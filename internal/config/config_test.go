@@ -6461,16 +6461,6 @@ func TestSessionProfilingValidation(t *testing.T) {
 			wantErr: "window_minutes must be positive",
 		},
 		{
-			name: "zero volume spike ratio",
-			setup: func(c *Config) {
-				c.SessionProfiling.Enabled = true
-			},
-			modify: func(c *Config) {
-				c.SessionProfiling.VolumeSpikeRatio = 0
-			},
-			wantErr: "volume_spike_ratio must be positive",
-		},
-		{
 			name: "zero max sessions always invalid",
 			modify: func(c *Config) {
 				c.SessionProfiling.MaxSessions = 0
@@ -6498,7 +6488,6 @@ func TestSessionProfilingValidation(t *testing.T) {
 				c.SessionProfiling.AnomalyAction = ActionBlock
 				c.SessionProfiling.DomainBurst = 10
 				c.SessionProfiling.WindowMinutes = 10
-				c.SessionProfiling.VolumeSpikeRatio = 5.0
 				c.SessionProfiling.MaxSessions = 500
 				c.SessionProfiling.SessionTTLMinutes = 60
 				c.SessionProfiling.CleanupIntervalSeconds = 120
@@ -6697,9 +6686,6 @@ func TestSessionProfilingDefaults(t *testing.T) {
 	if cfg.SessionProfiling.WindowMinutes != 5 {
 		t.Errorf("expected 5, got %d", cfg.SessionProfiling.WindowMinutes)
 	}
-	if cfg.SessionProfiling.VolumeSpikeRatio != 3.0 {
-		t.Errorf("expected 3.0, got %f", cfg.SessionProfiling.VolumeSpikeRatio)
-	}
 	if cfg.SessionProfiling.MaxSessions != 1000 {
 		t.Errorf("expected 1000, got %d", cfg.SessionProfiling.MaxSessions)
 	}
@@ -6735,9 +6721,6 @@ session_profiling:
 	if cfg.SessionProfiling.WindowMinutes != 5 {
 		t.Fatalf("WindowMinutes = %d, want 5", cfg.SessionProfiling.WindowMinutes)
 	}
-	if cfg.SessionProfiling.VolumeSpikeRatio != 3.0 {
-		t.Fatalf("VolumeSpikeRatio = %f, want 3.0", cfg.SessionProfiling.VolumeSpikeRatio)
-	}
 }
 
 func TestLoad_SessionProfilingReloadBackfillsDefaults(t *testing.T) {
@@ -6754,7 +6737,6 @@ session_profiling:
   anomaly_action: block
   domain_burst: 9
   window_minutes: 11
-  volume_spike_ratio: 7.5
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -6774,7 +6756,6 @@ session_profiling:
 	}
 	if cfg.SessionProfiling.DomainBurst != 5 ||
 		cfg.SessionProfiling.WindowMinutes != 5 ||
-		cfg.SessionProfiling.VolumeSpikeRatio != 3.0 ||
 		cfg.SessionProfiling.AnomalyAction != ActionWarn {
 		t.Fatalf("reload defaults not backfilled: %+v", cfg.SessionProfiling)
 	}
@@ -6785,7 +6766,6 @@ session_profiling:
 	}
 	if cfg.SessionProfiling.DomainBurst != 5 ||
 		cfg.SessionProfiling.WindowMinutes != 5 ||
-		cfg.SessionProfiling.VolumeSpikeRatio != 3.0 ||
 		cfg.SessionProfiling.AnomalyAction != ActionWarn {
 		t.Fatalf("idempotent reload defaults not preserved: %+v", cfg.SessionProfiling)
 	}
@@ -16635,5 +16615,75 @@ func TestValidateReload_AgentSandboxBestEffortAuthorizationChanged(t *testing.T)
 	}
 	if sandboxWarned(ValidateReload(base("same", future), base("same", future))) {
 		t.Fatal("unchanged per-agent authorization must not warn")
+	}
+}
+
+// TestRemovedVolumeSpikeRatioField verifies that the inert
+// session_profiling.volume_spike_ratio field, removed because it never had a
+// runtime consumer, produces an actionable migration error rather than a bare
+// "field not found" when an operator carries it across an upgrade. This joins
+// the existing clarifyRemovedField mechanism used for the removed DoW budget
+// limits: strict decode still fails closed, but the message names the field and
+// says to remove it. A config that omits the field loads normally.
+func TestRemovedVolumeSpikeRatioField(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string // substring; empty means expect successful load
+	}{
+		{
+			name: "omitted loads",
+			yaml: "mode: balanced\n" +
+				"session_profiling:\n" +
+				"  enabled: true\n",
+			wantErr: "",
+		},
+		{
+			name: "present at top level is rejected with migration hint",
+			yaml: "mode: balanced\n" +
+				"session_profiling:\n" +
+				"  enabled: true\n" +
+				"  volume_spike_ratio: 3.0\n",
+			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced",
+		},
+		{
+			name: "yaml null value is still rejected",
+			yaml: "mode: balanced\n" +
+				"session_profiling:\n" +
+				"  enabled: true\n" +
+				"  volume_spike_ratio:\n",
+			wantErr: "session_profiling.volume_spike_ratio was removed because it was not enforced",
+		},
+		{
+			name: "present in an agent profile is rejected with migration hint",
+			yaml: "mode: balanced\n" +
+				"agents:\n" +
+				"  worker:\n" +
+				"    session_profiling:\n" +
+				"      volume_spike_ratio: 5.0\n",
+			wantErr: "agents.<name>.session_profiling.volume_spike_ratio was removed because it was not enforced",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "pipelock.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			_, err := Load(path)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Load: expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }

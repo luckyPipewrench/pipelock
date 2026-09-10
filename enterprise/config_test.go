@@ -1023,9 +1023,8 @@ func TestMergeAgentProfile_SessionProfilingOverride(t *testing.T) {
 	cfg := testConfig()
 	profile := &config.AgentProfile{
 		SessionProfiling: &config.AgentSessionProf{
-			DomainBurst:      10,
-			AnomalyAction:    config.ActionBlock,
-			VolumeSpikeRatio: 5.0,
+			DomainBurst:   10,
+			AnomalyAction: config.ActionBlock,
 		},
 	}
 	merged, err := MergeAgentProfile(cfg, profile)
@@ -1037,9 +1036,6 @@ func TestMergeAgentProfile_SessionProfilingOverride(t *testing.T) {
 	}
 	if merged.SessionProfiling.AnomalyAction != config.ActionBlock {
 		t.Errorf("anomaly_action = %q, want block", merged.SessionProfiling.AnomalyAction)
-	}
-	if merged.SessionProfiling.VolumeSpikeRatio != 5.0 {
-		t.Errorf("volume_spike_ratio = %f, want 5.0", merged.SessionProfiling.VolumeSpikeRatio)
 	}
 }
 

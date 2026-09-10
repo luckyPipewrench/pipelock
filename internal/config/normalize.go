@@ -427,9 +427,6 @@ func (c *Config) ApplyDefaults() {
 		if c.SessionProfiling.WindowMinutes <= 0 {
 			c.SessionProfiling.WindowMinutes = 5
 		}
-		if c.SessionProfiling.VolumeSpikeRatio <= 0 {
-			c.SessionProfiling.VolumeSpikeRatio = 3.0
-		}
 	}
 	if c.SessionProfiling.MaxSessions <= 0 {
 		c.SessionProfiling.MaxSessions = 1000

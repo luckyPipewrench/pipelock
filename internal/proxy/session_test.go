@@ -43,7 +43,6 @@ func testSessionConfig() *config.SessionProfiling {
 		AnomalyAction:          "warn",
 		DomainBurst:            5,
 		WindowMinutes:          5,
-		VolumeSpikeRatio:       3.0,
 		MaxSessions:            100,
 		SessionTTLMinutes:      30,
 		CleanupIntervalSeconds: 60,

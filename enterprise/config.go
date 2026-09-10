@@ -462,7 +462,6 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 		// preserved from the base config.
 		merged.SessionProfiling.DomainBurst = profile.SessionProfiling.DomainBurst
 		merged.SessionProfiling.AnomalyAction = profile.SessionProfiling.AnomalyAction
-		merged.SessionProfiling.VolumeSpikeRatio = profile.SessionProfiling.VolumeSpikeRatio
 	}
 	if profile.MCPToolPolicy != nil {
 		// Wholesale replacement: setting mcp_tool_policy on an agent

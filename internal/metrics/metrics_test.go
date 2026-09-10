@@ -429,7 +429,7 @@ func TestRecordSessionAnomaly(t *testing.T) {
 	m := New()
 	m.RecordSessionAnomaly("domain_burst")
 	m.RecordSessionAnomaly("domain_burst")
-	m.RecordSessionAnomaly("volume_spike")
+	m.RecordSessionAnomaly("ip_domain_burst")
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -440,8 +440,8 @@ func TestRecordSessionAnomaly(t *testing.T) {
 	if !strings.Contains(text, `pipelock_session_anomalies_total{type="domain_burst"}`) {
 		t.Error("expected domain_burst anomaly counter in /metrics")
 	}
-	if !strings.Contains(text, `pipelock_session_anomalies_total{type="volume_spike"}`) {
-		t.Error("expected volume_spike anomaly counter in /metrics")
+	if !strings.Contains(text, `pipelock_session_anomalies_total{type="ip_domain_burst"}`) {
+		t.Error("expected ip_domain_burst anomaly counter in /metrics")
 	}
 
 	// Also verify JSON stats tracking
@@ -452,8 +452,8 @@ func TestRecordSessionAnomaly(t *testing.T) {
 	if m.topAnomalyTypes["domain_burst"] != 2 {
 		t.Errorf("expected domain_burst=2, got %d", m.topAnomalyTypes["domain_burst"])
 	}
-	if m.topAnomalyTypes["volume_spike"] != 1 {
-		t.Errorf("expected volume_spike=1, got %d", m.topAnomalyTypes["volume_spike"])
+	if m.topAnomalyTypes["ip_domain_burst"] != 1 {
+		t.Errorf("expected ip_domain_burst=1, got %d", m.topAnomalyTypes["ip_domain_burst"])
 	}
 	m.mu.Unlock()
 }

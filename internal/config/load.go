@@ -108,7 +108,7 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parsing config %s: %w", sourceName, clarifyRemovedDoWField(err))
+		return nil, fmt.Errorf("parsing config %s: %w", sourceName, clarifyRemovedField(err))
 	}
 	// Reject trailing documents. yaml.v3 Decoder.Decode consumes exactly one
 	// document per call, so a config with `---`-separated extra documents
@@ -259,17 +259,34 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	return cfg, nil
 }
 
-// clarifyRemovedDoWField turns yaml.v3's generic unknown-field error into an
-// actionable migration error for limits that were removed because the runtime
-// never enforced them.
-func clarifyRemovedDoWField(err error) error {
-	for _, field := range []string{
-		"max_retries_per_endpoint",
-		"fan_out_limit",
-		"fan_out_window_seconds",
+// clarifyRemovedField turns yaml.v3's generic unknown-field error into an
+// actionable migration error for fields that were removed because the runtime
+// never enforced them. Each entry names the yaml key and the struct type the
+// strict decoder reports it against, so an operator carrying a stale key on
+// upgrade gets "remove it" guidance instead of a bare "field not found".
+func clarifyRemovedField(err error) error {
+	type removed struct {
+		key  string
+		typ  string
+		note string
+	}
+	for _, r := range []removed{
+		{"max_retries_per_endpoint", "config.BudgetConfig", ""},
+		{"fan_out_limit", "config.BudgetConfig", ""},
+		{"fan_out_window_seconds", "config.BudgetConfig", ""},
+		// volume_spike_ratio never had a consumer: the session profiler
+		// implements domain-burst detection only and never compared bytes
+		// against this ratio. It appears both at the top-level
+		// session_profiling block and as a per-agent override.
+		{"volume_spike_ratio", "config.SessionProfiling", "session_profiling.volume_spike_ratio"},
+		{"volume_spike_ratio", "config.AgentSessionProf", "agents.<name>.session_profiling.volume_spike_ratio"},
 	} {
-		if strings.Contains(err.Error(), "field "+field+" not found in type config.BudgetConfig") {
-			return fmt.Errorf("%s was removed because it was not enforced; remove it from the config: %w", field, err)
+		if strings.Contains(err.Error(), "field "+r.key+" not found in type "+r.typ) {
+			name := r.note
+			if name == "" {
+				name = r.key
+			}
+			return fmt.Errorf("%s was removed because it was not enforced; remove it from the config: %w", name, err)
 		}
 	}
 	return err

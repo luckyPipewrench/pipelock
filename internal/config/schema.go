@@ -1239,17 +1239,16 @@ type LoggingConfig struct {
 }
 
 // SessionProfiling configures per-session behavioral analysis.
-// Tracks domains, volumes, and scanner signals per agent session to detect
-// anomalous behavior patterns like sudden domain bursts or volume spikes.
+// Tracks domains and scanner signals per agent session to detect anomalous
+// behavior patterns like sudden domain bursts.
 type SessionProfiling struct {
-	Enabled                bool    `yaml:"enabled"`
-	AnomalyAction          string  `yaml:"anomaly_action"`           // warn, block
-	DomainBurst            int     `yaml:"domain_burst"`             // new domains in one window to flag
-	WindowMinutes          int     `yaml:"window_minutes"`           // rolling window duration
-	VolumeSpikeRatio       float64 `yaml:"volume_spike_ratio"`       // bytes > ratio * rolling avg
-	MaxSessions            int     `yaml:"max_sessions"`             // hard cap on concurrent sessions
-	SessionTTLMinutes      int     `yaml:"session_ttl_minutes"`      // idle eviction TTL
-	CleanupIntervalSeconds int     `yaml:"cleanup_interval_seconds"` // background cleanup period
+	Enabled                bool   `yaml:"enabled"`
+	AnomalyAction          string `yaml:"anomaly_action"`           // warn, block
+	DomainBurst            int    `yaml:"domain_burst"`             // new domains in one window to flag
+	WindowMinutes          int    `yaml:"window_minutes"`           // rolling window duration
+	MaxSessions            int    `yaml:"max_sessions"`             // hard cap on concurrent sessions
+	SessionTTLMinutes      int    `yaml:"session_ttl_minutes"`      // idle eviction TTL
+	CleanupIntervalSeconds int    `yaml:"cleanup_interval_seconds"` // background cleanup period
 }
 
 // AdaptiveEnforcement configures per-session threat scoring with escalation.
@@ -1680,9 +1679,8 @@ type AgentRateLimit struct {
 // Global-only fields (max_sessions, session_ttl_minutes, cleanup_interval_seconds)
 // are NOT included; validation rejects them in agent profiles.
 type AgentSessionProf struct {
-	DomainBurst      int     `yaml:"domain_burst,omitempty"`
-	AnomalyAction    string  `yaml:"anomaly_action,omitempty"`
-	VolumeSpikeRatio float64 `yaml:"volume_spike_ratio,omitempty"`
+	DomainBurst   int    `yaml:"domain_burst,omitempty"`
+	AnomalyAction string `yaml:"anomaly_action,omitempty"`
 }
 
 // BudgetConfig defines per-agent request budgets. Zero values mean unlimited.

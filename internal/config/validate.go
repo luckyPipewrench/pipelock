@@ -2856,9 +2856,6 @@ func (c *Config) validateSessionProfiling() error {
 		if c.SessionProfiling.WindowMinutes <= 0 {
 			return fmt.Errorf("session_profiling.window_minutes must be positive")
 		}
-		if c.SessionProfiling.VolumeSpikeRatio <= 0 {
-			return fmt.Errorf("session_profiling.volume_spike_ratio must be positive")
-		}
 	}
 	if c.SessionProfiling.MaxSessions <= 0 {
 		return fmt.Errorf("session_profiling.max_sessions must be positive")

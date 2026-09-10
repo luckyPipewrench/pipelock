@@ -164,7 +164,7 @@ Three output formats are supported:
 | `--emit kustomize` | Kustomize overlay with `kustomization.yaml` | GitOps (Flux, Argo CD) |
 | `--emit helm-values` | `values.yaml` fragment for the pipelock Helm chart | Helm-based pipelines |
 
-The generated companion config sets `bind_default_agent_identity: true` so caller-supplied `X-Pipelock-Agent` headers and `?agent=` query parameters are ignored — identity is bound to the workload. This is the recommended mode for single-workload topologies. Shared-proxy multi-agent identity remains a deferred item on the roadmap (requires mTLS or workload-authenticated listener binding). Full reference: [`pipelock init sidecar`](../cli/init-sidecar.md).
+The generated companion config sets `bind_default_agent_identity: true` so caller-supplied `X-Pipelock-Agent` headers and `?agent=` query parameters are ignored — identity is bound to the workload. This is the recommended mode for single-workload topologies. A shared proxy fronting several agents distinguishes them with a trusted identity today by giving each agent its own listen address or by mapping each agent to a `source_cidrs` range matched against the connection's own source address; both bind identity from how the connection arrives rather than from spoofable request input. Full reference: [`pipelock init sidecar`](../cli/init-sidecar.md).
 
 **Rollout order:** deploy the pipelock Deployment and wait for ready endpoints before patching the agent workload to route through it. The Helm output documents that order explicitly. Rolling the agent workload first creates a fail-closed brownout until the companion is up.
 

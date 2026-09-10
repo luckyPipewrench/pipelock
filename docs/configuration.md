@@ -1406,7 +1406,7 @@ mcp_ws_listener:
 
 ## Session Profiling
 
-Per-session behavioral analysis that detects domain bursts and volume spikes.
+Per-session behavioral analysis that detects domain bursts.
 
 ```yaml
 session_profiling:
@@ -1414,7 +1414,6 @@ session_profiling:
   anomaly_action: warn
   domain_burst: 5
   window_minutes: 5
-  volume_spike_ratio: 3.0
   max_sessions: 1000
   session_ttl_minutes: 30
   cleanup_interval_seconds: 60
@@ -1426,7 +1425,6 @@ session_profiling:
 | `anomaly_action` | `"warn"` | warn or block on anomaly |
 | `domain_burst` | `5` | New unique domains in window to flag |
 | `window_minutes` | `5` | Rolling window duration |
-| `volume_spike_ratio` | `3.0` | Spike threshold (ratio of avg) |
 | `max_sessions` | `1000` | Hard cap on concurrent sessions |
 | `session_ttl_minutes` | `30` | Idle session eviction |
 | `cleanup_interval_seconds` | `60` | Background cleanup interval |
@@ -2139,7 +2137,9 @@ Resolution precedence with binding enabled: context override > `default_agent_id
 
 ## Agent Profiles
 
-Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. `mcp_tool_policy` replaces the base section entirely when set on an agent profile (no deep merge). `session_profiling` replaces the per-agent fields (`domain_burst`, `anomaly_action`, `volume_spike_ratio`) unconditionally while preserving global-only fields (`max_sessions`, `session_ttl_minutes`, `cleanup_interval_seconds`). `rate_limit` overrides individual rate limit fields (non-zero values win). DLP merging follows separate rules (see below).
+Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. `mcp_tool_policy` replaces the base section entirely when set on an agent profile (no deep merge). `session_profiling` replaces the per-agent fields (`domain_burst`, `anomaly_action`) unconditionally while preserving global-only fields (`max_sessions`, `session_ttl_minutes`, `cleanup_interval_seconds`). `rate_limit` overrides individual rate limit fields (non-zero values win). DLP merging follows separate rules (see below).
+
+Per-agent burst detection separates callers only when their identity is infrastructure-bound. Domain-burst detection runs a second, IP-level counter that catches a single caller rotating a self-declared `X-Pipelock-Agent` header to evade the per-agent counter: it emits an `ip_domain_burst` anomaly and, with `anomaly_action: block`, returns HTTP 403 once `domain_burst` unique domains are seen within `window_minutes`. That IP-level counter groups all self-declared and header-matched callers on one client IP together, because a request-supplied name cannot be trusted to partition state. Distinct callers that share one client IP are counted separately only when each is bound by a per-agent listener or by `source_cidrs` (see the [mediation envelope guide](guides/mediation-envelope.md) for identity grades); several bound callers on one host therefore do not false-positive as one bursting agent.
 
 ```yaml
 agents:

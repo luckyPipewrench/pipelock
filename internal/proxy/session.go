@@ -32,7 +32,7 @@ type SessionResult struct {
 
 // Anomaly represents a behavioral anomaly detected in a session.
 type Anomaly struct {
-	Type   string  // domain_burst, volume_spike
+	Type   string  // domain_burst, ip_domain_burst
 	Detail string  // human-readable description
 	Score  float64 // anomaly score contribution
 }

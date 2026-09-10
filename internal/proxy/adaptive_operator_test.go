@@ -78,7 +78,7 @@ func TestSignalForSessionAnomaly(t *testing.T) {
 		{"domain cooperative", testDomainBurst, true, session.SignalDomainAnomalyCooperative, true},
 		{"ip domain", testIPDomainBurst, false, session.SignalIPDomainAnomaly, true},
 		{"ip domain cooperative", testIPDomainBurst, true, session.SignalIPDomainAnomalyCooperative, true},
-		{"unknown", "volume_spike", false, 0, false},
+		{"unknown", "nonexistent_anomaly", false, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

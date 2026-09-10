@@ -3368,7 +3368,6 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
 	cfg.SessionProfiling.DomainBurst = 2
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0 // high, won't trigger
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3437,7 +3436,6 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn // warn, not block
 	cfg.SessionProfiling.DomainBurst = 1                   // triggers on first unique domain
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3498,7 +3496,6 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100 // high, won't trigger
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3576,7 +3573,6 @@ func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3649,7 +3645,6 @@ func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3697,7 +3692,6 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 10.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60
@@ -3745,7 +3739,6 @@ func TestProxy_Close_SessionManager(t *testing.T) {
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 5
 	cfg.SessionProfiling.WindowMinutes = 5
-	cfg.SessionProfiling.VolumeSpikeRatio = 3.0
 	cfg.SessionProfiling.MaxSessions = 100
 	cfg.SessionProfiling.SessionTTLMinutes = 30
 	cfg.SessionProfiling.CleanupIntervalSeconds = 60

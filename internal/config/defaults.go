@@ -396,7 +396,6 @@ func Defaults() *Config {
 			AnomalyAction:          ActionWarn,
 			DomainBurst:            5,
 			WindowMinutes:          5,
-			VolumeSpikeRatio:       3.0,
 			MaxSessions:            1000,
 			SessionTTLMinutes:      30,
 			CleanupIntervalSeconds: 60,

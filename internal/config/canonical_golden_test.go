@@ -398,7 +398,11 @@ const (
 	// token in an outbound frame stayed a DLP match and blocked a legitimate
 	// connection. Adding a host changes which destinations that credential is
 	// enforced against, which is a policy-semantics change.
-	goldenHashDefaults = "86381cc788e7098bbf397a24a32aa69e302c74f345fd4138b94378bf198c487d"
+	// Re-bumped when the inert session_profiling.volume_spike_ratio field was
+	// removed. It had no consumer, but SessionProfiling is part of the policy
+	// view, so dropping the field changes the canonical JSON shape and shifts
+	// the hash. Effective enforcement is unchanged.
+	goldenHashDefaults = "18a0abfed63f3277805971cde5412b94742b0d76aed5930cd1b9cb8d1456ca8e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -608,7 +612,10 @@ const (
 	// and could earn an allow at that vendor. It no longer does, which is a
 	// fail-closed policy change. The defaults hash is unaffected because the
 	// default set has no customized pattern.
-	goldenHashRichConfig = "f97d86c32b35e0726cdc39a88b87ebffb9e0be2fc645e43d5610f973e5e3dd66"
+	// Re-bumped for the session_profiling.volume_spike_ratio removal: see
+	// goldenHashDefaults note above. The rich fixture inherits SessionProfiling
+	// defaults, so the hash shifts in lockstep.
+	goldenHashRichConfig = "e9afed0409969eee5acf87a9b2ae6a9cbf072eb90033a41e0824ca707bda09b6"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -160,8 +160,10 @@ NOTICE_MARKER = "pr-review-notice:v1"
 STATUS_MARKER_REQUIRED_FIELDS = frozenset({"state", "identity", "mode", "findings"})
 # Older markers carry fewer fields. They are still readable, and simply do
 # not qualify as a baseline, which is the safe direction.
-STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"model", "reviewed_head", "scope", "coverage_base"}
+STATUS_MARKER_FIELDS = STATUS_MARKER_REQUIRED_FIELDS | {"binding", "model", "reviewed_head", "scope", "coverage_base"}
 FINDING_FINGERPRINTS_RE = re.compile(r"(?:[0-9a-f]{12}(?:,[0-9a-f]{12})*)?")
+COVERAGE_CONTEXT = "pr-review/coverage"
+COVERAGE_POST_ATTEMPTS = 3
 
 PUBLISHED_REVIEW_STATES = frozenset(
     {"already-running", "clean", "failed", "findings", "inconclusive", "partial", "superseded"}
@@ -213,6 +215,24 @@ class PullBinding:
         return ":".join(
             (self.base_sha[:12], self.head_sha[:12], self.reviewer_sha[:12], self.rubric_version)
         )
+
+
+@dataclass(frozen=True)
+class CoveragePlan:
+    """The one status write a terminal review is allowed to make."""
+
+    target_head: str
+    status: str
+    description: str
+    gate_exit: int
+
+
+@dataclass(frozen=True)
+class CoveragePublication:
+    """The terminal writer's outcome, including a deliberate stale rejection."""
+
+    outcome: str
+    plan: CoveragePlan | None = None
 
 
 @dataclass
@@ -1329,6 +1349,183 @@ def update_comment(repo: str, comment_id: int, token: str, body: str, correlatio
     response.raise_for_status()
 
 
+def coverage_plan(state: str, complete: bool, admitted: PullBinding, current: PullBinding) -> CoveragePlan:
+    """Choose the current-head status without publishing it.
+
+    A terminal review may be accurate for the head it read and still be stale
+    by publication time. GitHub evaluates a pull request against its current
+    head, so a moved head (or base) is an explicit failure on that current
+    commit rather than a historical green on the captured commit.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", admitted.head_sha):
+        raise ReviewError("coverage status has no immutable admitted head")
+    if not re.fullmatch(r"[0-9a-f]{40}", current.head_sha):
+        raise ReviewError("coverage status has no immutable current head")
+    if current.head_sha != admitted.head_sha:
+        return CoveragePlan(
+            current.head_sha,
+            "failure",
+            "Review was superseded by a newer head; re-run it",
+            1,
+        )
+    if current.base_sha != admitted.base_sha:
+        return CoveragePlan(
+            current.head_sha,
+            "failure",
+            "Review no longer matches the current base; re-run it",
+            1,
+        )
+    if complete:
+        return CoveragePlan(current.head_sha, "success", f"Review covered the whole diff ({state})", 0)
+    if state in COMPLETE_REVIEW_STATES:
+        return CoveragePlan(current.head_sha, "failure", "Review did not reach the current base; re-run it", 1)
+    return CoveragePlan(current.head_sha, "failure", f"Review did NOT finish (state={state or 'none'})", 1)
+
+
+def post_coverage_status(repo: str, token: str, plan: CoveragePlan, run_url: str, correlation: str) -> bool:
+    """Publish exactly three times, pausing only before a real retry."""
+    for attempt in range(1, COVERAGE_POST_ATTEMPTS + 1):
+        try:
+            response = requests.post(
+                f"https://api.github.com/repos/{repo}/statuses/{plan.target_head}",
+                headers=github_headers(token),
+                json={
+                    "state": plan.status,
+                    "context": COVERAGE_CONTEXT,
+                    "description": plan.description,
+                    "target_url": run_url,
+                },
+                timeout=30,
+            )
+        except requests.RequestException:
+            log_phase("coverage-status", attempt=attempt, status="request-error", correlation=correlation)
+        else:
+            log_phase("coverage-status", attempt=attempt, status=response.status_code, correlation=correlation)
+            if 200 <= response.status_code < 300:
+                return True
+        if attempt < COVERAGE_POST_ATTEMPTS:
+            time.sleep(attempt * 5)
+    return False
+
+
+def _coverage_publication_failure_body(body: str, review_identity: str, reason: str) -> str:
+    """Turn this review's terminal comment into an honest unpublished result."""
+    marker = parse_status_marker(body)
+    if marker is None or marker.get("identity") != review_identity:
+        raise ReviewError("coverage failure comment no longer belongs to this review")
+    verdict = re.search(r"\*\*Verdict:\*\* `[^`]+`", body)
+    if verdict is None:
+        raise ReviewError("coverage failure comment had no terminal verdict")
+    notice = (
+        f"**Coverage status:** {reason} "
+        "The pull request cannot show this review's coverage verdict, so it must not be treated as green."
+    )
+    replacement = "**Verdict:** `failed`\n" + notice
+    body = body[: verdict.start()] + replacement + body[verdict.end() :]
+    updated, changes = re.subn(
+        rf"(<!-- {re.escape(STATUS_MARKER)} [^>]*?\bstate=){re.escape(marker['state'])}(?=\s|-->)",
+        r"\1failed",
+        body,
+        count=1,
+    )
+    if changes != 1:
+        raise ReviewError("coverage failure comment marker could not be made terminal")
+    return updated
+
+
+def mark_coverage_unpublished(
+    repo: str,
+    comment_id: int,
+    token: str,
+    review_identity: str,
+    correlation: str,
+    reason: str = "could not be published after three attempts.",
+) -> None:
+    """Make an unpublished status visible where the reviewer result lives."""
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}",
+            headers=github_headers(token),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        log_phase("coverage-comment-read", status="request-error", correlation=correlation)
+        raise ReviewError("coverage failure comment could not be read") from exc
+    log_phase("coverage-comment-read", status=response.status_code, correlation=correlation)
+    if response.status_code != 200:
+        raise ReviewError("coverage failure comment could not be read")
+    try:
+        body = response.json()["body"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewError("coverage failure comment had no body") from exc
+    if not isinstance(body, str):
+        raise ReviewError("coverage failure comment had no body")
+    update_comment(
+        repo,
+        comment_id,
+        token,
+        _coverage_publication_failure_body(body, review_identity, reason),
+        correlation,
+    )
+
+
+def publish_review_coverage(
+    repo: str,
+    pr_number: str,
+    token: str,
+    reviewer_sha: str,
+    admitted: PullBinding,
+    comment_id: int,
+    review_identity: str,
+    state: str,
+    complete: bool,
+    run_url: str,
+) -> CoveragePublication:
+    """Publish a current-head verdict, rejecting stale terminal writers."""
+    try:
+        current = get_pull_binding(repo, pr_number, token, reviewer_sha)
+    except (FetchError, requests.RequestException):
+        mark_coverage_unpublished(
+            repo,
+            comment_id,
+            token,
+            review_identity,
+            review_identity,
+            "could not be published because the current pull request could not be read.",
+        )
+        raise
+    newest, scanned = newest_admitted_review(repo, pr_number, token, review_identity)
+    if not scanned or newest is None:
+        mark_coverage_unpublished(
+            repo,
+            comment_id,
+            token,
+            review_identity,
+            review_identity,
+            "could not be published because the newest admitted review could not be confirmed.",
+        )
+        raise ReviewError("could not prove the newest admitted review before publishing coverage")
+    if newest.get("identity") != review_identity:
+        log_phase("coverage-status", status="stale-writer-rejected", correlation=review_identity)
+        return CoveragePublication("stale")
+    try:
+        plan = coverage_plan(state, complete, admitted, current)
+    except ReviewError:
+        mark_coverage_unpublished(
+            repo,
+            comment_id,
+            token,
+            review_identity,
+            review_identity,
+            "could not be published because the admitted review binding was invalid.",
+        )
+        raise
+    if post_coverage_status(repo, token, plan, run_url, review_identity):
+        return CoveragePublication("published", plan)
+    mark_coverage_unpublished(repo, comment_id, token, review_identity, review_identity)
+    raise ReviewError("coverage status could not be published")
+
+
 def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
     """Whether a running marker is too old to belong to a live review job."""
     created = comment.get("created_at")
@@ -1678,6 +1875,9 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
                 fields["html_url"] = comment.get("html_url") if isinstance(comment.get("html_url"), str) else ""
                 # Recorded so a baseline can be chosen by when it was written.
                 fields["created_at"] = comment.get("created_at") if isinstance(comment.get("created_at"), str) else ""
+                # GitHub comment IDs increase monotonically. They break a
+                # same-second timestamp tie without trusting API page order.
+                fields["comment_id"] = comment.get("id") if isinstance(comment.get("id"), int) else 0
                 # The ledger rides in the same comment. Absent or malformed, the
                 # marker still counts as a verdict; it simply cannot serve as a
                 # baseline to re-check, which falls back to a full review.
@@ -1692,6 +1892,50 @@ def scan_status_comments(repo: str, pr_number: str, token: str, correlation: str
         if len(comments) < 100:
             return markers, notices, True
     return markers, notices, False
+
+
+def _running_admission_marker(body: str) -> dict[str, str] | None:
+    """Read the minimal marker a freshly admitted review has written."""
+    matches = re.findall(rf"<!-- {re.escape(STATUS_MARKER)} ([^>\r\n]*?)-->", body)
+    if len(matches) != 1:
+        return None
+    fields: dict[str, str] = {}
+    for token in matches[0].split():
+        key, separator, value = token.partition("=")
+        if not separator or not key or key in fields:
+            return None
+        fields[key] = value
+    if fields.get("state") != "running" or not fields.get("identity"):
+        return None
+    return fields
+
+
+def newest_admitted_review(
+    repo: str, pr_number: str, token: str, correlation: str
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return the newest known admission, or incomplete evidence.
+
+    Coverage writers run after reviews have become terminal, so an older writer
+    can overlap a later admission. The comment creation time is the admission
+    order; terminal edit time must not be used because it is exactly the race
+    this check prevents.
+    """
+    terminal, _, terminal_complete = scan_status_comments(repo, pr_number, token, correlation)
+    running, running_complete = find_running_comment(repo, pr_number, token, correlation)
+    if not terminal_complete or not running_complete:
+        return None, False
+    candidates: list[dict[str, Any]] = list(terminal)
+    if isinstance(running, dict):
+        body = running.get("body")
+        fields = _running_admission_marker(body) if isinstance(body, str) else None
+        if fields is None:
+            return None, False
+        fields["created_at"] = running.get("created_at") if isinstance(running.get("created_at"), str) else ""
+        fields["comment_id"] = running.get("id") if isinstance(running.get("id"), int) else 0
+        candidates.append(fields)
+    if not candidates:
+        return None, True
+    return max(candidates, key=lambda marker: (str(marker.get("created_at") or ""), int(marker.get("comment_id") or 0))), True
 
 
 def previously_reported(markers: list[dict[str, str]]) -> set[str]:
@@ -1726,7 +1970,12 @@ def completed_identical_review(markers: list[dict[str, str]], correlation: str, 
     """
     for marker in markers:
         if (
-            marker.get("identity") == correlation
+            # New markers use a fresh per-admission identity so an older
+            # terminal writer cannot impersonate a later admission. The
+            # immutable binding remains the de-duplication key. Older markers
+            # used that binding as their identity and are accepted only for
+            # this optimization.
+            marker.get("binding", marker.get("identity")) == correlation
             and marker.get("mode") == mode
             and marker.get("model") == model_binding(mode)
             and marker.get("state") in COMPLETE_REVIEW_STATES
@@ -2698,7 +2947,7 @@ def head_has_moved(repo: str, pr_number: str, token: str, binding: PullBinding, 
         return False
 
 
-def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None, repository: str | None = None, pr_number: str | None = None) -> str:
+def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None, repository: str | None = None, pr_number: str | None = None, review_identity: str | None = None) -> str:
     seen_before = seen_before or set()
     # `full` means base..head. `delta` means a prior completed review's head
     # ..head, which is a smaller question and must never be read as a
@@ -2885,7 +3134,11 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     fingerprints = ",".join(sorted({finding_fingerprint(finding) for finding in findings}))
     marker = {
         "state": state,
-        "identity": binding.correlation,
+        "identity": review_identity or uuid.uuid4().hex,
+        # The unique admission identity prevents stale terminal writers from
+        # clobbering a later review. This binding remains the stable key used
+        # only to decide whether the same immutable review can be skipped.
+        "binding": binding.correlation,
         "mode": mode,
         "model": model_binding(mode),
         "findings": fingerprints,
@@ -2926,8 +3179,9 @@ def workflow_run_url() -> str | None:
     return f"{server}/{repository}/actions/runs/{run_id}"
 
 
-def _initial_status(binding: PullBinding, mode: str) -> str:
+def _initial_status(binding: PullBinding, mode: str, review_identity: str | None = None) -> str:
     deep = mode == "deep"
+    review_identity = review_identity or uuid.uuid4().hex
     run_url = workflow_run_url()
     lines = [
         "## AI PR Review",
@@ -2958,12 +3212,12 @@ def _initial_status(binding: PullBinding, mode: str) -> str:
                 else []
             ),
             f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
-            f"**Review identity:** `{binding.correlation}`",
+            f"**Review identity:** `{review_identity}`",
             "**Classification:** pending immutable diff fetch",
             "",
             "</details>",
             "",
-            f"<!-- {STATUS_MARKER} state=running identity={binding.correlation} -->",
+            f"<!-- {STATUS_MARKER} state=running identity={review_identity} binding={binding.correlation} mode={mode} model={model_binding(mode)} -->",
         ]
     )
     return "\n".join(lines)
@@ -3035,16 +3289,16 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
             )
         write_action_outputs(claimed="false")
         return
-    comment = create_comment(repo, pr_number, token, _initial_status(binding, mode), binding.correlation)
+    review_identity = uuid.uuid4().hex
+    comment = create_comment(repo, pr_number, token, _initial_status(binding, mode, review_identity), binding.correlation)
     write_action_outputs(
         claimed="true",
         base_sha=binding.base_sha,
         head_sha=binding.head_sha,
         status_comment_id=str(comment["id"]),
-        # Published so the workflow finalizer matches this exact review identity
-        # instead of rebuilding the string in shell, where it would drift from
-        # the correlation this module writes.
-        correlation=binding.correlation,
+        # Published so finalizers and coverage writers can match this exact
+        # admission rather than a reusable base/head binding.
+        correlation=review_identity,
     )
 
 
@@ -3057,16 +3311,18 @@ def run_review(
     *,
     binding: PullBinding | None = None,
     status_comment_id: int | None = None,
+    review_identity: str | None = None,
 ) -> tuple[str, ReviewProgress]:
     deadline = time.monotonic() + REVIEW_WALL_CLOCK_SECONDS
     binding = binding or get_pull_binding(repo, pr_number, token, reviewer_sha)
+    review_identity = review_identity or uuid.uuid4().hex
     if status_comment_id is None:
         active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
         if active or not scanned:
             link = active.get("html_url") if isinstance(active, dict) and isinstance(active.get("html_url"), str) else "the existing review status"
             create_comment(repo, pr_number, token, f"A review is already running: {link}", binding.correlation)
             return "already-running", ReviewProgress()
-        comment = create_comment(repo, pr_number, token, _initial_status(binding, mode), binding.correlation)
+        comment = create_comment(repo, pr_number, token, _initial_status(binding, mode, review_identity), binding.correlation)
     else:
         comment = {"id": status_comment_id}
     progress = ReviewProgress()
@@ -3392,6 +3648,7 @@ def run_review(
                     scope_base,
                     repo,
                     pr_number,
+                    review_identity,
                 ),
                 binding.correlation,
             )
@@ -3425,7 +3682,7 @@ def main() -> None:
         or not REPO_PATTERN.fullmatch(repo)
         or not pr_number.isdigit()
         or mode not in {"default", "deep"}
-        or operation not in {"claim", "review"}
+        or operation not in {"claim", "coverage", "review"}
     ):
         print("pr-review phase=configuration attempt=1 status=invalid correlation=pending", file=sys.stderr)
         raise SystemExit(2)
@@ -3433,11 +3690,54 @@ def main() -> None:
         if operation == "claim":
             claim_review(repo, pr_number, github_token, mode, reviewer_sha)
             return
+        if operation == "coverage":
+            base_sha = os.environ.get("BASE_SHA", "")
+            head_sha = os.environ.get("HEAD_SHA", "")
+            comment_id = os.environ.get("STATUS_COMMENT_ID", "")
+            review_identity = os.environ.get("REVIEW_IDENTITY", "")
+            state = os.environ.get("COVERAGE_STATE", "")
+            complete_value = os.environ.get("COVERAGE_COMPLETE", "")
+            run_url = os.environ.get("COVERAGE_RUN_URL", "")
+            if (
+                not all((base_sha, head_sha, comment_id, review_identity, run_url))
+                or not comment_id.isdigit()
+                or not re.fullmatch(r"[0-9a-f]{32}", review_identity)
+                or complete_value not in {"", "true", "false"}
+            ):
+                raise ReviewError("coverage operation received incomplete admission data")
+            publication = publish_review_coverage(
+                repo,
+                pr_number,
+                github_token,
+                reviewer_sha,
+                binding_from_values(base_sha, head_sha, reviewer_sha),
+                int(comment_id),
+                review_identity,
+                state or "failed",
+                complete_value == "true",
+                run_url,
+            )
+            if publication.outcome == "stale":
+                print("pr-review phase=coverage attempt=1 status=stale-writer-rejected correlation=published")
+                return
+            if publication.plan is None:
+                raise ReviewError("coverage publication had no plan")
+            print(
+                f"pr-review phase=coverage attempt=1 status={publication.plan.status} correlation=published"
+            )
+            if publication.plan.gate_exit:
+                raise SystemExit(1)
+            return
         base_sha = os.environ.get("BASE_SHA", "")
         head_sha = os.environ.get("HEAD_SHA", "")
         comment_id = os.environ.get("STATUS_COMMENT_ID", "")
-        if any((base_sha, head_sha, comment_id)):
-            if not all((base_sha, head_sha, comment_id)) or not comment_id.isdigit():
+        review_identity = os.environ.get("REVIEW_IDENTITY", "")
+        if any((base_sha, head_sha, comment_id, review_identity)):
+            if (
+                not all((base_sha, head_sha, comment_id, review_identity))
+                or not comment_id.isdigit()
+                or not re.fullmatch(r"[0-9a-f]{32}", review_identity)
+            ):
                 raise ReviewError("review operation received incomplete admission data")
             state, progress = run_review(
                 repo,
@@ -3447,6 +3747,7 @@ def main() -> None:
                 reviewer_sha,
                 binding=binding_from_values(base_sha, head_sha, reviewer_sha),
                 status_comment_id=int(comment_id),
+                review_identity=review_identity,
             )
         else:
             state, progress = run_review(repo, pr_number, github_token, mode, reviewer_sha)

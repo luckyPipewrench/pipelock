@@ -222,8 +222,9 @@ class WorkflowPackagingTest(unittest.TestCase):
         # review look crashed, or lets an incomplete review show an all-green
         # pull request, which reads as reviewed when it was not.
         completeness = workflow["jobs"]["completeness"]
-        self.assertEqual(completeness["needs"], ["admit", "review"])
+        self.assertEqual(completeness["needs"], ["admit", "review", "finalize"])
         self.assertIn("always()", completeness["if"])
+        self.assertEqual(completeness["concurrency"], admit["concurrency"])
         # Every step that can run a review must feed both outputs. A hard-coded
         # count went stale the moment a provider was removed, and a count is the
         # wrong assertion anyway: it cannot tell which step was dropped. Derive
@@ -312,6 +313,10 @@ class WorkflowPackagingTest(unittest.TestCase):
             "openai-api-key",
             "model-fast",
             "model-deep",
+            "review-identity",
+            "coverage-state",
+            "coverage-complete",
+            "coverage-run-url",
             "reviewed-repository-path",
             "reviewed-merge-base-sha",
         ):
@@ -505,6 +510,108 @@ class ExitSemanticsTest(unittest.TestCase):
             self.assertIsNone(pr_review.main())
             output.seek(0)
             self.assertIn("complete=false", output.read().decode("utf-8"))
+
+
+class CoveragePublicationStateTableTest(unittest.TestCase):
+    """Exercise the terminal publisher rather than only rendering its shell."""
+
+    REVIEWER = "c" * 40
+    IDENTITY = "d" * 32
+
+    @staticmethod
+    def response(status: int) -> object:
+        result = mock.Mock()
+        result.status_code = status
+        return result
+
+    def binding(self, *, base: str = "a" * 40, head: str = "b" * 40) -> object:
+        return pr_review.PullBinding(base, head, self.REVIEWER, pr_review.RUBRIC_VERSION)
+
+    def test_coverage_publication_state_table(self) -> None:
+        admitted = self.binding()
+        cases = (
+            ("success", admitted, "clean", True, self.IDENTITY, "published", "success", "b" * 40, False),
+            ("partial", admitted, "partial", False, self.IDENTITY, "published", "failure", "b" * 40, False),
+            ("moved head", self.binding(), "clean", True, self.IDENTITY, "published", "failure", "e" * 40, False),
+            ("stale terminal writer", admitted, "clean", True, "e" * 32, "stale", None, None, False),
+            ("empty admitted head", self.binding(head=""), "clean", True, self.IDENTITY, "error", None, None, True),
+            ("POST failure", admitted, "clean", True, self.IDENTITY, "error", None, None, True),
+        )
+        for name, captured, state, complete, newest_identity, expected, status, target, raises in cases:
+            with self.subTest(name=name), mock.patch.object(
+                pr_review,
+                "get_pull_binding",
+                return_value=self.binding(head="e" * 40) if name == "moved head" else admitted,
+            ), mock.patch.object(
+                pr_review,
+                "newest_admitted_review",
+                return_value=({"identity": newest_identity}, True),
+            ), mock.patch.object(
+                pr_review,
+                "post_coverage_status",
+                return_value=name != "POST failure",
+            ) as post, mock.patch.object(pr_review, "mark_coverage_unpublished") as mark:
+                if raises:
+                    with self.assertRaises(pr_review.ReviewError):
+                        pr_review.publish_review_coverage(
+                            "owner/repo", "42", "token", self.REVIEWER, captured, 7, self.IDENTITY, state, complete, "https://ci.example/run"
+                        )
+                    mark.assert_called_once()
+                    if name == "empty admitted head":
+                        post.assert_not_called()
+                    continue
+                result = pr_review.publish_review_coverage(
+                    "owner/repo", "42", "token", self.REVIEWER, captured, 7, self.IDENTITY, state, complete, "https://ci.example/run"
+                )
+                self.assertEqual(result.outcome, expected)
+                if expected == "stale":
+                    post.assert_not_called()
+                    mark.assert_not_called()
+                    continue
+                self.assertIsNotNone(result.plan)
+                self.assertEqual(result.plan.status, status)
+                self.assertEqual(result.plan.target_head, target)
+                if name == "moved head":
+                    self.assertIn("superseded", result.plan.description)
+                post.assert_called_once()
+                mark.assert_not_called()
+
+    def test_coverage_retries_exactly_three_times_without_a_final_sleep(self) -> None:
+        plan = pr_review.CoveragePlan("b" * 40, "failure", "Review did NOT finish", 1)
+        with mock.patch.object(
+            pr_review.requests,
+            "post",
+            side_effect=[self.response(503), self.response(502), self.response(201)],
+        ) as post, mock.patch.object(pr_review.time, "sleep") as sleep:
+            self.assertTrue(pr_review.post_coverage_status("owner/repo", "token", plan, "https://ci.example/run", self.IDENTITY))
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
+
+    def test_status_publication_failure_rewrites_the_terminal_comment(self) -> None:
+        binding = self.binding()
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1)
+        body = pr_review.render_status(
+            binding,
+            "default",
+            [],
+            progress,
+            "clean",
+            [],
+            review_identity=self.IDENTITY,
+        )
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"body": body}
+        with mock.patch.object(pr_review.requests, "get", return_value=response), mock.patch.object(
+            pr_review, "update_comment"
+        ) as update:
+            pr_review.mark_coverage_unpublished("owner/repo", 7, "token", self.IDENTITY, self.IDENTITY)
+        rewritten = update.call_args.args[3]
+        self.assertIn("**Verdict:** `failed`", rewritten)
+        self.assertIn("could not be published after three attempts", rewritten)
+        marker = pr_review.parse_status_marker(rewritten)
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker["state"], "failed")
 
 
 class CompressionAndClassificationTest(unittest.TestCase):
@@ -1085,11 +1192,12 @@ printf '%s' "$FAKE_BODY"
     def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
         # A failed checkout is one of the cases the finalizer exists to survive,
         # so it must not resolve the locally checked-out action.
-        workflow = REUSABLE_WORKFLOW.read_text(encoding="utf-8")
-        finalize = workflow.split("Finalize an abandoned review", 1)[1]
-        self.assertIn("if: always()", finalize)
-        self.assertNotIn("trusted-pr-review", finalize)
-        self.assertIn("needs.admit.outputs.status_comment_id", finalize)
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        finalizer = workflow["jobs"]["finalize"]
+        rendered = finalizer["steps"][0]["run"]
+        self.assertIn("always()", finalizer["if"])
+        self.assertNotIn("trusted-pr-review", rendered)
+        self.assertEqual(finalizer["steps"][0]["env"]["COMMENT_ID"], "${{ needs.admit.outputs.status_comment_id }}")
 
     def test_finalizer_matches_the_claimed_identity_not_a_rebuilt_one(self) -> None:
         # Rebuilding the identity in shell would drift from PullBinding.correlation,
@@ -3210,7 +3318,8 @@ class RepeatReviewTest(unittest.TestCase):
         fields = pr_review.parse_status_marker(body)
         self.assertIsNotNone(fields)
         self.assertEqual(fields["state"], "findings")
-        self.assertEqual(fields["identity"], binding.correlation)
+        self.assertRegex(fields["identity"], r"^[0-9a-f]{32}$")
+        self.assertEqual(fields["binding"], binding.correlation)
         self.assertEqual(fields["mode"], "deep")
         self.assertEqual(fields["model"], pr_review.model_binding("deep"))
         self.assertEqual(

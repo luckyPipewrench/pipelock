@@ -176,6 +176,7 @@ jobs:
           base-sha: ${{ needs.admit.outputs.base_sha }}
           head-sha: ${{ needs.admit.outputs.head_sha }}
           status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          review-identity: ${{ needs.admit.outputs.correlation }}
           openai-api-key: ${{ secrets.openai_api_key }}
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
@@ -196,6 +197,7 @@ jobs:
           base-sha: ${{ needs.admit.outputs.base_sha }}
           head-sha: ${{ needs.admit.outputs.head_sha }}
           status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          review-identity: ${{ needs.admit.outputs.correlation }}
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
 
@@ -238,7 +240,7 @@ jobs:
           # alone, and the identity check makes this edit only ever land on the
           # comment this run claimed, never on a newer review's.
           case "${body}" in
-            *"<!-- pr-review-status:v1 state=running identity=${IDENTITY} -->"*) ;;
+            *"<!-- pr-review-status:v1 state=running identity=${IDENTITY} "*) ;;
             *) echo "pr-review phase=finalize status=not-ours-or-already-final"; exit 0 ;;
           esac
           profile=""
@@ -261,90 +263,46 @@ jobs:
           echo "pr-review phase=finalize status=closed"
 
   completeness:
-    needs: [admit, review]
+    # The finalizer owns the terminal comment when a review job never reaches
+    # its own final write. Coverage follows it so a publication failure can
+    # always replace a terminal result with an honest visible failure.
+    needs: [admit, review, finalize]
     if: always() && needs.admit.outputs.claimed == 'true'
+    # Share admission's key so its newest-identity read and status write cannot
+    # race a new claim. The Python publisher still rejects stale identities;
+    # the lock narrows the interval and the identity check protects ordering.
+    concurrency:
+      group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # ONE step, because splitting them forces a bad trade. A separate
-      # status step that fails would skip the gate entirely, since a failed
-      # step ends the job; making it continue-on-error instead buys the gate
-      # back by hiding a failed publish, and an unnoticed publish failure
-      # recreates the exact invisibility this status exists to remove.
-      #
-      # So: compute the verdict, publish it, then exit on the verdict.
-      #
-      # FAILURE DIRECTION, chosen deliberately: if the status cannot be
-      # published after bounded retries, the job FAILS even when the review
-      # itself was complete. An unpublished verdict on a merge-relevant gate
-      # is an unknown verdict, and the honest report of an unknown is red.
-      # The retries exist so a transient API blip does not spend that.
+      # The action contains the state-table-tested publisher. It first reads
+      # the current pull binding and newest admission, so an old terminal job
+      # either writes a re-run-needed failure on the current head or rejects
+      # itself without clobbering a newer review's context.
+      - name: Check out immutable Pipelock review source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: luckyPipewrench/pipelock
+          ref: ${{ inputs.reviewer_sha }}
+          path: trusted-pr-review
+          persist-credentials: false
+
       - name: Publish review coverage, then require it
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          STATE: ${{ needs.review.outputs.state }}
-          COMPLETE: ${{ needs.review.outputs.complete }}
-          REVIEW_RESULT: ${{ needs.review.result }}
-          HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -uo pipefail
-
-          if [ "${COMPLETE}" = "true" ]; then
-            STATUS_STATE=success
-            DESCRIPTION="Review covered the whole diff (${STATE})"
-            GATE_EXIT=0
-          elif [ "${STATE}" = "clean" ] || [ "${STATE}" = "findings" ]; then
-            STATUS_STATE=failure
-            DESCRIPTION="Review did not reach the current base; re-run it"
-            GATE_EXIT=1
-          else
-            STATUS_STATE=failure
-            DESCRIPTION="Review did NOT finish (state=${STATE:-none})"
-            GATE_EXIT=1
-          fi
-
-          # A comment-triggered run attaches to the default branch and so
-          # contributes no check to the pull request. A commit status is keyed
-          # to the SHA instead, which is why it reaches the merge box at all.
-          if [ -n "${HEAD_SHA}" ]; then
-            PUBLISHED=false
-            for attempt in 1 2 3; do
-              if gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
-                  -f state="${STATUS_STATE}" \
-                  -f context="pr-review/coverage" \
-                  -f description="${DESCRIPTION}" \
-                  -f target_url="${RUN_URL}" >/dev/null; then
-                PUBLISHED=true
-                break
-              fi
-              echo "status publish attempt ${attempt} failed" >&2
-              sleep $((attempt * 5))
-            done
-            if [ "${PUBLISHED}" != "true" ]; then
-              echo "pr-review coverage: could NOT publish the coverage status for ${HEAD_SHA}" >&2
-              echo "The verdict was ${STATUS_STATE} (${DESCRIPTION}), and the pull request will not show it." >&2
-              echo "A verdict nobody can see is the defect this status exists to remove, so this fails." >&2
-              echo "Check that the CALLING workflow grants statuses: write; a called workflow cannot" >&2
-              echo "hold a permission its caller withheld." >&2
-              exit 1
-            fi
-          else
-            echo "no reviewed head recorded; cannot publish a coverage status" >&2
-            exit 1
-          fi
-
-          if [ "${GATE_EXIT}" = "0" ]; then
-            echo "pr-review coverage: complete (${STATE})"
-            exit 0
-          fi
-          if [ "${STATE}" = "clean" ] || [ "${STATE}" = "findings" ]; then
-            echo "pr-review coverage: ${STATE}, but the reviewed range does not reach the current base" >&2
-            echo "A review chain covers the whole pull request only while the base it started from is still the base." >&2
-            echo "Re-run the review to cover the range whole." >&2
-            exit 1
-          fi
-          echo "pr-review coverage: NOT complete (state=${STATE:-none}, review job ${REVIEW_RESULT})" >&2
-          echo "The review comment carries the verdict and the reasons it is incomplete." >&2
-          exit 1
+        uses: ./trusted-pr-review/.github/actions/pr-review
+        with:
+          github-token: ${{ secrets.review_token }}
+          repo: ${{ github.repository }}
+          pr-number: ${{ inputs.pr_number }}
+          review-mode: ${{ inputs.review_mode }}
+          reviewer-sha: ${{ inputs.reviewer_sha }}
+          operation: coverage
+          base-sha: ${{ needs.admit.outputs.base_sha }}
+          head-sha: ${{ needs.admit.outputs.head_sha }}
+          status-comment-id: ${{ needs.admit.outputs.status_comment_id }}
+          review-identity: ${{ needs.admit.outputs.correlation }}
+          coverage-state: ${{ needs.review.outputs.state }}
+          coverage-complete: ${{ needs.review.outputs.complete }}
+          coverage-run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

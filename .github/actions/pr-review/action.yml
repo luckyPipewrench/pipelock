@@ -49,7 +49,7 @@ inputs:
     description: Optional model override for /review deep.
     required: false
   operation:
-    description: claim creates the status marker; review performs the provider calls.
+    description: claim creates the status marker; review performs provider calls; coverage publishes the current-head verdict.
     required: false
     default: review
   base-sha:
@@ -60,6 +60,18 @@ inputs:
     required: false
   status-comment-id:
     description: Comment identifier from the admission step.
+    required: false
+  review-identity:
+    description: Unique identity emitted by the admission step for this review run.
+    required: false
+  coverage-state:
+    description: Terminal review state whose coverage verdict is being published.
+    required: false
+  coverage-complete:
+    description: Whether the terminal review covered the whole admitted pull-request range.
+    required: false
+  coverage-run-url:
+    description: Workflow run URL attached to the coverage commit status.
     required: false
   reviewed-repository-path:
     description: Immutable checkout of the target repository at the captured head.
@@ -104,6 +116,10 @@ runs:
         BASE_SHA: ${{ inputs.base-sha }}
         HEAD_SHA: ${{ inputs.head-sha }}
         STATUS_COMMENT_ID: ${{ inputs.status-comment-id }}
+        REVIEW_IDENTITY: ${{ inputs.review-identity }}
+        COVERAGE_STATE: ${{ inputs.coverage-state }}
+        COVERAGE_COMPLETE: ${{ inputs.coverage-complete }}
+        COVERAGE_RUN_URL: ${{ inputs.coverage-run-url }}
         REVIEWED_REPOSITORY_PATH: ${{ inputs.reviewed-repository-path }}
         REVIEWED_MERGE_BASE_SHA: ${{ inputs.reviewed-merge-base-sha }}
       run: python "$GITHUB_ACTION_PATH/pr_review.py"

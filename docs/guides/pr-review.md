@@ -71,6 +71,10 @@ uses strict JSON output, a cross-file synthesis pass, and a second actual-code
 judge pass before publishing findings. It strips mentions and command-shaped
 text from model-supplied fields.
 
+The coverage status is written against the pull request head that GitHub reports when the review finishes. If the head or base moved, it marks that current head as needing another review. A terminal writer publishes only when its admission is still the newest one, so an older job can't replace a newer verdict.
+
+The publisher makes three total status requests and waits only between attempts. If all three fail, it changes the review comment to `failed` and says the pull request can't show the coverage verdict. That result isn't green.
+
 ## Setup
 
 ### Required GitHub Secret

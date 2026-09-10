@@ -4,11 +4,17 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // coreCredentialToken builds a value that trips the immutable "GitHub Token"
@@ -176,6 +182,179 @@ func TestA2ACoreFloor_HeaderURINonCoreFollowsWarn(t *testing.T) {
 	}
 }
 
+// dlpFindingsNamePattern reports whether any captured finding carries the given
+// DLP pattern name, so a warn-evidence assertion can confirm the original match
+// reached the capture surface.
+func dlpFindingsNamePattern(findings []capture.Finding, name string) bool {
+	for _, f := range findings {
+		if f.PatternName == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestForwardScannedInput_RedactedCoreCredentialRecordsWarnEvidence proves the
+// stdio evidence floor: when redaction fully scrubs a core credential under a
+// warn action, the request forwards scrubbed AND the pre-redaction finding is
+// still recorded as a warn -- the warn log names the core pattern with a
+// redacted marker, the capture observer sees a warn DLP verdict naming the core
+// pattern, and the request is NOT credited as a clean adaptive recovery. Before
+// the evidence floor the post-redaction rescan was clean, so this took the
+// all-clean path: no warn, no capture verdict, and a clean-recovery credit.
+func TestForwardScannedInput_RedactedCoreCredentialRecordsWarnEvidence(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := mcpRedactionSecret() // core AWS access key, fully scrubbed by the default matcher
+	msg := makeRequest(1, methodToolsCall, map[string]any{
+		"name":      "echo",
+		"arguments": map[string]string{"prompt": "use " + secret + " to deploy"},
+	})
+
+	obs := &mcpCaptureMetadataObserver{got: make(chan capture.DLPVerdictRecord, 4)}
+	cleanRecoveryCalls := 0
+	rec := &mockRecoverer{
+		cleanRecoverFunc: func(_ float64, _ int, _ func(int) bool) (bool, int, int) {
+			cleanRecoveryCalls++
+			return false, 0, 0
+		},
+	}
+	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true, DecayPerCleanRequest: 0.5, CleanRequestsToDeescalate: 1}
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher()), withRec(rec), withAdaptive(adaptiveCfg))
+	opts.CaptureObs = obs
+	opts.Transport = transportMCPStdio
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if blocked, ok := <-blockedCh; ok {
+		t.Fatalf("scrubbed core credential under warn must not block: %+v", blocked)
+	}
+	forwarded := strings.TrimSpace(serverBuf.String())
+	if strings.Contains(forwarded, secret) {
+		t.Fatalf("forwarded request leaked the core credential: %s", forwarded)
+	}
+	if !strings.Contains(forwarded, mcpPlaceholderAWS) {
+		t.Fatalf("forwarded request missing aws-access-key placeholder: %s", forwarded)
+	}
+
+	// Evidence: the warn line names the core pattern and marks it redacted.
+	if !strings.Contains(logBuf.String(), "warning") {
+		t.Fatalf("expected a warn log line, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "AWS Access ID") {
+		t.Fatalf("warn log missing the core pattern name: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), redactedDLPMarker) {
+		t.Fatalf("warn log missing the redacted marker: %s", logBuf.String())
+	}
+
+	// Evidence: the capture observer saw the DLP verdict as a warn naming the core pattern.
+	select {
+	case got := <-obs.got:
+		if got.EffectiveAction != config.ActionWarn {
+			t.Fatalf("captured DLP verdict action = %q, want warn", got.EffectiveAction)
+		}
+		if !dlpFindingsNamePattern(got.RawFindings, "AWS Access ID") {
+			t.Fatalf("captured DLP verdict missing the core pattern, got %+v", got.RawFindings)
+		}
+	default:
+		t.Fatal("expected a captured DLP verdict for the redacted core credential")
+	}
+
+	// Evidence: a scrubbed-credential request is NOT a clean recovery.
+	if cleanRecoveryCalls != 0 {
+		t.Fatalf("redacted-credential request credited clean recovery: calls = %d", cleanRecoveryCalls)
+	}
+	if rec.recordCleanCalls != 0 {
+		t.Fatalf("redacted-credential request credited RecordClean: calls = %d", rec.recordCleanCalls)
+	}
+}
+
+// TestScanHTTPInput_RedactedCoreCredentialRecordsWarnEvidence is the HTTP
+// listener sibling of the stdio evidence test above: same fully-scrubbed core
+// credential under warn, forwarded scrubbed, with the pre-redaction finding
+// retained as a warn on the capture surface and no clean-recovery credit.
+func TestScanHTTPInput_RedactedCoreCredentialRecordsWarnEvidence(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	secret := mcpRedactionSecret()
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + secret + ` to deploy"}}}`)
+
+	obs := &mcpCaptureMetadataObserver{got: make(chan capture.DLPVerdictRecord, 4)}
+	cleanRecoveryCalls := 0
+	rec := &mockRecoverer{
+		cleanRecoverFunc: func(_ float64, _ int, _ func(int) bool) (bool, int, int) {
+			cleanRecoveryCalls++
+			return false, 0, 0
+		},
+	}
+	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true, DecayPerCleanRequest: 0.5, CleanRequestsToDeescalate: 1}
+
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision(msg, &logBuf, "", "", MCPProxyOpts{
+		Scanner:       sc,
+		InputCfg:      &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock},
+		RedactMatcher: testHTTPRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+		RedactProfile: "code",
+		CaptureObs:    obs,
+		Rec:           rec,
+		AdaptiveCfg:   adaptiveCfg,
+		Transport:     transportMCPHTTP,
+	})
+
+	if decision.Blocked != nil {
+		t.Fatalf("scrubbed core credential under warn must forward, not block: %+v", decision.Blocked)
+	}
+	forwarded := string(decision.ForwardMessage)
+	if strings.Contains(forwarded, secret) {
+		t.Fatalf("forwarded request leaked the core credential: %s", forwarded)
+	}
+	if !strings.Contains(forwarded, mcpPlaceholderAWS) {
+		t.Fatalf("forwarded request missing aws-access-key placeholder: %s", forwarded)
+	}
+
+	if !strings.Contains(logBuf.String(), "warning") {
+		t.Fatalf("expected a warn log line, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "AWS Access ID") {
+		t.Fatalf("warn log missing the core pattern name: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), redactedDLPMarker) {
+		t.Fatalf("warn log missing the redacted marker: %s", logBuf.String())
+	}
+
+	select {
+	case got := <-obs.got:
+		if got.EffectiveAction != config.ActionWarn {
+			t.Fatalf("captured DLP verdict action = %q, want warn", got.EffectiveAction)
+		}
+		if !dlpFindingsNamePattern(got.RawFindings, "AWS Access ID") {
+			t.Fatalf("captured DLP verdict missing the core pattern, got %+v", got.RawFindings)
+		}
+	default:
+		t.Fatal("expected a captured DLP verdict for the redacted core credential")
+	}
+
+	if cleanRecoveryCalls != 0 {
+		t.Fatalf("redacted-credential request credited clean recovery: calls = %d", cleanRecoveryCalls)
+	}
+	if rec.recordCleanCalls != 0 {
+		t.Fatalf("redacted-credential request credited RecordClean: calls = %d", rec.recordCleanCalls)
+	}
+}
+
 // A non-core finding on an earlier leaf must not shadow the split-secret pass:
 // a core credential split across two JSON values still reaches the immutable
 // floor and the whole body blocks under a2a_scanning.action: warn.
@@ -194,5 +373,29 @@ func TestA2ACoreFloor_SplitCoreCredentialBlocksAfterNonCoreFinding(t *testing.T)
 	}
 	if result.Action != config.ActionBlock {
 		t.Fatalf("split core credential after a non-core finding: action = %q, want %q (findings %+v)", result.Action, config.ActionBlock, result.DLPFindings)
+	}
+	seen := make(map[string]struct{}, len(result.DLPFindings))
+	for _, finding := range result.DLPFindings {
+		key := finding.PatternName + "\x00" + finding.Encoded
+		if _, ok := seen[key]; ok {
+			t.Fatalf("duplicate A2A DLP finding across leaf and raw passes: %+v", finding)
+		}
+		seen[key] = struct{}{}
+	}
+}
+
+func TestAppendUniqueA2ADLPFindingsRetainsNewNonCoreRawMatch(t *testing.T) {
+	existing := []scanner.TextDLPMatch{{PatternName: "earlier", Encoded: "plain"}}
+	incoming := []scanner.TextDLPMatch{
+		{PatternName: "earlier", Encoded: "plain"},
+		{PatternName: "raw-only-non-core", Encoded: "plain"},
+	}
+
+	got := appendUniqueA2ADLPFindings(existing, incoming)
+	if len(got) != 2 {
+		t.Fatalf("deduplicated findings = %+v, want earlier and raw-only findings", got)
+	}
+	if got[1].PatternName != "raw-only-non-core" {
+		t.Fatalf("second finding = %+v, want retained raw-only non-core finding", got[1])
 	}
 }

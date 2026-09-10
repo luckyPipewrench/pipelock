@@ -6230,6 +6230,10 @@ func TestScanHTTPInput_ContentAndPolicyMerge(t *testing.T) {
 	}
 
 	var logBuf bytes.Buffer
+	eval := EvaluateMCPInputGates(context.Background(), ParseMCPFrame(msg), msg, "sess", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg}, inputCfg.Action, inputCfg.OnParseError, true)
+	if eval.ContentVerdict.Clean || len(eval.ContentVerdict.Matches) == 0 {
+		t.Fatalf("content verdict = %+v, want a non-clean DLP finding before policy merge", eval.ContentVerdict)
+	}
 	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
 	if blocked == nil {
 		t.Fatal("expected merged action to block")

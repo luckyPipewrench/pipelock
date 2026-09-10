@@ -223,10 +223,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// walker completed within budget, even when an earlier leaf already produced
 	// a finding: a core credential split across JSON values must still reach the
 	// immutable floor, and a prior non-core warn finding must not shadow it.
-	// When the result was already dirty, only the matches that force a block are
-	// folded in, so the per-leaf findings are not reported twice.
+	// When the result was already dirty, fold in every new match and deduplicate
+	// it against the per-leaf findings. Raw-pass evidence must not disappear just
+	// because an earlier leaf was already dirty.
 	if !budgetExceeded {
-		wasClean := result.Clean
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
@@ -239,23 +239,14 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLP(ctx, joined)
-			switch {
-			case dlpResult.Clean:
-			case wasClean:
+			if !dlpResult.Clean {
 				result.Clean = false
-				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
+				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
 				}
-			case a2aDLPForcesBlock(dlpResult.Matches):
-				for _, match := range dlpResult.Matches {
-					if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
-						result.DLPFindings = append(result.DLPFindings, match)
-					}
-				}
-				action = config.StrongestAction(action, config.ActionBlock)
 			}
 		}
 	}
@@ -296,6 +287,28 @@ func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentE
 // a positive core match only ever raises the action to block.
 func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
 	return scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches)
+}
+
+// appendUniqueA2ADLPFindings mirrors the scanner's match identity at the A2A
+// cross-pass boundary. The scanner deduplicates within one scan; A2A also has
+// to deduplicate across its per-leaf and joined-raw scans.
+func appendUniqueA2ADLPFindings(existing, incoming []scanner.TextDLPMatch) []scanner.TextDLPMatch {
+	type matchKey struct {
+		name    string
+		encoded string
+	}
+
+	seen := make(map[matchKey]struct{}, len(existing)+len(incoming))
+	result := make([]scanner.TextDLPMatch, 0, len(existing)+len(incoming))
+	for _, match := range append(existing, incoming...) {
+		key := matchKey{name: match.PatternName, encoded: match.Encoded}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, match)
+	}
+	return result
 }
 
 // a2aURLResultForcesBlock reports whether a blocked URL-leaf scan result must

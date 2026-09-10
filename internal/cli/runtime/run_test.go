@@ -1098,6 +1098,22 @@ logging:
 			t.Fatalf("mcp upstream missing placeholder: %s", gotMCP)
 		}
 
+		// Evidence parity: the reverse half records a body_dlp warn for the
+		// scrubbed credential; the MCP listener must not silently forward it.
+		// The MCP input warn line names the core pattern and marks it redacted,
+		// so the scrubbed core credential still leaves an audit trail rather
+		// than being credited as a clean request.
+		logs := stderr.String()
+		if !strings.Contains(logs, "pipelock: input: warning") {
+			t.Fatalf("mcp listener emitted no input warning for the scrubbed core credential:\n%s", logs)
+		}
+		if !strings.Contains(logs, "AWS Access ID") {
+			t.Fatalf("mcp input warning did not name the core pattern:\n%s", logs)
+		}
+		if !strings.Contains(logs, "redacted") {
+			t.Fatalf("mcp input warning did not mark the finding redacted:\n%s", logs)
+		}
+
 		cancel()
 		select {
 		case err := <-cmdErr:
@@ -1125,7 +1141,9 @@ func TestRunCmd_MCPListenerBlocksCoreCredentialWithoutRedaction(t *testing.T) {
 		secret := "AKIA" + "IOSFODNN7EXAMPLE"
 
 		var mcpBody atomic.Value
+		var upstreamCalls atomic.Int32
 		mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstreamCalls.Add(1)
 			body, _ := io.ReadAll(r.Body)
 			mcpBody.Store(string(body))
 
@@ -1222,6 +1240,9 @@ logging:
 		// The upstream must never have seen the blocked request.
 		if forwarded, _ := mcpBody.Load().(string); strings.Contains(forwarded, secret) {
 			t.Fatalf("mcp upstream received a blocked core credential: %s", forwarded)
+		}
+		if got := upstreamCalls.Load(); got != 0 {
+			t.Fatalf("mcp upstream calls = %d, want 0 for blocked core credential", got)
 		}
 
 		cancel()

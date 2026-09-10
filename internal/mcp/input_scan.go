@@ -22,6 +22,43 @@ const uninspectableJSONDepthReason = "input exceeds maximum inspectable nesting 
 
 const uninspectableSplitSecretFieldsReason = "input exceeds maximum inspectable split-secret fields"
 
+// redactedDLPMarker is appended to an MCP input verdict's reasons when a
+// finding survives only because redaction scrubbed it (RedactedDLPOnly). It
+// tells an operator reading the warn log that the credential was removed before
+// forwarding rather than leaked, distinguishing this warn from a raw residual.
+const redactedDLPMarker = "redacted"
+
+// restoreRedactedDLPEvidence repairs the evidence surface when argument
+// redaction scrubbed a DLP finding out of an MCP input request. When the
+// pre-redaction scan matched DLP patterns (preRedactionDLP), redaction actually
+// rewrote content (the report applied at least one redaction), and the
+// post-redaction rescan came back clean, the request still forwards scrubbed --
+// but taking the all-clean path would credit the session a clean request and
+// emit no warning, no capture verdict, and an allow receipt, silently dropping
+// the original match from every evidence surface. This restores the
+// pre-redaction findings on the verdict as the configured action so the
+// downstream dirty path records them, matching the request-body floor's
+// RedactedDLPOnly handling in internal/proxy/bodyscan.go.
+//
+// It never changes the block/forward decision. The immutable core floor already
+// ran on the redacted payload (preRedactionBlock plus the post-redaction
+// mcpInputVerdictAction), and this path is only reached when the configured
+// action is non-blocking, so the retained findings carry that same non-blocking
+// action -- evidence is repaired, enforcement is untouched.
+func restoreRedactedDLPEvidence(verdict InputVerdict, preRedactionDLP []scanner.TextDLPMatch, report *redact.Report, configuredAction string) InputVerdict {
+	if !verdict.Clean || len(preRedactionDLP) == 0 {
+		return verdict
+	}
+	if report == nil || !report.Applied || report.TotalRedactions == 0 {
+		return verdict
+	}
+	verdict.Clean = false
+	verdict.Matches = preRedactionDLP
+	verdict.RedactedDLPOnly = true
+	verdict.Action = configuredAction
+	return verdict
+}
+
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
 // Returns "" if the message is not a tools/call or the name cannot be extracted.
 func extractToolCallName(line []byte) string {

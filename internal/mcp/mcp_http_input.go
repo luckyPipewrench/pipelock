@@ -354,6 +354,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			mcpMethod = canonical
 		}
 	}
+	var preRedactionDLP []scanner.TextDLPMatch
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())
 		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
@@ -370,6 +371,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ErrorData:      mcpBlockReasonData(mcpScannerBlockReason(originalVerdict, policy.Verdict{}, false)),
 			}
 			return result
+		}
+		// Not blocked before redaction: remember the pre-redaction DLP findings
+		// so evidence survives if redaction scrubs them and the post-redaction
+		// rescan is clean (see restoreRedactedDLPEvidence).
+		if originalVerdict.Error == "" {
+			preRedactionDLP = originalVerdict.Matches
 		}
 	}
 	rewrittenMsg, report, redactErr := applyMCPToolCallRedactionWithConfig(msg, redactionCfg)
@@ -418,6 +425,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if canonical, ok := a2amethods.Canonical(mcpMethod); ok {
 		mcpMethod = canonical
 		verdict.Method = canonical
+	}
+	// Redaction evidence floor: if redaction scrubbed a pre-redaction DLP
+	// finding and the post-redaction rescan is clean, restore the finding as a
+	// warn so the request forwards scrubbed but the match is still recorded.
+	// Refresh the receipt attribution from the restored verdict.
+	verdict = restoreRedactedDLPEvidence(verdict, preRedactionDLP, redactionReport, action)
+	if verdict.RedactedDLPOnly {
+		eval.ContentVerdict = verdict
+		receiptLayer, receiptPattern, receiptSeverity = pickAttribution(eval)
 	}
 	if verdict.Method == methodToolsCall {
 		if actionID == "" {

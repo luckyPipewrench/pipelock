@@ -590,9 +590,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Early airlock check for opaque CONNECT: reject before dialing/hijacking
 	// so the client gets a proper HTTP 403 (not a torn-down connection).
 	// TLS-intercepted tunnels handle airlock per inner request instead.
+	// Admission reads the RAW adaptive session (sessionKeyFor) via
+	// airlockSessionForIdentity - the airlock writer's key - NOT connectRec,
+	// which is keyed on the CEE-safe key (ceeSessionKey) for CEE/adaptive use.
+	// For a self-declared or matched named agent that CEE-safe key folds the
+	// name to the client IP and would miss a tier the adaptive path raised, so
+	// a named agent under airlock would tunnel through non-intercepted CONNECT.
 	shouldIntercept := cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains)
 	if !shouldIntercept {
-		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
+		if connectSess := p.airlockSessionForIdentity(agent, clientIP); connectSess != nil {
 			tier := airlockTierForScope(connectSess, adaptiveScopeForHost(host))
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
@@ -1090,15 +1096,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	forwardRequiresReauth := false
 
 	// Airlock action classification for forward proxy. Admission reads the RAW
-	// adaptive session (sessionKeyFor) - the airlock writer's key - not the
-	// CEE-safe taint recorder above; see the fetch path for the rationale. For
-	// a self-declared or matched named agent the CEE-safe key folds the name to
-	// the client IP and would miss a tier the adaptive path set.
-	var forwardAirlockRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		forwardAirlockRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
-	}
-	if forwardSess, ok := forwardAirlockRec.(*SessionState); ok && forwardSess != nil {
+	// adaptive session (sessionKeyFor) via airlockSessionForIdentity - the
+	// airlock writer's key - not the CEE-safe taint recorder above; see the
+	// fetch path for the rationale. This same raw session is carried into the
+	// redirect context below so every hop admits against the writer's session.
+	forwardAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+	if forwardSess := forwardAirlockSess; forwardSess != nil {
 		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
@@ -1954,6 +1957,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
+	ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, forwardAirlockSess)
 	if forwardEntropyWarnRoute != nil {
 		ctx = context.WithValue(ctx, ctxKeyEntropyWarnRoute, forwardEntropyWarnRoute)
 	}

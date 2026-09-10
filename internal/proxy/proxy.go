@@ -130,6 +130,14 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
+	// ctxKeyRedirectAirlockSession carries the RAW adaptive session (the airlock
+	// writer's key, sessionKeyFor(agent, clientIP)) into CheckRedirect so a
+	// redirect hop admits airlock against the same session the writer raised the
+	// tier on - not the CEE-safe taint recorder in ctxKeyRedirectSessionRecorder,
+	// whose key folds a named agent to the client IP and would miss that tier.
+	// Redirect taint stays on ctxKeyRedirectSessionRecorder; only airlock
+	// admission reads this one. See airlockSessionForIdentity.
+	ctxKeyRedirectAirlockSession
 	// ctxKeyEntropyWarnRoute binds a request-body entropy warning exception to
 	// its exact admitted HTTPS destination. CheckRedirect refuses a replay to
 	// any other route because 307/308 preserve the already-scanned body.
@@ -878,7 +886,19 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return newRedirectTaintBlockedRequest(redirectTaint, blockReason)
 				}
 			}
-			if redirectSess, ok := redirectRec.(*SessionState); ok && redirectSess != nil {
+			// Airlock admission on a redirect hop reads the RAW adaptive
+			// session (the airlock writer's key), NOT redirectRec above:
+			// redirectRec is the CEE-safe taint recorder, whose key folds a
+			// named agent to the client IP and would miss a tier the adaptive
+			// path set. The originating fetch/forward handler stages the raw
+			// session in ctxKeyRedirectAirlockSession; recompute it from the
+			// request identity as a fail-safe so a hop is never admitted without
+			// an airlock check even if a p.client caller did not stage it.
+			redirectAirlockSess, _ := req.Context().Value(ctxKeyRedirectAirlockSession).(*SessionState)
+			if redirectAirlockSess == nil {
+				redirectAirlockSess = p.airlockSessionForIdentity(agentName, clientIP)
+			}
+			if redirectSess := redirectAirlockSess; redirectSess != nil {
 				tier := airlockTierForScope(redirectSess, adaptiveScopeForHost(req.URL.Hostname()))
 				if allowed, reason := ClassifyAction(tier, req.Method, redirectTransport, false); !allowed {
 					logger.LogAirlockDeny(redirectSess.key, tier, redirectTransport, req.Method, clientIP, requestID)
@@ -3327,6 +3347,27 @@ func airlockTierForScope(sess *SessionState, scope string) string {
 	return tier
 }
 
+// airlockSessionForIdentity returns the RAW adaptive SessionState that airlock
+// admission must read for an identity: the session keyed by
+// sessionKeyFor(agent, clientIP), which is the key the airlock writer
+// (recordSessionActivity) raised the tier on. Fetch, forward-proxy, opaque
+// CONNECT, and redirect hops all obtain admission through this one helper so
+// every airlock read agrees with the writer, whatever provenance grade the
+// agent's declared name carries. The CEE-safe taint key folds a self-declared
+// or matched name to the client IP - a different SessionState that never saw
+// the tier - so reading it for admission would fail open; response taint
+// deliberately stays on that CEE-safe recorder (the separate join from #1336).
+// Returns nil when the session manager is not initialized, and every caller
+// treats a nil session as "no airlock tier", which is correct because the
+// writer could not have recorded a tier without a live manager either.
+func (p *Proxy) airlockSessionForIdentity(agent, clientIP string) *SessionState {
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		return nil
+	}
+	return sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+}
+
 // applyShield runs Browser Shield rewriting on a response body when enabled
 // and the hostname is not exempt. Returns the possibly rewritten body, an
 // optional rewrite summary, and a blocked flag. When blocked is true, the
@@ -4650,18 +4691,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
 	// Airlock check: drain tier blocks all traffic including fetch. Admission
-	// reads the RAW adaptive session (sessionKeyFor) - the one the airlock
-	// writer (recordSessionActivityWithUserAgent) raised the tier on - NOT the
-	// CEE-safe taint recorder above. For a self-declared or matched named agent
-	// the CEE-safe key folds the name to the client IP, a different
-	// SessionState that never saw the tier, so reading it here would fail open.
-	// WebSocket and TLS intercept already read the raw session; response taint
-	// stays on the CEE-safe recorder (the separate join from #1336).
-	var fetchAirlockRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		fetchAirlockRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
-	}
-	if fetchSess, ok := fetchAirlockRec.(*SessionState); ok && fetchSess != nil {
+	// reads the RAW adaptive session (sessionKeyFor) via airlockSessionForIdentity
+	// - the one the airlock writer (recordSessionActivityWithUserAgent) raised
+	// the tier on - NOT the CEE-safe taint recorder above. This same raw session
+	// is carried into the redirect context below so every hop admits against the
+	// writer's session too. See airlockSessionForIdentity for the fail-open the
+	// CEE-safe key would open.
+	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+	if fetchSess := fetchAirlockSess; fetchSess != nil {
 		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
 		if tier == config.AirlockTierDrain {
 			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
@@ -5278,6 +5315,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)
+	ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, fetchAirlockSess)
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, parsed.Hostname(), effectiveURLPort(parsed), result)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {

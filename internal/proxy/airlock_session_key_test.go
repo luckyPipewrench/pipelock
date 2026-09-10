@@ -4,9 +4,13 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,6 +214,123 @@ func TestAirlockAdmission_AnonymousAgentUnchanged(t *testing.T) {
 	})
 }
 
+// TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect is the
+// load-bearing regression guard for opaque (non-intercepted) CONNECT. A
+// self-declared NAMED agent whose airlock tier is at drain on the raw adaptive
+// session must be refused before the tunnel is dialed or hijacked. Before the
+// fix, handleConnect read airlock from connectRec, keyed on the CEE-safe key
+// (ceeSessionKey), which folds the self-declared name to the client IP: a
+// different SessionState that never saw the tier, so admission read "none" and
+// the tunnel proceeded (fail-open). After the fix, CONNECT reads the raw
+// session the writer used via airlockSessionForIdentity and refuses with 403.
+func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect(t *testing.T) {
+	const agent = "named-agent-a"
+
+	// Prove the two keys diverge for this identity, so a green result cannot
+	// come from the keys accidentally coinciding.
+	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP)
+	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
+	if rawKey == ceeKey {
+		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
+	}
+
+	// airlockDrainProxyConfig leaves TLS interception off, so the target host
+	// takes the opaque (non-intercepted) CONNECT path where the early airlock
+	// admission runs. The airlock check answers before any dial, so no upstream
+	// is needed.
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, airlockDrainProxyConfig)
+	defer cleanup()
+	setupDrainedRecoveredSession(t, p, agent)
+
+	status, reason := doConnectWithAgent(t, proxyAddr, airlockSessionKeyTarget+":443", agent)
+	if status != http.StatusForbidden || reason != airlockActiveReason {
+		t.Fatalf("CONNECT admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent's opaque CONNECT)",
+			status, reason, airlockActiveReason)
+	}
+}
+
+// TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect is the
+// load-bearing regression guard for a redirect hop on both fetch and forward. A
+// self-declared NAMED agent's initial request to a non-drained host is admitted;
+// the upstream 302s to the drained target, and the redirect hop must refuse it.
+// Before the fix, CheckRedirect read airlock from redirectRec - the CEE-safe
+// taint recorder the originating handler stages - whose key folds the
+// self-declared name to the client IP: a different SessionState that never saw
+// the tier, so the redirect sailed through (fail-open, redirected egress
+// occurs). After the fix, the originating handler also stages the raw airlock
+// session in ctxKeyRedirectAirlockSession and the hop refuses it (403, no
+// redirected egress).
+func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T) {
+	const (
+		agent = "named-agent-a"
+		// initialHost is a non-drained scope the originating handler admits.
+		// installForwardTestDialer already routes it to the test upstream.
+		initialHost = "api.example.com"
+	)
+
+	// Prove the two keys diverge for this identity.
+	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP)
+	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
+	if rawKey == ceeKey {
+		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
+	}
+
+	// redirectBackend answers the initial host with a 302 to the drained target
+	// and records any redirected egress to that target, which must never occur.
+	redirectBackend := func(t *testing.T, initialHits, redirectedHits *atomic.Int32) string {
+		t.Helper()
+		backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Host == airlockSessionKeyTarget {
+				redirectedHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			initialHits.Add(1)
+			http.Redirect(w, r, "http://"+airlockSessionKeyTarget+"/final", http.StatusFound)
+		}))
+		t.Cleanup(backend.Close)
+		return backend.Listener.Addr().String()
+	}
+
+	t.Run("fetch", func(t *testing.T) {
+		proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, airlockDrainProxyConfig)
+		defer cleanup()
+		var initialHits, redirectedHits atomic.Int32
+		installForwardTestDialer(p, redirectBackend(t, &initialHits, &redirectedHits))
+		setupDrainedRecoveredSession(t, p, agent)
+
+		status, _ := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+initialHost+"/", agent)
+		if status != http.StatusForbidden {
+			t.Fatalf("fetch redirect admission fail-open: status=%d, want 403 (airlock drain on the raw session must refuse the redirect hop to the drained target)", status)
+		}
+		if initialHits.Load() != 1 {
+			t.Fatalf("initial upstream hits = %d, want 1", initialHits.Load())
+		}
+		if redirectedHits.Load() != 0 {
+			t.Fatalf("redirected egress to the drained target = %d, want 0 (redirect hop failed open)", redirectedHits.Load())
+		}
+	})
+
+	t.Run("forward", func(t *testing.T) {
+		proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, airlockDrainProxyConfig)
+		defer cleanup()
+		var initialHits, redirectedHits atomic.Int32
+		installForwardTestDialer(p, redirectBackend(t, &initialHits, &redirectedHits))
+		setupDrainedRecoveredSession(t, p, agent)
+
+		status, _ := doForwardWithAgent(t, proxyAddr, "http://"+initialHost+"/", agent)
+		if status != http.StatusForbidden {
+			t.Fatalf("forward redirect admission fail-open: status=%d, want 403 (airlock drain on the raw session must refuse the redirect hop to the drained target)", status)
+		}
+		if initialHits.Load() != 1 {
+			t.Fatalf("initial upstream hits = %d, want 1", initialHits.Load())
+		}
+		if redirectedHits.Load() != 0 {
+			t.Fatalf("redirected egress to the drained target = %d, want 0 (redirect hop failed open)", redirectedHits.Load())
+		}
+	})
+}
+
 // TestAirlockAdmissionKeyMatchesWriterKey documents, per transport and per
 // provenance grade, that airlock admission keys on the RAW adaptive session
 // (the writer's key) and NOT on the CEE-safe taint key. For bound and
@@ -224,19 +345,33 @@ func TestAirlockAdmissionKeyMatchesWriterKey(t *testing.T) {
 	)
 	writerKey := sessionKeyFor(agent, ip)
 
-	// The airlock admission read key each transport uses. fetch and forward
-	// read sessionKeyFor after the fix; WebSocket (websocket.go) and TLS
-	// intercept (forward.go interceptRec) already read sessionKeyFor.
+	// The airlock admission read key each of the six read sites uses. fetch,
+	// forward, opaque CONNECT, and the redirect hop read sessionKeyFor after the
+	// fix (fetch/forward/CONNECT via airlockSessionForIdentity, redirect via the
+	// raw session that helper staged into ctxKeyRedirectAirlockSession);
+	// WebSocket (websocket.go) and TLS intercept (forward.go interceptRec)
+	// already read sessionKeyFor.
 	transportReadKey := map[string]string{
 		"fetch":     sessionKeyFor(agent, ip),
 		"forward":   sessionKeyFor(agent, ip),
 		"websocket": sessionKeyFor(agent, ip),
 		"intercept": sessionKeyFor(agent, ip),
+		"connect":   sessionKeyFor(agent, ip),
+		"redirect":  sessionKeyFor(agent, ip),
 	}
 	for transport, readKey := range transportReadKey {
 		if readKey != writerKey {
 			t.Errorf("%s: airlock read key %q != writer key %q", transport, readKey, writerKey)
 		}
+	}
+
+	// Bind the assertion to production: fetch, forward, opaque CONNECT, and the
+	// redirect fail-safe all obtain the admission session through this one
+	// helper, so its returned key IS the read key those four sites use. This
+	// keeps the "connect"/"redirect" rows above from being re-typed literals.
+	p, _, _ := redirectPolicyTestProxy(t)
+	if sess := p.airlockSessionForIdentity(agent, ip); sess == nil || sess.key != writerKey {
+		t.Fatalf("airlockSessionForIdentity(%q, %q) key = %v, want %q", agent, ip, sess, writerKey)
 	}
 
 	grades := []struct {
@@ -282,6 +417,29 @@ func doFetchWithAgent(t *testing.T, proxyBase, targetURL, agent string) (int, st
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("fetch request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode, resp.Header.Get(blockreason.HeaderReason)
+}
+
+// doConnectWithAgent dials the proxy and issues a raw opaque CONNECT to target
+// (host:port) with the self-declared agent header, returning the tunnel-setup
+// HTTP status and block-reason header. It never completes a tunnel: the airlock
+// admission path answers before the proxy dials or hijacks the connection.
+func doConnectWithAgent(t *testing.T, proxyAddr, target, agent string) (int, string) {
+	t.Helper()
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s: %s\r\n\r\n",
+		target, target, AgentHeader, agent); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode, resp.Header.Get(blockreason.HeaderReason)

@@ -1958,7 +1958,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
-	ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, forwardAirlockSess)
+	if forwardAirlockSess != nil {
+		ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, forwardAirlockSess.key)
+	}
 	if forwardEntropyWarnRoute != nil {
 		ctx = context.WithValue(ctx, ctxKeyEntropyWarnRoute, forwardEntropyWarnRoute)
 	}

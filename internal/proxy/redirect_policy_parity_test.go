@@ -81,6 +81,39 @@ func TestCheckRedirect_TaintedProtectedActionBlocks(t *testing.T) {
 	}
 }
 
+func TestCheckRedirect_ResolvesAirlockSessionAfterManagerReplacement(t *testing.T) {
+	p, cfg, sc := redirectPolicyTestProxy(t)
+	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
+	key := sessionKeyFor(agentAnonymous, "127.0.0.1")
+	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectAirlockSession, key))
+	originalReq = originalReq.WithContext(context.WithValue(originalReq.Context(), ctxKeyRedirectAirlockSession, key))
+
+	oldManager := p.sessionMgrPtr.Load()
+	if oldManager == nil {
+		t.Fatal("session manager not initialized")
+	}
+	if got := oldManager.GetOrCreate(key).AirlockForScope(adaptiveScopeForHost(redirectReq.URL.Hostname())).Tier(); got != config.AirlockTierNone {
+		t.Fatalf("old manager precondition: tier = %q, want none", got)
+	}
+
+	replacement := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
+	replacement.UpdateConfig(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, &cfg.Airlock)
+	p.sessionMgrPtr.Store(replacement)
+	if found, _, _, _ := replacement.ForceSetAirlockTier(key, config.AirlockTierDrain); found {
+		t.Fatal("replacement precondition: fresh session unexpectedly existed")
+	}
+	replacement.GetOrCreate(key)
+	if found, changed, _, _ := replacement.ForceSetAirlockTier(key, config.AirlockTierDrain); !found || !changed {
+		t.Fatalf("replacement drain setup = found:%v changed:%v, want true:true", found, changed)
+	}
+
+	err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})
+	blockedErr, ok := blockedRequestErrorFrom(err)
+	if !ok || blockedErr.layer != "airlock" {
+		t.Fatalf("redirect after manager replacement = %v, want airlock block from current manager", err)
+	}
+}
+
 func TestCheckRedirect_TaintedProtectedActionExplicitApprovalAllows(t *testing.T) {
 	approver := hitl.New(5,
 		hitl.WithTerminal(true),

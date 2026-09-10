@@ -130,8 +130,8 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
-	// ctxKeyRedirectAirlockSession carries the RAW adaptive session (the airlock
-	// writer's key, sessionKeyFor(agent, clientIP)) into CheckRedirect so a
+	// ctxKeyRedirectAirlockSession carries the RAW adaptive session key (the
+	// airlock writer's key, sessionKeyFor(agent, clientIP)) into CheckRedirect so a
 	// redirect hop admits airlock against the same session the writer raised the
 	// tier on - not the CEE-safe taint recorder in ctxKeyRedirectSessionRecorder,
 	// whose key folds a named agent to the client IP and would miss that tier.
@@ -890,11 +890,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// session (the airlock writer's key), NOT redirectRec above:
 			// redirectRec is the CEE-safe taint recorder, whose key folds a
 			// named agent to the client IP and would miss a tier the adaptive
-			// path set. The originating fetch/forward handler stages the raw
-			// session in ctxKeyRedirectAirlockSession; recompute it from the
-			// request identity as a fail-safe so a hop is never admitted without
-			// an airlock check even if a p.client caller did not stage it.
-			redirectAirlockSess, _ := req.Context().Value(ctxKeyRedirectAirlockSession).(*SessionState)
+			// path set. The originating fetch/forward handler stages the stable
+			// session key, then every hop resolves it through the current manager.
+			// This avoids retaining a stale SessionState across a hot reload.
+			var redirectAirlockSess *SessionState
+			redirectAirlockKey, _ := req.Context().Value(ctxKeyRedirectAirlockSession).(string)
+			if sm := p.sessionMgrPtr.Load(); sm != nil && redirectAirlockKey != "" {
+				redirectAirlockSess = sm.SessionByKey(redirectAirlockKey)
+			}
 			if redirectAirlockSess == nil {
 				redirectAirlockSess = p.airlockSessionForIdentity(agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())))
 			}
@@ -5317,7 +5320,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)
-	ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, fetchAirlockSess)
+	if fetchAirlockSess != nil {
+		ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, fetchAirlockSess.key)
+	}
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, parsed.Hostname(), effectiveURLPort(parsed), result)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {

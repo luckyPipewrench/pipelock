@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -778,6 +779,40 @@ func TestForceSetAirlockTier_AppliesToEveryScope(t *testing.T) {
 			t.Fatalf("fetch after operator drain: status=%d reason=%q, want 403 %q (drained destination must be refused)", status, reason, airlockActiveReason)
 		}
 	})
+}
+
+func TestForceSetAirlockTier_WaitsForSessionTransactionLock(t *testing.T) {
+	sess := &SessionState{
+		key:    "atomic-override",
+		scopes: make(map[string]*adaptiveScopeState),
+	}
+	sess.airlock = *NewAirlockState()
+	sess.mu.Lock()
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(started)
+		sess.ForceSetAirlockTierAllScopes(config.AirlockTierDrain, airlockTriggerManual, airlockSourceAdminAPI)
+	}()
+	<-started
+
+	// While the session transaction lock is held, neither the global nor any
+	// scoped portion of the override may become visible.
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := sess.airlock.Tier(); got != config.AirlockTierNone {
+			sess.mu.Unlock()
+			<-done
+			t.Fatalf("global tier changed before session transaction lock was acquired: %q", got)
+		}
+		runtime.Gosched()
+	}
+	sess.mu.Unlock()
+	<-done
+	if got := sess.airlock.Tier(); got != config.AirlockTierDrain {
+		t.Fatalf("global tier after completed override = %q, want drain", got)
+	}
 }
 
 // doFetchWithAgent issues a GET to the proxy /fetch endpoint for targetURL,

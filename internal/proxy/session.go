@@ -190,11 +190,13 @@ func (s *SessionState) EscalateAirlock(tier, trigger string) (changed bool, from
 // touched. Returns whether any tier changed and the strongest prior tier, so
 // an operator release of a scoped drain is reported as a real drain-to-none
 // transition even when the session-wide tier was already none. Lock order is
-// s.mu > airlock.mu, matching AirlockForScope; the session-wide airlock is set
-// outside s.mu so it is never held across the global transition.
+// s.mu > airlock.mu, matching AirlockForScope. Holding s.mu across the global
+// and scoped writes makes the operator override one admission-visible change:
+// a scoped reader cannot observe the new global tier with an old scoped tier.
 func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string) (changed bool, from, to string) {
-	changed, from, to = s.airlock.ForceSetTierWithProvenance(tier, trigger, source)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed, from, to = s.airlock.ForceSetTierWithProvenance(tier, trigger, source)
 	for _, st := range s.scopes {
 		scopeChanged, scopeFrom, _ := st.airlock.ForceSetTierWithProvenance(tier, trigger, source)
 		if scopeChanged {
@@ -204,7 +206,6 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 			}
 		}
 	}
-	s.mu.Unlock()
 	return changed, from, to
 }
 

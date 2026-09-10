@@ -114,6 +114,22 @@ func TestCeeRecordMCPRecordsPartitionFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("well-formed arguments over the stream limit increment other", func(t *testing.T) {
+		cee, m := newDeps()
+		frame := MCPFrame{
+			Method: methodToolsCall, ToolCallName: "integrity_checker",
+			Args: json.RawMessage(mcpCEEArgumentsWithLeaves(mcpCEEArgumentMaxStreams + 1)), Raw: []byte(`{"a":"x"}`),
+		}
+		var logBuf bytes.Buffer
+		ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, frame: frame, cee: cee, sc: sc, logW: &logBuf})
+		if got := fallback(m, "other"); got != 1 {
+			t.Fatalf("limit fallback = %v, want 1", got)
+		}
+		if got := fallback(m, "malformed"); got != 0 {
+			t.Fatalf("malformed fallback = %v, want 0 for well-formed arguments", got)
+		}
+	})
+
 	t.Run("clean partition does not move the counter", func(t *testing.T) {
 		cee, m := newDeps()
 		frame := MCPFrame{

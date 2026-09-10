@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -215,6 +216,13 @@ func mcpCEEFragmentPayloads(frame MCPFrame) (map[string][]byte, string) {
 		MaxDepth: mcpCEEArgumentMaxDepth, MaxStreams: mcpCEEArgumentMaxStreams, MaxPathBytes: mcpCEEArgumentMaxPathBytes,
 	})
 	if !complete {
+		// The walker reports incomplete both for invalid JSON and for
+		// well-formed arguments that trip a per-frame limit (stream count,
+		// depth, path bytes). Only the first is malformed; the second is a
+		// configured limit and must be counted as one.
+		if json.Valid(frame.Args) {
+			return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonLimit
+		}
 		return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonMalformed
 	}
 	payloads := make(map[string][]byte, len(argumentPayloads)+1)

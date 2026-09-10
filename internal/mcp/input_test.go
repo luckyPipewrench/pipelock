@@ -406,9 +406,60 @@ func TestScanRequest(t *testing.T) {
 	}
 }
 
-func TestForwardScannedInput_RedactsToolCallArguments(t *testing.T) {
+// TestForwardScannedInput_CoreCredentialBlocksDespiteRedaction proves the
+// immutable core DLP floor overrides the redaction rescue path. Redaction only
+// rewrites a request that the input scan did not already block; a core
+// credential now hard-blocks in warn mode before redaction runs, so the
+// scrubbed request is never forwarded. The non-core rescue path is exercised by
+// TestForwardScannedInput_NonCoreArgumentRedactedAndForwarded below.
+func TestForwardScannedInput_CoreCredentialBlocksDespiteRedaction(t *testing.T) {
 	sc := testInputScanner(t)
-	secret := mcpRedactionSecret()
+	secret := mcpRedactionSecret() // core AWS access key
+	msg := makeRequest(1, methodToolsCall, map[string]any{
+		"name": "echo",
+		"arguments": map[string]string{
+			"prompt": "use " + secret + " to deploy",
+		},
+	})
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher()))
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected core credential to hard-block under warn+redaction, got no blocked request")
+	}
+	if blocked.ErrorCode != -32001 {
+		t.Fatalf("blocked error code = %d, want -32001 (MCP input scanning)", blocked.ErrorCode)
+	}
+	if forwarded := strings.TrimSpace(serverBuf.String()); forwarded != "" {
+		t.Fatalf("core credential must not be forwarded even redacted, got: %s", forwarded)
+	}
+}
+
+// TestForwardScannedInput_NonCoreArgumentRedactedAndForwarded proves the
+// redaction rescue path still applies to a non-core credential under warn: the
+// value is scrubbed from the tool arguments and the request is forwarded rather
+// than blocked. This is the coverage the core-floor block test above no longer
+// exercises.
+func TestForwardScannedInput_NonCoreArgumentRedactedAndForwarded(t *testing.T) {
+	sc := testInputScanner(t)
+	// Google API key: a non-core credential the default redaction matcher
+	// rewrites. Built from split literals so gosec G101 does not flag it.
+	secret := "AIza" + strings.Repeat("A", 35)
 	msg := makeRequest(1, methodToolsCall, map[string]any{
 		"name": "echo",
 		"arguments": map[string]string{
@@ -433,9 +484,8 @@ func TestForwardScannedInput_RedactsToolCallArguments(t *testing.T) {
 	)
 
 	if blocked, ok := <-blockedCh; ok {
-		t.Fatalf("unexpected blocked request: %+v", blocked)
+		t.Fatalf("non-core credential must not hard-block under warn: %+v", blocked)
 	}
-
 	forwarded := strings.TrimSpace(serverBuf.String())
 	if forwarded == "" {
 		t.Fatal("expected forwarded tools/call request")
@@ -453,8 +503,8 @@ func TestForwardScannedInput_RedactsToolCallArguments(t *testing.T) {
 	if strings.Contains(envelope.Params.Arguments.Prompt, secret) {
 		t.Fatalf("forwarded MCP request leaked secret: %s", forwarded)
 	}
-	if !strings.Contains(envelope.Params.Arguments.Prompt, mcpPlaceholderAWS) {
-		t.Fatalf("forwarded MCP request missing placeholder: %s", forwarded)
+	if !strings.Contains(envelope.Params.Arguments.Prompt, "<pl:google-api-key:") {
+		t.Fatalf("forwarded MCP request missing google-api-key placeholder: %s", forwarded)
 	}
 }
 

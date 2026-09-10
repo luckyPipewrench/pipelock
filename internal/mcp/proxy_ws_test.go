@@ -1025,7 +1025,8 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	// Non-core secret so warn mode forwards; a core credential would hard-block.
+	fakeKey := nonCoreSecretValue()
 	pr, pw := io.Pipe()
 	var stderr bytes.Buffer
 

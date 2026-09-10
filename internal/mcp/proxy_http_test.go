@@ -1033,10 +1033,10 @@ func TestRunHTTPProxy_InputScanWarnMode(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	// Same fake key as DLP test but action = warn.
-	fakeKey := strings.Repeat("a", 40)
-	prefix := testGHPPrefix
-	input := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s%s"}}}`, prefix, fakeKey)
+	// Non-core secret so warn mode forwards; a core credential would hard-block
+	// regardless of the configured action via the immutable core floor.
+	secret := nonCoreSecretValue()
+	input := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s"}}}`, secret)
 
 	inputCfg := &InputScanConfig{
 		Enabled:      true,
@@ -1824,12 +1824,11 @@ func TestScanHTTPInput_AskFallbackToBlock(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	// Build a fake API key at runtime to avoid gitleaks false positives.
-	fakeKey := strings.Repeat("a", 40)
-	prefix := testGHPPrefix
+	// Non-core secret so the ask-fallback path (not the core floor) is exercised.
+	secret := nonCoreSecretValue()
 
 	// Request with DLP match and action = ask.
-	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s%s"}}}`, prefix, fakeKey)
+	msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s"}}}`, secret)
 
 	inputCfg := &InputScanConfig{
 		Enabled:      true,
@@ -6255,8 +6254,8 @@ func TestScanHTTPInput_AdaptiveUpgradeWithAuditLogger(t *testing.T) {
 	al := audit.NewNop()
 	m := metrics.New()
 
-	// Build a request with a secret to trigger DLP detection.
-	secretVal := testGHPPrefix + "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
+	// Non-core secret so warn->adaptive-upgrade runs instead of the core floor.
+	secretVal := nonCoreSecretValue()
 	msg := []byte(makeRequest(1, methodToolsCall, map[string]interface{}{
 		"name":      "test",
 		"arguments": map[string]string{"token": secretVal},

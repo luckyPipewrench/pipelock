@@ -166,7 +166,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
@@ -181,7 +181,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
@@ -237,7 +237,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
@@ -271,6 +271,17 @@ func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentE
 		return nil
 	}
 	return &opts[0]
+}
+
+// a2aDLPForcesBlock reports whether a set of DLP matches must hard-block the
+// A2A body regardless of the configured a2a_scanning.action. It elevates both
+// structural hostname-exfil matches and the immutable core credential floor,
+// so a core credential in an A2A body blocks even when body scanning is
+// disabled and the A2A branch alone carries the floor. Fail direction: a match
+// the core predicate cannot classify falls through to the configured action;
+// a positive core match only ever raises the action to block.
+func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
+	return scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches)
 }
 
 func a2aDefaultAction(cfg *config.A2AScanning) string {

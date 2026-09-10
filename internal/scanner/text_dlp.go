@@ -165,6 +165,30 @@ func ContainsHostnameExfilMatch(matches []TextDLPMatch) bool {
 	return false
 }
 
+// IsCoreCriticalMatch reports whether a DLP match belongs to the immutable core
+// credential floor and therefore must hard-block regardless of the configured
+// action. Warn-tagged informational matches are excluded, matching the
+// request-body floor in internal/proxy (shouldHardBlockRequestDLP). This is the
+// single predicate the body, MCP input, and A2A body floors all consult so the
+// immutable-floor membership decision lives in exactly one place.
+func IsCoreCriticalMatch(m TextDLPMatch) bool {
+	if m.Warn {
+		return false
+	}
+	return config.IsCoreDLPPatternName(m.PatternName)
+}
+
+// ContainsCoreCriticalMatch reports whether any match belongs to the immutable
+// core credential floor.
+func ContainsCoreCriticalMatch(matches []TextDLPMatch) bool {
+	for _, m := range matches {
+		if IsCoreCriticalMatch(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // strictAWSAccessIDRe compiles the canonical AWS Access ID pattern without the
 // scanner's runtime (?i) prefix: it matches only a genuine uppercase/digit ID,
 // not lowercase prose the core pattern also matches after case-folding.

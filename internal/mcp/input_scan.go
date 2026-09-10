@@ -82,6 +82,15 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
 		return config.ActionBlock
 	}
+	// Immutable core credential floor: a core-critical credential (a class the
+	// operator cannot suppress) hard-blocks regardless of the configured MCP
+	// input action, matching the request-body floor. Fail direction: if the
+	// floor predicate cannot classify a match it treats it as non-core and the
+	// configured action still applies below, but a positive core match here can
+	// only ever raise the action to block, never lower it.
+	if scanner.ContainsCoreCriticalMatch(dlpMatches) {
+		return config.ActionBlock
+	}
 	for _, match := range dlpMatches {
 		if match.PatternName == uninspectableSplitSecretFieldsReason {
 			return config.ActionBlock

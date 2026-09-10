@@ -10,31 +10,44 @@ import (
 	"strings"
 )
 
-// AWS Signature Version 4 (SigV4) presigned URL carve-out.
+// AWS Signature Version 4 (SigV4) credential carve-out.
 //
-// A presigned URL embeds an AWS access-key ID inside the X-Amz-Credential
-// query parameter. The full URL is a scoped bearer capability for a single
-// S3 object until X-Amz-Expires elapses. Pipelock's core AWS Access ID DLP
-// pattern matches that AKIA and blocks the GET, even though the request is
-// going to the issuer's own S3 host and the credential is the operating
-// mechanism, not a leaked long-lived key.
+// AWS signed requests carry an access-key ID in two operating-mechanism
+// forms. A presigned URL embeds it in the X-Amz-Credential query parameter.
+// A live SDK/CLI call puts it in the Authorization header:
+//
+//	Authorization: AWS4-HMAC-SHA256 Credential=AKIA.../<scope>,
+//	               SignedHeaders=host;x-amz-date, Signature=<64 hex>
+//
+// Pipelock's core AWS Access ID DLP pattern matches that AKIA and would
+// otherwise block every signed request, even though the request is going
+// to the issuer's own AWS endpoint and the credential is the signing
+// envelope, not a leaked long-lived key.
 //
 // The carve-out is intentionally narrow:
 //
-//   - All six mandatory SigV4 query parameters must validate structurally
-//     and appear exactly once: X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
-//     X-Amz-Signature, X-Amz-Expires, X-Amz-SignedHeaders. The signed-header
-//     list must be well-formed and include host. Duplicate structural fields
-//     fall back to normal DLP scanning so a duplicate credential cannot be
-//     hidden by the scrub pass and an attacker cannot silence the long-expiry
-//     warn by pinning the scanner's view to a short value.
+//   - Presigned URLs: all six mandatory SigV4 query parameters must validate
+//     structurally and appear exactly once: X-Amz-Algorithm, X-Amz-Credential,
+//     X-Amz-Date, X-Amz-Signature, X-Amz-Expires, X-Amz-SignedHeaders. The
+//     signed-header list must be well-formed and include host. Duplicate
+//     structural fields fall back to normal DLP scanning so a duplicate
+//     credential cannot be hidden by the scrub pass and an attacker cannot
+//     silence the long-expiry warn by pinning the scanner's view to a short
+//     value.
+//   - Authorization headers: the value must be a well-formed AWS4-HMAC-SHA256
+//     envelope whose Credential, SignedHeaders, and Signature fields each
+//     appear exactly once and pass the same structural checks as the query
+//     form (minus X-Amz-Expires, which is a presigned-URL lifetime, not a
+//     header field). Malformed, truncated, duplicated, or partial envelopes
+//     stay under core DLP. The carve-out applies only to the Authorization
+//     header, never Proxy-Authorization or a lookalike in another header.
 //   - The destination host must match an AWS-published amazonaws.com
-//     hostname. The carve-out is for legitimate fetches to the issuer's
-//     own S3 endpoint; a SigV4-shaped URL to an attacker host is not
-//     evidence of legitimacy because pipelock cannot verify the HMAC.
+//     hostname. The carve-out is for legitimate requests to the issuer's
+//     own AWS endpoint; a SigV4-shaped URL or header to an attacker host is
+//     not evidence of legitimacy because pipelock cannot verify the HMAC.
 //   - The AKIA exemption applies ONLY to the access-key component of a
-//     parsed X-Amz-Credential value. AKIA anywhere else in the URL (path,
-//     hostname, other query params, subsequence-concatenated values) still
+//     parsed credential scope. AKIA anywhere else (path, hostname, other
+//     query params, other headers, subsequence-concatenated values) still
 //     blocks with ClassThreat.
 //   - The carve-out result is ClassStructuralExemption - adaptive-neutral,
 //     not clean-decay. A burst of legitimate presigned fetches must not
@@ -89,6 +102,13 @@ const (
 	// ASCII does not match the core AWS Access ID regex, which anchors
 	// on uppercase prefixes (AKIA, ASIA, …).
 	sigV4AccessKeyPlaceholderRune = 'a'
+
+	// SigV4 Authorization header field names. Exact case; a lowercase or
+	// mixed-case lookalike is not a well-formed envelope and stays under
+	// core DLP.
+	sigV4AuthFieldCredential    = "Credential"
+	sigV4AuthFieldSignedHeaders = "SignedHeaders"
+	sigV4AuthFieldSignature     = "Signature"
 )
 
 // sigV4CredentialQueryKey is the URL-encoded representation of the
@@ -190,27 +210,11 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 		return sigV4Detection{}
 	}
 
-	cred := params["X-Amz-Credential"]
-	if cred == "" {
+	keyID, credDate, ok := parseSigV4Credential(params["X-Amz-Credential"])
+	if !ok {
 		return sigV4Detection{}
 	}
-	parts := strings.Split(cred, "/")
-	if len(parts) != sigV4CredentialScopeSegments {
-		return sigV4Detection{}
-	}
-	if parts[sigV4CredentialScopeSegments-1] != sigV4CredentialScopeTerminator {
-		return sigV4Detection{}
-	}
-	if !sigV4AccessKeyAnchored.MatchString(parts[0]) {
-		return sigV4Detection{}
-	}
-	if !sigV4ScopeDateRe.MatchString(parts[1]) {
-		return sigV4Detection{}
-	}
-	if parts[1] != date[:8] {
-		return sigV4Detection{}
-	}
-	if parts[2] == "" || parts[3] == "" {
+	if credDate != date[:8] {
 		return sigV4Detection{}
 	}
 
@@ -227,7 +231,35 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 		return sigV4Detection{}
 	}
 
-	return sigV4Detection{Valid: true, KeyID: parts[0], Expires: expires}
+	return sigV4Detection{Valid: true, KeyID: keyID, Expires: expires}
+}
+
+// parseSigV4Credential validates the five-segment SigV4 credential scope
+// shared by X-Amz-Credential query values and Authorization Credential=
+// fields: <key>/<date>/<region>/<service>/aws4_request. Empty region or
+// service, the wrong segment count, or a non-exact access-key ID fail
+// closed so the caller leaves the value for core DLP.
+func parseSigV4Credential(cred string) (keyID, date string, ok bool) {
+	if cred == "" {
+		return "", "", false
+	}
+	parts := strings.Split(cred, "/")
+	if len(parts) != sigV4CredentialScopeSegments {
+		return "", "", false
+	}
+	if parts[sigV4CredentialScopeSegments-1] != sigV4CredentialScopeTerminator {
+		return "", "", false
+	}
+	if !sigV4AccessKeyAnchored.MatchString(parts[0]) {
+		return "", "", false
+	}
+	if !sigV4ScopeDateRe.MatchString(parts[1]) {
+		return "", "", false
+	}
+	if parts[2] == "" || parts[3] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func validSigV4SignedHeaders(raw string) bool {
@@ -423,4 +455,124 @@ func scrubEmbeddedSigV4Credentials(text string) (string, []sigV4Detection) {
 		return scrubSigV4Credential(parsed, detection.KeyID).String()
 	})
 	return scrubbed, detections
+}
+
+// ScrubSigV4AuthorizationForTarget returns a scan-only copy of value with the
+// access-key ID replaced by a same-length lowercase placeholder when target
+// is an AWS-issued endpoint and value is a structurally valid SigV4
+// Authorization envelope. Callers must keep the original value for
+// forwarding. Any other destination or any malformed envelope is returned
+// unchanged so core DLP still sees the access-key ID.
+func ScrubSigV4AuthorizationForTarget(value, target string) string {
+	host := ""
+	if target != "" {
+		parsed, err := url.Parse(target)
+		if err == nil {
+			host = parsed.Hostname()
+		}
+	}
+	if !isAWSEndpointHost(host) {
+		return value
+	}
+	detection := detectValidSigV4Authorization(value)
+	if !detection.Valid {
+		return value
+	}
+	return scrubSigV4Authorization(value, detection.KeyID)
+}
+
+// detectValidSigV4Authorization reports whether value is a well-formed SigV4
+// Authorization envelope. Strict by design: the scheme must be the canonical
+// AWS4-HMAC-SHA256 token, and Credential, SignedHeaders, and Signature must
+// each appear exactly once with no unknown fields. This does not prove the
+// HMAC; pipelock has no AWS credentials to verify it.
+func detectValidSigV4Authorization(value string) sigV4Detection {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, sigV4AlgorithmValue) {
+		return sigV4Detection{}
+	}
+	rest := value[len(sigV4AlgorithmValue):]
+	if rest == "" {
+		return sigV4Detection{}
+	}
+	switch rest[0] {
+	case ' ', '\t':
+	default:
+		return sigV4Detection{}
+	}
+	rest = strings.TrimSpace(rest)
+	fields, ok := extractSigV4AuthorizationFields(rest)
+	if !ok || len(fields) != 3 {
+		return sigV4Detection{}
+	}
+	// extractSigV4AuthorizationFields admits only the three known keys and
+	// rejects duplicates, so exactly three fields means all three are present.
+	cred := fields[sigV4AuthFieldCredential]
+	signed := fields[sigV4AuthFieldSignedHeaders]
+	sig := fields[sigV4AuthFieldSignature]
+	if !sigV4SignatureRe.MatchString(sig) {
+		return sigV4Detection{}
+	}
+	if !validSigV4SignedHeaders(signed) {
+		return sigV4Detection{}
+	}
+	keyID, _, ok := parseSigV4Credential(cred)
+	if !ok {
+		return sigV4Detection{}
+	}
+	return sigV4Detection{Valid: true, KeyID: keyID}
+}
+
+// extractSigV4AuthorizationFields walks the comma-separated k=v tail of a
+// SigV4 Authorization value. Keys are compared byte-for-byte against the
+// canonical field names. Duplicate known fields, unknown fields, missing
+// equals, or empty names/values fail closed.
+func extractSigV4AuthorizationFields(rest string) (map[string]string, bool) {
+	known := map[string]struct{}{
+		sigV4AuthFieldCredential:    {},
+		sigV4AuthFieldSignedHeaders: {},
+		sigV4AuthFieldSignature:     {},
+	}
+	out := map[string]string{}
+	if rest == "" {
+		return nil, false
+	}
+	for _, part := range strings.Split(rest, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, false
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, false
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			return nil, false
+		}
+		if _, isKnown := known[key]; !isKnown {
+			return nil, false
+		}
+		if _, dup := out[key]; dup {
+			return nil, false
+		}
+		out[key] = value
+	}
+	return out, true
+}
+
+// scrubSigV4Authorization replaces the single access-key ID span in a
+// previously validated Authorization envelope. If the key ID is absent,
+// duplicated, or the wrong length, the original value is returned so core
+// DLP still sees it.
+func scrubSigV4Authorization(value, akia string) string {
+	if value == "" || akia == "" || len(akia) != sigV4AccessKeyLength {
+		return value
+	}
+	if strings.Count(value, akia) != 1 {
+		return value
+	}
+	placeholder := strings.Repeat(string(sigV4AccessKeyPlaceholderRune), len(akia))
+	return strings.Replace(value, akia, placeholder, 1)
 }

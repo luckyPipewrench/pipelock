@@ -1192,7 +1192,11 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if val == "" {
 			continue
 		}
-		result := sc.ScanTextForDLP(ctx, val)
+		scanVal := val
+		if key == "Authorization" {
+			scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
+		}
+		result := sc.ScanTextForDLP(ctx, scanVal)
 		if !result.Clean {
 			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, "header")
 			for _, allow := range allows {

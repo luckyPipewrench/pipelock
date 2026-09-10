@@ -82,6 +82,11 @@ const (
 
 	invalidFormURLEncodedBody = "invalid application/x-www-form-urlencoded body"
 
+	// headerNameAuthorization is the only header whose value may carry a
+	// structurally validated SigV4 envelope. Proxy-Authorization and custom
+	// headers stay under core DLP even when they look similar.
+	headerNameAuthorization = "Authorization"
+
 	// bodyDLPJoinSeparator preserves cross-field token/key DLP because the
 	// scanner's dot-collapse pass removes dots, but it prevents phrase-based
 	// detectors like BIP-39 from synthesizing mnemonics across unrelated JSON
@@ -1876,6 +1881,17 @@ func isNoisyHeaderName(name string) bool {
 	return false
 }
 
+// headerValueForDLP returns the value that header DLP should scan. A
+// structurally valid SigV4 Authorization envelope to an AWS endpoint has
+// only its access-key ID replaced; the forwarded header is unchanged.
+// Every other header, destination, or malformed envelope is scanned as-is.
+func headerValueForDLP(name, value, target string) string {
+	if http.CanonicalHeaderKey(name) != headerNameAuthorization {
+		return value
+	}
+	return scanner.ScrubSigV4AuthorizationForTarget(value, target)
+}
+
 // scanRequestHeaders scans HTTP request headers for DLP patterns.
 // Two modes: "sensitive" scans only listed headers; "all" scans everything
 // except the ignore list. Headers are scanned regardless of destination
@@ -1990,15 +2006,16 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		}
 
 		for _, v := range values {
-			allValues = append(allValues, v)
-			result := sc.ScanTextForDLP(ctx, v)
+			scanVal := headerValueForDLP(name, v, target)
+			allValues = append(allValues, scanVal)
+			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {
 				addMatches(name, result.Matches)
 			}
 			// In "all" mode, scan name+value concatenation to catch secrets
 			// split across the header name:value boundary.
 			if bodyCfg.HeaderMode == config.HeaderModeAll {
-				combined := name + v
+				combined := name + scanVal
 				combinedResult := sc.ScanTextForDLP(ctx, combined)
 				if !combinedResult.Clean {
 					addMatches(name, combinedResult.Matches)

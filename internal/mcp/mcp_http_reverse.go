@@ -767,7 +767,7 @@ func RunHTTPListenerProxy(
 			recordListenerAdaptiveSignal(clientState.recorder, sig, listenerStateAuditKey())
 		}
 		blockedByForwardedHeaderDLP := func() bool {
-			headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg())
+			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
 			if headerResult == nil {
 				return false
 			}
@@ -1351,7 +1351,7 @@ func RunHTTPListenerProxy(
 		// Scan configured sensitive listener headers for DLP patterns. The
 		// body scanner doesn't see HTTP headers, so an agent could leak
 		// credentials via MCP listener headers without triggering DLP.
-		if headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg()); headerResult != nil {
+		if headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL); headerResult != nil {
 			reason, pattern := listenerHeaderBlockClassification(headerResult)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s in %s header: %s\n", reason, headerResult.header, pattern)
 			emitListenerBlockDecision(mcpListenerBlockDecision{

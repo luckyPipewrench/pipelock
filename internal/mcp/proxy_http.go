@@ -39,6 +39,16 @@ func scanMCPListenerHeadersForDLP(
 	sc *scanner.Scanner,
 	cfg *config.RequestBodyScanning,
 ) *mcpListenerHeaderDLPResult {
+	return scanMCPListenerHeadersForTarget(ctx, headers, sc, cfg, "")
+}
+
+func scanMCPListenerHeadersForTarget(
+	ctx context.Context,
+	headers http.Header,
+	sc *scanner.Scanner,
+	cfg *config.RequestBodyScanning,
+	target string,
+) *mcpListenerHeaderDLPResult {
 	if sc == nil {
 		return nil
 	}
@@ -60,8 +70,12 @@ func scanMCPListenerHeadersForDLP(
 			if value == "" {
 				continue
 			}
-			allValues = append(allValues, value)
-			result := sc.ScanTextForDLP(ctx, value)
+			scanVal := value
+			if http.CanonicalHeaderKey(name) == listenerAuthorization {
+				scanVal = scanner.ScrubSigV4AuthorizationForTarget(value, target)
+			}
+			allValues = append(allValues, scanVal)
+			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {
 				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
 			}
@@ -85,7 +99,7 @@ func scanMCPListenerHeadersForDLP(
 				}
 			}
 			if mcpListenerShouldScanHeaderNames(cfg) {
-				result = sc.ScanTextForDLP(ctx, name+value)
+				result = sc.ScanTextForDLP(ctx, name+scanVal)
 				if !result.Clean {
 					return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
 				}

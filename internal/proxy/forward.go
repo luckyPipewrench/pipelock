@@ -765,6 +765,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Airlock cancel hooks (intercepted and raw tunnels below) must attach to
+	// the RAW adaptive session - the airlock writer's key, sessionKeyFor(agent,
+	// clientIP) via airlockSessionForIdentity - NOT connectRec, which is keyed
+	// on the CEE-safe key (ceeSessionKey) and folds a self-declared or matched
+	// named agent to the client IP. Escalation transitions the raw session's
+	// scoped tier, so a hook registered on the folded session would never fire:
+	// a named agent's tunnel opened before escalation would stay open. This
+	// mirrors the WebSocket relay, which already registers cancel on the raw
+	// session's scoped airlock. connectRec is kept for CEE/adaptive/taint use.
+	connectAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+
 	// TLS interception: decrypt tunnel and scan body/headers/responses.
 	// Branch here after SNI verification but before raw splice. If interception
 	// is enabled and the host is not on the passthrough list, interceptTunnel
@@ -795,8 +806,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		defer interceptCancel()
 		// Register airlock cancel for intercepted tunnels so escalation to
 		// hard/drain terminates the inner-request http.Server via context.
-		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-			connectSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(interceptCancel)
+		if connectAirlockSess != nil {
+			connectAirlockSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(interceptCancel)
 		}
 		// Obtain a live session recorder for the tunnel. This provides live
 		// escalation level lookups instead of a stale snapshot from sr.Level.
@@ -847,8 +858,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
-	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-		connectSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
+	if connectAirlockSess != nil {
+		connectAirlockSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
 			safeClose(clientConn, "airlock.clientConn", p.logger)
 			safeClose(targetConn, "airlock.targetConn", p.logger)
 		})

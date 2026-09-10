@@ -596,9 +596,16 @@ func newInterceptHandler(
 			return
 		}
 
-		// Airlock classification of the inner request method.
+		// Airlock classification of the inner request method. Read the
+		// DESTINATION-SCOPED tier of the raw adaptive session the airlock
+		// writer raised, via airlockTierForScope - the scoped read that fetch,
+		// forward, opaque CONNECT, and WebSocket already use - NOT the
+		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
+		// per-destination state, so a normal scoped drain leaves the global
+		// tier at none; reading the global tier here would admit every
+		// intercepted inner request under a scoped quarantine (fail-open).
 		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
-			tier := interceptSess.Airlock().Tier()
+			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
 			if tier != config.AirlockTierNone {
 				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
 				if !allowed {

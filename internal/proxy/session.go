@@ -179,6 +179,35 @@ func (s *SessionState) EscalateAirlock(tier, trigger string) (changed bool, from
 	return s.airlock.SetTierWithProvenance(tier, trigger, airlockSourceTriggers)
 }
 
+// ForceSetAirlockTierAllScopes force-sets the session-wide airlock tier AND
+// every destination-scoped airlock to the same tier. An operator override is
+// session-wide intent, but adaptive escalation writes the tier per destination
+// scope (AirlockForScope), so setting only the session-wide airlock would leave
+// a scoped drain in place after an operator releases the session to none, and a
+// scoped session unaffected when an operator forces drain. Applying to every
+// scope makes both directions match operator expectation: release frees every
+// destination, force-drain quarantines every destination the session has
+// touched. Returns whether any tier changed and the strongest prior tier, so
+// an operator release of a scoped drain is reported as a real drain-to-none
+// transition even when the session-wide tier was already none. Lock order is
+// s.mu > airlock.mu, matching AirlockForScope; the session-wide airlock is set
+// outside s.mu so it is never held across the global transition.
+func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string) (changed bool, from, to string) {
+	changed, from, to = s.airlock.ForceSetTierWithProvenance(tier, trigger, source)
+	s.mu.Lock()
+	for _, st := range s.scopes {
+		scopeChanged, scopeFrom, _ := st.airlock.ForceSetTierWithProvenance(tier, trigger, source)
+		if scopeChanged {
+			changed = true
+			if AirlockTierOrder[scopeFrom] > AirlockTierOrder[from] {
+				from = scopeFrom
+			}
+		}
+	}
+	s.mu.Unlock()
+	return changed, from, to
+}
+
 // maxAdaptiveScopes bounds the per-session destination-scope cardinality.
 // Each scope holds its own adaptive lane and airlock (mutex + cancel slice),
 // so an agent that touches an unbounded number of distinct hosts must not be
@@ -2329,9 +2358,12 @@ func (sm *SessionManager) ForceSetAirlockTier(key, tier string) (found, changed 
 		return false, false, "", ""
 	}
 	// Hold RLock across the tier change so cleanup/eviction can't remove
-	// the session between lookup and mutation. ForceSetTier acquires its
-	// own mutex internally (lock ordering: sm.mu > airlock.mu).
-	changed, from, to = sess.Airlock().ForceSetTierWithProvenance(tier, airlockTriggerManual, airlockSourceAdminAPI)
+	// the session between lookup and mutation. ForceSetAirlockTierAllScopes
+	// acquires s.mu and airlock.mu internally (lock ordering: sm.mu > s.mu >
+	// airlock.mu). Apply to every destination scope, not just the session-wide
+	// airlock, so an operator release clears a scoped drain and an operator
+	// drain quarantines every destination the session has touched.
+	changed, from, to = sess.ForceSetAirlockTierAllScopes(tier, airlockTriggerManual, airlockSourceAdminAPI)
 	if changed {
 		sess.RecordEvent(SessionEvent{
 			Kind:     "airlock_override",

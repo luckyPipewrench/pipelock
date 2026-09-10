@@ -4649,8 +4649,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
-	// Airlock check: drain tier blocks all traffic including fetch.
-	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
+	// Airlock check: drain tier blocks all traffic including fetch. Admission
+	// reads the RAW adaptive session (sessionKeyFor) - the one the airlock
+	// writer (recordSessionActivityWithUserAgent) raised the tier on - NOT the
+	// CEE-safe taint recorder above. For a self-declared or matched named agent
+	// the CEE-safe key folds the name to the client IP, a different
+	// SessionState that never saw the tier, so reading it here would fail open.
+	// WebSocket and TLS intercept already read the raw session; response taint
+	// stays on the CEE-safe recorder (the separate join from #1336).
+	var fetchAirlockRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		fetchAirlockRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+	}
+	if fetchSess, ok := fetchAirlockRec.(*SessionState); ok && fetchSess != nil {
 		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
 		if tier == config.AirlockTierDrain {
 			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)

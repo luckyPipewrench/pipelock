@@ -1089,8 +1089,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	forwardTaint := evaluateHTTPTaint(cfg, forwardRec, r.Method, r.URL)
 	forwardRequiresReauth := false
 
-	// Airlock action classification for forward proxy.
-	if forwardSess, ok := forwardRec.(*SessionState); ok && forwardSess != nil {
+	// Airlock action classification for forward proxy. Admission reads the RAW
+	// adaptive session (sessionKeyFor) - the airlock writer's key - not the
+	// CEE-safe taint recorder above; see the fetch path for the rationale. For
+	// a self-declared or matched named agent the CEE-safe key folds the name to
+	// the client IP and would miss a tier the adaptive path set.
+	var forwardAirlockRec session.Recorder
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		forwardAirlockRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+	}
+	if forwardSess, ok := forwardAirlockRec.(*SessionState); ok && forwardSess != nil {
 		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)

@@ -3166,7 +3166,7 @@ Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement 
 
 ## Taint-Aware Policy Escalation (v2.1)
 
-Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. A session that just fetched a blog post cannot, without a trust override, then edit a file under `*/auth/*`. Runs across fetch, forward proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
+Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. A session that just fetched a blog post cannot, without a trust override, then edit a file under `*/auth/*`. Runs across fetch, forward proxy, reverse proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
 
 ```yaml
 taint:

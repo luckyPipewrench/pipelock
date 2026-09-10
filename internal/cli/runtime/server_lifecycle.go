@@ -1090,6 +1090,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			rpUpstream, s.proxy.ConfigPtr(), s.proxy.ScannerPtr(),
 			s.logger, s.metrics, s.killswitch, rpCaptureObs, s.proxy.ShieldEngine(),
 		)
+		rpHandler.SetOwnerProxy(s.proxy)
 		rpHandler.SetEnvelopeEmitter(s.proxy.EnvelopeEmitterPtr())
 		rpHandler.SetEnvelopeVerifier(s.proxy.EnvelopeVerifierPtr())
 		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())

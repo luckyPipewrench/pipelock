@@ -229,6 +229,10 @@ func TestCEESessionKey_SharedHelperMatchesPreRefactorKeys(t *testing.T) {
 // Transport matrix for CEE fragment/entropy accumulation:
 //   - fetch (GET /fetch):        query values        - shares buffer
 //   - forward proxy (abs-URI):   query values + body - shares buffer
+//   - reverse proxy (listener):  query values + body - shares buffer
+//     (see TestReverseCEEFragmentReassemblesAcrossRequests and
+//     TestReverseSharesCEESessionKeyWithForward: the reverse path feeds the same
+//     transport-independent ceeSessionKey.)
 //   - TLS intercept:             query values + body - shares buffer (MITM on)
 //   - WebSocket (/ws):           text frame payloads - shares buffer
 //   - CONNECT (no MITM):         opaque tunnel       - no payload visibility

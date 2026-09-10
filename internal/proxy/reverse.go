@@ -620,6 +620,39 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 	return rp.snapshotRuntime(), func() {}, false
 }
 
+// recordRequestBlockSignal feeds an adaptive SignalBlock for an enforce-mode
+// request-scan block that returns BEFORE the end-of-handler session-activity
+// recording. The forward proxy records session activity ahead of its
+// enforce-mode block return (forward.go handleForwardHTTP, "record BEFORE the
+// enforce-mode early return"), so a blocked forward request still contributes a
+// SignalBlock to its adaptive scope. Reverse's URL- and header-DLP enforce
+// blocks return earlier, so without this a run of blocked reverse DLP requests
+// leaves the scoped adaptive score at zero and a caller probing URL- or
+// header-embedded secrets never escalates. It reuses the same helper, session
+// key (sessionKeyFor(agent, clientIP)) and upstream-host scope the end-of-handler
+// recording uses, so a blocked request records exactly once: it returns before
+// that later recording, never reaching it. A nil owner has no session manager
+// (matching the guard on the end-of-handler recording), and
+// recordSessionActivityWithUserAgent is inert when session profiling is disabled,
+// so this can only ADD a denial signal, never remove one.
+func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) {
+	if rp.owner == nil {
+		return
+	}
+	rp.owner.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   rp.upstream.Hostname(),
+		RequestID:  requestID,
+		UserAgent:  r.UserAgent(),
+		ActorAuth:  actorAuth,
+		Result:     scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Score: 0.9},
+		Config:     cfg,
+		Logger:     rp.logger,
+		DeferClean: true,
+	})
+}
+
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -888,6 +921,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				len(patternNames), patternNames, nil)
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
@@ -936,6 +970,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action, patternNames, nil)
 
 			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
 				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
@@ -1885,12 +1920,26 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// manager make observeHTTPResponseTaint inert, so this changes nothing when
 	// the feature is off.
 	responsePromptHit := false
+	var responseTaintRec session.Recorder
+	// sseHandlesResponseTaint is set true only on the SSE scanning path, which
+	// scans asynchronously in its onComplete goroutine AFTER this function (and
+	// this defer) returns. That path records its own taint observation once the
+	// finding is known, so the defer below skips it to avoid firing with a
+	// premature clean promptHit and to avoid double-counting. Every non-SSE exit
+	// (buffered scan, oversize, shield, read-error, compressed) completes before
+	// the defer, so responsePromptHit is already final for those. This mirrors the
+	// forward proxy, whose SSE scan runs synchronously so its single deferred
+	// observation already reflects the final promptHit.
+	sseHandlesResponseTaint := false
 	if rp.owner != nil {
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
 			agentAuth := agentAuthFromContext(resp.Request.Context())
-			taintRec := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuth(agentAuth)))
+			responseTaintRec = sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuth(agentAuth)))
 			defer func() {
-				observeHTTPResponseTaint(taintRec, cfg, targetURL, resp.Header.Get("Content-Type"), "reverse_response", responsePromptHit)
+				if sseHandlesResponseTaint {
+					return
+				}
+				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, resp.Header.Get("Content-Type"), "reverse_response", responsePromptHit)
 			}()
 		}
 	}
@@ -2386,6 +2435,19 @@ responseScanning:
 			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
 			return nil
 		}
+		// This scanning SSE path owns the response-taint observation: it scans
+		// asynchronously in onComplete below, so the modifyResponse-level defer
+		// must not record early with a clean promptHit. sseResponsePromptHit is
+		// set by OnFinding (warn mode, forwarded inline) and by an
+		// IsSSEStreamFinding onComplete error (block mode), matching the forward
+		// proxy which sets responsePromptHit on both. When there is no session
+		// recorder (nil owner or session manager), the defer already records
+		// nothing, so leave it in charge.
+		sseContentType := resp.Header.Get("Content-Type")
+		sseResponsePromptHit := false
+		if responseTaintRec != nil {
+			sseHandlesResponseTaint = true
+		}
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream
 		sseOpts := SSEDispatchOptions{
@@ -2397,6 +2459,7 @@ responseScanning:
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: revRespExempt,
 				OnFinding: func(err error) {
+					sseResponsePromptHit = true
 					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
 				},
 				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
@@ -2408,6 +2471,18 @@ responseScanning:
 			},
 		}
 		onComplete := func(err error) {
+			// Record the response-taint observation now the async scan is done and
+			// the final finding state is known. OnFinding (warn mode) and an
+			// IsSSEStreamFinding error (block mode) both mean the stream carried an
+			// injection, so it upgrades the session to hostile taint the same way a
+			// buffered injection response would. This runs on every completion path
+			// (clean EOF, finding, scan error, cancel); observeHTTPResponseTaint is
+			// inert when taint is disabled. Both operands are final at this point:
+			// DispatchSSEScan (and every OnFinding it fires) completes before
+			// onComplete, all in the one streaming goroutine.
+			if responseTaintRec != nil {
+				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", sseResponsePromptHit || IsSSEStreamFinding(err))
+			}
 			if err == nil {
 				return
 			}

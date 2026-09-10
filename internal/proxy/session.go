@@ -232,7 +232,10 @@ func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState 
 			// every caller guards it.
 			return nil
 		}
-		st = &adaptiveScopeState{airlock: AirlockState{tier: config.AirlockTierNone}}
+		// A session-wide operator override also governs destinations first seen
+		// after the override. Inheriting the current global tier prevents a new
+		// scope from weakening a forced hard/drain state back to none.
+		st = &adaptiveScopeState{airlock: AirlockState{tier: s.airlock.Tier()}}
 		s.scopes[scope] = st
 	}
 	return st

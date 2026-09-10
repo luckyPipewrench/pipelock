@@ -590,15 +590,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Early airlock check for opaque CONNECT: reject before dialing/hijacking
 	// so the client gets a proper HTTP 403 (not a torn-down connection).
 	// TLS-intercepted tunnels handle airlock per inner request instead.
-	// Admission reads the RAW adaptive session (sessionKeyFor) via
-	// airlockSessionForIdentity - the airlock writer's key - NOT connectRec,
-	// which is keyed on the CEE-safe key (ceeSessionKey) for CEE/adaptive use.
-	// For a self-declared or matched named agent that CEE-safe key folds the
-	// name to the client IP and would miss a tier the adaptive path raised, so
-	// a named agent under airlock would tunnel through non-intercepted CONNECT.
+	// Admission reads the same trust-graded session as the adaptive writer.
+	// Request-controlled names fold to the source IP, so rotating a name cannot
+	// select a fresh airlock lane.
 	shouldIntercept := cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains)
 	if !shouldIntercept {
-		if connectSess := p.airlockSessionForIdentity(agent, clientIP); connectSess != nil {
+		if connectSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth); connectSess != nil {
 			tier := airlockTierForScope(connectSess, adaptiveScopeForHost(host))
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
@@ -765,16 +762,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Airlock cancel hooks (intercepted and raw tunnels below) must attach to
-	// the RAW adaptive session - the airlock writer's key, sessionKeyFor(agent,
-	// clientIP) via airlockSessionForIdentity - NOT connectRec, which is keyed
-	// on the CEE-safe key (ceeSessionKey) and folds a self-declared or matched
-	// named agent to the client IP. Escalation transitions the raw session's
-	// scoped tier, so a hook registered on the folded session would never fire:
-	// a named agent's tunnel opened before escalation would stay open. This
-	// mirrors the WebSocket relay, which already registers cancel on the raw
-	// session's scoped airlock. connectRec is kept for CEE/adaptive/taint use.
-	connectAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+	// Airlock cancel hooks (intercepted and raw tunnels below) attach to the
+	// same trust-graded session the adaptive writer transitions.
+	connectAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
 
 	// TLS interception: decrypt tunnel and scan body/headers/responses.
 	// Branch here after SNI verification but before raw splice. If interception
@@ -813,7 +803,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// escalation level lookups instead of a stale snapshot from sr.Level.
 		var interceptRec session.Recorder
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			interceptRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+			interceptRec = sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
 		}
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
 			TargetHost:         host,
@@ -1111,7 +1101,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// airlock writer's key - not the CEE-safe taint recorder above; see the
 	// fetch path for the rationale. This same raw session is carried into the
 	// redirect context below so every hop admits against the writer's session.
-	forwardAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+	forwardAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
 	if forwardSess := forwardAirlockSess; forwardSess != nil {
 		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 		if tier != config.AirlockTierNone {

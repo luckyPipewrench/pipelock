@@ -76,7 +76,8 @@ func setupDrainedRecoveredSession(t *testing.T, p *Proxy, agent string) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(sessionKeyFor(agent, ip))
+	sess := sm.GetOrCreate(responseTaintSessionKey(agent, ip, envelope.ActorAuthSelfDeclared))
+	profileSess := sm.GetOrCreate(sessionKeyFor(agent, ip))
 	if sess == nil {
 		t.Fatal("expected a session for the raw key")
 	}
@@ -104,23 +105,39 @@ func setupDrainedRecoveredSession(t *testing.T, p *Proxy, agent string) {
 	// steps one level down. This touches only the adaptive lane; the airlock
 	// timer is left alone, so the drain tier persists.
 	for range 10 {
-		if sess.ScopedEscalationLevel(scope) == 0 {
+		if profileSess.ScopedEscalationLevel(scope) == 0 {
 			break
 		}
-		sess.mu.Lock()
-		for _, st := range sess.scopes {
+		profileSess.mu.Lock()
+		for _, st := range profileSess.scopes {
 			st.lastEscalation = time.Now().Add(-time.Hour)
 		}
-		sess.mu.Unlock()
-		sess.TryAutoRecoverScopes(time.Nanosecond, func(int) bool { return false })
+		profileSess.mu.Unlock()
+		profileSess.TryAutoRecoverScopes(time.Nanosecond, func(int) bool { return false })
 	}
 
 	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 		t.Fatalf("precondition: airlock tier must stay drain after adaptive recovery, got %q", got)
 	}
-	if got := sess.ScopedEscalationLevel(scope); got != 0 {
+	if got := profileSess.ScopedEscalationLevel(scope); got != 0 {
 		t.Fatalf("precondition: adaptive level must recover to 0 to isolate airlock, got %d", got)
 	}
+}
+
+func setupForcedScopedDrain(t *testing.T, p *Proxy, agent, clientIP, host string) *SessionState {
+	t.Helper()
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager not initialized")
+	}
+	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
+	changed, _, to := sess.AirlockForScope(adaptiveScopeForHost(host)).ForceSetTierWithProvenance(
+		config.AirlockTierDrain, airlockTriggerManual, airlockSourceAdminAPI,
+	)
+	if !changed || to != config.AirlockTierDrain {
+		t.Fatalf("force scoped drain = changed:%v to:%q, want changed:true to:drain", changed, to)
+	}
+	return sess
 }
 
 // airlockTestUpstream starts a stand-in upstream that always returns 200 and
@@ -135,24 +152,14 @@ func airlockTestUpstream(t *testing.T, p *Proxy) {
 }
 
 // TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward is the
-// load-bearing regression guard. A self-declared NAMED agent whose airlock tier
-// is at drain on the raw adaptive session must be refused on fetch AND forward.
-// Before the fix, fetch and forward read airlock from the CEE-safe taint
-// recorder, whose key folds the self-declared name to the client IP: a
-// different SessionState that never saw the tier, so admission read "none" and
-// the request sailed through (fail-open, 200). After the fix, both transports
-// read the raw session the writer used and airlock refuses the request (403
-// with an airlock_active reason).
+// load-bearing regression guard. A self-declared caller cannot escape an
+// airlock drain by rotating its request-supplied agent name: both names fold to
+// the same source-bound enforcement session on fetch and forward.
 func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *testing.T) {
-	const agent = "named-agent-a"
-
-	// Prove the two keys actually diverge for this identity, so a green result
-	// cannot come from the keys accidentally coinciding.
-	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP)
-	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
-	if rawKey == ceeKey {
-		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
-	}
+	const (
+		agent        = "named-agent-a"
+		rotatedAgent = "named-agent-b"
+	)
 
 	t.Run("fetch", func(t *testing.T) {
 		proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, airlockDrainProxyConfig)
@@ -160,7 +167,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 		airlockTestUpstream(t, p)
 		setupDrainedRecoveredSession(t, p, agent)
 
-		status, reason := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+airlockSessionKeyTarget+"/", agent)
+		status, reason := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+airlockSessionKeyTarget+"/", rotatedAgent)
 		if status != http.StatusForbidden || reason != airlockActiveReason {
 			t.Fatalf("fetch admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent)",
 				status, reason, airlockActiveReason)
@@ -173,7 +180,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 		airlockTestUpstream(t, p)
 		setupDrainedRecoveredSession(t, p, agent)
 
-		status, reason := doForwardWithAgent(t, proxyAddr, "http://"+airlockSessionKeyTarget+"/", agent)
+		status, reason := doForwardWithAgent(t, proxyAddr, "http://"+airlockSessionKeyTarget+"/", rotatedAgent)
 		if status != http.StatusForbidden || reason != airlockActiveReason {
 			t.Fatalf("forward admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent)",
 				status, reason, airlockActiveReason)
@@ -220,23 +227,10 @@ func TestAirlockAdmission_AnonymousAgentUnchanged(t *testing.T) {
 
 // TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect is the
 // load-bearing regression guard for opaque (non-intercepted) CONNECT. A
-// self-declared NAMED agent whose airlock tier is at drain on the raw adaptive
-// session must be refused before the tunnel is dialed or hijacked. Before the
-// fix, handleConnect read airlock from connectRec, keyed on the CEE-safe key
-// (ceeSessionKey), which folds the self-declared name to the client IP: a
-// different SessionState that never saw the tier, so admission read "none" and
-// the tunnel proceeded (fail-open). After the fix, CONNECT reads the raw
-// session the writer used via airlockSessionForIdentity and refuses with 403.
+// self-declared agent whose source-bound enforcement session is drained must be
+// refused before the tunnel is dialed or hijacked.
 func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect(t *testing.T) {
 	const agent = "named-agent-a"
-
-	// Prove the two keys diverge for this identity, so a green result cannot
-	// come from the keys accidentally coinciding.
-	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP)
-	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
-	if rawKey == ceeKey {
-		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
-	}
 
 	// airlockDrainProxyConfig leaves TLS interception off, so the target host
 	// takes the opaque (non-intercepted) CONNECT path where the early airlock
@@ -244,7 +238,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect(t *testing.T) 
 	// is needed.
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, airlockDrainProxyConfig)
 	defer cleanup()
-	setupDrainedRecoveredSession(t, p, agent)
+	setupForcedScopedDrain(t, p, agent, airlockSessionKeyClientIP, airlockSessionKeyTarget)
 
 	status, reason := doConnectWithAgent(t, proxyAddr, airlockSessionKeyTarget+":443", agent)
 	if status != http.StatusForbidden || reason != airlockActiveReason {
@@ -335,88 +329,36 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T)
 	})
 }
 
-// TestAirlockAdmissionKeyMatchesWriterKey documents, per transport and per
-// provenance grade, that airlock admission keys on the RAW adaptive session
-// (the writer's key) and NOT on the CEE-safe taint key. For bound and
-// config-default grades the two keys coincide; for matched and self-declared
-// grades the CEE-safe key folds the name to the client IP, which is exactly the
-// fail-open the fix closes. The transport rows use the concrete key expression
-// each production read site uses.
+// TestAirlockAdmissionKeyMatchesWriterKey verifies the shared production
+// helper's trust-graded lookup contract. Transport behavior is covered by the
+// functional fetch, forward, CONNECT, redirect, intercept, and WebSocket tests;
+// this test does not duplicate their key expressions.
 func TestAirlockAdmissionKeyMatchesWriterKey(t *testing.T) {
 	const (
 		agent = "grade-agent"
 		ip    = "203.0.113.7"
 	)
-	writerKey := sessionKeyFor(agent, ip)
-
-	// The airlock admission read key each of the six read sites uses. fetch,
-	// forward, opaque CONNECT, and the redirect hop read sessionKeyFor after the
-	// fix (fetch/forward/CONNECT via airlockSessionForIdentity, redirect via the
-	// raw session that helper staged into ctxKeyRedirectAirlockSession);
-	// WebSocket (websocket.go) and TLS intercept (forward.go interceptRec)
-	// already read sessionKeyFor.
-	transportReadKey := map[string]string{
-		"fetch":     sessionKeyFor(agent, ip),
-		"forward":   sessionKeyFor(agent, ip),
-		"websocket": sessionKeyFor(agent, ip),
-		"intercept": sessionKeyFor(agent, ip),
-		"connect":   sessionKeyFor(agent, ip),
-		"redirect":  sessionKeyFor(agent, ip),
-	}
-	for transport, readKey := range transportReadKey {
-		if readKey != writerKey {
-			t.Errorf("%s: airlock read key %q != writer key %q", transport, readKey, writerKey)
-		}
-	}
-
-	// The airlock cancel-registration (write) key for every transport that
-	// registers a teardown hook. Escalation fires cancels on the scope of the
-	// RAW session, so a hook must attach to sessionKeyFor(agent, ip). CONNECT
-	// and TLS intercept register through airlockSessionForIdentity (forward.go
-	// connectAirlockSess); WebSocket registers on its raw wsRec. Before the fix
-	// CONNECT/intercept registered on connectRec (ceeSessionKey), which folds a
-	// named agent to the client IP - a session escalation never transitions.
-	transportCancelKey := map[string]string{
-		"connect":   sessionKeyFor(agent, ip),
-		"intercept": sessionKeyFor(agent, ip),
-		"websocket": sessionKeyFor(agent, ip),
-	}
-	for transport, cancelKey := range transportCancelKey {
-		if cancelKey != writerKey {
-			t.Errorf("%s: airlock cancel-registration key %q != writer key %q", transport, cancelKey, writerKey)
-		}
-	}
-
-	// Bind the assertion to production: fetch, forward, opaque CONNECT, and the
-	// redirect fail-safe all obtain the admission session through this one
-	// helper, so its returned key IS the read key those four sites use. This
-	// keeps the "connect"/"redirect" rows above from being re-typed literals.
 	p, _, _ := redirectPolicyTestProxy(t)
-	if sess := p.airlockSessionForIdentity(agent, ip); sess == nil || sess.key != writerKey {
-		t.Fatalf("airlockSessionForIdentity(%q, %q) key = %v, want %q", agent, ip, sess, writerKey)
+	sm := p.sessionMgrPtr.Load()
+	if sess := p.airlockSessionForIdentity(agent, ip, envelope.ActorAuthSelfDeclared); sess != nil {
+		t.Fatalf("lookup-only admission created a session: %+v", sess)
 	}
 
 	grades := []struct {
-		name        string
-		auth        envelope.ActorAuth
-		ceeDiverges bool
+		name    string
+		auth    envelope.ActorAuth
+		wantKey string
 	}{
-		{"bound", envelope.ActorAuthBound, false},
-		{"config-default", envelope.ActorAuthConfigDefault, false},
-		{"matched", envelope.ActorAuthMatched, true},
-		{"self-declared", envelope.ActorAuthSelfDeclared, true},
+		{"bound", envelope.ActorAuthBound, sessionKeyFor(agent, ip)},
+		{"config-default", envelope.ActorAuthConfigDefault, sessionKeyFor(agent, ip)},
+		{"matched", envelope.ActorAuthMatched, ip},
+		{"self-declared", envelope.ActorAuthSelfDeclared, ip},
 	}
 	for _, g := range grades {
 		t.Run(g.name, func(t *testing.T) {
-			ceeKey := responseTaintSessionKey(agent, ip, g.auth)
-			diverges := ceeKey != writerKey
-			if diverges != g.ceeDiverges {
-				t.Fatalf("grade %s: CEE-safe key %q vs writer key %q: diverges=%v, want %v",
-					g.name, ceeKey, writerKey, diverges, g.ceeDiverges)
-			}
-			// Whatever the grade, airlock admission keys on the writer key.
-			if got := sessionKeyFor(agent, ip); got != writerKey {
-				t.Fatalf("grade %s: airlock read key %q != writer key %q", g.name, got, writerKey)
+			sm.GetOrCreate(g.wantKey)
+			if got := p.airlockSessionForIdentity(agent, ip, g.auth); got == nil || got.key != g.wantKey {
+				t.Fatalf("grade %s: admission session = %+v, want key %q", g.name, got, g.wantKey)
 			}
 		})
 	}
@@ -452,7 +394,7 @@ func TestAirlockAdmission_TLSIntercept_RefusedOnScopedDrain(t *testing.T) {
 	// and a fail-open is a genuine admission, not an adaptive block masking it.
 	// This drives drain through the real escalation bridge (recordSessionActivity).
 	setupDrainedRecoveredSession(t, p, agent)
-	sess := sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
 	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 		t.Fatalf("precondition: scope %q tier = %q, want drain", scope, got)
 	}
@@ -591,7 +533,7 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
 	scope := adaptiveScopeForHost(targetHost)
 
 	conn := dialProxy(t, proxyAddr)
@@ -715,44 +657,8 @@ func TestAirlockCancel_TLSInterceptTunnel_TornDownOnScopedDrain(t *testing.T) {
 	}
 	p.certCachePtr.Store(cache)
 
-	sm := p.sessionMgrPtr.Load()
-	if sm == nil {
-		t.Fatal("session manager not initialized")
-	}
-	sess := sm.GetOrCreate(sessionKeyFor(agent, clientIP))
 	scope := adaptiveScopeForHost(host)
-
-	// Pre-drain the raw session's destination scope through the real bridge, so
-	// the intercept-branch RegisterCancel fires immediately when it attaches to
-	// the right session.
-	cfg := p.CurrentConfig()
-	logger := audit.NewNop()
-	drained := false
-	for range 40 {
-		p.recordSessionActivity(clientIP, agent, host, "req-escalate", scanner.Result{Allowed: false}, cfg, logger, false)
-		if sess.AirlockForScope(scope).Tier() == config.AirlockTierDrain {
-			drained = true
-			break
-		}
-	}
-	if !drained {
-		t.Fatalf("precondition: could not drive scope %q to drain (tier=%q)", scope, sess.AirlockForScope(scope).Tier())
-	}
-
-	// Recover the adaptive escalation level to 0 through the real time-based
-	// recovery path so no adaptive block_all masks the airlock behaviour; the
-	// airlock drain tier persists (its timer is left alone).
-	for range 10 {
-		if sess.ScopedEscalationLevel(scope) == 0 {
-			break
-		}
-		sess.mu.Lock()
-		for _, st := range sess.scopes {
-			st.lastEscalation = time.Now().Add(-time.Hour)
-		}
-		sess.mu.Unlock()
-		sess.TryAutoRecoverScopes(time.Nanosecond, func(int) bool { return false })
-	}
+	sess := setupForcedScopedDrain(t, p, agent, clientIP, host)
 	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 		t.Fatalf("precondition: airlock tier must stay drain after adaptive recovery, got %q", got)
 	}
@@ -805,7 +711,7 @@ func TestForceSetAirlockTier_AppliesToEveryScope(t *testing.T) {
 		clientIP = airlockSessionKeyClientIP
 		host     = airlockSessionKeyTarget
 	)
-	key := sessionKeyFor(agent, clientIP)
+	key := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
 	scope := adaptiveScopeForHost(host)
 
 	t.Run("release_to_none_clears_scoped_drain", func(t *testing.T) {
@@ -860,6 +766,10 @@ func TestForceSetAirlockTier_AppliesToEveryScope(t *testing.T) {
 		}
 		if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 			t.Fatalf("scoped tier after force drain = %q, want drain (operator drain must quarantine every existing scope)", got)
+		}
+		futureScope := adaptiveScopeForHost("future.example")
+		if got := sess.AirlockForScope(futureScope).Tier(); got != config.AirlockTierDrain {
+			t.Fatalf("scope created after force drain = %q, want drain (operator override must govern future destinations)", got)
 		}
 
 		// The destination the operator drained must now be refused.

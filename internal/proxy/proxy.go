@@ -896,7 +896,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// an airlock check even if a p.client caller did not stage it.
 			redirectAirlockSess, _ := req.Context().Value(ctxKeyRedirectAirlockSession).(*SessionState)
 			if redirectAirlockSess == nil {
-				redirectAirlockSess = p.airlockSessionForIdentity(agentName, clientIP)
+				redirectAirlockSess = p.airlockSessionForIdentity(agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())))
 			}
 			if redirectSess := redirectAirlockSess; redirectSess != nil {
 				tier := airlockTierForScope(redirectSess, adaptiveScopeForHost(req.URL.Hostname()))
@@ -3135,8 +3135,18 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			trigger = airlockTriggerOnCritical
 		}
 		if targetTier != "" && targetTier != config.AirlockTierNone {
-			if changed, from, to := sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
-				sess.RecordEvent(SessionEvent{
+			// Keep the existing per-agent profiling state, but enforce airlock on
+			// the trust-graded key. For request-controlled identities this folds
+			// agent-name rotation to the source IP; bound identities already use
+			// the same key as the profiling session.
+			enforcementKey := responseTaintSessionKey(agent, clientIP, opts.ActorAuth)
+			enforcementSess := sess
+			if enforcementKey != key {
+				enforcementSess = sm.GetOrCreate(enforcementKey)
+				_, _, _ = sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers)
+			}
+			if changed, from, to := enforcementSess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
+				enforcementSess.RecordEvent(SessionEvent{
 					Kind:     "airlock_enter",
 					Target:   scope,
 					Detail:   from + "->" + to,
@@ -3347,25 +3357,17 @@ func airlockTierForScope(sess *SessionState, scope string) string {
 	return tier
 }
 
-// airlockSessionForIdentity returns the RAW adaptive SessionState that airlock
-// admission must read for an identity: the session keyed by
-// sessionKeyFor(agent, clientIP), which is the key the airlock writer
-// (recordSessionActivity) raised the tier on. Fetch, forward-proxy, opaque
-// CONNECT, and redirect hops all obtain admission through this one helper so
-// every airlock read agrees with the writer, whatever provenance grade the
-// agent's declared name carries. The CEE-safe taint key folds a self-declared
-// or matched name to the client IP - a different SessionState that never saw
-// the tier - so reading it for admission would fail open; response taint
-// deliberately stays on that CEE-safe recorder (the separate join from #1336).
-// Returns nil when the session manager is not initialized, and every caller
-// treats a nil session as "no airlock tier", which is correct because the
-// writer could not have recorded a tier without a live manager either.
-func (p *Proxy) airlockSessionForIdentity(agent, clientIP string) *SessionState {
+// airlockSessionForIdentity returns the trust-graded adaptive SessionState the
+// writer uses. Bound identities retain per-agent isolation; request-controlled
+// identities fold to the source IP so rotating a name cannot escape airlock.
+// Admission is lookup-only: a request cannot materialize session state merely
+// by presenting high-cardinality names or destinations.
+func (p *Proxy) airlockSessionForIdentity(agent, clientIP string, auth envelope.ActorAuth) *SessionState {
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil {
 		return nil
 	}
-	return sm.GetOrCreate(sessionKeyFor(agent, clientIP))
+	return sm.SessionByKey(responseTaintSessionKey(agent, clientIP, auth))
 }
 
 // applyShield runs Browser Shield rewriting on a response body when enabled
@@ -4697,7 +4699,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// is carried into the redirect context below so every hop admits against the
 	// writer's session too. See airlockSessionForIdentity for the fail-open the
 	// CEE-safe key would open.
-	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP)
+	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
 	if fetchSess := fetchAirlockSess; fetchSess != nil {
 		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
 		if tier == config.AirlockTierDrain {

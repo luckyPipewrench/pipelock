@@ -775,7 +775,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// escalation changes during long-lived WS connections take effect.
 	var wsRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		sessionKey := sessionKeyFor(agent, clientIP)
+		sessionKey := responseTaintSessionKey(agent, clientIP, id.Auth)
 		wsRec = sm.GetOrCreate(sessionKey)
 	}
 	wsScope := adaptiveScopeForHost(parsed.Hostname())

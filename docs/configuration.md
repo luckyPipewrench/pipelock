@@ -2308,7 +2308,7 @@ it cannot corrupt MCP stdio framing.
 
 Each agent can bind to one or more dedicated ports via the `listeners` field. Pipelock opens these ports at startup alongside the main proxy port. Requests arriving on an agent's listener are automatically resolved to that agent without relying on headers or query params.
 
-Listener binding and a `source_cidrs` match are the two spoof-proof resolution methods; both grade the identity `bound`. With a listener, the agent process connects to its assigned port and pipelock knows which profile to apply from the port alone.
+Listener binding and a `source_cidrs` match are the two network-bound resolution methods; both grade the identity `bound`. A request cannot change either one, but neither authenticates the host or process behind the peer address, so access to the listener port and the integrity of the source address are the operator's controls. With a listener, the agent process connects to its assigned port and pipelock knows which profile to apply from the port alone.
 
 ```yaml
 agents:

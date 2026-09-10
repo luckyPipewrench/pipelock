@@ -175,3 +175,24 @@ func TestA2ACoreFloor_HeaderURINonCoreFollowsWarn(t *testing.T) {
 		t.Fatalf("non-core credential in A2A header under warn should not hard-block, got %q", result.Action)
 	}
 }
+
+// A non-core finding on an earlier leaf must not shadow the split-secret pass:
+// a core credential split across two JSON values still reaches the immutable
+// floor and the whole body blocks under a2a_scanning.action: warn.
+func TestA2ACoreFloor_SplitCoreCredentialBlocksAfterNonCoreFinding(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().A2AScanning
+	cfg.Enabled = true
+	cfg.Action = config.ActionWarn
+	token := coreCredentialToken()
+	head, tail := token[:12], token[12:]
+	body := []byte(`{"message":{"parts":[{"text":"non-core ` + nonCoreSecretValue() + `"},{"text":"` + head + `"},{"text":"` + tail + `"}]}}`)
+
+	result := ScanA2ARequestBody(context.Background(), body, sc, &cfg)
+	if result.Clean {
+		t.Fatalf("expected findings, got clean result %+v", result)
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("split core credential after a non-core finding: action = %q, want %q (findings %+v)", result.Action, config.ActionBlock, result.DLPFindings)
+	}
+}

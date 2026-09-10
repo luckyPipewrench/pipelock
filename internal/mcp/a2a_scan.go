@@ -219,9 +219,14 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		action = config.StrongestAction(action, defaultFindingAction)
 	}
 
-	// Pass 2: raw DLP fallback for split-secret detection.
-	// Only runs when walker completed within budget.
-	if result.Clean && !budgetExceeded {
+	// Pass 2: raw DLP fallback for split-secret detection. It runs whenever the
+	// walker completed within budget, even when an earlier leaf already produced
+	// a finding: a core credential split across JSON values must still reach the
+	// immutable floor, and a prior non-core warn finding must not shadow it.
+	// When the result was already dirty, only the matches that force a block are
+	// folded in, so the per-leaf findings are not reported twice.
+	if !budgetExceeded {
+		wasClean := result.Clean
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
@@ -234,7 +239,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLP(ctx, joined)
-			if !dlpResult.Clean {
+			switch {
+			case dlpResult.Clean:
+			case wasClean:
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
 				if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -242,6 +249,13 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
 				}
+			case a2aDLPForcesBlock(dlpResult.Matches):
+				for _, match := range dlpResult.Matches {
+					if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+						result.DLPFindings = append(result.DLPFindings, match)
+					}
+				}
+				action = config.StrongestAction(action, config.ActionBlock)
 			}
 		}
 	}

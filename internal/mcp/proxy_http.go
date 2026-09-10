@@ -71,7 +71,11 @@ func scanMCPListenerHeadersForTarget(
 				continue
 			}
 			scanVal := value
-			if http.CanonicalHeaderKey(name) == listenerAuthorization {
+			// Same rule as the forward-proxy header scan: a repeated
+			// Authorization header is not valid HTTP, and scrubbing each
+			// value independently would leave both the per-value and the
+			// joined scan with no access-key ID to find.
+			if http.CanonicalHeaderKey(name) == listenerAuthorization && len(values) == 1 {
 				scanVal = scanner.ScrubSigV4AuthorizationForTarget(value, target)
 			}
 			allValues = append(allValues, scanVal)

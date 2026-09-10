@@ -1885,8 +1885,15 @@ func isNoisyHeaderName(name string) bool {
 // structurally valid SigV4 Authorization envelope to an AWS endpoint has
 // only its access-key ID replaced; the forwarded header is unchanged.
 // Every other header, destination, or malformed envelope is scanned as-is.
-func headerValueForDLP(name, value, target string) string {
+// A repeated Authorization header is not valid HTTP and no AWS SDK emits one,
+// so valueCount above one means the carve-out does not apply: scrubbing each
+// value independently would leave the per-value AND joined scans with no
+// access-key ID to find.
+func headerValueForDLP(name, value, target string, valueCount int) string {
 	if http.CanonicalHeaderKey(name) != headerNameAuthorization {
+		return value
+	}
+	if valueCount != 1 {
 		return value
 	}
 	return scanner.ScrubSigV4AuthorizationForTarget(value, target)
@@ -2006,7 +2013,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		}
 
 		for _, v := range values {
-			scanVal := headerValueForDLP(name, v, target)
+			scanVal := headerValueForDLP(name, v, target, len(values))
 			allValues = append(allValues, scanVal)
 			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {

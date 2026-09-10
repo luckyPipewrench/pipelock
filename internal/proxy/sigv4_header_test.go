@@ -129,3 +129,46 @@ func TestScanRequestHeaders_SigV4CarveOutIsAuthorizationOnly(t *testing.T) {
 	requireSigV4HeaderBlocked(t, headers, sigV4HeaderAWSTarget,
 		"Proxy-Authorization is not the SigV4 signing header")
 }
+
+func TestScanRequestHeaders_SigV4CarveOutRequiresEncryptedTransport(t *testing.T) {
+	// A real AWS API call is always TLS. Over cleartext the forwarded header
+	// puts the key id on the wire in the clear, so the carve-out must not
+	// apply even though the hostname is AWS-issued.
+	for _, target := range []string{
+		"http://sts.us-east-1.amazonaws.com/",
+		"ws://sts.us-east-1.amazonaws.com/",
+		"HTTP://sts.us-east-1.amazonaws.com/",
+	} {
+		t.Run(target, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set("Authorization", buildSigV4Authorization(sigV4HeaderTestKey()))
+			requireSigV4HeaderBlocked(t, headers, target,
+				"a cleartext destination must stay under core DLP")
+		})
+	}
+}
+
+func TestScanRequestHeaders_SigV4CarveOutRequiresASingleAuthorizationValue(t *testing.T) {
+	// Scrubbing each value independently would leave the per-value and the
+	// joined scans with no key id to find, so a repeated header disables the
+	// carve-out entirely.
+	headers := http.Header{}
+	headers.Add("Authorization", buildSigV4Authorization(sigV4HeaderTestKey()))
+	headers.Add("Authorization", buildSigV4Authorization(sigV4HeaderTestAltKey()))
+
+	requireSigV4HeaderBlocked(t, headers, sigV4HeaderAWSTarget,
+		"a repeated Authorization header must disable the carve-out")
+}
+
+func TestScanRequestHeaders_SigV4EnvelopeStillAllowedOverTLS(t *testing.T) {
+	// Guards against over-tightening: the single legitimate shape must still
+	// pass, or the fix above has re-broken what this change set out to fix.
+	headers := http.Header{}
+	headers.Set("Authorization", buildSigV4Authorization(sigV4HeaderTestKey()))
+	headers.Set("X-Amz-Date", sigV4HeaderTestDate)
+
+	result := scanSigV4Headers(t, headers, sigV4HeaderAWSTarget)
+	if result != nil && !result.Clean {
+		t.Fatalf("a single TLS-bound SigV4 header was blocked: %+v", result)
+	}
+}

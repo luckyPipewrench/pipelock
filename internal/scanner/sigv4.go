@@ -149,10 +149,17 @@ var (
 	// cannot verify the HMAC of a SigV4 URL, so structural validity alone
 	// is not evidence of legitimacy: a presigned-looking URL pointing at
 	// an attacker host would let an attacker exfiltrate an AKIA-shaped
-	// value via the scrub-then-fetch path. *.amazonaws.com is registered
-	// to AWS and cannot be claimed by a third party, so the suffix gate is
-	// effective. Path-style and virtual-hosted S3, FIPS, and access-point
-	// hostnames all live under this suffix.
+	// value via the scrub-then-fetch path. The suffix is registered to AWS,
+	// so a third party cannot claim the DOMAIN - but this gate is weaker
+	// than that fact suggests, and the difference matters. S3 bucket names
+	// become hostnames under it and anyone with an AWS account can register
+	// one, so a request to a bucket an attacker controls satisfies this
+	// gate. What the gate rules out is an arbitrary attacker-operated
+	// origin; it does not establish that the destination belongs to the
+	// operator. Deciding WHICH AWS destinations an agent may reach is
+	// destination policy, not DLP. Path-style and virtual-hosted S3, FIPS,
+	// and access-point hostnames all live under this suffix, which is why
+	// the gate cannot simply demand a service-shaped hostname.
 	sigV4AmazonHostSuffixes = []string{
 		".amazonaws.com",
 		".amazonaws.com.cn", // AWS China regions
@@ -341,6 +348,18 @@ func extractSigV4FieldsLiteralKeyed(rawQuery string) (map[string]string, bool) {
 // known AWS-issued DNS suffixes. The match is case-insensitive and
 // requires a true suffix (not a substring), so attacker-controlled hosts
 // like example.com.evil.tld cannot impersonate an AWS endpoint.
+// sigV4EncryptedScheme reports whether the destination scheme protects the
+// forwarded Authorization header in transit. An empty, unknown, or cleartext
+// scheme is not evidence of protection and fails closed.
+func sigV4EncryptedScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "https", "wss":
+		return true
+	default:
+		return false
+	}
+}
+
 func isAWSEndpointHost(hostname string) bool {
 	if hostname == "" {
 		return false
@@ -465,11 +484,20 @@ func scrubEmbeddedSigV4Credentials(text string) (string, []sigV4Detection) {
 // unchanged so core DLP still sees the access-key ID.
 func ScrubSigV4AuthorizationForTarget(value, target string) string {
 	host := ""
+	scheme := ""
 	if target != "" {
 		parsed, err := url.Parse(target)
 		if err == nil {
 			host = parsed.Hostname()
+			scheme = parsed.Scheme
 		}
+	}
+	// A real AWS API call is always over TLS. Over cleartext the forwarded
+	// header would put the access-key ID on the wire in the clear, so an
+	// http:// or ws:// destination keeps the value under core DLP even when
+	// the hostname is AWS-issued.
+	if !sigV4EncryptedScheme(scheme) {
+		return value
 	}
 	if !isAWSEndpointHost(host) {
 		return value

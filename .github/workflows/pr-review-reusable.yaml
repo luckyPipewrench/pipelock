@@ -49,6 +49,13 @@ jobs:
     concurrency:
       group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: false
+      # Without this GitHub keeps only ONE pending job per group and a newly
+      # queued run cancels the pending one, so a second /review can cancel a
+      # queued completeness job before it publishes the coverage status or
+      # finalizes the review comment. That is the same silent-verdict failure
+      # the status exists to remove. `queue: max` is compatible here only
+      # because cancel-in-progress is false; the two cannot be combined.
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -274,6 +281,13 @@ jobs:
     concurrency:
       group: pr-review-${{ github.repository }}-${{ inputs.pr_number }}
       cancel-in-progress: false
+      # Without this GitHub keeps only ONE pending job per group and a newly
+      # queued run cancels the pending one, so a second /review can cancel a
+      # queued completeness job before it publishes the coverage status or
+      # finalizes the review comment. That is the same silent-verdict failure
+      # the status exists to remove. `queue: max` is compatible here only
+      # because cancel-in-progress is false; the two cannot be combined.
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

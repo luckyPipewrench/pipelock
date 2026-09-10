@@ -2949,6 +2949,11 @@ def head_has_moved(repo: str, pr_number: str, token: str, binding: PullBinding, 
 
 def render_status(binding: PullBinding, mode: str, classification: list[str], progress: ReviewProgress, state: str, manifest: list[dict[str, Any]], seen_before: set[str] | None = None, scope: str = "full", scope_base: str | None = None, repository: str | None = None, pr_number: str | None = None, review_identity: str | None = None) -> str:
     seen_before = seen_before or set()
+    # Resolve the fallback ONCE, so the rendered label and the marker below
+    # carry the same value. The stale-writer check compares this identity, so a
+    # comment showing one value while the marker stores another leaves a reader
+    # unable to tell which review a published verdict belongs to.
+    review_identity = review_identity or uuid.uuid4().hex
     # `full` means base..head. `delta` means a prior completed review's head
     # ..head, which is a smaller question and must never be read as a
     # verdict on the whole pull request.
@@ -3066,7 +3071,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
                 if delta
                 else f"**Reviewed range:** `{binding.base_sha}`..`{binding.head_sha}` (whole pull request)"
             ),
-            f"**Review identity:** `{binding.correlation}`",
+            f"**Review identity:** `{review_identity}`",
             f"**Classification:** {', '.join(classification) if classification else 'empty diff'}",
             f"**Completeness:** {progress.reviewed_units}/{progress.expected_units} representable units reviewed; {len(omitted)} omitted or unrepresentable; {len(collapsed)} deletion-collapsed.",
             "",
@@ -3134,7 +3139,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     fingerprints = ",".join(sorted({finding_fingerprint(finding) for finding in findings}))
     marker = {
         "state": state,
-        "identity": review_identity or uuid.uuid4().hex,
+        "identity": review_identity,
         # The unique admission identity prevents stale terminal writers from
         # clobbering a later review. This binding remains the stable key used
         # only to decide whether the same immutable review can be skipped.

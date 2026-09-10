@@ -115,6 +115,16 @@ func TestJSONLeafPayloads(t *testing.T) {
 			complete: true,
 			want:     map[string]string{"$/messages/0/content": "first", "$/messages/0/count": "2", "$/enabled": "true"},
 		},
+		{
+			// Keys carrying RFC 6901 special characters ('~' and '/') must be
+			// escaped in the path segment ('~0' and '~1') so a key containing a
+			// slash cannot forge a deeper path and collide two distinct streams.
+			name:     "escape tilde and slash in object keys",
+			raw:      `{"a/b":{"c~d":"v1"},"a":{"b":"v2"}}`,
+			limits:   JSONLeafLimits{MaxDepth: 3, MaxStreams: 3, MaxPathBytes: 64},
+			complete: true,
+			want:     map[string]string{"$/a~1b/c~0d": "v1", "$/a/b": "v2"},
+		},
 		{name: "malformed input fails closed", raw: `{"unterminated"`, limits: limits},
 		{name: "depth limit fails closed", raw: `[[["deep"]]]`, limits: limits},
 		{name: "stream limit fails closed", raw: `{"one":"1","two":"2","three":"3"}`, limits: limits},
@@ -353,6 +363,73 @@ func TestJSONLeafBucketPayloadsKeepsLeavesParsedBeforeError(t *testing.T) {
 			t.Fatalf("unterminated first leaf = %#v, valid=%t", buckets, valid)
 		}
 	})
+}
+
+// The bucket walker must bound its own recursion the way its JSONLeafPayloads
+// and JSONLeafPayloadsPartial siblings do. Without a depth head check it
+// recursed once per nesting level and a deeply nested body overflowed the
+// goroutine stack. The deepest case here is above the measured overflow point:
+// a naive recursive walk of it fails with the runtime's fatal, unrecoverable
+// "goroutine stack exceeds 1000000000-byte limit" (measured on go1.25: 8M deep
+// overflows, 4M does not), which aborts the whole test binary. So this case is
+// the load-bearing guard for the recursion bound: the iterative bucketing path
+// completes it in ~200ms where the recursive path would crash. The recover()
+// below only catches an ordinary panic; a true stack overflow is fatal and is
+// not caught, which is exactly why the depth must exceed the overflow point
+// rather than merely be "large". The over-depth leaf must also still be
+// bucketed, so a fix that dropped it fails the containsSecret assertion.
+func TestJSONLeafBucketPayloadsBoundsRecursionDepth(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 8, MaxPathBytes: 512}
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+
+	for _, depth := range []int{8, 64, 1000, 12000, 10_000_000} {
+		t.Run(strconv.Itoa(depth), func(t *testing.T) {
+			body := strings.Repeat(`[`, depth) + `"` + secret + `"` + strings.Repeat("]", depth)
+			var (
+				buckets map[string][]byte
+				valid   bool
+			)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("depth %d panicked (unbounded recursion): %v", depth, r)
+					}
+				}()
+				buckets, valid = JSONLeafBucketPayloads(json.RawMessage(body), limits, 4096, testJSONLeafBucketKey)
+			}()
+			<-done
+			if !valid {
+				t.Fatalf("depth %d: well-formed body reported incomplete", depth)
+			}
+			if !jsonLeafBucketsContain(buckets, secret) {
+				t.Fatalf("depth %d: over-depth leaf was dropped, not bucketed: %#v", depth, buckets)
+			}
+		})
+	}
+}
+
+// Over-depth object members are consumed but their keys are not bucketed as
+// values, matching the value-only contract of the in-depth recursive path.
+func TestJSONLeafBucketPayloadsOverDepthSkipsObjectKeys(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 1, MaxPathBytes: 512}
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+	// The secret sits well past MaxDepth=1, reached through nested objects whose
+	// keys ("wrapper", "inner", "leaf") must not appear in any bucket.
+	body := `{"wrapper":{"inner":{"leaf":"` + secret + `"}}}`
+	buckets, valid := JSONLeafBucketPayloads(json.RawMessage(body), limits, 4096, testJSONLeafBucketKey)
+	if !valid {
+		t.Fatalf("well-formed body reported incomplete: %#v", buckets)
+	}
+	if !jsonLeafBucketsContain(buckets, secret) {
+		t.Fatalf("over-depth leaf value was dropped: %#v", buckets)
+	}
+	for _, key := range []string{"wrapper", "inner", "leaf"} {
+		if jsonLeafBucketsContain(buckets, key) {
+			t.Fatalf("over-depth object key %q leaked into a value bucket: %#v", key, buckets)
+		}
+	}
 }
 
 func TestJSONLeafBucketPayloadsWalkerErrorReturns(t *testing.T) {

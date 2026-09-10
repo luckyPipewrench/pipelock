@@ -763,3 +763,12 @@ func TestFragmentBuffer_ExpiryDeletesOnlyTheStreamKindThatAgedOut(t *testing.T) 
 		t.Fatal("cleanup deleted the live path stream because a data stream shared its key")
 	}
 }
+
+// A nil FragmentBuffer must be safe for the delete methods, matching Close and
+// AppendPathSegmentsOwned. ResetCEEState guards with a nil check today, but the
+// buffer is the right place for the invariant so a future caller cannot panic.
+func TestFragmentBufferNilDeletesAreSafe(t *testing.T) {
+	var fb *FragmentBuffer
+	fb.Delete("k")
+	fb.DeletePrefix("k|body-json|")
+}

@@ -217,6 +217,7 @@ active exfiltration attempts.
 |--------|------|--------|-------------|
 | `pipelock_cross_request_entropy_exceeded_total` | counter | (none) | Entropy budget exceeded events. |
 | `pipelock_cross_request_dlp_match_total` | counter | (none) | Fragment reassembly DLP match events. |
+| `pipelock_cross_request_json_partition_fallback_total` | counter | `reason` | JSON request bodies (forward proxy) and MCP tools/call arguments that could not be partitioned into keyed fragment streams and fell back to raw-stream scanning. `reason` is one of `malformed`, `incomplete`, `unkeyed`, `other`. A nonzero value means some outbound JSON was inspected only as a single raw stream, which cannot reconstruct a secret split across sibling fields. |
 | `pipelock_cross_request_fragment_buffer_bytes` | gauge | (none) | Total fragment buffer memory across all sessions. |
 
 ## Airlock Metrics

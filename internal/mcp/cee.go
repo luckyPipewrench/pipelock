@@ -184,35 +184,54 @@ var mcpCEEPathEscaper = strings.NewReplacer("~", "~0", "/", "~1")
 // for fragment reassembly. Non-tool frames, malformed arguments, and argument
 // values with no scalar content fall back to the raw frame so an unexpected
 // shape cannot skip cross-request evaluation.
-func mcpCEEFragmentPayloads(frame MCPFrame) map[string][]byte {
+// mcpCEEFragmentPayloads reason values mirror the closed set enforced by
+// metrics.RecordCrossRequestJSONPartitionFallback. An empty reason means the
+// frame was either partitioned successfully or is genuinely out of scope for
+// per-argument partitioning (not a tools/call), which is not a fallback.
+const (
+	// mcpCEEPartitionReasonMalformed marks a tools/call whose arguments would
+	// not parse into complete leaf streams, so only the raw frame is scanned.
+	mcpCEEPartitionReasonMalformed = "malformed"
+	// mcpCEEPartitionReasonLimit marks a tools/call that parsed but exceeded a
+	// per-frame bound (tool-qualified stream key length or stream count), so it
+	// falls back to the raw frame. It maps to the "other" bucket.
+	mcpCEEPartitionReasonLimit = "other"
+)
+
+// mcpCEEFragmentPayloads returns the per-argument fragment streams and a fallback
+// reason. reason is non-empty only when a tools/call frame that COULD have been
+// partitioned instead fell back to the raw frame, so callers can emit the same
+// operator-visible partition-fallback counter the forward proxy uses. A frame
+// that is simply not a partitionable tools/call reports no reason.
+func mcpCEEFragmentPayloads(frame MCPFrame) (map[string][]byte, string) {
 	if !frame.IsToolsCall() || len(frame.Args) == 0 || frame.ToolCallName == "" {
-		return map[string][]byte{"": frame.Raw}
+		return map[string][]byte{"": frame.Raw}, ""
 	}
 	toolPrefix, ok := mcpCEEToolStreamPrefixFor(frame.ToolCallName)
 	if !ok {
-		return map[string][]byte{"": frame.Raw}
+		return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonLimit
 	}
 	argumentPayloads, complete := extract.JSONLeafPayloads(frame.Args, extract.JSONLeafLimits{
 		MaxDepth: mcpCEEArgumentMaxDepth, MaxStreams: mcpCEEArgumentMaxStreams, MaxPathBytes: mcpCEEArgumentMaxPathBytes,
 	})
 	if !complete {
-		return map[string][]byte{"": frame.Raw}
+		return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonMalformed
 	}
 	payloads := make(map[string][]byte, len(argumentPayloads)+1)
 	for path, value := range argumentPayloads {
 		stream := toolPrefix + mcpCEEArgumentStreamSuffix + path
 		if len(stream) > mcpCEEArgumentMaxStreamKeyBytes {
-			return map[string][]byte{"": frame.Raw}
+			return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonLimit
 		}
 		payloads[stream] = value
 	}
 	if toolStream, value, ok := mcpCEEUnambiguousToolValue(toolPrefix, payloads); ok {
 		if len(payloads) >= mcpCEEArgumentMaxStreams {
-			return map[string][]byte{"": frame.Raw}
+			return map[string][]byte{"": frame.Raw}, mcpCEEPartitionReasonLimit
 		}
 		payloads[toolStream] = append(payloads[toolStream], value...)
 	}
-	return payloads
+	return payloads, ""
 }
 
 func mcpCEEToolStreamPrefixFor(toolName string) (string, bool) {
@@ -248,13 +267,9 @@ func mcpCEEUnambiguousToolValue(toolPrefix string, payloads map[string][]byte) (
 	return toolPrefix + mcpCEESingletonStreamSuffix, value, true
 }
 
-// appendMCPCEEArgumentText walks a JSON value in wire order and appends each
-// scalar to its JSON-pointer-like argument path. A decoder, instead of a Go
-// map, preserves array and object ordering without reintroducing JSON syntax
-// between values. Object keys identify a stream but are not themselves mixed
-// into data values: a server receives alpha and progress as distinct arguments.
-// The mutable path buffer avoids allocating a new cumulative path at each
-// nested object key or array element.
+// mcpCEEPathEscape escapes one tool-name or argument-path segment with RFC
+// 6901 rules ('~' -> '~0', '/' -> '~1') so a segment containing those
+// characters cannot forge a deeper path and collide two distinct streams.
 func mcpCEEPathEscape(part string) string {
 	return mcpCEEPathEscaper.Replace(part)
 }
@@ -296,7 +311,15 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 
 	fragmentPayloads := opts.fragmentPayloads
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled && fragmentPayloads == nil {
-		fragmentPayloads = mcpCEEFragmentPayloads(opts.frame)
+		var fallbackReason string
+		fragmentPayloads, fallbackReason = mcpCEEFragmentPayloads(opts.frame)
+		// A tools/call frame that could not be partitioned into per-argument
+		// streams falls back to scanning the whole raw frame. Record the same
+		// partition-fallback counter the forward proxy uses so operators see the
+		// degraded-inspection signal on the MCP transport too.
+		if fallbackReason != "" && m != nil {
+			m.RecordCrossRequestJSONPartitionFallback(fallbackReason)
+		}
 	}
 	if len(opts.entropyPayload) == 0 && len(fragmentPayloads) == 0 {
 		return ""

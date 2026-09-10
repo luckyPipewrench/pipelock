@@ -431,7 +431,7 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mcpCEEFragmentPayloads(tt.frame)
+			got, _ := mcpCEEFragmentPayloads(tt.frame)
 			if len(got) != len(tt.want) {
 				t.Fatalf("mcpCEEFragmentPayloads() = %#v, want %#v", got, tt.want)
 			}
@@ -446,7 +446,7 @@ func TestMCPCEEFragmentPayloads(t *testing.T) {
 
 func TestMCPCEEFragmentPayloads_AddsToolStreamForUnambiguousValue(t *testing.T) {
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"rotating_name":"AKIA","empty":""}}}`))
-	payloads := mcpCEEFragmentPayloads(frame)
+	payloads, _ := mcpCEEFragmentPayloads(frame)
 
 	if got := string(payloads["@tool/integrity_checker/args$/rotating_name"]); got != "AKIA" {
 		t.Fatalf("path payload = %q, want %q", got, "AKIA")
@@ -458,7 +458,7 @@ func TestMCPCEEFragmentPayloads_AddsToolStreamForUnambiguousValue(t *testing.T) 
 
 func TestMCPCEEFragmentPayloads_DoesNotJoinSiblingValues(t *testing.T) {
 	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integrity_checker","arguments":{"alpha":"one","beta":"two"}}}`))
-	payloads := mcpCEEFragmentPayloads(frame)
+	payloads, _ := mcpCEEFragmentPayloads(frame)
 
 	if _, ok := payloads["@tool/integrity_checker/singleton"]; ok {
 		t.Fatalf("multi-value tool call unexpectedly joined sibling values: %#v", payloads)
@@ -586,7 +586,7 @@ func TestMCPCEEFragmentPayloads_FallsBackToRawWithoutToolName(t *testing.T) {
 
 func assertMCPCEERawFallback(t *testing.T, frame MCPFrame) {
 	t.Helper()
-	payloads := mcpCEEFragmentPayloads(frame)
+	payloads, _ := mcpCEEFragmentPayloads(frame)
 	if len(payloads) != 1 || string(payloads[""]) != string(frame.Raw) {
 		t.Fatalf("mcpCEEFragmentPayloads() = %#v, want complete raw frame %q", payloads, frame.Raw)
 	}

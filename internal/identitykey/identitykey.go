@@ -39,3 +39,32 @@ func CEESafeAgent(agent string, auth envelope.ActorAuth) string {
 func CEESafeKey(agent, client string, auth envelope.ActorAuth) string {
 	return ForAgentAndClient(CEESafeAgent(agent, auth), client)
 }
+
+// CEECandidateKeys returns every distinct CEE state key that CEESafeKey could
+// have produced for this (agent, client) pair across all authentication grades.
+//
+// It exists for the operator reset/terminate path, which is keyed by a stored
+// adaptive session key (agent|client) that does NOT carry the grade and cannot
+// recover a per-listener Bound grade that lived only in request context.
+// Re-deriving a single key there would silently miss whichever key the live
+// path actually wrote: a self-declared or matched caller folds to the client
+// alone, while a bound or config-default caller keeps the agent. Clearing every
+// candidate through this one helper keeps reset and the live path on the same
+// derivation (CEESafeKey), so reset can never target a key shape the live path
+// would not have produced. The set is at most two entries: the namespaced
+// "agent|client" and the folded "client"; an unnamed agent yields one.
+func CEECandidateKeys(agent, client string) []string {
+	keys := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	// ActorAuthBound represents the grades that keep the agent name;
+	// ActorAuthSelfDeclared represents the grades that fold it to the client.
+	for _, auth := range []envelope.ActorAuth{envelope.ActorAuthBound, envelope.ActorAuthSelfDeclared} {
+		key := CEESafeKey(agent, client, auth)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}

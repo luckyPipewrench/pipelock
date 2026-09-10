@@ -42,8 +42,10 @@ type JSONLeafLimits struct {
 	MaxPathBytes int
 }
 
-// JSONLeafPayloads returns scalar JSON values grouped by their JSON-pointer
-// path. Object keys identify streams but are not concatenated with values:
+// JSONLeafPayloads returns scalar JSON values grouped by their JSON-pointer-like
+// path. The path uses RFC 6901 segment escaping (~0, ~1) but roots at a "$"
+// sentinel of our own, so it is not a literal JSON Pointer. Object keys identify
+// streams but are not concatenated with values:
 // unrelated sibling fields must not interrupt a value split across requests.
 // Complete is false for malformed, oversized, or unrepresentable inputs; that
 // is the caller's signal to fall back to its complete raw payload.
@@ -99,6 +101,13 @@ func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloa
 // returns every leaf that was already represented; omitting those leaves
 // would drop partitioned evidence and leave only the raw concatenated
 // stream, which cannot reconstruct a split separated by unrelated padding.
+//
+// Truncation (an unexpected EOF, as when a caller caps the body it reads) is
+// exactly this partial case: every leaf whose value completed before the cut
+// is returned with valid=false, and content after the last complete leaf is
+// left to the caller's raw stream. The contract is therefore that a partial
+// payload map is trustworthy for the leaves it contains but is NOT a complete
+// inspection; callers keyed on valid=false must still scan their raw fallback.
 func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCount int, key []byte) (payloads map[string][]byte, valid bool) {
 	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxPathBytes <= 0 || bucketCount <= 0 || bucketCount > maxJSONLeafBuckets || len(key) == 0 {
 		return nil, false
@@ -129,6 +138,15 @@ type jsonLeafBucketState struct {
 }
 
 func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth int, limits JSONLeafLimits) bool {
+	// Past MaxDepth, stop recursing and fold the whole subtree's scalar leaves
+	// into path's truncated-plus-digest bucket. Without this head check the
+	// bucket walker (unlike its JSONLeafPayloads/Partial siblings) recursed once
+	// per nesting level, so a deeply nested body could exhaust the goroutine
+	// stack. jsonLeafBucketIndex already reduces an over-depth path to a
+	// digest, so no leaf is discarded; it is bucketed rather than descended.
+	if depth > limits.MaxDepth {
+		return bucketOverDepthValue(decoder, state, path, depth, limits.MaxDepth)
+	}
 	token, err := decoder.Token()
 	if err != nil {
 		return false
@@ -142,6 +160,9 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 				if err != nil {
 					return false
 				}
+				// json.Decoder guarantees an object member name arrives as a
+				// string token; a non-string key is a decoder error handled
+				// above. The check is retained as fail-closed defense.
 				keyString, ok := key.(string)
 				if !ok {
 					return false
@@ -163,6 +184,9 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 			end, err := decoder.Token()
 			return err == nil && end == json.Delim(']')
 		default:
+			// A value-position Delim token is only '{' or '[': a stray '}' or
+			// ']' is a decoder error, not a token. Retained as fail-closed
+			// defense so an unexpected shape cannot slip past unbucketed.
 			return false
 		}
 	case nil:
@@ -177,7 +201,73 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 		appendJSONLeafBucketValue(state, path, depth, limits.MaxDepth, strconv.FormatBool(value))
 		return true
 	default:
+		// Token returns only Delim, string, json.Number (UseNumber), bool, and
+		// nil. Any other dynamic type is impossible; retained as fail-closed
+		// defense rather than assuming the decoder's token set never widens.
 		return false
+	}
+}
+
+// bucketOverDepthValue consumes exactly one JSON value that sits past MaxDepth
+// and folds every scalar leaf it contains into path's over-depth bucket, using
+// an explicit container stack instead of recursion so pathological nesting
+// cannot overflow the goroutine stack. depth is held fixed at the boundary
+// value (already > maxDepth), so jsonLeafBucketIndex routes every leaf through
+// the truncated-plus-digest path and no content is discarded. Object member
+// names are consumed but not bucketed, matching the value-only contract of the
+// recursive path. The fixed bucket count still bounds retained state.
+func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth, maxDepth int) bool {
+	// stack element true = inside an object (tokens alternate key/value),
+	// false = inside an array (every element is a value).
+	var stack []bool
+	// expectKey is meaningful only while the top of stack is an object.
+	expectKey := false
+	for {
+		if len(stack) > 0 && stack[len(stack)-1] && expectKey && decoder.More() {
+			// Consume and discard the object member name.
+			keyTok, err := decoder.Token()
+			if err != nil {
+				return false
+			}
+			if _, ok := keyTok.(string); !ok {
+				return false
+			}
+			expectKey = false
+		}
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			switch value {
+			case '{':
+				stack = append(stack, true)
+				expectKey = true
+			case '[':
+				stack = append(stack, false)
+			case '}', ']':
+				if len(stack) == 0 {
+					return false
+				}
+				stack = stack[:len(stack)-1]
+				expectKey = len(stack) > 0 && stack[len(stack)-1]
+			}
+		case string:
+			appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
+			expectKey = len(stack) > 0 && stack[len(stack)-1]
+		case json.Number:
+			appendJSONLeafBucketValue(state, path, depth, maxDepth, value.String())
+			expectKey = len(stack) > 0 && stack[len(stack)-1]
+		case bool:
+			appendJSONLeafBucketValue(state, path, depth, maxDepth, strconv.FormatBool(value))
+			expectKey = len(stack) > 0 && stack[len(stack)-1]
+		case nil:
+			expectKey = len(stack) > 0 && stack[len(stack)-1]
+		}
+		if len(stack) == 0 {
+			return true
+		}
 	}
 }
 

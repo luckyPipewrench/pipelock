@@ -32,12 +32,14 @@ import (
 // CeeSessionKey builds a consistent session identity for cross-request
 // exfiltration detection. Exported for use by the session reset admin API.
 //
-// This is the RAW constructor: it trusts the agent string as given. Request
-// handlers that accumulate CEE state must instead build the key via
-// ceeSessionKey, which folds attacker-controlled agent identities into the
-// client IP. CeeSessionKey is retained for the reset/terminate admin path,
-// which round-trips an already-stored key back through classifySessionKey, so
-// whatever (possibly folded) key was written is the key that gets cleared.
+// This is the RAW constructor: it trusts the agent string as given and always
+// namespaces a named agent ahead of the client IP. Request handlers that
+// accumulate CEE state must NOT use it; they build the partition-resistant key
+// via ceeSessionKey, which folds attacker-controlled agent identities into the
+// client IP. The admin reset path does not clear a single CeeSessionKey either,
+// because the live path may have folded the name: it clears the full candidate
+// set (see ResetCEEState). CeeSessionKey remains the source of truth only for
+// the capture recorder directory name, which wants a stable per-agent label.
 func CeeSessionKey(agent, clientIP string) string {
 	return sessionKeyFor(agent, clientIP)
 }
@@ -124,21 +126,42 @@ func captureSessionKeyOriginal(agent, clientIP string) string {
 }
 
 // ResetCEEState clears entropy and fragment state for a session identity.
-// Entropy tracker: clears CeeSessionKey(agent, ip) (base key only).
-// Fragment buffer: clears every stream for that identity, so an operator reset
-// leaves no accumulated fragment state behind on any of them.
+//
+// The live forward/MCP paths write CEE state under identitykey.CEESafeKey,
+// which folds a self-declared or matched agent name down to the client IP and
+// keeps only a bound or config-default name. The admin reset is keyed by the
+// stored adaptive session key (agent|ip), which does not carry the grade, so it
+// cannot know which of those two shapes holds this session's state. Clearing
+// every candidate key (identitykey.CEECandidateKeys, built through the same
+// CEESafeKey helper the live path uses) closes that gap: reset can never target
+// a key the live path would not have produced, and it fails safe by clearing
+// more state rather than leaving evidence behind. The folded (IP-only) key is
+// the shared bucket self-declared agents already accumulate into, so clearing it
+// on any reset for that IP is consistent with the folding contract.
+//
+// Entropy tracker: clears each candidate base key.
+// Fragment buffer: clears every stream (raw, keys, path, and the JSON body
+// bucket family) for each candidate, so an operator reset leaves no accumulated
+// fragment state behind on any of them.
 // Safe to call with nil trackers (CEE disabled).
 func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scanner.FragmentBuffer) {
-	key := CeeSessionKey(agent, clientIP)
-	if et != nil {
-		et.Delete(key)
-	}
-	if fb != nil {
-		fb.Delete(key)
-		for _, suffix := range ceeFragmentStreamSuffixes {
-			fb.Delete(key + suffix)
+	for _, key := range identitykey.CEECandidateKeys(agent, clientIP) {
+		if et != nil {
+			et.Delete(key)
 		}
-		fb.DeletePrefix(key + ceeJSONBodyStreamPrefix)
+		if fb != nil {
+			fb.Delete(key)
+			for _, suffix := range ceeFragmentStreamSuffixes {
+				fb.Delete(key + suffix)
+			}
+			// The JSON body streams are key + "|body-json|" + bucket. The
+			// "|body-json|" delimiter after the full session key means this
+			// prefix cannot reach another session whose key is a textual
+			// prefix of this one (for example 10.0.0.5 vs 10.0.0.50): agent
+			// names cannot contain "|", so no base key is a structural prefix
+			// of another base key's body-json namespace.
+			fb.DeletePrefix(key + ceeJSONBodyStreamPrefix)
+		}
 	}
 }
 
@@ -349,7 +372,6 @@ func pathSegments(u *url.URL) *ceePathPayload {
 	return payload
 }
 
-// extractOutboundPayload extracts the outbound data visible to the proxy for
 // ceeEntropyExempt returns true if the target URL's hostname matches any
 // domain in the exempt list. Uses scanner.MatchDomain for consistent
 // wildcard behavior (trailing-dot normalization, *.example.com also
@@ -371,15 +393,13 @@ func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 	return false
 }
 
+// extractOutboundPayloads extracts the outbound data visible to the proxy for
 // entropy measurement and fragment buffering. Includes query parameter values
 // in wire order and request body content. The URL path is excluded here and
 // carried separately by pathSegments, so static route text cannot interleave
 // with this stream. Re-wraps r.Body after reading so downstream handlers can
-// still consume it.
-func extractOutboundPayload(r *http.Request) []byte {
-	return extractOutboundPayloads(r, false, "", nil).outbound
-}
-
+// still consume it. When partitionJSON is false the caller wants only the raw
+// outbound stream; the body-json partition fields stay empty.
 func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey string, partitionKey []byte) ceeOutboundPayloads {
 	var parts []string
 	result := ceeOutboundPayloads{}

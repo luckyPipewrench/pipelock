@@ -742,6 +742,9 @@ func (fb *FragmentBuffer) enforcePathMaxBytesLocked(ps *pathSessionBuffer) {
 
 // Delete removes all fragment state for the given session key.
 func (fb *FragmentBuffer) Delete(key string) {
+	if fb == nil {
+		return
+	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.deleteStreamLocked(key)
@@ -750,7 +753,16 @@ func (fb *FragmentBuffer) Delete(key string) {
 // DeletePrefix clears every ordinary and position-aware stream whose key
 // begins with prefix. It supports bounded families of hashed child streams
 // (for example, JSON body fields) when the parent CEE session is reset.
+//
+// Cost: it scans every stream key under the write lock, so it is O(total
+// sessions), not O(matched streams). That is acceptable because the only caller
+// is the operator reset/terminate admin path, a rare deliberate action; it must
+// not be called on the per-request hot path. There is no prefix index to bound
+// the scan; see BenchmarkFragmentBufferDeletePrefix for the measured cost.
 func (fb *FragmentBuffer) DeletePrefix(prefix string) {
+	if fb == nil {
+		return
+	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	for key := range fb.sessions {

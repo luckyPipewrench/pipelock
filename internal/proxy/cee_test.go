@@ -97,13 +97,13 @@ func TestExtractOutboundPayload_QueryParams(t *testing.T) {
 			RawQuery: "other=data&key=secret_value",
 		},
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	got := string(payload)
 
 	// Wire order preserved, values only (keys excluded for fragment contiguity).
 	want := "datasecret_value"
 	if got != want {
-		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
+		t.Errorf("extractOutboundPayloads outbound = %q, want %q", got, want)
 	}
 }
 
@@ -114,10 +114,10 @@ func TestExtractOutboundPayload_Body(t *testing.T) {
 		Body:          io.NopCloser(strings.NewReader(body)),
 		ContentLength: int64(len(body)),
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	got := string(payload)
 	if got != body {
-		t.Errorf("extractOutboundPayload = %q, want %q", got, body)
+		t.Errorf("extractOutboundPayloads outbound = %q, want %q", got, body)
 	}
 
 	// Body must still be readable after extraction (re-wrapping).
@@ -139,13 +139,13 @@ func TestExtractOutboundPayload_QueryAndBody(t *testing.T) {
 		Body:          io.NopCloser(strings.NewReader(body)),
 		ContentLength: int64(len(body)),
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	got := string(payload)
 
 	// Query values first, then body, concatenated without separator.
 	want := "query-data" + body
 	if got != want {
-		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
+		t.Errorf("extractOutboundPayloads outbound = %q, want %q", got, want)
 	}
 
 	// Body must still be readable after extraction (re-wrapping).
@@ -162,7 +162,7 @@ func TestExtractOutboundPayload_NoQueryNoBody(t *testing.T) {
 	r := &http.Request{
 		URL: &url.URL{},
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload, got %q", string(payload))
 	}
@@ -173,7 +173,7 @@ func TestExtractOutboundPayload_NilBody(t *testing.T) {
 		URL:  &url.URL{},
 		Body: nil,
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload for nil body, got %q", string(payload))
 	}
@@ -524,7 +524,7 @@ func TestExtractOutboundPayload_ZeroContentLength(t *testing.T) {
 		Body:          io.NopCloser(strings.NewReader("should not be read")),
 		ContentLength: 0,
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload for zero content-length, got %q", string(payload))
 	}
@@ -1251,11 +1251,11 @@ func TestExtractOutboundPayload_ExcludesPath(t *testing.T) {
 			RawQuery: "key=value",
 		},
 	}
-	payload := extractOutboundPayload(r)
+	payload := extractOutboundPayloads(r, false, "", nil).outbound
 	got := string(payload)
 	want := testCEEParamValue
 	if got != want {
-		t.Errorf("extractOutboundPayload = %q, want %q", got, want)
+		t.Errorf("extractOutboundPayloads outbound = %q, want %q", got, want)
 	}
 }
 
@@ -1382,12 +1382,12 @@ func TestExtractOutboundPayload_Deterministic(t *testing.T) {
 				RawQuery: "z=zval&a=aval&m=mval",
 			},
 		}
-		payload := extractOutboundPayload(r)
+		payload := extractOutboundPayloads(r, false, "", nil).outbound
 		got := string(payload)
 		// Wire order, values only: zval, aval, mval.
 		want := "zvalavalmval"
 		if got != want {
-			t.Errorf("iteration %d: extractOutboundPayload = %q, want %q", i, got, want)
+			t.Errorf("iteration %d: extractOutboundPayloads outbound = %q, want %q", i, got, want)
 		}
 	}
 }

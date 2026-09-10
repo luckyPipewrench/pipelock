@@ -635,9 +635,25 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // (matching the guard on the end-of-handler recording), and
 // recordSessionActivityWithUserAgent is inert when session profiling is disabled,
 // so this can only ADD a denial signal, never remove one.
+//
+// A DLP block to an adaptive-exempt upstream is score-neutral, mirroring the
+// forward proxy's CONNECT header-DLP block (forward.go handleConnect, "record as
+// allowed with deferClean=true so session profiling tracks the domain but neither
+// escalation signals nor clean-decay fire. Blocked exempt traffic is
+// score-neutral"). Auth headers and tokens to a trusted destination are expected
+// and must not feed escalation, so the exempt case records the activity as
+// ALLOWED (with DeferClean so the allow does not fire a clean decay either) while
+// the caller still returns the DLP 403. The 403 is unconditional; only the
+// adaptive scoring differs by exemption.
 func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) {
 	if rp.owner == nil {
 		return
+	}
+	// Uses exempt_domains (adaptive trust), not api_allowlist (reachability),
+	// scoped to the upstream host the SignalBlock would be recorded against.
+	result := scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Score: 0.9}
+	if isAdaptiveExempt(rp.upstream.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
+		result = scanner.Result{Allowed: true}
 	}
 	rp.owner.recordSessionActivityWithUserAgent(sessionActivityOptions{
 		ClientIP:   clientIP,
@@ -646,7 +662,7 @@ func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, 
 		RequestID:  requestID,
 		UserAgent:  r.UserAgent(),
 		ActorAuth:  actorAuth,
-		Result:     scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Score: 0.9},
+		Result:     result,
 		Config:     cfg,
 		Logger:     rp.logger,
 		DeferClean: true,
@@ -925,6 +941,23 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
+				// Sign the denial so every reverse DLP block leaves a receipt,
+				// matching the intercept URL-scan block (intercept.go, Layer:
+				// urlResult.Scanner) and the reverse data-budget/inflight blocks
+				// just below. Without it a URL-DLP 403 returns unattested and an
+				// auditor reconstructing the enforcement timeline from receipts
+				// cannot see that this request was refused.
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     scanner.ScannerDLP,
+					Pattern:   reason,
+					Transport: TransportReverse,
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
 					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
 					reason)
@@ -974,6 +1007,21 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
 				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
+				// Sign the denial under the cross-transport header-DLP layer
+				// (forward.go and the fetch path both emit Layer "dlp_header"),
+				// so a reverse header-DLP 403 is attested the same way. Previously
+				// this path returned without a receipt.
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "dlp_header",
+					Pattern:   reason,
+					Transport: TransportReverse,
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
 					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
 					reason)

@@ -1503,9 +1503,12 @@ func TestReverseProxy_BinaryUnscannablePassthroughOutcomeReason(t *testing.T) {
 
 // findReceiptByLayer returns the first receipt whose ActionRecord.Layer
 // matches the wanted label. Tests use this instead of indexing
-// receipts[0] so they cannot silently validate a different receipt if a
-// future change emits an upstream URL/header DLP receipt before the
-// response block fires.
+// receipts[0] so they cannot silently validate a different receipt: the
+// reverse path now emits upstream URL-DLP (scanner.ScannerDLP) and
+// header-DLP ("dlp_header") receipts before any response block fires, so a
+// response-layer assertion must select by layer rather than position.
+// TestReceiptCoverage_ReverseURLDLPBlock_EmitsReceipt and its header sibling
+// assert those request-scan receipts directly.
 func findReceiptByLayer(t *testing.T, receipts []receipt.Receipt, wantLayer string) receipt.Receipt {
 	t.Helper()
 	for _, r := range receipts {
@@ -1712,6 +1715,102 @@ func TestReceiptCoverage_ReverseSizeExemptResponseScanBlock_EmitsReceipt(t *test
 	}
 	if !strings.Contains(r.ActionRecord.Pattern, "response injection") {
 		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "response injection")
+	}
+}
+
+// TestReceiptCoverage_ReverseURLDLPBlock_EmitsReceipt proves the reverse URL-DLP
+// enforce block leaves a signed receipt, closing the request-scan gap the
+// findReceiptByLayer note anticipated: this path returned a 403 without
+// attestation, so not every reverse denial was reconstructable from receipts.
+// The layer is scanner.ScannerDLP, matching the intercept URL-scan block
+// (intercept.go, Layer: urlResult.Scanner).
+func TestReceiptCoverage_ReverseURLDLPBlock_EmitsReceipt(t *testing.T) {
+	cfg := reverseTestConfig()
+	// Build the AWS key at runtime so this test's own source does not trip DLP.
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxySrv.URL+"/api/data?token="+apiKey, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for URL DLP block, got %d", resp.StatusCode)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+
+	receipts := extractReceiptsFromDir(t, dir)
+	r := findReceiptByLayer(t, receipts, scanner.ScannerDLP)
+	if r.ActionRecord.Transport != TransportReverse {
+		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
+	}
+	if r.ActionRecord.Verdict != config.ActionBlock {
+		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
+	}
+	if !strings.Contains(r.ActionRecord.Pattern, "URL DLP") {
+		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "URL DLP")
+	}
+	if r.ActionRecord.ActionID == "" {
+		t.Error("ActionID empty on reverse URL-DLP block receipt")
+	}
+}
+
+// TestReceiptCoverage_ReverseHeaderDLPBlock_EmitsReceipt is the header-DLP
+// sibling: a reverse header-DLP enforce block now emits a receipt under the
+// cross-transport "dlp_header" layer (forward.go and the fetch path use the same
+// label), where it previously returned a 403 with no receipt.
+func TestReceiptCoverage_ReverseHeaderDLPBlock_EmitsReceipt(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.HeaderMode = "all"
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxySrv.URL+"/api/data", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("X-Secret", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for header DLP block, got %d", resp.StatusCode)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+
+	receipts := extractReceiptsFromDir(t, dir)
+	r := findReceiptByLayer(t, receipts, "dlp_header")
+	if r.ActionRecord.Transport != TransportReverse {
+		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
+	}
+	if r.ActionRecord.Verdict != config.ActionBlock {
+		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
+	}
+	if !strings.Contains(r.ActionRecord.Pattern, "header DLP") {
+		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "header DLP")
+	}
+	if r.ActionRecord.ActionID == "" {
+		t.Error("ActionID empty on reverse header-DLP block receipt")
 	}
 }
 

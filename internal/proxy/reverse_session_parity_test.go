@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
@@ -326,6 +327,178 @@ func TestReverseSSEInjectionUpgradesResponseTaint(t *testing.T) {
 	}
 }
 
+// countReverseResponseTaintSources returns how many response-taint observations
+// the SSE path recorded on a session, identified by the "reverse_response" source
+// kind observeHTTPResponseTaint stamps. Each observeHTTPResponseTaint call appends
+// exactly one source (appendBoundedSource never dedupes), so this is the
+// observation count for small counts under the RecentSources bound.
+func countReverseResponseTaintSources(rec *SessionState) int {
+	n := 0
+	for _, s := range rec.RiskSnapshot().Sources {
+		if s.Kind == "reverse_response" {
+			n++
+		}
+	}
+	return n
+}
+
+// waitReverseResponseTaintSettledOne polls until the SSE onComplete taint
+// observation has landed, then holds a settle window asserting the count never
+// exceeds one. The onComplete goroutine can outlive ServeHTTP when a client
+// cancels mid-stream (the proxy stops copying the pipe before the scanner
+// goroutine finishes), so a plain post-ServeHTTP read can miss the observation
+// (count 0). The settle window is what makes this a load-bearing double-count
+// guard: a defer that fired alongside onComplete would push the count to two
+// shortly after the first observation, and onComplete fires promptly after the
+// completion event, so the window catches it.
+func waitReverseResponseTaintSettledOne(t *testing.T, rec *SessionState) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for countReverseResponseTaintSources(rec) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for the SSE onComplete response-taint observation (count stayed 0 = dropped signal)")
+		case <-tick.C:
+		}
+	}
+	settle := time.After(500 * time.Millisecond)
+	for {
+		if got := countReverseResponseTaintSources(rec); got > 1 {
+			t.Fatalf("SSE completion recorded %d reverse_response taint observations, want exactly 1 "+
+				"(2 = the modifyResponse defer double-counted onComplete)", got)
+		}
+		select {
+		case <-settle:
+			if got := countReverseResponseTaintSources(rec); got != 1 {
+				t.Fatalf("SSE completion recorded %d reverse_response taint observations, want exactly 1", got)
+			}
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// TestReverseSSETaintObservationOnNonCleanCompletion pins the contract that the
+// SSE scanning path records EXACTLY ONE response-taint observation per response,
+// via its onComplete callback, on every completion path — including a client that
+// cancels mid-stream and an upstream that errors mid-stream, not just a clean EOF
+// or a finding. onComplete is the single owner of the observation; the
+// modifyResponse-level taint defer is deliberately skipped on the SSE path
+// (sseHandlesResponseTaint). Two observations would mean that defer fired early
+// (with a premature, possibly-clean promptHit) alongside onComplete, which is the
+// double-count the previous round's fix removed; zero would mean a non-clean
+// completion silently dropped the contamination signal. The stream carries no
+// injection here, so the single observation is benign — this test asserts the
+// COUNT (exactly one), which is the property the completion path controls,
+// independent of whether that observation is clean or hostile.
+func TestReverseSSETaintObservationOnNonCleanCompletion(t *testing.T) {
+	baseCfg := func(t *testing.T) *config.Config {
+		t.Helper()
+		cfg := reverseParityBaseConfig(t)
+		cfg.CrossRequestDetection.Enabled = false
+		if !cfg.Taint.Enabled {
+			t.Fatal("precondition: taint must be enabled by default")
+		}
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.MaxSessions = 1000
+		cfg.SessionProfiling.DomainBurst = 100
+		cfg.SessionProfiling.WindowMinutes = 5
+		cfg.SessionProfiling.SessionTTLMinutes = 30
+		cfg.SessionProfiling.CleanupIntervalSeconds = 600
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
+		return cfg
+	}
+
+	taintRecFor := func(t *testing.T, p *Proxy, cfg *config.Config, clientHost string) *SessionState {
+		t.Helper()
+		idReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/stream", nil)
+		resolved := edition.ResolveAgentIdentity(idReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+		sm := p.SessionMgrPtr().Load()
+		if sm == nil {
+			t.Fatal("session manager not initialized")
+		}
+		return sm.GetOrCreate(responseTaintSessionKey(resolved.Name, clientHost, resolved.Auth))
+	}
+
+	t.Run("client_cancel", func(t *testing.T) {
+		cfg := baseCfg(t)
+		// The upstream flushes one clean event then holds the stream open on its
+		// own (client-derived) request context. A REAL client reads that first
+		// event before cancelling, which is the deterministic barrier: the client
+		// receiving the event proves the proxy already ran modifyResponse, built
+		// the SSE pipe, and the scanner scanned-and-forwarded event one, so it is
+		// now blocked on the READ of the next event. Cancelling the client request
+		// then disconnects it; the proxy cancels the upstream, the watcher closes
+		// the body, the read errors, and onComplete fires exactly once. A
+		// ResponseRecorder cannot provide this barrier: signalling from the server
+		// side races the proxy's own header receipt, so a cancel can land before
+		// the SSE pipe exists and onComplete never runs.
+		rp, p, _ := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			_, _ = fmt.Fprint(w, "data: clean\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		})
+		srv := newIPv4Server(t, rp)
+		t.Cleanup(srv.Close)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/stream", http.NoBody)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET reverse proxy: %v", err)
+		}
+		// Read the first forwarded event so the pipeline is provably live, then
+		// cancel mid-stream.
+		buf := make([]byte, 64)
+		if _, err := resp.Body.Read(buf); err != nil {
+			t.Fatalf("read first SSE event: %v", err)
+		}
+		cancel()
+		_ = resp.Body.Close()
+
+		// The client connects over loopback, so the session key is anchored to
+		// 127.0.0.1 (reverseClientIP strips the port).
+		waitReverseResponseTaintSettledOne(t, taintRecFor(t, p, cfg, "127.0.0.1"))
+	})
+
+	t.Run("upstream_error", func(t *testing.T) {
+		cfg := baseCfg(t)
+		// The upstream flushes one clean event then aborts the connection, so the
+		// SSE scanner reads the first event and then hits a mid-stream error rather
+		// than a clean EOF. panic(http.ErrAbortHandler) is the sanctioned way to
+		// drop a response abruptly; net/http recovers it without logging.
+		rp, p, _ := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			_, _ = fmt.Fprint(w, "data: clean\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			panic(http.ErrAbortHandler)
+		})
+
+		const clientHost = "10.0.0.62"
+		// Synchronous: the body copier drains the internal pipe (closed after
+		// onComplete), so onComplete has run by the time ServeHTTP returns.
+		_ = reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/stream", clientHost+":8888", nil)
+
+		waitReverseResponseTaintSettledOne(t, taintRecFor(t, p, cfg, clientHost))
+	})
+}
+
 // --- Control 1 (block signal): a blocked URL/header DLP request feeds state ----
 
 // TestReverseURLDLPBlockRecordsAdaptiveSignal proves an enforce-mode URL DLP
@@ -419,6 +592,94 @@ func TestReverseHeaderDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	if score := sess.ScopedThreatScore(scope); score <= 0 {
 		t.Fatalf("blocked header DLP requests recorded no adaptive signal: scoped threat score=%.4f (want >0); "+
 			"the reverse header DLP block returns before session activity is recorded", score)
+	}
+}
+
+// TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain proves the reverse DLP
+// block signal honors adaptive_enforcement.exempt_domains exactly as the forward
+// proxy does: a DLP block to an exempt upstream still returns the 403 but records
+// the activity as ALLOWED (score-neutral), so a run of blocked requests to that
+// trusted destination never escalates the scoped adaptive score. The two exempt
+// cases are calibrated by their non-exempt siblings in the SAME table: with the
+// same DLP trigger and no exemption the score rises above zero, which proves the
+// zero score in the exempt case is the exemption at work and not a block path
+// that silently stopped recording. Covers both the URL-DLP (~reverse.go:923) and
+// header-DLP (~reverse.go:972) block sites, which share recordRequestBlockSignal.
+func TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain(t *testing.T) {
+	cases := []struct {
+		name   string
+		header bool
+		exempt bool
+	}{
+		{name: "url_dlp_not_exempt_escalates", header: false, exempt: false},
+		{name: "url_dlp_exempt_stays_flat", header: false, exempt: true},
+		{name: "header_dlp_not_exempt_escalates", header: true, exempt: false},
+		{name: "header_dlp_exempt_stays_flat", header: true, exempt: true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseParityBaseConfig(t)
+			cfg.CrossRequestDetection.Enabled = false
+			cfg.Taint.Enabled = false
+			cfg.SessionProfiling.Enabled = true
+			cfg.SessionProfiling.MaxSessions = 1000
+			cfg.SessionProfiling.DomainBurst = 100
+			cfg.SessionProfiling.WindowMinutes = 5
+			cfg.SessionProfiling.SessionTTLMinutes = 30
+			cfg.SessionProfiling.CleanupIntervalSeconds = 600
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			if tc.header {
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = "all"
+			}
+
+			rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
+			if tc.exempt {
+				// The block signal is scoped to the upstream host, so exempting
+				// that host is what makes the blocked traffic score-neutral.
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{upstreamURL.Hostname()}
+			}
+
+			// Distinct client host per subtest so their sessions do not share state.
+			clientHost := fmt.Sprintf("10.0.0.%d", 40+i)
+			apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+			const blocks = 3
+			for b := 0; b < blocks; b++ {
+				var rr *httptest.ResponseRecorder
+				if tc.header {
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/y", http.NoBody)
+					req.RemoteAddr = clientHost + ":9200"
+					req.Header.Set("X-Secret", apiKey)
+					rr = httptest.NewRecorder()
+					rp.ServeHTTP(rr, req)
+				} else {
+					rr = reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/x?token="+apiKey, clientHost+":9200", nil)
+				}
+				if rr.Code != http.StatusForbidden {
+					t.Fatalf("request %d: DLP must block regardless of exemption, got %d: %s", b, rr.Code, rr.Body.String())
+				}
+			}
+
+			sm := p.SessionMgrPtr().Load()
+			if sm == nil {
+				t.Fatal("session manager not initialized")
+			}
+			sess := sm.GetOrCreate(sessionKeyFor("", clientHost))
+			scope := adaptiveScopeForHost(upstreamURL.Hostname())
+			score := sess.ScopedThreatScore(scope)
+			if tc.exempt {
+				if score != 0 {
+					t.Fatalf("blocked DLP requests to an adaptive-exempt upstream must stay score-neutral, "+
+						"got scoped threat score=%.4f (want 0); the exempt block still fed an escalation signal", score)
+				}
+			} else if score <= 0 {
+				t.Fatalf("blocked DLP requests to a non-exempt upstream must escalate, "+
+					"got scoped threat score=%.4f (want >0); the block path recorded no adaptive signal", score)
+			}
+		})
 	}
 }
 

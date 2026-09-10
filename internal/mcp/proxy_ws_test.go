@@ -24,6 +24,7 @@ import (
 	gobwasutil "github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -1068,6 +1069,33 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	// Warning should be logged.
 	if !strings.Contains(stderr.String(), "warning") {
 		t.Errorf("expected warning log, got stderr: %s", stderr.String())
+	}
+}
+
+func TestRunWSProxy_InputScanWarnModeCoreCredentialBlocks(t *testing.T) {
+	srv, upstreamFrames := wsDrainServer(t)
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + coreCredentialToken() + `"}}}` + "\n")
+	var stdout, stderr bytes.Buffer
+	inputCfg := &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg}); err != nil {
+		t.Fatalf("RunWSProxy: %v", err)
+	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Fatalf("core credential reached WebSocket upstream in warn mode: frames=%d", got)
+	}
+	if !strings.Contains(stdout.String(), `"error"`) || !strings.Contains(stdout.String(), string(blockreason.DLPMatch)) {
+		t.Fatalf("WebSocket core-floor block response = %q, want structured DLP error", stdout.String())
 	}
 }
 

@@ -22,9 +22,9 @@ func TestIsCoreCriticalMatch(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "warn-tagged core pattern is excluded",
+			name:  "warn tag cannot downgrade core pattern",
 			match: TextDLPMatch{PatternName: "GitHub Token", Warn: true},
-			want:  false,
+			want:  true,
 		},
 		{
 			name:  "non-core pattern",
@@ -64,9 +64,9 @@ func TestContainsCoreCriticalMatch(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "core but warn-tagged",
+			name:    "warn-tagged core remains immutable",
 			matches: []TextDLPMatch{{PatternName: "AWS Secret Key", Warn: true}},
-			want:    false,
+			want:    true,
 		},
 	}
 	for _, tt := range tests {

@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -522,6 +523,30 @@ func EvaluateMCPInputGates(
 		// disabled.
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method
+		// Disabling configurable input scanning must not disable the immutable
+		// credential floor. Scan the already-redacted message, retain only core
+		// DLP evidence, and leave every configurable finding disabled.
+		if sc != nil {
+			floorVerdict := scanRequestForAgent(ctx, msg, sc, config.ActionWarn, config.ActionForward, opts.addressProtectionAgent())
+			if floorVerdict.Error != "" {
+				eval.ContentVerdict.Clean = false
+				eval.ContentVerdict.Error = floorVerdict.Error
+			}
+			for _, match := range floorVerdict.Matches {
+				if scanner.IsCoreCriticalMatch(match) {
+					eval.ContentVerdict.Clean = false
+					eval.ContentVerdict.Action = config.ActionBlock
+					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
+				}
+			}
+			for _, finding := range floorVerdict.URLFindings {
+				if scanner.IsCoreCriticalResult(finding) {
+					eval.ContentVerdict.Clean = false
+					eval.ContentVerdict.Action = config.ActionBlock
+					eval.ContentVerdict.URLFindings = append(eval.ContentVerdict.URLFindings, finding)
+				}
+			}
+		}
 	}
 	if frameParseErrFailsClosed(frame.ParseErr) {
 		eval.ContentVerdict.ID = frame.ID

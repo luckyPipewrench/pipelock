@@ -41,6 +41,11 @@ func TestCoreFloorPredicatesDoNotDrift(t *testing.T) {
 			if !scanner.IsCoreCriticalMatch(match) {
 				t.Fatalf("scanner.IsCoreCriticalMatch(%q) = false, want true", p.Name)
 			}
+			match.Warn = true
+			if !scanner.IsCoreCriticalMatch(match) {
+				t.Fatalf("scanner.IsCoreCriticalMatch(%q, Warn=true) = false; warn metadata must not downgrade the immutable core floor", p.Name)
+			}
+			match.Warn = false
 
 			// The body floor must hard-block the core pattern even when the
 			// operator points a pattern_actions warn override at it: the core

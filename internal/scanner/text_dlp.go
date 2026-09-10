@@ -167,7 +167,7 @@ func ContainsHostnameExfilMatch(matches []TextDLPMatch) bool {
 
 // IsCoreCriticalMatch reports whether a DLP match belongs to the immutable core
 // credential floor and therefore must hard-block regardless of the configured
-// action. Warn-tagged informational matches are excluded. The MCP input and A2A
+// action. A warn tag cannot downgrade core membership. The MCP input and A2A
 // body floors consult this predicate directly. The request-body floor in
 // internal/proxy (shouldHardBlockRequestDLP) keeps its own composition -- it
 // also honors a pattern_actions warn downgrade for non-core criticals, which
@@ -178,9 +178,6 @@ func ContainsHostnameExfilMatch(matches []TextDLPMatch) bool {
 // operator cannot downgrade a core credential on one transport while it stays
 // blocked on another.
 func IsCoreCriticalMatch(m TextDLPMatch) bool {
-	if m.Warn {
-		return false
-	}
 	return config.IsCoreDLPPatternName(m.PatternName)
 }
 

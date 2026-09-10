@@ -71,8 +71,66 @@ func TestMCPInputCoreFloor_WarnActionAllowsNonCoreConfigured(t *testing.T) {
 		}
 	}
 	got := inputVerdictEffectiveAction(verdict, config.ActionWarn)
-	if got == config.ActionBlock {
-		t.Fatalf("non-core finding under warn should not hard-block, got %q", got)
+	if got != config.ActionWarn {
+		t.Fatalf("non-core finding under warn: effective action = %q, want %q", got, config.ActionWarn)
+	}
+}
+
+func TestMCPInputCoreFloor_DisabledHTTPScanningStillBlocksCoreOnly(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	for _, tc := range []struct {
+		name      string
+		value     string
+		wantBlock bool
+		wantURL   bool
+	}{
+		{name: "core credential", value: coreCredentialToken(), wantBlock: true},
+		{name: "core credential in tool argument URL", value: "https://api.vendor.example/callback?token=" + coreCredentialToken(), wantBlock: true},
+		{name: "non-core credential", value: nonCoreSecretValue(), wantBlock: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send","arguments":{"note":"` + tc.value + `"}}}`)
+			eval := EvaluateMCPInputGates(
+				context.Background(), ParseMCPFrame(msg), msg, "session", MCPProxyOpts{Scanner: sc},
+				config.ActionWarn, config.ActionBlock, false,
+			)
+			gotBlock := eval.ContentVerdict.Action == config.ActionBlock
+			if gotBlock != tc.wantBlock {
+				t.Fatalf("disabled input scanning: action = %q, wantBlock=%v, verdict=%+v", eval.ContentVerdict.Action, tc.wantBlock, eval.ContentVerdict)
+			}
+			if gotURL := len(eval.ContentVerdict.URLFindings) > 0; gotURL != tc.wantURL {
+				t.Fatalf("disabled input scanning: URL finding=%v, want %v, verdict=%+v", gotURL, tc.wantURL, eval.ContentVerdict)
+			}
+		})
+	}
+}
+
+func TestMCPInputCoreFloor_DisabledHTTPScanningBlocksCoreResourceURL(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	msg := []byte(makeRequest(1, "resources/read", map[string]string{
+		"uri": "https://api.vendor.example/callback?token=" + coreCredentialToken(),
+	}))
+	eval := EvaluateMCPInputGates(
+		context.Background(), ParseMCPFrame(msg), msg, "session", MCPProxyOpts{Scanner: sc},
+		config.ActionWarn, config.ActionBlock, false,
+	)
+	if eval.ContentVerdict.Action != config.ActionBlock || len(eval.ContentVerdict.URLFindings) == 0 {
+		t.Fatalf("disabled input scanning forwarded core credential resource URL: %+v", eval.ContentVerdict)
+	}
+	if !scanner.IsCoreCriticalResult(eval.ContentVerdict.URLFindings[0]) {
+		t.Fatalf("resource URL finding is not classified as core: %+v", eval.ContentVerdict.URLFindings)
+	}
+}
+
+func TestMCPInputCoreFloor_DisabledHTTPScanningFailsClosedOnIncompleteFloorScan(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send","arguments":` + deepJSONObject("safe", 100) + `}}`)
+	eval := EvaluateMCPInputGates(
+		context.Background(), ParseMCPFrame(msg), msg, "session", MCPProxyOpts{Scanner: sc},
+		config.ActionWarn, config.ActionBlock, false,
+	)
+	if eval.ContentVerdict.Clean || eval.ContentVerdict.Error == "" || inputVerdictEffectiveAction(eval.ContentVerdict, config.ActionWarn) != config.ActionBlock {
+		t.Fatalf("incomplete disabled-mode floor scan did not fail closed: %+v", eval.ContentVerdict)
 	}
 }
 
@@ -135,8 +193,8 @@ func TestA2ACoreFloor_URLLeafNonCoreFollowsWarn(t *testing.T) {
 	if result.Clean {
 		t.Fatal("expected non-core credential in URL to be detected")
 	}
-	if result.Action == config.ActionBlock {
-		t.Fatalf("non-core credential in A2A URL under warn should not hard-block, got %q", result.Action)
+	if result.Action != config.ActionWarn {
+		t.Fatalf("non-core credential in A2A URL under warn: action = %q, want %q", result.Action, config.ActionWarn)
 	}
 }
 
@@ -177,8 +235,8 @@ func TestA2ACoreFloor_HeaderURINonCoreFollowsWarn(t *testing.T) {
 	if result.Clean {
 		t.Fatal("expected non-core credential in header URI to be detected")
 	}
-	if result.Action == config.ActionBlock {
-		t.Fatalf("non-core credential in A2A header under warn should not hard-block, got %q", result.Action)
+	if result.Action != config.ActionWarn {
+		t.Fatalf("non-core credential in A2A header under warn: action = %q, want %q", result.Action, config.ActionWarn)
 	}
 }
 

@@ -417,6 +417,22 @@ func New(cfg *config.Config) (*Scanner, error) {
 // overlays never mutate Config, so a Guard invocation cannot widen another
 // runtime built from the same configuration.
 func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
+	// Construction is an ingest boundary: this signature accepts any *Config
+	// and nothing here can tell whether it passed through config.Validate.
+	// Every production caller today does arrive validated, by loading a config
+	// or by deriving one from a loaded config, so this is defense in depth
+	// rather than a live bypass. It is what keeps the host-pattern rules
+	// binding when a caller arrives that does not.
+	//
+	// Re-check every host-pattern list against the SAME rules validation
+	// applies, and refuse rather than installing a pattern that would match
+	// something the operator never wrote. Dropping the entry instead would
+	// move the enforced posture while the operator still reads their
+	// configuration as accepted.
+	if err := cfg.ValidateHostPatterns(); err != nil {
+		return nil, fmt.Errorf("invalid host pattern: %w", err)
+	}
+
 	// Only enforce the allowlist in strict mode. In balanced/audit modes,
 	// the allowlist is a config field but not enforced at the scanner level.
 	var allowlist []string

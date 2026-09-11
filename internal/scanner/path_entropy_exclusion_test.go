@@ -142,16 +142,20 @@ func TestPathEntropyExclusion_LeavesQueryEntropyEnforced(t *testing.T) {
 	}
 }
 
-// An entry that cannot name a route is dropped rather than treated as a
-// wildcard, so a malformed config cannot silently disable the gate. Validation
-// rejects these too; this is the second line, at the point of use.
+// An entry whose PATH PREFIX cannot name a route is dropped rather than treated
+// as a wildcard, so a malformed config cannot silently disable the gate.
+// Validation rejects these too; this is the second line, at the point of use.
+//
+// The host is well-formed in every case here, deliberately. A malformed HOST no
+// longer reaches this defense, because construction refuses it outright; that
+// boundary has its own test below.
 func TestPathEntropyExclusion_IncompleteEntriesAreInert(t *testing.T) {
 	t.Parallel()
 
 	for _, entry := range []config.PathEntropyExclusion{
-		{Host: "", PathPrefix: "/document/d/"},
 		{Host: "docs.vendor.example", PathPrefix: ""},
-		{Host: "   ", PathPrefix: "   "},
+		{Host: "docs.vendor.example", PathPrefix: "   "},
+		{Host: "docs.vendor.example", PathPrefix: "/"},
 	} {
 		s := pathExclusionScanner(t, entry)
 		parsed, err := url.Parse("https://docs.vendor.example/document/d/" + highEntropyID + "/edit")
@@ -163,6 +167,53 @@ func TestPathEntropyExclusion_IncompleteEntriesAreInert(t *testing.T) {
 		s.Close()
 		if res.Allowed {
 			t.Errorf("an incomplete entry %+v exempted the route; it must be inert", entry)
+		}
+	}
+}
+
+// A malformed HOST is refused at construction rather than dropped. Dropping it
+// would leave the operator reading a configuration the runtime is not running:
+// the exemption they wrote is gone, the gate is stricter than the YAML says,
+// and nothing reports the difference.
+func TestPathEntropyExclusion_MalformedHostIsRefusedAtConstruction(t *testing.T) {
+	t.Parallel()
+
+	for _, entry := range []config.PathEntropyExclusion{
+		{Host: "", PathPrefix: "/document/d/"},
+		{Host: "   ", PathPrefix: "/document/d/"},
+		{Host: "*.co.uk", PathPrefix: "/document/d/"},
+		{Host: "https://docs.vendor.example", PathPrefix: "/document/d/"},
+	} {
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{entry}
+
+		s, err := New(cfg)
+		if err == nil {
+			s.Close()
+			t.Errorf("New accepted a path-entropy exclusion with host %q; it must refuse rather than silently drop it", entry.Host)
+			continue
+		}
+		if !strings.Contains(err.Error(), "fetch_proxy.monitoring.path_entropy_exclusions[0].host") {
+			t.Errorf("New error %q does not name the field the operator has to edit", err)
+		}
+	}
+}
+
+// The builder's own drop stays in place behind the refusal above. It is
+// unreachable through New now, which is the point of a second line, so it is
+// exercised directly rather than deleted on the strength of the first.
+func TestPathEntropyExclusion_BuilderStillDropsMalformedHost(t *testing.T) {
+	t.Parallel()
+
+	for _, entry := range []config.PathEntropyExclusion{
+		{Scheme: "https", Host: "", PathPrefix: "/document/d/"},
+		{Scheme: "https", Host: "   ", PathPrefix: "/document/d/"},
+		{Scheme: "https", Host: "*.co.uk", PathPrefix: "/document/d/"},
+		{Scheme: "https", Host: "\u212Aexample.com", PathPrefix: "/document/d/"},
+	} {
+		if got := buildPathEntropyExclusions([]config.PathEntropyExclusion{entry}); len(got) != 0 {
+			t.Errorf("buildPathEntropyExclusions kept %+v as %+v; the point-of-use defense must still drop it", entry, got)
 		}
 	}
 }

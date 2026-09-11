@@ -59,7 +59,7 @@ pipelock contain run: session contract for claude
     /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
 ```
 
-Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching — the way to review what a launch would grant before running it.
+Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch, so an expired grant prints `[expired]` and exits non-zero.
 
 If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then launches `/usr/local/bin/plk-launch <tool> ...` directly as `pipelock-agent`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 

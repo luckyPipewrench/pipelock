@@ -49,19 +49,18 @@ type workspaceInventory struct {
 // grant, no metadata" row rather than failing to parse. Timestamps are RFC3339
 // in UTC.
 type workspaceGrant struct {
-	Path         string `json:"path"`
-	Mode         string `json:"mode"`
-	Owner        string `json:"owner,omitempty"`         // operator who granted it (SUDO_USER, else current user)
-	Reason       string `json:"reason,omitempty"`        // optional free-text justification
-	Created      string `json:"created,omitempty"`       // when the grant was recorded
-	Expires      string `json:"expires,omitempty"`       // empty = never; a grant past this is refused at launch/verify
-	LastVerified string `json:"last_verified,omitempty"` // set by the verify workspace probe when it runs
+	Path    string `json:"path"`
+	Mode    string `json:"mode"`
+	Owner   string `json:"owner,omitempty"`   // operator who granted it (SUDO_USER, else current user)
+	Reason  string `json:"reason,omitempty"`  // optional free-text justification
+	Created string `json:"created,omitempty"` // when the grant was recorded
+	Expires string `json:"expires,omitempty"` // empty = never; a grant past this is refused at launch/verify
 }
 
 // isLegacyGrant reports whether a grant carries none of the lifecycle metadata
 // fields, i.e. it was written by a Pipelock that predates this feature.
 func (g workspaceGrant) isLegacyGrant() bool {
-	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == "" && g.LastVerified == ""
+	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == ""
 }
 
 // expired reports whether the grant's expiry (if any) is at or before now. A

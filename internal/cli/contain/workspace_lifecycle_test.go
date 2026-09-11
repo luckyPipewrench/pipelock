@@ -144,6 +144,69 @@ func TestRunGrantWorkspace_RecordsMetadata(t *testing.T) {
 	}
 }
 
+// TestWorkspaceMetadataSurvivesRevokeAndRegrant proves inventory rewrites keep
+// metadata on unaffected grants while a re-grant records fresh metadata.
+func TestWorkspaceMetadataSurvivesRevokeAndRegrant(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.now = func() time.Time { return testNow }
+	env.runCmd = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
+	keptPath := t.TempDir()
+	regrantPath := t.TempDir()
+	kept := workspaceGrant{
+		Path:    keptPath,
+		Mode:    workspaceModeReadOnly,
+		Owner:   "alice",
+		Reason:  "keep this grant",
+		Created: "2026-05-01T00:00:00Z",
+		Expires: "2026-07-01T00:00:00Z",
+	}
+	if err := recordWorkspaceGrant(env, kept); err != nil {
+		t.Fatalf("record kept grant: %v", err)
+	}
+	if err := recordWorkspaceGrant(env, workspaceGrant{
+		Path:    regrantPath,
+		Mode:    workspaceModeReadOnly,
+		Owner:   "bob",
+		Reason:  "old reason",
+		Created: "2026-05-01T00:00:00Z",
+		Expires: "2026-07-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("record initial grant: %v", err)
+	}
+	if err := runRevokeWorkspace(context.Background(), env, regrantPath, workspaceOpts{}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := runGrantWorkspace(context.Background(), env, regrantPath, workspaceOpts{
+		mode:    workspaceModeReadWrite,
+		reason:  "new reason",
+		expires: "720h",
+	}); err != nil {
+		t.Fatalf("re-grant: %v", err)
+	}
+
+	inv := readWorkspaceInventory(env)
+	if len(inv.Workspaces) != 2 {
+		t.Fatalf("grants = %d, want 2: %+v", len(inv.Workspaces), inv.Workspaces)
+	}
+	var gotKept, gotRegrant workspaceGrant
+	for _, grant := range inv.Workspaces {
+		switch grant.Path {
+		case keptPath:
+			gotKept = grant
+		case regrantPath:
+			gotRegrant = grant
+		}
+	}
+	if gotKept != kept {
+		t.Fatalf("unaffected grant metadata changed: got %+v, want %+v", gotKept, kept)
+	}
+	if gotRegrant.Mode != workspaceModeReadWrite || gotRegrant.Owner != containInstallOperatorUser ||
+		gotRegrant.Reason != "new reason" || gotRegrant.Created != testNow.Format(time.RFC3339) ||
+		gotRegrant.Expires != testNow.Add(720*time.Hour).Format(time.RFC3339) {
+		t.Fatalf("re-grant metadata = %+v, want fresh recorded metadata", gotRegrant)
+	}
+}
+
 func TestRunListWorkspaces_RendersRowsAndStatus(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	env.now = func() time.Time { return testNow }
@@ -198,7 +261,7 @@ func TestExpiredWorkspaceGrants(t *testing.T) {
 }
 
 // TestRunContainRun_RefusesExpiredGrant proves an expired grant fails the launch
-// closed, and that --dry-run still surfaces it without launching.
+// closed, including a dry-run that must report the same refusal without launching.
 func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 	seedExpired := func(env *probeEnv) {
 		env.now = func() time.Time { return testNow }
@@ -232,20 +295,31 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 		}
 	})
 
-	t.Run("dry-run surfaces without refusing", func(t *testing.T) {
+	t.Run("dry-run reports refusal", func(t *testing.T) {
 		env := allPassEnv(t)
 		seedExpired(env)
 		var buf bytes.Buffer
+		var launched, posture bool
 		runEnv := containRunEnv{
-			probe:       env,
-			launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-			emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+			probe: env,
+			launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
+				launched = true
+				return nil
+			},
+			emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+				posture = true
+				return "/unused", nil
+			},
 		}
-		if err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{dryRun: true}, []string{"claude"}); err != nil {
-			t.Fatalf("dry-run err = %v", err)
+		err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{dryRun: true}, []string{"claude"})
+		if err == nil || !strings.Contains(err.Error(), "refusing to launch") {
+			t.Fatalf("dry-run err = %v, want expired-grant refusal", err)
 		}
 		if !strings.Contains(buf.String(), "[expired]") {
 			t.Fatalf("dry-run did not surface expired grant status:\n%s", buf.String())
+		}
+		if launched || posture {
+			t.Fatalf("dry-run launched=%v posture=%v, want neither", launched, posture)
 		}
 	})
 }

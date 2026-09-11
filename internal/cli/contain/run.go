@@ -159,13 +159,11 @@ func runContainRun(
 	contract := buildSessionContract(env.probe, tool, entries, inv.Workspaces, proofPath)
 	renderSessionContract(stdout, contract)
 
-	if opts.dryRun {
-		return nil
-	}
-
 	// Fail CLOSED on an expired grant: the recorded window has passed while the
 	// ACL is still live, so refuse the launch until the operator re-grants or
-	// revokes. Expiry gates the launch; it does not remove the ACL.
+	// revokes. Dry-runs use this same gate so their outcome cannot claim a launch
+	// is possible when a real launch would refuse it. Expiry gates the launch; it
+	// does not remove the ACL.
 	expired, err := expiredWorkspaceGrants(inv.Workspaces, containRunNow(env.probe))
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
@@ -175,7 +173,9 @@ func runContainRun(
 			"refusing to launch: %d workspace grant(s) have expired: %s; re-grant with `pipelock contain grant-workspace` or remove with `pipelock contain revoke-workspace`",
 			len(expired), strings.Join(expired, ", ")))
 	}
-
+	if opts.dryRun {
+		return nil
+	}
 	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))

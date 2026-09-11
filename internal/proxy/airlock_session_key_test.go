@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -298,9 +297,9 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T)
 		installForwardTestDialer(p, redirectBackend(t, &initialHits, &redirectedHits))
 		setupDrainedRecoveredSession(t, p, agent)
 
-		status, _ := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+initialHost+"/", agent)
-		if status != http.StatusForbidden {
-			t.Fatalf("fetch redirect admission fail-open: status=%d, want 403 (airlock drain on the raw session must refuse the redirect hop to the drained target)", status)
+		status, reason := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+initialHost+"/", agent)
+		if status != http.StatusForbidden || reason != airlockActiveReason {
+			t.Fatalf("fetch redirect admission fail-open: status=%d reason=%q, want 403 %q (airlock drain must refuse the redirect hop to the drained target)", status, reason, airlockActiveReason)
 		}
 		if initialHits.Load() != 1 {
 			t.Fatalf("initial upstream hits = %d, want 1", initialHits.Load())
@@ -317,9 +316,9 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T)
 		installForwardTestDialer(p, redirectBackend(t, &initialHits, &redirectedHits))
 		setupDrainedRecoveredSession(t, p, agent)
 
-		status, _ := doForwardWithAgent(t, proxyAddr, "http://"+initialHost+"/", agent)
-		if status != http.StatusForbidden {
-			t.Fatalf("forward redirect admission fail-open: status=%d, want 403 (airlock drain on the raw session must refuse the redirect hop to the drained target)", status)
+		status, reason := doForwardWithAgent(t, proxyAddr, "http://"+initialHost+"/", agent)
+		if status != http.StatusForbidden || reason != airlockActiveReason {
+			t.Fatalf("forward redirect admission fail-open: status=%d reason=%q, want 403 %q (airlock drain must refuse the redirect hop to the drained target)", status, reason, airlockActiveReason)
 		}
 		if initialHits.Load() != 1 {
 			t.Fatalf("initial upstream hits = %d, want 1", initialHits.Load())
@@ -534,7 +533,6 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
 	scope := adaptiveScopeForHost(targetHost)
 
 	conn := dialProxy(t, proxyAddr)
@@ -563,6 +561,10 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	case <-relayLive:
 	case <-time.After(5 * time.Second):
 		t.Fatal("precondition: tunnel relay never delivered the probe byte")
+	}
+	sess := sm.SessionByKey(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
+	if sess == nil {
+		t.Fatal("CONNECT did not materialize the bounded airlock session for teardown registration")
 	}
 
 	// Escalate the RAW session's destination scope to drain through the real
@@ -781,6 +783,32 @@ func TestForceSetAirlockTier_AppliesToEveryScope(t *testing.T) {
 	})
 }
 
+func TestForceSetAirlockTier_FutureScopesInheritRecoveryMetadata(t *testing.T) {
+	for _, tier := range []string{config.AirlockTierHard, config.AirlockTierDrain} {
+		t.Run(tier, func(t *testing.T) {
+			sess := &SessionState{scopes: make(map[string]*adaptiveScopeState)}
+			sess.airlock = *NewAirlockState()
+			if changed, _, _ := sess.ForceSetAirlockTierAllScopes(tier, airlockTriggerManual, airlockSourceAdminAPI); !changed {
+				t.Fatalf("force %s did not change the global tier", tier)
+			}
+
+			scope := sess.AirlockForScope(adaptiveScopeForHost("future.example"))
+			if got := scope.Tier(); got != tier {
+				t.Fatalf("future scope tier = %q, want %q", got, tier)
+			}
+			if got, want := scope.EnteredAt(), sess.airlock.EnteredAt(); got.IsZero() || !got.Equal(want) {
+				t.Fatalf("future scope entered_at = %v, want inherited %v", got, want)
+			}
+			if trigger, source := scope.EntryProvenance(); trigger != airlockTriggerManual || source != airlockSourceAdminAPI {
+				t.Fatalf("future scope provenance = %q/%q, want %q/%q", trigger, source, airlockTriggerManual, airlockSourceAdminAPI)
+			}
+			if changed, from, to := scope.TryDeescalate(&config.AirlockTimers{HardMinutes: 1, DrainMinutes: 1}); changed {
+				t.Fatalf("freshly inherited %s scope deescalated immediately: %q -> %q", tier, from, to)
+			}
+		})
+	}
+}
+
 func TestForceSetAirlockTier_WaitsForSessionTransactionLock(t *testing.T) {
 	sess := &SessionState{
 		key:    "atomic-override",
@@ -788,25 +816,27 @@ func TestForceSetAirlockTier_WaitsForSessionTransactionLock(t *testing.T) {
 	}
 	sess.airlock = *NewAirlockState()
 	sess.mu.Lock()
-	started := make(chan struct{})
+	reachedLock := make(chan struct{})
+	sess.mu.onBlocked = func() { close(reachedLock) }
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		close(started)
 		sess.ForceSetAirlockTierAllScopes(config.AirlockTierDrain, airlockTriggerManual, airlockSourceAdminAPI)
 	}()
-	<-started
+	<-reachedLock
 
 	// While the session transaction lock is held, neither the global nor any
 	// scoped portion of the override may become visible.
-	deadline := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if got := sess.airlock.Tier(); got != config.AirlockTierNone {
-			sess.mu.Unlock()
-			<-done
-			t.Fatalf("global tier changed before session transaction lock was acquired: %q", got)
-		}
-		runtime.Gosched()
+	if got := sess.airlock.Tier(); got != config.AirlockTierNone {
+		sess.mu.Unlock()
+		<-done
+		t.Fatalf("global tier changed before session transaction lock was acquired: %q", got)
+	}
+	select {
+	case <-done:
+		sess.mu.Unlock()
+		t.Fatal("override completed while the session transaction lock was held")
+	default:
 	}
 	sess.mu.Unlock()
 	<-done

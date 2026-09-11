@@ -284,6 +284,12 @@ func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
 	if blockedErr != nil && blockedErr.layer == blockLayerRequestPolicy {
 		return blockInfoFor(blockreason.RequestPolicyDeny, "")
 	}
+	// Airlock admission is an operator quarantine decision, not a scanner
+	// denial. Preserve its reason code across redirect handling so callers can
+	// distinguish quarantine from an unrelated redirect scan failure.
+	if blockedErr != nil && blockedErr.layer == "airlock" {
+		return blockInfoFor(blockreason.AirlockActive, "")
+	}
 	layer := ""
 	if blockedErr != nil {
 		layer = blockedErr.layer
@@ -3157,7 +3163,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 					Score:    sess.ScopedThreatScore(scope),
 				})
 				if log != nil {
-					log.LogAirlockEnter(key, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
+					log.LogAirlockEnter(enforcementKey, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
 				}
 				if p.metrics != nil {
 					p.metrics.RecordAirlockTransition(from, to, "adaptive")

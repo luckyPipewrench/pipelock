@@ -106,9 +106,28 @@ type adaptiveScopeState struct {
 	airlock          AirlockState
 }
 
+// sessionMutex behaves like sync.Mutex in production. Tests can install an
+// onBlocked callback to observe that a caller actually contended on the lock.
+type sessionMutex struct {
+	sync.Mutex
+	onBlocked func()
+}
+
+func (m *sessionMutex) Lock() {
+	if m.onBlocked == nil {
+		m.Mutex.Lock()
+		return
+	}
+	if m.TryLock() {
+		return
+	}
+	m.onBlocked()
+	m.Mutex.Lock()
+}
+
 // SessionState tracks behavioral state for a single agent session.
 type SessionState struct {
-	mu           sync.Mutex
+	mu           sessionMutex
 	key          string
 	kind         string // "identity" or "invocation" - set at creation, not inferred from key
 	created      time.Time
@@ -236,7 +255,7 @@ func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState 
 		// A session-wide operator override also governs destinations first seen
 		// after the override. Inheriting the current global tier prevents a new
 		// scope from weakening a forced hard/drain state back to none.
-		st = &adaptiveScopeState{airlock: AirlockState{tier: s.airlock.Tier()}}
+		st = &adaptiveScopeState{airlock: s.airlock.inheritedEntry()}
 		s.scopes[scope] = st
 	}
 	return st

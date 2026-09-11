@@ -108,6 +108,20 @@ func (a *AirlockState) EntryProvenance() (trigger, source string) {
 	return a.trigger, a.source
 }
 
+// inheritedEntry returns quarantine metadata for a newly created destination
+// scope. Runtime counters, cancellation hooks, and synchronization state stay
+// local to each scope.
+func (a *AirlockState) inheritedEntry() AirlockState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return AirlockState{
+		tier:      a.tier,
+		enteredAt: a.enteredAt,
+		trigger:   a.trigger,
+		source:    a.source,
+	}
+}
+
 // setEntryMetadataLocked records when and why the current tier was entered.
 // Entering the none tier clears quarantine metadata entirely.
 func (a *AirlockState) setEntryMetadataLocked(tier, trigger, source string) {

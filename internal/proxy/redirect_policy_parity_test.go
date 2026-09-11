@@ -92,6 +92,7 @@ func TestCheckRedirect_ResolvesAirlockSessionAfterManagerReplacement(t *testing.
 	if oldManager == nil {
 		t.Fatal("session manager not initialized")
 	}
+	t.Cleanup(oldManager.Close)
 	if got := oldManager.GetOrCreate(key).AirlockForScope(adaptiveScopeForHost(redirectReq.URL.Hostname())).Tier(); got != config.AirlockTierNone {
 		t.Fatalf("old manager precondition: tier = %q, want none", got)
 	}

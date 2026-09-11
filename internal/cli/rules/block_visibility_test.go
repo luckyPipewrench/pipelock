@@ -68,6 +68,29 @@ func TestFetchNamesPipelockOnBlockedResponse(t *testing.T) {
 	}
 }
 
+// TestBlockWithoutLayerStillNamesPipelock: Layer is optional in the header set,
+// and a block that omits it is still a Pipelock block. The operator gets "unset"
+// rather than a message that trails off.
+func TestBlockWithoutLayerStillNamesPipelock(t *testing.T) {
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.KillSwitchActive))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "layer=unset") {
+		t.Errorf("a layerless block should report layer=unset:\n%s", msg)
+	}
+	if !strings.Contains(msg, "kill_switch_active") {
+		t.Errorf("lost the reason:\n%s", msg)
+	}
+	if strings.Contains(msg, "authenticated_artifacts") {
+		t.Errorf("offered an inert remedy for a kill-switch block:\n%s", msg)
+	}
+}
+
 // TestFetchDoesNotMislabelOrdinaryUpstreamError is the negative direction. An
 // upstream 403 with no Pipelock headers must stay a plain status error, or the
 // CLI blames the operator's proxy for something it never did.

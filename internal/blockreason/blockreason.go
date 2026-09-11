@@ -484,13 +484,11 @@ func FromHeader(h http.Header) (Info, bool) {
 	if _, ok := validRetries[retry]; !ok {
 		retry = RetryFor(reason)
 	}
-	info, err := New(reason, severity, retry)
-	if err != nil {
-		// Unreachable: reason passed validReasons above, and both fallbacks
-		// return vocabulary members. Fail toward "not a Pipelock block"
-		// rather than reporting a half-built Info.
-		return Info{}, false
-	}
+	// Direct construction rather than New: the three vocabulary maps New
+	// consults were already consulted above, and SeverityFor / RetryFor are
+	// exhaustive switches over constants, so routing through New would only
+	// add an error branch that no input can reach.
+	info := Info{Reason: reason, Severity: severity, Retry: retry}
 	if layered, layerErr := info.WithLayer(h.Get(HeaderLayer)); layerErr == nil {
 		info = layered
 	}

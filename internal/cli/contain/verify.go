@@ -639,7 +639,7 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	}
 	blocks, malformed := parseLaunchExecEnvBlocks(script)
 	if malformed {
-		return statusFail, fmt.Sprintf("plk-launch at %s has an `exec env -i` block that never reaches the tool (a line before \"$TARGET\" is missing its trailing continuation), so the launcher would not start the agent - reinstall with `pipelock contain install`", env.launchPath)
+		return statusFail, fmt.Sprintf("plk-launch at %s has an `exec env -i` block that does not match the installed launcher grammar (a token before \"$TARGET\" is not a NAME=VALUE assignment, or a line is missing its trailing continuation), so the launcher may not start the agent under the runtime contract - reinstall with `pipelock contain install`", env.launchPath)
 	}
 	switch len(blocks) {
 	case 0:
@@ -786,6 +786,7 @@ func parseLaunchExecEnvBlocks(script string) (blocks [][]launchEnvAssign, malfor
 		var assigns []launchEnvAssign
 		rest := strings.TrimPrefix(line, "exec env -i")
 		reachedTarget := false
+		unsupported := ""
 		for {
 			trimmed := strings.TrimSpace(rest)
 			// The shell ends the command at the first physical line that is NOT
@@ -795,14 +796,30 @@ func parseLaunchExecEnvBlocks(script string) (blocks [][]launchEnvAssign, malfor
 			// set from lines the shell would never pass to env.
 			continued := strings.HasSuffix(trimmed, "\\")
 			trimmed = strings.TrimSuffix(trimmed, "\\")
-			for _, tok := range strings.Fields(trimmed) {
+			for _, tok := range splitLaunchEnvTokens(trimmed) {
 				if tok == `"$TARGET"` || tok == "$TARGET" {
 					reachedTarget = true
 					break
 				}
-				if eq := strings.IndexByte(tok, '='); eq > 0 && launchEnvNamePattern.MatchString(tok[:eq]) {
-					assigns = append(assigns, launchEnvAssign{name: tok[:eq], value: unquoteShellValue(tok[eq+1:])})
+				// Parse ONLY the grammar the renderer emits: every token before
+				// the target is a NAME=VALUE assignment. Anything else means the
+				// installed script is not the script `contain install` writes,
+				// and the shell may not read it the way this probe does. An
+				// inline `#` is the sharp case: `PATH="$PATH" # \` looks
+				// continued to a line-based reader, while the shell treats the
+				// rest as a comment and runs `env -i` with no target, so the
+				// probe would certify a runtime contract for a launcher that
+				// never starts the agent. Control operators (;, &, |, redirects,
+				// command substitution) are rejected for the same reason.
+				eq := strings.IndexByte(tok, '=')
+				if eq <= 0 || !launchEnvNamePattern.MatchString(tok[:eq]) {
+					unsupported = tok
+					break
 				}
+				assigns = append(assigns, launchEnvAssign{name: tok[:eq], value: unquoteShellValue(tok[eq+1:])})
+			}
+			if unsupported != "" {
+				break
 			}
 			i++
 			if reachedTarget || !continued || i >= len(lines) {
@@ -810,16 +827,59 @@ func parseLaunchExecEnvBlocks(script string) (blocks [][]launchEnvAssign, malfor
 			}
 			rest = lines[i]
 		}
-		if !reachedTarget {
-			// Ran off a broken continuation or off the end of the file: this
-			// launcher does not exec the tool at all. Fail rather than report a
-			// variable set the shell never applies.
+		if unsupported != "" || !reachedTarget {
+			// Either a token outside the renderer's grammar, or the block ran
+			// off a broken continuation or the end of the file. Both mean this
+			// launcher does not reliably exec the tool under the contract, so
+			// fail rather than report a variable set the shell may never apply.
 			malformed = true
 			continue
 		}
 		blocks = append(blocks, assigns)
 	}
 	return blocks, malformed
+}
+
+// splitLaunchEnvTokens splits a rendered launcher line into shell words,
+// honoring double and single quotes. strings.Fields cannot be used here: the
+// renderer quotes any value that is not shell-safe, so a value containing a
+// space (NODE_OPTIONS="--require /path/shim.js") would split into two words and
+// the second would look like a token outside the grammar.
+func splitLaunchEnvTokens(line string) []string {
+	var (
+		tokens []string
+		cur    strings.Builder
+		quote  byte
+		inTok  bool
+	)
+	flush := func() {
+		if inTok {
+			tokens = append(tokens, cur.String())
+			cur.Reset()
+			inTok = false
+		}
+	}
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+		case c == '"' || c == '\'':
+			quote = c
+			inTok = true
+			cur.WriteByte(c)
+		case c == ' ' || c == '\t':
+			flush()
+		default:
+			inTok = true
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return tokens
 }
 
 // unquoteShellValue strips one layer of matching single or double quotes from a

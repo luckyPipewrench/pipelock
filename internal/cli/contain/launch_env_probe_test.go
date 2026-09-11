@@ -100,7 +100,24 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 			name:       "a missing line continuation fails",
 			body:       strings.Replace(canonical, "    SHELL=/bin/bash \\\n", "    SHELL=/bin/bash\n", 1),
 			wantStatus: statusFail,
-			wantDetail: "never reaches the tool",
+			wantDetail: "does not match the installed launcher grammar",
+		},
+		{
+			// `# \` looks like a continued line to a line-based reader, but the
+			// shell treats it as a comment and runs env -i with no target, so
+			// the agent never starts while every variable still looks correct.
+			name:       "an inline comment before the target fails",
+			body:       strings.Replace(canonical, "    SHELL=/bin/bash \\\n", "    SHELL=/bin/bash # \\\n", 1),
+			wantStatus: statusFail,
+			wantDetail: "does not match the installed launcher grammar",
+		},
+		{
+			// A control operator is rejected for the same reason: the shell may
+			// not read the block the way this probe does.
+			name:       "a control operator before the target fails",
+			body:       strings.Replace(canonical, "    SHELL=/bin/bash \\\n", "    SHELL=/bin/bash ; true \\\n", 1),
+			wantStatus: statusFail,
+			wantDetail: "does not match the installed launcher grammar",
 		},
 		{
 			name:       "a dropped posture forward fails",

@@ -312,11 +312,15 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 			},
 		}
 		err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{dryRun: true}, []string{"claude"})
-		if err == nil || !strings.Contains(err.Error(), "refusing to launch") {
+		// The recorded grants are checked by the workspace probe during
+		// preflight, so a dry run refuses at the same point a real launch does
+		// and names the remedy; the contract is never rendered for a boundary
+		// that already failed.
+		if err == nil || !strings.Contains(err.Error(), "expired") {
 			t.Fatalf("dry-run err = %v, want expired-grant refusal", err)
 		}
-		if !strings.Contains(buf.String(), "[expired]") {
-			t.Fatalf("dry-run did not surface expired grant status:\n%s", buf.String())
+		if !strings.Contains(buf.String(), "[FAIL] probe 15") || !strings.Contains(buf.String(), "revoke-workspace") {
+			t.Fatalf("dry-run did not surface the expired grant through the workspace probe:\n%s", buf.String())
 		}
 		if launched || posture {
 			t.Fatalf("dry-run launched=%v posture=%v, want neither", launched, posture)

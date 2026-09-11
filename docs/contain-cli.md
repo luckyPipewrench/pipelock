@@ -74,7 +74,7 @@ Flags:
 
 Exit codes:
 
-- **0** — preflight passed, posture capsule was written, and the agent process exited successfully.
+- **0** — preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
 - **1** — containment was broken, posture emission failed, or the launched agent exited non-zero.
 - **2** — usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
 
@@ -450,6 +450,8 @@ Flags:
 | Flag | Default | Purpose |
 |---|---|---|
 | `--agent-user` | `pipelock-agent` | Contained agent user whose grants to list. |
+
+Grants recorded by this version carry the agent user they were granted to and are listed only for that `--agent-user`; grants written by an earlier version carry none and are listed for every agent user. The table includes the reason recorded at grant time.
 
 ## `pipelock contain revoke-workspace`
 

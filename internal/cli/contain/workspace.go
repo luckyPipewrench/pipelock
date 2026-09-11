@@ -55,12 +55,15 @@ type workspaceGrant struct {
 	Reason  string `json:"reason,omitempty"`  // optional free-text justification
 	Created string `json:"created,omitempty"` // when the grant was recorded
 	Expires string `json:"expires,omitempty"` // empty = never; a grant past this is refused at launch/verify
+	// AgentUser is the contained user the ACL was granted to, so a host that
+	// contains more than one agent user can list each one's grants alone.
+	AgentUser string `json:"agent_user,omitempty"`
 }
 
 // isLegacyGrant reports whether a grant carries none of the lifecycle metadata
 // fields, i.e. it was written by a Pipelock that predates this feature.
 func (g workspaceGrant) isLegacyGrant() bool {
-	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == ""
+	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == "" && g.AgentUser == ""
 }
 
 // expired reports whether the grant's expiry (if any) is at or before now. A
@@ -228,11 +231,12 @@ func runGrantWorkspace(ctx context.Context, env *installEnv, path string, opts w
 	}
 	created := envNow(env)
 	grant := workspaceGrant{
-		Path:    workspace,
-		Mode:    mode,
-		Owner:   grantOwner(env),
-		Reason:  strings.TrimSpace(opts.reason),
-		Created: created.Format(time.RFC3339),
+		Path:      workspace,
+		Mode:      mode,
+		Owner:     grantOwner(env),
+		Reason:    strings.TrimSpace(opts.reason),
+		Created:   created.Format(time.RFC3339),
+		AgentUser: env.agentUserName,
 	}
 	if strings.TrimSpace(opts.expires) != "" {
 		expiry, err := parseGrantExpiry(opts.expires, created)
@@ -385,17 +389,26 @@ func runListWorkspaces(env *installEnv) error {
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
 	}
-	if len(inv.Workspaces) == 0 {
-		_, _ = fmt.Fprintf(env.out, "no workspace grants recorded in %s\n", env.workspaceInvPath)
+	// Legacy grants carry no agent user and are shown for every agent user;
+	// grants recorded with one are shown only for that user.
+	var rows []workspaceGrant
+	for _, g := range inv.Workspaces {
+		if g.AgentUser != "" && g.AgentUser != env.agentUserName {
+			continue
+		}
+		rows = append(rows, g)
+	}
+	if len(rows) == 0 {
+		_, _ = fmt.Fprintf(env.out, "no workspace grants recorded for %s in %s\n", env.agentUserName, env.workspaceInvPath)
 		return nil
 	}
 	now := envNow(env)
-	_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %s\n",
-		"PATH", "MODE", "OWNER", "CREATED", "EXPIRES", "STATUS")
-	for _, g := range inv.Workspaces {
-		_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %s\n",
+	_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %-14s  %s\n",
+		"PATH", "MODE", "OWNER", "CREATED", "EXPIRES", "STATUS", "REASON")
+	for _, g := range rows {
+		_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %-14s  %s\n",
 			g.Path, valueOrDash(g.Mode), valueOrDash(g.Owner),
-			valueOrDash(g.Created), grantExpiryLabel(g), g.grantStatus(now))
+			valueOrDash(g.Created), grantExpiryLabel(g), g.grantStatus(now), valueOrDash(g.Reason))
 	}
 	return nil
 }

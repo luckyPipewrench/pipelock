@@ -30,7 +30,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 // Test helpers ---------------------------------------------------------------
@@ -3661,8 +3660,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 	toolTarget := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, toolTarget, 0o755)
-	body := "#!/bin/bash\nexec env -i NO_PROXY=127.0.0.1,localhost,::1 HTTPS_PROXY=http://127.0.0.1:8888 " +
-		posturebinding.RuntimeProofEnv + `="${` + posturebinding.RuntimeProofEnv + ":-" + posturebinding.DefaultContainRunProofPath + `}" sh` + "\n"
+	body := canonicalLaunchScript(env.port)
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}
@@ -3973,4 +3971,17 @@ func TestNewFakeRunHelper(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for unstubbed call")
 	}
+}
+
+// canonicalLaunchScript renders the plk-launch body exactly as `contain
+// install` would for the given proxy port, so fixtures exercise the real
+// `exec env -i` contract block the launcher-environment probe validates.
+func canonicalLaunchScript(port int) string {
+	env := &installEnv{
+		agentUserName: testAgentUser,
+		proxyPort:     port,
+		caBundlePath:  defaultCABundlePath,
+		caExportPath:  defaultCAExportPath,
+	}
+	return "#!/bin/bash\n" + strings.Join(launchExecEnvLines(env), "\n") + "\n"
 }

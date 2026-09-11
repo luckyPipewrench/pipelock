@@ -131,6 +131,17 @@ func runContainRun(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("invalid tool name %q (must match %s)", tool, containToolNameRegex))
 	}
 
+	// Read the workspace inventory ONCE, before preflight, so the workspace probe
+	// checks readability and expiry of every recorded grant in the same pass, and
+	// the contract and the expiry gate below derive from the same read the launch
+	// enforces. A grant the agent cannot actually read, or one past its expiry,
+	// fails preflight (fail closed) rather than launching against a stale record.
+	inv, err := loadWorkspaceInventoryFrom(env.probe.readFile, env.probe.workspaceInvPath)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
+	}
+	env.probe.workspaceGrants = inv.Workspaces
+
 	_, _ = fmt.Fprintln(stdout, "pipelock contain run: verifying containment preflight")
 	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
 	if err != nil {
@@ -148,16 +159,13 @@ func runContainRun(
 	}
 	env.probe.postureProofPath = proofPath
 
-	// Read the workspace inventory ONCE and derive both the contract's workspace
-	// rows and the expiry gate from it, so what the operator is shown is what the
-	// launch enforces.
-	inv, err := loadWorkspaceInventoryFrom(env.probe.readFile, env.probe.workspaceInvPath)
-	if err != nil {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
-	}
-
 	contract := buildSessionContract(env.probe, tool, entries, inv.Workspaces, proofPath)
-	renderSessionContract(stdout, contract)
+	// The contract is the operator's review surface. If it cannot be written
+	// (closed pipe, failed writer) nobody saw the boundary, so refuse to go on
+	// rather than emit a capsule and launch unreviewed (fail closed).
+	if err := renderSessionContract(stdout, contract); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("write session contract: %w", err))
+	}
 
 	// Fail CLOSED on an expired grant: the recorded window has passed while the
 	// ACL is still live, so refuse the launch until the operator re-grants or
@@ -262,9 +270,29 @@ func buildSessionContract(env *probeEnv, tool string, tools []toolsListEntry, gr
 	}
 }
 
+// firstErrWriter records the first write error so a multi-line render can
+// report whether the whole block reached the operator.
+type firstErrWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (f *firstErrWriter) Write(p []byte) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	n, err := f.w.Write(p)
+	if err != nil {
+		f.err = err
+	}
+	return n, err
+}
+
 // renderSessionContract prints the contract as an operator-facing block. Pure
-// over the struct so tests assert exact text.
-func renderSessionContract(out io.Writer, c sessionContract) {
+// over the struct so tests assert exact text. It returns the first write error
+// so a caller can refuse to launch a boundary the operator never saw.
+func renderSessionContract(w io.Writer, c sessionContract) error {
+	out := &firstErrWriter{w: w}
 	_, _ = fmt.Fprintf(out, "pipelock contain run: session contract for %s\n", c.Tool)
 	_, _ = fmt.Fprintf(out, "  agent user:       %s\n", c.AgentUser)
 	_, _ = fmt.Fprintf(out, "  proxy egress:     %s (loopback proxy only; direct egress denied by nftables)\n", c.ProxyURL)
@@ -288,6 +316,7 @@ func renderSessionContract(out io.Writer, c sessionContract) {
 				w.Path, w.Mode, w.Owner, w.Created, w.Expires, w.Status)
 		}
 	}
+	return out.err
 }
 
 func containRunPostureProofPath(postureOutput string) (string, error) {

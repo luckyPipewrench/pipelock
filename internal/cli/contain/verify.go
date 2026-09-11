@@ -19,6 +19,8 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -148,6 +150,10 @@ type probeEnv struct {
 	workspaceInvPath   string
 	workspacePaths     []string
 	workspaceGrants    []workspaceGrant
+	// workspaceInvErr records a recorded-inventory read that failed for any
+	// reason other than absence. The workspace probe fails on it so a permission
+	// or parse error cannot make verify pass with the grant set silently empty.
+	workspaceInvErr    error
 	pipelockTarget     string
 	verifyRunningImage bool
 	// postureProofPath is the resolved path the current `contain run` writes its
@@ -362,13 +368,18 @@ func probesForEnv(env *probeEnv) []probe {
 	// which now tops out at 14) so adding the launch-env probe did not renumber
 	// any fixed probe. Appears when workspaces are passed via --workspace or when
 	// the recorded inventory has grants to check for readability and expiry.
-	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 {
+	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
 		probes = append(probes, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
 	}
 	return probes
 }
 
 func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
+	// An unreadable inventory is a failure, not an empty grant set: verify must
+	// not pass while the recorded grants are unknown (fail closed).
+	if env.workspaceInvErr != nil {
+		return statusFail, fmt.Sprintf("workspace inventory %s could not be read: %v; repair it before trusting recorded grants", env.workspaceInvPath, env.workspaceInvErr)
+	}
 	// Expiry gate first: a recorded grant past its window means the ACL is still
 	// live after the operator's intended lifetime, which is a posture failure
 	// even if the path is still readable. Fail CLOSED, including on a malformed
@@ -386,8 +397,12 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 			len(expired), strings.Join(expired, "; "))
 	}
 
+	// Check readability of every path the agent is supposed to reach: ad-hoc
+	// --workspace paths AND every recorded grant, deduplicated, so a recorded
+	// grant is never silently skipped when no --workspace flag is given.
+	paths := workspaceProbePaths(env)
 	var bad []string
-	for _, path := range env.workspacePaths {
+	for _, path := range paths {
 		clean, err := filepath.Abs(filepath.Clean(path))
 		if err != nil {
 			bad = append(bad, fmt.Sprintf("%s resolve: %v", path, err))
@@ -421,7 +436,29 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, strings.Join(bad, "; ")
 	}
 	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s; %d recorded grant(s) within expiry",
-		len(env.workspacePaths), env.agentUserName, len(env.workspaceGrants))
+		len(paths), env.agentUserName, len(env.workspaceGrants))
+}
+
+// workspaceProbePaths returns the deduplicated union of ad-hoc --workspace
+// paths and recorded grant paths, in first-seen order.
+func workspaceProbePaths(env *probeEnv) []string {
+	seen := make(map[string]bool, len(env.workspacePaths)+len(env.workspaceGrants))
+	var paths []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	for _, p := range env.workspacePaths {
+		add(p)
+	}
+	for _, g := range env.workspaceGrants {
+		add(g.Path)
+	}
+	return paths
 }
 
 // probeListedToolTargets verifies each configured wrapper target exists and is
@@ -592,23 +629,107 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 		return statusSkip, fmt.Sprintf("read %s: %v (rerun as root)", env.launchPath, err)
 	}
 	script := string(data)
-	if !strings.Contains(script, "exec env -i") {
+	// Parse the executed `exec env -i` block rather than substring-matching the
+	// file: a comment or a decoy line must not satisfy the probe, and the block
+	// must rebuild EXACTLY the runtime contract, nothing missing and nothing
+	// extra. Both directions fail: a missing variable breaks the proxy/CA
+	// contract, an extra one is an operator-environment passthrough.
+	names, found := parseLaunchExecEnvNames(script)
+	if !found {
 		if strings.Contains(script, "exec env ") {
 			return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
 		}
-		return statusFail, fmt.Sprintf("plk-launch at %s does not clear the environment (no `env -i`) before exec", env.launchPath)
+		return statusFail, fmt.Sprintf("plk-launch at %s does not clear the environment (no `exec env -i` block) before exec", env.launchPath)
 	}
-	if !strings.Contains(script, posturebinding.RuntimeProofEnv+`="${`+posturebinding.RuntimeProofEnv) {
-		return statusFail, fmt.Sprintf("plk-launch does not forward %s under env -i; a contained launch would grade containment UNKNOWN", posturebinding.RuntimeProofEnv)
+	expected := expectedLaunchEnvNames()
+	missing, extra := diffNameSets(expected, names)
+	if len(missing) > 0 || len(extra) > 0 {
+		return statusFail, fmt.Sprintf("plk-launch env -i block does not match the runtime contract (missing: %s; unexpected: %s); reinstall with `pipelock contain install`",
+			listOrNone(missing), listOrNone(extra))
 	}
-	// Guard against a future edit re-introducing an explicit operator-variable
-	// passthrough (e.g. DISPLAY="$DISPLAY") that env -i would otherwise defeat.
-	for _, leak := range []string{`DISPLAY="$DISPLAY"`, `XAUTHORITY=`, `SUDO_`} {
-		if strings.Contains(script, leak) {
-			return statusFail, fmt.Sprintf("plk-launch explicitly forwards an operator variable (%s); remove it so env -i keeps the boundary closed", leak)
+	return statusPass, fmt.Sprintf("plk-launch clears the environment (env -i) and rebuilds exactly the %d-variable runtime contract", len(expected))
+}
+
+var launchEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// parseLaunchExecEnvNames finds the executed `exec env -i` command in a
+// launcher script (comment lines are skipped) and returns the variable names it
+// assigns, reading line continuations up to the "$TARGET" token. found is false
+// when no such command exists.
+func parseLaunchExecEnvNames(script string) (names []string, found bool) {
+	lines := strings.Split(script, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "exec env -i") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "exec env -i")
+		for {
+			rest = strings.TrimSuffix(strings.TrimSpace(rest), "\\")
+			for _, tok := range strings.Fields(rest) {
+				if tok == `"$TARGET"` || tok == "$TARGET" {
+					return names, true
+				}
+				if eq := strings.IndexByte(tok, '='); eq > 0 && launchEnvNamePattern.MatchString(tok[:eq]) {
+					names = append(names, tok[:eq])
+				}
+			}
+			i++
+			if i >= len(lines) {
+				return names, true
+			}
+			rest = lines[i]
 		}
 	}
-	return statusPass, "plk-launch clears the environment (env -i) and rebuilds only the runtime contract"
+	return nil, false
+}
+
+// expectedLaunchEnvNames is the exact variable-name set a correctly rendered
+// plk-launch assigns under env -i: the identity block, the proxy/CA runtime
+// contract, the posture-proof binding, and PATH. Names do not depend on
+// install-time values, so a zero installEnv yields the canonical set.
+func expectedLaunchEnvNames() []string {
+	var names []string
+	for _, v := range containedLaunchIdentityVars("", "") {
+		names = append(names, v.name)
+	}
+	for _, v := range runtimeContractVars(&installEnv{}) {
+		names = append(names, v.name)
+	}
+	return append(names, posturebinding.RuntimeProofEnv, "PATH")
+}
+
+// diffNameSets returns the names in want but not got (missing) and in got but
+// not want (extra), each sorted.
+func diffNameSets(want, got []string) (missing, extra []string) {
+	wantSet := make(map[string]bool, len(want))
+	for _, n := range want {
+		wantSet[n] = true
+	}
+	gotSet := make(map[string]bool, len(got))
+	for _, n := range got {
+		gotSet[n] = true
+	}
+	for n := range wantSet {
+		if !gotSet[n] {
+			missing = append(missing, n)
+		}
+	}
+	for n := range gotSet {
+		if !wantSet[n] {
+			extra = append(extra, n)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	return missing, extra
+}
+
+func listOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ",")
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
@@ -831,7 +952,7 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run read-only probes against the containment model",
-		Long: `Run thirteen read-only probes to verify the workstation containment model
+		Long: `Run fourteen read-only probes to verify the workstation containment model
 is installed correctly and the boundary is intact.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
@@ -865,10 +986,13 @@ Exit codes:
 			env := defaultProbeEnv()
 			env.port = opts.port
 			env.workspacePaths = append([]string(nil), opts.workspacePaths...)
-			// Load recorded grants so the workspace probe can enforce expiry, not
-			// just the ad-hoc --workspace paths. A missing inventory is empty (no
-			// grants), not an error.
-			if inv, err := loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath); err == nil {
+			// Load recorded grants so the workspace probe checks readability and
+			// expiry of every grant, not just the ad-hoc --workspace paths. A
+			// missing inventory is empty (no grants); any other read or parse error
+			// is recorded so the probe FAILS instead of treating grants as absent.
+			if inv, err := loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath); err != nil {
+				env.workspaceInvErr = err
+			} else {
 				env.workspaceGrants = inv.Workspaces
 			}
 			return runVerify(cmd, env, opts)

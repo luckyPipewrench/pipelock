@@ -15,7 +15,7 @@ import (
 
 func TestRenderSessionContract_ExactText(t *testing.T) {
 	var buf bytes.Buffer
-	renderSessionContract(&buf, sessionContract{
+	_ = renderSessionContract(&buf, sessionContract{
 		Tool:            "claude",
 		AgentUser:       "pipelock-agent",
 		ProxyURL:        "http://127.0.0.1:8888",
@@ -45,7 +45,7 @@ func TestRenderSessionContract_ExactText(t *testing.T) {
 
 func TestRenderSessionContract_EmptyToolsAndWorkspaces(t *testing.T) {
 	var buf bytes.Buffer
-	renderSessionContract(&buf, sessionContract{Tool: "claude", AgentUser: "pipelock-agent", ProxyURL: "http://127.0.0.1:8888"})
+	_ = renderSessionContract(&buf, sessionContract{Tool: "claude", AgentUser: "pipelock-agent", ProxyURL: "http://127.0.0.1:8888"})
 	out := buf.String()
 	if !strings.Contains(out, "registered tools: (none)") {
 		t.Errorf("empty tools not rendered: %q", out)

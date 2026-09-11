@@ -18,6 +18,7 @@ import (
 // probe can return. The probe reads the installed plk-launch text, so each case
 // writes a launcher and asserts the status plus the operator-facing detail.
 func TestProbeLaunchEnvAllowList(t *testing.T) {
+	canonical := canonicalLaunchScript(8888)
 	posture := posturebinding.RuntimeProofEnv + `="${` + posturebinding.RuntimeProofEnv + `:-/var/lib/pipelock/proof.json}"`
 	cases := []struct {
 		name       string
@@ -26,10 +27,10 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 		wantDetail string
 	}{
 		{
-			name:       "env -i with posture forward passes",
-			body:       "#!/bin/bash\nexec env -i \\\n    HOME=/home/agent \\\n    " + posture + " \\\n    PATH=\"$AGENT_PATH\" \\\n    \"$TARGET\" \"$@\"\n",
+			name:       "canonical env -i block passes",
+			body:       canonical,
 			wantStatus: statusPass,
-			wantDetail: "env -i",
+			wantDetail: "rebuilds exactly",
 		},
 		{
 			name:       "plain env leaks the operator environment",
@@ -44,16 +45,28 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 			wantDetail: "does not clear the environment",
 		},
 		{
-			name:       "env -i without the posture forward grades containment unknown",
-			body:       "#!/bin/bash\nexec env -i \\\n    HOME=/home/agent \\\n    \"$TARGET\" \"$@\"\n",
+			name:       "a decoy comment does not satisfy the probe",
+			body:       "#!/bin/bash\n# exec env -i " + posture + "\nexec env HOME=/home/agent \"$TARGET\" \"$@\"\n",
 			wantStatus: statusFail,
-			wantDetail: "does not forward " + posturebinding.RuntimeProofEnv,
+			wantDetail: "plain `env`",
 		},
 		{
-			name:       "explicit operator variable passthrough fails even under env -i",
-			body:       "#!/bin/bash\nexec env -i \\\n    " + posture + " \\\n    DISPLAY=\"$DISPLAY\" \\\n    \"$TARGET\" \"$@\"\n",
+			name:       "a missing contract variable fails",
+			body:       strings.Replace(canonical, "    NO_PROXY=", "    NOT_PROXY=", 1),
 			wantStatus: statusFail,
-			wantDetail: "explicitly forwards an operator variable",
+			wantDetail: "missing: NO_PROXY",
+		},
+		{
+			name:       "an extra operator variable fails even under env -i",
+			body:       strings.Replace(canonical, "    PATH=", "    DISPLAY=\"$DISPLAY\" \\\n    PATH=", 1),
+			wantStatus: statusFail,
+			wantDetail: "unexpected: DISPLAY",
+		},
+		{
+			name:       "a dropped posture forward fails",
+			body:       strings.Replace(canonical, "    "+posturebinding.RuntimeProofEnv+"=", "    IGNORED_PROOF=", 1),
+			wantStatus: statusFail,
+			wantDetail: "missing: " + posturebinding.RuntimeProofEnv,
 		},
 	}
 	for _, tc := range cases {

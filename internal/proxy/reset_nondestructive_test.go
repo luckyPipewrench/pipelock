@@ -29,13 +29,28 @@ func TestReset_LeavesInFlightConnectionsAlone(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &SessionState{kind: sessionKindIdentity}
 
-			cancelled := false
-			s.airlock.RegisterCancel(func() { cancelled = true })
+			// Both lanes matter and they are separate code paths in Reset.
+			// Adaptive escalation writes the tier PER DESTINATION SCOPE, so a
+			// real session's live connections hang off the scoped airlock; a
+			// test that only registers a global callback passes even when the
+			// scoped branch still tears connections down.
+			globalCancelled := false
+			s.airlock.RegisterCancel(func() { globalCancelled = true })
+
+			scopedCancelled := false
+			scoped := s.AirlockForScope("api.example")
+			if scoped == nil {
+				t.Fatal("AirlockForScope returned nil; cannot exercise the scoped branch")
+			}
+			scoped.RegisterCancel(func() { scopedCancelled = true })
 
 			s.Reset(tt.cancelInFlight)
 
-			if cancelled != tt.wantCancelled {
-				t.Fatalf("in-flight connection cancelled=%t, want %t", cancelled, tt.wantCancelled)
+			if globalCancelled != tt.wantCancelled {
+				t.Errorf("global in-flight connection cancelled=%t, want %t", globalCancelled, tt.wantCancelled)
+			}
+			if scopedCancelled != tt.wantCancelled {
+				t.Errorf("scoped in-flight connection cancelled=%t, want %t", scopedCancelled, tt.wantCancelled)
 			}
 
 			// Either way the callbacks must be dropped, or a later escalation
@@ -44,7 +59,18 @@ func TestReset_LeavesInFlightConnectionsAlone(t *testing.T) {
 			remaining := len(s.airlock.cancelFuncs)
 			s.airlock.mu.Unlock()
 			if remaining != 0 {
-				t.Fatalf("reset left %d cancel func(s) registered; a later escalation would re-fire them", remaining)
+				t.Errorf("reset left %d global cancel func(s) registered; a later escalation would re-fire them", remaining)
+			}
+
+			// Reset drops s.scopes entirely, so the scoped callbacks go with
+			// it. Assert on the slice captured above rather than re-reading
+			// through the session, which would find no scope at all and pass
+			// for the wrong reason.
+			scoped.mu.Lock()
+			scopedRemaining := len(scoped.cancelFuncs)
+			scoped.mu.Unlock()
+			if scopedRemaining != 0 {
+				t.Errorf("reset left %d scoped cancel func(s) registered", scopedRemaining)
 			}
 		})
 	}

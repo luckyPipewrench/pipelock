@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
@@ -563,7 +564,7 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
+		return nil, statusError(url, resp)
 	}
 
 	// Enforce size limit.
@@ -578,6 +579,80 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 	}
 
 	return data, nil
+}
+
+// statusError turns a non-200 bundle fetch into an operator-readable error.
+//
+// A Pipelock proxy sitting between this command and the registry answers a
+// blocked fetch with its own 403 and the block-reason header set. Without this,
+// that arrives as a bare "status 403" indistinguishable from the registry being
+// down, and nothing tells the operator that their own proxy made the decision
+// or which control governs it.
+//
+// Only the headers are read. The body is attacker-influenced bytes of
+// arbitrary content and echoing it into an operator's terminal buys nothing the
+// bounded reason vocabulary does not already say.
+func statusError(url string, resp *http.Response) error {
+	info, ok := blockreason.FromHeader(resp.Header)
+	if !ok {
+		return fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
+	}
+	msg := fmt.Sprintf(
+		"HTTP GET %s: status %d: blocked by Pipelock, not by the server (reason=%s, layer=%s)",
+		url, resp.StatusCode, info.Reason, layerOrUnset(info.Layer),
+	)
+	if remedy := authenticatedArtifactRemedy(url, info.Reason); remedy != "" {
+		msg += remedy
+	}
+	return errors.New(msg)
+}
+
+func layerOrUnset(layer string) string {
+	if layer == "" {
+		return "unset"
+	}
+	return layer
+}
+
+// authenticatedArtifactRemedy names the one control that would have changed
+// this outcome, and returns empty when no control would have.
+//
+// The exception is scoped to response injection scanning, so it is offered only
+// for a prompt_injection block: response_scanning.authenticated_artifacts is
+// consulted in the proxy's response path before injection matching runs
+// (internal/proxy/authenticated_artifact.go, wired into both the forward proxy
+// and decrypted CONNECT). A block from any other layer would be unaffected by
+// it, and pointing an operator at a setting that would not have helped teaches
+// them policy changed when nothing did.
+//
+// host and path are the exact strings the proxy compares against, so they are
+// taken from the URL rather than described. bundle_name cannot be: it must
+// equal the name field inside the bundle that was just refused, which this
+// command never got to read.
+func authenticatedArtifactRemedy(rawURL string, reason blockreason.Reason) string {
+	if reason != blockreason.PromptInjection {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+A rules bundle is a list of detection patterns, so its own contents read as injection
+text to a response scanner. Pipelock can verify and release this exact artifact instead
+of scanning it. In the PROXY's config (not this machine's rules directory):
+
+  response_scanning:
+    authenticated_artifacts:
+      - host: %q
+        path: %q
+        bundle_name: "<the name field inside that bundle>"
+
+The proxy then re-fetches the signature itself and verifies the bundle against its
+official keyring before releasing the body. Only injection matching is skipped;
+request-side DLP, an unsigned bundle, a non-official signer, a redirect, and any
+other host or path are all still refused.`, parsed.Hostname(), parsed.EscapedPath())
 }
 
 // decodeSignatureBytes decodes a base64-encoded signature from raw bytes.

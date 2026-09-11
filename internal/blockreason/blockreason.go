@@ -448,6 +448,58 @@ func (i Info) SetHeaders(h http.Header) {
 	}
 }
 
+// FromHeader decodes the block-reason header set that a Pipelock block
+// response carries, giving this package a read side to match SetHeaders. The
+// two sit together on purpose: the vocabulary, the header names, and the
+// canonical severity/retry mappings are all defined here, so a decoder placed
+// anywhere else would be a second copy of them that drifts silently.
+//
+// ok is true only when HeaderReason holds a reason inside the v1 vocabulary.
+// That is what keeps an ordinary upstream 4xx - which carries no such header -
+// from being reported to an operator as a Pipelock block.
+//
+// Severity and Retry fall back to the reason's canonical mapping when the wire
+// values are missing or outside the vocabulary. The reason code is the
+// authoritative field and the emitting end derives the other two from it, so a
+// mismatch means the wire value is wrong, not the reason. Layer and Receipt are
+// optional: a value that fails its validator is dropped rather than rejected,
+// so a malformed optional field degrades the explanation instead of discarding
+// a block that really did happen.
+//
+// This is a diagnostic decoder, not a trust decision. Any server can set these
+// headers; nothing here should gate enforcement on the result.
+func FromHeader(h http.Header) (Info, bool) {
+	if h == nil {
+		return Info{}, false
+	}
+	reason := Reason(h.Get(HeaderReason))
+	if _, ok := validReasons[reason]; !ok {
+		return Info{}, false
+	}
+	severity := Severity(h.Get(HeaderSeverity))
+	if _, ok := validSeverities[severity]; !ok {
+		severity = SeverityFor(reason)
+	}
+	retry := Retry(h.Get(HeaderRetry))
+	if _, ok := validRetries[retry]; !ok {
+		retry = RetryFor(reason)
+	}
+	info, err := New(reason, severity, retry)
+	if err != nil {
+		// Unreachable: reason passed validReasons above, and both fallbacks
+		// return vocabulary members. Fail toward "not a Pipelock block"
+		// rather than reporting a half-built Info.
+		return Info{}, false
+	}
+	if layered, layerErr := info.WithLayer(h.Get(HeaderLayer)); layerErr == nil {
+		info = layered
+	}
+	if receipted, receiptErr := info.WithReceipt(h.Get(HeaderReceipt)); receiptErr == nil {
+		info = receipted
+	}
+	return info, true
+}
+
 // SetRecordedReceipt sets the caller-correlation header only for a valid
 // receipt action ID. Its boolean result lets an emission site fail toward
 // silence if a future producer supplies an invalid ID.

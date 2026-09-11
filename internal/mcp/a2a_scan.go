@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -392,10 +393,29 @@ func CardCacheKeyFromRequest(cardURL string, authHeader string) cardCacheKey {
 	return cardCacheKey{cardURL: cardURL, authFingerprint: fp}
 }
 
-// cardEntry stores a single Agent Card baseline.
+// cardEntry stores a single Agent Card baseline as two views: the
+// endpoint/structural digest (any change blocks) and the descriptive free text
+// (a change is adopted when it introduces no cue class). Splitting the record is
+// what lets a benign description edit update the baseline while an endpoint or
+// auth change still fails closed.
 type cardEntry struct {
-	hash       string
-	skillNames []string
+	structuralDigest string
+	descriptive      string
+	skillNames       []string
+}
+
+// cardDriftOutcome reports how a card compares to its baseline. changed drives
+// observability (DriftDetected); block is the enforcement decision. When block
+// is set, exactly one of structuralChange or introducedCues explains it; when
+// adopted is set, a benign descriptive change updated the baseline in place.
+type cardDriftOutcome struct {
+	firstSeen        bool
+	capacityExceeded bool
+	changed          bool
+	block            bool
+	adopted          bool
+	structuralChange bool
+	introducedCues   []string
 }
 
 // CardBaseline tracks Agent Card hashes by origin, for drift detection.
@@ -419,50 +439,73 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 	}
 }
 
-// Check compares a card hash against the baseline for the given key.
-// Returns (driftDetected, isFirstSeen, capacityExceeded). First-seen cards
-// are accepted only when the baseline has room to preserve them (TOFU).
-func (cb *CardBaseline) Check(key cardCacheKey, hash string, skillNames []string) (bool, bool, bool) {
+// Check compares a card's structural digest and descriptive text against the
+// baseline for the given key. First-seen cards are accepted only when the
+// baseline has room to preserve them (TOFU).
+//
+// Enforcement, in fail-closed order:
+//   - a changed structural/endpoint digest ALWAYS blocks and never auto-promotes
+//     (url, auth, capabilities, skill ids/schemas, modes moved);
+//   - with the structure unchanged, a descriptive change that introduces a cue
+//     class (tool-poison, egress, directive, concealment, cross-tool) blocks and
+//     never auto-promotes;
+//   - a descriptive change that introduces no cue class is adopted as the new
+//     baseline in place and does not block, which is the false-positive the whole
+//     mechanism exists to remove.
+//
+// A blocked change preserves the existing baseline so repeated fetches keep
+// blocking until an operator ResetBaseline accepts it. Auto-promotion is scoped
+// strictly to the benign descriptive case; every other change holds the ledger.
+func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	existing, ok := cb.entries[key]
 	if !ok {
 		if len(cb.entries) >= cb.maxSize {
-			return false, false, true
+			return cardDriftOutcome{capacityExceeded: true}
 		}
 		// First-seen: store baseline (TOFU).
-		cb.entries[key] = &cardEntry{hash: hash, skillNames: skillNames}
+		cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
 		cb.touchLocked(key)
-		return false, true, false
+		return cardDriftOutcome{firstSeen: true}
 	}
 
 	// Update LRU position.
 	cb.touchLocked(key)
 
-	if existing.hash == hash {
-		return false, false, false
+	if existing.structuralDigest != structuralDigest {
+		// Endpoint/structural change: fail closed, preserve baseline.
+		return cardDriftOutcome{changed: true, block: true, structuralChange: true}
+	}
+	if existing.descriptive == descriptive {
+		return cardDriftOutcome{}
 	}
 
-	// Drift detected - do NOT auto-promote the baseline. The existing
-	// baseline is preserved so repeated fetches of a drifted card
-	// continue to report drift until explicitly reset. Operators must
-	// call ResetBaseline to accept the new card.
-	return true, false, false
+	// Structure unchanged, descriptive text changed: block only if the change
+	// introduced a cue class; otherwise adopt the new descriptive text.
+	introduced := tools.IntroducedDescriptionCues(existing.descriptive, descriptive)
+	if len(introduced) > 0 {
+		return cardDriftOutcome{changed: true, block: true, introducedCues: introduced}
+	}
+	existing.descriptive = descriptive
+	existing.skillNames = skillNames
+	return cardDriftOutcome{changed: true, adopted: true}
 }
 
 // ResetBaseline explicitly updates the stored baseline for a key.
-// Use after reviewing and accepting a drifted Agent Card. This is the
-// only path that promotes a new hash; Check never auto-promotes. Resetting a
-// missing entry at capacity is refused so an operator action cannot discard a
-// different trusted baseline.
-func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames []string) error {
+// Use after reviewing and accepting a drifted Agent Card. This is the operator
+// path that promotes a change Check refused (a structural/endpoint change or a
+// cue-introducing descriptive change). Resetting a missing entry at capacity is
+// refused so an operator action cannot discard a different trusted baseline.
+func (cb *CardBaseline) ResetBaseline(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	existing, ok := cb.entries[key]
 	if ok {
-		existing.hash = hash
+		existing.structuralDigest = structuralDigest
+		existing.descriptive = descriptive
 		existing.skillNames = skillNames
 		cb.touchLocked(key)
 		return nil
@@ -472,7 +515,7 @@ func (cb *CardBaseline) ResetBaseline(key cardCacheKey, hash string, skillNames 
 		return ErrCardBaselineCapacity
 	}
 	// Key not present: insert as a reviewed baseline.
-	cb.entries[key] = &cardEntry{hash: hash, skillNames: skillNames}
+	cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
 	cb.touchLocked(key)
 	return nil
 }
@@ -495,7 +538,12 @@ type AgentCardScanResult struct {
 	Action        string
 	Reason        string
 	DriftDetected bool
-	FirstSeen     bool
+	// DriftAdopted is true when a benign descriptive change was adopted as the
+	// new baseline without blocking. DriftDetected is still set (the card
+	// changed, which observability records), but the change did not enforce.
+	// Distinguishes an adopted change from a blocked one for downstream audit.
+	DriftAdopted bool
+	FirstSeen    bool
 	// BaselineCapacityExceeded reports that this card could not be safely
 	// verified without replacing a different trusted baseline.
 	BaselineCapacityExceeded bool
@@ -547,28 +595,36 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		}
 	}
 
-	// Drift detection.
+	// Drift detection. A change to an endpoint/structural field always blocks;
+	// a descriptive change blocks only when it introduces a cue class, and is
+	// otherwise adopted as the new baseline (the false positive this removes).
 	if cfg.DetectCardDrift && baseline != nil {
-		hash := HashAgentCard(card)
 		var skillNames []string
 		for _, s := range card.Skills {
 			skillNames = append(skillNames, s.Name)
 		}
-		drift, firstSeen, capacityExceeded := baseline.Check(key, hash, skillNames)
-		result.DriftDetected = drift
-		result.FirstSeen = firstSeen
-		result.BaselineCapacityExceeded = capacityExceeded
-		if capacityExceeded {
+		outcome := baseline.Check(key, cardStructuralDigest(card), cardDescriptiveText(card), skillNames)
+		result.DriftDetected = outcome.changed
+		result.DriftAdopted = outcome.adopted
+		result.FirstSeen = outcome.firstSeen
+		result.BaselineCapacityExceeded = outcome.capacityExceeded
+		if outcome.capacityExceeded {
 			result.Clean = false
 			result.Action = config.ActionBlock
 			result.Reason = "a2a: Agent Card baseline capacity exhausted; card cannot be safely verified"
 		}
-		if drift {
+		if outcome.block {
 			result.Clean = false
 			if result.Action == "" {
 				result.Action = cfg.Action
 			}
-			result.Reason = "a2a: Agent Card drift detected"
+			if outcome.structuralChange {
+				// Name the axis (endpoint/structural), not the specific field, so
+				// the reason does not map the card's configuration surface.
+				result.Reason = "a2a: Agent Card drift introduced: endpoint or structural change"
+			} else {
+				result.Reason = "a2a: Agent Card drift introduced: " + strings.Join(outcome.introducedCues, ", ")
+			}
 		}
 	}
 

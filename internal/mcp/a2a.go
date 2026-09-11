@@ -670,3 +670,68 @@ func writeBool(h interface{ Write([]byte) (int, error) }, v *bool) {
 		_, _ = h.Write([]byte{1})
 	}
 }
+
+// --- Agent Card drift discrimination ---
+//
+// An Agent Card carries endpoints and auth by construction (url, provider.url,
+// documentationUrl, securitySchemes), so blocking on the bare fact of a change
+// blocks every legitimate description edit. Drift discrimination splits the card
+// into two views: DESCRIPTIVE free text scanned for introduced cue classes, and
+// a STRUCTURAL/ENDPOINT digest whose change always blocks. Only a change confined
+// to descriptive text that introduces no cue class is adopted as the new
+// baseline. This mirrors the MCP tool-drift discriminator in internal/mcp/tools.
+
+// cardDescriptiveText returns the card's free-text fields - name, description,
+// and each skill's name and description - as one normalized string for cue
+// comparison. Skills are ordered by ID (then Name) so a reorder is not read as a
+// change, matching HashAgentCard's ordering. Endpoint and structural fields (url,
+// provider, auth, capabilities, schemas, modes, version) are deliberately absent:
+// they belong to the structural digest, not the cue-scanned text, so a URL that a
+// card carries by construction never registers as an egress cue.
+func cardDescriptiveText(card A2AAgentCard) string {
+	skills := make([]A2ASkill, len(card.Skills))
+	copy(skills, card.Skills)
+	sort.Slice(skills, func(i, j int) bool {
+		if skills[i].ID != skills[j].ID {
+			return skills[i].ID < skills[j].ID
+		}
+		return skills[i].Name < skills[j].Name
+	})
+	var b strings.Builder
+	b.WriteString(card.Name)
+	b.WriteByte('\n')
+	b.WriteString(card.Description)
+	for _, s := range skills {
+		b.WriteByte('\n')
+		b.WriteString(s.Name)
+		b.WriteByte('\n')
+		b.WriteString(s.Description)
+	}
+	return b.String()
+}
+
+// cardStructuralDigest hashes everything HashAgentCard covers EXCEPT the
+// descriptive free text, so a description-only edit leaves it stable and any
+// endpoint/structural change (url, skill ids/schemas, interfaces, capabilities,
+// security schemes/requirements, default modes) moves it. It is computed by
+// blanking the descriptive fields on a copy and reusing HashAgentCard, so the
+// digest cannot drift from the semantic hash's field set and coverage. Version
+// is excluded (HashAgentCard already omits it), matching the rule that a bare
+// version bump is descriptive for drift purposes.
+//
+// Fail direction: any structural field a change touches moves this digest, and a
+// caller treats a moved digest as a block. Fields HashAgentCard does not cover
+// (provider, documentationUrl, iconUrl) are outside this digest exactly as they
+// are outside today's drift hash; widening drift to them is a separate change.
+func cardStructuralDigest(card A2AAgentCard) string {
+	card.Name = ""
+	card.Description = ""
+	blanked := make([]A2ASkill, len(card.Skills))
+	for i, s := range card.Skills {
+		s.Name = ""
+		s.Description = ""
+		blanked[i] = s
+	}
+	card.Skills = blanked
+	return HashAgentCard(card)
+}

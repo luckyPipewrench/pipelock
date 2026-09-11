@@ -297,6 +297,24 @@ func introducedDriftCues(prevDesc, newDesc string, structuralChanged bool) []str
 	return introduced
 }
 
+// IntroducedDescriptionCues returns the cue classes present in newDesc that were
+// absent from prevDesc, over descriptive TEXT only. It is the exported,
+// text-only form of introducedDriftCues (no structural component - the caller
+// evaluates endpoint/structural change on its own record shape). Reusing the
+// same cue set - tool-poison patterns plus the behavioral cues (egress-url,
+// agent-directive, concealment, cross-tool) - lets a second surface such as A2A
+// agent-card drift agree with MCP tool drift about what a descriptive change
+// introduced, instead of forking the detection.
+//
+// An empty result means the change added only descriptive text with no new cue
+// class and is safe to adopt as a new baseline. Fail direction: any cue the
+// analysis recognizes is reported so the caller can block; a caller that cannot
+// characterize the surrounding change must still fail closed on its own
+// structural comparison, exactly as the tool path does with structuralChanged.
+func IntroducedDescriptionCues(prevDesc, newDesc string) []string {
+	return introducedDriftCues(prevDesc, newDesc, false)
+}
+
 // definitionCues returns every cue identity a description carries. Poison
 // matching is reused rather than reimplemented so the drift bar can never
 // disagree with first-sight scanning about the same text, and each matched

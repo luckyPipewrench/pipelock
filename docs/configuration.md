@@ -3041,7 +3041,7 @@ a2a_scanning:
 | `enabled` | `false` | Enable A2A protocol detection and scanning |
 | `action` | `warn` | Action on findings: `block` or `warn`. Immutable core DLP findings in an A2A body hard-block regardless of this action, including on the branch where `request_body_scanning` is disabled and A2A scanning alone carries the body floor. Non-core findings follow this action. |
 | `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
-| `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull) |
+| `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull). Evaluates what a change introduced rather than blocking on the fact of a change — see below. |
 | `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
 | `max_context_messages` | `100` | Per-context message cap |
 | `max_contexts` | `1000` | Total tracked contexts |
@@ -3050,7 +3050,17 @@ a2a_scanning:
 | `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
 | `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
 
-A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and alerts on mid-session changes.
+A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and evaluates mid-session changes.
+
+#### Agent Card drift: what adopts silently, what blocks
+
+An Agent Card carries endpoints and auth by construction (`url`, `provider`, `securitySchemes`, capabilities, skill schemas), so blocking on the bare fact of any change blocks every ordinary vendor description edit — the fastest way to get drift detection turned off. Drift detection instead splits the card into two views and asks what a change introduced.
+
+A change is **adopted silently as the new baseline** (no block, and the change is recorded for audit) only when it is confined to descriptive free text — the card name, the card description, and skill names and descriptions — and introduces no cue class. A refined description, a reworded skill description, or a bare `version` bump adopts.
+
+A change **blocks** and preserves the prior baseline (so repeated fetches keep blocking until an operator accepts the new card) when it is an endpoint or structural change — `url`, `securitySchemes`, capabilities, default input/output modes, or the set of skill ids and their schemas — or when a descriptive change introduces a cue class such as an instruction-injection or tool-poison pattern, an embedded egress instruction, a concealment instruction, or a reference to another tool. Adding a new skill is a structural change (a new capability surface) and blocks. The block reason names the axis for a structural change and the introduced cue classes for a descriptive one. A card that cannot be re-parsed fails closed.
+
+Fields the semantic hash does not currently cover (`provider`, `documentationUrl`, `iconUrl`) are outside drift comparison, unchanged from prior releases; widening drift to them is a separate change.
 
 ### Agent Card Signature Verification
 

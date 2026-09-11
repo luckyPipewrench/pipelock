@@ -50,7 +50,13 @@ func newTestServer(t *testing.T) *Server {
 	}
 
 	// Polar mock returns active pro subscription.
-	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every production Polar read must carry the version pin; these
+		// end-to-end fixtures are the ones that would otherwise let an
+		// unpinned client through.
+		if got := r.Header.Get("Polar-Version"); got != defaultPolarAPIVersion {
+			t.Errorf("Polar-Version = %q, want %q", got, defaultPolarAPIVersion)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{
 			"id": "%s",
@@ -87,6 +93,7 @@ func newTestServer(t *testing.T) *Server {
 		ListenAddr:          ":0",
 		FromEmail:           "test@pipelock.dev",
 		PolarAPIBase:        polarSrv.URL,
+		PolarAPIVersion:     defaultPolarAPIVersion,
 	}
 
 	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)

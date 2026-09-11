@@ -95,6 +95,12 @@ func newTestSetup(t *testing.T) *testSetup {
 
 	// Default Polar mock: returns an active pro subscription.
 	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every production Polar read must carry the version pin; these
+		// end-to-end fixtures are the ones that would otherwise let an
+		// unpinned client through.
+		if got := r.Header.Get("Polar-Version"); got != defaultPolarAPIVersion {
+			t.Errorf("Polar-Version = %q, want %q", got, defaultPolarAPIVersion)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/v1/orders/") {
 			orderID := strings.TrimPrefix(r.URL.Path, "/v1/orders/")
@@ -211,6 +217,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		ListenAddr:          ":0",
 		FromEmail:           "test@pipelock.dev",
 		PolarAPIBase:        polarSrv.URL,
+		PolarAPIVersion:     defaultPolarAPIVersion,
 		OrderProducts: []OrderProductConfig{
 			{ProductID: "prod_trial", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
 			{ProductID: "prod_trial_test", Tier: tierTrial, AmountCents: 100, Currency: "usd"},

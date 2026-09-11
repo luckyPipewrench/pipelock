@@ -86,9 +86,13 @@ type Config struct {
 	// PolarAPIVersion pins every Polar API request to a dated contract via the
 	// Polar-Version header. Polar releases a new version each quarter and an
 	// unpinned request silently follows whatever "Current" is, so the response
-	// shape can change under us at a release boundary. A removed or malformed
-	// version is a 404 from Polar, not a fallback, so this is validated at
-	// startup rather than discovered on the first webhook.
+	// shape can change under us at a release boundary.
+	//
+	// Only the YYYY-MM SHAPE is checked at startup. Whether Polar still serves
+	// that version is not knowable without calling Polar, and a version it has
+	// retired is answered with 404 on every request rather than a fallback, so
+	// a syntactically valid but retired pin presents at runtime as every
+	// subscription and order read failing.
 	PolarAPIVersion string
 
 	// EvalProductIDs is the allowlist of Polar product IDs that fulfill the
@@ -144,9 +148,10 @@ const (
 	defaultFromEmail        = "licenses@mail.pipelab.org"
 	defaultPolarAPIBase     = "https://api.polar.sh"
 	// defaultPolarAPIVersion is the dated Polar API contract this code was
-	// written against. Polar removes a version roughly nine months after
-	// release, at which point every request pinned to it returns 404, so this
-	// must be re-pinned to a supported version before then.
+	// written against. Polar retires a version roughly nine months after
+	// release, at which point every request pinned to it returns 404. Nothing
+	// in this process can detect that in advance, so this constant must be
+	// re-pinned to a supported version before the pinned one is retired.
 	defaultPolarAPIVersion = "2026-04"
 	defaultEvalCurrency    = "usd"
 )
@@ -267,7 +272,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if !polarAPIVersionPattern.MatchString(cfg.PolarAPIVersion) {
-		return nil, fmt.Errorf("POLAR_API_VERSION must be YYYY-MM (e.g. %s), got %q", defaultPolarAPIVersion, cfg.PolarAPIVersion)
+		return nil, fmt.Errorf("POLAR_API_VERSION must be a YYYY-MM date (e.g. %s), got %q", defaultPolarAPIVersion, cfg.PolarAPIVersion)
 	}
 
 	// Validate required secrets.

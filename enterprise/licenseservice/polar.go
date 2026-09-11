@@ -130,6 +130,14 @@ func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) 
 		return fmt.Errorf("read %s response: exceeds %d bytes", label, maxResponseBody)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// Polar answers a retired or unrecognized Polar-Version with 404, which
+		// is otherwise indistinguishable from "this subscription does not
+		// exist". Name the pin in the error so the operator has a control to
+		// reach for; POLAR_API_VERSION is the knob that changes it.
+		if resp.StatusCode == http.StatusNotFound && p.apiVersion != "" {
+			return fmt.Errorf("polar API returned 404 for %s (pinned to API version %s via POLAR_API_VERSION; a retired version returns 404 for every request): %s",
+				label, p.apiVersion, string(body))
+		}
 		return fmt.Errorf("polar API returned %d for %s: %s", resp.StatusCode, label, string(body))
 	}
 	if err := decodeVendorJSON(body, out); err != nil {

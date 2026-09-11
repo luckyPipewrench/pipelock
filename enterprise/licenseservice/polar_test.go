@@ -663,3 +663,42 @@ func TestPolarClient_SendsVersionHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestPolarClient_404NamesVersionPin covers the operability direction. A
+// retired Polar-Version is answered with 404 on every request, which otherwise
+// reads exactly like "no such subscription". The error must name the pin, or
+// the operator has a total fulfillment outage and no control to reach for.
+func TestPolarClient_404NamesVersionPin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Not Found"}`))
+	}))
+	defer srv.Close()
+
+	client := NewPolarClient(testPolarAPIToken, srv.URL, "2026-01")
+	_, err := client.GetSubscription(t.Context(), testSubscriptionID)
+	if err == nil {
+		t.Fatal("expected an error on 404")
+	}
+	for _, want := range []string{"2026-01", "POLAR_API_VERSION"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("404 error %q does not mention %q", err.Error(), want)
+		}
+	}
+
+	// A non-404 failure keeps the plain shape: the version pin is not a
+	// plausible remedy for a 500, and suggesting it would misdirect.
+	srv500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv500.Close()
+
+	client500 := NewPolarClient(testPolarAPIToken, srv500.URL, "2026-01")
+	_, err = client500.GetSubscription(t.Context(), testSubscriptionID)
+	if err == nil {
+		t.Fatal("expected an error on 500")
+	}
+	if strings.Contains(err.Error(), "POLAR_API_VERSION") {
+		t.Errorf("500 error should not suggest the version pin: %q", err.Error())
+	}
+}

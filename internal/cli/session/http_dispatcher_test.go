@@ -6,6 +6,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,8 +83,9 @@ func TestHTTPDispatcher_Reset_ReportsNoOp(t *testing.T) {
 				t.Fatalf("Reset: %v", err)
 			}
 			got := out.String()
-			if !strings.Contains(got, "reset=") {
-				t.Errorf("reset output must report the reset flag; got %q", got)
+			wantFlag := fmt.Sprintf("reset=%t", tt.didReset)
+			if !strings.Contains(got, wantFlag) {
+				t.Errorf("reset output must contain %q; got %q", wantFlag, got)
 			}
 			warned := strings.Contains(got, "nothing was reset")
 			if warned != tt.wantWarn {

@@ -324,7 +324,7 @@ func TestProtocolLifecycleSessionResetAndMetrics(t *testing.T) {
 		s.scopes["destination:api.vendor.example"].airlock.RegisterCancel(func() { scopedCalls.Add(1) })
 		s.airlock.RegisterCancel(func() { globalCalls.Add(1) })
 
-		s.Reset()
+		s.Reset(true)
 
 		if scopedCalls.Load() != 1 || globalCalls.Load() != 1 {
 			t.Fatalf("cancel calls scoped=%d global=%d, want one each", scopedCalls.Load(), globalCalls.Load())

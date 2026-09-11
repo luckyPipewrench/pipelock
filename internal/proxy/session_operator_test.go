@@ -157,7 +157,7 @@ func TestSessionState_Reset_ClearsRecentEvents(t *testing.T) {
 	s.RecordEvent(SessionEvent{Kind: "block", Target: operTarget, Detail: "one"})
 	s.RecordEvent(SessionEvent{Kind: "block", Target: operTarget, Detail: "two"})
 
-	s.Reset()
+	s.Reset(true)
 
 	events := s.RecentEvents()
 	if len(events) != 0 {

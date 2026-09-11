@@ -903,12 +903,23 @@ func (s *SessionState) RecentEvents() []SessionEvent {
 // Reset zeros all enforcement fields in place and refreshes lastActivity.
 // The session remains in the map so live Recorder pointers stay valid.
 // Returns previous score and level for the API response.
-func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
+// Reset clears enforcement state. cancelInFlight decides whether registered
+// airlock cancel functions are FIRED before they are cleared, and the two are
+// deliberately separable: firing them tears down live requests and tunnels,
+// while clearing them is what stops a stale callback re-firing on a later
+// hard/drain escalation. Only the clearing is a safety requirement.
+//
+// POST /api/v1/sessions/{key}/reset is documented as clearing enforcement
+// state WITHOUT cutting connections, so HandleReset passes false. Terminate is
+// the destructive operation and passes true. Before this split both paths
+// fired, so the recovery command an operator reaches for when a destination
+// scope has locked a session out also killed that session's in-flight work.
+func (s *SessionState) Reset(cancelInFlight bool) (prevScore float64, prevLevel int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.airlock.mu.Lock()
 	defer s.airlock.mu.Unlock()
-	return s.resetWhileLocked()
+	return s.resetWhileLocked(cancelInFlight)
 }
 
 // resetWhileLocked performs the in-place reset under the assumption
@@ -921,7 +932,7 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 //
 // Callers are responsible for holding s.mu AND s.airlock.mu. Lock
 // order is sess.mu > sess.airlock.mu; acquire in that order.
-func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
+func (s *SessionState) resetWhileLocked(cancelInFlight bool) (prevScore float64, prevLevel int) {
 	prevScore = s.threatScore
 	prevLevel = s.escalationLevel
 
@@ -933,7 +944,13 @@ func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
 	s.globalSignalsAuthoritative = false
 	for _, scoped := range s.scopes {
 		scoped.airlock.mu.Lock()
-		scoped.airlock.callCancelFuncsLocked()
+		if cancelInFlight {
+			scoped.airlock.callCancelFuncsLocked()
+		} else {
+			// Drop the callbacks without firing them: the scope is going away,
+			// so nothing may re-fire, but the connections stay up.
+			scoped.airlock.cancelFuncs = nil
+		}
 		scoped.airlock.mu.Unlock()
 	}
 	s.scopes = nil
@@ -958,7 +975,9 @@ func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
 	s.airlock.enteredAt = time.Time{}
 	s.airlock.trigger = ""
 	s.airlock.source = ""
-	s.airlock.callCancelFuncsLocked()
+	if cancelInFlight {
+		s.airlock.callCancelFuncsLocked()
+	}
 	s.airlock.cancelFuncs = nil
 
 	return prevScore, prevLevel
@@ -1875,7 +1894,8 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 
 	// Reset session in place while still holding sm.mu to prevent an
 	// eviction race between lock release and Reset.
-	prevScore, prevLevel := sess.Reset()
+	// Destructive path: in-flight work is torn down.
+	prevScore, prevLevel := sess.Reset(true)
 	sm.mu.Unlock()
 
 	// Decrement adaptive gauge if session was escalated (lock-free prometheus op).
@@ -1946,7 +1966,8 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 
 	// Reset session in place while still holding sm.mu to prevent an
 	// eviction race between lock release and Reset.
-	prevScore, prevLevel := sess.Reset()
+	// Connections stay up: this is the non-destructive reset behind POST /reset.
+	prevScore, prevLevel := sess.Reset(false)
 	sm.mu.Unlock()
 
 	// Decrement adaptive gauge if session was escalated (lock-free prometheus op).
@@ -2046,7 +2067,7 @@ func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sess
 	// so the snapshot fields above and the fields being cleared come
 	// from the same critical section. No concurrent goroutine can
 	// mutate sess or sess.airlock between the capture and the reset.
-	_, _ = sess.resetWhileLocked()
+	_, _ = sess.resetWhileLocked(true)
 
 	// Decrement adaptive gauge if session was escalated. Lock-free
 	// prometheus op; safe to call under the session locks.
@@ -2073,7 +2094,7 @@ func (sm *SessionManager) ResetAllIdentitySessions() (reset, skipped int) {
 		sess.mu.Lock()
 		sess.airlock.mu.Lock()
 		prevLevel := sess.escalationLevel
-		sess.resetWhileLocked()
+		sess.resetWhileLocked(true)
 		sess.airlock.mu.Unlock()
 		sess.mu.Unlock()
 		if prevLevel > 0 && sm.metrics != nil {

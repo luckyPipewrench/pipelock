@@ -49,7 +49,7 @@ func TestNoteClassifiedDenial_ResetClearsFingerprints(t *testing.T) {
 	if !sess.NoteClassifiedDenial(scope, scanner.ScannerSSRF, "ssrf blocked", "hash-a") {
 		t.Fatal("first denial must score")
 	}
-	sess.Reset()
+	sess.Reset(true)
 	if !sess.NoteClassifiedDenial(scope, scanner.ScannerSSRF, "ssrf blocked", "hash-a") {
 		t.Fatal("after reset, the same denial must score again")
 	}

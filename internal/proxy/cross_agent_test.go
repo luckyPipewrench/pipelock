@@ -96,7 +96,7 @@ func TestCrossAgentContaminationSurvivesReset(t *testing.T) {
 	taintCfg := &config.TaintConfig{Enabled: true, RecentSources: 10}
 	decide.ObserveCrossAgentContamination(sess, taintCfg, session.CrossAgentBoundaryA2ARequest)
 
-	sess.Reset()
+	sess.Reset(true)
 
 	snap := sess.RiskSnapshot()
 	if !snap.Contaminated {

@@ -33,7 +33,7 @@ func TestSessionStateObserveRisk(t *testing.T) {
 		t.Fatalf("level = %v, want hostile", snap.Level)
 	}
 
-	sess.Reset()
+	sess.Reset(true)
 	if !sess.RiskSnapshot().Contaminated {
 		t.Fatal("reset should not clear sticky taint contamination")
 	}

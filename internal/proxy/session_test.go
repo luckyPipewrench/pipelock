@@ -2422,7 +2422,7 @@ func TestSessionState_Reset(t *testing.T) {
 		lastBurstAt:      time.Now(),
 	}
 
-	prevScore, prevLevel := s.Reset()
+	prevScore, prevLevel := s.Reset(true)
 
 	if prevScore != 12.5 {
 		t.Errorf("prevScore: got %f, want 12.5", prevScore)
@@ -2766,7 +2766,7 @@ func TestSessionState_Reset_ClearsBaselineFields(t *testing.T) {
 	sess.RecordToolCall("exec")
 	sess.RecordRequest("example.com", testSessionConfig())
 
-	sess.Reset()
+	sess.Reset(true)
 
 	m := sess.BaselineMetrics()
 	if m.BytesTotal != 0 {

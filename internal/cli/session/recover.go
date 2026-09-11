@@ -66,10 +66,14 @@ func (httpDispatcher) Reset(ctx context.Context, client *Client, key string, out
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "reset %s: reset=%t previous_level=%s previous_score=%.2f\n",
-		resp.Key, resp.Reset, resp.PreviousLevel, resp.PreviousScore)
+	if _, err := fmt.Fprintf(out, "reset %s: reset=%t previous_level=%s previous_score=%.2f\n",
+		resp.Key, resp.Reset, resp.PreviousLevel, resp.PreviousScore); err != nil {
+		return err
+	}
 	if !resp.Reset {
-		_, _ = fmt.Fprintln(out, "no session matched that key; nothing was reset.")
+		if _, err := fmt.Fprintln(out, "no session matched that key; nothing was reset."); err != nil {
+			return err
+		}
 	}
 	return nil
 }

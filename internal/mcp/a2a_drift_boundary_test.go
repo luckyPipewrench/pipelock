@@ -172,3 +172,42 @@ func TestHashAgentCard_FramesCollectionBoundaries(t *testing.T) {
 		t.Fatalf("adding an empty skill did not move the digest: both %s", got)
 	}
 }
+
+// TestApplyFreshDriftOutcome_CapacityForcesBlock covers the race path: Commit
+// declined because the baseline moved, and the re-evaluation came back with the
+// baseline full. The card could not be verified against any baseline, so the
+// verdict must be BLOCK even when the operator configured warn. A fall-back to
+// cfg.Action here is a fail-open that only shows up under the race, which is
+// exactly the kind of branch that never gets exercised in production testing.
+func TestApplyFreshDriftOutcome_CapacityForcesBlock(t *testing.T) {
+	cfg := &config.A2AScanning{Enabled: true, Action: config.ActionWarn, DetectCardDrift: true}
+
+	result := AgentCardScanResult{Clean: true}
+	applyFreshDriftOutcome(&result, cardDriftOutcome{capacityExceeded: true}, cfg)
+
+	if result.Clean {
+		t.Fatal("a card that could not be verified against any baseline was reported clean")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("action = %q, want %q; a configured warn must not forward an unverifiable card", result.Action, config.ActionBlock)
+	}
+	if !result.BaselineCapacityExceeded {
+		t.Fatal("BaselineCapacityExceeded was not set, so callers cannot tell why it blocked")
+	}
+
+	// Control: an ordinary structural block still honours the configured
+	// action, so the override above is scoped to capacity and is not a blanket
+	// "always block" that would make the assertion meaningless.
+	structural := AgentCardScanResult{Clean: true}
+	applyFreshDriftOutcome(&structural, cardDriftOutcome{changed: true, block: true, structuralChange: true}, cfg)
+	if structural.Action != config.ActionWarn {
+		t.Fatalf("structural drift action = %q, want the configured %q", structural.Action, config.ActionWarn)
+	}
+
+	// A clean re-evaluation must not invent a block.
+	ok := AgentCardScanResult{Clean: true}
+	applyFreshDriftOutcome(&ok, cardDriftOutcome{}, cfg)
+	if !ok.Clean || ok.Action != "" {
+		t.Fatalf("a clean re-evaluation produced %+v, want clean with no action", ok)
+	}
+}

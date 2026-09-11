@@ -707,24 +707,7 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 			if baseline.Commit(key, structural, descriptiveDigest, descriptive, skillNames) {
 				return
 			}
-			fresh := baseline.Evaluate(key, structural, descriptiveDigest, descriptive, skillNames)
-			result.DriftDetected = fresh.changed
-			result.DriftAdopted = fresh.adopted
-			result.FirstSeen = fresh.firstSeen
-			result.BaselineCapacityExceeded = fresh.capacityExceeded
-			if fresh.block || fresh.capacityExceeded {
-				result.Clean = false
-				if result.Action == "" {
-					result.Action = cfg.Action
-				}
-				if fresh.capacityExceeded {
-					result.Reason = "a2a: Agent Card baseline capacity exhausted; card cannot be safely verified"
-				} else if fresh.structuralChange {
-					result.Reason = "a2a: Agent Card drift introduced: endpoint or structural change"
-				} else {
-					result.Reason = "a2a: Agent Card drift introduced: " + strings.Join(fresh.introducedCues, ", ")
-				}
-			}
+			applyFreshDriftOutcome(&result, baseline.Evaluate(key, structural, descriptiveDigest, descriptive, skillNames), cfg)
 		}
 		driftOutcome = outcome
 		result.DriftDetected = outcome.changed
@@ -768,6 +751,38 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	}
 
 	return result
+}
+
+// applyFreshDriftOutcome rewrites a scan result from a re-evaluation performed
+// after Commit declined, which happens when the baseline moved between Evaluate
+// and Commit. It is a named function rather than an inline block so the
+// capacity branch below is reachable from a test without a sleep or a race.
+func applyFreshDriftOutcome(result *AgentCardScanResult, fresh cardDriftOutcome, cfg *config.A2AScanning) {
+	result.DriftDetected = fresh.changed
+	result.DriftAdopted = fresh.adopted
+	result.FirstSeen = fresh.firstSeen
+	result.BaselineCapacityExceeded = fresh.capacityExceeded
+	if !fresh.block && !fresh.capacityExceeded {
+		return
+	}
+	result.Clean = false
+	if result.Action == "" {
+		result.Action = cfg.Action
+	}
+	switch {
+	case fresh.capacityExceeded:
+		// Capacity exhaustion FORCES block, overriding cfg.Action, exactly as
+		// the first-pass capacity branch does. The card could not be verified
+		// against any baseline at all, so a configured `warn` must not forward
+		// it. An earlier version of this branch fell back to cfg.Action, which
+		// was a fail-open reachable only on the rarer race path.
+		result.Action = config.ActionBlock
+		result.Reason = "a2a: Agent Card baseline capacity exhausted; card cannot be safely verified"
+	case fresh.structuralChange:
+		result.Reason = "a2a: Agent Card drift introduced: endpoint or structural change"
+	default:
+		result.Reason = "a2a: Agent Card drift introduced: " + strings.Join(fresh.introducedCues, ", ")
+	}
 }
 
 // applyCardSignatureVerification verifies the card's signature (when verification

@@ -1616,6 +1616,13 @@ func TestScanResponseA2A_AdoptedCardDriftNotifies(t *testing.T) {
 	if verdict := ScanResponseA2A(first, testA2AScanner(t), opts); !verdict.Clean {
 		t.Fatalf("first card = %+v, want clean", verdict)
 	}
+	// A first-seen card is LEARNED, not adopted. Asserting zero here is what
+	// makes the final count meaningful: without it, a regression where the
+	// first scan fires the callback and the descriptive update does not would
+	// still end at 1 and pass.
+	if adoptions != 0 {
+		t.Fatalf("adoption notifications after the first (first-seen) card = %d, want 0", adoptions)
+	}
 	second := []byte(`{"jsonrpc":"2.0","id":1,"result":{"name":"Vendor Agent","description":"does useful things","skills":[{"id":"s1","name":"search","description":"ok"}],"supportedInterfaces":[{"url":"https://agent.vendor.example/a2a"}]}}`)
 	if verdict := ScanResponseA2A(second, testA2AScanner(t), opts); !verdict.Clean {
 		t.Fatalf("benign descriptive update = %+v, want clean", verdict)

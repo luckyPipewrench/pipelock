@@ -307,6 +307,12 @@ dlp:
       severity: medium
       validator: mod97
 response_scanning:
+  # authenticated_artifacts: exact signed rules artifacts (a bundle.yaml served
+  # over HTTPS) that the proxy re-fetches, verifies against its official keyring,
+  # and releases without injection scanning. None are configured by default,
+  # which is why fetching a rules bundle through this proxy is refused until an
+  # operator adds one. See docs/rules.md, "Installing a bundle through a Pipelock
+  # proxy", for the entry shape and what it does and does not relax.
   enabled: true
   action: warn
   include_defaults: false  # Preset defines the complete pattern set

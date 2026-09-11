@@ -19,7 +19,7 @@ you have not set that token, the CLI will refuse to connect. See
 | `pipelock session inspect <key> [--json]` | Full detail snapshot: tier, entry time, in-flight, recent events |
 | `pipelock session risk [<key>] [--json]` | Compact adaptive risk view: score, level, block-all state, and auto-recover ETA |
 | `pipelock session explain <key> [--json]` | Why the session is where it is: trigger, evidence, destination scopes, next auto-recovery time |
-| `pipelock session reset <key>` | Clear adaptive score, destination-scoped airlock, and block_all without cutting connections |
+| `pipelock session reset <key> [--json]` | Clear adaptive score, destination-scoped airlock, and block_all without cutting connections |
 | `pipelock session release <key> [--to none\|soft]` | Move session-wide airlock to a lower tier. Does not clear destination adaptive scores. |
 | `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state |
 | `pipelock session recover <key> [--choice ...]` | Interactive workflow: inspect → explain → pick an action. Prefer reset when a destination scope is the blocker. |

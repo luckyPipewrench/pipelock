@@ -741,6 +741,21 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	var findings []ConfigSemanticFinding
 	for _, entry := range entries {
 		tuple := pathEntropyAdvisoryTuple(entry)
+		// Every advisory in this loop asks the OPERATOR to act on an exemption
+		// they chose: own it, review it, remove it while entropy is off, or
+		// narrow it. A Pipelock-shipped default is none of those things. The
+		// operator did not add the route, cannot meaningfully own it, and
+		// "remove the path exemption" names a control they do not hold, so the
+		// advisory is an instruction that cannot be followed. Emitting them
+		// would put five to ten warnings in front of every operator on a fresh
+		// install, which is how a diagnostic trains people to ignore it.
+		//
+		// A shipped entry is still governed - just not here. It is pinned by a
+		// defaults test, validated by the same validator an operator's config
+		// passes, and moves the canonical policy hash when it changes.
+		if isShippedPathEntropyDefault(entry) {
+			continue
+		}
 		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
 			findings = append(findings, newPathEntropyFinding(
 				ConfigSemanticKindInert,
@@ -792,6 +807,22 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	}
 	sortConfigSemanticFindings(findings)
 	return findings
+}
+
+// isShippedPathEntropyDefault reports whether an entry is one Pipelock ships in
+// Defaults(). It compares against the live default set rather than a second
+// hardcoded list, so adding or removing a shipped route cannot leave this
+// predicate out of date. An operator who types the same host and prefix by hand
+// is indistinguishable here and is treated as shipped, which is the safe
+// direction: the worst case is one missing advisory on a route we already
+// consider correct.
+func isShippedPathEntropyDefault(entry config.PathEntropyExclusion) bool {
+	for _, def := range config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions {
+		if strings.EqualFold(entry.Host, def.Host) && entry.PathPrefix == def.PathPrefix {
+			return true
+		}
+	}
+	return false
 }
 
 func pathEntropyLifecycleCheck(tuple, field, next string) ConfigSemanticFinding {

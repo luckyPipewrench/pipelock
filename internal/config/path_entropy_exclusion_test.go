@@ -189,12 +189,53 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 	})
 }
 
-// The field ships empty. That is what makes adding it behaviour-preserving, so
-// it is worth pinning rather than assuming.
-func TestPathEntropyExclusionsDefaultEmpty(t *testing.T) {
+// The field shipped EMPTY when the mechanism landed, and this test pinned that.
+// Josh overruled it on 2026-09-11: the five document-sharing routes below now
+// ship as defaults, because an operator sent an ordinary Google Doc, Sheet,
+// Slide, Form or Drive link was blocked on a fresh install and the remedy they
+// reach for first is disabling path entropy outright.
+//
+// The distinction that changed the answer: a shipped default here encodes the
+// vendor's ROUTE PREFIX, which is directly observable and stable, NOT the
+// identifier format, which Google documents as opaque. The earlier "needs a
+// published route contract" bar was applied to the ID format and then used to
+// refuse the route prefix, which was never the thing in question.
+//
+// This test is rewritten rather than deleted so the shipped set stays pinned:
+// an entry added without a deliberate edit here fails.
+func TestPathEntropyExclusionDefaults(t *testing.T) {
 	t.Parallel()
-	if got := Defaults().FetchProxy.Monitoring.PathEntropyExclusions; len(got) != 0 {
-		t.Fatalf("default path_entropy_exclusions = %+v, want empty; a shipped default needs the vendor's published route contract behind it", got)
+	got := Defaults().FetchProxy.Monitoring.PathEntropyExclusions
+	want := []PathEntropyExclusion{
+		{Host: "docs.google.com", PathPrefix: "/document/d/"},
+		{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/"},
+		{Host: "docs.google.com", PathPrefix: "/presentations/d/"},
+		{Host: "docs.google.com", PathPrefix: "/forms/d/e/"},
+		{Host: "drive.google.com", PathPrefix: "/file/d/"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("default path_entropy_exclusions has %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Host != w.Host || got[i].PathPrefix != w.PathPrefix {
+			t.Fatalf("entry %d = %s%s, want %s%s", i, got[i].Host, got[i].PathPrefix, w.Host, w.PathPrefix)
+		}
+		// Every shipped entry must stay narrow. A wildcard host or a bare "/"
+		// prefix would turn a route exemption into a host-wide one, which is
+		// the thing this mechanism exists to avoid.
+		if strings.HasPrefix(got[i].Host, "*") {
+			t.Fatalf("entry %d ships a wildcard host %q; a shipped default must name an exact host", i, got[i].Host)
+		}
+		if got[i].PathPrefix == "/" || !strings.HasPrefix(got[i].PathPrefix, "/") || len(got[i].PathPrefix) < 4 {
+			t.Fatalf("entry %d ships an over-broad path prefix %q", i, got[i].PathPrefix)
+		}
+		if got[i].Reason == "" {
+			t.Fatalf("entry %d ships without a reason an operator can read", i)
+		}
+	}
+	// The shipped set must satisfy the same validator an operator's config does.
+	if err := validatePathEntropyExclusions(got); err != nil {
+		t.Fatalf("shipped defaults fail their own validator: %v", err)
 	}
 }
 

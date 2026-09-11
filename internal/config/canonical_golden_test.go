@@ -402,7 +402,13 @@ const (
 	// removed. It had no consumer, but SessionProfiling is part of the policy
 	// view, so dropping the field changes the canonical JSON shape and shifts
 	// the hash. Effective enforcement is unchanged.
-	goldenHashDefaults = "18a0abfed63f3277805971cde5412b94742b0d76aed5930cd1b9cb8d1456ca8e"
+	// Re-bumped 2026-09-11 for the shipped document-sharing route exclusions.
+	// Defaults() now carries five path_entropy_exclusions entries, which IS a
+	// policy-semantics change: every deployment's reported policy identity moves
+	// on upgrade, and a conductor strict-mode reload will see it. That
+	// visibility is the intended behavior, not a side effect - an operator's
+	// detection posture changed and the hash is what says so.
+	goldenHashDefaults = "09c3838715f14d36effe3ba7790a40a2295d68dadfc76ba12b585f9495d9927e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

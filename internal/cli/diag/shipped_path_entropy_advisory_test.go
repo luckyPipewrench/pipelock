@@ -1,0 +1,48 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package diag
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
+
+// TestShippedPathEntropyDefaultsProduceNoAdvisories pins the operability
+// direction of shipping vendor route defaults: a fresh install must not greet
+// the operator with advisories about routes Pipelock itself shipped. Every
+// advisory in this analyzer asks the operator to own, review, narrow or remove
+// an exemption they chose; none of those is an action they can take on a
+// shipped default, and an instruction that cannot be followed teaches an
+// operator to ignore the whole diagnostic.
+func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	if len(cfg.FetchProxy.Monitoring.PathEntropyExclusions) == 0 {
+		t.Fatal("defaults ship no path_entropy_exclusions; this test is calibrated against a non-empty shipped set")
+	}
+	for _, f := range analyzeDoctorPathEntropyExclusions(cfg) {
+		t.Errorf("fresh install emits a path-entropy advisory the operator cannot act on: %s || next: %s", f.Detail, f.Next)
+	}
+
+	// Calibration: the analyzer is NOT inert. An operator's own entry still
+	// gets the full lifecycle treatment, so the silence above is scoping and
+	// not a disabled check.
+	operator := config.Defaults()
+	operator.FetchProxy.Monitoring.PathEntropyExclusions = append(
+		operator.FetchProxy.Monitoring.PathEntropyExclusions,
+		config.PathEntropyExclusion{Host: "vendor.example", PathPrefix: "/assets/d/"},
+	)
+	got := analyzeDoctorPathEntropyExclusions(operator)
+	if len(got) == 0 {
+		t.Fatal("an operator-added entry with no reason/owner/expires produced no advisory; the analyzer is inert")
+	}
+	for _, f := range got {
+		if !strings.Contains(f.Subject, "vendor.example") {
+			t.Errorf("advisory targeted a shipped default rather than the operator entry: %s", f.Detail)
+		}
+	}
+}

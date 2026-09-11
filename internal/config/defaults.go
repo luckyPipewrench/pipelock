@@ -263,6 +263,33 @@ func Defaults() *Config {
 					"pypi.org",
 					"objects.githubusercontent.com",
 				},
+				// Document-sharing routes whose path carries an opaque vendor
+				// file identifier by construction. Without these, an operator
+				// sent an ordinary Google Doc, Sheet, Slide, Form or Drive link
+				// is blocked on a fresh install, and the remedy an operator
+				// reaches for first is disabling path entropy entirely - which
+				// is the only control that catches an unrecognizable payload in
+				// a URL path.
+				//
+				// What these encode is the vendor's ROUTE SHAPE, never the
+				// identifier format. The route prefix is directly observable
+				// and stable; Google's Drive API guide calls the file ID opaque
+				// and publishes no charset or length, so keying on the ID would
+				// be the invented value this mechanism exists to avoid.
+				//
+				// Scope, and why this is not a host exemption: each entry binds
+				// ONE host to ONE literal path prefix and suppresses ONLY the
+				// path-entropy gate. Subdomain entropy, query entropy, DLP,
+				// the core credential floor and SSRF all still run on the same
+				// request. docs.google.com/<anything-else> stays checked, and a
+				// lookalike host matches nothing here.
+				PathEntropyExclusions: []PathEntropyExclusion{
+					{Host: "docs.google.com", PathPrefix: "/document/d/", Reason: "Google Docs document route; opaque vendor file id"},
+					{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/", Reason: "Google Sheets route; opaque vendor file id"},
+					{Host: "docs.google.com", PathPrefix: "/presentations/d/", Reason: "Google Slides route; opaque vendor file id"},
+					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},
+					{Host: "drive.google.com", PathPrefix: "/file/d/", Reason: "Google Drive file route; opaque vendor file id"},
+				},
 			},
 		},
 		ForwardProxy: ForwardProxy{

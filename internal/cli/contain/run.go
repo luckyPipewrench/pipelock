@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -34,6 +35,7 @@ type containRunOptions struct {
 	configFile    string
 	port          int
 	postureOutput string
+	dryRun        bool
 }
 
 type containRunEnv struct {
@@ -95,6 +97,7 @@ Pipelock does not read or store agent secrets.`,
 	cmd.Flags().StringVarP(&opts.configFile, "config", "c", opts.configFile, "pipelock config file for the signed posture capsule")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "pipelock listen port to probe on loopback")
 	cmd.Flags().StringVar(&opts.postureOutput, "posture-output", opts.postureOutput, "directory for the signed contain-run posture capsule")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "run preflight and print the session contract, then exit without emitting a posture capsule or launching")
 
 	return cmd
 }
@@ -129,7 +132,8 @@ func runContainRun(
 	}
 
 	_, _ = fmt.Fprintln(stdout, "pipelock contain run: verifying containment preflight")
-	if err := containRunPreflight(ctx, stdout, env.probe, tool); err != nil {
+	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
+	if err != nil {
 		return err
 	}
 
@@ -144,6 +148,34 @@ func runContainRun(
 	}
 	env.probe.postureProofPath = proofPath
 
+	// Read the workspace inventory ONCE and derive both the contract's workspace
+	// rows and the expiry gate from it, so what the operator is shown is what the
+	// launch enforces.
+	inv, err := loadWorkspaceInventoryFrom(env.probe.readFile, env.probe.workspaceInvPath)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
+	}
+
+	contract := buildSessionContract(env.probe, tool, entries, inv.Workspaces, proofPath)
+	renderSessionContract(stdout, contract)
+
+	if opts.dryRun {
+		return nil
+	}
+
+	// Fail CLOSED on an expired grant: the recorded window has passed while the
+	// ACL is still live, so refuse the launch until the operator re-grants or
+	// revokes. Expiry gates the launch; it does not remove the ACL.
+	expired, err := expiredWorkspaceGrants(inv.Workspaces, containRunNow(env.probe))
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	if len(expired) > 0 {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf(
+			"refusing to launch: %d workspace grant(s) have expired: %s; re-grant with `pipelock contain grant-workspace` or remove with `pipelock contain revoke-workspace`",
+			len(expired), strings.Join(expired, ", ")))
+	}
+
 	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
@@ -156,6 +188,106 @@ func runContainRun(
 		return err
 	}
 	return nil
+}
+
+// containRunNow returns the probe environment's clock, defaulting to time.Now
+// so production callers need not wire it.
+func containRunNow(env *probeEnv) time.Time {
+	if env.now != nil {
+		return env.now()
+	}
+	return time.Now()
+}
+
+// sessionContract is the set of boundaries `contain run` is about to grant the
+// agent, rendered for the operator before launch. Every field is derived from
+// the SAME preflight state the launch itself uses (the same probe environment,
+// the single tools.list read from preflight, the single workspace-inventory
+// read), so the printed contract can never describe a boundary different from
+// the one that is enforced.
+type sessionContract struct {
+	Tool            string
+	AgentUser       string
+	ProxyURL        string
+	ProxyPort       int
+	PostureCapsule  string
+	RegisteredTools []string
+	Workspaces      []contractWorkspace
+	// PrivateTmp reports whether the agent's /tmp is isolated from the operator.
+	// It is false today: contain run shares /tmp with the operator (see the
+	// "private /tmp" item in the containment guide). The field exists so the
+	// contract stops advertising a boundary the moment one is added.
+	PrivateTmp bool
+}
+
+type contractWorkspace struct {
+	Path    string
+	Mode    string
+	Owner   string
+	Created string
+	Expires string
+	Status  string
+}
+
+// buildSessionContract assembles the contract from preflight state. tools are
+// the entries preflight already parsed and the launcher's allow-list relies on;
+// grants are the single workspace-inventory read; proofPath is the exact capsule
+// destination threaded into the launch environment.
+func buildSessionContract(env *probeEnv, tool string, tools []toolsListEntry, grants []workspaceGrant, proofPath string) sessionContract {
+	names := make([]string, 0, len(tools))
+	for _, e := range tools {
+		names = append(names, e.name)
+	}
+	now := containRunNow(env)
+	workspaces := make([]contractWorkspace, 0, len(grants))
+	for _, g := range grants {
+		workspaces = append(workspaces, contractWorkspace{
+			Path:    g.Path,
+			Mode:    valueOrDash(g.Mode),
+			Owner:   valueOrDash(g.Owner),
+			Created: valueOrDash(g.Created),
+			Expires: grantExpiryLabel(g),
+			Status:  g.grantStatus(now),
+		})
+	}
+	return sessionContract{
+		Tool:            tool,
+		AgentUser:       env.agentUserName,
+		ProxyURL:        proxyURLFor(env.port),
+		ProxyPort:       env.port,
+		PostureCapsule:  proofPath,
+		RegisteredTools: names,
+		Workspaces:      workspaces,
+		PrivateTmp:      false,
+	}
+}
+
+// renderSessionContract prints the contract as an operator-facing block. Pure
+// over the struct so tests assert exact text.
+func renderSessionContract(out io.Writer, c sessionContract) {
+	_, _ = fmt.Fprintf(out, "pipelock contain run: session contract for %s\n", c.Tool)
+	_, _ = fmt.Fprintf(out, "  agent user:       %s\n", c.AgentUser)
+	_, _ = fmt.Fprintf(out, "  proxy egress:     %s (loopback proxy only; direct egress denied by nftables)\n", c.ProxyURL)
+	_, _ = fmt.Fprintf(out, "  posture capsule:  %s\n", c.PostureCapsule)
+	if c.PrivateTmp {
+		_, _ = fmt.Fprintln(out, "  agent /tmp:       private (isolated from the operator)")
+	} else {
+		_, _ = fmt.Fprintln(out, "  agent /tmp:       shared with the operator (not private)")
+	}
+	if len(c.RegisteredTools) == 0 {
+		_, _ = fmt.Fprintln(out, "  registered tools: (none)")
+	} else {
+		_, _ = fmt.Fprintf(out, "  registered tools: %s\n", strings.Join(c.RegisteredTools, ", "))
+	}
+	if len(c.Workspaces) == 0 {
+		_, _ = fmt.Fprintln(out, "  workspaces:       (none granted)")
+	} else {
+		_, _ = fmt.Fprintln(out, "  workspaces:")
+		for _, w := range c.Workspaces {
+			_, _ = fmt.Fprintf(out, "    %s  %s  owner=%s  created=%s  expires=%s  [%s]\n",
+				w.Path, w.Mode, w.Owner, w.Created, w.Expires, w.Status)
+		}
+	}
 }
 
 func containRunPostureProofPath(postureOutput string) (string, error) {
@@ -188,33 +320,39 @@ func warnCustomPostureOutput(stderr io.Writer, postureOutput, posturePath string
 		posturebinding.RuntimeProofEnv, posturePath)
 }
 
-func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) error {
+// containRunPreflight runs every containment probe, the privilege-escape
+// canary, and the requested-tool registration check. It returns the parsed
+// tools.list entries it read for the registration check so the caller renders
+// the session contract from the SAME read the launch path relies on, never a
+// second, possibly-divergent read.
+func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) ([]toolsListEntry, error) {
 	for _, p := range probesForEnv(env) {
 		status, detail := p.fn(ctx, env)
 		writeTextLine(out, p, status, detail)
 		if status != statusPass {
-			return cliutil.ExitCodeError(cliutil.ExitGeneral,
+			return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 				fmt.Errorf("containment preflight failed at probe %d (%s): %s: %s", p.n, p.name, status, detail))
 		}
 	}
 
-	// Numbered above the verify probe range (max 13, the conditional
-	// workspace_access probe) so these run-only checks never collide with a
-	// verify probe number operators may key off.
+	// Numbered above the verify probe range (allProbes tops out at 14 after the
+	// launch-environment allow-list probe; the conditional workspace_access
+	// probe is 15) so these run-only checks never collide with a verify probe
+	// number operators may key off.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
-	writeTextLine(out, probe{n: 14, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
+	writeTextLine(out, probe{n: 16, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
 	if status != statusPass {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral,
+		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at %s: %s: %s", containRunPrivilegeProbe, status, detail))
 	}
 
-	status, detail = probeRequestedToolRegistered(env, tool)
-	writeTextLine(out, probe{n: 15, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
+	entries, status, detail := probeRequestedToolRegistered(env, tool)
+	writeTextLine(out, probe{n: 17, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
 	if status != statusPass {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral,
+		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))
 	}
-	return nil
+	return entries, nil
 }
 
 func probeAgentPrivilegeEscapeDenied(ctx context.Context, env *probeEnv) (string, string) {
@@ -231,21 +369,24 @@ func probeAgentPrivilegeEscapeDenied(ctx context.Context, env *probeEnv) (string
 	return statusPass, fmt.Sprintf("sudo escape denied (exit=%d): %s", code, oneLine(out))
 }
 
-func probeRequestedToolRegistered(env *probeEnv, tool string) (string, string) {
+// probeRequestedToolRegistered confirms the requested tool is present in the
+// runtime allow-list and returns the parsed entries so the caller can render
+// them in the session contract without a second read of tools.list.
+func probeRequestedToolRegistered(env *probeEnv, tool string) ([]toolsListEntry, string, string) {
 	data, err := env.readFile(env.toolsListPath)
 	if err != nil {
-		return statusFail, fmt.Sprintf("read %s: %v", env.toolsListPath, err)
+		return nil, statusFail, fmt.Sprintf("read %s: %v", env.toolsListPath, err)
 	}
 	entries, err := parseToolsList(data)
 	if err != nil {
-		return statusFail, fmt.Sprintf("parse %s: %v", env.toolsListPath, err)
+		return nil, statusFail, fmt.Sprintf("parse %s: %v", env.toolsListPath, err)
 	}
 	for _, entry := range entries {
 		if entry.name == tool {
-			return statusPass, fmt.Sprintf("%s is registered", tool)
+			return entries, statusPass, fmt.Sprintf("%s is registered", tool)
 		}
 	}
-	return statusFail, fmt.Sprintf("%s is not registered; run `pipelock contain add-tool %s` first", tool, tool)
+	return entries, statusFail, fmt.Sprintf("%s is not registered; run `pipelock contain add-tool %s` first", tool, tool)
 }
 
 // parseAgentGIDs converts the agent's group-id strings (primary plus

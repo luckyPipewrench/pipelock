@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 // Test helpers ---------------------------------------------------------------
@@ -208,6 +209,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		serviceName:        testService,
 		pinPath:            filepath.Join(t.TempDir(), "binary-pin.sha256"),
 		toolsListPath:      filepath.Join(t.TempDir(), "tools.list"),
+		workspaceInvPath:   filepath.Join(t.TempDir(), "workspaces.json"),
 		configPath:         filepath.Join(t.TempDir(), "pipelock.yaml"),
 		pipelockTarget:     defaultPipelockTarget,
 		verifyRunningImage: true,
@@ -2996,10 +2998,10 @@ func TestRunVerify_TextOutput_AllPass(t *testing.T) {
 	if !strings.HasPrefix(out, "pipelock contain verify") {
 		t.Errorf("missing header: %q", out)
 	}
-	if strings.Count(out, "[PASS]") != 13 {
-		t.Errorf("want 13 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
+	if strings.Count(out, "[PASS]") != 14 {
+		t.Errorf("want 14 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
 	}
-	if !strings.Contains(out, "13 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "14 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing aggregate: %q", out)
 	}
 }
@@ -3016,10 +3018,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 14 {
-		t.Fatalf("expected 14 JSON records (13 probes + aggregate), got %d: %q", len(lines), buf.String())
+	if len(lines) != 15 {
+		t.Fatalf("expected 15 JSON records (14 probes + aggregate), got %d: %q", len(lines), buf.String())
 	}
-	for i := 0; i < 13; i++ {
+	for i := 0; i < 14; i++ {
 		var rec probeRecord
 		if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
 			t.Fatalf("line %d: parse: %v (line=%q)", i, err, lines[i])
@@ -3032,10 +3034,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 		}
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[13]), &agg); err != nil {
-		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[13])
+	if err := json.Unmarshal([]byte(lines[14]), &agg); err != nil {
+		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[14])
 	}
-	if agg.Aggregate.Pass != 13 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
+	if agg.Aggregate.Pass != 14 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
 		t.Errorf("aggregate counts: %+v", agg.Aggregate)
 	}
 	if agg.Aggregate.ExitCode != cliutil.ExitOK {
@@ -3080,7 +3082,7 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	if strings.Contains(out, "probe 2:") || strings.Contains(out, "probe 6:") {
 		t.Errorf("liveness probes should be omitted: %q", out)
 	}
-	if !strings.Contains(out, "11 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "12 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing enforcement-only aggregate: %q", out)
 	}
 	if !strings.Contains(out, "probe 10: deployed pipelock binary matches TOFU pin; running-service image is not verified") ||
@@ -3296,8 +3298,8 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 14 {
-		t.Fatalf("JSON record count = %d, want 14: %q", len(lines), buf.String())
+	if len(lines) != 15 {
+		t.Fatalf("JSON record count = %d, want 15: %q", len(lines), buf.String())
 	}
 	var canary probeRecord
 	if err := json.Unmarshal([]byte(lines[7]), &canary); err != nil {
@@ -3307,11 +3309,11 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 		t.Fatalf("canary record = %+v, want probe 8 unknown", canary)
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[13]), &agg); err != nil {
+	if err := json.Unmarshal([]byte(lines[14]), &agg); err != nil {
 		t.Fatalf("decode aggregate: %v", err)
 	}
-	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 12 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
-		t.Fatalf("aggregate = %+v, want 12 pass / 1 unknown / exit 2", agg.Aggregate)
+	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 13 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
+		t.Fatalf("aggregate = %+v, want 13 pass / 1 unknown / exit 2", agg.Aggregate)
 	}
 }
 
@@ -3348,14 +3350,14 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 9 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 10 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 2 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 9 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 10 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "9 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "10 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -3379,9 +3381,9 @@ func TestRunVerify_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text probe", successfulWrites: 1, want: "writing probe 1 text"},
-		{name: "text aggregate", successfulWrites: 14, want: "writing verify aggregate"},
+		{name: "text aggregate", successfulWrites: 15, want: "writing verify aggregate"},
 		{name: "JSON probe", jsonOutput: true, want: "encoding probe 1 JSON"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 13, want: "encoding aggregate JSON"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 14, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {
@@ -3659,7 +3661,8 @@ func allPassEnv(t *testing.T) *probeEnv {
 	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 	toolTarget := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, toolTarget, 0o755)
-	body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost,::1 HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
+	body := "#!/bin/bash\nexec env -i NO_PROXY=127.0.0.1,localhost,::1 HTTPS_PROXY=http://127.0.0.1:8888 " +
+		posturebinding.RuntimeProofEnv + `="${` + posturebinding.RuntimeProofEnv + ":-" + posturebinding.DefaultContainRunProofPath + `}" sh` + "\n"
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}
@@ -3685,6 +3688,11 @@ func allPassEnv(t *testing.T) *probeEnv {
 		}
 		if path == env.toolsListPath {
 			return []byte("claude\t" + toolTarget + "\n"), nil
+		}
+		if path == env.workspaceInvPath {
+			// Empty inventory: contain run's contract read and expiry gate see no
+			// grants. Tests that exercise grants override readFile after this.
+			return nil, os.ErrNotExist
 		}
 		if path == env.nftRulesPath {
 			return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil

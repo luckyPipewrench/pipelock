@@ -31,6 +31,8 @@ Subcommands:
               Grant pipelock-agent ACL access to a project directory.
   revoke-workspace
               Revoke pipelock-agent ACL access from a project directory.
+  list-workspaces
+              List recorded workspace grants (path, mode, owner, expiry, status).
   ca-refresh  Rebuild the combined CA bundle after a CA rotation.
 
 All mutating subcommands except 'upgrade' accept --dry-run to print the
@@ -49,6 +51,7 @@ planned actions without touching state.`,
 		explainCmd(),
 		grantWorkspaceCmd(),
 		revokeWorkspaceCmd(),
+		listWorkspacesCmd(),
 		caRefreshCmd(),
 		reloadNFTRulesCmd(),
 		upgradeCmd(),

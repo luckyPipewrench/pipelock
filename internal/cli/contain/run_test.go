@@ -499,7 +499,7 @@ func TestProbeRequestedToolRegistered_FailureDetails(t *testing.T) {
 			env := allPassEnv(t)
 			env.readFile = tt.read
 
-			status, detail := probeRequestedToolRegistered(env, "claude")
+			_, status, detail := probeRequestedToolRegistered(env, "claude")
 			if status != statusFail {
 				t.Fatalf("status = %s, want %s (%s)", status, statusFail, detail)
 			}

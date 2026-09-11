@@ -123,11 +123,19 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	lines := launchExecEnvLines(env)
 	joined := strings.Join(lines, "\n")
-	if lines[0] != "exec env \\" {
-		t.Errorf("first line = %q, want 'exec env \\'", lines[0])
+	// env -i (not plain env) is the operator->agent leak fix: the wrapper must
+	// start from an empty environment and rebuild only the contract.
+	if lines[0] != "exec env -i \\" {
+		t.Errorf("first line = %q, want 'exec env -i \\'", lines[0])
+	}
+	if strings.Contains(joined, "exec env \\") {
+		t.Errorf("launch wrapper still uses plain `env` (ambient operator env would leak):\n%s", joined)
 	}
 	for _, want := range []string{
 		"HOME=" + agentHomeDir(env),
+		"USER=" + env.agentUserName,
+		"LOGNAME=" + env.agentUserName,
+		"SHELL=/bin/bash",
 		"HTTPS_PROXY=http://127.0.0.1:8888",
 		`PATH="$AGENT_PATH"`,
 		`"$TARGET" "$@"`,
@@ -139,8 +147,12 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 			t.Errorf("launch exec env missing %q", want)
 		}
 	}
-	if strings.Contains(joined, posturebinding.RuntimeProofEnv+"=") {
-		t.Fatalf("launch wrapper must preserve caller-provided %s, got:\n%s", posturebinding.RuntimeProofEnv, joined)
+	// Under env -i the caller's PIPELOCK_POSTURE_PROOF is cleared, so it must be
+	// explicitly forwarded (preserving a run-provided value, else the default) or
+	// the child grades containment UNKNOWN.
+	wantForward := posturebinding.RuntimeProofEnv + `="${` + posturebinding.RuntimeProofEnv + ":-" + posturebinding.DefaultContainRunProofPath + `}"`
+	if !strings.Contains(joined, wantForward) {
+		t.Fatalf("launch wrapper must forward %s under env -i, want %q, got:\n%s", posturebinding.RuntimeProofEnv, wantForward, joined)
 	}
 	// Every continuation line except the last must end with a backslash.
 	for i, l := range lines[:len(lines)-1] {

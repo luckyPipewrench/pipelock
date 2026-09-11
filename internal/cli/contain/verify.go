@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 // Probe environment defaults. These match the layout produced by
@@ -144,7 +145,9 @@ type probeEnv struct {
 	wrapperInvPath     string
 	toolsListPath      string
 	configPath         string
+	workspaceInvPath   string
 	workspacePaths     []string
+	workspaceGrants    []workspaceGrant
 	pipelockTarget     string
 	verifyRunningImage bool
 	// postureProofPath is the resolved path the current `contain run` writes its
@@ -152,6 +155,8 @@ type probeEnv struct {
 	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
 	// run produced, even when --posture-output points off the default path.
 	postureProofPath string
+
+	now func() time.Time
 
 	runCmd      runCommand
 	dropCounter dropCounterFunc
@@ -191,9 +196,11 @@ func defaultProbeEnv() *probeEnv {
 		pinPath:            defaultIntegrityPin,
 		wrapperInvPath:     defaultWrapperInvPath,
 		toolsListPath:      defaultToolsListPath,
+		workspaceInvPath:   defaultWorkspaceInvPath,
 		configPath:         filepath.Join(defaultConfigDir, "pipelock.yaml"),
 		pipelockTarget:     defaultPipelockTarget,
 		verifyRunningImage: true,
+		now:                time.Now,
 		runCmd:             realRunCommand,
 		dropCounter:        readContainmentDropCounter,
 		dialCtx:            realDial,
@@ -337,6 +344,7 @@ func allProbes() []probe {
 		{11, "cc_launch_allow_list_enforced", "plk-launch rejects tools missing from the allow-list", probeCCLaunchAllowList},
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
+		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 	}
 }
 
@@ -350,13 +358,34 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	if len(env.workspacePaths) > 0 {
-		probes = append(probes, probe{14, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
+	// Conditional workspace probe. Numbered 15 (above the fixed allProbes range,
+	// which now tops out at 14) so adding the launch-env probe did not renumber
+	// any fixed probe. Appears when workspaces are passed via --workspace or when
+	// the recorded inventory has grants to check for readability and expiry.
+	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 {
+		probes = append(probes, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
 	}
 	return probes
 }
 
 func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
+	// Expiry gate first: a recorded grant past its window means the ACL is still
+	// live after the operator's intended lifetime, which is a posture failure
+	// even if the path is still readable. Fail CLOSED, including on a malformed
+	// expiry value.
+	now := time.Now()
+	if env.now != nil {
+		now = env.now()
+	}
+	expired, err := expiredWorkspaceGrants(env.workspaceGrants, now)
+	if err != nil {
+		return statusFail, err.Error()
+	}
+	if len(expired) > 0 {
+		return statusFail, fmt.Sprintf("%d workspace grant(s) expired: %s; re-grant with `pipelock contain grant-workspace` or remove with `pipelock contain revoke-workspace`",
+			len(expired), strings.Join(expired, "; "))
+	}
+
 	var bad []string
 	for _, path := range env.workspacePaths {
 		clean, err := filepath.Abs(filepath.Clean(path))
@@ -391,7 +420,8 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 	if len(bad) > 0 {
 		return statusFail, strings.Join(bad, "; ")
 	}
-	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s", len(env.workspacePaths), env.agentUserName)
+	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s; %d recorded grant(s) within expiry",
+		len(env.workspacePaths), env.agentUserName, len(env.workspaceGrants))
 }
 
 // probeListedToolTargets verifies each configured wrapper target exists and is
@@ -534,6 +564,51 @@ func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string)
 		// exit-code table.
 		return statusFail, fmt.Sprintf("plk-launch exit %d (expected 5): %s", code, oneLine(out))
 	}
+}
+
+// probeLaunchEnvAllowList confirms the installed plk-launch clears the operator
+// environment before exec'ing the tool. plk-launch runs after sudo, which leaves
+// operator variables standing (DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR, SUDO_*);
+// plain `env` would pass them all through to the contained agent, and a sudoers
+// change could widen that further. The launcher is rendered with `env -i` so it
+// rebuilds ONLY the identity block, the proxy/CA contract, the posture-proof
+// binding, and PATH. This probe fails CLOSED: a plk-launch that reverted to
+// plain `env`, or that no longer forwards the posture proof, is a boundary
+// regression the operator must see, not a silent leak.
+//
+// It is a read-only check of the rendered launcher artifact rather than a live
+// env dump: with `env -i` the child's environment is fully determined by the
+// script text, and there is no default-registered tool that prints its
+// environment to exec through the allow-list, so reading the artifact is both
+// sufficient and the only path that does not depend on install-specific tools.
+func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) {
+	// Read the on-disk launcher artifact the same way probeNoProxyEnv does, so
+	// both probes inspect the exact script the operator will exec.
+	data, err := os.ReadFile(filepath.Clean(env.launchPath))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusSkip, fmt.Sprintf("plk-launch missing at %s (install never ran)", env.launchPath)
+		}
+		return statusSkip, fmt.Sprintf("read %s: %v (rerun as root)", env.launchPath, err)
+	}
+	script := string(data)
+	if !strings.Contains(script, "exec env -i") {
+		if strings.Contains(script, "exec env ") {
+			return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
+		}
+		return statusFail, fmt.Sprintf("plk-launch at %s does not clear the environment (no `env -i`) before exec", env.launchPath)
+	}
+	if !strings.Contains(script, posturebinding.RuntimeProofEnv+`="${`+posturebinding.RuntimeProofEnv) {
+		return statusFail, fmt.Sprintf("plk-launch does not forward %s under env -i; a contained launch would grade containment UNKNOWN", posturebinding.RuntimeProofEnv)
+	}
+	// Guard against a future edit re-introducing an explicit operator-variable
+	// passthrough (e.g. DISPLAY="$DISPLAY") that env -i would otherwise defeat.
+	for _, leak := range []string{`DISPLAY="$DISPLAY"`, `XAUTHORITY=`, `SUDO_`} {
+		if strings.Contains(script, leak) {
+			return statusFail, fmt.Sprintf("plk-launch explicitly forwards an operator variable (%s); remove it so env -i keeps the boundary closed", leak)
+		}
+	}
+	return statusPass, "plk-launch clears the environment (env -i) and rebuilds only the runtime contract"
 }
 
 // probeBinaryIntegrity reads the integrity pin written at install time and
@@ -790,6 +865,12 @@ Exit codes:
 			env := defaultProbeEnv()
 			env.port = opts.port
 			env.workspacePaths = append([]string(nil), opts.workspacePaths...)
+			// Load recorded grants so the workspace probe can enforce expiry, not
+			// just the ad-hoc --workspace paths. A missing inventory is empty (no
+			// grants), not an error.
+			if inv, err := loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath); err == nil {
+				env.workspaceGrants = inv.Workspaces
+			}
 			return runVerify(cmd, env, opts)
 		},
 	}

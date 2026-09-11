@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +30,8 @@ type workspaceOpts struct {
 	dryRun          bool
 	mode            string
 	agentUser       string
+	reason          string
+	expires         string
 }
 
 type workspaceCommand struct {
@@ -39,9 +43,57 @@ type workspaceInventory struct {
 	Workspaces []workspaceGrant `json:"workspaces"`
 }
 
+// workspaceGrant records one ACL grant plus its lifecycle metadata. The
+// metadata fields are all omitempty and optional so an inventory written by an
+// older Pipelock (path+mode only) loads unchanged and renders as a "legacy
+// grant, no metadata" row rather than failing to parse. Timestamps are RFC3339
+// in UTC.
 type workspaceGrant struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
+	Path         string `json:"path"`
+	Mode         string `json:"mode"`
+	Owner        string `json:"owner,omitempty"`         // operator who granted it (SUDO_USER, else current user)
+	Reason       string `json:"reason,omitempty"`        // optional free-text justification
+	Created      string `json:"created,omitempty"`       // when the grant was recorded
+	Expires      string `json:"expires,omitempty"`       // empty = never; a grant past this is refused at launch/verify
+	LastVerified string `json:"last_verified,omitempty"` // set by the verify workspace probe when it runs
+}
+
+// isLegacyGrant reports whether a grant carries none of the lifecycle metadata
+// fields, i.e. it was written by a Pipelock that predates this feature.
+func (g workspaceGrant) isLegacyGrant() bool {
+	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == "" && g.LastVerified == ""
+}
+
+// expired reports whether the grant's expiry (if any) is at or before now. A
+// malformed Expires value fails CLOSED (returns an error) so a corrupted
+// timestamp is treated as a launch/verify failure, never silently as
+// "not expired".
+func (g workspaceGrant) expired(now time.Time) (bool, error) {
+	if strings.TrimSpace(g.Expires) == "" {
+		return false, nil
+	}
+	exp, err := time.Parse(time.RFC3339, g.Expires)
+	if err != nil {
+		return false, fmt.Errorf("workspace %s has a malformed expiry %q: %w", g.Path, g.Expires, err)
+	}
+	return !now.Before(exp), nil
+}
+
+// grantStatus returns a short human status for list-workspaces: "legacy",
+// "expired", or "active". A malformed expiry surfaces as "invalid-expiry" so an
+// operator sees the corruption rather than a misleading "active".
+func (g workspaceGrant) grantStatus(now time.Time) string {
+	if g.isLegacyGrant() {
+		return "legacy"
+	}
+	exp, err := g.expired(now)
+	if err != nil {
+		return "invalid-expiry"
+	}
+	if exp {
+		return "expired"
+	}
+	return "active"
 }
 
 var deniedWorkspacePrefixes = []string{
@@ -114,6 +166,8 @@ Must be run as root.`,
 	cmd.Flags().BoolVar(&opts.allowSystemPath, "allow-system-path", false, "allow granting ACLs under protected system path prefixes")
 	cmd.Flags().StringVar(&opts.mode, "mode", workspaceModeReadOnly, "workspace ACL mode: read-only or read-write")
 	cmd.Flags().StringVar(&opts.agentUser, "agent-user", defaultAgentUser, "contained agent user to grant access to")
+	cmd.Flags().StringVar(&opts.reason, "reason", "", "optional justification recorded with the grant")
+	cmd.Flags().StringVar(&opts.expires, "expires", "", "grant expiry as a Go duration (e.g. 720h) or an RFC3339 timestamp; an expired grant is refused at launch and fails verify")
 
 	return cmd
 }
@@ -173,23 +227,93 @@ func runGrantWorkspace(ctx context.Context, env *installEnv, path string, opts w
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
+	created := envNow(env)
+	grant := workspaceGrant{
+		Path:    workspace,
+		Mode:    mode,
+		Owner:   grantOwner(env),
+		Reason:  strings.TrimSpace(opts.reason),
+		Created: created.Format(time.RFC3339),
+	}
+	if strings.TrimSpace(opts.expires) != "" {
+		expiry, err := parseGrantExpiry(opts.expires, created)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+		}
+		grant.Expires = expiry.UTC().Format(time.RFC3339)
+	}
 	commands := workspaceACLCommands(workspace, env.agentUserName, mode)
 	if opts.dryRun {
 		_, _ = fmt.Fprintf(env.out, "pipelock contain grant-workspace %s - planned:\n", workspace)
 		for i, c := range commands {
 			_, _ = fmt.Fprintf(env.out, "  %d. %s %s\n", i+1, c.name, strings.Join(shellQuoteArgs(c.args), " "))
 		}
-		_, _ = fmt.Fprintf(env.out, "  %d. record grant in %s\n", len(commands)+1, env.workspaceInvPath)
+		_, _ = fmt.Fprintf(env.out, "  %d. record grant in %s (owner %s, expires %s)\n",
+			len(commands)+1, env.workspaceInvPath, grant.Owner, grantExpiryLabel(grant))
 		return nil
 	}
 	if err := runWorkspaceCommands(ctx, env, commands); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 	}
-	if err := recordWorkspaceGrant(env, workspaceGrant{Path: workspace, Mode: mode}); err != nil {
+	if err := recordWorkspaceGrant(env, grant); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("record workspace grant: %w", err))
 	}
-	_, _ = fmt.Fprintf(env.out, "granted %s access to %s for %s.\n", mode, workspace, env.agentUserName)
+	_, _ = fmt.Fprintf(env.out, "granted %s access to %s for %s (owner %s, expires %s).\n",
+		mode, workspace, env.agentUserName, grant.Owner, grantExpiryLabel(grant))
 	return nil
+}
+
+// envNow returns env.now() when set, falling back to time.Now. Keeps timestamp
+// generation deterministic under test without every caller having to check.
+func envNow(env *installEnv) time.Time {
+	if env.now != nil {
+		return env.now()
+	}
+	return time.Now()
+}
+
+// grantOwner resolves who is recording the grant: SUDO_USER (the operator
+// behind sudo) first, then the current OS user, then "unknown". Never fails the
+// grant on a lookup miss - ownership metadata is advisory, not a gate.
+func grantOwner(env *installEnv) string {
+	if op := strings.TrimSpace(env.operatorUser); op != "" {
+		return op
+	}
+	if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" {
+		return u.Username
+	}
+	return "unknown"
+}
+
+// parseGrantExpiry accepts either a Go duration (relative to created) or an
+// absolute RFC3339 timestamp. A duration must be positive; an absolute time
+// must be in the future relative to created. Fails CLOSED: an unparseable or
+// already-past value is a config error, never a silently-ignored expiry.
+func parseGrantExpiry(raw string, created time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if dur, err := time.ParseDuration(raw); err == nil {
+		if dur <= 0 {
+			return time.Time{}, fmt.Errorf("invalid --expires %q: duration must be positive", raw)
+		}
+		return created.Add(dur), nil
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --expires %q: want a Go duration (e.g. 720h) or an RFC3339 timestamp", raw)
+	}
+	if !ts.After(created) {
+		return time.Time{}, fmt.Errorf("invalid --expires %q: timestamp is not in the future", raw)
+	}
+	return ts, nil
+}
+
+// grantExpiryLabel renders a grant's expiry for operator output: "never" when
+// unset, otherwise the recorded RFC3339 value.
+func grantExpiryLabel(g workspaceGrant) string {
+	if strings.TrimSpace(g.Expires) == "" {
+		return "never"
+	}
+	return g.Expires
 }
 
 func runRevokeWorkspace(ctx context.Context, env *installEnv, path string, opts workspaceOpts) error {
@@ -222,6 +346,85 @@ func runRevokeWorkspace(ctx context.Context, env *installEnv, path string, opts 
 	}
 	_, _ = fmt.Fprintf(env.out, "revoked workspace access to %s for %s.\n", workspace, env.agentUserName)
 	return nil
+}
+
+func listWorkspacesCmd() *cobra.Command {
+	var agentUser string
+	cmd := &cobra.Command{
+		Use:   "list-workspaces",
+		Short: "List recorded pipelock-agent workspace grants",
+		Long: `List the workspace grants recorded for the contained agent.
+
+Answers "what can the agent reach today, and why" from one command: each row
+shows the path, ACL mode, owner, when it was granted, when it expires, and a
+status. An EXPIRED grant is refused by contain run and fails contain verify,
+but its ACLs stay on disk until you run revoke-workspace - expiry gates the
+launch, it does not remove the ACL.
+
+Read-only; safe to run without root.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if agentUser == "" {
+				agentUser = defaultAgentUser
+			}
+			if err := validateContainUsername("agent user", agentUser); err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
+			env := defaultInstallEnv(cmd.OutOrStdout())
+			env.agentUserName = agentUser
+			return runListWorkspaces(env)
+		},
+	}
+	cmd.Flags().StringVar(&agentUser, "agent-user", defaultAgentUser, "contained agent user whose grants to list")
+	return cmd
+}
+
+func runListWorkspaces(env *installEnv) error {
+	inv, err := loadWorkspaceInventory(env)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
+	}
+	if len(inv.Workspaces) == 0 {
+		_, _ = fmt.Fprintf(env.out, "no workspace grants recorded in %s\n", env.workspaceInvPath)
+		return nil
+	}
+	now := envNow(env)
+	_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %s\n",
+		"PATH", "MODE", "OWNER", "CREATED", "EXPIRES", "STATUS")
+	for _, g := range inv.Workspaces {
+		_, _ = fmt.Fprintf(env.out, "%-40s  %-10s  %-12s  %-20s  %-20s  %s\n",
+			g.Path, valueOrDash(g.Mode), valueOrDash(g.Owner),
+			valueOrDash(g.Created), grantExpiryLabel(g), g.grantStatus(now))
+	}
+	return nil
+}
+
+func valueOrDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+// expiredWorkspaceGrants returns the paths of every grant that has passed its
+// expiry as of now, plus the first malformed-expiry error if any. Callers
+// (contain run, contain verify) use it to fail CLOSED: any expired grant means
+// the recorded window has passed while the ACL is still live, so the launch is
+// refused until the operator re-grants or revokes.
+func expiredWorkspaceGrants(grants []workspaceGrant, now time.Time) ([]string, error) {
+	var expired []string
+	for _, g := range grants {
+		isExpired, err := g.expired(now)
+		if err != nil {
+			return nil, err
+		}
+		if isExpired {
+			expired = append(expired, g.Path)
+		}
+	}
+	return expired, nil
 }
 
 func resolveWorkspaceForRevoke(env *installEnv, path string, inv workspaceInventory) (string, bool, error) {
@@ -443,7 +646,15 @@ func readWorkspaceInventory(env *installEnv) workspaceInventory {
 }
 
 func loadWorkspaceInventory(env *installEnv) (workspaceInventory, error) {
-	data, err := env.readFile(env.workspaceInvPath)
+	return loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath)
+}
+
+// loadWorkspaceInventoryFrom reads and parses the workspace inventory from an
+// arbitrary readFile/path pair so both the installEnv-based commands and the
+// probeEnv-based contain run/verify paths share one loader. A missing file is
+// an empty inventory (install never ran, or no grants yet), not an error.
+func loadWorkspaceInventoryFrom(readFile func(string) ([]byte, error), path string) (workspaceInventory, error) {
+	data, err := readFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return workspaceInventory{}, nil
@@ -452,7 +663,7 @@ func loadWorkspaceInventory(env *installEnv) (workspaceInventory, error) {
 	}
 	var inv workspaceInventory
 	if err := json.Unmarshal(data, &inv); err != nil {
-		return workspaceInventory{}, fmt.Errorf("parse %s: %w", env.workspaceInvPath, err)
+		return workspaceInventory{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return inv, nil
 }

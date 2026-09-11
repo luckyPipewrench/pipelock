@@ -158,10 +158,26 @@ func runtimeContractVars(env *installEnv) []contractVar {
 	}
 }
 
+// containedLaunchIdentityVars returns the identity block that LEADS the
+// contained launch environment. It is the single source of truth for that
+// block, consumed by both containLaunchEnv (the `contain run` Go launcher) and
+// launchExecEnvLines (the installed plk-launch wrapper) so the two launch paths
+// can never disagree on who the tool runs as.
+func containedLaunchIdentityVars(agentUserName, homeDir string) []contractVar {
+	return []contractVar{
+		{"HOME", homeDir},
+		{"USER", agentUserName},
+		{"LOGNAME", agentUserName},
+		{"SHELL", "/bin/bash"},
+	}
+}
+
 // containLaunchEnv returns the exact environment used by `pipelock contain
-// run` when it execs plk-launch directly, bypassing sudo's env filtering. Keep
-// this in lockstep with launchExecEnvLines so the verified run launcher and the
-// installed wrapper do not drift.
+// run` when it execs plk-launch directly, bypassing sudo's env filtering. It is
+// derived from the same building blocks the installed wrapper renders
+// (containedLaunchIdentityVars + runtimeContractVars + the posture-proof export
+// + PATH); TestLaunchPathsShareEnvNameSet enforces that the two paths export the
+// same ordered set of names so they cannot drift.
 //
 // postureProofPath is the resolved path this run wrote its signed posture
 // capsule to; it is exported as PIPELOCK_POSTURE_PROOF so an emitter running in
@@ -170,11 +186,9 @@ func runtimeContractVars(env *installEnv) []contractVar {
 // when --posture-output points elsewhere. An empty value falls back to the
 // default proof path.
 func containLaunchEnv(agentUserName, homeDir string, proxyPort int, postureProofPath string) []string {
-	env := []string{
-		"HOME=" + homeDir,
-		"USER=" + agentUserName,
-		"LOGNAME=" + agentUserName,
-		"SHELL=/bin/bash",
+	var env []string
+	for _, v := range containedLaunchIdentityVars(agentUserName, homeDir) {
+		env = append(env, v.name+"="+v.value)
 	}
 	for _, v := range runtimeContractVars(&installEnv{
 		proxyPort:    proxyPort,
@@ -230,19 +244,37 @@ func envAssign(name, value string) string {
 	return name + "=" + shellQuote(value)
 }
 
-// launchExecEnvLines renders the `exec env \`-style block that plk-launch uses
-// to run the resolved tool under the full runtime contract. HOME and PATH are
-// handled specially (HOME is fixed, PATH expands the AGENT_PATH shell var), so
-// they bracket the generated contract assignments.
+// launchExecEnvLines renders the `exec env -i`-style block that plk-launch uses
+// to run the resolved tool under the full runtime contract.
+//
+// `env -i` (not plain `env`) is deliberate and is the fix for the operator->agent
+// env leak: plk-launch runs after sudo, which leaves ~two dozen operator
+// variables standing (DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR, SUDO_*, ...). Plain
+// `env` would pass every one of them through to the contained tool. `env -i`
+// starts from an empty environment and rebuilds ONLY the identity block, the
+// proxy/CA runtime contract, the posture-proof binding, and PATH - the same set
+// containLaunchEnv assembles for the `contain run` Go path, so the two launch
+// paths agree. This is fail-closed for confidentiality: a variable not on this
+// list never reaches the agent. The availability tradeoff is that ambient
+// niceties like TERM/LANG are not forwarded either; this already matches the
+// `contain run` path (containLaunchEnv never set them), so it is not a new
+// regression relative to the primary path.
+//
+// HOME and PATH are rendered specially (HOME is fixed, PATH expands the
+// AGENT_PATH shell var); PIPELOCK_POSTURE_PROOF is forwarded from the caller
+// when set (contain run sets it) or bound to the default, because `env -i`
+// clears the caller's value and it must be re-asserted here or the child grades
+// containment UNKNOWN.
 func launchExecEnvLines(env *installEnv) []string {
-	lines := []string{
-		"exec env \\",
-		"    " + envAssign("HOME", agentHomeDir(env)) + " \\",
+	lines := []string{"exec env -i \\"}
+	for _, v := range containedLaunchIdentityVars(env.agentUserName, agentHomeDir(env)) {
+		lines = append(lines, "    "+envAssign(v.name, v.value)+" \\")
 	}
 	for _, v := range runtimeContractVars(env) {
 		lines = append(lines, "    "+envAssign(v.name, v.value)+" \\")
 	}
 	lines = append(lines,
+		"    "+posturebinding.RuntimeProofEnv+`="${`+posturebinding.RuntimeProofEnv+":-"+posturebinding.DefaultContainRunProofPath+`}" \`,
 		`    PATH="$AGENT_PATH" \`,
 		`    "$TARGET" "$@"`,
 	)

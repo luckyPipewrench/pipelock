@@ -66,6 +66,11 @@ type installEnv struct {
 	out    io.Writer
 	errOut io.Writer
 
+	// now returns the current time. Abstracted so workspace-grant metadata
+	// (created/expires timestamps) is deterministic in tests. Defaults to
+	// time.Now.
+	now func() time.Time
+
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
@@ -146,6 +151,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		hashFile:           sha256HexOfFile,
 		out:                out,
 		errOut:             os.Stderr,
+		now:                time.Now,
 		operatorUser:       os.Getenv("SUDO_USER"),
 		proxyUserName:      defaultProxyUser,
 		agentUserName:      defaultAgentUser,

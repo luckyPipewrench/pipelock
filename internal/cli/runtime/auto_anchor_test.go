@@ -56,6 +56,24 @@ func (b errorAnchorBackend) Submit(anchorpkg.Checkpoint) (anchorpkg.Proof, error
 
 func (errorAnchorBackend) Verify(anchorpkg.Proof, anchorpkg.Checkpoint) error { return nil }
 
+// verifyCountingAnchorBackend is a non-Rekor backend that accepts every Submit
+// and records how many times Verify was called, optionally returning a fixed
+// verify error. It proves the verify-by-default path both runs Verify and fails
+// closed when Verify rejects the proof.
+type verifyCountingAnchorBackend struct {
+	verifies  atomic.Int64
+	verifyErr error
+}
+
+func (b *verifyCountingAnchorBackend) Submit(anchorpkg.Checkpoint) (anchorpkg.Proof, error) {
+	return anchorpkg.Proof{Backend: anchorpkg.LocalBackend, LogID: "verify-counting-log"}, nil
+}
+
+func (b *verifyCountingAnchorBackend) Verify(anchorpkg.Proof, anchorpkg.Checkpoint) error {
+	b.verifies.Add(1)
+	return b.verifyErr
+}
+
 type autoAnchorTestRig struct {
 	monitor  *autoAnchorMonitor
 	metrics  *metrics.Metrics
@@ -750,10 +768,70 @@ func TestVerifyAutoAnchorProof(t *testing.T) {
 			t.Fatal("verifyAutoAnchorProof(local, tampered) = nil, want error")
 		}
 	})
+	t.Run("non-rekor backend is verified by default and its error surfaces", func(t *testing.T) {
+		sentinel := errors.New("backend rejected the proof")
+		backend := &verifyCountingAnchorBackend{verifyErr: sentinel}
+		err := verifyAutoAnchorProof(backend, anchorpkg.Proof{Backend: anchorpkg.LocalBackend}, checkpoint)
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("verifyAutoAnchorProof(custom backend) = %v, want %v", err, sentinel)
+		}
+		if got := backend.verifies.Load(); got != 1 {
+			t.Fatalf("custom backend Verify calls = %d, want 1 (verify is the default)", got)
+		}
+	})
 	t.Run("rekor records without immediate self-verification", func(t *testing.T) {
+		// The RekorLog carries no TrustedLogKeys (as autoAnchorBackend builds it),
+		// so RekorLog.Verify would fail with "trusted Rekor log public key
+		// required" if it were called. A nil result therefore proves the Rekor
+		// type is skipped, not that a permissive Verify passed.
 		if err := verifyAutoAnchorProof(anchorpkg.RekorLog{URL: "https://rekor.internal.example"}, anchorpkg.Proof{Backend: anchorpkg.RekorBackend}, checkpoint); err != nil {
 			t.Fatalf("verifyAutoAnchorProof(rekor) = %v, want nil", err)
 		}
+	})
+}
+
+// TestAutoAnchorVerifiesEveryBackendBeforePersist proves the verify-by-default
+// rule end to end: a non-Rekor backend is verified before its proof is persisted.
+// When Verify rejects the proof, nothing is written and the failure surfaces
+// through the same fail() path a LocalLog verify failure uses; when Verify
+// accepts it, the anchor persists normally.
+func TestAutoAnchorVerifiesEveryBackendBeforePersist(t *testing.T) {
+	t.Run("verify failure keeps the proof out of persisted state", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		backend := &verifyCountingAnchorBackend{verifyErr: errors.New("bogus proof material")}
+		trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) { return backend, nil }
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/rejected")
+
+		trig.monitor.runPass()
+
+		if got := backend.verifies.Load(); got != 1 {
+			t.Fatalf("Verify calls = %d, want exactly 1 before persistence", got)
+		}
+		if state, found, err := readAnchorStateForSession(trig.recorder.Dir()); found || err != nil {
+			t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want no persisted marker", state, found, err)
+		}
+		bundles, err := filepath.Glob(filepath.Join(trig.recorder.Dir(), autoAnchorBundleDir, "*.json"))
+		if err != nil || len(bundles) != 0 {
+			t.Fatalf("anchor bundles = %v err=%v, want none written on verify failure", bundles, err)
+		}
+		assertAutoAnchorStats(t, trig.metrics, 1, 0, 1, "verify live receipt anchor proof")
+	})
+	t.Run("verify success persists the anchor", func(t *testing.T) {
+		trig := newAutoAnchorTestRig(t)
+		backend := &verifyCountingAnchorBackend{}
+		trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) { return backend, nil }
+		emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/accepted")
+
+		trig.monitor.runPass()
+
+		if got := backend.verifies.Load(); got != 1 {
+			t.Fatalf("Verify calls = %d, want exactly 1 on the success path", got)
+		}
+		state, found, err := readAnchorStateForSession(trig.recorder.Dir())
+		if err != nil || !found {
+			t.Fatalf("readAnchorStateForSession = (%+v, %v, %v), want a persisted marker", state, found, err)
+		}
+		assertAutoAnchorStats(t, trig.metrics, 1, 1, 0, "")
 	})
 }
 

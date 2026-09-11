@@ -106,6 +106,7 @@
       "allOf": [
         {
           "if": {
+            "type": "object",
             "properties": {
               "backend": {
                 "const": "rekor"
@@ -273,6 +274,7 @@
   "allOf": [
     {
       "if": {
+        "type": "object",
         "properties": {
           "backend": {
             "const": "local"
@@ -283,8 +285,10 @@
         ]
       },
       "then": {
+        "type": "object",
         "properties": {
           "proof": {
+            "type": "object",
             "properties": {
               "backend": {
                 "const": "local"
@@ -296,6 +300,7 @@
     },
     {
       "if": {
+        "type": "object",
         "properties": {
           "backend": {
             "const": "rekor"
@@ -306,8 +311,10 @@
         ]
       },
       "then": {
+        "type": "object",
         "properties": {
           "proof": {
+            "type": "object",
             "properties": {
               "backend": {
                 "const": "rekor"

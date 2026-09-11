@@ -6,6 +6,7 @@ package anchor
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -172,6 +173,55 @@ func TestAnchorBundleV1SchemaForbidsRekorOnNonRekorProof(t *testing.T) {
 	}
 	if !forbidden {
 		t.Fatal("proof schema must forbid the rekor property when backend is not rekor")
+	}
+}
+
+// TestAnchorBundleV1SchemaTypesEveryPropertiesNode asserts every schema node that
+// carries a "properties" keyword also declares "type": "object". Draft 2020-12
+// does not require this, and the santhosh-tekuri validator used by the other
+// conformance tests accepts the schema either way, but AJV strict-mode consumers
+// reject a properties node that lacks an object type (strictTypes). This guard
+// keeps the published schema strict-mode clean so a future edit cannot silently
+// reintroduce the untyped-properties tell. It is semantically a no-op for every
+// bundle instance, which is always an object.
+func TestAnchorBundleV1SchemaTypesEveryPropertiesNode(t *testing.T) {
+	data, err := os.ReadFile(filepath.Clean(anchorBundleSchemaPath))
+	if err != nil {
+		t.Fatalf("read anchor bundle schema: %v", err)
+	}
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse anchor bundle schema: %v", err)
+	}
+
+	checked := 0
+	var walk func(node any, path string)
+	walk = func(node any, path string) {
+		switch v := node.(type) {
+		case map[string]any:
+			if _, hasProps := v["properties"]; hasProps {
+				checked++
+				if typ, _ := v["type"].(string); typ != "object" {
+					t.Errorf("schema node %s carries \"properties\" but type = %q, want \"object\" (AJV strictTypes)", path, typ)
+				}
+			}
+			for k, child := range v {
+				walk(child, path+"/"+k)
+			}
+		case []any:
+			for i, child := range v {
+				walk(child, fmt.Sprintf("%s[%d]", path, i))
+			}
+		}
+	}
+	walk(doc, "#")
+
+	// Calibrate the walk so a silent miss (or a schema-shape change) is caught: the
+	// five object definitions (root, checkpoint, proof, rekor_proof,
+	// rekor_inclusion_proof) plus the seven conditional subschemas that carry
+	// "properties" total twelve nodes.
+	if checked != 12 {
+		t.Fatalf("walked %d nodes carrying \"properties\", want 12; the walk missed nodes or the schema shape changed", checked)
 	}
 }
 

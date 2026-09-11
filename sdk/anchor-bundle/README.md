@@ -10,6 +10,8 @@ package.
 | `v1.json` | JSON Schema draft 2020-12 description of the emitted v1 shape. |
 | `example.json` | Fully populated structural fixture. Its placeholder proof is not cryptographically valid. |
 
+Every schema object that declares `properties` also declares `"type": "object"`, so strict-mode validators such as AJV (`strict: true`) accept `v1.json` without a `strictTypes` error.
+
 ## Stability status
 
 **Experimental compatibility notice:** This document and `v1.json` describe the

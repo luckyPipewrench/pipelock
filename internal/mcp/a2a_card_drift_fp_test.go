@@ -15,7 +15,7 @@ import (
 
 func readA2ACardFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join("testdata", "a2a", name))
+	body, err := os.ReadFile(filepath.Clean(filepath.Join("testdata", "a2a", name)))
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}

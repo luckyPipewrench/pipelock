@@ -768,6 +768,15 @@ func TestVerifyAutoAnchorProof(t *testing.T) {
 			t.Fatal("verifyAutoAnchorProof(local, tampered) = nil, want error")
 		}
 	})
+	t.Run("pointer rekor backend is exempt like the value form", func(t *testing.T) {
+		// A factory change to *RekorLog must not turn Rekor into an always-failing
+		// verify (the runtime holds no Rekor log key), which would be an
+		// availability failure disguised as hardening.
+		rekor := &anchorpkg.RekorLog{}
+		if err := verifyAutoAnchorProof(rekor, anchorpkg.Proof{Backend: anchorpkg.RekorBackend}, checkpoint); err != nil {
+			t.Fatalf("verifyAutoAnchorProof(*RekorLog) = %v, want nil (exempt)", err)
+		}
+	})
 	t.Run("non-rekor backend is verified by default and its error surfaces", func(t *testing.T) {
 		sentinel := errors.New("backend rejected the proof")
 		backend := &verifyCountingAnchorBackend{verifyErr: sentinel}

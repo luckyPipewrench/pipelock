@@ -385,6 +385,9 @@ func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorder
 		m.pendingCheckpoint.ReceiptCount == checkpoint.ReceiptCount &&
 		m.pendingCheckpoint.RootHash == checkpoint.RootHash &&
 		m.pendingCheckpoint.FinalSeq == checkpoint.FinalSeq {
+		// The retained proof was verified by verifyAutoAnchorProof before it was
+		// stored below; keep that ordering if this reuse path is ever refactored,
+		// or an unverified proof could reach persistence through the retry.
 		proof := m.pendingProof
 		m.mu.Unlock()
 		return proof, false, nil
@@ -425,11 +428,14 @@ func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorder
 // syntactically accepted but invalid proof cannot make the chain look anchored.
 //
 // Verification is the DEFAULT: every backend is asked to verify its own proof.
-// The choice of whether to verify keys off the CONCRETE backend type, which the
-// runtime built from local config (autoAnchorBackend), not off proof.Backend.
-// The backend controls proof.Backend, so trusting that field would let a hostile
-// backend label its proof "rekor" to dodge verification — the exact gap this
-// closes.
+// This is fail-closed on the backend's own verifier error; it is not an
+// independent check of an arbitrary backend implementation, whose Verify remains
+// its own trust mechanism. The choice of whether to verify keys off the CONCRETE
+// backend type, which the runtime built from local config (autoAnchorBackend),
+// not off proof.Backend. The backend controls proof.Backend, so trusting that
+// field would let a buggy or mislabelled backend mark its proof "rekor" to dodge
+// verification. Both the value and pointer Rekor forms are exempt so a future
+// factory change cannot silently turn Rekor into an always-failing verify.
 //
 // Rekor is the one exception: its proofs are witnessed offline against the log's
 // public key, which the runtime does not hold (autoAnchorBackend builds RekorLog
@@ -441,7 +447,8 @@ func (m *autoAnchorMonitor) submitOrReusePending(anchorCfg config.FlightRecorder
 // future custom backend tomorrow) whose Verify errors keeps its proof out of the
 // persisted anchor state. Only the named Rekor type is exempt.
 func verifyAutoAnchorProof(backend anchorpkg.Backend, proof anchorpkg.Proof, checkpoint anchorpkg.Checkpoint) error {
-	if _, ok := backend.(anchorpkg.RekorLog); ok {
+	switch backend.(type) {
+	case anchorpkg.RekorLog, *anchorpkg.RekorLog:
 		return nil
 	}
 	return backend.Verify(proof, checkpoint)

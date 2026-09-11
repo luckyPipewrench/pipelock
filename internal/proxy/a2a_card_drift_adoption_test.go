@@ -41,7 +41,15 @@ func TestForwardHTTP_AgentCardBenignDriftAdopted(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+	// A real audit logger, not the no-op default: adoption is a SILENT baseline
+	// update, so the audit record is the only thing that makes it visible to an
+	// operator. A regression that adopts without auditing must fail here.
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	proxyAddr, _, cleanup := setupForwardProxyWithLogger(t, logger, func(cfg *config.Config) {
 		cfg.A2AScanning.Enabled = true
 		cfg.A2AScanning.Action = config.ActionBlock
 		cfg.A2AScanning.ScanAgentCards = false
@@ -59,6 +67,14 @@ func TestForwardHTTP_AgentCardBenignDriftAdopted(t *testing.T) {
 	}
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("backend fetches = %d, want 2", got)
+	}
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !strings.Contains(string(data), "descriptive drift adopted") {
+		t.Fatalf("adopted drift was not audited over the forward proxy:\n%s", data)
 	}
 }
 

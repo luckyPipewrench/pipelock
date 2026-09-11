@@ -6,8 +6,10 @@ package mcp
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"mime"
 	"regexp"
 	"sort"
@@ -533,32 +535,39 @@ type A2APushNotificationConfig struct {
 // HashAgentCard computes a deterministic hash of the semantic content of an
 // Agent Card, excluding signatures (re-signing is not drift), provider
 // (metadata), and version (version bumps are expected).
+//
+// Every variable-length field is LENGTH-PREFIXED rather than separated by a
+// delimiter. A delimiter only frames fields unambiguously when it cannot occur
+// inside one, and these fields carry attacker-controlled JSON strings that may
+// contain any byte including NUL: with NUL separators the field pair
+// ("a\x00b", "") and the pair ("a", "b\x00") produce identical hash input, so
+// two materially different cards collide. That matters because
+// cardStructuralDigest reuses this encoding to decide whether an endpoint or
+// interface CHANGED, and a collision there reads as "structure unchanged" and
+// downgrades a blocking structural change into an adopted descriptive one.
+// Length prefixes remove the class rather than escaping one byte of it.
+//
+// The digest is an in-process TOFU baseline only; it is not persisted, signed,
+// or carried on any wire or receipt surface, so changing the framing needs no
+// migration and no format version.
 func HashAgentCard(card A2AAgentCard) string {
 	h := sha256.New()
 
 	// Identity
-	_, _ = h.Write([]byte(card.Name))
-	h.Write([]byte{0})
-	_, _ = h.Write([]byte(card.Description))
-	h.Write([]byte{0})
-	_, _ = h.Write([]byte(card.URL))
-	h.Write([]byte{0})
+	writeFramed(h, []byte(card.Name))
+	writeFramed(h, []byte(card.Description))
+	writeFramed(h, []byte(card.URL))
 
 	// Skills (semantically sorted for determinism)
 	skills := make([]A2ASkill, len(card.Skills))
 	copy(skills, card.Skills)
 	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
 	for _, s := range skills {
-		_, _ = h.Write([]byte(s.ID))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(s.Name))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(s.Description))
-		h.Write([]byte{0})
-		_, _ = h.Write(canonicalizeJSON(s.InputSchema))
-		h.Write([]byte{0})
-		_, _ = h.Write(canonicalizeJSON(s.OutputSchema))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(s.ID))
+		writeFramed(h, []byte(s.Name))
+		writeFramed(h, []byte(s.Description))
+		writeFramed(h, canonicalizeJSON(s.InputSchema))
+		writeFramed(h, canonicalizeJSON(s.OutputSchema))
 	}
 
 	// Supported interfaces (sorted by URL)
@@ -571,14 +580,10 @@ func HashAgentCard(card A2AAgentCard) string {
 		return ifaces[i].ProtocolBinding < ifaces[j].ProtocolBinding // tie-breaker
 	})
 	for _, iface := range ifaces {
-		_, _ = h.Write([]byte(iface.URL))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.ProtocolBinding))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.Tenant))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.ProtocolVersion))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(iface.URL))
+		writeFramed(h, []byte(iface.ProtocolBinding))
+		writeFramed(h, []byte(iface.Tenant))
+		writeFramed(h, []byte(iface.ProtocolVersion))
 	}
 
 	// Capabilities
@@ -596,44 +601,47 @@ func HashAgentCard(card A2AAgentCard) string {
 		return exts[i].Description < exts[j].Description // tie-breaker
 	})
 	for _, ext := range exts {
-		_, _ = h.Write([]byte(ext.URI))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(ext.Description))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(ext.URI))
+		writeFramed(h, []byte(ext.Description))
 		if ext.Required {
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
 		}
-		_, _ = h.Write(canonicalizeJSON(ext.Params))
-		h.Write([]byte{0})
+		writeFramed(h, canonicalizeJSON(ext.Params))
 	}
 
 	// Security schemes and requirements - canonicalize JSON so
 	// semantically identical objects with different key order or
 	// whitespace produce the same hash.
-	_, _ = h.Write(canonicalizeJSON(card.SecuritySchemes))
-	h.Write([]byte{0})
-	_, _ = h.Write(canonicalizeJSON(card.SecurityRequirements))
-	h.Write([]byte{0})
+	writeFramed(h, canonicalizeJSON(card.SecuritySchemes))
+	writeFramed(h, canonicalizeJSON(card.SecurityRequirements))
 
 	// Default modes (sorted)
 	inputModes := make([]string, len(card.DefaultInputModes))
 	copy(inputModes, card.DefaultInputModes)
 	sort.Strings(inputModes)
 	for _, m := range inputModes {
-		_, _ = h.Write([]byte(m))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(m))
 	}
 	outputModes := make([]string, len(card.DefaultOutputModes))
 	copy(outputModes, card.DefaultOutputModes)
 	sort.Strings(outputModes)
 	for _, m := range outputModes {
-		_, _ = h.Write([]byte(m))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(m))
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeFramed writes a length-prefixed field into the hash. The 8-byte
+// big-endian length makes the field boundary independent of the field's own
+// bytes, so no value can forge a boundary the way a delimiter allows.
+func writeFramed(h hash.Hash, b []byte) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+	_, _ = h.Write(n[:])
+	_, _ = h.Write(b)
 }
 
 // canonicalizeJSON parses JSON and re-serializes with sorted keys.

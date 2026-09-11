@@ -78,10 +78,19 @@ func redirectReceiptParityProxy(t *testing.T, rph *receiptProxyHelper, backend *
 // api.vendor.example. redirectedHits counts any request that reached the
 // redirect target, which must stay zero because the redirect is blocked in
 // CheckRedirect before the redirected request is dispatched.
-func redirectReceiptBackend(t *testing.T, status int, redirectedHits *atomic.Int32) *httptest.Server {
+//
+// sourceHits counts requests that reached the redirect SOURCE, and callers
+// require exactly one. Without it, redirectedHits == 0 is satisfied just as
+// well by a proxy that blocked the initial request and never followed a
+// redirect at all, so the test would pass while proving nothing about
+// redirect-hop enforcement.
+func redirectReceiptBackend(t *testing.T, status int, redirectedHits, sourceHits *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host == "source.vendor.example" {
+			if sourceHits != nil {
+				sourceHits.Add(1)
+			}
 			http.Redirect(w, r, "http://api.vendor.example/auth/update", status)
 			return
 		}
@@ -127,11 +136,11 @@ func requireRedirectRecordedReceipt(t *testing.T, receipts []receipt.Receipt, he
 // receipt id (currently the transport block receipt; see BUILD-OUT.md for the
 // open which-receipt parity decision).
 func TestForwardRedirect_RequestPolicyBlockAdvertisesRecordedReceipt(t *testing.T) {
-	var redirectedHits atomic.Int32
+	var redirectedHits, sourceHits atomic.Int32
 	// 307 preserves the POST method so the POST-scoped rule matches on hop 2.
 	// A bodyless POST avoids the redirect-body-replay guard, which would block
 	// earlier as body_dlp rather than exercising the request_policy path.
-	backend := redirectReceiptBackend(t, http.StatusTemporaryRedirect, &redirectedHits)
+	backend := redirectReceiptBackend(t, http.StatusTemporaryRedirect, &redirectedHits, &sourceHits)
 	defer backend.Close()
 
 	rph := newReceiptProxyHelper(t)
@@ -150,6 +159,9 @@ func TestForwardRedirect_RequestPolicyBlockAdvertisesRecordedReceipt(t *testing.
 	if redirectedHits.Load() != 0 {
 		t.Fatalf("redirected egress hits = %d, want 0", redirectedHits.Load())
 	}
+	if sourceHits.Load() != 1 {
+		t.Fatalf("redirect source hits = %d, want exactly 1; the request must reach the source and be blocked on the redirect hop, not before it", sourceHits.Load())
+	}
 	headerID := rec.Header().Get(blockreason.HeaderRecordedReceipt)
 	requireRedirectRecordedReceipt(t, rph.findReceipts(t), headerID)
 }
@@ -157,10 +169,10 @@ func TestForwardRedirect_RequestPolicyBlockAdvertisesRecordedReceipt(t *testing.
 // TestFetchRedirect_RequestPolicyBlockAdvertisesRecordedReceipt proves the same
 // for the fetch-mode redirect chain.
 func TestFetchRedirect_RequestPolicyBlockAdvertisesRecordedReceipt(t *testing.T) {
-	var redirectedHits atomic.Int32
+	var redirectedHits, sourceHits atomic.Int32
 	// Fetch is always GET; 302 preserves GET so the GET-scoped rule matches on
 	// hop 2.
-	backend := redirectReceiptBackend(t, http.StatusFound, &redirectedHits)
+	backend := redirectReceiptBackend(t, http.StatusFound, &redirectedHits, &sourceHits)
 	defer backend.Close()
 
 	rph := newReceiptProxyHelper(t)
@@ -179,6 +191,9 @@ func TestFetchRedirect_RequestPolicyBlockAdvertisesRecordedReceipt(t *testing.T)
 	}
 	if redirectedHits.Load() != 0 {
 		t.Fatalf("redirected egress hits = %d, want 0", redirectedHits.Load())
+	}
+	if sourceHits.Load() != 1 {
+		t.Fatalf("redirect source hits = %d, want exactly 1; the request must reach the source and be blocked on the redirect hop, not before it", sourceHits.Load())
 	}
 	headerID := rec.Header().Get(blockreason.HeaderRecordedReceipt)
 	requireRedirectRecordedReceipt(t, rph.findReceipts(t), headerID)
@@ -215,8 +230,8 @@ func TestRedirect_RequestPolicyBlockWithoutRecordedReceiptOmitsHeader(t *testing
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var redirectedHits atomic.Int32
-			backend := redirectReceiptBackend(t, tt.status, &redirectedHits)
+			var redirectedHits, sourceHits atomic.Int32
+			backend := redirectReceiptBackend(t, tt.status, &redirectedHits, &sourceHits)
 			defer backend.Close()
 
 			// No receiptProxyHelper: emitter unavailable, so request_policy
@@ -236,6 +251,9 @@ func TestRedirect_RequestPolicyBlockWithoutRecordedReceiptOmitsHeader(t *testing
 			}
 			if redirectedHits.Load() != 0 {
 				t.Fatalf("redirected egress hits = %d, want 0", redirectedHits.Load())
+			}
+			if sourceHits.Load() != 1 {
+				t.Fatalf("redirect source hits = %d, want exactly 1; the request must reach the source and be blocked on the redirect hop, not before it", sourceHits.Load())
 			}
 		})
 	}

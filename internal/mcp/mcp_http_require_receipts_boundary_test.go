@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // cleanToolsCallRequest is a benign tools/call that passes input scanning, so the
@@ -24,8 +26,17 @@ const cleanToolsCallResponse = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"t
 // the ordering probe: an upstream hit can only happen AFTER the listener's
 // require_receipts gate ran, because the gate is inside scanHTTPInputDecision,
 // which returns before the listener builds or sends the upstream request.
-func receiptBoundaryUpstream(hits *atomic.Int32, sse bool) http.HandlerFunc {
+// receiptBoundaryUpstream counts upstream hits and, at REQUEST ENTRY, records
+// how many receipts had already been durably recorded. recordedAtEntry is the
+// ordering witness: the upstream reads it before writing anything, so a
+// non-zero value can only mean the receipt was recorded BEFORE the forward. A
+// regression that forwards first and records afterwards leaves it at zero,
+// which "the receipt exists once the test ends" cannot detect.
+func receiptBoundaryUpstream(hits *atomic.Int32, sse bool, recorded, recordedAtEntry *atomic.Int32) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		if recorded != nil && recordedAtEntry != nil {
+			recordedAtEntry.Store(recorded.Load())
+		}
 		hits.Add(1)
 		if sse {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -79,15 +90,15 @@ func TestHTTPListener_RequireReceiptsGatesUpstreamForward(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var hits atomic.Int32
-			upstream := httptest.NewServer(receiptBoundaryUpstream(&hits, false))
+			var hits, recorded, recordedAtEntry atomic.Int32
+			upstream := httptest.NewServer(receiptBoundaryUpstream(&hits, false, &recorded, &recordedAtEntry))
 			defer upstream.Close()
 
 			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), RequireReceipts: tt.requireReceipts}
 			var rec interface{ Close() error }
 			var dir string
 			if tt.withEmitter {
-				emitter, r, d, _ := newReceiptTestHarness(t)
+				emitter, r, d, _ := newReceiptTestHarnessWithObserver(t, func(*receipt.Receipt) { recorded.Add(1) })
 				opts.ReceiptEmitter = emitter
 				rec, dir = r, d
 				if tt.closeRecorder {
@@ -120,6 +131,9 @@ func TestHTTPListener_RequireReceiptsGatesUpstreamForward(t *testing.T) {
 			// "forwarded after a durable receipt" rather than "forwarded, receipt
 			// unknown". A closed recorder records nothing.
 			if tt.withEmitter && !tt.closeRecorder && rec != nil {
+				if tt.requireReceipts && tt.wantForwarded && recordedAtEntry.Load() == 0 {
+					t.Fatal("upstream was reached before the required receipt was durably recorded")
+				}
 				_ = rec.Close()
 				if got := len(readActionReceipts(t, dir)); got == 0 {
 					t.Fatal("require_receipts forward recorded no receipt")
@@ -137,11 +151,11 @@ func TestHTTPListener_RequireReceiptsGatesUpstreamForward(t *testing.T) {
 // independent (the upstream is never contacted) and are covered by the JSON table
 // above; this pins the one case where the response transport differs.
 func TestHTTPListener_RequireReceiptsGatesSSEUpstreamForward(t *testing.T) {
-	var hits atomic.Int32
-	upstream := httptest.NewServer(receiptBoundaryUpstream(&hits, true))
+	var hits, recorded, recordedAtEntry atomic.Int32
+	upstream := httptest.NewServer(receiptBoundaryUpstream(&hits, true, &recorded, &recordedAtEntry))
 	defer upstream.Close()
 
-	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	emitter, rec, dir, _ := newReceiptTestHarnessWithObserver(t, func(*receipt.Receipt) { recorded.Add(1) })
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
 		Scanner:         testScannerForHTTP(t),
 		RequireReceipts: true,
@@ -154,6 +168,9 @@ func TestHTTPListener_RequireReceiptsGatesSSEUpstreamForward(t *testing.T) {
 	}
 	if !strings.Contains(body, "ok") {
 		t.Fatalf("SSE forward missing upstream result: status=%d body=%s", status, body)
+	}
+	if recordedAtEntry.Load() == 0 {
+		t.Fatal("SSE upstream was reached before the required receipt was durably recorded")
 	}
 	_ = rec.Close()
 	if got := len(readActionReceipts(t, dir)); got == 0 {

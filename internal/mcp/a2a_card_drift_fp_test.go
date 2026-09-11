@@ -193,7 +193,11 @@ func TestCardBaseline_ConcurrentDescriptiveAdoption(t *testing.T) {
 			updated := card
 			updated.Description = description
 			out := baseline.Check(key, structural, cardDescriptiveText(updated), nil)
-			if out.block || out.structuralChange || out.capacityExceeded {
+			// Every description here is distinct from the seed, so each call
+			// MUST report a change and adopt it. Accepting a zero outcome as
+			// well would let a regression that silently drops every update
+			// pass this test.
+			if !out.changed || !out.adopted || out.block || out.structuralChange || out.capacityExceeded {
 				errs <- out
 			}
 		})
@@ -201,6 +205,6 @@ func TestCardBaseline_ConcurrentDescriptiveAdoption(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for out := range errs {
-		t.Fatalf("benign concurrent adoption = %+v, want clean adoption or no-op", out)
+		t.Fatalf("benign concurrent adoption = %+v, want changed+adopted without blocking", out)
 	}
 }

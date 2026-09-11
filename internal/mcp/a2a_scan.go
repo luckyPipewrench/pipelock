@@ -457,6 +457,27 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 // blocking until an operator ResetBaseline accepts it. Auto-promotion is scoped
 // strictly to the benign descriptive case; every other change holds the ledger.
 func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
+	outcome := cb.Evaluate(key, structuralDigest, descriptive, skillNames)
+	if outcome.firstSeen || outcome.adopted {
+		cb.Commit(key, structuralDigest, descriptive, skillNames)
+	}
+	return outcome
+}
+
+// Evaluate decides what a card's digests mean against the baseline WITHOUT
+// changing it. Trusting a card is a decision the drift check alone cannot make:
+// the same scan also runs field scanning and signature verification, and a card
+// those reject must not leave its text behind as the trusted baseline. So the
+// mutation is split out into Commit, which the caller runs only once the whole
+// verdict is clean. Splitting it this way is what stops a rejected card - an
+// unsigned one under require_signed_agent_cards, one with an invalid signature,
+// or one carrying a scanner finding - from replacing the baseline that every
+// later comparison is measured against.
+//
+// The LRU position IS updated here, on purpose and for every card including a
+// blocked one: a card under repeated attack must stay resident so it keeps
+// blocking instead of aging out and being re-accepted as first-seen.
+func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -465,13 +486,9 @@ func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive st
 		if len(cb.entries) >= cb.maxSize {
 			return cardDriftOutcome{capacityExceeded: true}
 		}
-		// First-seen: store baseline (TOFU).
-		cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
-		cb.touchLocked(key)
 		return cardDriftOutcome{firstSeen: true}
 	}
 
-	// Update LRU position.
 	cb.touchLocked(key)
 
 	if existing.structuralDigest != structuralDigest {
@@ -483,14 +500,43 @@ func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive st
 	}
 
 	// Structure unchanged, descriptive text changed: block only if the change
-	// introduced a cue class; otherwise adopt the new descriptive text.
+	// introduced a cue class; otherwise the caller may adopt the new text.
 	introduced := tools.IntroducedDescriptionCues(existing.descriptive, descriptive)
 	if len(introduced) > 0 {
 		return cardDriftOutcome{changed: true, block: true, introducedCues: introduced}
 	}
+	return cardDriftOutcome{changed: true, adopted: true}
+}
+
+// Commit writes the baseline change a preceding Evaluate found acceptable, and
+// is called only after the card's full verdict came back clean. It re-derives
+// the decision under the lock rather than trusting the caller's outcome, so a
+// concurrent fetch that moved the entry in between cannot be overwritten on the
+// strength of a stale read: a first-seen insert happens only while the key is
+// still absent and there is still room, and a descriptive adoption happens only
+// while the structure still matches and the change still introduces no cue.
+func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	existing, ok := cb.entries[key]
+	if !ok {
+		if len(cb.entries) >= cb.maxSize {
+			return
+		}
+		cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
+		cb.touchLocked(key)
+		return
+	}
+	if existing.structuralDigest != structuralDigest || existing.descriptive == descriptive {
+		return
+	}
+	if len(tools.IntroducedDescriptionCues(existing.descriptive, descriptive)) > 0 {
+		return
+	}
 	existing.descriptive = descriptive
 	existing.skillNames = skillNames
-	return cardDriftOutcome{changed: true, adopted: true}
+	cb.touchLocked(key)
 }
 
 // ResetBaseline explicitly updates the stored baseline for a key.
@@ -585,6 +631,12 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 
 	result := AgentCardScanResult{Clean: true}
 
+	// driftCommit writes the baseline change the drift evaluation found
+	// acceptable. It runs only after the FULL verdict is known, so a card the
+	// scanner or the signature check rejects leaves the trusted baseline alone.
+	driftCommit := func(bool) {}
+	var driftOutcome cardDriftOutcome
+
 	// Card content scanning via field walker.
 	if cfg.ScanAgentCards {
 		result.Findings = scanA2ABody(ctx, body, sc, cfg, nil)
@@ -603,7 +655,16 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		for _, s := range card.Skills {
 			skillNames = append(skillNames, s.Name)
 		}
-		outcome := baseline.Check(key, cardStructuralDigest(card), cardDescriptiveText(card), skillNames)
+		structural, descriptive := cardStructuralDigest(card), cardDescriptiveText(card)
+		// Evaluate now, commit at the end: the baseline must not learn a card
+		// that field scanning or signature verification is about to reject.
+		outcome := baseline.Evaluate(key, structural, descriptive, skillNames)
+		driftCommit = func(accepted bool) {
+			if accepted {
+				baseline.Commit(key, structural, descriptive, skillNames)
+			}
+		}
+		driftOutcome = outcome
 		result.DriftDetected = outcome.changed
 		result.DriftAdopted = outcome.adopted
 		result.FirstSeen = outcome.firstSeen
@@ -632,6 +693,17 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// against the operator's trusted, origin-scoped keys. This runs in addition
 	// to (not instead of) content scanning and drift detection.
 	applyCardSignatureVerification(&result, body, key, cfg)
+
+	// The verdict is final here. Learn the card only if nothing rejected it;
+	// otherwise the baseline keeps what it already trusted, and the result must
+	// not claim an adoption that never happened (the audit event and the
+	// OnCardDriftAdopted callback both read DriftAdopted).
+	if result.Clean {
+		driftCommit(true)
+	} else if driftOutcome.adopted || driftOutcome.firstSeen {
+		result.DriftAdopted = false
+		result.FirstSeen = false
+	}
 
 	return result
 }

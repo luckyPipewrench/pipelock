@@ -95,7 +95,7 @@ func TestRefreshCron_Tick_SkipsCanceledSubscription(t *testing.T) {
 		}`, testSubscriptionID, testCustomerEmail, testProductID, testProductName)
 	}))
 	defer canceledPolar.Close()
-	ts.handler.polar = NewPolarClient(testPolarAPIToken, canceledPolar.URL)
+	ts.handler.polar = NewPolarClient(testPolarAPIToken, canceledPolar.URL, defaultPolarAPIVersion)
 
 	// Insert an entitlement due for refresh.
 	past := time.Now().Add(-1 * time.Hour)
@@ -166,7 +166,7 @@ func TestRefreshCron_RefreshOne_PolarError(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient(testPolarAPIToken, errorPolar.URL)
+	polar := NewPolarClient(testPolarAPIToken, errorPolar.URL, defaultPolarAPIVersion)
 	email := NewEmailSender("re_"+"key", "from@test.com")
 
 	handler, err := NewWebhookHandler(cfg, db, polar, email, ledger, priv, zerolog.Nop())
@@ -249,7 +249,7 @@ func TestRefreshCron_RefreshOne_CanceledSub(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient(testPolarAPIToken, canceledPolar.URL)
+	polar := NewPolarClient(testPolarAPIToken, canceledPolar.URL, defaultPolarAPIVersion)
 	email := NewEmailSender("re_"+"key", "from@test.com")
 
 	handler, err := NewWebhookHandler(cfg, db, polar, email, ledger, priv, zerolog.Nop())

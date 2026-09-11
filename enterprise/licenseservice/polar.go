@@ -75,16 +75,21 @@ type PolarSubscription struct {
 
 // PolarClient handles communication with the Polar API.
 type PolarClient struct {
-	apiToken string
-	baseURL  string
-	client   *http.Client
+	apiToken   string
+	baseURL    string
+	apiVersion string
+	client     *http.Client
 }
 
-// NewPolarClient creates a Polar API client with the given token and base URL.
-func NewPolarClient(apiToken, baseURL string) *PolarClient {
+// NewPolarClient creates a Polar API client with the given token, base URL, and
+// dated API version. The version is sent as the Polar-Version header on every
+// request so a quarterly Polar release cannot change the response contract
+// under a running deployment.
+func NewPolarClient(apiToken, baseURL, apiVersion string) *PolarClient {
 	return &PolarClient{
-		apiToken: apiToken,
-		baseURL:  baseURL,
+		apiToken:   apiToken,
+		baseURL:    baseURL,
+		apiVersion: apiVersion,
 		client: &http.Client{
 			Timeout: 15 * time.Second, // 15s: generous for external API, prevents hanging
 		},
@@ -102,6 +107,11 @@ func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) 
 	}
 	req.Header.Set("Authorization", "Bearer "+p.apiToken)
 	req.Header.Set("Accept", "application/json")
+	// Pin the response contract. Without this header Polar serves whatever
+	// version is Current, which rolls forward every quarter.
+	if p.apiVersion != "" {
+		req.Header.Set("Polar-Version", p.apiVersion)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {

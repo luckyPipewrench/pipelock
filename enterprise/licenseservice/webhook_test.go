@@ -219,7 +219,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		},
 	}
 
-	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
+	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
 	email := &EmailSender{
 		apiKey:    cfg.ResendAPIKey,
 		fromEmail: cfg.FromEmail,
@@ -795,7 +795,7 @@ func TestProcessSubscription_ExpiryClampedToIntermediateNotAfter(t *testing.T) {
 	handler, err := NewWebhookHandler(
 		cfg,
 		db,
-		NewPolarClient("token", "http://localhost"),
+		NewPolarClient("token", "http://localhost", defaultPolarAPIVersion),
 		&EmailSender{apiKey: "re_" + "test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL},
 		ledger,
 		signingPriv,
@@ -1434,7 +1434,7 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient("token", "http://localhost")
+	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
 
 	handler, err := NewWebhookHandler(cfg, db, polar, email, ledger, priv, zerolog.Nop())
@@ -1467,7 +1467,7 @@ func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient("token", "http://localhost")
+	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
 
 	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
@@ -1498,7 +1498,7 @@ func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient("token", "http://localhost")
+	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
 
 	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
@@ -1576,7 +1576,7 @@ func TestNewWebhookHandler_VerifiesIntermediateAtStartup(t *testing.T) {
 				FoundingProCap:      50,
 				FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 			}
-			_, err = NewWebhookHandler(cfg, db, NewPolarClient("token", "http://localhost"), NewEmailSender("key", "from@test.com"), ledger, signingPriv, zerolog.Nop())
+			_, err = NewWebhookHandler(cfg, db, NewPolarClient("token", "http://localhost", defaultPolarAPIVersion), NewEmailSender("key", "from@test.com"), ledger, signingPriv, zerolog.Nop())
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("NewWebhookHandler() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1610,7 +1610,7 @@ func TestHandleEvent_PolarFetchError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"down"}`))
 	}))
 	defer errorPolar.Close()
-	ts.handler.polar = NewPolarClient(testPolarAPIToken, errorPolar.URL)
+	ts.handler.polar = NewPolarClient(testPolarAPIToken, errorPolar.URL, defaultPolarAPIVersion)
 
 	event := &PolarWebhookEvent{
 		Type: EventSubscriptionCreated,
@@ -2145,7 +2145,7 @@ func TestNewWebhookHandler_DBError(t *testing.T) {
 		FoundingProCap:      50,
 		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
 	}
-	polar := NewPolarClient("token", "http://localhost")
+	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
 
 	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, priv, zerolog.Nop())
@@ -2712,7 +2712,7 @@ func TestHandleOrderEvent_RejectsCurrentlyRefundedOrder(t *testing.T) {
 		}`))
 	}))
 	t.Cleanup(orderSrv.Close)
-	ts.handler.polar = NewPolarClient(testPolarAPIToken, orderSrv.URL)
+	ts.handler.polar = NewPolarClient(testPolarAPIToken, orderSrv.URL, defaultPolarAPIVersion)
 
 	event := &PolarWebhookEvent{Type: EventOrderCreated, Data: json.RawMessage(`{
 		"id":"order_refunded",

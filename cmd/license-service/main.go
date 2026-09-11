@@ -127,7 +127,7 @@ func run(log zerolog.Logger) error {
 	log.Info().Str("ledger_path", cfg.LedgerPath).Msg("audit ledger ready")
 
 	// Create subsystem clients.
-	polar := licenseservice.NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
+	polar := licenseservice.NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
 	email := licenseservice.NewEmailSender(cfg.ResendAPIKey, cfg.FromEmail)
 
 	// Create the webhook handler (loads founding count from DB).

@@ -415,7 +415,7 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := NewPolarClient(testPolarAPIToken, srv.URL)
+			client := NewPolarClient(testPolarAPIToken, srv.URL, defaultPolarAPIVersion)
 			sub, err := client.GetSubscription(t.Context(), testSubscriptionID)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetSubscription() error = %v, wantErr %v", err, tt.wantErr)
@@ -521,7 +521,7 @@ func TestPolarClient_GetOrder(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			client := NewPolarClient(testPolarAPIToken, srv.URL)
+			client := NewPolarClient(testPolarAPIToken, srv.URL, defaultPolarAPIVersion)
 			order, err := client.GetOrder(t.Context(), testOrderID)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetOrder() error = %v, wantErr %v", err, tt.wantErr)
@@ -570,7 +570,7 @@ func TestPolarClient_GetSubscription_NetworkError(t *testing.T) {
 	}))
 	srv.Close()
 
-	client := NewPolarClient(testPolarAPIToken, srv.URL)
+	client := NewPolarClient(testPolarAPIToken, srv.URL, defaultPolarAPIVersion)
 	_, err := client.GetSubscription(t.Context(), testSubscriptionID)
 	if err == nil {
 		t.Fatal("expected network error for closed server, got nil")
@@ -600,5 +600,66 @@ func TestIsSubscriptionEvent(t *testing.T) {
 				t.Errorf("isSubscriptionEvent(%q) = %v, want %v", tt.eventType, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPolarClient_SendsVersionHeader proves every API read pins its contract.
+// Polar serves whatever version is Current to an unpinned request, and Current
+// rolls forward each quarter, so a missing header here means the response shape
+// can change under a running deployment without any code change.
+func TestPolarClient_SendsVersionHeader(t *testing.T) {
+	calls := []struct {
+		name     string
+		wantPath string
+		body     string
+		invoke   func(*PolarClient) error
+	}{
+		{
+			name:     "GetSubscription",
+			wantPath: "/v1/subscriptions/" + testSubscriptionID,
+			body:     `{"id":"` + testSubscriptionID + `","status":"active"}`,
+			invoke: func(c *PolarClient) error {
+				_, err := c.GetSubscription(t.Context(), testSubscriptionID)
+				return err
+			},
+		},
+		{
+			name:     "GetOrder",
+			wantPath: "/v1/orders/order_123",
+			body:     `{"id":"order_123","status":"paid"}`,
+			invoke: func(c *PolarClient) error {
+				_, err := c.GetOrder(t.Context(), "order_123")
+				return err
+			},
+		},
+	}
+
+	for _, call := range calls {
+		for _, version := range []string{defaultPolarAPIVersion, "2026-10"} {
+			t.Run(call.name+"/"+version, func(t *testing.T) {
+				var got string
+				var seen bool
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seen = true
+					got = r.Header.Get("Polar-Version")
+					if r.URL.Path != call.wantPath {
+						t.Errorf("got path %q, want %q", r.URL.Path, call.wantPath)
+					}
+					_, _ = w.Write([]byte(call.body))
+				}))
+				defer srv.Close()
+
+				client := NewPolarClient(testPolarAPIToken, srv.URL, version)
+				if err := call.invoke(client); err != nil {
+					t.Fatalf("%s: %v", call.name, err)
+				}
+				if !seen {
+					t.Fatal("upstream was never called")
+				}
+				if got != version {
+					t.Errorf("Polar-Version = %q, want %q", got, version)
+				}
+			})
+		}
 	}
 }

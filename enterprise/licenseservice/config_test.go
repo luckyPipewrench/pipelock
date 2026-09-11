@@ -328,3 +328,48 @@ func TestLoadConfig_ZeroFoundingCap(t *testing.T) {
 		t.Errorf("FoundingProCap = %d, want 0", cfg.FoundingProCap)
 	}
 }
+
+// TestLoadConfig_PolarAPIVersion covers the three states the pin can be in:
+// omitted (default), explicitly set to another supported version, and
+// malformed. A malformed version must be refused at startup, because Polar
+// answers an unknown version with 404 on every request rather than falling
+// back, so an unvalidated typo would present as a total fulfillment outage.
+func TestLoadConfig_PolarAPIVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    string
+		wantErr bool
+	}{
+		{name: "omitted uses the pinned default", env: "", want: defaultPolarAPIVersion},
+		{name: "explicit version is honored", env: "2026-10", want: "2026-10"},
+		{name: "not a date is refused", env: "latest", wantErr: true},
+		{name: "month out of range is refused", env: "2026-13", wantErr: true},
+		{name: "zero month is refused", env: "2026-00", wantErr: true},
+		{name: "day-precision is refused", env: "2026-04-01", wantErr: true},
+		{name: "short year is refused", env: "26-04", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			if tt.env != "" {
+				t.Setenv("POLAR_API_VERSION", tt.env)
+			}
+
+			cfg, err := LoadConfig()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("LoadConfig() accepted %q, want an error", tt.env)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.PolarAPIVersion != tt.want {
+				t.Errorf("PolarAPIVersion = %q, want %q", cfg.PolarAPIVersion, tt.want)
+			}
+		})
+	}
+}

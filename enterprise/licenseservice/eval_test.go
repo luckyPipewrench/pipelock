@@ -93,7 +93,7 @@ func newEvalTestSetup(t *testing.T) *evalTestSetup {
 		EvalCurrency:        "usd",
 	}
 	email := &EmailSender{apiKey: cfg.ResendAPIKey, fromEmail: cfg.FromEmail, client: emailSrv.Client(), apiURL: emailSrv.URL}
-	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
+	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
 	handler, err := NewWebhookHandler(cfg, db, polar, email, ledger, priv, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewWebhookHandler: %v", err)

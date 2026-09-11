@@ -83,7 +83,7 @@ func adminHandler(ctx context.Context, log zerolog.Logger) (*licenseservice.Webh
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("open audit ledger: %w", err)
 	}
-	polar := licenseservice.NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
+	polar := licenseservice.NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
 	email := licenseservice.NewEmailSender(cfg.ResendAPIKey, cfg.FromEmail)
 	handler, err := licenseservice.NewWebhookHandler(cfg, db, polar, email, ledger, privateKey, log)
 	if err != nil {

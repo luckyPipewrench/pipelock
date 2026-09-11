@@ -89,7 +89,7 @@ func newTestServer(t *testing.T) *Server {
 		PolarAPIBase:        polarSrv.URL,
 	}
 
-	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase)
+	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
 	email := &EmailSender{
 		apiKey:    cfg.ResendAPIKey,
 		fromEmail: cfg.FromEmail,
@@ -422,7 +422,7 @@ func TestServer_WebhookProcessingError_Returns500(t *testing.T) {
 	defer badPolarSrv.Close()
 
 	// Rewire the handler's Polar client.
-	srv.handler.polar = NewPolarClient(testPolarAPIToken, badPolarSrv.URL)
+	srv.handler.polar = NewPolarClient(testPolarAPIToken, badPolarSrv.URL, defaultPolarAPIVersion)
 
 	body := `{"type":"subscription.created","data":{"id":"sub_bad"}}`
 	req := signedWebhookRequest(t, srv, body)

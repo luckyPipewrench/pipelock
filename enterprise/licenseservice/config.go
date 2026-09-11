@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,14 @@ type Config struct {
 	// PolarAPIBase is the base URL for the Polar API. Defaults to production.
 	PolarAPIBase string
 
+	// PolarAPIVersion pins every Polar API request to a dated contract via the
+	// Polar-Version header. Polar releases a new version each quarter and an
+	// unpinned request silently follows whatever "Current" is, so the response
+	// shape can change under us at a release boundary. A removed or malformed
+	// version is a 404 from Polar, not a fallback, so this is validated at
+	// startup rather than discovered on the first webhook.
+	PolarAPIVersion string
+
 	// EvalProductIDs is the allowlist of Polar product IDs that fulfill the
 	// Enterprise Eval. An order only mints an eval token if its product ID is in
 	// this list AND its tier metadata is enterprise_eval (defense in depth against
@@ -134,7 +143,12 @@ const (
 	defaultLedgerPath       = "audit.jsonl"
 	defaultFromEmail        = "licenses@mail.pipelab.org"
 	defaultPolarAPIBase     = "https://api.polar.sh"
-	defaultEvalCurrency     = "usd"
+	// defaultPolarAPIVersion is the dated Polar API contract this code was
+	// written against. Polar removes a version roughly nine months after
+	// release, at which point every request pinned to it returns 404, so this
+	// must be re-pinned to a supported version before then.
+	defaultPolarAPIVersion = "2026-04"
+	defaultEvalCurrency    = "usd"
 )
 
 // LoadConfig reads configuration from environment variables with sensible
@@ -156,6 +170,7 @@ func LoadConfig() (*Config, error) {
 		ListenAddr:        envOrDefault("LISTEN_ADDR", defaultListenAddr),
 		FromEmail:         envOrDefault("FROM_EMAIL", defaultFromEmail),
 		PolarAPIBase:      envOrDefault("POLAR_API_BASE", defaultPolarAPIBase),
+		PolarAPIVersion:   envOrDefault("POLAR_API_VERSION", defaultPolarAPIVersion),
 	}
 
 	// Parse founding pro cap.
@@ -251,6 +266,10 @@ func LoadConfig() (*Config, error) {
 		seenOrderProducts[product.ProductID] = struct{}{}
 	}
 
+	if !polarAPIVersionPattern.MatchString(cfg.PolarAPIVersion) {
+		return nil, fmt.Errorf("POLAR_API_VERSION must be YYYY-MM (e.g. %s), got %q", defaultPolarAPIVersion, cfg.PolarAPIVersion)
+	}
+
 	// Validate required secrets.
 	if cfg.PolarWebhookSecret == "" {
 		return nil, fmt.Errorf("POLAR_WEBHOOK_SECRET is required")
@@ -270,6 +289,9 @@ func LoadConfig() (*Config, error) {
 
 	return cfg, nil
 }
+
+// polarAPIVersionPattern matches Polar's dated version format, YYYY-MM.
+var polarAPIVersionPattern = regexp.MustCompile(`^[0-9]{4}-(0[1-9]|1[0-2])$`)
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

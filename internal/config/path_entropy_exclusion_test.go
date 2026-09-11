@@ -209,7 +209,7 @@ func TestPathEntropyExclusionDefaults(t *testing.T) {
 	want := []PathEntropyExclusion{
 		{Host: "docs.google.com", PathPrefix: "/document/d/"},
 		{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/"},
-		{Host: "docs.google.com", PathPrefix: "/presentations/d/"},
+		{Host: "docs.google.com", PathPrefix: "/presentation/d/"},
 		{Host: "docs.google.com", PathPrefix: "/forms/d/e/"},
 		{Host: "drive.google.com", PathPrefix: "/file/d/"},
 	}

@@ -402,13 +402,15 @@ const (
 	// removed. It had no consumer, but SessionProfiling is part of the policy
 	// view, so dropping the field changes the canonical JSON shape and shifts
 	// the hash. Effective enforcement is unchanged.
-	// Re-bumped 2026-09-11 for the shipped document-sharing route exclusions.
+	// Re-bumped 2026-09-11 for the shipped document-sharing route exclusions,
+	// and again the same day when the Slides route was corrected to Google's
+	// published singular /presentation/d/ (the plural was an invented value).
 	// Defaults() now carries five path_entropy_exclusions entries, which IS a
 	// policy-semantics change: every deployment's reported policy identity moves
 	// on upgrade, and a conductor strict-mode reload will see it. That
 	// visibility is the intended behavior, not a side effect - an operator's
 	// detection posture changed and the hash is what says so.
-	goldenHashDefaults = "09c3838715f14d36effe3ba7790a40a2295d68dadfc76ba12b585f9495d9927e"
+	goldenHashDefaults = "c6264fe6ff02adfcab114ed9575298e46d72608cbeb0e6f74c6f8d6ea801afe7"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -621,7 +623,13 @@ const (
 	// Re-bumped for the session_profiling.volume_spike_ratio removal: see
 	// goldenHashDefaults note above. The rich fixture inherits SessionProfiling
 	// defaults, so the hash shifts in lockstep.
-	goldenHashRichConfig = "e9afed0409969eee5acf87a9b2ae6a9cbf072eb90033a41e0824ca707bda09b6"
+	// Re-bumped 2026-09-11 alongside goldenHashDefaults. This one moving is the
+	// POINT rather than a side effect: the rich fixture is YAML-backed, and it
+	// only inherits the shipped document-sharing routes because ApplyDefaults
+	// now materializes them. Before that fix the defaults hash moved and this
+	// one did not, which is exactly the shape of a default that reaches the
+	// no-config CLI path and no real deployment.
+	goldenHashRichConfig = "e5c4d6a5b87d66803c06ac88b976f414b9c793d270e3ad50a314e9d7a1d7c16c"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -1079,8 +1079,12 @@ type Monitoring struct {
 	// SSRF enforced for the same request. Prefer this over adding a host to
 	// SubdomainEntropyExclusions for a path false positive: that list governs
 	// BOTH the path and subdomain gates, so it gives up a second detection.
-	// Ships empty; a route enters the defaults only with the vendor's own
-	// published route contract behind it.
+	// Ships with five document-sharing routes (Google Docs, Sheets, Slides,
+	// Forms and Drive file), because those carry an opaque service-issued file
+	// ID by construction and were otherwise blocked on a fresh install. A route
+	// enters the defaults on the vendor's PUBLISHED ROUTE SHAPE only, never on
+	// the identifier format, which Google documents as opaque. An operator's
+	// own list replaces the shipped set; an explicitly empty list removes it.
 	PathEntropyExclusions []PathEntropyExclusion `yaml:"path_entropy_exclusions"`
 
 	// QueryEntropyParamExclusions lists exact HTTPS endpoint+parameter tuples

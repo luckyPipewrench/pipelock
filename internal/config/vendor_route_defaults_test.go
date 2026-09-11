@@ -5,6 +5,8 @@ package config_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -36,7 +38,7 @@ func TestVendorRouteDefaults(t *testing.T) {
 	}{
 		{"docs document", "https://docs.google.com/document/d/" + id + "/edit", true},
 		{"docs spreadsheet", "https://docs.google.com/spreadsheets/d/" + id + "/edit", true},
-		{"docs presentation", "https://docs.google.com/presentations/d/" + id + "/edit", true},
+		{"docs presentation", "https://docs.google.com/presentation/d/" + id + "/edit", true},
 		{"docs form", "https://docs.google.com/forms/d/e/" + formID + "/viewform", true},
 		{"drive file", "https://drive.google.com/file/d/" + id + "/view", true},
 
@@ -56,5 +58,47 @@ func TestVendorRouteDefaults(t *testing.T) {
 				t.Fatalf("allowed=%v want %v (reason=%q scanner=%q)", res.Allowed, tc.wantAllow, res.Reason, res.Scanner)
 			}
 		})
+	}
+}
+
+// TestVendorRouteDefaultsReachAYAMLBackedConfig covers the state every real
+// operator occupies and the original tests missed: a config LOADED FROM YAML.
+//
+// Load() decodes into an empty config and then calls ApplyDefaults, so a value
+// present only in Defaults() reaches the no-config CLI path and no deployment.
+// The first version of this change had exactly that shape: the five routes were
+// in Defaults(), the defaults hash moved, and a configured operator still got
+// the block. Asserting through Load is what makes the default real.
+func TestVendorRouteDefaultsReachAYAMLBackedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+	// A minimal config that says nothing about path_entropy_exclusions.
+	if err := os.WriteFile(path, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := len(config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions)
+	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
+	if len(got) != want {
+		t.Fatalf("a YAML-backed config inherited %d shipped routes, want %d; the default never reaches a real deployment: %+v",
+			len(got), want, got)
+	}
+
+	// An explicitly empty list is a deliberate opt-out and must be preserved,
+	// not silently refilled with the shipped set.
+	optOut := filepath.Join(dir, "optout.yaml")
+	body := "mode: balanced\nfetch_proxy:\n  monitoring:\n    path_entropy_exclusions: []\n"
+	if err := os.WriteFile(optOut, []byte(body), 0o600); err != nil {
+		t.Fatalf("write opt-out config: %v", err)
+	}
+	cfg2, err := config.Load(optOut)
+	if err != nil {
+		t.Fatalf("config.Load(opt-out): %v", err)
+	}
+	if n := len(cfg2.FetchProxy.Monitoring.PathEntropyExclusions); n != 0 {
+		t.Fatalf("an explicit empty list was refilled with %d shipped routes; the operator's opt-out was overridden", n)
 	}
 }

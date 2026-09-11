@@ -261,6 +261,15 @@ func (c *Config) ApplyDefaults() {
 	if c.FetchProxy.Monitoring.SubdomainEntropyExclusions == nil {
 		c.FetchProxy.Monitoring.SubdomainEntropyExclusions = append([]string(nil), Defaults().FetchProxy.Monitoring.SubdomainEntropyExclusions...)
 	}
+	// The shipped document-sharing routes must reach a YAML-backed deployment,
+	// which is every real operator: Load() decodes into an EMPTY config and then
+	// calls this, so a default that is only present in Defaults() covers the
+	// no-config CLI path and nothing else. nil means the operator omitted the
+	// field and gets the shipped set; an explicitly empty list is a deliberate
+	// opt-out and is preserved, matching the sibling above.
+	if c.FetchProxy.Monitoring.PathEntropyExclusions == nil {
+		c.FetchProxy.Monitoring.PathEntropyExclusions = append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
+	}
 	if c.FetchProxy.Monitoring.MaxReqPerMinute <= 0 {
 		c.FetchProxy.Monitoring.MaxReqPerMinute = 60
 	}

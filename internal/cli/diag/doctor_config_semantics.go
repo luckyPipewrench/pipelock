@@ -741,22 +741,24 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	var findings []ConfigSemanticFinding
 	for _, entry := range entries {
 		tuple := pathEntropyAdvisoryTuple(entry)
-		// Every advisory in this loop asks the OPERATOR to act on an exemption
-		// they chose: own it, review it, remove it while entropy is off, or
-		// narrow it. A Pipelock-shipped default is none of those things. The
-		// operator did not add the route, cannot meaningfully own it, and
-		// "remove the path exemption" names a control they do not hold, so the
-		// advisory is an instruction that cannot be followed. Emitting them
-		// would put five to ten warnings in front of every operator on a fresh
-		// install, which is how a diagnostic trains people to ignore it.
+		// A shipped default is not an exemption the operator chose, so the
+		// LIFECYCLE advisories below (own it, give it a reason, set and renew an
+		// expiry) name actions they cannot take on a route Pipelock maintains.
+		// Emitting those would put ten warnings in front of every operator on a
+		// fresh install, which is how a diagnostic trains people to ignore it.
 		//
-		// A shipped entry is still governed - just not here. It is pinned by a
-		// defaults test, validated by the same validator an operator's config
-		// passes, and moves the canonical policy hash when it changes.
-		if isShippedPathEntropyDefault(entry) {
-			continue
-		}
-		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
+		// The CROSS-FIELD checks are a different thing and still run on shipped
+		// entries, because their remedy IS operator-controlled: an operator who
+		// also lists the host in subdomain_entropy_exclusions has given up
+		// subdomain-entropy coverage for it, and suppressing that warning would
+		// hide a real detection downgrade behind a route we shipped.
+		shipped := isShippedPathEntropyDefault(entry)
+		// The inert-while-entropy-disabled notice is skipped for shipped routes:
+		// its remedy is "remove the path exemption", which the operator does not
+		// own, and repeating it once per shipped route buries the one signal
+		// that matters (entropy is off) under five copies about our own
+		// defaults. An operator's own entry still gets it.
+		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 && !shipped {
 			findings = append(findings, newPathEntropyFinding(
 				ConfigSemanticKindInert,
 				tuple,
@@ -774,6 +776,12 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 				fmt.Sprintf("path_entropy_exclusions entry %s is redundant because subdomain_entropy_exclusions already exempts host %s from path entropy", tuple, entry.Host),
 				"keep the narrow path exemption and remove the host from subdomain_entropy_exclusions, which also disables subdomain entropy for that host",
 			))
+		}
+		if shipped {
+			// Lifecycle metadata stops here for a shipped route. Everything
+			// above is either a correctness problem or has an operator-owned
+			// remedy; everything below asks them to own a route they did not add.
+			continue
 		}
 		if strings.TrimSpace(entry.Reason) == "" {
 			findings = append(findings, pathEntropyLifecycleCheck(tuple, "reason", "add a short reason so future operators know why this route is exempt"))

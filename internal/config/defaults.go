@@ -286,7 +286,7 @@ func Defaults() *Config {
 				PathEntropyExclusions: []PathEntropyExclusion{
 					{Host: "docs.google.com", PathPrefix: "/document/d/", Reason: "Google Docs document route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/", Reason: "Google Sheets route; opaque vendor file id"},
-					{Host: "docs.google.com", PathPrefix: "/presentations/d/", Reason: "Google Slides route; opaque vendor file id"},
+					{Host: "docs.google.com", PathPrefix: "/presentation/d/", Reason: "Google Slides route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},
 					{Host: "drive.google.com", PathPrefix: "/file/d/", Reason: "Google Drive file route; opaque vendor file id"},
 				},

@@ -460,27 +460,23 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 // A blocked change preserves the existing baseline so repeated fetches keep
 // blocking until an operator ResetBaseline accepts it. Auto-promotion is scoped
 // strictly to the benign descriptive case; every other change holds the ledger.
-func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
-	digest := descriptiveIdentity(descriptive)
-	outcome := cb.Evaluate(key, structuralDigest, digest, descriptive, skillNames)
+// The descriptive digest is a PARAMETER rather than something this function
+// derives, and that is deliberate. An earlier version hashed the flattened text
+// here while ScanAgentCard hashed the card's fields, so the two produced
+// different values for the same card: a baseline seeded or reset through this
+// API then reported the unchanged card as drifted and adopted it again. There
+// is exactly one canonical derivation, cardDescriptiveDigest, and every writer
+// of a cardEntry must pass the value it produced.
+func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) cardDriftOutcome {
+	outcome := cb.Evaluate(key, structuralDigest, descriptiveDigest, descriptive, skillNames)
 	if outcome.firstSeen || outcome.adopted {
 		// If the baseline moved in between, the decision is stale. Re-evaluate
 		// rather than reporting an adoption that did not happen.
-		if !cb.Commit(key, structuralDigest, digest, descriptive, skillNames) {
-			return cb.Evaluate(key, structuralDigest, digest, descriptive, skillNames)
+		if !cb.Commit(key, structuralDigest, descriptiveDigest, descriptive, skillNames) {
+			return cb.Evaluate(key, structuralDigest, descriptiveDigest, descriptive, skillNames)
 		}
 	}
 	return outcome
-}
-
-// descriptiveIdentity derives an unambiguous identity from already-flattened
-// descriptive text. ScanAgentCard computes the digest from the card directly;
-// this exists for the Check convenience wrapper and for callers that only hold
-// the text.
-func descriptiveIdentity(descriptive string) string {
-	h := sha256.New()
-	writeFramed(h, []byte(descriptive))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Evaluate decides what a card's digests mean against the baseline WITHOUT
@@ -572,14 +568,12 @@ func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptiveDi
 // path that promotes a change Check refused (a structural/endpoint change or a
 // cue-introducing descriptive change). Resetting a missing entry at capacity is
 // refused so an operator action cannot discard a different trusted baseline.
-func (cb *CardBaseline) ResetBaseline(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) error {
+// The caller supplies the canonical descriptive digest for the same reason Check
+// does: a reviewed baseline stored under a differently-derived digest reports
+// drift on the very card the operator just accepted.
+func (cb *CardBaseline) ResetBaseline(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-
-	// The reviewed text must be stored with its identity digest, or the next
-	// Evaluate compares a real digest against an empty one and reports drift on
-	// the very card the operator just accepted.
-	descriptiveDigest := descriptiveIdentity(descriptive)
 
 	existing, ok := cb.entries[key]
 	if ok {

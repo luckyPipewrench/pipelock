@@ -125,12 +125,24 @@ func TestCardDescriptiveDigest_FramesFieldBoundaries(t *testing.T) {
 		t.Fatalf("distinct descriptive fields collided in the identity digest: both %s", got)
 	}
 
-	// The baseline must see the second card as changed.
+	// Seed through Evaluate+Commit, the path ScanAgentCard uses, so the stored
+	// entry carries the canonical digest. Seeding through an API that derived
+	// its own digest would make this test pass on the MISMATCH between two
+	// derivations rather than on the field-boundary case it claims to cover.
 	baseline := NewCardBaseline(4)
 	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
 	structural := cardStructuralDigest(left)
-	if out := baseline.Check(key, structural, cardDescriptiveText(left), nil); !out.firstSeen {
+	if out := baseline.Evaluate(key, structural, cardDescriptiveDigest(left), cardDescriptiveText(left), nil); !out.firstSeen {
 		t.Fatalf("seed outcome = %+v, want first-seen", out)
+	}
+	if !baseline.Commit(key, structural, cardDescriptiveDigest(left), cardDescriptiveText(left), nil) {
+		t.Fatal("seed commit did not apply")
+	}
+	// Control: the SAME card must now report no drift. If this fires, the
+	// seeded digest and the evaluated digest disagree and every assertion below
+	// would be meaningless.
+	if out := baseline.Evaluate(key, structural, cardDescriptiveDigest(left), cardDescriptiveText(left), nil); out.changed {
+		t.Fatalf("the same card reported drift against its own baseline: %+v", out)
 	}
 	if out := baseline.Evaluate(key, structural, cardDescriptiveDigest(right), cardDescriptiveText(right), nil); !out.changed {
 		t.Fatalf("a card with different descriptive fields reported no drift: %+v", out)

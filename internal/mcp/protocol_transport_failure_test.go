@@ -424,17 +424,17 @@ func TestA2AStateTransitionsPreserveReviewedBoundaries(t *testing.T) {
 		cb := NewCardBaseline(2)
 		first := CardCacheKeyFromRequest("https://api.vendor.example/card/one", "Bearer one")
 		second := CardCacheKeyFromRequest("https://api.vendor.example/card/two", "Bearer two")
-		cb.Check(first, "old", "old-desc", []string{"read"})
-		if err := cb.ResetBaseline(first, "new", "new-desc", []string{"write"}); err != nil {
+		cb.Check(first, "old", "old-desc", "old-desc", []string{"read"})
+		if err := cb.ResetBaseline(first, "new", "new-desc", "new-desc", []string{"write"}); err != nil {
 			t.Fatalf("ResetBaseline existing: %v", err)
 		}
-		if out := cb.Check(first, "new", "new-desc", nil); out.changed || out.capacityExceeded {
+		if out := cb.Check(first, "new", "new-desc", "new-desc", nil); out.changed || out.capacityExceeded {
 			t.Fatal("reviewed replacement still reports drift")
 		}
-		if err := cb.ResetBaseline(second, "second", "second-desc", []string{"search"}); err != nil {
+		if err := cb.ResetBaseline(second, "second", "second-desc", "second-desc", []string{"search"}); err != nil {
 			t.Fatalf("ResetBaseline new: %v", err)
 		}
-		if out := cb.Check(second, "second", "second-desc", nil); out.changed || out.firstSeen || out.capacityExceeded {
+		if out := cb.Check(second, "second", "second-desc", "second-desc", nil); out.changed || out.firstSeen || out.capacityExceeded {
 			t.Fatalf("inserted reset = %+v, want no change/firstSeen/capacity", out)
 		}
 	})

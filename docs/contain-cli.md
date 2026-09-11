@@ -9,13 +9,14 @@ The subcommands are:
 | `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle, runtime contract | yes (root only) |
 | `upgrade` | Download, verify, replace, re-pin integrity, restart, and verify in one fail-closed command | yes (root only) |
 | `run` | Verify the containment boundary, emit a signed posture capsule, then launch a registered tool as `pipelock-agent` | writes proof + starts process |
-| `verify` | Read-only probes that report pass / fail / skip for the 12 invariants below | no |
+| `verify` | Read-only probes that report pass / fail / skip for the invariants below | no |
 | `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
 | `add-tool` | Register an additional tool wrapper under `/usr/local/bin/plk-<name>` after install | yes (root only) |
 | `explain` | Explain a contain egress block event and print remediation | no |
 | `grant-workspace` | Grant the contained agent user ACL access to one project workspace | yes (root only) |
 | `revoke-workspace` | Revoke a previously granted workspace ACL and clean unused parent traversal ACLs | yes (root only) |
+| `list-workspaces` | List recorded workspace grants (path, mode, owner, expiry, status) | no |
 | `ca-refresh` | Rebuild the combined CA bundle at `/etc/pipelock/combined-ca.pem` after a CA rotation | yes (root only) |
 
 Each mutating subcommand accepts `--dry-run` to print the planned actions without touching state.
@@ -45,7 +46,22 @@ Before it starts the tool, `contain run` fails closed unless every containment p
 - the direct-egress canary from `pipelock-agent` must fail while the operator can still reach the internet, proving the negative probe is meaningful rather than a generic outage;
 - `pipelock-agent` must not be able to run `sudo -n true`, so the launch path refuses a host where the agent can trivially sudo back out.
 
-If preflight passes, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then launches `/usr/local/bin/plk-launch <tool> ...` directly as `pipelock-agent`. Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+After preflight, and before it launches, `contain run` prints a **session contract**: the exact boundary the agent is about to receive, derived from the same preflight state the launch uses. It lists the agent user, the proxy egress posture, the posture-capsule destination, whether the agent's `/tmp` is private, the registered tools, and every workspace grant with its owner, creation time, expiry, and status:
+
+```text
+pipelock contain run: session contract for claude
+  agent user:       pipelock-agent
+  proxy egress:     http://127.0.0.1:8888 (loopback proxy only; direct egress denied by nftables)
+  posture capsule:  /var/lib/pipelock/contain/posture/proof.json
+  agent /tmp:       shared with the operator (not private)
+  registered tools: claude, codex
+  workspaces:
+    /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
+```
+
+Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching — the way to review what a launch would grant before running it.
+
+If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then launches `/usr/local/bin/plk-launch <tool> ...` directly as `pipelock-agent`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 Flags:
 
@@ -54,6 +70,7 @@ Flags:
 | `--config` | `/etc/pipelock/pipelock.yaml` | Config used to sign the posture capsule. Must include `flight_recorder.signing_key_path`. |
 | `--port` | `8888` | Loopback proxy port to verify before launch. |
 | `--posture-output` | `/var/lib/pipelock/contain/posture` | Directory where the signed posture capsule is written. |
+| `--dry-run` | off | Run preflight and print the session contract, then exit without emitting a posture capsule or launching. |
 
 Exit codes:
 
@@ -159,8 +176,11 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify is read-only. It walks 13 probes in order and prints pass / fail / skip /
-unknown per probe. It does not require root.
+Verify is read-only. It walks 14 fixed probes in order (plus a conditional
+workspace probe, numbered 15, when workspaces are configured) and prints pass /
+fail / skip / unknown per probe. It does not require root. Probe numbers are an
+operator contract; new probes are appended above the existing range rather than
+renumbering the ones already published.
 
 ```bash
 pipelock contain verify
@@ -181,6 +201,8 @@ pipelock contain verify
 | 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
+| 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |
+| 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. |
 
 ### Managed metrics invariant
 
@@ -240,6 +262,8 @@ The containment boundary is security-correct, but a tool that ignores the proxy 
 
 The contract has four parts:
 
+`plk-launch` builds this environment with `env -i` — it starts from an empty environment and rebuilds only the identity block, the matrix below, the posture-proof binding, and the agent PATH. This is deliberate: `plk-launch` runs after `sudo`, which leaves operator variables standing (`DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`, `SUDO_*`), and plain `env` would pass every one of them through to the contained agent. `env -i` closes that leak, and it uses the same environment set as the `contain run` Go launcher so the two launch paths cannot drift (verify probe 14 fails if the launcher reverts to plain `env`). The tradeoff is that ambient niceties like `TERM`/`LANG` are not forwarded either; this already matched the `contain run` path, so it is not a new regression there.
+
 1. **Full environment matrix.** `plk-launch` (and the login-shell script below) export the complete proxy + CA set, because different ecosystems read different variables:
 
    - Proxy (upper- and lower-case): `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lowercase forms, all pointing at `http://127.0.0.1:<proxy-port>`.
@@ -256,6 +280,10 @@ The contract has four parts:
 A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
 
 This makes compatible tooling work; it does **not** widen egress. Direct (proxy-bypassing) connections from the agent user remain blocked by the nftables owner-match rule.
+
+### Filesystem sharing
+
+The contained agent runs as its own system user, but `contain run` does not currently give it a private `/tmp`: the agent and the operator share `/tmp` and `/var/tmp`, so at the usual `umask 022` the agent can read operator scratch files. The session contract reports this as `agent /tmp: shared with the operator (not private)`. Do not use `/tmp` to hand secrets to or from the agent. The supported, audited way to share a directory with the agent is a workspace grant (`contain grant-workspace`), which is recorded, listable, and revocable.
 
 ## `pipelock contain doctor`
 
@@ -386,6 +414,12 @@ sudo pipelock contain grant-workspace /home/alice/src/my-project --mode read-wri
 
 The command resolves symlinks, requires the target to be an existing directory, rejects protected system prefixes such as `/`, `/etc`, `/usr`, `/var`, `/proc`, `/sys`, and `/root` by default, and records the grant in `/etc/pipelock/contain/workspaces.json` so later revocation knows which parent traversal ACLs are still needed.
 
+Each grant is recorded with lifecycle metadata: the owner (the operator behind `sudo`, else the current user), an optional `--reason`, the creation timestamp, and an optional expiry from `--expires`. `--expires` accepts either a Go duration (for example `720h`) or an absolute RFC3339 timestamp. An **expired** grant is refused fail-closed by `contain run` and fails the `workspace_access` verify probe; the ACL itself is not auto-removed, so `revoke-workspace` (or a fresh grant) is still how you take the access away. In other words, expiry gates the launch, it does not unset the ACL. Inventories written by an older Pipelock (path and mode only) still load and are shown as legacy grants with no metadata. Use `list-workspaces` to see every recorded grant and its status.
+
+```bash
+sudo pipelock contain grant-workspace /home/alice/src/my-project --mode read-write --reason "sprint-42 refactor" --expires 336h
+```
+
 Default ACLs are applied only below the granted directory, not on the directory root. That keeps config roots such as `~/.codex` or `~/.claude` traversable without making future root-level credential files inherit agent-read. During every grant, credential-shaped files named `auth.json`, `.claude.json`, `.credentials.json`, or `*.token` are stripped of the contained agent ACL and chmodded to `0600`.
 
 `pipelock contain install` also installs a root-managed credential guard (`pipelock-cred-guard.path` / `.service`). The path unit uses `PathChanged` watches on exact credential-shaped files under the operator's home directory, `.claude`, `.claude-cc2`, and `.codex` roots so systemd can catch atomic temp-file plus rename rewrites through leaf-path watching. It also keeps `PathChanged` watches on those roots because systemd has no `PathChangedGlob`, and dynamic `*.token` files must still be discovered without level-triggered `PathExistsGlob` loops. The service filters each rescan to credential-shaped files only and re-applies the same credential lock if a later tool recreates, replaces, or widens them. The home-directory pass is depth-limited to top-level credential files such as `~/.claude.json`.
@@ -398,6 +432,24 @@ Flags:
 | `--mode` | `read-only` | Workspace ACL mode: `read-only` or `read-write`. |
 | `--agent-user` | `pipelock-agent` | Contained agent user to grant access to. |
 | `--allow-system-path` | false | Allow grants under protected system path prefixes. Use only for deliberate admin workflows. |
+| `--reason` | (none) | Optional justification recorded with the grant. |
+| `--expires` | (none) | Grant expiry as a Go duration (e.g. `720h`) or an RFC3339 timestamp. An expired grant is refused at launch and fails verify. |
+
+## `pipelock contain list-workspaces`
+
+Lists every recorded workspace grant so "what can the agent reach today, and why" is one command. Read-only; safe without root.
+
+```bash
+pipelock contain list-workspaces
+```
+
+Prints a table of path, mode, owner, creation time, expiry, and status (`active`, `expired`, `legacy`, or `invalid-expiry`). An `expired` grant still has its ACLs on disk — clear them with `revoke-workspace`.
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--agent-user` | `pipelock-agent` | Contained agent user whose grants to list. |
 
 ## `pipelock contain revoke-workspace`
 

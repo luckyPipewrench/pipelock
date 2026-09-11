@@ -18,7 +18,7 @@ import (
 // probe can return. The probe reads the installed plk-launch text, so each case
 // writes a launcher and asserts the status plus the operator-facing detail.
 func TestProbeLaunchEnvAllowList(t *testing.T) {
-	canonical := canonicalLaunchScript(8888)
+	canonical := canonicalLaunchScript(8888, defaultCABundlePath)
 	posture := posturebinding.RuntimeProofEnv + `="${` + posturebinding.RuntimeProofEnv + `:-/var/lib/pipelock/proof.json}"`
 	cases := []struct {
 		name       string
@@ -63,6 +63,37 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 			wantDetail: "unexpected: DISPLAY",
 		},
 		{
+			// env applies the LAST assignment of a repeated name, so a wrapper
+			// that sets HTTPS_PROXY twice runs with a value a reader scanning
+			// from the top never sees.
+			name:       "a duplicated assignment fails",
+			body:       strings.Replace(canonical, "    PATH=", "    HTTPS_PROXY=http://127.0.0.1:9 \\\n    PATH=", 1),
+			wantStatus: statusFail,
+			wantDetail: "assigns HTTPS_PROXY more than once",
+		},
+		{
+			// Two exec blocks make the effective environment depend on which one
+			// the shell reaches, so a canonical decoy could front a leaky block.
+			name:       "two exec env -i blocks are ambiguous",
+			body:       canonical + "\n" + canonical,
+			wantStatus: statusFail,
+			wantDetail: "contains 2 `exec env -i` blocks",
+		},
+		{
+			// The name-only check passes here: every expected variable is
+			// present. Only the value check catches the redirected proxy.
+			name:       "a redirected proxy value fails",
+			body:       strings.Replace(canonical, "    HTTPS_PROXY=http://127.0.0.1:8888", "    HTTPS_PROXY=http://127.0.0.1:9999", 1),
+			wantStatus: statusFail,
+			wantDetail: "expected http://127.0.0.1:8888",
+		},
+		{
+			name:       "a swapped CA bundle fails",
+			body:       strings.Replace(canonical, "SSL_CERT_FILE="+defaultCABundlePath, "SSL_CERT_FILE=/tmp/attacker-ca.pem", 1),
+			wantStatus: statusFail,
+			wantDetail: "CA bundle",
+		},
+		{
 			name:       "a dropped posture forward fails",
 			body:       strings.Replace(canonical, "    "+posturebinding.RuntimeProofEnv+"=", "    IGNORED_PROOF=", 1),
 			wantStatus: statusFail,
@@ -72,6 +103,12 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := makeProbeEnv(t)
+			// This probe reads only the launcher text, never the bundle file.
+			// Production renders the wrapper and runs verify from one install
+			// state, where both carry the default CA path; pin the probe env to
+			// it so the fixture exercises that state rather than an impossible
+			// one where the two disagree.
+			env.caBundlePath = defaultCABundlePath
 			if err := os.WriteFile(env.launchPath, []byte(tc.body), 0o600); err != nil {
 				t.Fatalf("write launcher: %v", err)
 			}

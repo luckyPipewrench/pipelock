@@ -3660,7 +3660,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 	toolTarget := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, toolTarget, 0o755)
-	body := canonicalLaunchScript(env.port)
+	body := canonicalLaunchScript(env.port, env.caBundlePath)
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}
@@ -3976,11 +3976,16 @@ func TestNewFakeRunHelper(t *testing.T) {
 // canonicalLaunchScript renders the plk-launch body exactly as `contain
 // install` would for the given proxy port, so fixtures exercise the real
 // `exec env -i` contract block the launcher-environment probe validates.
-func canonicalLaunchScript(port int) string {
+// canonicalLaunchScript renders the launcher exactly as `contain install`
+// would for this port and CA bundle. Fixtures pass the SAME caBundle the
+// probeEnv under test discovers: production renders the wrapper and runs verify
+// from one install state, so a fixture whose script and probe disagree about
+// the CA path is testing a state production never occupies.
+func canonicalLaunchScript(port int, caBundle string) string {
 	env := &installEnv{
 		agentUserName: testAgentUser,
 		proxyPort:     port,
-		caBundlePath:  defaultCABundlePath,
+		caBundlePath:  caBundle,
 		caExportPath:  defaultCAExportPath,
 	}
 	return "#!/bin/bash\n" + strings.Join(launchExecEnvLines(env), "\n") + "\n"

@@ -140,7 +140,11 @@ func runContainRun(
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("read workspace inventory: %w", err))
 	}
-	env.probe.workspaceGrants = inv.Workspaces
+	// Only the grants governing THIS agent user gate this launch; another
+	// contained user's expired grant must not refuse it, and its paths must not
+	// be probed as though this agent could read them.
+	grants := grantsForAgent(inv.Workspaces, env.probe.agentUserName)
+	env.probe.workspaceGrants = grants
 
 	_, _ = fmt.Fprintln(stdout, "pipelock contain run: verifying containment preflight")
 	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
@@ -159,7 +163,7 @@ func runContainRun(
 	}
 	env.probe.postureProofPath = proofPath
 
-	contract := buildSessionContract(env.probe, tool, entries, inv.Workspaces, proofPath)
+	contract := buildSessionContract(env.probe, tool, entries, grants, proofPath)
 	// The contract is the operator's review surface. If it cannot be written
 	// (closed pipe, failed writer) nobody saw the boundary, so refuse to go on
 	// rather than emit a capsule and launch unreviewed (fail closed).
@@ -172,7 +176,7 @@ func runContainRun(
 	// revokes. Dry-runs use this same gate so their outcome cannot claim a launch
 	// is possible when a real launch would refuse it. Expiry gates the launch; it
 	// does not remove the ACL.
-	expired, err := expiredWorkspaceGrants(inv.Workspaces, containRunNow(env.probe))
+	expired, err := expiredWorkspaceGrants(grants, containRunNow(env.probe))
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}

@@ -66,6 +66,30 @@ func (g workspaceGrant) isLegacyGrant() bool {
 	return g.Owner == "" && g.Reason == "" && g.Created == "" && g.Expires == "" && g.AgentUser == ""
 }
 
+// appliesTo reports whether this grant governs the named contained agent user.
+// A grant recorded with an explicit AgentUser belongs to that user alone; a
+// legacy grant (written before the field existed) carries no identity and is
+// therefore attributed to every agent user, because refusing to honour it would
+// silently drop an ACL that is still live on disk.
+//
+// This is the single predicate every grant consumer uses - list-workspaces,
+// `contain run` preflight, and `contain verify` - so one agent user's grant can
+// never gate, expire, or be verified against another's launch.
+func (g workspaceGrant) appliesTo(agentUser string) bool {
+	return g.AgentUser == "" || g.AgentUser == agentUser
+}
+
+// grantsForAgent filters an inventory down to the grants that govern agentUser.
+func grantsForAgent(grants []workspaceGrant, agentUser string) []workspaceGrant {
+	out := make([]workspaceGrant, 0, len(grants))
+	for _, g := range grants {
+		if g.appliesTo(agentUser) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // expired reports whether the grant's expiry (if any) is at or before now. A
 // malformed Expires value fails CLOSED (returns an error) so a corrupted
 // timestamp is treated as a launch/verify failure, never silently as
@@ -331,7 +355,7 @@ func runRevokeWorkspace(ctx context.Context, env *installEnv, path string, opts 
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-	remaining := workspaceGrantsExcept(inv.Workspaces, workspace)
+	remaining := workspaceGrantsExcept(inv.Workspaces, workspace, env.agentUserName)
 	commands := workspaceRevokeCommands(workspace, env.agentUserName, ancestorsNeededBy(remaining), workspaceExists)
 	if opts.dryRun {
 		_, _ = fmt.Fprintf(env.out, "pipelock contain revoke-workspace %s - planned:\n", workspace)
@@ -391,13 +415,7 @@ func runListWorkspaces(env *installEnv) error {
 	}
 	// Legacy grants carry no agent user and are shown for every agent user;
 	// grants recorded with one are shown only for that user.
-	var rows []workspaceGrant
-	for _, g := range inv.Workspaces {
-		if g.AgentUser != "" && g.AgentUser != env.agentUserName {
-			continue
-		}
-		rows = append(rows, g)
-	}
+	rows := grantsForAgent(inv.Workspaces, env.agentUserName)
 	if len(rows) == 0 {
 		_, _ = fmt.Fprintf(env.out, "no workspace grants recorded for %s in %s\n", env.agentUserName, env.workspaceInvPath)
 		return nil
@@ -632,9 +650,18 @@ func recordWorkspaceGrant(env *installEnv, grant workspaceGrant) error {
 	if err != nil {
 		return err
 	}
+	// A grant is identified by (Path, AgentUser), not by Path alone: a host that
+	// contains two agent users can hold a live ACL on the same directory for each
+	// of them, and keying on Path would make the second grant silently destroy
+	// the first one's record (including its expiry) while its ACL stayed live.
+	// A legacy row (no AgentUser) is upgraded in place by the first grant that
+	// names a user for that path, because it is the same ACL gaining an identity.
 	replaced := false
 	for i, existing := range inv.Workspaces {
-		if existing.Path == grant.Path {
+		if existing.Path != grant.Path {
+			continue
+		}
+		if existing.AgentUser == grant.AgentUser || existing.AgentUser == "" {
 			inv.Workspaces[i] = grant
 			replaced = true
 			break
@@ -695,12 +722,18 @@ func writeWorkspaceInventory(env *installEnv, inv workspaceInventory) error {
 	return backupAndWrite(env, env.workspaceInvPath, data, modeAllowListReadable)
 }
 
-func workspaceGrantsExcept(grants []workspaceGrant, path string) []workspaceGrant {
+// workspaceGrantsExcept drops the grants revoking path for agentUser removes.
+// Revocation strips the ACL for ONE agent user, so another user's grant on the
+// same path survives: dropping it would leave that user's ACL live on disk with
+// no record of it. A legacy row on that path is dropped, because it cannot be
+// attributed and the revoke may well be removing exactly it.
+func workspaceGrantsExcept(grants []workspaceGrant, path, agentUser string) []workspaceGrant {
 	out := make([]workspaceGrant, 0, len(grants))
 	for _, grant := range grants {
-		if grant.Path != path {
-			out = append(out, grant)
+		if grant.Path == path && grant.appliesTo(agentUser) {
+			continue
 		}
+		out = append(out, grant)
 	}
 	return out
 }

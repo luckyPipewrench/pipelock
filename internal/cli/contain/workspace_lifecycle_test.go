@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -336,4 +337,124 @@ func TestProbeWorkspaceAccess_FailsOnExpiredGrant(t *testing.T) {
 	if status != statusFail || !strings.Contains(detail, "expired") {
 		t.Fatalf("status=%s detail=%q, want fail on expiry", status, detail)
 	}
+}
+
+// TestMultiAgentGrantsOnOnePathStayIndependent covers the case a host that
+// contains two agent users actually occupies: both hold a live ACL on the same
+// directory. Grant identity is (Path, AgentUser), so neither one's record may
+// overwrite, revoke, or gate the other's.
+func TestMultiAgentGrantsOnOnePathStayIndependent(t *testing.T) {
+	shared := t.TempDir()
+	alphaGrant := workspaceGrant{
+		Path: shared, Mode: workspaceModeReadOnly, Owner: "josh",
+		Reason: "alpha reads it", Created: "2026-05-01T00:00:00Z",
+		Expires: "2026-07-01T00:00:00Z", AgentUser: "agent-alpha",
+	}
+	betaGrant := workspaceGrant{
+		Path: shared, Mode: workspaceModeReadWrite, Owner: "josh",
+		Reason: "beta writes it", Created: "2026-05-02T00:00:00Z",
+		Expires: "2026-08-01T00:00:00Z", AgentUser: "agent-beta",
+	}
+
+	t.Run("a second agent's grant does not overwrite the first", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.now = func() time.Time { return testNow }
+		if err := recordWorkspaceGrant(env, alphaGrant); err != nil {
+			t.Fatalf("record alpha: %v", err)
+		}
+		if err := recordWorkspaceGrant(env, betaGrant); err != nil {
+			t.Fatalf("record beta: %v", err)
+		}
+		inv := readWorkspaceInventory(env)
+		if len(inv.Workspaces) != 2 {
+			t.Fatalf("grants = %d, want 2 (one per agent user): %+v", len(inv.Workspaces), inv.Workspaces)
+		}
+		for _, want := range []workspaceGrant{alphaGrant, betaGrant} {
+			if !slices.Contains(inv.Workspaces, want) {
+				t.Fatalf("inventory lost %+v: %+v", want, inv.Workspaces)
+			}
+		}
+	})
+
+	t.Run("re-granting one agent leaves the other's metadata intact", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.now = func() time.Time { return testNow }
+		if err := recordWorkspaceGrant(env, alphaGrant); err != nil {
+			t.Fatalf("record alpha: %v", err)
+		}
+		updated := betaGrant
+		updated.Reason = "beta re-granted"
+		if err := recordWorkspaceGrant(env, betaGrant); err != nil {
+			t.Fatalf("record beta: %v", err)
+		}
+		if err := recordWorkspaceGrant(env, updated); err != nil {
+			t.Fatalf("re-record beta: %v", err)
+		}
+		inv := readWorkspaceInventory(env)
+		if len(inv.Workspaces) != 2 {
+			t.Fatalf("grants = %d, want 2: %+v", len(inv.Workspaces), inv.Workspaces)
+		}
+		if !slices.Contains(inv.Workspaces, alphaGrant) {
+			t.Fatalf("alpha's grant changed when beta was re-granted: %+v", inv.Workspaces)
+		}
+		if !slices.Contains(inv.Workspaces, updated) {
+			t.Fatalf("beta's re-grant not recorded: %+v", inv.Workspaces)
+		}
+	})
+
+	t.Run("revoking one agent leaves the other's ACL recorded", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.now = func() time.Time { return testNow }
+		env.runCmd = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
+		env.agentUserName = "agent-beta"
+		if err := recordWorkspaceGrant(env, alphaGrant); err != nil {
+			t.Fatalf("record alpha: %v", err)
+		}
+		if err := recordWorkspaceGrant(env, betaGrant); err != nil {
+			t.Fatalf("record beta: %v", err)
+		}
+		if err := runRevokeWorkspace(context.Background(), env, shared, workspaceOpts{}); err != nil {
+			t.Fatalf("revoke beta: %v", err)
+		}
+		inv := readWorkspaceInventory(env)
+		if len(inv.Workspaces) != 1 || inv.Workspaces[0] != alphaGrant {
+			t.Fatalf("revoking beta must leave alpha's grant alone, got %+v", inv.Workspaces)
+		}
+	})
+
+	t.Run("one agent's expired grant does not gate another's launch", func(t *testing.T) {
+		stale := alphaGrant
+		stale.Expires = "2026-05-01T00:00:00Z" // before testNow
+		grants := []workspaceGrant{stale, betaGrant}
+
+		betaScoped := grantsForAgent(grants, "agent-beta")
+		expired, err := expiredWorkspaceGrants(betaScoped, testNow)
+		if err != nil {
+			t.Fatalf("beta expiry check: %v", err)
+		}
+		if len(expired) != 0 {
+			t.Fatalf("alpha's expired grant gated beta: %v", expired)
+		}
+
+		alphaScoped := grantsForAgent(grants, "agent-alpha")
+		expired, err = expiredWorkspaceGrants(alphaScoped, testNow)
+		if err != nil {
+			t.Fatalf("alpha expiry check: %v", err)
+		}
+		if len(expired) != 1 || expired[0] != shared {
+			t.Fatalf("alpha's own expired grant must still gate alpha, got %v", expired)
+		}
+	})
+
+	t.Run("a legacy grant is honoured for every agent user", func(t *testing.T) {
+		legacy := workspaceGrant{Path: shared, Mode: workspaceModeReadOnly}
+		for _, user := range []string{"agent-alpha", "agent-beta"} {
+			if got := grantsForAgent([]workspaceGrant{legacy}, user); len(got) != 1 {
+				t.Fatalf("legacy grant hidden from %s: %+v", user, got)
+			}
+		}
+		if got := grantsForAgent([]workspaceGrant{betaGrant}, "agent-alpha"); len(got) != 0 {
+			t.Fatalf("beta's grant leaked into alpha's scope: %+v", got)
+		}
+	})
 }

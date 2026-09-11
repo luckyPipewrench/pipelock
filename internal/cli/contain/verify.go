@@ -634,12 +634,31 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	// must rebuild EXACTLY the runtime contract, nothing missing and nothing
 	// extra. Both directions fail: a missing variable breaks the proxy/CA
 	// contract, an extra one is an operator-environment passthrough.
-	names, found := parseLaunchExecEnvNames(script)
-	if !found {
-		if strings.Contains(script, "exec env ") {
-			return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
-		}
+	if plainExecEnvLine(script) {
+		return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
+	}
+	blocks := parseLaunchExecEnvBlocks(script)
+	switch len(blocks) {
+	case 0:
 		return statusFail, fmt.Sprintf("plk-launch at %s does not clear the environment (no `exec env -i` block) before exec", env.launchPath)
+	case 1:
+	default:
+		// A correctly rendered wrapper execs exactly once. More than one block
+		// means the block this probe reads is not necessarily the one the shell
+		// reaches, so a canonical decoy could stand in front of a leaky block
+		// that actually runs. Refuse to guess which is effective.
+		return statusFail, fmt.Sprintf("plk-launch at %s contains %d `exec env -i` blocks; exactly one is expected, so the effective launch environment is ambiguous - reinstall with `pipelock contain install`",
+			env.launchPath, len(blocks))
+	}
+	assigns := blocks[0]
+	names := make([]string, 0, len(assigns))
+	for _, a := range assigns {
+		names = append(names, a.name)
+	}
+	if dup := firstDuplicateName(names); dup != "" {
+		// env applies the LAST assignment of a repeated name, so a duplicate
+		// makes the effective value differ from the one a reader sees first.
+		return statusFail, fmt.Sprintf("plk-launch env -i block assigns %s more than once; the effective value is not the one it appears to set - reinstall with `pipelock contain install`", dup)
 	}
 	expected := expectedLaunchEnvNames()
 	missing, extra := diffNameSets(expected, names)
@@ -647,41 +666,157 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 		return statusFail, fmt.Sprintf("plk-launch env -i block does not match the runtime contract (missing: %s; unexpected: %s); reinstall with `pipelock contain install`",
 			listOrNone(missing), listOrNone(extra))
 	}
-	return statusPass, fmt.Sprintf("plk-launch clears the environment (env -i) and rebuilds exactly the %d-variable runtime contract", len(expected))
+	// Names alone are not the contract. A wrapper that assigns every expected
+	// name and points HTTPS_PROXY somewhere else, or SSL_CERT_FILE at an
+	// attacker-writable bundle, passes a name-only check while defeating exactly
+	// what containment buys. Values are checked for the variables whose correct
+	// value this probe can derive with certainty from the verified install
+	// (proxy endpoint, no-proxy list, CA bundle, agent identity); the rest
+	// (NODE_OPTIONS shim path, NODE_EXTRA_CA_CERTS, PATH, posture proof) depend
+	// on install-time paths this probe does not rediscover, so demanding a value
+	// for them would refuse legitimate non-default installs.
+	if name, want, got, ok := firstLaunchEnvValueMismatch(assigns, env); !ok {
+		return statusFail, fmt.Sprintf("plk-launch env -i block sets %s=%s, expected %s; the contained agent would not be bound to this install's %s - reinstall with `pipelock contain install`",
+			name, got, want, launchEnvValueSubject(name))
+	}
+	return statusPass, fmt.Sprintf("plk-launch clears the environment (env -i) and rebuilds exactly the %d-variable runtime contract, with the proxy, no-proxy, CA and identity values bound to this install", len(expected))
+}
+
+// launchEnvAssign is one NAME=VALUE assignment read from a launcher's exec
+// block, with surrounding shell quoting stripped from the value.
+type launchEnvAssign struct {
+	name  string
+	value string
+}
+
+// plainExecEnvLine reports whether the script execs the tool through `env`
+// WITHOUT -i anywhere, which passes the whole operator environment through.
+// Checked independently of the -i parse so a leaky exec line is caught even
+// when a canonical block also exists.
+func plainExecEnvLine(script string) bool {
+	for _, raw := range strings.Split(script, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "exec env ") {
+			continue
+		}
+		if !strings.HasPrefix(line, "exec env -i") {
+			return true
+		}
+	}
+	return false
+}
+
+// firstDuplicateName returns the first name assigned more than once, or "".
+func firstDuplicateName(names []string) string {
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if seen[n] {
+			return n
+		}
+		seen[n] = true
+	}
+	return ""
+}
+
+// launchEnvValueSubject names, in operator words, what a mismatched variable
+// would have bound the agent to, so the failure line says what broke.
+func launchEnvValueSubject(name string) string {
+	switch name {
+	case "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy":
+		return "proxy endpoint"
+	case "NO_PROXY", "no_proxy":
+		return "proxy bypass list"
+	case "USER", "LOGNAME", "SHELL":
+		return "agent identity"
+	default:
+		return "CA bundle"
+	}
+}
+
+// firstLaunchEnvValueMismatch checks the assignments whose correct value is
+// derivable from the verified install state. ok is false on the first mismatch.
+func firstLaunchEnvValueMismatch(assigns []launchEnvAssign, env *probeEnv) (name, want, got string, ok bool) {
+	proxy := proxyURLFor(env.port)
+	expect := map[string]string{
+		"HTTP_PROXY":  proxy,
+		"http_proxy":  proxy,
+		"HTTPS_PROXY": proxy,
+		"https_proxy": proxy,
+		"ALL_PROXY":   proxy,
+		"all_proxy":   proxy,
+		"NO_PROXY":    contractNoProxy,
+		"no_proxy":    contractNoProxy,
+	}
+	if env.caBundlePath != "" {
+		for _, n := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "CARGO_HTTP_CAINFO", "PIP_CERT"} {
+			expect[n] = env.caBundlePath
+		}
+	}
+	// SHELL is a fixed literal in the contract, so it is always checkable.
+	expect["SHELL"] = "/bin/bash"
+	if env.agentUserName != "" {
+		expect["USER"] = env.agentUserName
+		expect["LOGNAME"] = env.agentUserName
+	}
+	for _, a := range assigns {
+		if w, checked := expect[a.name]; checked && a.value != w {
+			return a.name, w, a.value, false
+		}
+	}
+	return "", "", "", true
 }
 
 var launchEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// parseLaunchExecEnvNames finds the executed `exec env -i` command in a
-// launcher script (comment lines are skipped) and returns the variable names it
-// assigns, reading line continuations up to the "$TARGET" token. found is false
-// when no such command exists.
-func parseLaunchExecEnvNames(script string) (names []string, found bool) {
+// parseLaunchExecEnvBlocks finds EVERY `exec env -i` command in a launcher
+// script (comment lines are skipped) and returns each one's assignments,
+// reading line continuations up to the "$TARGET" token. All blocks are returned
+// rather than the first, because a script with more than one has no
+// determinable effective environment and the caller refuses it.
+func parseLaunchExecEnvBlocks(script string) [][]launchEnvAssign {
+	var blocks [][]launchEnvAssign
 	lines := strings.Split(script, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "exec env -i") {
 			continue
 		}
+		var assigns []launchEnvAssign
 		rest := strings.TrimPrefix(line, "exec env -i")
 		for {
 			rest = strings.TrimSuffix(strings.TrimSpace(rest), "\\")
+			done := false
 			for _, tok := range strings.Fields(rest) {
 				if tok == `"$TARGET"` || tok == "$TARGET" {
-					return names, true
+					done = true
+					break
 				}
 				if eq := strings.IndexByte(tok, '='); eq > 0 && launchEnvNamePattern.MatchString(tok[:eq]) {
-					names = append(names, tok[:eq])
+					assigns = append(assigns, launchEnvAssign{name: tok[:eq], value: unquoteShellValue(tok[eq+1:])})
 				}
 			}
 			i++
-			if i >= len(lines) {
-				return names, true
+			if done || i >= len(lines) {
+				break
 			}
 			rest = lines[i]
 		}
+		blocks = append(blocks, assigns)
 	}
-	return nil, false
+	return blocks
+}
+
+// unquoteShellValue strips one layer of matching single or double quotes from a
+// rendered assignment value so it can be compared with the literal it must
+// carry. envAssign quotes only when the value is not shell-safe, so an unquoted
+// value is returned unchanged.
+func unquoteShellValue(v string) string {
+	if len(v) >= 2 {
+		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+			return v[1 : len(v)-1]
+		}
+	}
+	return v
 }
 
 // expectedLaunchEnvNames is the exact variable-name set a correctly rendered
@@ -993,7 +1128,9 @@ Exit codes:
 			if inv, err := loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath); err != nil {
 				env.workspaceInvErr = err
 			} else {
-				env.workspaceGrants = inv.Workspaces
+				// Scope to this agent user: another contained user's grant is not
+				// part of this verification's boundary and must not fail it.
+				env.workspaceGrants = grantsForAgent(inv.Workspaces, env.agentUserName)
 			}
 			return runVerify(cmd, env, opts)
 		},

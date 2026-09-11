@@ -54,8 +54,11 @@ Examples:
 			if jsonOutput {
 				return writeJSON(out, resp)
 			}
-			_, _ = fmt.Fprintf(out, "reset %s: previous_level=%s previous_score=%.2f ip_cleared=%t cee_cleared=%t\n",
-				resp.Key, resp.PreviousLevel, resp.PreviousScore, resp.IPStateCleared, resp.CEEStateCleared)
+			_, _ = fmt.Fprintf(out, "reset %s: reset=%t previous_level=%s previous_score=%.2f ip_cleared=%t cee_cleared=%t\n",
+				resp.Key, resp.Reset, resp.PreviousLevel, resp.PreviousScore, resp.IPStateCleared, resp.CEEStateCleared)
+			if !resp.Reset {
+				_, _ = fmt.Fprintln(out, "no session matched that key; nothing was reset. check the key with `pipelock session list`.")
+			}
 			return nil
 		})
 	}

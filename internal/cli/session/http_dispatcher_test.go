@@ -50,6 +50,49 @@ func TestHTTPDispatcher_Reset_ReportsPreviousState(t *testing.T) {
 	}
 }
 
+// A reset that matched no session must say so. The API answers 200 with
+// Reset=false when the key does not resolve, and the command previously printed
+// its ordinary success line regardless. That is the failure mode an operator
+// hits while trying to clear a destination scope that is holding a session
+// down: a mistyped key reads as a completed reset and they stay blocked while
+// believing they are not.
+func TestHTTPDispatcher_Reset_ReportsNoOp(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		didReset bool
+		wantWarn bool
+	}{
+		{name: "real reset stays quiet", didReset: true, wantWarn: false},
+		{name: "no-op reset must say nothing was reset", didReset: false, wantWarn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSONResponse(w, http.StatusOK, proxy.SessionResetResult{
+					Key:           "agent|10.0.0.1",
+					Reset:         tt.didReset,
+					PreviousLevel: "block_all",
+					PreviousScore: 12.5,
+				})
+			}))
+			defer srv.Close()
+
+			var out bytes.Buffer
+			client := newClient(endpoint{URL: srv.URL, Token: testToken})
+			if err := (httpDispatcher{}).Reset(context.Background(), client, "agent|10.0.0.1", &out); err != nil {
+				t.Fatalf("Reset: %v", err)
+			}
+			got := out.String()
+			if !strings.Contains(got, "reset=") {
+				t.Errorf("reset output must report the reset flag; got %q", got)
+			}
+			warned := strings.Contains(got, "nothing was reset")
+			if warned != tt.wantWarn {
+				t.Errorf("no-op warning present=%t, want %t; got %q", warned, tt.wantWarn, got)
+			}
+		})
+	}
+}
+
 func TestHTTPDispatcher_Release_WarnsWhenAirlockDidNotChange(t *testing.T) {
 	for _, tt := range []struct {
 		name      string

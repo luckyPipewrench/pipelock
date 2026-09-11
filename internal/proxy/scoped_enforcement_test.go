@@ -33,6 +33,13 @@ func TestScopedEnforcementRank(t *testing.T) {
 			want: 25,
 		},
 		{
+			// The floor must RAISE a tier that sits below it. Without this case
+			// a regression that floors only rank zero passes the whole table.
+			name: "block_all raises a soft tier to the floor",
+			snap: &AdaptiveScopeSnapshot{AirlockTier: config.AirlockTierSoft, BlockAll: true},
+			want: 25,
+		},
+		{
 			// The floor must not DEMOTE a higher tier.
 			name: "block_all does not lower a drain tier",
 			snap: &AdaptiveScopeSnapshot{AirlockTier: config.AirlockTierDrain, BlockAll: true},

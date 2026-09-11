@@ -5,9 +5,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -96,5 +98,109 @@ func TestScanAgentCard_DriftDiscriminationFixtures(t *testing.T) {
 				t.Fatalf("block reason = %q, want it to name introduced drift", got.Reason)
 			}
 		})
+	}
+}
+
+func TestScanAgentCard_DriftDiscriminationAcceptsOrdinaryDescriptionURLs(t *testing.T) {
+	updates := []string{
+		"Searches the documentation corpus. See https://docs.vendor.example/guide for examples.",
+		"Searches the documentation corpus. Read https://support.vendor.example/faq before opening a ticket.",
+		"Searches the documentation corpus. The API reference is https://api.vendor.example/reference.",
+	}
+	base := readA2ACardFixture(t, "base.json")
+	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
+	for _, update := range updates {
+		t.Run(update, func(t *testing.T) {
+			cfg := enabledA2ACfg()
+			cfg.ScanAgentCards = false
+			cfg.DetectCardDrift = true
+			cfg.Action = config.ActionBlock
+			baseline := NewCardBaseline(2)
+			if got := ScanAgentCard(context.Background(), base, testA2AScanner(t), baseline, key, cfg); !got.Clean || !got.FirstSeen {
+				t.Fatalf("seed baseline = %+v, want clean first-seen", got)
+			}
+			updated := strings.Replace(string(base), "Searches the documentation corpus.", update, 1)
+			got := ScanAgentCard(context.Background(), []byte(updated), testA2AScanner(t), baseline, key, cfg)
+			if !got.Clean || !got.DriftAdopted {
+				t.Fatalf("ordinary documentation URL update = %+v, want clean adopted drift", got)
+			}
+		})
+	}
+}
+
+func TestCardStructuralDigest_DuplicateSkillIDsIgnoreOrder(t *testing.T) {
+	first := A2AAgentCard{Skills: []A2ASkill{
+		{ID: "", Name: "Search", Description: "Searches the documentation.", InputSchema: json.RawMessage(`{"type":"string"}`)},
+		{ID: "", Name: "Summarize", Description: "Summarizes the selected text.", InputSchema: json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`)},
+	}}
+	second := A2AAgentCard{Skills: []A2ASkill{first.Skills[1], first.Skills[0]}}
+	if got, want := cardStructuralDigest(second), cardStructuralDigest(first); got != want {
+		t.Fatalf("same empty-ID skills in a different order changed structural digest: got %s want %s", got, want)
+	}
+}
+
+func TestCardStructuralDigest_DescriptiveUnicodeNormalizationIsAdopted(t *testing.T) {
+	first := A2AAgentCard{
+		Name:        "Café Search",
+		Description: "Searches the café documentation.",
+		URL:         "https://agent.vendor.example/a2a",
+		Skills:      []A2ASkill{{ID: "search", Name: "Café search", Description: "Searches café articles."}},
+	}
+	second := first
+	second.Name = "Cafe\u0301 Search"
+	second.Description = "Searches the cafe\u0301 documentation."
+	second.Skills = append([]A2ASkill(nil), first.Skills...)
+	second.Skills[0].Name = "Cafe\u0301 search"
+	second.Skills[0].Description = "Searches cafe\u0301 articles."
+	if got, want := cardStructuralDigest(second), cardStructuralDigest(first); got != want {
+		t.Fatalf("descriptive Unicode normalization changed structural digest: got %s want %s", got, want)
+	}
+
+	baseline := NewCardBaseline(2)
+	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
+	if out := baseline.Check(key, cardStructuralDigest(first), cardDescriptiveText(first), nil); !out.firstSeen {
+		t.Fatalf("seed outcome = %+v, want first-seen", out)
+	}
+	if out := baseline.Check(key, cardStructuralDigest(second), cardDescriptiveText(second), nil); !out.adopted || out.block {
+		t.Fatalf("Unicode normalization update = %+v, want adopted non-blocking drift", out)
+	}
+}
+
+func TestCardBaseline_ConcurrentDescriptiveAdoption(t *testing.T) {
+	card := A2AAgentCard{
+		Name:        "Vendor Agent",
+		Description: "Searches vendor documentation.",
+		URL:         "https://agent.vendor.example/a2a",
+		Skills:      []A2ASkill{{ID: "search", Name: "Search", Description: "Searches the documentation corpus."}},
+	}
+	baseline := NewCardBaseline(2)
+	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "Bearer tenant-one")
+	structural := cardStructuralDigest(card)
+	if out := baseline.Check(key, structural, cardDescriptiveText(card), nil); !out.firstSeen {
+		t.Fatalf("seed outcome = %+v, want first-seen", out)
+	}
+
+	descriptions := []string{
+		"Searches vendor documentation and returns relevant passages.",
+		"Searches vendor documentation with source links.",
+		"Searches vendor documentation and includes headings.",
+		"Searches vendor documentation for the selected product.",
+	}
+	errs := make(chan cardDriftOutcome, len(descriptions))
+	var wg sync.WaitGroup
+	for _, description := range descriptions {
+		wg.Go(func() {
+			updated := card
+			updated.Description = description
+			out := baseline.Check(key, structural, cardDescriptiveText(updated), nil)
+			if out.block || out.structuralChange || out.capacityExceeded {
+				errs <- out
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for out := range errs {
+		t.Fatalf("benign concurrent adoption = %+v, want clean adoption or no-op", out)
 	}
 }

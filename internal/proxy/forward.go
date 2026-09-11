@@ -2705,6 +2705,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						a2aResult.Reason = cardResult.Reason
 					}
 				}
+				if cardResult.DriftAdopted {
+					p.logger.LogAnomaly(actx, scannerLabelA2ACardDrift, "a2a: Agent Card descriptive drift adopted", 0)
+				}
 				// Positive attestation: emit an allow receipt when the card's
 				// signature verified against a trusted, origin-scoped key.
 				if cardResult.SignatureVerified {

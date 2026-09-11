@@ -910,6 +910,10 @@ func hasScannableToolsList(line []byte) bool {
 type A2AResponseOpts struct {
 	Cfg      *config.A2AScanning
 	Baseline *CardBaseline
+	// OnCardDriftAdopted observes a benign descriptive Agent Card change that
+	// was accepted as the new baseline. It must not change the scan verdict:
+	// adoption remains clean, while the transport records the audit event.
+	OnCardDriftAdopted func()
 	// CardKey identifies the Agent Card origin for drift detection.
 	// Used for GetExtendedAgentCard / agent/getAuthenticatedExtendedCard
 	// responses and for card-shaped results when the method is unknown.
@@ -1028,6 +1032,9 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 		context.Background(), rpc.Result, sc,
 		a2aOpts.Baseline, a2aOpts.CardKey, a2aOpts.Cfg,
 	)
+	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
+		a2aOpts.OnCardDriftAdopted()
+	}
 	return agentCardToVerdict(rpcID, cardResult, a2aOpts.Cfg)
 }
 

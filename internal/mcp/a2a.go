@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -543,15 +544,10 @@ func HashAgentCard(card A2AAgentCard) string {
 	_, _ = h.Write([]byte(card.URL))
 	h.Write([]byte{0})
 
-	// Skills (sorted by ID for determinism)
+	// Skills (semantically sorted for determinism)
 	skills := make([]A2ASkill, len(card.Skills))
 	copy(skills, card.Skills)
-	sort.Slice(skills, func(i, j int) bool {
-		if skills[i].ID != skills[j].ID {
-			return skills[i].ID < skills[j].ID
-		}
-		return skills[i].Name < skills[j].Name // tie-breaker for empty/duplicate IDs
-	})
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
 	for _, s := range skills {
 		_, _ = h.Write([]byte(s.ID))
 		h.Write([]byte{0})
@@ -671,6 +667,28 @@ func writeBool(h interface{ Write([]byte) (int, error) }, v *bool) {
 	}
 }
 
+// lessA2ASkill imposes a total semantic ordering on skills. IDs and names are
+// normally sufficient, but a malformed card can contain empty or duplicate
+// IDs. The extra non-descriptive tie-breakers keep its digest independent of
+// source-array order. This matters after a structural view blanks names and
+// descriptions: otherwise two distinct empty-ID skills compare equal and a
+// harmless reorder appears to be a structural change.
+func lessA2ASkill(a, b A2ASkill) bool {
+	if a.ID != b.ID {
+		return a.ID < b.ID
+	}
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	if a.Description != b.Description {
+		return a.Description < b.Description
+	}
+	if cmp := bytes.Compare(canonicalizeJSON(a.InputSchema), canonicalizeJSON(b.InputSchema)); cmp != 0 {
+		return cmp < 0
+	}
+	return bytes.Compare(canonicalizeJSON(a.OutputSchema), canonicalizeJSON(b.OutputSchema)) < 0
+}
+
 // --- Agent Card drift discrimination ---
 //
 // An Agent Card carries endpoints and auth by construction (url, provider.url,
@@ -683,20 +701,15 @@ func writeBool(h interface{ Write([]byte) (int, error) }, v *bool) {
 
 // cardDescriptiveText returns the card's free-text fields - name, description,
 // and each skill's name and description - as one normalized string for cue
-// comparison. Skills are ordered by ID (then Name) so a reorder is not read as a
-// change, matching HashAgentCard's ordering. Endpoint and structural fields (url,
+// comparison. Skills use the same semantic ordering as HashAgentCard, so a
+// reorder is not read as a change. Endpoint and structural fields (url,
 // provider, auth, capabilities, schemas, modes, version) are deliberately absent:
 // they belong to the structural digest, not the cue-scanned text, so a URL that a
 // card carries by construction never registers as an egress cue.
 func cardDescriptiveText(card A2AAgentCard) string {
 	skills := make([]A2ASkill, len(card.Skills))
 	copy(skills, card.Skills)
-	sort.Slice(skills, func(i, j int) bool {
-		if skills[i].ID != skills[j].ID {
-			return skills[i].ID < skills[j].ID
-		}
-		return skills[i].Name < skills[j].Name
-	})
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
 	var b strings.Builder
 	b.WriteString(card.Name)
 	b.WriteByte('\n')

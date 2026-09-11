@@ -1600,6 +1600,31 @@ func TestScanResponseA2A_ByShape_AgentCard(t *testing.T) {
 	}
 }
 
+func TestScanResponseA2A_AdoptedCardDriftNotifies(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.ScanAgentCards = false
+	baseline := NewCardBaseline(2)
+	adoptions := 0
+	opts := &A2AResponseOpts{
+		Cfg:                cfg,
+		Baseline:           baseline,
+		CardKey:            CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", ""),
+		Method:             methodGetExtendedAgentCard,
+		OnCardDriftAdopted: func() { adoptions++ },
+	}
+	first := []byte(`{"jsonrpc":"2.0","id":1,"result":{"name":"Vendor Agent","description":"does things","skills":[{"id":"s1","name":"search","description":"ok"}],"supportedInterfaces":[{"url":"https://agent.vendor.example/a2a"}]}}`)
+	if verdict := ScanResponseA2A(first, testA2AScanner(t), opts); !verdict.Clean {
+		t.Fatalf("first card = %+v, want clean", verdict)
+	}
+	second := []byte(`{"jsonrpc":"2.0","id":1,"result":{"name":"Vendor Agent","description":"does useful things","skills":[{"id":"s1","name":"search","description":"ok"}],"supportedInterfaces":[{"url":"https://agent.vendor.example/a2a"}]}}`)
+	if verdict := ScanResponseA2A(second, testA2AScanner(t), opts); !verdict.Clean {
+		t.Fatalf("benign descriptive update = %+v, want clean", verdict)
+	}
+	if adoptions != 1 {
+		t.Fatalf("adoption notifications = %d, want 1", adoptions)
+	}
+}
+
 func TestScanResponseA2A_NonA2AShape(t *testing.T) {
 	opts := &A2AResponseOpts{Cfg: enabledA2ACfg()}
 	// MCP tools/list - not A2A shape.

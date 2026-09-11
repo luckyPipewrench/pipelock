@@ -94,6 +94,15 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 			wantDetail: "CA bundle",
 		},
 		{
+			// Without the trailing backslash the shell ends the command there,
+			// so the tool never starts. The probe must not read on and report
+			// a complete variable set the shell would never apply.
+			name:       "a missing line continuation fails",
+			body:       strings.Replace(canonical, "    SHELL=/bin/bash \\\n", "    SHELL=/bin/bash\n", 1),
+			wantStatus: statusFail,
+			wantDetail: "never reaches the tool",
+		},
+		{
 			name:       "a dropped posture forward fails",
 			body:       strings.Replace(canonical, "    "+posturebinding.RuntimeProofEnv+"=", "    IGNORED_PROOF=", 1),
 			wantStatus: statusFail,

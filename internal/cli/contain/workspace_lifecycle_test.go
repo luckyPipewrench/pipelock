@@ -458,3 +458,81 @@ func TestMultiAgentGrantsOnOnePathStayIndependent(t *testing.T) {
 		}
 	})
 }
+
+// TestRevokeScopesAncestorACLCleanupToTheRevokedAgent pins the authorization
+// boundary in ancestor cleanup. Traversal (--x) ACLs on a shared ancestor are
+// per agent user, so only the revoked user's OWN remaining grants may keep one
+// open. Passing every agent's grants to the ancestor calculation would let a
+// second agent's grant under the same parent preserve the revoked agent's
+// traversal, leaving a path walkable after its grant was revoked.
+func TestRevokeScopesAncestorACLCleanupToTheRevokedAgent(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.now = func() time.Time { return testNow }
+	env.agentUserName = "agent-alpha"
+
+	var ran []workspaceCommand
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		ran = append(ran, workspaceCommand{name: name, args: args})
+		return "", 0, nil
+	}
+
+	parent := t.TempDir()
+	alphaPath := filepath.Join(parent, "alpha")
+	betaPath := filepath.Join(parent, "beta")
+	for _, dir := range []string{alphaPath, betaPath} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	// Two agents, two workspaces, one shared ancestor.
+	if err := recordWorkspaceGrant(env, workspaceGrant{
+		Path: alphaPath, Mode: workspaceModeReadOnly, Owner: "josh",
+		Created: "2026-05-01T00:00:00Z", AgentUser: "agent-alpha",
+	}); err != nil {
+		t.Fatalf("record alpha: %v", err)
+	}
+	if err := recordWorkspaceGrant(env, workspaceGrant{
+		Path: betaPath, Mode: workspaceModeReadOnly, Owner: "josh",
+		Created: "2026-05-01T00:00:00Z", AgentUser: "agent-beta",
+	}); err != nil {
+		t.Fatalf("record beta: %v", err)
+	}
+
+	ran = nil
+	if err := runRevokeWorkspace(context.Background(), env, alphaPath, workspaceOpts{}); err != nil {
+		t.Fatalf("revoke alpha: %v", err)
+	}
+
+	// agent-alpha holds no other grant, so its traversal ACL on the shared
+	// parent must be removed. agent-beta's grant lives under the same parent
+	// and must not keep alpha's traversal alive.
+	// Match the ancestor path EXACTLY as an argument. A substring match would
+	// be satisfied by the workspace command itself, since alphaPath has parent
+	// as a prefix - which made an earlier version of this test pass with the
+	// guard removed.
+	var cleared bool
+	for _, c := range ran {
+		if c.name != "setfacl" {
+			continue
+		}
+		joined := strings.Join(c.args, " ")
+		if strings.Contains(joined, "u:agent-beta") {
+			t.Fatalf("revoking agent-alpha touched agent-beta's ACL: setfacl %s", joined)
+		}
+		if !slices.Contains(c.args, "-x") || !slices.Contains(c.args, "u:agent-alpha") {
+			continue
+		}
+		if slices.Contains(c.args, parent) {
+			cleared = true
+		}
+	}
+	if !cleared {
+		var got []string
+		for _, c := range ran {
+			got = append(got, c.name+" "+strings.Join(c.args, " "))
+		}
+		t.Fatalf("agent-alpha's traversal ACL on the shared ancestor %s was not removed; another agent's grant kept it open.\ncommands:\n%s",
+			parent, strings.Join(got, "\n"))
+	}
+}

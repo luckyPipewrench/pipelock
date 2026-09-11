@@ -356,7 +356,11 @@ func runRevokeWorkspace(ctx context.Context, env *installEnv, path string, opts 
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	remaining := workspaceGrantsExcept(inv.Workspaces, workspace, env.agentUserName)
-	commands := workspaceRevokeCommands(workspace, env.agentUserName, ancestorsNeededBy(remaining), workspaceExists)
+	// Ancestor traversal ACLs are per agent user, so only THIS user's remaining
+	// grants may hold one open. Passing every agent's grants here would let
+	// another user's grant on a shared ancestor preserve the revoked user's --x
+	// traversal, leaving a path walkable after its grant was revoked.
+	commands := workspaceRevokeCommands(workspace, env.agentUserName, ancestorsNeededBy(grantsForAgent(remaining, env.agentUserName)), workspaceExists)
 	if opts.dryRun {
 		_, _ = fmt.Fprintf(env.out, "pipelock contain revoke-workspace %s - planned:\n", workspace)
 		for i, c := range commands {

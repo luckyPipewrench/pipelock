@@ -637,7 +637,10 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	if plainExecEnvLine(script) {
 		return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
 	}
-	blocks := parseLaunchExecEnvBlocks(script)
+	blocks, malformed := parseLaunchExecEnvBlocks(script)
+	if malformed {
+		return statusFail, fmt.Sprintf("plk-launch at %s has an `exec env -i` block that never reaches the tool (a line before \"$TARGET\" is missing its trailing continuation), so the launcher would not start the agent - reinstall with `pipelock contain install`", env.launchPath)
+	}
 	switch len(blocks) {
 	case 0:
 		return statusFail, fmt.Sprintf("plk-launch at %s does not clear the environment (no `exec env -i` block) before exec", env.launchPath)
@@ -773,8 +776,7 @@ var launchEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // reading line continuations up to the "$TARGET" token. All blocks are returned
 // rather than the first, because a script with more than one has no
 // determinable effective environment and the caller refuses it.
-func parseLaunchExecEnvBlocks(script string) [][]launchEnvAssign {
-	var blocks [][]launchEnvAssign
+func parseLaunchExecEnvBlocks(script string) (blocks [][]launchEnvAssign, malformed bool) {
 	lines := strings.Split(script, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
@@ -783,12 +785,19 @@ func parseLaunchExecEnvBlocks(script string) [][]launchEnvAssign {
 		}
 		var assigns []launchEnvAssign
 		rest := strings.TrimPrefix(line, "exec env -i")
+		reachedTarget := false
 		for {
-			rest = strings.TrimSuffix(strings.TrimSpace(rest), "\\")
-			done := false
-			for _, tok := range strings.Fields(rest) {
+			trimmed := strings.TrimSpace(rest)
+			// The shell ends the command at the first physical line that is NOT
+			// continued. A block whose continuation is missing therefore never
+			// reaches "$TARGET" and never starts the tool, so reading on past
+			// that line would let the probe collect a complete-looking variable
+			// set from lines the shell would never pass to env.
+			continued := strings.HasSuffix(trimmed, "\\")
+			trimmed = strings.TrimSuffix(trimmed, "\\")
+			for _, tok := range strings.Fields(trimmed) {
 				if tok == `"$TARGET"` || tok == "$TARGET" {
-					done = true
+					reachedTarget = true
 					break
 				}
 				if eq := strings.IndexByte(tok, '='); eq > 0 && launchEnvNamePattern.MatchString(tok[:eq]) {
@@ -796,14 +805,21 @@ func parseLaunchExecEnvBlocks(script string) [][]launchEnvAssign {
 				}
 			}
 			i++
-			if done || i >= len(lines) {
+			if reachedTarget || !continued || i >= len(lines) {
 				break
 			}
 			rest = lines[i]
 		}
+		if !reachedTarget {
+			// Ran off a broken continuation or off the end of the file: this
+			// launcher does not exec the tool at all. Fail rather than report a
+			// variable set the shell never applies.
+			malformed = true
+			continue
+		}
 		blocks = append(blocks, assigns)
 	}
-	return blocks
+	return blocks, malformed
 }
 
 // unquoteShellValue strips one layer of matching single or double quotes from a

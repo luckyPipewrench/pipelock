@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -105,14 +106,17 @@ func TestReverseCEEFragmentReassemblesAcrossRequests(t *testing.T) {
 
 	const clientIP = "10.0.0.9:5555"
 	rec1 := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/x?p="+testCEEAWSKeyPrefix, clientIP, nil)
-	if rec1.Code == http.StatusForbidden {
-		t.Fatalf("first fragment must not block, got %d: %s", rec1.Code, rec1.Body.String())
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first fragment status = %d, want 200: %s", rec1.Code, rec1.Body.String())
 	}
 
 	rec2 := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/y?p="+testCEEAWSKeySuffix, clientIP, nil)
 	if rec2.Code != http.StatusForbidden {
 		t.Fatalf("SILO: secret split across two reverse requests was not reassembled "+
 			"(second request got %d, want 403): reverse CEE siloed from the shared buffer", rec2.Code)
+	}
+	if got := rec2.Header().Get(blockreason.HeaderLayer); got != "cross_request" {
+		t.Fatalf("second fragment block layer = %q, want cross_request", got)
 	}
 }
 
@@ -206,8 +210,11 @@ func TestReverseSessionProfilingBlockAllDeniesSharedSession(t *testing.T) {
 	}
 	rec := sm.GetOrCreate(sessionKeyFor("", clientHost))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	for rec.ScopedEscalationLevel(scope) < 1 {
+	for attempts := 0; rec.ScopedEscalationLevel(scope) < 1 && attempts < 10; attempts++ {
 		rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)
+	}
+	if got := rec.ScopedEscalationLevel(scope); got < 1 {
+		t.Fatalf("scoped escalation level = %d after 10 signals, want at least 1", got)
 	}
 
 	resp := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/clean", clientHost+":7777", nil)
@@ -304,7 +311,25 @@ func TestReverseSSEInjectionUpgradesResponseTaint(t *testing.T) {
 
 			// Distinct client host per subtest so their sessions do not share state.
 			clientHost := fmt.Sprintf("10.0.0.%d", 21+i)
-			_ = reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/stream", clientHost+":8888", nil)
+			streamRec := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/stream", clientHost+":8888", nil)
+			if tc.action == config.ActionBlock {
+				if streamRec.Code != http.StatusOK {
+					t.Fatalf("block-mode SSE status = %d, want 200: %s", streamRec.Code, streamRec.Body.String())
+				}
+				if !strings.Contains(streamRec.Body.String(), "data: clean") {
+					t.Fatalf("block-mode SSE did not forward the clean event: %q", streamRec.Body.String())
+				}
+				if strings.Contains(streamRec.Body.String(), "ignore previous instructions") {
+					t.Fatalf("block-mode SSE forwarded the finding-bearing event: %q", streamRec.Body.String())
+				}
+			} else {
+				if streamRec.Code != http.StatusOK {
+					t.Fatalf("warn-mode SSE status = %d, want 200: %s", streamRec.Code, streamRec.Body.String())
+				}
+				if !strings.Contains(streamRec.Body.String(), "ignore previous instructions") {
+					t.Fatalf("warn-mode SSE did not forward the finding-bearing event: %q", streamRec.Body.String())
+				}
+			}
 
 			idReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/stream", nil)
 			resolved := edition.ResolveAgentIdentity(idReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
@@ -443,7 +468,7 @@ func TestReverseSSETaintObservationOnNonCleanCompletion(t *testing.T) {
 		srv := newIPv4Server(t, rp)
 		t.Cleanup(srv.Close)
 
-		ctx, cancel := context.WithCancel(t.Context())
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/stream", http.NoBody)
 		if err != nil {
@@ -492,12 +517,3 @@ func TestReverseSSETaintObservationOnNonCleanCompletion(t *testing.T) {
 		waitReverseResponseTaintSettledOne(t, taintRecFor(t, p, cfg, clientHost))
 	})
 }
-
-// --- Control 1 (block signal): a blocked URL/header DLP request feeds state ----
-
-// TestReverseURLDLPBlockRecordsAdaptiveSignal proves an enforce-mode URL DLP
-// block still contributes an adaptive SignalBlock to the shared session, the way
-// the forward proxy records session activity before its enforce-mode block
-// return. Without it a run of blocked reverse requests leaves the session's
-// scoped adaptive score at zero, so a caller probing URL-embedded secrets never
-// escalates.

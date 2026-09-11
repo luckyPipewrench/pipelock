@@ -1154,7 +1154,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			RequestID:  requestID,
 			UserAgent:  r.UserAgent(),
 			ActorAuth:  actorAuth,
-			Result:     scanner.Result{Allowed: requestEffectiveAction != config.ActionBlock},
+			Result:     scanner.Result{Allowed: !cfg.EnforceEnabled() || requestEffectiveAction != config.ActionBlock},
 			Config:     cfg,
 			Logger:     rp.logger,
 			DeferClean: true,

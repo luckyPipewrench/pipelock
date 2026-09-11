@@ -19,9 +19,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// TestReverseURLDLPBlockRecordsAdaptiveSignal proves an enforce-mode URL DLP
+// block still contributes an adaptive SignalBlock to the shared session, the way
+// the forward proxy records session activity before its enforce-mode block
+// return. Without it a run of blocked reverse requests leaves the session's
+// scoped adaptive score at zero, so a caller probing URL-embedded secrets never
+// escalates.
 func TestReverseURLDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	cfg := reverseParityBaseConfig(t)
 	cfg.CrossRequestDetection.Enabled = false
@@ -37,7 +44,11 @@ func TestReverseURLDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 
-	rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
+	var upstreamCalls atomic.Int32
+	rp, p, upstreamURL := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	const clientHost = "10.0.0.31"
 	// Build the AWS key at runtime so this test's own source does not trip DLP.
@@ -48,6 +59,12 @@ func TestReverseURLDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("request %d: URL DLP must block, got %d: %s", i, rec.Code, rec.Body.String())
 		}
+		if got := rec.Header().Get(blockreason.HeaderLayer); got != scanner.ScannerDLP {
+			t.Fatalf("request %d: block layer = %q, want %q", i, got, scanner.ScannerDLP)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("URL-DLP-blocked requests reached upstream %d times, want 0", got)
 	}
 
 	sm := p.SessionMgrPtr().Load()
@@ -56,9 +73,40 @@ func TestReverseURLDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	}
 	sess := sm.GetOrCreate(sessionKeyFor("", clientHost))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	if score := sess.ScopedThreatScore(scope); score <= 0 {
-		t.Fatalf("blocked URL DLP requests recorded no adaptive signal: scoped threat score=%.4f (want >0); "+
-			"the reverse URL DLP block returns before session activity is recorded", score)
+	if score := sess.ScopedThreatScore(scope); score != blocks*session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("blocked URL DLP requests recorded scoped threat score=%.4f, want %.4f for %d block signals", score, blocks*session.SignalPoints[session.SignalBlock], blocks)
+	}
+}
+
+func TestReverseURLDLPAuditModeRecordsOneNearMiss(t *testing.T) {
+	cfg := reverseParityBaseConfig(t)
+	cfg.CrossRequestDetection.Enabled = false
+	cfg.Taint.Enabled = false
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	enforce := false
+	cfg.Enforce = &enforce
+
+	rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
+	const clientHost = "10.0.0.33"
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	rec := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/x?token="+apiKey, clientHost+":9000", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit-mode URL DLP status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "ok" {
+		t.Fatalf("audit-mode URL DLP body = %q, want upstream body %q", rec.Body.String(), "ok")
+	}
+
+	sess := p.SessionMgrPtr().Load().GetOrCreate(sessionKeyFor("", clientHost))
+	scope := adaptiveScopeForHost(upstreamURL.Hostname())
+	if score := sess.ScopedThreatScore(scope); score != session.SignalPoints[session.SignalNearMiss] {
+		t.Fatalf("audit-mode URL DLP score = %.4f, want one near-miss score %.4f", score, session.SignalPoints[session.SignalNearMiss])
 	}
 }
 
@@ -82,7 +130,11 @@ func TestReverseHeaderDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.RequestBodyScanning.HeaderMode = "all"
 
-	rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
+	var upstreamCalls atomic.Int32
+	rp, p, upstreamURL := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	const clientHost = "10.0.0.32"
 	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
@@ -96,6 +148,12 @@ func TestReverseHeaderDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("request %d: header DLP must block, got %d: %s", i, rr.Code, rr.Body.String())
 		}
+		if got := rr.Header().Get(blockreason.HeaderLayer); got != scanner.ScannerDLP {
+			t.Fatalf("request %d: block layer = %q, want %q", i, got, scanner.ScannerDLP)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("header-DLP-blocked requests reached upstream %d times, want 0", got)
 	}
 
 	sm := p.SessionMgrPtr().Load()
@@ -104,9 +162,8 @@ func TestReverseHeaderDLPBlockRecordsAdaptiveSignal(t *testing.T) {
 	}
 	sess := sm.GetOrCreate(sessionKeyFor("", clientHost))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	if score := sess.ScopedThreatScore(scope); score <= 0 {
-		t.Fatalf("blocked header DLP requests recorded no adaptive signal: scoped threat score=%.4f (want >0); "+
-			"the reverse header DLP block returns before session activity is recorded", score)
+	if score := sess.ScopedThreatScore(scope); score != blocks*session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("blocked header DLP requests recorded scoped threat score=%.4f, want %.4f for %d block signals", score, blocks*session.SignalPoints[session.SignalBlock], blocks)
 	}
 }
 
@@ -150,12 +207,13 @@ func TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain(t *testing.T) {
 				cfg.RequestBodyScanning.ScanHeaders = true
 				cfg.RequestBodyScanning.HeaderMode = "all"
 			}
+			if tc.exempt {
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{"127.0.0.1"}
+			}
 
 			rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
-			if tc.exempt {
-				// The block signal is scoped to the upstream host, so exempting
-				// that host is what makes the blocked traffic score-neutral.
-				cfg.AdaptiveEnforcement.ExemptDomains = []string{upstreamURL.Hostname()}
+			if tc.exempt && upstreamURL.Hostname() != "127.0.0.1" {
+				t.Fatalf("exemption fixture host = %q, want 127.0.0.1", upstreamURL.Hostname())
 			}
 
 			// Distinct client host per subtest so their sessions do not share state.
@@ -186,6 +244,9 @@ func TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain(t *testing.T) {
 			scope := adaptiveScopeForHost(upstreamURL.Hostname())
 			score := sess.ScopedThreatScore(scope)
 			if tc.exempt {
+				if got := sess.BaselineMetrics().Requests; got != blocks {
+					t.Fatalf("adaptive-exempt blocked DLP activity recorded %d requests, want %d", got, blocks)
+				}
 				if score != 0 {
 					t.Fatalf("blocked DLP requests to an adaptive-exempt upstream must stay score-neutral, "+
 						"got scoped threat score=%.4f (want 0); the exempt block still fed an escalation signal", score)
@@ -216,6 +277,7 @@ func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
 			cfg.Taint.Enabled = false
 			cfg.SessionProfiling.Enabled = true
 			cfg.SessionProfiling.DomainBurst = 100
+			cfg.SessionProfiling.WindowMinutes = 5
 			cfg.AdaptiveEnforcement.Enabled = true
 			cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
 			cfg.RequestBodyScanning.Enabled = true
@@ -227,13 +289,22 @@ func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
 				cfg.RequestBodyScanning.ScanHeaders = true
 				cfg.RequestBodyScanning.HeaderMode = "all"
 			}
+			if tc.exempt {
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{"127.0.0.1"}
+			}
 
 			rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
-			if tc.exempt {
-				cfg.AdaptiveEnforcement.ExemptDomains = []string{upstreamURL.Hostname()}
+			if tc.exempt && upstreamURL.Hostname() != "127.0.0.1" {
+				t.Fatalf("exemption fixture host = %q, want 127.0.0.1", upstreamURL.Hostname())
 			}
 			clientHost := fmt.Sprintf("10.0.1.%d", 40+i)
 			apiKey := "reversewarn-abcdefghijkl"
+			probeScanner := scanner.MustNew(cfg)
+			probe := probeScanner.ScanTextForDLP(t.Context(), apiKey)
+			probeScanner.Close()
+			if probe.Clean {
+				t.Fatal("DLP fixture did not independently match the configured warning pattern")
+			}
 			var rr *httptest.ResponseRecorder
 			if tc.header {
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/y", http.NoBody)
@@ -247,14 +318,21 @@ func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
 			if rr.Code != http.StatusOK {
 				t.Fatalf("warn-mode DLP request = %d, want 200", rr.Code)
 			}
+			if rr.Body.String() != "ok" {
+				t.Fatalf("warn-mode DLP body = %q, want upstream body %q", rr.Body.String(), "ok")
+			}
 
 			sess := p.SessionMgrPtr().Load().GetOrCreate(sessionKeyFor("", clientHost))
 			score := sess.ScopedThreatScore(adaptiveScopeForHost(upstreamURL.Hostname()))
-			if tc.exempt && score != 0 {
-				t.Fatalf("adaptive-exempt warn finding score = %.4f, want 0", score)
-			}
-			if !tc.exempt && score <= 0 {
-				t.Fatalf("warn finding recorded no adaptive near-miss: score = %.4f, want >0", score)
+			if tc.exempt {
+				if got := sess.BaselineMetrics().Requests; got != 1 {
+					t.Fatalf("adaptive-exempt warn DLP activity recorded %d requests, want 1", got)
+				}
+				if score != 0 {
+					t.Fatalf("adaptive-exempt warn finding score = %.4f, want 0", score)
+				}
+			} else if want := session.SignalPoints[session.SignalNearMiss]; score != want {
+				t.Fatalf("warn finding score = %.4f, want near-miss score %.4f", score, want)
 			}
 		})
 	}
@@ -280,12 +358,7 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 			Action:        config.ActionWarn,
 		},
 	}
-	// A bound default identity gives a stable agent name so the folded key is not
-	// merely the client IP.
-	cfg.DefaultAgentIdentity = "reverse-agent"
-	cfg.BindDefaultAgentIdentity = true
-
-	rp, p, _ := newReverseParityHarness(t, cfg, nil)
+	rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
 
 	const clientHost = "203.0.113.7"
 	// Derive the identity the reverse path will resolve using the SAME production
@@ -303,13 +376,42 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 	}
 
 	resp := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/q?p=abcdefghij0123456789", clientHost+":4444", nil)
-	if resp.Code == http.StatusForbidden {
-		t.Fatalf("high-entropy-budget request must not block, got %d: %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusOK || resp.Body.String() != "ok" {
+		t.Fatalf("reverse request = %d %q, want 200 ok", resp.Code, resp.Body.String())
 	}
 
-	if after := et.CurrentUsage(expectedKey); after <= 0 {
+	afterReverse := et.CurrentUsage(expectedKey)
+	if afterReverse <= 0 {
 		t.Fatalf("reverse request recorded no cross-request entropy under the shared key %q "+
-			"(usage=%.4f); the reverse CEE join does not use the transport-independent key", expectedKey, after)
+			"(usage=%.4f); the reverse CEE join does not use the transport-independent key", expectedKey, afterReverse)
+	}
+
+	forwardURL := *upstreamURL
+	forwardURL.Path = "/q"
+	forwardURL.RawQuery = "p=zyxwvutsrq9876543210"
+	forwardReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, forwardURL.String(), http.NoBody)
+	forwardReq.RemoteAddr = clientHost + ":5555"
+	forwardRec := httptest.NewRecorder()
+	p.handleForwardHTTP(forwardRec, forwardReq)
+	if forwardRec.Code != http.StatusOK || forwardRec.Body.String() != "ok" {
+		t.Fatalf("forward request = %d %q, want 200 ok", forwardRec.Code, forwardRec.Body.String())
+	}
+	if afterForward := et.CurrentUsage(expectedKey); afterForward <= afterReverse {
+		t.Fatalf("forward request did not add entropy to reverse key %q: before=%.4f after=%.4f", expectedKey, afterReverse, afterForward)
+	}
+
+	const otherClient = "203.0.113.8"
+	otherReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, forwardURL.String(), http.NoBody)
+	otherReq.RemoteAddr = otherClient + ":5555"
+	otherRec := httptest.NewRecorder()
+	p.handleForwardHTTP(otherRec, otherReq)
+	if otherRec.Code != http.StatusOK {
+		t.Fatalf("distinct-client forward request = %d, want 200: %s", otherRec.Code, otherRec.Body.String())
+	}
+	otherID := edition.ResolveAgentIdentity(otherReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+	otherKey := ceeSessionKey(otherID.Name, otherClient, otherID.Auth)
+	if otherKey == expectedKey || et.CurrentUsage(otherKey) <= 0 {
+		t.Fatalf("distinct client did not use an isolated CEE key: shared=%q other=%q usage=%.4f", expectedKey, otherKey, et.CurrentUsage(otherKey))
 	}
 }
 
@@ -538,8 +640,11 @@ func TestReverseCEEBlockAllDeniesGloballyEscalatedSession(t *testing.T) {
 	if otherScope == upstreamScope {
 		t.Fatal("test setup: the seeded scope must differ from the reverse upstream scope")
 	}
-	for sess.EscalationLevel() < 1 {
+	for attempts := 0; sess.EscalationLevel() < 1 && attempts < 10; attempts++ {
 		sess.RecordScopedSignal(otherScope, session.SignalBlock, adaptiveTestThreshold)
+	}
+	if got := sess.EscalationLevel(); got < 1 {
+		t.Fatalf("global escalation level = %d after 10 signals, want at least 1", got)
 	}
 	// The shadow guard: if the upstream-scoped effective level were >0 the
 	// session-profiling block_all would fire first and this test would not

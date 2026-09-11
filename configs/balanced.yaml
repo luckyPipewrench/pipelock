@@ -309,9 +309,12 @@ dlp:
 response_scanning:
   # authenticated_artifacts: exact signed rules artifacts (a bundle.yaml served
   # over HTTPS) that the proxy re-fetches, verifies against its official keyring,
-  # and releases without injection scanning. None are configured by default,
-  # which is why fetching a rules bundle through this proxy is refused until an
-  # operator adds one. See docs/rules.md, "Installing a bundle through a Pipelock
+  # and releases without injection scanning. None are configured by default.
+  # Whether a rules-bundle fetch is actually refused depends on the enforcement
+  # action below: `warn` records the finding and passes the body through, while
+  # `ask` and `block` refuse it, as does adaptive enforcement after it escalates
+  # a warn. Add an entry when this proxy must release the bundle under an
+  # enforcing action. See docs/rules.md, "Installing a bundle through a Pipelock
   # proxy", for the entry shape and what it does and does not relax.
   enabled: true
   action: warn

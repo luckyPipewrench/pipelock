@@ -7,11 +7,25 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 )
+
+// withConfiguredProxy makes the proxy resolver report that this process routes
+// through a proxy, which is the provenance signal the block attribution
+// requires. Tests that assert Pipelock attribution must opt in: the default is
+// no proxy, because a header alone is not evidence a Pipelock was in the path.
+func withConfiguredProxy(t *testing.T) {
+	t.Helper()
+	prev := proxyResolver
+	proxyResolver = func(*http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: "127.0.0.1:8888"}, nil
+	}
+	t.Cleanup(func() { proxyResolver = prev })
+}
 
 // blockedBundleServer answers every request with status and the given headers,
 // standing in for a Pipelock proxy that refused to release a bundle.
@@ -31,6 +45,7 @@ func blockedBundleServer(t *testing.T, status int, set func(http.Header)) *httpt
 // has to reach the operator. A Pipelock 403 arriving as a bare "status 403" is
 // indistinguishable from the registry being down.
 func TestFetchNamesPipelockOnBlockedResponse(t *testing.T) {
+	withConfiguredProxy(t)
 	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
 		info, err := blockreason.NewForReason(blockreason.PromptInjection)
 		if err != nil {
@@ -72,6 +87,7 @@ func TestFetchNamesPipelockOnBlockedResponse(t *testing.T) {
 // and a block that omits it is still a Pipelock block. The operator gets "unset"
 // rather than a message that trails off.
 func TestBlockWithoutLayerStillNamesPipelock(t *testing.T) {
+	withConfiguredProxy(t)
 	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
 		h.Set(blockreason.HeaderReason, string(blockreason.KillSwitchActive))
 	})
@@ -107,6 +123,15 @@ func TestFetchDoesNotMislabelOrdinaryUpstreamError(t *testing.T) {
 		}},
 		{"unknown reason code", http.StatusForbidden, func(h http.Header) {
 			h.Set(blockreason.HeaderReason, "something_else_entirely")
+		}},
+		// The sharp one: a RECOGNIZED reason from an ordinary server. The header
+		// carries no trust, so an origin that simply sets it must not earn a
+		// "blocked by Pipelock" message or configuration advice for a proxy that
+		// was never in the path. No proxy is configured in this test, which is
+		// the signal the client actually has.
+		{"recognized reason from an untrusted server", http.StatusForbidden, func(h http.Header) {
+			h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+			h.Set(blockreason.HeaderLayer, "response_scanning")
 		}},
 	}
 	for _, tc := range tests {

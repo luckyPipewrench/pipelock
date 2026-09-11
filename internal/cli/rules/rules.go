@@ -592,9 +592,17 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 // Only the headers are read. The body is attacker-influenced bytes of
 // arbitrary content and echoing it into an operator's terminal buys nothing the
 // bounded reason vocabulary does not already say.
+//
+// The header alone is NOT provenance. blockreason.FromHeader performs no trust
+// check, so any origin server can answer 403 with a recognized reason and earn a
+// "blocked by Pipelock" message plus configuration advice for a proxy that was
+// never involved. The one signal available to a CLI is whether this process was
+// routed through a proxy at all: with no proxy configured for the request, a
+// Pipelock block header cannot have come from a Pipelock in the path, and the
+// generic status error is the honest answer.
 func statusError(url string, resp *http.Response) error {
 	info, ok := blockreason.FromHeader(resp.Header)
-	if !ok {
+	if !ok || !proxyConfiguredFor(resp.Request) {
 		return fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
 	}
 	msg := fmt.Sprintf(
@@ -606,6 +614,31 @@ func statusError(url string, resp *http.Response) error {
 	}
 	return errors.New(msg)
 }
+
+// proxyConfiguredFor reports whether this request would have been routed through
+// a proxy. It asks the SAME resolver net/http used to dial, so the answer tracks
+// the actual route rather than a guess at the environment: HTTP_PROXY,
+// HTTPS_PROXY, NO_PROXY and their lowercase forms are all honored, including a
+// NO_PROXY entry that exempts this specific host.
+//
+// A nil request or a resolver error is treated as "no proxy", which keeps the
+// attribution fail-closed: the worst case is a real Pipelock block reported as a
+// bare status code, which is the behavior that shipped before this message
+// existed. The opposite default would let any server borrow Pipelock's name.
+func proxyConfiguredFor(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	proxyURL, err := proxyResolver(&http.Request{URL: req.URL})
+	return err == nil && proxyURL != nil
+}
+
+// proxyResolver is the proxy lookup, indirected so a test can drive both
+// directions. It is NOT merely a convenience: http.ProxyFromEnvironment reads
+// the environment once per process and caches it, so the attribution branch
+// would otherwise be decided by whatever was set when the binary started and
+// could not be exercised either way from a test.
+var proxyResolver = http.ProxyFromEnvironment
 
 func layerOrUnset(layer string) string {
 	if layer == "" {
@@ -647,12 +680,17 @@ of scanning it. In the PROXY's config (not this machine's rules directory):
     authenticated_artifacts:
       - host: %q
         path: %q
-        bundle_name: "<the name field inside that bundle>"
+        bundle_name: "<the bundle's own name field>"
 
 The proxy then re-fetches the signature itself and verifies the bundle against its
 official keyring before releasing the body. Only injection matching is skipped;
 request-side DLP, an unsigned bundle, a non-official signer, a redirect, and any
-other host or path are all still refused.`, parsed.Hostname(), parsed.EscapedPath())
+other host or path are all still refused.
+
+bundle_name is required and must equal the name field inside the bundle itself;
+the placeholder above is not valid configuration. docs/rules.md names the value
+for the official bundle, and for any other bundle it is the top-level name in its
+YAML.`, parsed.Hostname(), parsed.EscapedPath())
 }
 
 // decodeSignatureBytes decodes a base64-encoded signature from raw bytes.

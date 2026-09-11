@@ -562,6 +562,7 @@ func HashAgentCard(card A2AAgentCard) string {
 	skills := make([]A2ASkill, len(card.Skills))
 	copy(skills, card.Skills)
 	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
+	writeCollection(h, "skills", len(skills))
 	for _, s := range skills {
 		writeFramed(h, []byte(s.ID))
 		writeFramed(h, []byte(s.Name))
@@ -579,6 +580,7 @@ func HashAgentCard(card A2AAgentCard) string {
 		}
 		return ifaces[i].ProtocolBinding < ifaces[j].ProtocolBinding // tie-breaker
 	})
+	writeCollection(h, "interfaces", len(ifaces))
 	for _, iface := range ifaces {
 		writeFramed(h, []byte(iface.URL))
 		writeFramed(h, []byte(iface.ProtocolBinding))
@@ -600,6 +602,7 @@ func HashAgentCard(card A2AAgentCard) string {
 		}
 		return exts[i].Description < exts[j].Description // tie-breaker
 	})
+	writeCollection(h, "extensions", len(exts))
 	for _, ext := range exts {
 		writeFramed(h, []byte(ext.URI))
 		writeFramed(h, []byte(ext.Description))
@@ -621,17 +624,39 @@ func HashAgentCard(card A2AAgentCard) string {
 	inputModes := make([]string, len(card.DefaultInputModes))
 	copy(inputModes, card.DefaultInputModes)
 	sort.Strings(inputModes)
+	writeCollection(h, "input_modes", len(inputModes))
 	for _, m := range inputModes {
 		writeFramed(h, []byte(m))
 	}
 	outputModes := make([]string, len(card.DefaultOutputModes))
 	copy(outputModes, card.DefaultOutputModes)
 	sort.Strings(outputModes)
+	writeCollection(h, "output_modes", len(outputModes))
 	for _, m := range outputModes {
 		writeFramed(h, []byte(m))
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeCollection frames a variable-length collection by its NAME and ITEM
+// COUNT before its items are written. Length-prefixing the individual fields is
+// not enough on its own: four empty skills and five empty interfaces each emit
+// only empty frames, so without a collection boundary two structurally
+// different cards hash identically and cardStructuralDigest reports "no
+// structural change" for a card that gained or moved a capability surface.
+func writeCollection(h hash.Hash, name string, n int) {
+	writeFramed(h, []byte(name))
+	// n is always a slice length and cannot be negative, but it arrives as an
+	// int parameter so that is not provable at this call site; clamp rather than
+	// convert blind, so a future caller cannot wrap a negative into a huge count.
+	var count uint64
+	if n > 0 {
+		count = uint64(n)
+	}
+	var c [8]byte
+	binary.BigEndian.PutUint64(c[:], count)
+	_, _ = h.Write(c[:])
 }
 
 // writeFramed writes a length-prefixed field into the hash. The 8-byte
@@ -729,6 +754,32 @@ func cardDescriptiveText(card A2AAgentCard) string {
 		b.WriteString(s.Description)
 	}
 	return b.String()
+}
+
+// cardDescriptiveDigest is the EQUALITY identity for a card's descriptive text.
+// cardDescriptiveText below joins attacker-controlled fields with newlines and
+// is therefore ambiguous: {Name: "A\nB", Description: ""} and {Name: "A",
+// Description: "B\n"} flatten to the same string, so a baseline comparing that
+// text reports no drift for a card whose fields actually changed, recording no
+// adoption and no audit event. The digest frames every field and every
+// collection, so distinct cards cannot collide.
+//
+// The flattened TEXT is still produced, separately, because cue detection needs
+// readable prose to diff. Identity and analysis are two different jobs and this
+// is the split between them.
+func cardDescriptiveDigest(card A2AAgentCard) string {
+	h := sha256.New()
+	writeFramed(h, []byte(card.Name))
+	writeFramed(h, []byte(card.Description))
+	skills := make([]A2ASkill, len(card.Skills))
+	copy(skills, card.Skills)
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
+	writeCollection(h, "skills", len(skills))
+	for _, sk := range skills {
+		writeFramed(h, []byte(sk.Name))
+		writeFramed(h, []byte(sk.Description))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // cardStructuralDigest hashes everything HashAgentCard covers EXCEPT the

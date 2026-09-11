@@ -91,7 +91,7 @@ func TestScanAgentCard_RejectedCardDoesNotLearnBaseline(t *testing.T) {
 		Description: "Searches vendor documentation.",
 		URL:         "https://agent.vendor.example/a2a",
 	}
-	baseline.Commit(key, cardStructuralDigest(trusted), cardDescriptiveText(trusted), nil)
+	baseline.Commit(key, cardStructuralDigest(trusted), cardDescriptiveDigest(trusted), cardDescriptiveText(trusted), nil)
 	before := baseline.entries[key].descriptive
 
 	const changed = `{"name":"Vendor Agent","description":"Searches vendor documentation and returns passages.","url":"https://agent.vendor.example/a2a"}`
@@ -104,5 +104,59 @@ func TestScanAgentCard_RejectedCardDoesNotLearnBaseline(t *testing.T) {
 	}
 	if got := baseline.entries[key].descriptive; got != before {
 		t.Fatalf("a rejected card replaced the trusted baseline: %q -> %q", before, got)
+	}
+}
+
+// TestCardDescriptiveDigest_FramesFieldBoundaries proves the descriptive
+// IDENTITY cannot be collided by moving a delimiter across a field boundary.
+// cardDescriptiveText joins attacker-controlled fields with newlines, so
+// {Name: "A\nB", Description: ""} and {Name: "A", Description: "B\n"} flatten
+// identically. A baseline comparing that text reports "no drift" for a card
+// whose fields changed, recording no adoption and no audit event.
+func TestCardDescriptiveDigest_FramesFieldBoundaries(t *testing.T) {
+	left := A2AAgentCard{Name: "A\nB", Description: "", URL: "https://agent.vendor.example/a2a"}
+	right := A2AAgentCard{Name: "A", Description: "B\n", URL: "https://agent.vendor.example/a2a"}
+
+	// Calibration: the ambiguity is real in the flattened text.
+	if cardDescriptiveText(left) != cardDescriptiveText(right) {
+		t.Fatal("flattened text is no longer ambiguous; this test's premise needs rechecking")
+	}
+	if got := cardDescriptiveDigest(left); got == cardDescriptiveDigest(right) {
+		t.Fatalf("distinct descriptive fields collided in the identity digest: both %s", got)
+	}
+
+	// The baseline must see the second card as changed.
+	baseline := NewCardBaseline(4)
+	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
+	structural := cardStructuralDigest(left)
+	if out := baseline.Check(key, structural, cardDescriptiveText(left), nil); !out.firstSeen {
+		t.Fatalf("seed outcome = %+v, want first-seen", out)
+	}
+	if out := baseline.Evaluate(key, structural, cardDescriptiveDigest(right), cardDescriptiveText(right), nil); !out.changed {
+		t.Fatalf("a card with different descriptive fields reported no drift: %+v", out)
+	}
+}
+
+// TestHashAgentCard_FramesCollectionBoundaries proves two structurally
+// different cards cannot collide because their collections happen to emit the
+// same empty frames. Four empty skills and five empty interfaces both contribute
+// only empty fields; without a collection tag and item count the digest matches
+// and cardStructuralDigest reports "no structural change" for a card that gained
+// or moved a capability surface.
+func TestHashAgentCard_FramesCollectionBoundaries(t *testing.T) {
+	skills := A2AAgentCard{URL: "https://agent.vendor.example/a2a", Skills: make([]A2ASkill, 4)}
+	ifaces := A2AAgentCard{URL: "https://agent.vendor.example/a2a", SupportedInterfaces: make([]A2AInterface, 5)}
+	if got := HashAgentCard(skills); got == HashAgentCard(ifaces) {
+		t.Fatalf("four empty skills collided with five empty interfaces: both %s", got)
+	}
+	if got := cardStructuralDigest(skills); got == cardStructuralDigest(ifaces) {
+		t.Fatalf("collections collided in the structural digest: both %s", got)
+	}
+
+	// Item count alone must move the digest.
+	four := A2AAgentCard{URL: "https://agent.vendor.example/a2a", Skills: make([]A2ASkill, 4)}
+	five := A2AAgentCard{URL: "https://agent.vendor.example/a2a", Skills: make([]A2ASkill, 5)}
+	if got := HashAgentCard(four); got == HashAgentCard(five) {
+		t.Fatalf("adding an empty skill did not move the digest: both %s", got)
 	}
 }

@@ -399,9 +399,13 @@ func CardCacheKeyFromRequest(cardURL string, authHeader string) cardCacheKey {
 // what lets a benign description edit update the baseline while an endpoint or
 // auth change still fails closed.
 type cardEntry struct {
-	structuralDigest string
-	descriptive      string
-	skillNames       []string
+	// descriptiveDigest is the EQUALITY identity (framed, unambiguous);
+	// descriptive is the flattened text cue detection diffs against. They are
+	// separate because a delimiter-joined string cannot serve as an identity.
+	descriptiveDigest string
+	structuralDigest  string
+	descriptive       string
+	skillNames        []string
 }
 
 // cardDriftOutcome reports how a card compares to its baseline. changed drives
@@ -457,11 +461,26 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 // blocking until an operator ResetBaseline accepts it. Auto-promotion is scoped
 // strictly to the benign descriptive case; every other change holds the ledger.
 func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
-	outcome := cb.Evaluate(key, structuralDigest, descriptive, skillNames)
+	digest := descriptiveIdentity(descriptive)
+	outcome := cb.Evaluate(key, structuralDigest, digest, descriptive, skillNames)
 	if outcome.firstSeen || outcome.adopted {
-		cb.Commit(key, structuralDigest, descriptive, skillNames)
+		// If the baseline moved in between, the decision is stale. Re-evaluate
+		// rather than reporting an adoption that did not happen.
+		if !cb.Commit(key, structuralDigest, digest, descriptive, skillNames) {
+			return cb.Evaluate(key, structuralDigest, digest, descriptive, skillNames)
+		}
 	}
 	return outcome
+}
+
+// descriptiveIdentity derives an unambiguous identity from already-flattened
+// descriptive text. ScanAgentCard computes the digest from the card directly;
+// this exists for the Check convenience wrapper and for callers that only hold
+// the text.
+func descriptiveIdentity(descriptive string) string {
+	h := sha256.New()
+	writeFramed(h, []byte(descriptive))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Evaluate decides what a card's digests mean against the baseline WITHOUT
@@ -477,7 +496,7 @@ func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptive st
 // The LRU position IS updated here, on purpose and for every card including a
 // blocked one: a card under repeated attack must stay resident so it keeps
 // blocking instead of aging out and being re-accepted as first-seen.
-func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) cardDriftOutcome {
+func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) cardDriftOutcome {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -495,7 +514,9 @@ func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptive
 		// Endpoint/structural change: fail closed, preserve baseline.
 		return cardDriftOutcome{changed: true, block: true, structuralChange: true}
 	}
-	if existing.descriptive == descriptive {
+	// Compare the framed digest, not the flattened text: the text is ambiguous
+	// across field boundaries and would report "unchanged" for a changed card.
+	if existing.descriptiveDigest == descriptiveDigest {
 		return cardDriftOutcome{}
 	}
 
@@ -515,28 +536,35 @@ func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptive
 // strength of a stale read: a first-seen insert happens only while the key is
 // still absent and there is still room, and a descriptive adoption happens only
 // while the structure still matches and the change still introduces no cue.
-func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptive string, skillNames []string) {
+func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	existing, ok := cb.entries[key]
 	if !ok {
 		if len(cb.entries) >= cb.maxSize {
-			return
+			return false
 		}
-		cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
+		cb.entries[key] = &cardEntry{
+			structuralDigest:  structuralDigest,
+			descriptiveDigest: descriptiveDigest,
+			descriptive:       descriptive,
+			skillNames:        skillNames,
+		}
 		cb.touchLocked(key)
-		return
+		return true
 	}
-	if existing.structuralDigest != structuralDigest || existing.descriptive == descriptive {
-		return
+	if existing.structuralDigest != structuralDigest || existing.descriptiveDigest == descriptiveDigest {
+		return false
 	}
 	if len(tools.IntroducedDescriptionCues(existing.descriptive, descriptive)) > 0 {
-		return
+		return false
 	}
+	existing.descriptiveDigest = descriptiveDigest
 	existing.descriptive = descriptive
 	existing.skillNames = skillNames
 	cb.touchLocked(key)
+	return true
 }
 
 // ResetBaseline explicitly updates the stored baseline for a key.
@@ -548,9 +576,15 @@ func (cb *CardBaseline) ResetBaseline(key cardCacheKey, structuralDigest, descri
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
+	// The reviewed text must be stored with its identity digest, or the next
+	// Evaluate compares a real digest against an empty one and reports drift on
+	// the very card the operator just accepted.
+	descriptiveDigest := descriptiveIdentity(descriptive)
+
 	existing, ok := cb.entries[key]
 	if ok {
 		existing.structuralDigest = structuralDigest
+		existing.descriptiveDigest = descriptiveDigest
 		existing.descriptive = descriptive
 		existing.skillNames = skillNames
 		cb.touchLocked(key)
@@ -561,7 +595,12 @@ func (cb *CardBaseline) ResetBaseline(key cardCacheKey, structuralDigest, descri
 		return ErrCardBaselineCapacity
 	}
 	// Key not present: insert as a reviewed baseline.
-	cb.entries[key] = &cardEntry{structuralDigest: structuralDigest, descriptive: descriptive, skillNames: skillNames}
+	cb.entries[key] = &cardEntry{
+		structuralDigest:  structuralDigest,
+		descriptiveDigest: descriptiveDigest,
+		descriptive:       descriptive,
+		skillNames:        skillNames,
+	}
 	cb.touchLocked(key)
 	return nil
 }
@@ -655,13 +694,42 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		for _, s := range card.Skills {
 			skillNames = append(skillNames, s.Name)
 		}
-		structural, descriptive := cardStructuralDigest(card), cardDescriptiveText(card)
+		structural := cardStructuralDigest(card)
+		descriptive := cardDescriptiveText(card)
+		descriptiveDigest := cardDescriptiveDigest(card)
 		// Evaluate now, commit at the end: the baseline must not learn a card
 		// that field scanning or signature verification is about to reject.
-		outcome := baseline.Evaluate(key, structural, descriptive, skillNames)
+		outcome := baseline.Evaluate(key, structural, descriptiveDigest, descriptive, skillNames)
 		driftCommit = func(accepted bool) {
-			if accepted {
-				baseline.Commit(key, structural, descriptive, skillNames)
+			if !accepted {
+				return
+			}
+			// Commit reports whether it applied. It declines when the baseline
+			// moved between Evaluate and Commit, which makes the decision this
+			// scan is carrying stale. Re-evaluate against the CURRENT baseline
+			// and correct the result rather than reporting an adoption or a
+			// first-seen that never happened; if the fresh evaluation now
+			// blocks, the response must say so.
+			if baseline.Commit(key, structural, descriptiveDigest, descriptive, skillNames) {
+				return
+			}
+			fresh := baseline.Evaluate(key, structural, descriptiveDigest, descriptive, skillNames)
+			result.DriftDetected = fresh.changed
+			result.DriftAdopted = fresh.adopted
+			result.FirstSeen = fresh.firstSeen
+			result.BaselineCapacityExceeded = fresh.capacityExceeded
+			if fresh.block || fresh.capacityExceeded {
+				result.Clean = false
+				if result.Action == "" {
+					result.Action = cfg.Action
+				}
+				if fresh.capacityExceeded {
+					result.Reason = "a2a: Agent Card baseline capacity exhausted; card cannot be safely verified"
+				} else if fresh.structuralChange {
+					result.Reason = "a2a: Agent Card drift introduced: endpoint or structural change"
+				} else {
+					result.Reason = "a2a: Agent Card drift introduced: " + strings.Join(fresh.introducedCues, ", ")
+				}
 			}
 		}
 		driftOutcome = outcome

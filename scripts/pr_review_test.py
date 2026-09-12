@@ -2024,6 +2024,35 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(prompt["changed_path_summaries"][0]["path"], candidate.path)
         self.assertEqual(prompt["changed_path_summaries"][-1]["path"], "<truncated>")
 
+    def test_many_candidates_leave_room_for_an_actual_judge_call(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        candidates = [
+            pr_review.Finding(
+                "medium",
+                f"path/{index}.go",
+                50,
+                f"candidate {index}",
+                "a plausible failure premise that needs current-code judgment",
+                "repair the invariant",
+            )
+            for index in range(18)
+        ]
+        decisions = {
+            "findings": [
+                {"index": index, "verdict": "drop", "reason": "current code rejects the premise"}
+                for index in range(len(candidates))
+            ]
+        }
+        with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 2_000), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("consumer evidence", False)
+        ), mock.patch.object(pr_review, "call_model", return_value=decisions) as model:
+            verified, judged, over_budget, over_files, unresolved, invalid = pr_review.judge_findings(
+                "owner/repo", "token", binding, "default", candidates
+            )
+        self.assertTrue(judged)
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual((verified, over_budget, over_files, unresolved, invalid), ([], [], [], [], []))
+
     def test_a_mismatched_checkout_cannot_supply_judge_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

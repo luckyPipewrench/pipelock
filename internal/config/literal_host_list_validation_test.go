@@ -80,16 +80,59 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 // proxy, which still scans them, so breadth there is a routing preference.
 func TestLiteralHostMatchLists_BreadthPerList(t *testing.T) {
 	t.Run("passthrough refuses a public-suffix wildcard", func(t *testing.T) {
-		for _, entry := range []string{"*.com", "*.co.uk", "*.org"} {
+		// The assertions name the BREADTH reason and the offending entry, not
+		// merely the field. A test that accepts any error mentioning the
+		// field would pass on an unrelated validation failure and would stop
+		// proving that breadth is what refused the value.
+		// The breadth predicate has TWO branches with different messages, and
+		// which one fires is not obvious from the entry: a single-label base
+		// such as "com" never reaches the public-suffix test because it
+		// carries no dot. Asserting the specific reason is what surfaced
+		// that. A test that accepted any error naming the field would have
+		// passed while proving nothing about breadth.
+		for _, entry := range []string{"*.com", "*.org", "*.internal"} {
 			cfg := Defaults()
 			cfg.TLSInterception.PassthroughDomains = []string{entry}
 			err := cfg.Validate()
 			if err == nil {
-				t.Fatalf("passthrough accepted %q, which splices every host under that suffix", entry)
+				t.Fatalf("passthrough accepted %q, which splices every host under that namespace", entry)
 			}
-			if !strings.Contains(err.Error(), "passthrough_domains") {
-				t.Fatalf("error does not name the field: %v", err)
+			message := err.Error()
+			for _, want := range []string{
+				"tls_interception.passthrough_domains[0]", entry, "not the whole",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("entry %q: error %q does not contain %q", entry, message, want)
+				}
 			}
+		}
+
+		// A multi-label ICANN suffix reaches the public-suffix branch.
+		for _, entry := range []string{"*.co.uk", "*.com.au"} {
+			cfg := Defaults()
+			cfg.TLSInterception.PassthroughDomains = []string{entry}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("passthrough accepted the public suffix %q", entry)
+			}
+			message := err.Error()
+			for _, want := range []string{
+				"tls_interception.passthrough_domains[0]", entry, "public suffix",
+				"which would match every domain registered under it",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("entry %q: error %q does not contain %q", entry, message, want)
+				}
+			}
+		}
+
+		// A PRIVATE-section boundary is accepted, which is the line this rule
+		// deliberately draws: the flag says who administers the boundary, not
+		// who owns the content under it.
+		cfg := Defaults()
+		cfg.TLSInterception.PassthroughDomains = []string{"*.github.io"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("passthrough refused the private-section boundary *.github.io: %v", err)
 		}
 	})
 

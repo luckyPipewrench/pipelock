@@ -945,7 +945,8 @@ def llm_timeout_for(mode: str, phase: str = "") -> int:
 
 def llm_call_budget_for(mode: str, phase: str = "") -> int:
     """Reserve the longest delivery-proven retry path for one provider call."""
-    return llm_timeout_for(mode, phase) * MODEL_CONNECTION_ATTEMPTS
+    retry_sleep_budget = MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (MODEL_RATE_LIMIT_ATTEMPTS - 1)
+    return llm_timeout_for(mode, phase) * MODEL_CONNECTION_ATTEMPTS + retry_sleep_budget
 
 
 def budget_allows(deadline: float, mode: str, phase: str = "") -> bool:
@@ -974,12 +975,20 @@ def retry_after_seconds(header: str | None) -> float | None:
         seconds = float(header.strip())
     except (TypeError, ValueError):
         return None
-    if seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS)
 
 
-def call_model(system: str, user: str, mode: str, phase: str, correlation: str) -> object:
+def call_model(
+    system: str,
+    user: str,
+    mode: str,
+    phase: str,
+    correlation: str,
+    *,
+    deadline: float | None = None,
+) -> object:
     api_url, api_key = provider_configuration()
     model = model_for_phase(mode, phase)
     timeout = llm_timeout_for(mode, phase)
@@ -1000,10 +1009,16 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
     connect_attempt = 0
     rate_limit_attempt = 1
     while True:
+        request_timeout = timeout
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModelTimeout("provider call exceeded the review deadline")
+            request_timeout = min(request_timeout, remaining)
         connect_attempt += 1
         attempt = connect_attempt
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=request_timeout)
         except requests.ConnectTimeout as exc:
             # The only failure that proves the request was never delivered: the
             # connection itself was never established, so the provider cannot
@@ -1042,6 +1057,11 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
                     MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS * (2 ** (rate_limit_attempt - 1)),
                     MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS,
                 )
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ModelTimeout("provider call exceeded the review deadline")
+                delay = min(delay, remaining)
             log_phase(phase, attempt=attempt, status=f"rate-limited-sleep-{delay:.0f}s", correlation=correlation)
             time.sleep(delay)
             rate_limit_attempt += 1
@@ -2560,7 +2580,7 @@ def judge_findings(
     if evidence_unavailable:
         return [], False, over_budget, over_files, [], candidates
     system, user = build_judge_prompt(candidates, contexts, judge_summaries, evidence)
-    payload = call_model(system, user, mode, "judge", binding.correlation)
+    payload = call_model(system, user, mode, "judge", binding.correlation, deadline=deadline)
     decisions = _parse_judge_decisions(payload, len(candidates))
 
     # One narrow follow-up is cheaper and more useful than rerunning the whole
@@ -2598,7 +2618,12 @@ def judge_findings(
         if repair_budget_available:
             try:
                 recheck_payload = call_model(
-                    recheck_system, recheck_user, mode, "judge-repair", binding.correlation
+                    recheck_system,
+                    recheck_user,
+                    mode,
+                    "judge-repair",
+                    binding.correlation,
+                    deadline=deadline,
                 )
                 recheck = _parse_judge_decisions(
                     recheck_payload, len(pending), allow_requests=False
@@ -3345,7 +3370,9 @@ def run_review(
                 break
             system, user = build_review_prompt(classification, chunk, mode)
             try:
-                payload = call_model(system, user, mode, f"review-chunk-{chunk_index}", binding.correlation)
+                payload = call_model(
+                    system, user, mode, f"review-chunk-{chunk_index}", binding.correlation, deadline=deadline
+                )
                 findings, changes = parse_findings(payload, {unit.path for unit in chunk}, require_changes={unit.path for unit in chunk})
             except ModelTimeout:
                 progress.timed_out = True
@@ -3409,7 +3436,9 @@ def run_review(
                 mode,
             )
             try:
-                payload = call_model(system, user, mode, "cross-file-synthesis", binding.correlation)
+                payload = call_model(
+                    system, user, mode, "cross-file-synthesis", binding.correlation, deadline=deadline
+                )
                 synthesis_findings, _ = parse_findings(payload, {unit.path for unit in units if unit.representable})
                 candidates.extend(synthesis_findings)
             except ModelTimeout:
@@ -3418,6 +3447,11 @@ def run_review(
             except ModelConnectionError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis could not connect after one retry")
+                if reason := unverified_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
+            except ModelRateLimited as exc:
+                progress.aggregation_failed = True
+                progress.incomplete_reasons.append(f"cross-file synthesis was rate limited ({exc})")
                 if reason := unverified_candidates_reason(candidates):
                     progress.incomplete_reasons.append(reason)
             except ModelOutputError:
@@ -3499,6 +3533,12 @@ def run_review(
                 progress.aggregation_failed = True
                 progress.unverified_candidates.extend(candidates)
                 progress.incomplete_reasons.append("judge pass could not connect after one retry")
+                if reason := unverified_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
+            except ModelRateLimited as exc:
+                progress.aggregation_failed = True
+                progress.unverified_candidates.extend(candidates)
+                progress.incomplete_reasons.append(f"judge pass was rate limited ({exc})")
                 if reason := unverified_candidates_reason(candidates):
                     progress.incomplete_reasons.append(reason)
             except ModelOutputError:

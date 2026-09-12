@@ -1574,7 +1574,7 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 }
 
 func TestFileSentryArmFailureNamesWorkingRemedies(t *testing.T) {
-	err := fileSentryArmFailure(fmt.Errorf("filesentry: incomplete watch coverage: cannot monitor subtree %q beneath watch root %q: %w", "/tmp/watch/blocked", "/tmp/watch", fs.ErrPermission))
+	err := fileSentryArmFailure(fmt.Errorf("filesentry: incomplete watch coverage: cannot monitor subtree %q beneath watch root %q: %w", "/tmp/watch/blocked", "/tmp/watch", fs.ErrPermission), 1)
 	for _, want := range []string{
 		"/tmp/watch/blocked",
 		"/tmp/watch",

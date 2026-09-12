@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,6 +283,15 @@ func TestEmitterNativeAELInitializationFailureQuarantinesAfterReceiptPersistence
 			if len(receipts) != 4 || !isSessionOpenControl(receipts[0].ActionRecord.SessionControl) {
 				t.Fatalf("persisted receipts = %#v, want preserved first session_open and recovered lifecycle", receipts)
 			}
+			if !isSessionOpenControl(receipts[1].ActionRecord.SessionControl) {
+				t.Fatal("recovered receipt 0 is not session_open")
+			}
+			if action := receipts[2].ActionRecord; action.SessionControl != nil || action.Method != http.MethodGet || action.Target != "https://api.vendor.example/recovered" || action.Verdict != config.ActionAllow {
+				t.Fatalf("recovered receipt 1 = %#v, want recovered allowed action", action)
+			}
+			if !isSessionCloseControl(receipts[3].ActionRecord.SessionControl) {
+				t.Fatal("recovered receipt 2 is not session_close")
+			}
 			if result := VerifyChain(receipts, hex.EncodeToString(pub)); !result.Valid {
 				t.Fatalf("recovered receipt chain = %s", result.Error)
 			}
@@ -289,8 +299,25 @@ func TestEmitterNativeAELInitializationFailureQuarantinesAfterReceiptPersistence
 			if err != nil {
 				t.Fatalf("read recovered native AEL stream: %v", err)
 			}
-			if lines := strings.Split(strings.TrimSpace(string(raw)), "\n"); len(lines) != 3 {
+			lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			wantTypes := []string{"open", "activity", "close"}
+			if len(lines) != len(wantTypes) {
 				t.Fatalf("recovered native AEL record count = %d, want open, activity, close", len(lines))
+			}
+			for index, line := range lines {
+				payload, decodeErr := base64.RawURLEncoding.DecodeString(strings.Split(line, ".")[0])
+				if decodeErr != nil {
+					t.Fatalf("decode recovered record %d: %v", index, decodeErr)
+				}
+				var record struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal(payload, &record); err != nil {
+					t.Fatalf("unmarshal recovered record %d: %v", index, err)
+				}
+				if record.Type != wantTypes[index] {
+					t.Fatalf("recovered record %d type = %q, want %q", index, record.Type, wantTypes[index])
+				}
 			}
 			if outside != "" {
 				if entries, err := os.ReadDir(outside); err != nil {

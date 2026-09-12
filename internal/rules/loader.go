@@ -500,6 +500,11 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 
 	for i := range bundle.Rules {
 		r := &bundle.Rules[i]
+		if len(r.Pattern.ExemptDomains) > 0 {
+			stagedCtx.Result.Warnings = append(stagedCtx.Result.Warnings, fmt.Sprintf(
+				"bundle %q rule %q sets pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
+				bundle.Name, r.ID))
+		}
 
 		// Status filter: deprecated always skipped.
 		if r.Status == StatusDeprecated {
@@ -529,12 +534,6 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		patternName := nsID
 		if bundle.Name == StandardBundleName {
 			patternName = r.Name
-		}
-
-		if len(r.Pattern.ExemptDomains) > 0 {
-			stagedCtx.Result.Warnings = append(stagedCtx.Result.Warnings, fmt.Sprintf(
-				"bundle %q rule %q sets pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
-				bundle.Name, r.ID))
 		}
 
 		definition, ok := stagedCtx.ruleTypeDefinitionFor(r.Type)

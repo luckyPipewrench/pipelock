@@ -27,6 +27,12 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 		{name: "uppercase is folded to the matcher's view", entry: "Vendor.Example", wantStored: "vendor.example"},
 		{name: "single root dot is canonicalized", entry: "vendor.example.", wantStored: "vendor.example"},
 		{name: "double trailing dot", entry: "vendor.example..", wantErr: "must be written as"},
+		// A DIFFERENT validator catches this one. The trailing-dot case above
+		// normalizes to a valid host and is refused by the matcher-parity
+		// check, so it never reaches the label grammar; an interior empty
+		// label does, and nothing exercised that path through these lists.
+		{name: "embedded empty label", entry: "vendor..example", wantErr: "empty DNS label"},
+		{name: "leading dot", entry: ".vendor.example", wantErr: "empty DNS label"},
 		{name: "leading space", entry: " vendor.example", wantErr: "must be written as"},
 		{name: "empty", entry: "", wantErr: "empty"},
 		{name: "embedded space", entry: "bad host", wantErr: "DNS label characters"},

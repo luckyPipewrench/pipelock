@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,17 +21,21 @@ func TestCodexInstallForeignUpgradeAndRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		args   []string
-		want   string
+		want   []string
 		refuse bool
 	}{
-		{"stdio", []string{"mcp", "proxy", "--", "node", "server.js"}, "--env EXAMPLE_MODE -- node server.js", false},
-		{"upstream", []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"}, "--upstream https://api.vendor.example/mcp", false},
-		{"sidecar", []string{"mcp", "proxy", "--header-file", "credentials.headers", "--upstream", "https://api.vendor.example/mcp"}, "", true},
-		{"missing upstream URL", []string{"mcp", "proxy", "--upstream", "--header-file"}, "", true},
+		{"stdio", []string{"mcp", "proxy", "--", "node", "server.js"}, []string{"--env", "EXAMPLE_MODE", "--", "node", "server.js"}, false},
+		{"upstream", []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"}, []string{"--upstream", "https://api.vendor.example/mcp"}, false},
+		{"sidecar", []string{"mcp", "proxy", "--header-file", "credentials.headers", "--upstream", "https://api.vendor.example/mcp"}, nil, true},
+		{"missing upstream URL", []string{"mcp", "proxy", "--upstream", "--header-file"}, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			exe, err := resolvePipelockBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
 			servers := []codexMCPServer{
-				{Name: "fresh", Transport: codexMCPTransport{Type: codexTransportStdio, Command: "node", Args: []string{"fresh.js"}}},
+				{Name: "fresh", Transport: codexMCPTransport{Type: codexTransportStdio, Command: exe, Args: []string{"mcp", "proxy", "--", "node", "fresh.js"}}},
 				{Name: "upgrading", Transport: codexMCPTransport{Type: codexTransportStdio, Command: foreignBinary, Args: tc.args, Env: map[string]string{"EXAMPLE_MODE": "local"}}},
 			}
 			list, err := json.Marshal(servers)
@@ -37,6 +43,16 @@ func TestCodexInstallForeignUpgradeAndRefusal(t *testing.T) {
 				t.Fatal(err)
 			}
 			bin, logPath := fakeCodex(t, string(list))
+			// Preserve argv boundaries and separate invocations, including empty args.
+			script := fmt.Sprintf(`#!/bin/sh
+case "$1 $2" in
+"mcp list") cat %q; exit 0 ;;
+esac
+printf '%%s\000' "$@" >> %q
+printf '\000' >> %q
+`, filepath.Join(filepath.Dir(bin), "list.json"), logPath, logPath)
+			writeShellScript(t, bin, script)
+
 			cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
 			if err := os.WriteFile(cfgPath, []byte("version: 1\nmode: balanced\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -63,8 +79,11 @@ func TestCodexInstallForeignUpgradeAndRefusal(t *testing.T) {
 			if installErr != nil {
 				t.Fatal(installErr)
 			}
-			if strings.Contains(string(logData), foreignBinary) || !strings.Contains(string(logData), tc.want) {
-				t.Fatalf("upgrade did not replace the foreign wrapper: %s", logData)
+			wantAdd := []string{"mcp", "add", "--env", "EXAMPLE_MODE=local", "upgrading", "--", exe, "mcp", "proxy", "--config", cfgPath}
+			wantAdd = append(wantAdd, tc.want...)
+			wantLog := strings.Join([]string{"mcp", "remove", "upgrading"}, "\x00") + "\x00\x00" + strings.Join(wantAdd, "\x00") + "\x00\x00"
+			if !slices.Equal(logData, []byte(wantLog)) {
+				t.Fatalf("upgrade invocations = %q, want %q (fresh server must remain untouched)", logData, wantLog)
 			}
 		})
 	}

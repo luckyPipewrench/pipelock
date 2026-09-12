@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,12 +40,15 @@ func TestMCPOnlyInstallReplacesForeignWrapper(t *testing.T) {
 		t.Fatal("missing server")
 	}
 	args := mcpwrap.InterfaceSliceToStrings(server["args"])
-	joined := strings.Join(args, " ")
-	if !mcpwrap.IsWrappedBySelf(server) || !strings.Contains(joined, "-- node server.js") || strings.Contains(joined, "older-proxy") || strings.Contains(joined, "old.yaml") {
-		t.Fatalf("upgrade did not produce one current wrapper: %v", server)
+	sep := slices.Index(args, "--")
+	if !mcpwrap.IsWrappedBySelf(server) || sep < 0 || !slices.Equal(args[sep+1:], []string{"node", "server.js"}) {
+		t.Fatalf("upgrade did not preserve the exact child: %v", server)
 	}
-	if !strings.Contains(joined, "--env EXAMPLE_MODE") {
-		t.Fatalf("env passthrough lost: %v", args)
+	if !slices.Equal(args[:sep], []string{"mcp", "proxy", "--config", opts.PipelockConfig, "--env", "EXAMPLE_MODE"}) {
+		t.Fatalf("unexpected wrapper flags: %v", args)
+	}
+	if !reflect.DeepEqual(server["env"], map[string]interface{}{"EXAMPLE_MODE": "local"}) {
+		t.Fatalf("environment values changed: %v", server["env"])
 	}
 	first, err := os.ReadFile(opts.HermesConfig)
 	if err != nil {

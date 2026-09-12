@@ -5,6 +5,7 @@ package mcpwrap
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -189,6 +190,15 @@ func TestWrapServerRecoversForeignInvocation(t *testing.T) {
 			}
 			if wrapped[FieldCommand] != "/current/proxy" || plan != nil {
 				t.Fatalf("unexpected wrapper or sidecar: %v %v", wrapped, plan)
+			}
+			wantArgs := []string{"mcp", "proxy", "--config", "new.yaml"}
+			if tc.command != "" {
+				wantArgs = append(wantArgs, "--", "node", "server.js")
+			} else {
+				wantArgs = append(wantArgs, "--upstream", "https://api.vendor.example/mcp")
+			}
+			if got := InterfaceSliceToStrings(wrapped[FieldArgs]); !slices.Equal(got, wantArgs) {
+				t.Fatalf("replacement args = %q, want %q", got, wantArgs)
 			}
 			if _, ok := wrapped[FieldPipelock]; ok {
 				t.Fatal("stale restoration marker survived")

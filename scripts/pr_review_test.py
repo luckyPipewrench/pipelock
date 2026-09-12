@@ -4229,6 +4229,25 @@ class RateLimitRetryTest(unittest.TestCase):
         self.assertEqual(post.call_args_list[1].kwargs["timeout"], 8.0)
         slept.assert_called_once_with(9.0)
 
+    def test_rate_limit_sleep_that_consumes_deadline_stops_before_another_request(self):
+        clock = {"now": 100.0}
+
+        def advance(delay: float) -> None:
+            clock["now"] += delay
+
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
+             mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
+             mock.patch.object(pr_review, "llm_timeout_for", return_value=120), \
+             mock.patch.object(pr_review, "build_llm_payload", return_value={}), \
+             mock.patch.object(pr_review.time, "monotonic", side_effect=lambda: clock["now"]), \
+             mock.patch.object(pr_review.time, "sleep", side_effect=advance) as slept, \
+             mock.patch.object(pr_review.requests, "post", return_value=self._response(429, {"Retry-After": "30"})) as post:
+            with self.assertRaises(pr_review.ModelTimeout):
+                pr_review.call_model("s", "u", "default", "review-chunk-1", "corr", deadline=110.0)
+        self.assertEqual(post.call_count, 1, "the deadline must prevent a second provider request")
+        self.assertEqual(post.call_args.kwargs["timeout"], 10.0)
+        slept.assert_called_once_with(10.0)
+
     def _run_phase_rate_limit(self, *, synthesis: bool) -> tuple[str, object]:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         diff = "diff --git a/f.go b/f.go\n--- a/f.go\n+++ b/f.go\n@@ -1 +1 @@\n-old\n+new\n"

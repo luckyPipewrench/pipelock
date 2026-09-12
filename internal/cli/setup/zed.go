@@ -344,6 +344,9 @@ func installZedPath(cmd *cobra.Command, targetPath, exe, configFile string, dryR
 
 		newServer, meta, plan, wrapErr := wrapClineServer(server, exe, configFile, targetPath, name)
 		if wrapErr != nil {
+			if isNormalizationFailure(wrapErr) {
+				return fmt.Errorf("server %q: %w", name, wrapErr)
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q in %s: %v\n", name, targetPath, wrapErr)
 			continue
 		}

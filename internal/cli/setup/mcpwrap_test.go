@@ -183,7 +183,7 @@ func TestWarnForeignWrapper(t *testing.T) {
 				mcpFieldCommand: "/usr/bin/attacker-server",
 				mcpFieldArgs:    []interface{}{"mcp", "proxy", "--", testEchoCmd},
 			},
-			want: "is not this pipelock binary",
+			want: "from another binary",
 		},
 		{
 			name: "marker beside a command that does not run the proxy",
@@ -376,7 +376,7 @@ func TestForeignCodexWrapperReason(t *testing.T) {
 		Args: []string{"mcp", "proxy", "--", "node", "x.js"},
 	}}
 	reason := foreignCodexWrapperReason(foreign)
-	if !strings.Contains(reason, "/other/bin/pipelock") || !strings.Contains(reason, "not this pipelock binary") {
+	if !strings.Contains(reason, "/other/bin/pipelock") || !strings.Contains(reason, "from another binary") {
 		t.Fatalf("note does not name the binary or the problem: %q", reason)
 	}
 

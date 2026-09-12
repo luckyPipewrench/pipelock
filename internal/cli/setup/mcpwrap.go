@@ -5,6 +5,7 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +24,11 @@ const (
 	mcpFieldHeaders  = "headers"
 	mcpFieldType     = "type"
 	mcpFieldPipelock = "_pipelock"
+	// mcpHTTPWrapType is the transport label given to a remote child recovered
+	// from a foreign wrapper, so command/args installers whose wrap routes HTTP
+	// by an explicit type (JetBrains, VS Code) send it down their HTTP branch.
+	// Installers that infer the transport from url-presence pass "".
+	mcpHTTPWrapType = "http"
 )
 
 // mcpConfig is a generic MCP config file with a server map under a
@@ -88,6 +94,14 @@ func marshalMCPConfig(originalData []byte, cfg *mcpConfig, serversKey string) ([
 // wrapMCPServer wraps a single MCP server entry through pipelock mcp proxy.
 // Works for any IDE config format that uses command/args (stdio) or url (HTTP).
 func wrapMCPServer(server map[string]interface{}, exe, configFile string, sandbox bool, workspace string) (map[string]interface{}, *pipelockMeta, error) {
+	// Normalize a foreign wrapper (one written by a pipelock at a different path)
+	// down to the bare child it wraps, so we re-wrap the ORIGINAL command through
+	// this binary instead of nesting one proxy invocation inside another.
+	server, err := normalizeForeignWrapper(server, mcpHTTPWrapType)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	serverType, _ := server[mcpFieldType].(string)
 	typeOmitted := serverType == ""
 	if typeOmitted {
@@ -375,7 +389,7 @@ func warnForeignWrapper(w io.Writer, name string, server map[string]interface{})
 	case stateForeignWrapper:
 		binary := serverCommand(server)
 		_, _ = fmt.Fprintf(w,
-			"warning: server %q runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap\n",
+			"warning: server %q runs %q with proxy arguments from another binary; checking its invocation before replacing the wrapper\n",
 			name, binary)
 	case stateNotWrapper:
 		if _, marked := server[mcpFieldPipelock]; marked {
@@ -398,4 +412,119 @@ func commandArgStrings(v interface{}) []string {
 	default:
 		return interfaceSliceToStrings(v)
 	}
+}
+
+// normalizeForeignWrapper rewrites a foreign proxy wrapper - a command/args
+// entry that runs `mcp proxy ...` through a pipelock at a DIFFERENT path - into
+// the bare child server it wraps, so the caller re-wraps the original command
+// through this binary instead of nesting one proxy invocation inside another
+// invocation. The child is read from the invocation, never from the _pipelock
+// marker, so a forged marker cannot steer it.
+//
+// This handles the conventional command+args shape (VS Code, Cline, JetBrains,
+// Continue); OpenCode's single command-array shape uses
+// normalizeForeignOpenCodeWrapper.
+//
+// httpType, when non-empty, is written as the recovered remote server's type so
+// a caller that routes HTTP by an explicit type sends it down its HTTP branch;
+// callers that infer the transport from url-presence pass "".
+//
+// A non-foreign entry is returned unchanged. An unrecoverable wrapper (unknown
+// proxy flags, a header-file credential sidecar, or an empty child) returns an
+// error carrying the operator remedy, which the caller surfaces on its existing
+// wrap-error path (an availability failure, not an unmediated path).
+func normalizeForeignWrapper(server map[string]interface{}, httpType string) (map[string]interface{}, error) {
+	if classifyWrapper(server) != stateForeignWrapper {
+		return server, nil
+	}
+	inner, err := mcpwrap.RecoverServerInvocation(server, commandArgStrings(server[mcpFieldArgs]))
+	if err != nil {
+		if errors.Is(err, mcpwrap.ErrNotProxyInvocation) {
+			// Classified foreign but not a command/args-shaped proxy invocation;
+			// leave it for the wrap path to reject on its own terms.
+			return server, nil
+		}
+		return nil, err
+	}
+
+	bare := passthroughServerFields(server)
+	switch inner.Transport {
+	case mcpwrap.TransportUpstream:
+		bare[mcpFieldURL] = inner.UpstreamURL
+		if httpType != "" {
+			bare[mcpFieldType] = httpType
+		}
+	default:
+		bare[mcpFieldCommand] = inner.Command
+		if len(inner.Args) > 0 {
+			bare[mcpFieldArgs] = stringsToInterfaces(inner.Args)
+		}
+	}
+	return bare, nil
+}
+
+// normalizeForeignOpenCodeWrapper is normalizeForeignWrapper for OpenCode's
+// single command-array shape, where the wrapping binary is element zero of the
+// command array and the recovered stdio child is rebuilt as an array.
+func normalizeForeignOpenCodeWrapper(server map[string]interface{}) (map[string]interface{}, error) {
+	if classifyWrapper(server) != stateForeignWrapper {
+		return server, nil
+	}
+	command := commandArgStrings(server[mcpFieldCommand])
+	if len(command) == 0 {
+		return server, nil
+	}
+	inner, err := mcpwrap.RecoverServerInvocation(server, command[1:])
+	if err != nil {
+		if errors.Is(err, mcpwrap.ErrNotProxyInvocation) {
+			return server, nil
+		}
+		return nil, err
+	}
+
+	bare := passthroughServerFields(server)
+	switch inner.Transport {
+	case mcpwrap.TransportUpstream:
+		bare[mcpFieldURL] = inner.UpstreamURL
+	default:
+		rebuilt := make([]interface{}, 0, len(inner.Args)+1)
+		rebuilt = append(rebuilt, inner.Command)
+		for _, a := range inner.Args {
+			rebuilt = append(rebuilt, a)
+		}
+		bare[mcpFieldCommand] = rebuilt
+	}
+	return bare, nil
+}
+
+// stringsToInterfaces reconstructs the []interface{} shape a JSON/YAML decode
+// produces, so a recovered child server is indistinguishable from a freshly read
+// one and the installers' args readers (which expect []interface{}) handle it.
+func stringsToInterfaces(in []string) []interface{} {
+	out := make([]interface{}, len(in))
+	for i, s := range in {
+		out[i] = s
+	}
+	return out
+}
+
+// passthroughServerFields copies every field that describes the server rather
+// than its wrapping - env and any host-specific extras - while dropping the
+// transport fields (rebuilt from the recovered child) and the _pipelock marker
+// (discarded, since normalization is metadata-free).
+func passthroughServerFields(server map[string]interface{}) map[string]interface{} {
+	bare := make(map[string]interface{}, len(server))
+	for k, v := range server {
+		switch k {
+		case mcpFieldCommand, mcpFieldArgs, mcpFieldURL, mcpFieldHeaders, mcpFieldType, mcpFieldPipelock:
+			// Replaced from the recovered child, or discarded.
+		default:
+			bare[k] = v
+		}
+	}
+	return bare
+}
+
+func isNormalizationFailure(err error) bool {
+	return errors.Is(err, mcpwrap.ErrCannotNormalize)
 }

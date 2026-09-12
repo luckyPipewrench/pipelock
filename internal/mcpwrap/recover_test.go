@@ -201,10 +201,61 @@ func TestWrapServerForeignRecoveryErrors(t *testing.T) {
 	for _, server := range []map[string]interface{}{
 		{FieldCommand: "/nonexistent/older-proxy", FieldArgs: []string{"mcp", "proxy", "--header-file", "credentials.headers"}},
 		{FieldCommand: []string{"/nonexistent/older-proxy", "mcp", "proxy"}, FieldArgs: []interface{}{false}},
+		{FieldCommand: []string{"/nonexistent/older-proxy", "mcp", "proxy", "--", "node"}, FieldArgs: []string{"different-child"}},
 	} {
 		wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
 		if err == nil || wrapped != nil || meta != nil || plan != nil {
 			t.Fatalf("invalid foreign wrapper produced a write plan: %v %v %v %v", wrapped, meta, plan, err)
+		}
+	}
+}
+
+func TestRecoverServerInvocationHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers interface{}
+		refuse  bool
+	}{
+		{"null", nil, false},
+		{"empty decoded map", map[string]interface{}{}, false},
+		{"empty string map", map[string]string{}, false},
+		{"decoded headers", map[string]interface{}{"X-Example-Auth": "test-only-value"}, true},
+		{"string headers", map[string]string{"X-Example-Auth": "test-only-value"}, true},
+		{"malformed headers", "test-only-value", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := map[string]interface{}{
+				FieldCommand: "/nonexistent/older-proxy",
+				FieldArgs:    []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"},
+				FieldHeaders: tc.headers,
+			}
+			wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+			if tc.refuse {
+				if !errors.Is(err, ErrCannotNormalize) || wrapped != nil || meta != nil || plan != nil {
+					t.Fatalf("ambiguous headers produced a replacement: %v %v %v %v", wrapped, meta, plan, err)
+				}
+				if strings.Contains(err.Error(), "test-only-value") {
+					t.Fatal("refusal exposed a header value")
+				}
+			} else if err != nil || meta == nil || meta.OriginalURL != "https://api.vendor.example/mcp" {
+				t.Fatalf("empty headers prevented recovery: %v %v", meta, err)
+			}
+		})
+	}
+}
+
+func TestWrapServerForeignCommandList(t *testing.T) {
+	for _, command := range []interface{}{
+		[]string{"/nonexistent/older-proxy", "mcp", "proxy", "--", "node", "server.js"},
+		[]interface{}{"/nonexistent/older-proxy", "mcp", "proxy", "--", "node", "server.js"},
+	} {
+		server := map[string]interface{}{FieldCommand: command}
+		wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wrapped[FieldCommand] != "/current/proxy" || meta.OriginalCommand != "node" || strings.Join(meta.OriginalArgs, " ") != "server.js" || plan != nil {
+			t.Fatalf("command-list child was not recovered: %v %v %v", wrapped, meta, plan)
 		}
 	}
 }

@@ -437,7 +437,7 @@ func normalizeForeignWrapper(server map[string]interface{}, httpType string) (ma
 	if classifyWrapper(server) != stateForeignWrapper {
 		return server, nil
 	}
-	inner, err := mcpwrap.RecoverInner(commandArgStrings(server[mcpFieldArgs]))
+	inner, err := mcpwrap.RecoverServerInvocation(server, commandArgStrings(server[mcpFieldArgs]))
 	if err != nil {
 		if errors.Is(err, mcpwrap.ErrNotProxyInvocation) {
 			// Classified foreign but not a command/args-shaped proxy invocation;
@@ -474,7 +474,7 @@ func normalizeForeignOpenCodeWrapper(server map[string]interface{}) (map[string]
 	if len(command) == 0 {
 		return server, nil
 	}
-	inner, err := mcpwrap.RecoverInner(command[1:])
+	inner, err := mcpwrap.RecoverServerInvocation(server, command[1:])
 	if err != nil {
 		if errors.Is(err, mcpwrap.ErrNotProxyInvocation) {
 			return server, nil

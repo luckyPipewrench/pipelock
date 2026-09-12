@@ -30,61 +30,73 @@ func TestInstallerForeignRefusalPreservesConfig(t *testing.T) {
 		{"opencode", OpenCodeCmd, "opencode.json", "mcp", false, true},
 		{"zed", ZedCmd, "settings.json", "context_servers", false, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			t.Chdir(dir)
-			configPath := filepath.Join(dir, "pipelock.yaml")
-			if err := os.WriteFile(configPath, []byte("version: 1\nmode: balanced\n"), 0o600); err != nil {
-				t.Fatal(err)
+		for _, headerMap := range []bool{false, true} {
+			name := tc.name + "/sidecar"
+			if headerMap {
+				name = tc.name + "/header-map"
 			}
-			args := []string{"mcp", "proxy", "--header-file", "credentials.headers", "--upstream", "https://api.vendor.example/mcp"}
-			server := map[string]interface{}{"command": foreignBinary, "args": args}
-			if tc.array {
-				server = map[string]interface{}{"type": "local", "command": append([]string{foreignBinary}, args...)}
-			}
-			data, err := json.Marshal(map[string]interface{}{tc.key: map[string]interface{}{"example": server}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(dir, tc.path)
-			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadDir(filepath.Dir(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := tc.newCmd()
-			var output bytes.Buffer
-			cmd.SetOut(&output)
-			cmd.SetErr(&output)
-			cmdArgs := []string{"install", "--config", configPath}
-			if tc.project {
-				cmdArgs = append(cmdArgs, "--project")
-			} else {
-				cmdArgs = append(cmdArgs, "--path", path)
-			}
-			cmd.SetArgs(cmdArgs)
-			if err := cmd.Execute(); !errors.Is(err, mcpwrap.ErrCannotNormalize) {
-				t.Fatalf("install error = %v, want refusal; output: %s", err, output.String())
-			}
-			after, err := os.ReadFile(filepath.Clean(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, data) {
-				t.Fatal("refused install changed the configuration")
-			}
-			entries, err := os.ReadDir(filepath.Dir(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(entries) != len(before) {
-				t.Fatal("refused install created a backup or sidecar")
-			}
-		})
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				t.Chdir(dir)
+				configPath := filepath.Join(dir, "pipelock.yaml")
+				if err := os.WriteFile(configPath, []byte("version: 1\nmode: balanced\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"mcp", "proxy", "--header-file", "credentials.headers", "--upstream", "https://api.vendor.example/mcp"}
+				if headerMap {
+					args = []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"}
+				}
+				server := map[string]interface{}{"command": foreignBinary, "args": args}
+				if tc.array {
+					server = map[string]interface{}{"type": "local", "command": append([]string{foreignBinary}, args...)}
+				}
+				if headerMap {
+					server["headers"] = map[string]interface{}{"X-Example-Auth": "test-only-value"}
+				}
+				data, err := json.Marshal(map[string]interface{}{tc.key: map[string]interface{}{"example": server}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(dir, tc.path)
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.ReadDir(filepath.Dir(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd := tc.newCmd()
+				var output bytes.Buffer
+				cmd.SetOut(&output)
+				cmd.SetErr(&output)
+				cmdArgs := []string{"install", "--config", configPath}
+				if tc.project {
+					cmdArgs = append(cmdArgs, "--project")
+				} else {
+					cmdArgs = append(cmdArgs, "--path", path)
+				}
+				cmd.SetArgs(cmdArgs)
+				if err := cmd.Execute(); !errors.Is(err, mcpwrap.ErrCannotNormalize) {
+					t.Fatalf("install error = %v, want refusal; output: %s", err, output.String())
+				}
+				after, err := os.ReadFile(filepath.Clean(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(after, data) {
+					t.Fatal("refused install changed the configuration")
+				}
+				entries, err := os.ReadDir(filepath.Dir(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != len(before) {
+					t.Fatal("refused install created a backup or sidecar")
+				}
+			})
+		}
 	}
 }

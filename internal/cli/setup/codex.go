@@ -442,6 +442,9 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			action := codexActionWrapStdio
 			newArgs := wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile)
 			if classifyCodexWrapper(s) == stateForeignWrapper {
+				if codexURLTransportHasAuthOrHeaders(s.Transport) {
+					return nil, fmt.Errorf("server %q: %w: wrapper has HTTP authentication settings outside its invocation; restore the original server configuration before installing again", s.Name, mcpwrap.ErrCannotNormalize)
+				}
 				inner, err := mcpwrap.RecoverInner(s.Transport.Args)
 				if err != nil {
 					return nil, fmt.Errorf("server %q: %w", s.Name, err)

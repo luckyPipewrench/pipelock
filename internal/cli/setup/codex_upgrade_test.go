@@ -69,3 +69,19 @@ func TestCodexInstallForeignUpgradeAndRefusal(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanCodexForeignAuthRefused(t *testing.T) {
+	for _, transport := range []codexMCPTransport{
+		{HTTPHeaders: json.RawMessage(`{"X-Example-Auth":"test-only-value"}`)},
+		{EnvHTTPHeaders: json.RawMessage(`{"X-Example-Auth":"EXAMPLE_AUTH"}`)},
+		{BearerTokenEnvVar: "EXAMPLE_AUTH"},
+	} {
+		transport.Type = codexTransportStdio
+		transport.Command = foreignBinary
+		transport.Args = []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"}
+		plans, err := planCodexInstall([]codexMCPServer{{Name: "example", Transport: transport}}, "/current/proxy", "config.yaml")
+		if !errors.Is(err, mcpwrap.ErrCannotNormalize) || plans != nil {
+			t.Fatalf("ambiguous authentication produced a replacement plan: %v %v", plans, err)
+		}
+	}
+}

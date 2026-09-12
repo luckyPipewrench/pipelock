@@ -54,6 +54,24 @@ var ErrNotProxyInvocation = errors.New("mcpwrap: not an mcp proxy invocation")
 // ErrCannotNormalize identifies a wrapper the installer cannot safely replace.
 var ErrCannotNormalize = errors.New("cannot normalize wrapper")
 
+// RecoverServerInvocation refuses header settings whose use cannot be established
+// from the proxy invocation, then recovers the original server from its arguments.
+func RecoverServerInvocation(server map[string]interface{}, proxyArgs []string) (RecoveredInner, error) {
+	if headers, present := server[FieldHeaders]; present && headers != nil {
+		empty := false
+		switch h := headers.(type) {
+		case map[string]interface{}:
+			empty = len(h) == 0
+		case map[string]string:
+			empty = len(h) == 0
+		}
+		if !empty {
+			return RecoveredInner{}, refusef("wrapper has header settings outside its invocation; restore the original server configuration before installing again")
+		}
+	}
+	return RecoverInner(proxyArgs)
+}
+
 // RecoverInner extracts the child that a `mcp proxy` invocation wraps, reading
 // only the invocation arguments and never the _pipelock restoration marker (a
 // config-controlled value that must not authorize anything).
@@ -169,7 +187,17 @@ func recoverForeignServer(server map[string]interface{}) (map[string]interface{}
 	if err != nil {
 		return nil, err
 	}
-	inner, err := RecoverInner(args)
+	if _, scalar := server[FieldCommand].(string); !scalar {
+		if len(args) > 0 {
+			return nil, refusef("command-list wrapper also has a separate args field; restore the original server configuration before installing again")
+		}
+		command, err := stringArgs(server[FieldCommand])
+		if err != nil || len(command) < 2 {
+			return nil, refusef("wrapper has an invalid command list; restore the original server configuration before installing again")
+		}
+		args = command[1:]
+	}
+	inner, err := RecoverServerInvocation(server, args)
 	if err != nil {
 		return nil, err
 	}

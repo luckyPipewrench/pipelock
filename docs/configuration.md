@@ -317,7 +317,7 @@ forward_proxy:
 | `idle_timeout_seconds` | `120` | No | Kill established tunnels after this much inactivity |
 | `sni_verification` | `true` | **To disable while `sni_require_tls` is on** | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
 | `sni_require_tls` | `false` | **To disable** | Require the tunnel to begin with a TLS ClientHello carrying SNI. Enabling it hot-reloads; **disabling it at runtime is rejected as a security downgrade** (restart to disable), because dropping it re-opens an unscanned opaque tunnel. Official security profiles enable it. This prevents raw/no-SNI protocol smuggling but does not decrypt or scan the tunnel body. Requires `sni_verification: true`. |
-| `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
+| `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws. Same entry shape as `tls_interception.passthrough_domains`: exact hosts or `*.example.com`, no surrounding whitespace, at most one trailing DNS dot. |
 
 ## TLS Interception
 
@@ -342,7 +342,7 @@ tls_interception:
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
 | `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
 | `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
-| `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). |
+| `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over a public suffix such as `*.com` is also refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every destination under the suffix. A wildcard over a private boundary such as `*.s3.amazonaws.com` stays accepted. |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
 | `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
@@ -2039,7 +2039,7 @@ trusted_domains:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `dns.host_overrides` | `{}` | Map of exact hostnames to one or more IP addresses. Hostname keys are normalized case-insensitively with trailing DNS dots stripped. URL, wildcard, host:port, and IP-literal keys are rejected. |
+| `dns.host_overrides` | `{}` | Map of exact hostnames to one or more IP addresses. Hostname keys are normalized case-insensitively with a single trailing DNS dot stripped; a key carrying an empty label (`host.example..`, a leading dot) is refused, because it could never match a lookup. URL, wildcard, host:port, and IP-literal keys are rejected. |
 
 Host overrides do not exempt a destination from SSRF blocking by themselves. If an override resolves to an internal IP, the hostname must also be present in `trusted_domains` or the target IP must be covered by `ssrf.ip_allowlist`. Raw IP targets never use `dns.host_overrides`.
 

@@ -60,6 +60,30 @@ func NormalizeHost(host string) string {
 	return strings.ToLower(host)
 }
 
+// hasEmptyDNSLabel reports whether a host that has already had its single
+// root dot removed still carries an empty label: a leading dot, a second
+// trailing dot, or two dots in a row.
+//
+// No DNS name has an empty label, so nothing legitimate is refused. What the
+// check closes is a verdict split between the two request-side normalizers.
+// NormalizeHost above and MatchDomain each remove ONE trailing dot, and the
+// URL scanner hands the RAW hostname to the blocklist while handing THIS
+// struct's Host to the allowlist. Written "evil.example.com..", the raw form
+// reached the blocklist as "evil.example.com." and matched nothing, while the
+// once-trimmed form reached a strict allowlist as "evil.example.com" and
+// matched. The request then failed only because the dialer's own lookup of
+// the two-dot name found no such host: a wrong allow verdict rescued by the
+// resolver. Refusing the host here makes every transport's verdict an
+// explicit invalid-destination block instead. A single root dot is a valid
+// spelling and stays accepted; NormalizeHost has already consumed it.
+//
+// IPv6 literals never contain a dot pair, and an IPv4-mapped form such as
+// "::ffff:10.0.0.1" carries ordinary dotted labels, so no address literal
+// trips this check.
+func hasEmptyDNSLabel(host string) bool {
+	return strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.Contains(host, "..")
+}
+
 // NormalizeIP returns a canonical form of an address so two spellings of the
 // same address compare and hash identically. IPv4 is reduced to its 4-byte
 // form, which also collapses IPv4-mapped IPv6 onto the address it actually
@@ -122,6 +146,9 @@ func New(network Network, host string, port uint16) (Destination, error) {
 	}
 	if hasUnsafeHostChars(host) {
 		return Destination{}, fmt.Errorf("%w: control or whitespace character in %q", ErrInvalidHost, host)
+	}
+	if hasEmptyDNSLabel(host) {
+		return Destination{}, fmt.Errorf("%w: empty DNS label in %q", ErrInvalidHost, host)
 	}
 	if port == 0 {
 		return Destination{}, fmt.Errorf("%w: 0", ErrInvalidPort)

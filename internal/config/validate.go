@@ -1272,6 +1272,58 @@ func matcherParityError(raw, normalized string) error {
 	return nil
 }
 
+// validateLiteralHostMatchList validates a host list whose runtime matcher
+// only folds case: it compares the operator's stored string against the
+// request hostname with no trimming at all.
+//
+// Two lists are in that shape, tls_interception.passthrough_domains and
+// forward_proxy.redirect_websocket_hosts, and until now neither had any
+// validator. Every malformed spelling loaded clean and then matched nothing,
+// so the entry was silently inert: a pinned-certificate host written
+// "vendor.example." or " vendor.example" was intercepted anyway, and the
+// operator saw accepted configuration. That is an availability failure rather
+// than a bypass, which is why the repair is to refuse the input and to store
+// the canonical form, not to loosen either matcher.
+//
+// BREADTH is judged for one of the two lists and not the other, because they
+// differ in what a wide wildcard costs.
+//
+// tls_interception.passthrough_domains SPLICES a matching host without
+// decrypting it, so "*.com" there turns body and response scanning off for
+// every .com destination. That is the same detector-off shape this repository
+// already breadth-checks on trusted_domains and the exempt lists, so it gets
+// the grant-list rule: a wildcard whose base is an ICANN public suffix is
+// refused, while a private-suffix base such as "*.s3.amazonaws.com" stays
+// accepted because an operator legitimately writes it.
+//
+// forward_proxy.redirect_websocket_hosts is NOT the same: a wide wildcard
+// routes more traffic INTO the /ws proxy, which still scans it, so breadth
+// there is a routing preference rather than a hole.
+//
+// The admission cost was measured rather than assumed before adding this.
+// Nothing shipped is refused: the default is "*.googlevideo.com", every
+// preset ships an empty list, and the documented examples all survive the
+// predicate. An existing deployment that loads a public-suffix wildcard will
+// now fail validation and can be checked ahead of a restart with
+// `pipelock check --config`, which names the field, index and value.
+func validateLiteralHostMatchList(label string, entries []string, judgeBreadth bool) error {
+	if judgeBreadth {
+		if err := ValidateHostGrantList(entries, label); err != nil {
+			return err
+		}
+	} else if err := ValidateHostMatchList(entries, label); err != nil {
+		return err
+	}
+	// Store the normalized form. These matchers do not trim a trailing dot,
+	// so "vendor.example." would otherwise stay stored as typed and never
+	// match a request for "vendor.example", even though the parity check
+	// above accepts that spelling for matchers that do trim one dot.
+	for i, raw := range entries {
+		entries[i] = NormalizeHostPattern(raw)
+	}
+	return nil
+}
+
 func (c *Config) validateLogging() error {
 	switch c.Logging.Format {
 	case DefaultLogFormat, "text":
@@ -2824,6 +2876,10 @@ func (c *Config) validateGitProtection() error {
 
 func (c *Config) validateForwardProxy() error {
 	// Validate forward proxy config
+	if err := validateLiteralHostMatchList(
+		"forward_proxy.redirect_websocket_hosts", c.ForwardProxy.RedirectWebSocketHosts, false); err != nil {
+		return err
+	}
 	if !c.ForwardProxy.Enabled {
 		return nil
 	}
@@ -3361,6 +3417,10 @@ func (c *Config) validateCrossRequestDetection(warnings *[]Warning) error {
 
 func (c *Config) validateTLSInterception() error {
 	// Validate TLS interception config
+	if err := validateLiteralHostMatchList(
+		"tls_interception.passthrough_domains", c.TLSInterception.PassthroughDomains, true); err != nil {
+		return err
+	}
 	if !c.TLSInterception.Enabled {
 		return nil
 	}
@@ -4086,6 +4146,18 @@ func (c *Config) validateDNS() error {
 		}
 		if strings.Contains(normalizedHost, "://") || strings.ContainsAny(normalizedHost, "/*?[]:") {
 			return fmt.Errorf("dns.host_overrides: %q must be a hostname, not a URL, wildcard, IP, or host:port", host)
+		}
+		// An empty label means the key can never be reached. The resolver's
+		// own key normalizer removes ONE trailing dot, so "pin.example.com.."
+		// loaded clean, was stored as "pin.example.com." and no lookup for
+		// "pin.example.com" ever matched it: the pin was silently inert while
+		// the operator saw accepted configuration.
+		// The test is against the ONCE-TRIMMED value, which is what the
+		// resolver stores, so a residual trailing dot here means the operator
+		// wrote two.
+		if strings.HasPrefix(normalizedHost, ".") || strings.HasSuffix(normalizedHost, ".") ||
+			strings.Contains(normalizedHost, "..") {
+			return fmt.Errorf("dns.host_overrides: %q has an empty DNS label", host)
 		}
 		// Reject IP-literal keys: the override path is hostname-only, and
 		// allowing an IP-literal key would suggest the operator can rewrite

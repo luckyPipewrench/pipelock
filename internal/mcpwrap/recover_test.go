@@ -4,6 +4,7 @@
 package mcpwrap
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -190,7 +191,11 @@ func TestWrapServerRecoversForeignInvocation(t *testing.T) {
 				FieldArgs:     tc.args,
 				FieldPipelock: map[string]interface{}{"original_command": "wrong-command"},
 			}
+			before := snapshotRecoveryServer(t, server)
 			wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+			if after := snapshotRecoveryServer(t, server); after != before {
+				t.Fatalf("recovery mutated input: before=%s after=%s", before, after)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +227,11 @@ func TestWrapServerForeignRecoveryErrors(t *testing.T) {
 		{FieldCommand: []string{"/nonexistent/older-proxy", "mcp", "proxy"}, FieldArgs: []interface{}{false}},
 		{FieldCommand: []string{"/nonexistent/older-proxy", "mcp", "proxy", "--", "node"}, FieldArgs: []string{"different-child"}},
 	} {
+		before := snapshotRecoveryServer(t, server)
 		wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+		if after := snapshotRecoveryServer(t, server); after != before {
+			t.Fatalf("recovery mutated input: before=%s after=%s", before, after)
+		}
 		if err == nil || wrapped != nil || meta != nil || plan != nil {
 			t.Fatalf("invalid foreign wrapper produced a write plan: %v %v %v %v", wrapped, meta, plan, err)
 		}
@@ -248,7 +257,11 @@ func TestRecoverServerInvocationHeaders(t *testing.T) {
 				FieldArgs:    []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"},
 				FieldHeaders: tc.headers,
 			}
+			before := snapshotRecoveryServer(t, server)
 			wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+			if after := snapshotRecoveryServer(t, server); after != before {
+				t.Fatalf("recovery mutated input: before=%s after=%s", before, after)
+			}
 			if tc.refuse {
 				if !errors.Is(err, ErrCannotNormalize) || wrapped != nil || meta != nil || plan != nil {
 					t.Fatalf("ambiguous headers produced a replacement: %v %v %v %v", wrapped, meta, plan, err)
@@ -256,8 +269,8 @@ func TestRecoverServerInvocationHeaders(t *testing.T) {
 				if strings.Contains(err.Error(), "test-only-value") {
 					t.Fatal("refusal exposed a header value")
 				}
-			} else if err != nil || meta == nil || meta.OriginalURL != "https://api.vendor.example/mcp" {
-				t.Fatalf("empty headers prevented recovery: %v %v", meta, err)
+			} else if err != nil || meta == nil || meta.OriginalURL != "https://api.vendor.example/mcp" || wrapped[FieldCommand] != "/current/proxy" || plan != nil {
+				t.Fatalf("unexpected empty-header recovery: wrapped=%v meta=%v plan=%v err=%v", wrapped, meta, plan, err)
 			}
 		})
 	}
@@ -269,7 +282,11 @@ func TestWrapServerForeignCommandList(t *testing.T) {
 		[]interface{}{"/nonexistent/older-proxy", "mcp", "proxy", "--", "node", "server.js"},
 	} {
 		server := map[string]interface{}{FieldCommand: command}
+		before := snapshotRecoveryServer(t, server)
 		wrapped, meta, plan, err := WrapServer(server, "/current/proxy", "new.yaml", "config.yaml", "example")
+		if after := snapshotRecoveryServer(t, server); after != before {
+			t.Fatalf("recovery mutated input: before=%s after=%s", before, after)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,4 +294,14 @@ func TestWrapServerForeignCommandList(t *testing.T) {
 			t.Fatalf("command-list child was not recovered: %v %v %v", wrapped, meta, plan)
 		}
 	}
+}
+
+// snapshotRecoveryServer captures nested input values without retaining aliases.
+func snapshotRecoveryServer(t *testing.T, server map[string]interface{}) string {
+	t.Helper()
+	data, err := json.Marshal(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

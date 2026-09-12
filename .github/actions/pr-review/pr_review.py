@@ -78,6 +78,12 @@ DIFF_FETCH_ATTEMPTS = 2
 # bound literal and small; a second connection failure remains incomplete work,
 # not an invitation to keep spending the review budget.
 MODEL_CONNECTION_ATTEMPTS = 2
+# A 429 is retried because the provider's rate-limit guidance explicitly makes
+# it retryable. The ceiling and shared deadline bound both request attempts and
+# sleeps so a sustained outage cannot strand finalization.
+MODEL_RATE_LIMIT_ATTEMPTS = 4
+MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS = 2.0
+MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS = 30.0
 # Bounds the admission scan on a pull request with a very long comment history.
 ADMISSION_COMMENT_PAGES = 10
 # A running marker older than any possible job (10-minute admit plus 45-minute
@@ -185,6 +191,16 @@ class ModelTimeout(ReviewError):
 
 class ModelOutputError(ReviewError):
     """A provider response was not a complete, valid structured result."""
+
+
+class ModelRateLimited(ReviewError):
+    """The provider returned the one non-200 response eligible for retry.
+
+    Kept distinct from ModelOutputError because the no-retry policy elsewhere in
+    this file avoids repeating an ambiguous request. Provider guidance explicitly
+    permits bounded backoff for a 429, while the shared deadline keeps those
+    retries from silently consuming the rest of the review.
+    """
 
 
 class ModelConnectionError(ModelOutputError):
@@ -927,7 +943,8 @@ def llm_timeout_for(mode: str, phase: str = "") -> int:
 
 def llm_call_budget_for(mode: str, phase: str = "") -> int:
     """Reserve the longest delivery-proven retry path for one provider call."""
-    return llm_timeout_for(mode, phase) * MODEL_CONNECTION_ATTEMPTS
+    retry_sleep_budget = MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (MODEL_RATE_LIMIT_ATTEMPTS - 1)
+    return llm_timeout_for(mode, phase) * MODEL_CONNECTION_ATTEMPTS + retry_sleep_budget
 
 
 def budget_allows(deadline: float, mode: str, phase: str = "") -> bool:
@@ -940,7 +957,36 @@ def budget_allows(deadline: float, mode: str, phase: str = "") -> bool:
     return deadline - time.monotonic() >= llm_call_budget_for(mode, phase)
 
 
-def call_model(system: str, user: str, mode: str, phase: str, correlation: str) -> object:
+def retry_after_seconds(header: str | None) -> float | None:
+    """Parse a Retry-After header into a bounded sleep, or None when unusable.
+
+    Only the delta-seconds form is honoured. The HTTP-date form is accepted by
+    the spec but depends on clock agreement with the provider, and a skewed
+    clock would turn a short wait into a long one; falling back to the local
+    backoff curve is the safer reading. Anything negative, unparseable, or
+    beyond the ceiling falls back too, so a hostile or mistaken header cannot
+    stall the run.
+    """
+    if not header:
+        return None
+    try:
+        seconds = float(header.strip())
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS)
+
+
+def call_model(
+    system: str,
+    user: str,
+    mode: str,
+    phase: str,
+    correlation: str,
+    *,
+    deadline: float | None = None,
+) -> object:
     api_url, api_key = provider_configuration()
     model = model_for_phase(mode, phase)
     timeout = llm_timeout_for(mode, phase)
@@ -954,16 +1000,30 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
         "X-Client-Request-Id": str(uuid.uuid4()),
     }
     payload = build_llm_payload(model, system, user, mode, phase)
-    for attempt in range(1, MODEL_CONNECTION_ATTEMPTS + 1):
+    # Connection retries and rate-limit retries are counted SEPARATELY. They
+    # exist for different reasons: a connect timeout proves non-delivery, while
+    # a 429 is an explicit rate-limit response. Sharing one counter would let a burst of
+    # rate limits consume the connection budget, or the reverse.
+    connect_attempt = 0
+    rate_limit_attempt = 1
+    while True:
+        request_timeout = timeout
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModelTimeout("provider call exceeded the review deadline")
+            request_timeout = min(request_timeout, remaining)
+        connect_attempt += 1
+        attempt = connect_attempt
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=request_timeout)
         except requests.ConnectTimeout as exc:
             # The only failure that proves the request was never delivered: the
             # connection itself was never established, so the provider cannot
             # have seen or billed it. This clause must stay ABOVE Timeout,
             # which ConnectTimeout also subclasses, or it never runs.
             log_phase(phase, attempt=attempt, status="connect-timeout", correlation=correlation)
-            if attempt == MODEL_CONNECTION_ATTEMPTS:
+            if connect_attempt >= MODEL_CONNECTION_ATTEMPTS:
                 raise ModelConnectionError("provider connection failed after one retry") from exc
             continue
         except requests.Timeout as exc:
@@ -980,6 +1040,30 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
             log_phase(phase, attempt=attempt, status="request-error", correlation=correlation)
             raise ModelOutputError("provider request failed") from exc
         log_phase(phase, attempt=attempt, status=response.status_code, correlation=correlation)
+        if response.status_code == 429:
+            # Provider guidance explicitly permits bounded retries for this
+            # status. Honour Retry-After when present, since the provider knows
+            # when its rate-limit window reopens better than a fixed curve.
+            if rate_limit_attempt >= MODEL_RATE_LIMIT_ATTEMPTS:
+                raise ModelRateLimited(
+                    f"provider rate limited the request (HTTP 429) after {rate_limit_attempt} attempts"
+                )
+            delay = retry_after_seconds(response.headers.get("Retry-After"))
+            if delay is None:
+                delay = min(
+                    MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS * (2 ** (rate_limit_attempt - 1)),
+                    MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS,
+                )
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ModelTimeout("provider call exceeded the review deadline")
+                delay = min(delay, remaining)
+            log_phase(phase, attempt=attempt, status=f"rate-limited-sleep-{delay:.0f}s", correlation=correlation)
+            time.sleep(delay)
+            rate_limit_attempt += 1
+            connect_attempt -= 1  # a rate limit is not a connection attempt
+            continue
         if response.status_code != 200:
             raise ModelOutputError(f"provider returned HTTP {response.status_code}")
         try:
@@ -997,7 +1081,7 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
             return json.loads(_content_from_response(data))
         except (ValueError, json.JSONDecodeError) as exc:
             raise ModelOutputError("provider did not return JSON") from exc
-    raise AssertionError("connection retry loop must return or raise")
+    raise AssertionError("retry loop must return or raise")
 
 
 def _required_string(value: object, field_name: str, *, limit: int) -> str:
@@ -2493,7 +2577,7 @@ def judge_findings(
     if evidence_unavailable:
         return [], False, over_budget, over_files, [], candidates
     system, user = build_judge_prompt(candidates, contexts, judge_summaries, evidence)
-    payload = call_model(system, user, mode, "judge", binding.correlation)
+    payload = call_model(system, user, mode, "judge", binding.correlation, deadline=deadline)
     decisions = _parse_judge_decisions(payload, len(candidates))
 
     # One narrow follow-up is cheaper and more useful than rerunning the whole
@@ -2531,7 +2615,12 @@ def judge_findings(
         if repair_budget_available:
             try:
                 recheck_payload = call_model(
-                    recheck_system, recheck_user, mode, "judge-repair", binding.correlation
+                    recheck_system,
+                    recheck_user,
+                    mode,
+                    "judge-repair",
+                    binding.correlation,
+                    deadline=deadline,
                 )
                 recheck = _parse_judge_decisions(
                     recheck_payload, len(pending), allow_requests=False
@@ -3278,7 +3367,9 @@ def run_review(
                 break
             system, user = build_review_prompt(classification, chunk, mode)
             try:
-                payload = call_model(system, user, mode, f"review-chunk-{chunk_index}", binding.correlation)
+                payload = call_model(
+                    system, user, mode, f"review-chunk-{chunk_index}", binding.correlation, deadline=deadline
+                )
                 findings, changes = parse_findings(payload, {unit.path for unit in chunk}, require_changes={unit.path for unit in chunk})
             except ModelTimeout:
                 progress.timed_out = True
@@ -3299,13 +3390,27 @@ def run_review(
                     f"review chunk {chunk_index} could not connect after one retry"
                 )
                 continue
-            except ModelOutputError:
+            except ModelRateLimited as exc:
+                # Name the rate limit. The generic message below describes a
+                # malformed payload, and reporting a quota failure in those
+                # words sent readers looking for a parse bug in the diff
+                # instead of at the provider account.
+                progress.incomplete_reasons.append(
+                    f"review chunk {chunk_index} was rate limited by the provider and not reviewed ({exc})"
+                )
+                continue
+            except ModelOutputError as exc:
                 # A provider 500 or malformed response is localized to this
                 # chunk. Later chunks remain independently reviewable; the
                 # missing unit and this reason make derive_state report partial
                 # rather than allowing their success to read as clean.
+                #
+                # The underlying cause is carried through verbatim. Collapsing
+                # every non-200 into "invalid structured response" hid the real
+                # HTTP status from the published comment, so the run log was the
+                # only place the truth existed.
                 progress.incomplete_reasons.append(
-                    f"review chunk {chunk_index} returned an incomplete or invalid structured response"
+                    f"review chunk {chunk_index} failed: {exc}"
                 )
                 continue
             progress.reviewed_units += len(chunk)
@@ -3328,7 +3433,9 @@ def run_review(
                 mode,
             )
             try:
-                payload = call_model(system, user, mode, "cross-file-synthesis", binding.correlation)
+                payload = call_model(
+                    system, user, mode, "cross-file-synthesis", binding.correlation, deadline=deadline
+                )
                 synthesis_findings, _ = parse_findings(payload, {unit.path for unit in units if unit.representable})
                 candidates.extend(synthesis_findings)
             except ModelTimeout:
@@ -3337,6 +3444,11 @@ def run_review(
             except ModelConnectionError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis could not connect after one retry")
+                if reason := unverified_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
+            except ModelRateLimited as exc:
+                progress.aggregation_failed = True
+                progress.incomplete_reasons.append(f"cross-file synthesis was rate limited ({exc})")
                 if reason := unverified_candidates_reason(candidates):
                     progress.incomplete_reasons.append(reason)
             except ModelOutputError:
@@ -3418,6 +3530,12 @@ def run_review(
                 progress.aggregation_failed = True
                 progress.unverified_candidates.extend(candidates)
                 progress.incomplete_reasons.append("judge pass could not connect after one retry")
+                if reason := unverified_candidates_reason(candidates):
+                    progress.incomplete_reasons.append(reason)
+            except ModelRateLimited as exc:
+                progress.aggregation_failed = True
+                progress.unverified_candidates.extend(candidates)
+                progress.incomplete_reasons.append(f"judge pass was rate limited ({exc})")
                 if reason := unverified_candidates_reason(candidates):
                     progress.incomplete_reasons.append(reason)
             except ModelOutputError:

@@ -104,6 +104,9 @@ func TestRecoverInner_Upstream(t *testing.T) {
 			if got.Transport != TransportUpstream {
 				t.Fatalf("transport = %v, want upstream", got.Transport)
 			}
+			if got.Command != "" || len(got.Args) != 0 {
+				t.Fatalf("upstream recovery contains child invocation: %+v", got)
+			}
 			if got.UpstreamURL != tc.want {
 				t.Fatalf("upstream = %q, want %q", got.UpstreamURL, tc.want)
 			}
@@ -128,6 +131,7 @@ func TestRecoverInner_Refusals(t *testing.T) {
 		{"value flag missing value", []string{"mcp", "proxy", "--config"}, "has no value"},
 		{"no child or upstream", []string{"mcp", "proxy", "--config", "/c.yaml"}, "no child command or upstream"},
 		{"nested proxy", []string{"mcp", "proxy", "--", "older-proxy", "mcp", "proxy", "--", "node"}, "another proxy invocation"},
+		{"upstream trailing positional", []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp", "unexpected-tail"}, "does not recognize"},
 		{"repeated upstream", []string{"mcp", "proxy", "--upstream", "https://a.example/mcp", "--upstream", "https://b.example/mcp"}, "repeats --upstream"},
 		{"flag instead of upstream", []string{"mcp", "proxy", "--upstream", "--header-file"}, "invalid --upstream URL"},
 		{"malformed upstream", []string{"mcp", "proxy", "--upstream", "https://%/mcp"}, "invalid --upstream URL"},
@@ -160,8 +164,13 @@ func TestRecoverInner_Refusals(t *testing.T) {
 func TestRecoverInnerRefusalOmitsArgumentValues(t *testing.T) {
 	const opaqueValue = "--unsupported=private-value"
 	_, err := RecoverInner([]string{"mcp", "proxy", opaqueValue, "--", "node"})
-	if !errors.Is(err, ErrCannotNormalize) || strings.Contains(err.Error(), opaqueValue) {
+	if !errors.Is(err, ErrCannotNormalize) {
 		t.Fatalf("refusal must omit unknown argument values: %v", err)
+	}
+	for _, fragment := range []string{opaqueValue, "private-value", "--unsupported"} {
+		if strings.Contains(err.Error(), fragment) {
+			t.Fatalf("refusal leaked component %q: %v", fragment, err)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -474,10 +475,15 @@ func TestContinueInstall_WarnsForForeignAndUnrestorableWrappers(t *testing.T) {
 	if got := wrappedArgs[sep+1:]; len(got) != 2 || got[0] != "node" || got[1] != "server.js" {
 		t.Fatalf("child tail not the recovered inner command: %#v", got)
 	}
-	for _, a := range wrappedArgs {
-		if strings.Contains(a, "other-pipelock") {
-			t.Fatalf("foreign binary survived in the wrapped args (nested wrap): %#v", wrappedArgs)
-		}
+	encoded, err := yaml.Marshal(wrapped[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "other-pipelock") {
+		t.Fatalf("foreign binary survived in the server entry: %s", encoded)
+	}
+	if got := interfaceSliceToStrings(meta["original_args"]); !reflect.DeepEqual(got, []string{"server.js"}) {
+		t.Fatalf("recovered metadata args = %q", got)
 	}
 	const unrestorable = `mcpServers:
   - name: marked-but-direct
@@ -1009,4 +1015,37 @@ func TestWriteInstallerBackup_NeverFollowsTheBackupPath(t *testing.T) {
 			t.Fatalf("fresh backup mode = %o, want 600", info.Mode().Perm())
 		}
 	})
+}
+
+func TestContinueInstallForeignRefusalPreservesConfig(t *testing.T) {
+	for _, headers := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sidecar", true: "header-map"}[headers], func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			path := filepath.Join(home, continueDirname, continueConfigName)
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			server := map[string]interface{}{"name": "foreign", "command": "/nonexistent/older-proxy", "args": []string{"mcp", "proxy", "--header-file", "credentials.headers", "--upstream", "https://api.vendor.example/mcp"}}
+			if headers {
+				server["args"] = []string{"mcp", "proxy", "--upstream", "https://api.vendor.example/mcp"}
+				server["headers"] = map[string]string{"X-Example-Auth": "test-only-value"}
+			}
+			data, err := yaml.Marshal(map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"name": "fresh", "command": "node", "args": []string{"fresh.js"}}, server}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotTree(t, home)
+			_, err = runContinueCmdWithOutput(t, "install")
+			if !errors.Is(err, mcpwrap.ErrCannotNormalize) {
+				t.Fatalf("install error = %v, want fatal normalization refusal", err)
+			}
+			if after := snapshotTree(t, home); !reflect.DeepEqual(before, after) {
+				t.Fatalf("refusal changed files: before=%v after=%v", before, after)
+			}
+		})
+	}
 }

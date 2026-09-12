@@ -102,13 +102,40 @@ func TestParseSigV4Credential_ScopeComponentGrammar(t *testing.T) {
 	}
 
 	// The length bound is exact at its edge, so a later change to the
-	// constant cannot silently widen it.
+	// constant cannot silently widen it. BOTH components are bounded, and
+	// asserting only the region would leave the service half of the
+	// condition unexercised.
 	t.Run("length bound edge", func(t *testing.T) {
-		if _, _, ok := parseSigV4Credential(credential(strings.Repeat("a", 64), "s3")); !ok {
-			t.Fatal("a 64-character region was refused; the bound is inclusive")
+		for _, field := range []string{"region", "service"} {
+			atBound := credential(strings.Repeat("a", 64), "s3")
+			overBound := credential(strings.Repeat("a", 65), "s3")
+			if field == "service" {
+				atBound = credential("us-east-1", strings.Repeat("a", 64))
+				overBound = credential("us-east-1", strings.Repeat("a", 65))
+			}
+			if _, _, ok := parseSigV4Credential(atBound); !ok {
+				t.Fatalf("a 64-character %s was refused; the bound is inclusive", field)
+			}
+			if _, _, ok := parseSigV4Credential(overBound); ok {
+				t.Fatalf("a 65-character %s was accepted", field)
+			}
 		}
-		if _, _, ok := parseSigV4Credential(credential(strings.Repeat("a", 65), "s3")); ok {
-			t.Fatal("a 65-character region was accepted")
+	})
+
+	// The refusal probe above carries an uppercase letter, so it proves only
+	// that MIXED case is refused. A lowercase 40-character run is a shape the
+	// grammar genuinely accepts, and pinning it is the honest statement of
+	// what this change does and does not buy: it narrows the accepted input
+	// surface, it does not contain a secret-shaped value.
+	t.Run("a lowercase separator-free run is accepted, and that is the residual", func(t *testing.T) {
+		lowercase := strings.Repeat("ab3", 13) + "x"
+		if len(lowercase) != 40 {
+			t.Fatalf("probe is %d characters, want 40", len(lowercase))
+		}
+		for _, cred := range []string{credential(lowercase, "s3"), credential("us-east-1", lowercase)} {
+			if _, _, ok := parseSigV4Credential(cred); !ok {
+				t.Fatalf("a lowercase 40-character component was refused: %s", cred)
+			}
 		}
 	})
 }

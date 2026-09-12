@@ -593,20 +593,25 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 // arbitrary content and echoing it into an operator's terminal buys nothing the
 // bounded reason vocabulary does not already say.
 //
-// The header alone is NOT provenance. blockreason.FromHeader performs no trust
-// check, so any origin server can answer 403 with a recognized reason and earn a
-// "blocked by Pipelock" message plus configuration advice for a proxy that was
-// never involved. The one signal available to a CLI is whether this process was
-// routed through a proxy at all: with no proxy configured for the request, a
-// Pipelock block header cannot have come from a Pipelock in the path, and the
-// generic status error is the honest answer.
+// This message does NOT claim who blocked the request, because nothing here can
+// establish that. blockreason.FromHeader performs no trust check, the headers
+// carry no authenticated Pipelock signal, and a configured proxy is not
+// necessarily a Pipelock: an ordinary corporate proxy forwarding an upstream 403
+// satisfies both conditions. So the wording reports what is actually known, that
+// the response CARRIES these headers, and leaves attribution to the operator who
+// knows their own topology.
+//
+// The proxy check is kept as a relevance gate rather than as proof. With no
+// proxy configured for this request there is nothing in the path to have set the
+// headers on our behalf, so printing proxy configuration advice would send the
+// operator to a control they do not have.
 func statusError(url string, resp *http.Response) error {
 	info, ok := blockreason.FromHeader(resp.Header)
 	if !ok || !proxyConfiguredFor(resp.Request) {
 		return fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
 	}
 	msg := fmt.Sprintf(
-		"HTTP GET %s: status %d: blocked by Pipelock, not by the server (reason=%s, layer=%s)",
+		"HTTP GET %s: status %d: the response carries Pipelock block-reason headers (reason=%s, layer=%s), so a proxy in front of this fetch refused to release the bundle rather than the registry being down",
 		url, resp.StatusCode, info.Reason, layerOrUnset(info.Layer),
 	)
 	if remedy := authenticatedArtifactRemedy(url, info.Reason); remedy != "" {

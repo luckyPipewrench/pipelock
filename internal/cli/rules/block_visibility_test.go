@@ -5,6 +5,7 @@ package rules
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,7 +67,10 @@ func TestFetchNamesPipelockOnBlockedResponse(t *testing.T) {
 
 	for _, want := range []string{
 		"Pipelock",
-		"not by the server",
+		// The message states what the response CARRIES, not who decided; the
+		// CLI has no authenticated signal for provenance. See
+		// TestStatusErrorDoesNotClaimPipelockBlocked.
+		"carries Pipelock block-reason headers",
 		"prompt_injection",
 		"response_scan",
 		"response_scanning",
@@ -191,5 +195,56 @@ func TestRemedyAbsentForAnUnparseableURL(t *testing.T) {
 	t.Parallel()
 	if got := authenticatedArtifactRemedy("://not a url", blockreason.PromptInjection); got != "" {
 		t.Errorf("invented a remedy for an unparseable URL:\n%s", got)
+	}
+}
+
+// TestStatusErrorDoesNotClaimPipelockBlocked pins the wording invariant. The CLI
+// has no authenticated signal that a Pipelock produced a response: the headers
+// carry no proof, and a configured proxy may be an ordinary corporate proxy
+// forwarding an upstream 403. So the message must report what the response
+// CARRIES and must never assert who decided.
+func TestStatusErrorDoesNotClaimPipelockBlocked(t *testing.T) {
+	withConfiguredProxy(t)
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	for _, claim := range []string{"blocked by Pipelock", "not by the server"} {
+		if strings.Contains(msg, claim) {
+			t.Fatalf("message asserts provenance it cannot establish (%q):\n%s", claim, msg)
+		}
+	}
+	if !strings.Contains(msg, "carries Pipelock block-reason headers") {
+		t.Fatalf("message lost the observable fact that makes it useful:\n%s", msg)
+	}
+}
+
+// TestProxyResolverErrorSuppressesAttribution covers the error path: when the
+// proxy lookup itself fails we cannot tell whether anything is in front of this
+// fetch, so the remedy must not be printed. Fail closed, not open.
+func TestProxyResolverErrorSuppressesAttribution(t *testing.T) {
+	prev := proxyResolver
+	proxyResolver = func(*http.Request) (*url.URL, error) {
+		return nil, errors.New("malformed proxy configuration")
+	}
+	t.Cleanup(func() { proxyResolver = prev })
+
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "Pipelock") || strings.Contains(msg, "authenticated_artifacts") {
+		t.Fatalf("a proxy-resolver error still produced Pipelock guidance:\n%s", msg)
+	}
+	if !strings.Contains(msg, "status") {
+		t.Fatalf("lost the status code:\n%s", msg)
 	}
 }

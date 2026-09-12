@@ -6,6 +6,8 @@ package mcp
 import (
 	"context"
 	"crypto/ed25519"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -209,5 +211,72 @@ func TestApplyFreshDriftOutcome_CapacityForcesBlock(t *testing.T) {
 	applyFreshDriftOutcome(&ok, cardDriftOutcome{}, cfg)
 	if !ok.Clean || ok.Action != "" {
 		t.Fatalf("a clean re-evaluation produced %+v, want clean with no action", ok)
+	}
+}
+
+// TestCommitOrReevaluate_NeverReportsAnUnappliedAdoption is the concurrency
+// case the split Evaluate/Commit shape could not satisfy. Many goroutines race
+// to adopt DIFFERENT descriptive texts for the same card. Exactly one write can
+// win each round, so the invariant is: every outcome reported as adopted must
+// correspond to a write that actually happened, and the baseline's final state
+// must equal one of the texts whose call reported adoption.
+//
+// A barrier releases every goroutine at once rather than a sleep, so the
+// interleaving is real rather than hoped for.
+func TestCommitOrReevaluate_NeverReportsAnUnappliedAdoption(t *testing.T) {
+	base := A2AAgentCard{
+		Name:        "Vendor Agent",
+		Description: "Searches vendor documentation.",
+		URL:         "https://agent.vendor.example/a2a",
+	}
+	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
+	baseline := NewCardBaseline(4)
+	structural := cardStructuralDigest(base)
+
+	if applied, out := baseline.CommitOrReevaluate(key, structural, cardDescriptiveDigest(base), cardDescriptiveText(base), nil); !applied || !out.firstSeen {
+		t.Fatalf("seed: applied=%v outcome=%+v, want applied first-seen", applied, out)
+	}
+
+	const workers = 8
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+
+	var mu sync.Mutex
+	adoptedTexts := map[string]bool{}
+
+	for i := range workers {
+		card := base
+		card.Description = fmt.Sprintf("Searches vendor documentation, revision %d.", i)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			applied, out := baseline.CommitOrReevaluate(key, structural, cardDescriptiveDigest(card), cardDescriptiveText(card), nil)
+			// The invariant under test: adopted is reported ONLY together with
+			// an applied write. An adopted outcome with applied=false is a scan
+			// claiming a baseline update that never happened.
+			if out.adopted && !applied {
+				t.Errorf("reported adoption without applying it: %+v", out)
+			}
+			if applied && !out.adopted {
+				t.Errorf("applied a write without reporting adoption: %+v", out)
+			}
+			if applied {
+				mu.Lock()
+				adoptedTexts[cardDescriptiveText(card)] = true
+				mu.Unlock()
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if len(adoptedTexts) == 0 {
+		t.Fatal("no goroutine adopted anything; the test did not exercise the path")
+	}
+	final := baseline.entries[key].descriptive
+	if !adoptedTexts[final] {
+		t.Fatalf("the stored baseline %q was never reported as adopted by any caller", final)
 	}
 }

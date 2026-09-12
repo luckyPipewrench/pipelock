@@ -533,13 +533,31 @@ func (cb *CardBaseline) Evaluate(key cardCacheKey, structuralDigest, descriptive
 // still absent and there is still room, and a descriptive adoption happens only
 // while the structure still matches and the change still introduces no cue.
 func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) bool {
+	applied, _ := cb.CommitOrReevaluate(key, structuralDigest, descriptiveDigest, descriptive, skillNames)
+	return applied
+}
+
+// CommitOrReevaluate decides and writes under ONE lock hold, which removes the
+// race rather than compensating for it.
+//
+// The earlier shape was Evaluate, then Commit, then re-Evaluate when Commit
+// declined. Every version of that leaks: the re-evaluation is itself a separate
+// lock hold, so a benign outcome it returns has not been written either, and
+// publishing it reports an adoption that never happened. Deciding and applying
+// together means the outcome returned here is ALWAYS the one that was applied,
+// or one that required no write at all.
+//
+// applied is true only when this call wrote the baseline. The returned outcome
+// is authoritative for the state at the moment of the write, so a caller may
+// publish it without a further check.
+func (cb *CardBaseline) CommitOrReevaluate(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) (applied bool, outcome cardDriftOutcome) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	existing, ok := cb.entries[key]
 	if !ok {
 		if len(cb.entries) >= cb.maxSize {
-			return false
+			return false, cardDriftOutcome{capacityExceeded: true}
 		}
 		cb.entries[key] = &cardEntry{
 			structuralDigest:  structuralDigest,
@@ -548,19 +566,24 @@ func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptiveDi
 			skillNames:        skillNames,
 		}
 		cb.touchLocked(key)
-		return true
+		return true, cardDriftOutcome{firstSeen: true}
 	}
-	if existing.structuralDigest != structuralDigest || existing.descriptiveDigest == descriptiveDigest {
-		return false
+
+	cb.touchLocked(key)
+
+	if existing.structuralDigest != structuralDigest {
+		return false, cardDriftOutcome{changed: true, block: true, structuralChange: true}
 	}
-	if len(tools.IntroducedDescriptionCues(existing.descriptive, descriptive)) > 0 {
-		return false
+	if existing.descriptiveDigest == descriptiveDigest {
+		return false, cardDriftOutcome{}
+	}
+	if introduced := tools.IntroducedDescriptionCues(existing.descriptive, descriptive); len(introduced) > 0 {
+		return false, cardDriftOutcome{changed: true, block: true, introducedCues: introduced}
 	}
 	existing.descriptiveDigest = descriptiveDigest
 	existing.descriptive = descriptive
 	existing.skillNames = skillNames
-	cb.touchLocked(key)
-	return true
+	return true, cardDriftOutcome{changed: true, adopted: true}
 }
 
 // ResetBaseline explicitly updates the stored baseline for a key.
@@ -698,16 +721,18 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 			if !accepted {
 				return
 			}
-			// Commit reports whether it applied. It declines when the baseline
-			// moved between Evaluate and Commit, which makes the decision this
-			// scan is carrying stale. Re-evaluate against the CURRENT baseline
-			// and correct the result rather than reporting an adoption or a
-			// first-seen that never happened; if the fresh evaluation now
-			// blocks, the response must say so.
-			if baseline.Commit(key, structural, descriptiveDigest, descriptive, skillNames) {
+			// One atomic decide-and-write. Whatever it returns either WAS
+			// applied or needed no write, so the result can publish it without
+			// a further round trip. When it differs from the pre-verdict
+			// evaluation the baseline moved in between, and the response must
+			// carry the state that actually holds, including a block.
+			applied, final := baseline.CommitOrReevaluate(key, structural, descriptiveDigest, descriptive, skillNames)
+			// Publish the pre-verdict outcome only when the write applied AND
+			// the decision did not change underneath it.
+			if applied && final.firstSeen == outcome.firstSeen && final.adopted == outcome.adopted && !final.block && !final.capacityExceeded {
 				return
 			}
-			applyFreshDriftOutcome(&result, baseline.Evaluate(key, structural, descriptiveDigest, descriptive, skillNames), cfg)
+			applyFreshDriftOutcome(&result, final, cfg)
 		}
 		driftOutcome = outcome
 		result.DriftDetected = outcome.changed

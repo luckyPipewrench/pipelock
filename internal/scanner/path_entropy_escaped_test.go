@@ -170,6 +170,12 @@ func TestPathEntropyExclusion_ConstructionCompilesTheCurrentList(t *testing.T) {
 // empty prefix and let a bare / prefix and a cleartext scheme through, which
 // are the same over-broad exemption in different spellings. These construct the
 // scanner directly, bypassing Validate exactly as the gap required.
+//
+// Only the SCHEME and PREFIX spellings remain here. An over-broad HOST no
+// longer reaches the builder through New, which now refuses it outright rather
+// than dropping it; those cases moved to the two tests below, which assert the
+// refusal and then exercise the builder's drop directly so the second line is
+// still proven rather than assumed.
 func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 	t.Parallel()
 
@@ -219,60 +225,6 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			probe:  exempted,
 			reason: "an unrecognized scheme must not default into the https slot",
 		},
-		{
-			name:   "a public-suffix wildcard exempts most of the internet",
-			entry:  config.PathEntropyExclusion{Host: "*.com", PathPrefix: "/document/d/"},
-			probe:  "https://evil.com/document/d/" + highEntropyID,
-			reason: "MatchDomain matches *.com against every .com host, so the route prefix would exempt requests far outside the intended domain",
-		},
-		{
-			name:   "repeated trailing dots must not survive the breadth check",
-			entry:  config.PathEntropyExclusion{Host: "*.com..", PathPrefix: "/document/d/"},
-			probe:  "https://evil.com/document/d/" + highEntropyID,
-			reason: "one TrimSuffix left *.com. whose remaining dot read as a domain label, and runtime matching then stripped it and matched every .com host",
-		},
-		{
-			name:   "a single trailing dot is the same host and is still refused",
-			entry:  config.PathEntropyExclusion{Host: "*.com.", PathPrefix: "/document/d/"},
-			probe:  "https://evil.com/document/d/" + highEntropyID,
-			reason: "trailing dots are DNS-equivalent, so this is *.com by another spelling",
-		},
-		{
-			name:   "a bare dot host normalizes to nothing and is dropped",
-			entry:  config.PathEntropyExclusion{Host: ".", PathPrefix: "/document/d/"},
-			probe:  exempted,
-			reason: "an entry that cannot name a host is dead config, and the builder claims to drop dead config",
-		},
-		{
-			name:   "a bare wildcard host is not a scoped route",
-			entry:  config.PathEntropyExclusion{Host: "*", PathPrefix: "/document/d/"},
-			probe:  exempted,
-			reason: "a bare wildcard names no domain at all",
-		},
-		{
-			name:   "a wildcard in the middle is not a supported pattern",
-			entry:  config.PathEntropyExclusion{Host: "docs.*.example", PathPrefix: "/document/d/"},
-			probe:  exempted,
-			reason: "only exact hosts and leading *. wildcards are supported",
-		},
-		{
-			// U+212A KELVIN SIGN lowercases to ASCII "k", so a host checked for
-			// ASCII only AFTER case folding reads as clean and installs an
-			// exemption for kexample.com. Written as a Go escape on purpose:
-			// an earlier version of this input lost the rune to a shell
-			// heredoc and became a plain ASCII "K", which is legitimately
-			// accepted and asserted nothing.
-			name:   "a rune that folds into ASCII must not install a retargeted exemption",
-			entry:  config.PathEntropyExclusion{Host: "\u212Aexample.com", PathPrefix: "/document/d/"},
-			probe:  "https://kexample.com/document/d/" + highEntropyID,
-			reason: "the raw host is gated before folding, so the folded ASCII host is never exempted",
-		},
-		{
-			name:   "a host:port is not a hostname",
-			entry:  config.PathEntropyExclusion{Host: "docs.vendor.example:443", PathPrefix: "/document/d/"},
-			probe:  exempted,
-			reason: "a port makes the pattern unmatchable and is refused rather than trimmed",
-		},
 	}
 
 	for _, tt := range tests {
@@ -300,6 +252,122 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 				t.Fatalf("entry %+v was installed and exempted %q; it must be dropped (%s)", tt.entry, tt.probe, tt.reason)
 			}
 		})
+	}
+}
+
+// The over-broad HOST spellings the builder used to absorb are now refused at
+// construction. Each one names a host whose pattern would match well outside
+// the route the operator wrote, so installing it quietly and dropping it
+// quietly are both worse than refusing loudly: the operator can only fix what
+// they are told about.
+func TestPathEntropyExclusion_OverBroadHostIsRefusedAtConstruction(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range overBroadPathEntropyHosts() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{tt.entry}
+
+			s, err := New(cfg)
+			if err == nil {
+				s.Close()
+				t.Fatalf("New accepted host %q; %s", tt.entry.Host, tt.reason)
+			}
+			if !strings.Contains(err.Error(), "fetch_proxy.monitoring.path_entropy_exclusions[0].host") {
+				t.Errorf("New error %q does not name the field the operator has to edit", err)
+			}
+		})
+	}
+}
+
+// The builder's drop for those same hosts stays proven. Construction refuses
+// them first, so this is the only way left to exercise the second line, and
+// deleting it on the strength of the first is how a defense quietly rots.
+func TestPathEntropyExclusion_BuilderStillDropsOverBroadHost(t *testing.T) {
+	t.Parallel()
+
+	// Calibrate: the builder KEEPS a well-formed entry, so a zero-length result
+	// below means the entry was dropped rather than the builder being inert.
+	ok := buildPathEntropyExclusions([]config.PathEntropyExclusion{
+		{Scheme: "https", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
+	})
+	if len(ok) != 1 {
+		t.Fatalf("builder kept %d of 1 well-formed entries; every case below would pass for the wrong reason", len(ok))
+	}
+
+	for _, tt := range overBroadPathEntropyHosts() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			entry := tt.entry
+			entry.Scheme = "https"
+			if got := buildPathEntropyExclusions([]config.PathEntropyExclusion{entry}); len(got) != 0 {
+				t.Fatalf("builder kept %+v as %+v; %s", entry, got, tt.reason)
+			}
+		})
+	}
+}
+
+// overBroadPathEntropyHosts is shared by the refusal test and the builder test
+// so the two layers are proven against the SAME set. Two copies of this list
+// would let one layer quietly lose a case.
+func overBroadPathEntropyHosts() []struct {
+	name   string
+	entry  config.PathEntropyExclusion
+	reason string
+} {
+	return []struct {
+		name   string
+		entry  config.PathEntropyExclusion
+		reason string
+	}{
+		{
+			name:   "a public-suffix wildcard exempts most of the internet",
+			entry:  config.PathEntropyExclusion{Host: "*.com", PathPrefix: "/document/d/"},
+			reason: "MatchDomain matches *.com against every .com host, so the route prefix would exempt requests far outside the intended domain",
+		},
+		{
+			name:   "repeated trailing dots must not survive the breadth check",
+			entry:  config.PathEntropyExclusion{Host: "*.com..", PathPrefix: "/document/d/"},
+			reason: "one TrimSuffix left *.com. whose remaining dot read as a domain label, and runtime matching then stripped it and matched every .com host",
+		},
+		{
+			name:   "a single trailing dot is the same host and is still refused",
+			entry:  config.PathEntropyExclusion{Host: "*.com.", PathPrefix: "/document/d/"},
+			reason: "trailing dots are DNS-equivalent, so this is *.com by another spelling",
+		},
+		{
+			name:   "a bare dot host normalizes to nothing",
+			entry:  config.PathEntropyExclusion{Host: ".", PathPrefix: "/document/d/"},
+			reason: "an entry that cannot name a host is dead config",
+		},
+		{
+			name:   "a bare wildcard host is not a scoped route",
+			entry:  config.PathEntropyExclusion{Host: "*", PathPrefix: "/document/d/"},
+			reason: "a bare wildcard names no domain at all",
+		},
+		{
+			name:   "a wildcard in the middle is not a supported pattern",
+			entry:  config.PathEntropyExclusion{Host: "docs.*.example", PathPrefix: "/document/d/"},
+			reason: "only exact hosts and leading *. wildcards are supported",
+		},
+		{
+			// U+212A KELVIN SIGN lowercases to ASCII "k", so a host checked for
+			// ASCII only AFTER case folding reads as clean and would install an
+			// exemption for kexample.com. Written as a Go escape on purpose: an
+			// earlier version of this input lost the rune to a shell heredoc and
+			// became a plain ASCII "K", which is legitimately accepted and
+			// asserted nothing.
+			name:   "a rune that folds into ASCII must not install a retargeted exemption",
+			entry:  config.PathEntropyExclusion{Host: "\u212Aexample.com", PathPrefix: "/document/d/"},
+			reason: "the raw host is gated before folding, so the folded ASCII host is never exempted",
+		},
+		{
+			name:   "a host:port is not a hostname",
+			entry:  config.PathEntropyExclusion{Host: "docs.vendor.example:443", PathPrefix: "/document/d/"},
+			reason: "a port makes the pattern unmatchable and is refused rather than trimmed",
+		},
 	}
 }
 

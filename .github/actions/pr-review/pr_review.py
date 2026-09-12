@@ -2498,7 +2498,14 @@ def judge_findings(
     # Reserve room for changed-path summaries, repository evidence, and prompt
     # structure before accepting candidate context. The old first-candidate
     # exception could submit a single 200 KB line above the provider limit.
-    candidate_budget = max(1_000, budget - 3_000)
+    # Preserve the mandatory later sections before admitting context. Reserving
+    # only 3,000 let contexts consume the summary and repository-evidence floor,
+    # so the judge returned every retained candidate without calling a model.
+    candidate_budget = max(1_000, budget - 4_500)
+    context_token_cap = min(
+        MAX_JUDGE_CONTEXT_TOKENS,
+        max(200, candidate_budget // max(1, len(candidates)) - 100),
+    )
     for finding in candidates:
         addition = estimate_tokens(finding.title + finding.why + finding.fix + finding.path)
         context = fetched.get(finding.path)
@@ -2509,7 +2516,7 @@ def judge_findings(
             content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
             if content is None:
                 return [], False, [], [], [], []
-            context = _line_context(content, finding.line)
+            context = _line_context(content, finding.line, max_tokens=context_token_cap)
             fetched[finding.path] = context
         if finding.path not in contexts:
             addition += estimate_tokens(context)
@@ -2522,7 +2529,9 @@ def judge_findings(
     candidates = retained
     if not candidates:
         return [], False, over_budget, over_files, [], []
-    summary_budget = max(500, min(budget // 4, budget - used - 2_100))
+    # Leave 1,000 tokens for prompt structure, 2,000 for requested evidence,
+    # and 1,000 for repository evidence after summaries are selected.
+    summary_budget = max(500, min(budget // 4, budget - used - 4_000))
     bounded_summaries, summaries_truncated = _bounded_change_summaries(
         change_summaries or [], {finding.path for finding in candidates}, summary_budget
     )

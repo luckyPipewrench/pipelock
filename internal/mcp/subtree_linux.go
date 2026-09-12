@@ -35,6 +35,12 @@ func setPdeathsig(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Pdeathsig = syscall.SIGTERM
 }
 
+// cleanupPlatformSupported reports that this platform can provide
+// subreaper-based orphan cleanup. Linux can; the classification in
+// cleanup_capability.go uses this so a non-Linux no-op is never read as
+// available.
+const cleanupPlatformSupported = true
+
 // enableSubreaper makes pipelock adopt any orphaned descendants so that
 // when the direct MCP subprocess exits, any grandchildren it detached
 // (via setsid, double-fork, or explicit setpgid) reparent to pipelock

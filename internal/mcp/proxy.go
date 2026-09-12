@@ -1552,21 +1552,26 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// round-7 of the pre-tag gate finding reproduced exactly this case (grandchild
 	// PPID=1, pgid != direct-child pgid).
 	//
-	// Idempotent and process-wide; safe to call before every subprocess
-	// spawn. Non-fatal on error - the later pgid-kill backstop still
-	// handles the common case.
-	if srErr := enableSubreaper(); srErr != nil {
-		_, _ = fmt.Fprintf(logW, "pipelock: warning: session descendant cleanup degraded: PR_SET_CHILD_SUBREAPER failed (%v). Detached descendants can survive session exit and can block proxy shutdown by retaining inherited I/O.\n", srErr)
+	// cleanupCapability arms the subreaper once for the life of the process
+	// (idempotent and process-wide) and caches the verdict, so a startup
+	// report and this per-child arming probe the kernel once between them.
+	// Non-fatal on error - the later pgid-kill backstop still handles the
+	// common case. The warning is suppressed when the caller already reported
+	// the capability at startup so the operator sees it once, not per child.
+	if c := cleanupCapability(); c.State != CleanupAvailable && !opts.StartupCleanupReported {
+		writeCleanupReport(logW, c, false)
 	}
 
 	// Enable subreaper before starting the child so we adopt orphaned
 	// grandchildren. This lets the lineage tracker attribute file writes
 	// to the agent's process tree.
 	//
-	// If subreaper setup fails (e.g. missing CAP_SYS_RESOURCE in containers),
-	// PID attribution is unreliable. Warn and disable the lineage tracker
-	// rather than silently producing wrong results. File sentry DLP scanning
-	// still runs - only process-tree attribution is affected.
+	// PR_SET_CHILD_SUBREAPER needs no capability (not CAP_SYS_RESOURCE); a
+	// failure here means a seccomp filter blocked prctl or the kernel is too
+	// old to know the option. Either way PID attribution is unreliable, so
+	// warn and disable the lineage tracker rather than silently producing
+	// wrong results. File sentry DLP scanning still runs - only process-tree
+	// attribution is affected.
 	lineage := opts.Lineage
 	if lineage != nil {
 		if err := lineage.EnableSubreaper(); err != nil {

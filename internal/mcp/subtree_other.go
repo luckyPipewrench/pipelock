@@ -7,6 +7,12 @@ package mcp
 
 import "os/exec"
 
+// cleanupPlatformSupported reports that this platform cannot provide
+// subreaper-based orphan cleanup. PR_SET_CHILD_SUBREAPER is Linux-specific,
+// so the classification in cleanup_capability.go returns CleanupUnsupported
+// here rather than reading enableSubreaper's nil no-op as available.
+const cleanupPlatformSupported = false
+
 // enableSubreaper is a no-op on non-Linux builds. PR_SET_CHILD_SUBREAPER
 // is Linux-specific; pipelock's MCP stdio proxy still works on macOS for
 // developer testing, it just cannot claim subtree ownership of orphaned

@@ -411,6 +411,15 @@ type MCPProxyOpts struct {
 	// Production wiring leaves it nil and calls the platform implementation.
 	enableSubreaperForTest func() error
 
+	// StartupCleanupReported tells the subprocess proxy paths that the caller
+	// already reported the orphan-cleanup capability once at startup (via
+	// ReportCleanupCapability). When set, the per-child paths suppress their
+	// own duplicate degraded-cleanup warning so the operator sees it once. It
+	// does NOT gate the strict refusal: reporting never bypasses a strict
+	// launch, which still checks the real probe result. Direct library callers
+	// that do not report at startup leave this false and keep the warning.
+	StartupCleanupReported bool
+
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts

@@ -85,7 +85,12 @@ func TestProxy_EmptyLabelHostBlocksOnEveryTransport(t *testing.T) {
 
 		t.Run("fetch/"+tc.host, func(t *testing.T) {
 			before := backendHits.Load()
-			resp, getErr := http.Get(srv.URL + "/fetch?url=" + url.QueryEscape(target))
+			fetchReq, fetchReqErr := http.NewRequestWithContext(
+				t.Context(), http.MethodGet, srv.URL+"/fetch?url="+url.QueryEscape(target), nil)
+			if fetchReqErr != nil {
+				t.Fatalf("new fetch request: %v", fetchReqErr)
+			}
+			resp, getErr := http.DefaultClient.Do(fetchReq)
 			if getErr != nil {
 				t.Fatalf("fetch: %v", getErr)
 			}
@@ -105,7 +110,7 @@ func TestProxy_EmptyLabelHostBlocksOnEveryTransport(t *testing.T) {
 		t.Run("forward/"+tc.host, func(t *testing.T) {
 			before := backendHits.Load()
 			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-			req, reqErr := http.NewRequest(http.MethodGet, target, nil)
+			req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 			if reqErr != nil {
 				t.Fatalf("new request: %v", reqErr)
 			}
@@ -125,11 +130,12 @@ func TestProxy_EmptyLabelHostBlocksOnEveryTransport(t *testing.T) {
 
 		t.Run("connect/"+tc.host, func(t *testing.T) {
 			before := backendHits.Load()
-			conn, dialErr := net.DialTimeout("tcp", srv.Listener.Addr().String(), 5*time.Second)
+			dialer := &net.Dialer{Timeout: 5 * time.Second}
+			conn, dialErr := dialer.DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
 			if dialErr != nil {
 				t.Fatalf("dial proxy: %v", dialErr)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			authority := net.JoinHostPort(tc.host, backendPort)
 			if _, writeErr := fmt.Fprintf(conn,
 				"CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", authority, authority); writeErr != nil {
@@ -195,7 +201,8 @@ func TestWebSocketProxy_EmptyLabelHostRefused(t *testing.T) {
 // and the point is what pipelock does with the name.
 func wsUpgradeStatus(t *testing.T, proxyAddr, targetHostPort string) int {
 	t.Helper()
-	conn, dialErr := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, dialErr := dialer.DialContext(t.Context(), "tcp", proxyAddr)
 	if dialErr != nil {
 		t.Fatalf("dial proxy: %v", dialErr)
 	}

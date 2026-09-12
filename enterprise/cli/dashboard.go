@@ -337,13 +337,12 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if err != nil {
 		return err
 	}
-	authorization := newDashboardRequestAuthorization(token, rawToken, oidcAuthenticator)
-	// Token/OIDC auth retains its metadata/raw split. When mTLS is enabled, the
-	// verified certificate's mapped role supplies both route and raw-view
-	// permissions and takes precedence over any token or OIDC principal on the
-	// same request.
-	metaAuthorized, authorizePermission, rawAuthorized := dashboardServeAuthorizers(clientCertAuth, authorization)
-	authenticated := metaAuthorized
+	authorizers := newDashboardAuthorizerRegistry()
+	authorizers.registerStaticTokens(token, rawToken)
+	authorizers.registerClientCertificate(clientCertAuth)
+	authorizers.registerOIDC(oidcAuthenticator)
+	composedAuthorizers := authorizers.compose()
+	authenticated := composedAuthorizers.metaAuthorized
 
 	auditWriter := cmd.ErrOrStderr()
 	var authorizeFleetScope func(*http.Request, dashboard.DecisionScope, bool) error
@@ -364,8 +363,8 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		LegalHoldStore:      legalHoldStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
 		Authorize:           dashboardAuthorizeFunc(authenticated),
-		AuthorizePermission: authorizePermission,
-		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
+		AuthorizePermission: composedAuthorizers.authorizePermission,
+		AuthorizeRaw:        dashboardAuthorizeFunc(composedAuthorizers.rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter:         auditWriter,
 		AuthorizeFleetScope: authorizeFleetScope,
@@ -379,20 +378,15 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		ConductorSource:   dashboardConductorDecisionSource(conductorSource),
 		BudgetSource:      dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
-	authAuditInfo := authorization.authAuditInfo
-	if clientCertAuth != nil {
-		authAuditInfo = func(r *http.Request) dashboard.AuthAuditInfo {
-			return dashboardClientCertAuthAuditInfo(clientCertAuth, r)
-		}
-	}
-	var authFailureMode func(*http.Request) string
-	if clientCertAuth == nil {
-		authFailureMode = authorization.failedAuthMode
-	}
-	handler := dashboardAuthHandler(authenticated, authAuditInfo, auditWriter, dashboardEventEmitter, authFailureMode, inner)
-	if oidcAuthenticator != nil {
-		handler = oidcAuthenticator.middleware(handler)
-	}
+	handler := dashboardAuthHandler(
+		authenticated,
+		composedAuthorizers.authAuditInfo,
+		auditWriter,
+		dashboardEventEmitter,
+		composedAuthorizers.failedAuthMode,
+		inner,
+	)
+	handler = composedAuthorizers.wrap(handler)
 	baseCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	runCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)

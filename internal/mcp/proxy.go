@@ -1558,8 +1558,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Non-fatal on error - the later pgid-kill backstop still handles the
 	// common case. The warning is suppressed when the caller already reported
 	// the capability at startup so the operator sees it once, not per child.
-	if c := cleanupCapability(); c.State == CleanupDenied && !opts.StartupCleanupReported {
-		_, _ = fmt.Fprint(logW, cleanupDegradedWarning(c.Err, false))
+	if c := cleanupCapability(); c.State != CleanupAvailable && !opts.StartupCleanupReported {
+		writeCleanupReport(logW, c, false)
 	}
 
 	// Enable subreaper before starting the child so we adopt orphaned

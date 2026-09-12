@@ -6,6 +6,8 @@ package scanner
 import (
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 )
 
 // entropyEntry tracks bits of entropy recorded at a point in time.
@@ -60,7 +62,7 @@ func NewEntropyTracker(budgetBits float64, windowSecs int) *EntropyTracker {
 // the bits recorded. Total bits = ShannonEntropy(payload) * len(payload).
 // Returns 0 for nil or empty payloads. Inline-prunes expired entries on the
 // hot path to keep currentUsageLocked O(active) instead of O(total).
-func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
+func (et *EntropyTracker) Record(sessionKey identitykey.CEEIdentity, payload []byte) float64 {
 	if len(payload) == 0 {
 		return 0
 	}
@@ -72,14 +74,14 @@ func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 	defer et.mu.Unlock()
 	et.maybeCleanupLocked(time.Now())
 
-	sess, exists := et.sessions[sessionKey]
+	sess, exists := et.sessions[sessionKey.Key()]
 	if !exists {
 		// Check global session cap before creating a new session.
 		if len(et.sessions) >= et.maxSessions {
 			et.evictLRUSession()
 		}
 		sess = &entropySession{}
-		et.sessions[sessionKey] = sess
+		et.sessions[sessionKey.Key()] = sess
 	}
 
 	now := time.Now()
@@ -105,22 +107,22 @@ func (et *EntropyTracker) Record(sessionKey string, payload []byte) float64 {
 
 // CurrentUsage returns the total entropy bits recorded for a session within the
 // current sliding window.
-func (et *EntropyTracker) CurrentUsage(sessionKey string) float64 {
+func (et *EntropyTracker) CurrentUsage(sessionKey identitykey.CEEIdentity) float64 {
 	et.mu.Lock()
 	defer et.mu.Unlock()
 	et.maybeCleanupLocked(time.Now())
 
-	return et.currentUsageLocked(sessionKey)
+	return et.currentUsageLocked(sessionKey.Key())
 }
 
 // Remaining returns the entropy budget remaining for a session. Returns 0 (not
 // negative) when the budget is exceeded.
-func (et *EntropyTracker) Remaining(sessionKey string) float64 {
+func (et *EntropyTracker) Remaining(sessionKey identitykey.CEEIdentity) float64 {
 	et.mu.Lock()
 	defer et.mu.Unlock()
 	et.maybeCleanupLocked(time.Now())
 
-	usage := et.currentUsageLocked(sessionKey)
+	usage := et.currentUsageLocked(sessionKey.Key())
 	remaining := et.budget - usage
 	if remaining < 0 {
 		return 0
@@ -130,12 +132,12 @@ func (et *EntropyTracker) Remaining(sessionKey string) float64 {
 
 // BudgetExceeded returns true if the session's entropy usage within the sliding
 // window exceeds the configured budget.
-func (et *EntropyTracker) BudgetExceeded(sessionKey string) bool {
+func (et *EntropyTracker) BudgetExceeded(sessionKey identitykey.CEEIdentity) bool {
 	et.mu.Lock()
 	defer et.mu.Unlock()
 	et.maybeCleanupLocked(time.Now())
 
-	return et.currentUsageLocked(sessionKey) >= et.budget
+	return et.currentUsageLocked(sessionKey.Key()) >= et.budget
 }
 
 // Budget returns the configured entropy budget in bits per window.
@@ -168,10 +170,10 @@ func (et *EntropyTracker) UpdateConfig(budgetBits float64, windowSecs int) {
 }
 
 // Delete removes all entropy tracking state for the given session key.
-func (et *EntropyTracker) Delete(key string) {
+func (et *EntropyTracker) Delete(key identitykey.CEEIdentity) {
 	et.mu.Lock()
 	defer et.mu.Unlock()
-	delete(et.sessions, key)
+	delete(et.sessions, key.Key())
 }
 
 // Close retires all tracked entropy state. It is safe to call more than once.

@@ -621,7 +621,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// upgrade; this pre-upgrade check catches a secret split across two target
 	// URLs before the second upstream handshake is dialed.
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), PathPayload: pathSegments(parsed),
+		ActorAuth: id.Auth, PathPayload: pathSegments(parsed),
 		TargetURL: targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID, IncludeFragments: true,
 	})
 	if ceeAdmission.Active {
@@ -1486,7 +1486,7 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 
 func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg []byte, includeFragments bool) bool {
 	ceeAdmission := r.proxy.admitCurrentCEE(ctx, ceeAdmitRequest{
-		SessionKey: ceeSessionKey(r.agent, r.clientIP, r.actorAuth), Outbound: msg,
+		ActorAuth: r.actorAuth, Outbound: msg,
 		TargetURL: r.targetURL, Agent: r.agent, ClientIP: r.clientIP, RequestID: r.requestID,
 		IncludeFragments: includeFragments,
 	})

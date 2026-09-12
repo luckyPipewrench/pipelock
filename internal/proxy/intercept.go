@@ -1429,7 +1429,7 @@ func newInterceptHandler(
 		var admission ceeAdmission
 		if ic.Proxy != nil {
 			admission = ic.Proxy.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-				SessionKey: sessionKey, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, PartitionReason: outboundPayloads.partitionReason, KeyPayload: keys, PathPayload: paths, TargetURL: r.URL.String(),
+				ActorAuth: ic.ActorAuth, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, PartitionReason: outboundPayloads.partitionReason, KeyPayload: keys, PathPayload: paths, TargetURL: r.URL.String(),
 				Agent: ic.Agent, ClientIP: ic.ClientIP, RequestID: ic.RequestID, IncludeFragments: true,
 			})
 			// A missing live snapshot is security-relevant only when this
@@ -1448,7 +1448,7 @@ func newInterceptHandler(
 			if ceeCfg.Enabled {
 				admission = ceeAdmission{
 					Result: ceeAdmit(r.Context(), ceeAdmitOptions{
-						SessionKey: sessionKey, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, KeyPayload: keys,
+						ActorAuth: ic.ActorAuth, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, KeyPayload: keys,
 						PathPayload: paths, TargetURL: r.URL.String(), Agent: ic.Agent,
 						ClientIP: ic.ClientIP, RequestID: ic.RequestID, Config: ceeCfg,
 						Entropy: ic.EntropyTracker, Fragments: ic.FragmentBuffer,

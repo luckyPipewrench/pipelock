@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
@@ -27,13 +28,13 @@ func TestReloadMCPCEE_DisableRetiresBufferedState(t *testing.T) {
 	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
 	cee := buildMCPCEE(cfg, metrics.New())
 	tracker, buffer := cee.Components()
-	tracker.Record("session", []byte("secret"))
-	buffer.Append("session", []byte("split-secret"))
+	tracker.Record(identitykey.NewMCPCEEIdentity("session"), []byte("secret"))
+	buffer.Append(identitykey.NewMCPCEEIdentity("session"), []byte("split-secret"))
 
 	if got := reloadMCPCEE(cee, nil, metrics.New()); got != nil {
 		t.Fatalf("disabled reload returned %p, want nil", got)
 	}
-	if tracker.CurrentUsage("session") != 0 || buffer.TotalBufferBytes() != 0 {
+	if tracker.CurrentUsage(identitykey.NewMCPCEEIdentity("session")) != 0 || buffer.TotalBufferBytes() != 0 {
 		t.Fatal("disabled reload retained CEE request state")
 	}
 }
@@ -67,9 +68,9 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	if tracker == nil || buffer == nil {
 		t.Fatalf("first CEE load = %+v, want tracker and buffer", cee)
 	}
-	tracker.Record("mcp-session", []byte("abc"))
-	buffer.Append("mcp-session", []byte("first-"))
-	if tracker.BudgetExceeded("mcp-session") {
+	tracker.Record(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("abc"))
+	buffer.Append(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("first-"))
+	if tracker.BudgetExceeded(identitykey.NewMCPCEEIdentity("mcp-session")) {
 		t.Fatal("first MCP message unexpectedly exhausted the entropy budget")
 	}
 
@@ -85,8 +86,8 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	if gotTracker != tracker || gotBuffer != buffer {
 		t.Fatal("unrelated reload replaced MCP CEE state")
 	}
-	tracker.Record("mcp-session", []byte("abc"))
-	if !tracker.BudgetExceeded("mcp-session") {
+	tracker.Record(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("abc"))
+	if !tracker.BudgetExceeded(identitykey.NewMCPCEEIdentity("mcp-session")) {
 		t.Fatal("MCP entropy history was cleared by unrelated reload")
 	}
 
@@ -105,7 +106,7 @@ func TestServerReload_PreservesMCPCEEState(t *testing.T) {
 	if got := tracker.Budget(); got != 6 {
 		t.Fatalf("reloaded entropy budget = %v, want 6", got)
 	}
-	buffer.Append("mcp-session", []byte("second"))
+	buffer.Append(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("second"))
 	if got := buffer.TotalBufferBytes(); got > 8 {
 		t.Fatalf("reloaded fragment limit retained %d bytes, want at most 8", got)
 	}
@@ -145,7 +146,7 @@ func TestServerReload_FailedReloadKeepsMCPCEEState(t *testing.T) {
 	}
 	before := s.currentMCPCEE()
 	beforeTracker, _ := before.Components()
-	beforeTracker.Record("mcp-session", []byte("abc"))
+	beforeTracker.Record(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("abc"))
 
 	broken := s.proxy.CurrentConfig().Clone()
 	broken.MediationEnvelope.Enabled = true
@@ -159,8 +160,8 @@ func TestServerReload_FailedReloadKeepsMCPCEEState(t *testing.T) {
 	} else if gotTracker, _ := got.Components(); gotTracker != beforeTracker {
 		t.Fatal("failed reload replaced MCP CEE tracker")
 	}
-	beforeTracker.Record("mcp-session", []byte("abc"))
-	if !beforeTracker.BudgetExceeded("mcp-session") {
+	beforeTracker.Record(identitykey.NewMCPCEEIdentity("mcp-session"), []byte("abc"))
+	if !beforeTracker.BudgetExceeded(identitykey.NewMCPCEEIdentity("mcp-session")) {
 		t.Fatal("failed reload cleared MCP entropy history")
 	}
 }

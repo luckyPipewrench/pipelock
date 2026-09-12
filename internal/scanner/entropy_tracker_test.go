@@ -24,14 +24,14 @@ func TestEntropyTrackerRecord(t *testing.T) {
 	defer et.Close()
 
 	payload := []byte("Hello, this is a test payload with some entropy")
-	bits := et.Record(testSessionKey, payload)
+	bits := et.Record(testCEEIdentity(testSessionKey), payload)
 
 	if bits <= 0 {
 		t.Fatalf("expected positive bits, got %f", bits)
 	}
 
 	// Verify usage matches what was recorded.
-	usage := et.CurrentUsage(testSessionKey)
+	usage := et.CurrentUsage(testCEEIdentity(testSessionKey))
 	if usage != bits {
 		t.Fatalf("expected usage %f to match recorded bits %f", usage, bits)
 	}
@@ -46,7 +46,7 @@ func TestEntropyTrackerOpportunisticCleanup(t *testing.T) {
 	}
 	et.lastCleanup = time.Now().Add(-2 * time.Second)
 
-	et.Record("active", []byte("fresh payload"))
+	et.Record(testCEEIdentity("active"), []byte("fresh payload"))
 
 	if _, exists := et.sessions["expired"]; exists {
 		t.Fatal("expired entropy session survived opportunistic cleanup")
@@ -61,7 +61,7 @@ func TestEntropyTrackerRecordMatchesShannonEntropy(t *testing.T) {
 	defer et.Close()
 
 	payload := []byte("abcdefghijklmnopqrstuvwxyz0123456789")
-	bits := et.Record(testSessionKey, payload)
+	bits := et.Record(testCEEIdentity(testSessionKey), payload)
 
 	// Total bits = ShannonEntropy(string) * len(payload)
 	expectedBits := ShannonEntropy(string(payload)) * float64(len(payload))
@@ -78,9 +78,9 @@ func TestEntropyTrackerBudgetExceeded(t *testing.T) {
 
 	// Record enough data to exceed the budget.
 	payload := []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz")
-	et.Record(testSessionKey, payload)
+	et.Record(testCEEIdentity(testSessionKey), payload)
 
-	if !et.BudgetExceeded(testSessionKey) {
+	if !et.BudgetExceeded(testCEEIdentity(testSessionKey)) {
 		t.Fatal("expected budget to be exceeded")
 	}
 }
@@ -90,9 +90,9 @@ func TestEntropyTrackerBudgetNotExceeded(t *testing.T) {
 	defer et.Close()
 
 	// A small payload should not exceed the default budget.
-	et.Record(testSessionKey, []byte("hi"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("hi"))
 
-	if et.BudgetExceeded(testSessionKey) {
+	if et.BudgetExceeded(testCEEIdentity(testSessionKey)) {
 		t.Fatal("expected budget NOT to be exceeded")
 	}
 }
@@ -102,19 +102,19 @@ func TestEntropyTrackerEmptyPayload(t *testing.T) {
 	defer et.Close()
 
 	// Nil payload returns 0 bits.
-	bits := et.Record(testSessionKey, nil)
+	bits := et.Record(testCEEIdentity(testSessionKey), nil)
 	if bits != 0 {
 		t.Fatalf("expected 0 bits for nil payload, got %f", bits)
 	}
 
 	// Empty slice returns 0 bits.
-	bits = et.Record(testSessionKey, []byte{})
+	bits = et.Record(testCEEIdentity(testSessionKey), []byte{})
 	if bits != 0 {
 		t.Fatalf("expected 0 bits for empty payload, got %f", bits)
 	}
 
 	// Usage should be 0 after only empty recordings.
-	usage := et.CurrentUsage(testSessionKey)
+	usage := et.CurrentUsage(testCEEIdentity(testSessionKey))
 	if usage != 0 {
 		t.Fatalf("expected 0 usage, got %f", usage)
 	}
@@ -127,11 +127,11 @@ func TestEntropyTrackerSessionIsolation(t *testing.T) {
 	payload1 := []byte("session one data with some entropy content")
 	payload2 := []byte("completely different payload for session two")
 
-	bits1 := et.Record(testSessionKey, payload1)
-	bits2 := et.Record(testSessionKey2, payload2)
+	bits1 := et.Record(testCEEIdentity(testSessionKey), payload1)
+	bits2 := et.Record(testCEEIdentity(testSessionKey2), payload2)
 
-	usage1 := et.CurrentUsage(testSessionKey)
-	usage2 := et.CurrentUsage(testSessionKey2)
+	usage1 := et.CurrentUsage(testCEEIdentity(testSessionKey))
+	usage2 := et.CurrentUsage(testCEEIdentity(testSessionKey2))
 
 	if usage1 != bits1 {
 		t.Fatalf("session 1 usage %f != recorded bits %f", usage1, bits1)
@@ -149,21 +149,21 @@ func TestEntropyTrackerWindowExpiry(t *testing.T) {
 	et := NewEntropyTracker(testDefaultBudget, 1)
 	defer et.Close()
 
-	et.Record(testSessionKey, []byte("data that should expire"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("data that should expire"))
 
-	usage := et.CurrentUsage(testSessionKey)
+	usage := et.CurrentUsage(testCEEIdentity(testSessionKey))
 	if usage == 0 {
 		t.Fatal("expected non-zero usage immediately after recording")
 	}
 
 	expireEntropyEntries(t, et, testSessionKey)
 
-	usage = et.CurrentUsage(testSessionKey)
+	usage = et.CurrentUsage(testCEEIdentity(testSessionKey))
 	if usage != 0 {
 		t.Fatalf("expected 0 usage after window expiry, got %f", usage)
 	}
 
-	if et.BudgetExceeded(testSessionKey) {
+	if et.BudgetExceeded(testCEEIdentity(testSessionKey)) {
 		t.Fatal("expected budget NOT exceeded after window expiry")
 	}
 }
@@ -179,7 +179,7 @@ func TestEntropyTrackerConcurrentAccess(t *testing.T) {
 	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
-			key := fmt.Sprintf("session-%d", id%10) // 10 sessions, 10 goroutines each
+			key := testCEEIdentity(fmt.Sprintf("session-%d", id%10)) // 10 sessions, 10 goroutines each
 			payload := []byte(fmt.Sprintf("payload-%d-with-some-entropy-data", id))
 			et.Record(key, payload)
 			et.CurrentUsage(key)
@@ -197,9 +197,9 @@ func TestEntropyTrackerRemainingNeverNegative(t *testing.T) {
 	defer et.Close()
 
 	// Record enough to far exceed the budget.
-	et.Record(testSessionKey, []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
 
-	remaining := et.Remaining(testSessionKey)
+	remaining := et.Remaining(testCEEIdentity(testSessionKey))
 	if remaining < 0 {
 		t.Fatalf("expected remaining >= 0, got %f", remaining)
 	}
@@ -213,13 +213,13 @@ func TestEntropyTrackerRemainingWithBudget(t *testing.T) {
 	defer et.Close()
 
 	// No recordings: remaining should equal full budget.
-	remaining := et.Remaining(testSessionKey)
+	remaining := et.Remaining(testCEEIdentity(testSessionKey))
 	if remaining != testDefaultBudget {
 		t.Fatalf("expected remaining %f, got %f", testDefaultBudget, remaining)
 	}
 
-	bits := et.Record(testSessionKey, []byte("test"))
-	remaining = et.Remaining(testSessionKey)
+	bits := et.Record(testCEEIdentity(testSessionKey), []byte("test"))
+	remaining = et.Remaining(testCEEIdentity(testSessionKey))
 	expected := testDefaultBudget - bits
 	if remaining != expected {
 		t.Fatalf("expected remaining %f, got %f", expected, remaining)
@@ -240,13 +240,13 @@ func TestEntropyTrackerUnknownSession(t *testing.T) {
 	defer et.Close()
 
 	// Unknown session should report zero usage and not be exceeded.
-	if et.CurrentUsage("nonexistent") != 0 {
+	if et.CurrentUsage(testCEEIdentity("nonexistent")) != 0 {
 		t.Fatal("expected 0 usage for unknown session")
 	}
-	if et.BudgetExceeded("nonexistent") {
+	if et.BudgetExceeded(testCEEIdentity("nonexistent")) {
 		t.Fatal("expected budget not exceeded for unknown session")
 	}
-	if et.Remaining("nonexistent") != testDefaultBudget {
+	if et.Remaining(testCEEIdentity("nonexistent")) != testDefaultBudget {
 		t.Fatal("expected full budget remaining for unknown session")
 	}
 }
@@ -264,10 +264,10 @@ func TestEntropyTrackerMultipleRecordings(t *testing.T) {
 	et := NewEntropyTracker(testDefaultBudget, testDefaultWindow)
 	defer et.Close()
 
-	bits1 := et.Record(testSessionKey, []byte("first payload"))
-	bits2 := et.Record(testSessionKey, []byte("second payload"))
+	bits1 := et.Record(testCEEIdentity(testSessionKey), []byte("first payload"))
+	bits2 := et.Record(testCEEIdentity(testSessionKey), []byte("second payload"))
 
-	usage := et.CurrentUsage(testSessionKey)
+	usage := et.CurrentUsage(testCEEIdentity(testSessionKey))
 	expected := bits1 + bits2
 	if usage != expected {
 		t.Fatalf("expected cumulative usage %f, got %f", expected, usage)
@@ -280,14 +280,14 @@ func TestEntropyTrackerCleanup(t *testing.T) {
 	defer et.Close()
 
 	// Record data for two sessions.
-	et.Record(testSessionKey, []byte("data for session one"))
-	et.Record(testSessionKey2, []byte("data for session two"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("data for session one"))
+	et.Record(testCEEIdentity(testSessionKey2), []byte("data for session two"))
 
 	// Both sessions should have non-zero usage now.
-	if et.CurrentUsage(testSessionKey) == 0 {
+	if et.CurrentUsage(testCEEIdentity(testSessionKey)) == 0 {
 		t.Fatal("expected non-zero usage for session 1 immediately after recording")
 	}
-	if et.CurrentUsage(testSessionKey2) == 0 {
+	if et.CurrentUsage(testCEEIdentity(testSessionKey2)) == 0 {
 		t.Fatal("expected non-zero usage for session 2 immediately after recording")
 	}
 
@@ -316,11 +316,11 @@ func TestEntropyTrackerCleanup_RetainsValidEntries(t *testing.T) {
 	defer et.Close()
 
 	// Record old data, let it expire.
-	et.Record(testSessionKey, []byte("old data that will expire"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("old data that will expire"))
 	expireEntropyEntries(t, et, testSessionKey)
 
 	// Record fresh data for session 2 (still within window).
-	et.Record(testSessionKey2, []byte("fresh data still valid"))
+	et.Record(testCEEIdentity(testSessionKey2), []byte("fresh data still valid"))
 
 	// Run cleanup.
 	et.cleanup()
@@ -345,7 +345,7 @@ func TestEntropyTrackerSessionCapLRU(t *testing.T) {
 
 	// Fill to maxSessions.
 	for i := range et.maxSessions {
-		et.Record(fmt.Sprintf("session-%d", i), []byte("payload"))
+		et.Record(testCEEIdentity(fmt.Sprintf("session-%d", i)), []byte("payload"))
 	}
 
 	et.mu.Lock()
@@ -356,7 +356,7 @@ func TestEntropyTrackerSessionCapLRU(t *testing.T) {
 	}
 
 	// Adding one more should evict the LRU (session-0, recorded first).
-	et.Record("overflow-session", []byte("new payload"))
+	et.Record(testCEEIdentity("overflow-session"), []byte("new payload"))
 
 	et.mu.Lock()
 	countAfter := len(et.sessions)
@@ -376,23 +376,23 @@ func TestEntropyTracker_Delete(t *testing.T) {
 	defer et.Close()
 
 	// Record some entropy for two sessions.
-	et.Record("session-a", []byte("high-entropy-payload-abcdefghijklmnop"))
-	et.Record("session-b", []byte("other-payload-xyz"))
+	et.Record(testCEEIdentity("session-a"), []byte("high-entropy-payload-abcdefghijklmnop"))
+	et.Record(testCEEIdentity("session-b"), []byte("other-payload-xyz"))
 
-	usageBefore := et.CurrentUsage("session-a")
+	usageBefore := et.CurrentUsage(testCEEIdentity("session-a"))
 	if usageBefore == 0 {
 		t.Fatal("expected non-zero usage for session-a before delete")
 	}
 
-	et.Delete("session-a")
+	et.Delete(testCEEIdentity("session-a"))
 
 	// session-a should be gone - usage should be 0.
-	if et.CurrentUsage("session-a") != 0 {
+	if et.CurrentUsage(testCEEIdentity("session-a")) != 0 {
 		t.Error("deleted session should have zero usage")
 	}
 
 	// session-b should be unaffected.
-	if et.CurrentUsage("session-b") == 0 {
+	if et.CurrentUsage(testCEEIdentity("session-b")) == 0 {
 		t.Error("session-b should still have usage after deleting session-a")
 	}
 }
@@ -402,7 +402,7 @@ func TestEntropyTracker_Delete_NonExistent(t *testing.T) {
 	defer et.Close()
 
 	// Should not panic on missing key.
-	et.Delete("no-such-session")
+	et.Delete(testCEEIdentity("no-such-session"))
 }
 
 func TestEntropyTrackerInlinePruning(t *testing.T) {
@@ -411,12 +411,12 @@ func TestEntropyTrackerInlinePruning(t *testing.T) {
 	defer et.Close()
 
 	// Record initial data.
-	et.Record(testSessionKey, []byte("data that will expire"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("data that will expire"))
 
 	expireEntropyEntries(t, et, testSessionKey)
 
 	// Record again on same session. Inline pruning should remove expired entries.
-	et.Record(testSessionKey, []byte("fresh data"))
+	et.Record(testCEEIdentity(testSessionKey), []byte("fresh data"))
 
 	et.mu.Lock()
 	sess := et.sessions[testSessionKey]

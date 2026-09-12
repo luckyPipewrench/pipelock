@@ -43,6 +43,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/health"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -2279,7 +2280,7 @@ type ceeEntropySnapshot struct {
 }
 
 type ceeAdmitRequest struct {
-	SessionKey           string
+	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
 	PartitionReason      string
@@ -2318,7 +2319,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	}
 	return ceeAdmission{
 		Result: ceeAdmit(ctx, ceeAdmitOptions{
-			SessionKey: req.SessionKey, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
+			ActorAuth: req.ActorAuth, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
 			PathPayload: req.PathPayload, TargetURL: req.TargetURL, Agent: req.Agent,
 			ClientIP: req.ClientIP, RequestID: req.RequestID, Config: ceeCfg,
 			Entropy: p.entropyTrackerPtr.Load(), Fragments: fb, Scanner: p.scannerPtr.Load(),
@@ -2336,7 +2337,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 // currentCEEEntropy snapshots an existing entropy result with the policy that
 // governed it. CONNECT does not add hostname data to CEE, but it must still
 // enforce a prior session's accumulated budget without mixing reload versions.
-func (p *Proxy) currentCEEEntropy(sessionKey string) ceeEntropySnapshot {
+func (p *Proxy) currentCEEEntropy(identity identitykey.CEEIdentity) ceeEntropySnapshot {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
 	cfg := p.cfgPtr.Load()
@@ -2348,11 +2349,11 @@ func (p *Proxy) currentCEEEntropy(sessionKey string) ceeEntropySnapshot {
 	if !ceeCfg.Enabled || !ceeCfg.EntropyBudget.Enabled || et == nil {
 		return ceeEntropySnapshot{Config: ceeCfg}
 	}
-	usage, budget := et.CurrentUsage(sessionKey), et.Budget()
+	usage, budget := et.CurrentUsage(identity), et.Budget()
 	sessions := p.sessionMgrPtr.Load()
 	var recorder session.Recorder
 	if sessions != nil {
-		recorder = sessions.GetOrCreate(sessionKey)
+		recorder = sessions.GetOrCreate(identity.Key())
 	}
 	return ceeEntropySnapshot{
 		Exceeded:       usage >= budget,
@@ -5102,7 +5103,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// reassembly before the outbound request leaves the proxy. Fetch is
 	// GET-only so the outbound data is the target URL path and query values.
 	admission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		SessionKey: ceeSessionKey(agent, clientIP, id.Auth), Outbound: urlPayload(parsed),
+		ActorAuth: id.Auth, Outbound: urlPayload(parsed),
 		KeyPayload: queryParamKeys(parsed), PathPayload: pathSegments(parsed), TargetURL: displayURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,
 	})

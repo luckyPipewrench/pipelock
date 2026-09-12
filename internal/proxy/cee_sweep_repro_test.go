@@ -51,7 +51,7 @@ func TestRepro_OverDepthForwardsWhenReassemblyDisabled(t *testing.T) {
 	cfg.Enabled = true
 	cfg.Action = config.ActionBlock
 	cfg.FragmentReassembly.Enabled = false
-	res := ceeAdmit(t.Context(), ceeAdmitOptions{SessionKey: "k", PathPayload: payload, TargetURL: "http://example.com/x", Agent: "agent", ClientIP: "1.2.3.4", RequestID: "req", Config: cfg, Logger: audit.NewNop(), Metrics: metrics.New()})
+	res := ceeAdmit(t.Context(), ceeAdmitOptions{PathPayload: payload, TargetURL: "http://example.com/x", Agent: "agent", ClientIP: "1.2.3.4", RequestID: "req", Config: cfg, Logger: audit.NewNop(), Metrics: metrics.New()})
 	if !res.Blocked {
 		t.Fatal("over-depth path forwarded when fragment reassembly is disabled")
 	}

@@ -21,7 +21,7 @@ func TestFragmentBufferPath_StaticPositionsStoredOnceAndDynamicValuesRepeat(t *t
 	fb := NewFragmentBuffer(4096, 10, testWindowSecs)
 	defer fb.Close()
 
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", "one"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", "one"))
 	if got, want := fb.TotalBufferBytes(), len("uploadone"); got != want {
 		t.Fatalf("first path buffered %d bytes, want %d", got, want)
 	}
@@ -29,8 +29,8 @@ func TestFragmentBufferPath_StaticPositionsStoredOnceAndDynamicValuesRepeat(t *t
 	// The static route at position zero is stored only once. Position one now
 	// varies, so every later value at that position must be retained, including
 	// a repeat of "two".
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", "two"))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", "two"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", "two"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", "two"))
 	if got, want := fb.TotalBufferBytes(), len("uploadonetwotwo"); got != want {
 		t.Fatalf("position-aware path bytes = %d, want %d", got, want)
 	}
@@ -57,11 +57,11 @@ func TestFragmentBufferPath_ExactDuplicatePrimingCannotSuppressCompletingSuffix(
 	// The attack order: suffix first, then prefix, then the same suffix. A
 	// value-based dedupe drops the third fragment. A varying position keeps it
 	// and the latter two fragments reconstruct the credential.
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", suffix))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", prefix))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", suffix))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", suffix))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", prefix))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", suffix))
 
-	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) == 0 {
+	if matches := fb.ScanPathForSecrets(context.Background(), testCEEStream(testSessionA), sc); len(matches) == 0 {
 		t.Fatal("exact-duplicate priming suppressed the completing suffix")
 	}
 }
@@ -75,9 +75,9 @@ func TestFragmentBufferPath_SeparatePositionsDoNotCreateSingleRequestMatches(t *
 	// One complete key in one path position is handled by normal URL DLP. It
 	// must not become a CEE match merely because static positions also exist.
 	fullKey := "AKI" + "A" + testAWSKeySuffix
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", fullKey))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("upload", "normal"))
-	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", fullKey))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("upload", "normal"))
+	if matches := fb.ScanPathForSecrets(context.Background(), testCEEStream(testSessionA), sc); len(matches) != 0 {
 		t.Fatalf("single-request path secret produced %d CEE matches", len(matches))
 	}
 }
@@ -90,29 +90,29 @@ func TestFragmentBufferPath_DepthCapDoesNotAllocateOrConsumeGlobalSessions(t *te
 	for i := range deep {
 		deep[i] = []byte("x")
 	}
-	if result := fb.AppendPathSegments(testSessionA, deep); !result.PathDepthExceeded {
+	if result := fb.AppendPathSegments(testCEEIdentity(testSessionA), deep); !result.PathDepthExceeded {
 		t.Fatal("path over depth cap was accepted")
 	}
 	if got := fb.TotalBufferBytes(); got != 0 {
 		t.Fatalf("over-depth path retained %d bytes", got)
 	}
-	if result := fb.Append(testSessionB, []byte("ordinary")); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(testSessionB), []byte("ordinary")); result.CapacityExceeded {
 		t.Fatal("over-depth path consumed the only global session slot")
 	}
 }
 
 func TestFragmentBufferPath_EmptyAndCapacityInputsDoNotAllocate(t *testing.T) {
 	var nilBuffer *FragmentBuffer
-	if result := nilBuffer.AppendPathSegments(testSessionA, pathSegmentsForTest("ignored")); result != (FragmentAppendResult{}) {
+	if result := nilBuffer.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("ignored")); result != (FragmentAppendResult{}) {
 		t.Fatalf("nil buffer result = %+v, want empty", result)
 	}
 
 	fb := NewFragmentBuffer(4096, 1, testWindowSecs)
 	defer fb.Close()
-	if result := fb.AppendPathSegments(testSessionA, nil); result != (FragmentAppendResult{}) {
+	if result := fb.AppendPathSegments(testCEEIdentity(testSessionA), nil); result != (FragmentAppendResult{}) {
 		t.Fatalf("nil path result = %+v, want empty", result)
 	}
-	if result := fb.AppendPathSegments(testSessionA, pathSegmentsForTest("", "")); result != (FragmentAppendResult{}) {
+	if result := fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("", "")); result != (FragmentAppendResult{}) {
 		t.Fatalf("empty path result = %+v, want empty", result)
 	}
 	if got := fb.TotalBufferBytes(); got != 0 {
@@ -127,8 +127,8 @@ func TestFragmentBufferPath_EmptyAndCapacityInputsDoNotAllocate(t *testing.T) {
 
 	// A logical path session consumes one shared session slot, not one per
 	// position; a second session fails closed when the global limit is full.
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("route"))
-	if result := fb.AppendPathSegments(testSessionB, pathSegmentsForTest("route")); !result.CapacityExceeded {
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("route"))
+	if result := fb.AppendPathSegments(testCEEIdentity(testSessionB), pathSegmentsForTest("route")); !result.CapacityExceeded {
 		t.Fatal("path session capacity exhaustion was accepted")
 	}
 }
@@ -141,13 +141,13 @@ func TestFragmentBufferPath_UsesOneGlobalSessionRegardlessOfDepth(t *testing.T) 
 	for i := range segments {
 		segments[i] = []byte("static")
 	}
-	if result := fb.AppendPathSegments(testSessionA, segments); result.CapacityExceeded || result.PathDepthExceeded {
+	if result := fb.AppendPathSegments(testCEEIdentity(testSessionA), segments); result.CapacityExceeded || result.PathDepthExceeded {
 		t.Fatalf("bounded path session was not admitted: %+v", result)
 	}
-	if result := fb.Append(testSessionB, []byte("ordinary")); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(testSessionB), []byte("ordinary")); result.CapacityExceeded {
 		t.Fatal("one path session consumed more than one global session slot")
 	}
-	if result := fb.Append(testSessionC, []byte("overflow")); !result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(testSessionC), []byte("overflow")); !result.CapacityExceeded {
 		t.Fatal("global session cap did not account for the path session")
 	}
 }
@@ -156,8 +156,8 @@ func TestFragmentBufferPath_EvictionAndWindowDiscardPositionState(t *testing.T) 
 	fb := NewFragmentBuffer(8, 10, 1)
 	defer fb.Close()
 
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("route", "abcdef"))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("route", "ghijkl"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("route", "abcdef"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("route", "ghijkl"))
 	if got := fb.TotalBufferBytes(); got > 8 {
 		t.Fatalf("path bytes %d exceed shared session cap", got)
 	}
@@ -174,7 +174,7 @@ func TestFragmentBufferPath_EvictionAndWindowDiscardPositionState(t *testing.T) 
 
 	// Trigger cleanup through the public path API. Expired fragments must also
 	// discard their "static versus dynamic" classifications.
-	fb.AppendPathSegments(testSessionB, pathSegmentsForTest("fresh"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionB), pathSegmentsForTest("fresh"))
 	fb.mu.Lock()
 	_, exists := fb.pathSessions[testSessionA]
 	fb.mu.Unlock()
@@ -189,23 +189,23 @@ func TestFragmentBufferPath_ScanSkipsMissingSingleAndCleanStreams(t *testing.T) 
 	sc := testFragmentScanner()
 	defer sc.Close()
 
-	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+	if matches := fb.ScanPathForSecrets(context.Background(), testCEEStream(testSessionA), sc); len(matches) != 0 {
 		t.Fatalf("missing path state returned %d matches", len(matches))
 	}
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("fixed"))
-	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("fixed"))
+	if matches := fb.ScanPathForSecrets(context.Background(), testCEEStream(testSessionA), sc); len(matches) != 0 {
 		t.Fatalf("one static fragment returned %d CEE matches", len(matches))
 	}
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("changed"))
-	if matches := fb.ScanPathForSecrets(context.Background(), testSessionA, sc); len(matches) != 0 {
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("changed"))
+	if matches := fb.ScanPathForSecrets(context.Background(), testCEEStream(testSessionA), sc); len(matches) != 0 {
 		t.Fatalf("clean dynamic path returned %d CEE matches", len(matches))
 	}
 }
 
 func TestFragmentBufferPath_ReloadAndCloseBoundPathState(t *testing.T) {
 	fb := NewFragmentBuffer(4096, 10, testWindowSecs)
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("static", "abcdef"))
-	fb.AppendPathSegments(testSessionA, pathSegmentsForTest("static", "ghijkl"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("static", "abcdef"))
+	fb.AppendPathSegments(testCEEIdentity(testSessionA), pathSegmentsForTest("static", "ghijkl"))
 
 	// Invalid reload values are clamped and immediately trim the shared path
 	// budget instead of leaving position buffers at their old size.

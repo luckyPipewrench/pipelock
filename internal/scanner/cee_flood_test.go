@@ -49,19 +49,19 @@ func TestFragmentBuffer_FloodEvictDoesNotDropVictim(t *testing.T) {
 
 	// Victim accumulates the first two pieces of a 3-piece split AWS key.
 	// Two in-window fragments make this an in-progress cross-request secret.
-	fb.Append(floodVictimKey, []byte(floodAWSKeyPrefix))
-	fb.Append(floodVictimKey, []byte(floodAWSKeyMid))
+	fb.Append(testCEEIdentity(floodVictimKey), []byte(floodAWSKeyPrefix))
+	fb.Append(testCEEIdentity(floodVictimKey), []byte(floodAWSKeyMid))
 
 	// Attacker floods well past the cap with fresh single-fragment dummies.
 	for i := range maxSessions * 3 {
-		fb.Append(fmt.Sprintf("dummy-%d", i), []byte("noise"))
+		fb.Append(testCEEIdentity(fmt.Sprintf("dummy-%d", i)), []byte("noise"))
 	}
 
 	// Victim sends the completing piece. If the victim bucket survived the
 	// flood, the concatenation reassembles the full key and DLP matches.
-	fb.Append(floodVictimKey, []byte(floodAWSKeyTail))
+	fb.Append(testCEEIdentity(floodVictimKey), []byte(floodAWSKeyTail))
 
-	matches := fb.ScanForSecrets(ctx, floodVictimKey, sc)
+	matches := fb.ScanForSecrets(ctx, testCEEStream(floodVictimKey), sc)
 	if len(matches) == 0 {
 		t.Fatalf("BYPASS: flood evicted the victim's in-progress fragments; " +
 			"the completing fragment landed in a clean bucket and the split secret leaked")
@@ -86,20 +86,20 @@ func TestEntropyTracker_FloodEvictDoesNotDropVictim(t *testing.T) {
 	bits := ShannonEntropy(string(victimPayload)) * float64(len(victimPayload))
 	et.budget = bits * 1.6 // one record is about 62% (protected); two records exceed.
 
-	et.Record(floodVictimKey, victimPayload)
-	if et.BudgetExceeded(floodVictimKey) {
+	et.Record(testCEEIdentity(floodVictimKey), victimPayload)
+	if et.BudgetExceeded(testCEEIdentity(floodVictimKey)) {
 		t.Fatal("setup: single victim record should not exceed budget")
 	}
 
 	// Flood fresh, low-entropy dummy sessions past the cap.
 	for i := range maxSessions * 3 {
-		et.Record(fmt.Sprintf("dummy-%d", i), []byte("aa"))
+		et.Record(testCEEIdentity(fmt.Sprintf("dummy-%d", i)), []byte("aa"))
 	}
 
 	// Final victim payload. If the victim survived, accumulated + final
 	// exceeds the budget; if it was evicted, the final alone stays under.
-	et.Record(floodVictimKey, victimPayload)
-	if !et.BudgetExceeded(floodVictimKey) {
+	et.Record(testCEEIdentity(floodVictimKey), victimPayload)
+	if !et.BudgetExceeded(testCEEIdentity(floodVictimKey)) {
 		t.Fatalf("BYPASS: flood evicted the victim's accumulated entropy; " +
 			"the final payload landed in a fresh bucket and stayed under budget")
 	}
@@ -119,14 +119,14 @@ func TestFragmentBuffer_WindowExpiryStopsReassembly(t *testing.T) {
 	defer sc.Close()
 	ctx := context.Background()
 
-	fb.Append(floodVictimKey, []byte(floodAWSKeyPrefix))
+	fb.Append(testCEEIdentity(floodVictimKey), []byte(floodAWSKeyPrefix))
 	// Backdate the first fragment beyond the retention window.
 	fb.mu.Lock()
-	fb.sessions[floodVictimKey].fragments[0].at = time.Now().Add(-2 * time.Duration(testWindowSecs) * time.Second)
+	fb.sessions[testCEEIdentity(floodVictimKey).Key()].fragments[0].at = time.Now().Add(-2 * time.Duration(testWindowSecs) * time.Second)
 	fb.mu.Unlock()
 
-	fb.Append(floodVictimKey, []byte(floodAWSKeyMid+floodAWSKeyTail))
-	if matches := fb.ScanForSecrets(ctx, floodVictimKey, sc); len(matches) != 0 {
+	fb.Append(testCEEIdentity(floodVictimKey), []byte(floodAWSKeyMid+floodAWSKeyTail))
+	if matches := fb.ScanForSecrets(ctx, testCEEStream(floodVictimKey), sc); len(matches) != 0 {
 		t.Fatalf("expired fragment must not reassemble across the window boundary (got %d matches)", len(matches))
 	}
 }
@@ -146,8 +146,8 @@ func TestFragmentBuffer_EmptyAndSingleFragmentNoMatch(t *testing.T) {
 	// key so this check leaves no fragment behind in the single-fragment key
 	// below (which would otherwise make that session hold two fragments).
 	const emptyKey = "empty-only"
-	fb.Append(emptyKey, []byte{})
-	if matches := fb.ScanForSecrets(ctx, emptyKey, sc); len(matches) != 0 {
+	fb.Append(testCEEIdentity(emptyKey), []byte{})
+	if matches := fb.ScanForSecrets(ctx, testCEEStream(emptyKey), sc); len(matches) != 0 {
 		t.Fatalf("empty fragment produced %d matches, want 0", len(matches))
 	}
 
@@ -155,8 +155,8 @@ func TestFragmentBuffer_EmptyAndSingleFragmentNoMatch(t *testing.T) {
 	// match: with only one in-window fragment the scan returns on the
 	// activeCount < minFragmentsForMatch fast path (body DLP handles it).
 	const singleKey = "single-fragment"
-	fb.Append(singleKey, []byte(floodAWSKeyPrefix+floodAWSKeyMid+floodAWSKeyTail))
-	if matches := fb.ScanForSecrets(ctx, singleKey, sc); len(matches) != 0 {
+	fb.Append(testCEEIdentity(singleKey), []byte(floodAWSKeyPrefix+floodAWSKeyMid+floodAWSKeyTail))
+	if matches := fb.ScanForSecrets(ctx, testCEEStream(singleKey), sc); len(matches) != 0 {
 		t.Fatalf("single-fragment full key reported %d cross-request matches, want 0 (body DLP handles it)", len(matches))
 	}
 }
@@ -171,7 +171,7 @@ func TestFragmentBuffer_AllProtectedStillBoundsMemory(t *testing.T) {
 	defer fb.Close()
 
 	for i := range maxSessions + 3 {
-		key := fmt.Sprintf("prot-%d", i)
+		key := testCEEIdentity(fmt.Sprintf("prot-%d", i))
 		fb.Append(key, []byte("alpha")) // two in-window fragments => protected
 		fb.Append(key, []byte("beta"))
 	}
@@ -198,7 +198,7 @@ func TestEntropyTracker_AllProtectedStillBoundsMemory(t *testing.T) {
 	et.budget = bits // one record => usage >= protect threshold (all protected)
 
 	for i := range maxSessions + 3 {
-		et.Record(fmt.Sprintf("prot-%d", i), hi)
+		et.Record(testCEEIdentity(fmt.Sprintf("prot-%d", i)), hi)
 	}
 
 	et.mu.Lock()

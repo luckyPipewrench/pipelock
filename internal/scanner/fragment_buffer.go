@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 )
 
 // DLPMatch describes a single DLP pattern match found in reassembled fragments.
@@ -160,22 +162,22 @@ func (fb *FragmentBuffer) PartitionKey() []byte {
 // Evicts oldest fragments when the per-session byte cap is exceeded.
 // Refuses a new session when the global session cap is reached: accumulated
 // fragment state is security evidence and must not be silently evicted.
-func (fb *FragmentBuffer) Append(sessionKey string, payload []byte) FragmentAppendResult {
-	return fb.AppendForSession(sessionKey, payload)
+func (fb *FragmentBuffer) Append(sessionKey identitykey.CEEIdentity, payload []byte) FragmentAppendResult {
+	return fb.AppendForSession(sessionKey.Stream(""), payload)
 }
 
 // AppendForSession appends an independently scanned stream. The stream key is
 // also the ledger identity, which is what unit tests and callers that still
 // buffer one stream per client use.
-func (fb *FragmentBuffer) AppendForSession(streamKey string, payload []byte) FragmentAppendResult {
-	return fb.AppendOwned(streamKey, streamKey, payload)
+func (fb *FragmentBuffer) AppendForSession(streamKey identitykey.CEEStream, payload []byte) FragmentAppendResult {
+	return fb.AppendOwned(streamKey.Owner(), streamKey, payload)
 }
 
 // AppendOwned appends an independently scanned stream under a logical identity.
 // Additional streams for an identity that already holds evidence do not consume
 // another global ledger slot. A new identity is refused at capacity rather than
 // evicting someone else's fragments or skipping this identity's inspection.
-func (fb *FragmentBuffer) AppendOwned(owner, streamKey string, payload []byte) FragmentAppendResult {
+func (fb *FragmentBuffer) AppendOwned(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, payload []byte) FragmentAppendResult {
 	return fb.AppendOwnedInGroup(owner, streamKey, streamKey, payload)
 }
 
@@ -186,17 +188,41 @@ func (fb *FragmentBuffer) AppendOwned(owner, streamKey string, payload []byte) F
 // JSON buckets a request body maps into, pass a shared group so the identity's
 // retention stays a small stated multiple of the configured figure instead of
 // that figure times the bucket count.
-func (fb *FragmentBuffer) AppendOwnedInGroup(owner, group, streamKey string, payload []byte) FragmentAppendResult {
+func (fb *FragmentBuffer) AppendOwnedInGroup(owner identitykey.CEEIdentity, group, streamKey identitykey.CEEStream, payload []byte) FragmentAppendResult {
+	if group.Owner() != owner || streamKey.Owner() != owner {
+		return FragmentAppendResult{OwnerMismatch: true}
+	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
-	return fb.appendLocked(owner, group, streamKey, payload)
+	return fb.appendLocked(owner.Key(), group.Key(), streamKey.Key(), payload)
+}
+
+// AppendAndScanOwnedInGroup captures the completed stream before retention
+// eviction, then scans that immutable snapshot after releasing the ledger lock.
+// A completing request must not evict the bytes needed to inspect itself. The
+// retained ledger still obeys maxBytes; the scan holds at most the previous
+// retained stream plus the current request's already-bounded payload.
+func (fb *FragmentBuffer) AppendAndScanOwnedInGroup(ctx context.Context, owner identitykey.CEEIdentity, group, streamKey identitykey.CEEStream, payload []byte, sc *Scanner) (FragmentAppendResult, []DLPMatch) {
+	if group.Owner() != owner || streamKey.Owner() != owner {
+		return FragmentAppendResult{OwnerMismatch: true}, nil
+	}
+	var snapshot []fragment
+	fb.mu.Lock()
+	fb.maybeCleanupLocked(time.Now())
+	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), payload, &snapshot)
+	fb.mu.Unlock()
+	return result, scanFragmentsForSecrets(ctx, sc, snapshot)
 }
 
 // appendLocked performs the buffer append. Must be called with fb.mu held and
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
 func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload []byte) FragmentAppendResult {
+	return fb.appendWithSnapshotLocked(owner, group, streamKey, payload, nil)
+}
+
+func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, payload []byte, snapshot *[]fragment) FragmentAppendResult {
 	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
 	// Normalized once here so everything below can assume a non-empty owner:
 	// a caller that keeps one stream per client passes no owner, and that
@@ -229,6 +255,11 @@ func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload [
 		at:   now,
 	})
 	sb.totalBytes += len(copied)
+	if snapshot != nil {
+		// activeFragmentsLocked copies descriptors; payload bytes were copied
+		// on entry and remain immutable even if the ledger evicts or resets.
+		*snapshot = fb.activeFragmentsLocked(sb.fragments)
+	}
 
 	// Evict oldest fragments until within per-session byte cap.
 	// A single fragment larger than maxBytes is truncated to maxBytes.
@@ -412,10 +443,10 @@ const minFragmentsForMatch = 2
 // already caught by body DLP and doesn't need a second +3 CEE signal. This prevents
 // LLM conversation context from generating repeated fragment DLP signals on every
 // API call (the context carries the same secrets in every POST body).
-func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
+func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey identitykey.CEEStream, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
 	fb.maybeCleanupLocked(time.Now())
-	sb, exists := fb.sessions[sessionKey]
+	sb, exists := fb.sessions[sessionKey.Key()]
 	if !exists {
 		fb.mu.Unlock()
 		return nil
@@ -434,20 +465,39 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 // Path state shares one logical buffer session and one byte cap across all
 // positions. A path depth cannot consume the global session cap one position at
 // a time.
-func (fb *FragmentBuffer) AppendPathSegments(sessionKey string, segments [][]byte) FragmentAppendResult {
-	return fb.AppendPathSegmentsForSession(sessionKey, segments)
+func (fb *FragmentBuffer) AppendPathSegments(sessionKey identitykey.CEEIdentity, segments [][]byte) FragmentAppendResult {
+	return fb.AppendPathSegmentsForSession(sessionKey.Stream(""), segments)
 }
 
 // AppendPathSegmentsForSession appends a position-aware stream. The stream key
 // is also the ledger identity.
-func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey string, segments [][]byte) FragmentAppendResult {
-	return fb.AppendPathSegmentsOwned(streamKey, streamKey, segments)
+func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey identitykey.CEEStream, segments [][]byte) FragmentAppendResult {
+	return fb.AppendPathSegmentsOwned(streamKey.Owner(), streamKey, segments)
 }
 
 // AppendPathSegmentsOwned appends a position-aware stream under a logical
 // identity. Path state shares that identity's ledger slot with any sibling
 // JSON or raw streams rather than competing with them one key at a time.
-func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segments [][]byte) FragmentAppendResult {
+func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte) FragmentAppendResult {
+	return fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, nil)
+}
+
+// AppendAndScanPathSegmentsOwned inspects each completed position before the
+// shared path retention budget evicts its earlier fragments.
+func (fb *FragmentBuffer) AppendAndScanPathSegmentsOwned(ctx context.Context, owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte, sc *Scanner) (FragmentAppendResult, []DLPMatch) {
+	var snapshots [][]fragment
+	result := fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, &snapshots)
+	var matches []DLPMatch
+	for _, fragments := range snapshots {
+		matches = append(matches, scanFragmentsForSecrets(ctx, sc, fragments)...)
+	}
+	return result, matches
+}
+
+func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte, snapshots *[][]fragment) FragmentAppendResult {
+	if streamKey.Owner() != owner {
+		return FragmentAppendResult{OwnerMismatch: true}
+	}
 	if fb == nil || len(segments) == 0 {
 		return FragmentAppendResult{}
 	}
@@ -469,19 +519,20 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 	defer fb.mu.Unlock()
 	fb.maybeCleanupLocked(time.Now())
 
-	pathStreamID := fragmentStreamID(fragmentStreamKindPath, streamKey)
-	if owner == "" {
-		owner = pathStreamID
+	pathStreamID := fragmentStreamID(fragmentStreamKindPath, streamKey.Key())
+	ownerKey := owner.Key()
+	if ownerKey == "" {
+		ownerKey = pathStreamID
 	}
-	ps, exists := fb.pathSessions[streamKey]
+	ps, exists := fb.pathSessions[streamKey.Key()]
 	if !exists {
-		if !fb.canAdmitOwnerLocked(owner) {
+		if !fb.canAdmitOwnerLocked(ownerKey) {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
 		ps = &pathSessionBuffer{positions: make(map[int]*pathPositionBuffer)}
-		fb.pathSessions[streamKey] = ps
-		fb.trackOwnerStreamLocked(owner, pathStreamID, pathStreamID)
-	} else if !fb.streamOwnedByLocked(pathStreamID, owner) {
+		fb.pathSessions[streamKey.Key()] = ps
+		fb.trackOwnerStreamLocked(ownerKey, pathStreamID, pathStreamID)
+	} else if !fb.streamOwnedByLocked(pathStreamID, ownerKey) {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
 
@@ -510,7 +561,14 @@ func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner, streamKey string, segme
 		// half of a split secret after an attacker primed it earlier.
 		fb.appendPathFragmentLocked(ps, pb, segment)
 	}
-	// A session has exactly one path stream, so enforcePathMaxBytesLocked above
+	if snapshots != nil {
+		for _, pb := range ps.positions {
+			if fragments := fb.activeFragmentsLocked(pb.fragments); len(fragments) >= minFragmentsForMatch {
+				*snapshots = append(*snapshots, fragments)
+			}
+		}
+	}
+	// A session has exactly one path stream, so enforcePathMaxBytesLocked below
 	// is already its whole budget; there is no group for it to share.
 	fb.enforcePathMaxBytesLocked(ps)
 	return FragmentAppendResult{}
@@ -526,10 +584,10 @@ func (fb *FragmentBuffer) appendPathFragmentLocked(ps *pathSessionBuffer, pb *pa
 // ScanPathForSecrets scans every path position independently. Combining
 // different positions would reintroduce static route text and would falsely
 // make a single-request secret appear to span requests.
-func (fb *FragmentBuffer) ScanPathForSecrets(ctx context.Context, sessionKey string, sc *Scanner) []DLPMatch {
+func (fb *FragmentBuffer) ScanPathForSecrets(ctx context.Context, sessionKey identitykey.CEEStream, sc *Scanner) []DLPMatch {
 	fb.mu.Lock()
 	fb.maybeCleanupLocked(time.Now())
-	ps, exists := fb.pathSessions[sessionKey]
+	ps, exists := fb.pathSessions[sessionKey.Key()]
 	if !exists {
 		fb.mu.Unlock()
 		return nil
@@ -741,13 +799,13 @@ func (fb *FragmentBuffer) enforcePathMaxBytesLocked(ps *pathSessionBuffer) {
 }
 
 // Delete removes all fragment state for the given session key.
-func (fb *FragmentBuffer) Delete(key string) {
+func (fb *FragmentBuffer) Delete(key identitykey.CEEStream) {
 	if fb == nil {
 		return
 	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
-	fb.deleteStreamLocked(key)
+	fb.deleteStreamLocked(key.Key())
 }
 
 // DeletePrefix clears every ordinary and position-aware stream whose key
@@ -759,19 +817,19 @@ func (fb *FragmentBuffer) Delete(key string) {
 // is the operator reset/terminate admin path, a rare deliberate action; it must
 // not be called on the per-request hot path. There is no prefix index to bound
 // the scan; see BenchmarkFragmentBufferDeletePrefix for the measured cost.
-func (fb *FragmentBuffer) DeletePrefix(prefix string) {
+func (fb *FragmentBuffer) DeletePrefix(prefix identitykey.CEEStream) {
 	if fb == nil {
 		return
 	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	for key := range fb.sessions {
-		if strings.HasPrefix(key, prefix) {
+		if strings.HasPrefix(key, prefix.Key()) {
 			fb.deleteStreamLocked(key)
 		}
 	}
 	for key := range fb.pathSessions {
-		if strings.HasPrefix(key, prefix) {
+		if strings.HasPrefix(key, prefix.Key()) {
 			fb.deleteStreamLocked(key)
 		}
 	}

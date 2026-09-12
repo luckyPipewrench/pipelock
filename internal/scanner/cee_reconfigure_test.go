@@ -10,8 +10,9 @@ import (
 
 func TestEntropyTrackerUpdateConfig_PreservesCurrentState(t *testing.T) {
 	tracker := NewEntropyTracker(100, 300)
-	tracker.Record("session", []byte("abc"))
-	before := tracker.CurrentUsage("session")
+	identity := testCEEIdentity("session")
+	tracker.Record(identity, []byte("abc"))
+	before := tracker.CurrentUsage(identity)
 	if before == 0 {
 		t.Fatal("test setup did not record entropy")
 	}
@@ -20,30 +21,31 @@ func TestEntropyTrackerUpdateConfig_PreservesCurrentState(t *testing.T) {
 	if got := tracker.Budget(); got != 1 {
 		t.Fatalf("budget = %v, want 1", got)
 	}
-	if !tracker.BudgetExceeded("session") {
+	if !tracker.BudgetExceeded(identity) {
 		t.Fatal("config update cleared in-window entropy state")
 	}
 
 	tracker.UpdateConfig(100, 1)
 	tracker.mu.Lock()
-	tracker.sessions["session"].entries[0].timestamp = time.Now().Add(-2 * time.Second)
+	tracker.sessions[identity.Key()].entries[0].timestamp = time.Now().Add(-2 * time.Second)
 	tracker.mu.Unlock()
 	tracker.UpdateConfig(100, 1)
-	if got := tracker.CurrentUsage("session"); got != 0 {
+	if got := tracker.CurrentUsage(identity); got != 0 {
 		t.Fatalf("shorter window retained expired usage %v", got)
 	}
 }
 
 func TestFragmentBufferUpdateConfig_PreservesNewestSuffix(t *testing.T) {
 	buffer := NewFragmentBuffer(32, 100, 300)
-	buffer.Append("session", []byte("first-second"))
+	identity := testCEEIdentity("session")
+	buffer.Append(identity, []byte("first-second"))
 
 	buffer.UpdateConfig(8, 100, 300)
 	if got := buffer.TotalBufferBytes(); got != 8 {
 		t.Fatalf("total bytes = %d, want 8", got)
 	}
 	buffer.mu.Lock()
-	got := string(buffer.sessions["session"].fragments[0].data)
+	got := string(buffer.sessions[identity.Key()].fragments[0].data)
 	buffer.mu.Unlock()
 	if got != "t-second" {
 		t.Fatalf("retained suffix = %q, want %q", got, "t-second")
@@ -60,7 +62,7 @@ func TestCEEUpdateConfig_ClampsNonPositiveLimits(t *testing.T) {
 	tracker.mu.Unlock()
 
 	buffer := NewFragmentBuffer(32, 100, 300)
-	buffer.Append("session", []byte("first-second"))
+	buffer.Append(testCEEIdentity("session"), []byte("first-second"))
 	buffer.UpdateConfig(-1, -1, -1)
 	buffer.mu.Lock()
 	if buffer.maxBytes != 1 || buffer.windowSecs != 1 {
@@ -74,13 +76,14 @@ func TestCEEUpdateConfig_ClampsNonPositiveLimits(t *testing.T) {
 
 func TestFragmentBufferUpdateConfig_DropsOldestFragments(t *testing.T) {
 	buffer := NewFragmentBuffer(64, 100, 300)
-	buffer.Append("session", []byte("aaaaaaaa"))
-	buffer.Append("session", []byte("bbbbbbbb"))
-	buffer.Append("session", []byte("cccccccc"))
+	identity := testCEEIdentity("session")
+	buffer.Append(identity, []byte("aaaaaaaa"))
+	buffer.Append(identity, []byte("bbbbbbbb"))
+	buffer.Append(identity, []byte("cccccccc"))
 
 	buffer.UpdateConfig(16, 100, 300)
 	buffer.mu.Lock()
-	fragments := buffer.sessions["session"].fragments
+	fragments := buffer.sessions[identity.Key()].fragments
 	got := make([]string, len(fragments))
 	for i := range fragments {
 		got[i] = string(fragments[i].data)

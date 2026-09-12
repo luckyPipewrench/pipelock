@@ -293,10 +293,10 @@ func TestFragmentBuffer_WarnPatternNotEnforced(t *testing.T) {
 	defer fb.Close()
 
 	// Split a staged secret across two fragments.
-	fb.Append("session-1", []byte("staged-frag-"))
-	fb.Append("session-1", []byte("AABBCCDDEEFFGGHHIIJJ"))
+	fb.Append(testCEEIdentity("session-1"), []byte("staged-frag-"))
+	fb.Append(testCEEIdentity("session-1"), []byte("AABBCCDDEEFFGGHHIIJJ"))
 
-	matches := fb.ScanForSecrets(context.Background(), "session-1", s)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream("session-1"), s)
 	// Warn-only cross-request matches must NOT appear in the enforcement
 	// return - CEE callers treat len(matches) > 0 as an enforcement signal.
 	// The DLPWarnHook inside ScanTextForDLP handles audit emission.

@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -448,7 +449,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// was exhausting the entropy budget and triggering adaptive escalation
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
-	ceeEntropy := p.currentCEEEntropy(ceeSessionKey(agent, clientIP, id.Auth))
+	ceeEntropy := p.currentCEEEntropy(identitykey.NewCEEIdentity(agent, clientIP, id.Auth))
 	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
 	if ceeEntropy.Active {
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
@@ -1768,7 +1769,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		SessionKey: ceeSession, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
 		PartitionReason: ceePayloads.partitionReason,
 		KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,

@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -313,6 +314,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	}
 	tracker, buffer, m, ceeCfg, release := opts.cee.snapshot()
 	defer release()
+	identity := identitykey.NewMCPCEEIdentity(opts.sessionKey)
 	if tracker == nil && (buffer == nil || !ceeCfg.FragmentReassembly.Enabled) {
 		return ""
 	}
@@ -345,13 +347,13 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 
 	// Entropy budget check.
 	if tracker != nil && ceeCfg.EntropyBudget.Enabled {
-		tracker.Record(opts.sessionKey, opts.entropyPayload)
-		if tracker.BudgetExceeded(opts.sessionKey) {
+		tracker.Record(identity, opts.entropyPayload)
+		if tracker.BudgetExceeded(identity) {
 			if m != nil {
 				m.RecordCrossRequestEntropyExceeded()
 			}
 			reason := fmt.Sprintf("cross-request entropy budget exceeded: %.0f/%.0f bits",
-				tracker.CurrentUsage(opts.sessionKey), tracker.Budget())
+				tracker.CurrentUsage(identity), tracker.Budget())
 			_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
 				if opts.logger != nil {
@@ -381,10 +383,6 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 			// stream made an ordinary one-argument call cost two slots, so a
 			// small max_sessions denied a first call outright, and let one
 			// client's streams crowd out unrelated clients.
-			owner := opts.sessionKey
-			if owner == "" {
-				owner = fragmentKey
-			}
 			// Capacity exhaustion always blocks, regardless of the configured
 			// cross-request action, because the request is no longer inspectable.
 			// Argument streams are the class whose cardinality the frame
@@ -394,9 +392,9 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 			// argument evidence a split secret is reassembled from.
 			budgetGroup := fragmentKey
 			if path != "" {
-				budgetGroup = owner + mcpCEEArgumentStreamSuffix
+				budgetGroup = opts.sessionKey + mcpCEEArgumentStreamSuffix
 			}
-			appendResult := buffer.AppendOwnedInGroup(owner, budgetGroup, fragmentKey, payload)
+			appendResult, matches := buffer.AppendAndScanOwnedInGroup(context.Background(), identity, identity.Stream(strings.TrimPrefix(budgetGroup, opts.sessionKey)), identity.Stream(strings.TrimPrefix(fragmentKey, opts.sessionKey)), payload, opts.sc)
 			if appendResult.OwnerMismatch {
 				if m != nil {
 					m.RecordCrossRequestFragmentOwnerMismatch()
@@ -421,7 +419,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				}
 				return reason
 			}
-			if matches := buffer.ScanForSecrets(context.Background(), fragmentKey, opts.sc); len(matches) > 0 {
+			if len(matches) > 0 {
 				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, matches[0].PatternName)
 				if mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
 					continue

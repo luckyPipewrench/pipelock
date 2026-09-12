@@ -44,7 +44,7 @@ func TestFragmentBuffer_OpportunisticCleanup(t *testing.T) {
 	}
 	fb.lastCleanup = time.Now().Add(-2 * time.Second)
 
-	fb.Append("active", []byte("fresh"))
+	fb.Append(testCEEIdentity("active"), []byte("fresh"))
 
 	if _, exists := fb.sessions["expired"]; exists {
 		t.Fatal("expired fragment session survived opportunistic cleanup")
@@ -66,10 +66,10 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	part1 := "AKI" + "A"
 	part2 := testAWSKeySuffix
 
-	fb.Append(testSessionA, []byte(part1))
-	fb.Append(testSessionA, []byte(part2))
+	fb.Append(testCEEIdentity(testSessionA), []byte(part1))
+	fb.Append(testCEEIdentity(testSessionA), []byte(part2))
 
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) == 0 {
 		t.Fatal("expected DLP match on concatenated AWS key fragments, got none")
 	}
@@ -91,11 +91,11 @@ func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
 	t.Cleanup(fb.Close)
 
 	for _, stream := range []string{"first", "second", "third"} {
-		if result := fb.AppendForSession(stream, []byte("ordinary")); result.CapacityExceeded {
+		if result := fb.AppendForSession(testCEEStream(stream), []byte("ordinary")); result.CapacityExceeded {
 			t.Fatalf("stream %q result = %+v, want admission", stream, result)
 		}
 	}
-	if result := fb.AppendForSession("fourth", []byte("ordinary")); !result.CapacityExceeded {
+	if result := fb.AppendForSession(testCEEStream("fourth"), []byte("ordinary")); !result.CapacityExceeded {
 		t.Fatalf("over-capacity result = %+v, want capacity denial", result)
 	}
 }
@@ -107,21 +107,23 @@ func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
 func TestFragmentBuffer_OwnedStreamsShareOneLedgerSlot(t *testing.T) {
 	fb := NewFragmentBuffer(1024, 1, testWindowSecs)
 	t.Cleanup(fb.Close)
+	clientA := testCEEIdentity("client-a")
 
-	for _, stream := range []string{"client-a|raw", "client-a|body-json/1", "client-a|body-json/2", "client-a|keys"} {
-		if result := fb.AppendOwned("client-a", stream, []byte("ordinary")); result.CapacityExceeded || result.OwnerMismatch {
-			t.Fatalf("owner stream %q result = %+v, want admission under one identity slot", stream, result)
+	for _, partition := range []string{"|raw", "|body-json/1", "|body-json/2", "|keys"} {
+		if result := fb.AppendOwned(clientA, clientA.Stream(partition), []byte("ordinary")); result.CapacityExceeded || result.OwnerMismatch {
+			t.Fatalf("owner stream %q result = %+v, want admission under one identity slot", partition, result)
 		}
 	}
-	if result := fb.AppendPathSegmentsOwned("client-a", "client-a|path", [][]byte{[]byte("upload")}); result.CapacityExceeded || result.OwnerMismatch {
+	if result := fb.AppendPathSegmentsOwned(clientA, clientA.Stream("|path"), [][]byte{[]byte("upload")}); result.CapacityExceeded || result.OwnerMismatch {
 		t.Fatalf("owner path stream result = %+v, want admission under one identity slot", result)
 	}
 	// A SECOND identity needs a slot of its own, and the ledger holds one, so
 	// it is refused rather than admitted or silently skipped.
-	if result := fb.AppendOwned("client-b", "client-b|raw", []byte("ordinary")); !result.CapacityExceeded {
+	clientB := testCEEIdentity("client-b")
+	if result := fb.AppendOwned(clientB, clientB.Stream("|raw"), []byte("ordinary")); !result.CapacityExceeded {
 		t.Fatalf("second identity result = %+v, want capacity denial", result)
 	}
-	if result := fb.AppendOwned("client-a", "client-a|body-json/3", []byte("more")); result.CapacityExceeded || result.OwnerMismatch {
+	if result := fb.AppendOwned(clientA, clientA.Stream("|body-json/3"), []byte("more")); result.CapacityExceeded || result.OwnerMismatch {
 		t.Fatalf("established identity result = %+v, want continued admission", result)
 	}
 }
@@ -143,8 +145,9 @@ func TestFragmentBuffer_ByteBudgetBoundsTheGroupNotEachStream(t *testing.T) {
 
 	for _, streams := range []int{1, 10, 500} {
 		fb := NewFragmentBuffer(capBytes, 10, testWindowSecs)
+		owner := testCEEIdentity("client-a")
 		for i := 0; i < streams; i++ {
-			fb.AppendOwnedInGroup("client-a", "client-a|json", fmt.Sprintf("client-a|bucket/%d", i), payload)
+			fb.AppendOwnedInGroup(owner, owner.Stream("|json"), owner.Stream(fmt.Sprintf("|bucket/%d", i)), payload)
 		}
 		if got := fb.TotalBufferBytes(); got > capBytes {
 			t.Fatalf("one identity across %d streams retained %d bytes, want at most %d", streams, got, capBytes)
@@ -157,8 +160,8 @@ func TestFragmentBuffer_ByteBudgetBoundsTheGroupNotEachStream(t *testing.T) {
 	fb := NewFragmentBuffer(capBytes, 10, testWindowSecs)
 	t.Cleanup(fb.Close)
 	for i := 0; i < 4; i++ {
-		owner := fmt.Sprintf("client-%d", i)
-		fb.AppendOwnedInGroup(owner, owner+"|json", owner+"|raw", payload)
+		owner := testCEEIdentity(fmt.Sprintf("client-%d", i))
+		fb.AppendOwnedInGroup(owner, owner.Stream("|json"), owner.Stream("|raw"), payload)
 	}
 	if got := fb.TotalBufferBytes(); got != 4*capBytes {
 		t.Fatalf("four identities retained %d bytes, want %d; the cap must apply per identity", got, 4*capBytes)
@@ -173,15 +176,17 @@ func TestFragmentBuffer_IdentityEvictionKeepsNewestAndSparesOthers(t *testing.T)
 	t.Cleanup(fb.Close)
 
 	victim := "client-victim"
+	victimOwner := testCEEIdentity(victim)
 	victimStream := victim + "|raw"
-	fb.AppendOwned(victim, victimStream, []byte("victim-evidence"))
+	fb.AppendOwned(victimOwner, victimOwner.Stream("|raw"), []byte("victim-evidence"))
 	fb.mu.Lock()
 	victimBefore := fb.sessions[victimStream].totalBytes
 	fb.mu.Unlock()
 
 	greedy := "client-greedy"
+	greedyOwner := testCEEIdentity(greedy)
 	for i := 0; i < 20; i++ {
-		fb.AppendOwnedInGroup(greedy, greedy+"|json", fmt.Sprintf("%s|bucket/%d", greedy, i), []byte("0123456789"))
+		fb.AppendOwnedInGroup(greedyOwner, greedyOwner.Stream("|json"), greedyOwner.Stream(fmt.Sprintf("|bucket/%d", i)), []byte("0123456789"))
 	}
 
 	// Assert the VICTIM's own retained bytes, not the aggregate. The buffer
@@ -212,10 +217,13 @@ func TestFragmentBuffer_RefusesForeignOwnerOnExistingStream(t *testing.T) {
 		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
 		t.Cleanup(fb.Close)
 
-		if result := fb.AppendOwned("client-a", "shared", []byte("AKI"+"AIOSFODNN")); result.OwnerMismatch {
+		clientA := testCEEIdentity("client-a")
+		clientB := testCEEIdentity("client-b")
+		shared := clientA.Stream("shared")
+		if result := fb.AppendOwned(clientA, shared, []byte("AKI"+"AIOSFODNN")); result.OwnerMismatch {
 			t.Fatalf("first owner result = %+v, want admission", result)
 		}
-		result := fb.AppendOwned("client-b", "shared", []byte("7EXAMPLE"))
+		result := fb.AppendOwned(clientB, shared, []byte("7EXAMPLE"))
 		if !result.OwnerMismatch {
 			t.Fatalf("foreign owner result = %+v, want OwnerMismatch; blending identities is never safe", result)
 		}
@@ -228,10 +236,13 @@ func TestFragmentBuffer_RefusesForeignOwnerOnExistingStream(t *testing.T) {
 		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
 		t.Cleanup(fb.Close)
 
-		if result := fb.AppendPathSegmentsOwned("client-a", "shared", [][]byte{[]byte("first")}); result.OwnerMismatch {
+		clientA := testCEEIdentity("client-a")
+		clientB := testCEEIdentity("client-b")
+		shared := clientA.Stream("shared")
+		if result := fb.AppendPathSegmentsOwned(clientA, shared, [][]byte{[]byte("first")}); result.OwnerMismatch {
 			t.Fatalf("first owner result = %+v, want admission", result)
 		}
-		if result := fb.AppendPathSegmentsOwned("client-b", "shared", [][]byte{[]byte("second")}); !result.OwnerMismatch {
+		if result := fb.AppendPathSegmentsOwned(clientB, shared, [][]byte{[]byte("second")}); !result.OwnerMismatch {
 			t.Fatalf("foreign owner path result = %+v, want OwnerMismatch", result)
 		}
 	})
@@ -242,9 +253,12 @@ func TestFragmentBuffer_RefusesForeignOwnerOnExistingStream(t *testing.T) {
 		fb := NewFragmentBuffer(1024, 8, testWindowSecs)
 		t.Cleanup(fb.Close)
 
-		fb.AppendOwned("client-a", "shared", []byte("ordinary"))
-		fb.AppendOwned("client-b", "shared", []byte("foreign"))
-		if result := fb.AppendOwned("client-a", "shared", []byte("more")); result.OwnerMismatch || result.CapacityExceeded {
+		clientA := testCEEIdentity("client-a")
+		clientB := testCEEIdentity("client-b")
+		shared := clientA.Stream("shared")
+		fb.AppendOwned(clientA, shared, []byte("ordinary"))
+		fb.AppendOwned(clientB, shared, []byte("foreign"))
+		if result := fb.AppendOwned(clientA, shared, []byte("more")); result.OwnerMismatch || result.CapacityExceeded {
 			t.Fatalf("rightful owner result = %+v, want continued admission", result)
 		}
 	})
@@ -277,17 +291,18 @@ func TestFragmentBuffer_PartitionKeyLivesWithBuffer(t *testing.T) {
 func TestFragmentBuffer_DeletesPrefixAcrossStreamsAndPaths(t *testing.T) {
 	fb := NewFragmentBuffer(1024, 4, testWindowSecs)
 	t.Cleanup(fb.Close)
-	if result := fb.AppendForSession("owner/raw", []byte("raw")); result.CapacityExceeded {
+	owner := testCEEIdentity("owner")
+	if result := fb.AppendForSession(owner.Stream("/raw"), []byte("raw")); result.CapacityExceeded {
 		t.Fatalf("raw result = %+v", result)
 	}
-	if result := fb.AppendPathSegmentsForSession("owner/path", [][]byte{[]byte("route")}); result.CapacityExceeded {
+	if result := fb.AppendPathSegmentsForSession(owner.Stream("/path"), [][]byte{[]byte("route")}); result.CapacityExceeded {
 		t.Fatalf("path result = %+v", result)
 	}
 	fb.UpdateConfig(512, 2, testWindowSecs)
 	if fb.maxSessions != 2 {
 		t.Fatalf("max sessions = %d, want 2", fb.maxSessions)
 	}
-	fb.DeletePrefix("owner/")
+	fb.DeletePrefix(owner.Stream("/"))
 	if len(fb.sessions) != 0 || len(fb.pathSessions) != 0 {
 		t.Fatalf("DeletePrefix retained streams: sessions=%d paths=%d", len(fb.sessions), len(fb.pathSessions))
 	}
@@ -300,10 +315,10 @@ func TestFragmentBuffer_NoMatch_NormalText(t *testing.T) {
 	sc := testFragmentScanner()
 	defer sc.Close()
 
-	fb.Append(testSessionA, []byte("hello "))
-	fb.Append(testSessionA, []byte("world, this is normal text"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("hello "))
+	fb.Append(testCEEIdentity(testSessionA), []byte("world, this is normal text"))
 
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) != 0 {
 		t.Errorf("expected no matches for normal text, got %d", len(matches))
 	}
@@ -320,11 +335,11 @@ func TestFragmentBuffer_SessionIsolation(t *testing.T) {
 	part1 := "AKI" + "A"
 	part2 := testAWSKeySuffix
 
-	fb.Append(testSessionA, []byte(part1))
-	fb.Append(testSessionB, []byte(part2))
+	fb.Append(testCEEIdentity(testSessionA), []byte(part1))
+	fb.Append(testCEEIdentity(testSessionB), []byte(part2))
 
-	matchesA := fb.ScanForSecrets(context.Background(), testSessionA, sc)
-	matchesB := fb.ScanForSecrets(context.Background(), testSessionB, sc)
+	matchesA := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	matchesB := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionB), sc)
 
 	if len(matchesA) != 0 {
 		t.Errorf("session A should not match with only key prefix, got %d matches", len(matchesA))
@@ -350,8 +365,8 @@ func TestFragmentBuffer_MaxBytesEviction(t *testing.T) {
 		data2[i] = 'B'
 	}
 
-	fb.Append(testSessionA, data1)
-	fb.Append(testSessionA, data2)
+	fb.Append(testCEEIdentity(testSessionA), data1)
+	fb.Append(testCEEIdentity(testSessionA), data2)
 
 	fb.mu.Lock()
 	sb := fb.sessions[testSessionA]
@@ -369,15 +384,15 @@ func TestFragmentBuffer_MaxSessionsCapacityDeniesNewSession(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 3, testWindowSecs)
 	defer fb.Close()
 
-	fb.Append(testSessionA, []byte("data-a"))
-	fb.Append(testSessionB, []byte("data-b"))
-	fb.Append(testSessionC, []byte("data-c"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("data-a"))
+	fb.Append(testCEEIdentity(testSessionB), []byte("data-b"))
+	fb.Append(testCEEIdentity(testSessionC), []byte("data-c"))
 
 	// Add more state to session A to prove known sessions remain admissible.
-	fb.Append(testSessionA, []byte("more-a"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("more-a"))
 
 	// A new session at capacity must fail closed rather than evict session B.
-	if result := fb.Append(testSessionD, []byte("data-d")); !result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(testSessionD), []byte("data-d")); !result.CapacityExceeded {
 		t.Fatal("new fragment session at capacity was admitted")
 	}
 
@@ -421,7 +436,7 @@ func TestFragmentBuffer_WindowExpiry(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, 1) // 1s window
 	defer fb.Close()
 
-	fb.Append(testSessionA, []byte("test data"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("test data"))
 
 	// Backdate the fragment to before the window.
 	fb.mu.Lock()
@@ -452,8 +467,8 @@ func TestFragmentBuffer_ScanAlwaysSynchronous(t *testing.T) {
 	sc := testFragmentScanner()
 	defer sc.Close()
 
-	fb.Append(testSessionA, []byte("harmless data"))
-	matches1 := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	fb.Append(testCEEIdentity(testSessionA), []byte("harmless data"))
+	matches1 := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if matches1 != nil {
 		t.Fatal("first scan should find nothing")
 	}
@@ -461,10 +476,10 @@ func TestFragmentBuffer_ScanAlwaysSynchronous(t *testing.T) {
 	// Immediately append credential fragments and scan again.
 	part1 := "AKI" + "A"
 	part2 := testAWSKeySuffix
-	fb.Append(testSessionA, []byte(part1))
-	fb.Append(testSessionA, []byte(part2))
+	fb.Append(testCEEIdentity(testSessionA), []byte(part1))
+	fb.Append(testCEEIdentity(testSessionA), []byte(part2))
 
-	matches2 := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches2 := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches2) == 0 {
 		t.Fatal("second scan must detect secret synchronously, got nil (pre-forward guarantee broken)")
 	}
@@ -483,9 +498,9 @@ func TestFragmentBuffer_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			key := fmt.Sprintf("session-%d", id%10)
+			key := testCEEIdentity(fmt.Sprintf("session-%d", id%10))
 			fb.Append(key, []byte(fmt.Sprintf("payload-%d", id)))
-			fb.ScanForSecrets(context.Background(), key, sc)
+			fb.ScanForSecrets(context.Background(), key.Stream(""), sc)
 		}(i)
 	}
 	wg.Wait()
@@ -495,8 +510,8 @@ func TestFragmentBuffer_TotalBufferBytes(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
-	fb.Append(testSessionA, []byte("hello"))      // 5 bytes
-	fb.Append(testSessionB, []byte("world12345")) // 10 bytes
+	fb.Append(testCEEIdentity(testSessionA), []byte("hello"))      // 5 bytes
+	fb.Append(testCEEIdentity(testSessionB), []byte("world12345")) // 10 bytes
 
 	total := fb.TotalBufferBytes()
 	if total != 15 {
@@ -518,7 +533,7 @@ func TestFragmentBuffer_ScanEmptySession(t *testing.T) {
 	defer sc.Close()
 
 	// Scan a session that has never been appended to.
-	matches := fb.ScanForSecrets(context.Background(), "nonexistent", sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream("nonexistent"), sc)
 	if matches != nil {
 		t.Errorf("expected nil for nonexistent session, got %v", matches)
 	}
@@ -539,15 +554,15 @@ func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 	for i := range old {
 		old[i] = 'X'
 	}
-	fb.Append(testSessionA, old)
+	fb.Append(testCEEIdentity(testSessionA), old)
 
 	// Add two fragments that together form an AWS key (split across requests).
 	// The old fragment gets evicted but these two survive and span the secret.
-	fb.Append(testSessionA, []byte("AKI"+"A"))
-	fb.Append(testSessionA, []byte(testAWSKeySuffix))
+	fb.Append(testCEEIdentity(testSessionA), []byte("AKI"+"A"))
+	fb.Append(testCEEIdentity(testSessionA), []byte(testAWSKeySuffix))
 
 	// The secret spans two surviving fragments - should be detected.
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) == 0 {
 		t.Error("cross-fragment secret should survive eviction and trigger DLP match")
 	}
@@ -564,9 +579,9 @@ func TestFragmentBuffer_SingleFragmentNotReported(t *testing.T) {
 
 	// Single fragment with complete secret.
 	key := "AKI" + "A" + testAWSKeySuffix
-	fb.Append(testSessionA, []byte(key))
+	fb.Append(testCEEIdentity(testSessionA), []byte(key))
 
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) != 0 {
 		t.Errorf("single-fragment secret should not trigger fragment DLP (body DLP handles it), got %d matches", len(matches))
 	}
@@ -587,10 +602,10 @@ func TestFragmentBuffer_RepeatedIdenticalBodiesNotReported(t *testing.T) {
 
 	// Simulate 5 LLM API calls with same context.
 	for range 5 {
-		fb.Append(testSessionA, []byte(body))
+		fb.Append(testCEEIdentity(testSessionA), []byte(body))
 	}
 
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) != 0 {
 		t.Errorf("repeated identical bodies should not trigger fragment DLP, got %d matches", len(matches))
 	}
@@ -611,12 +626,12 @@ func TestFragmentBuffer_OldFragmentSecretNotReported(t *testing.T) {
 	defer fb.Close()
 
 	// Fragment 1: contains a complete secret.
-	fb.Append(testSessionA, []byte("key="+"AKIA"+"IOSFODNN7EXAMPLE"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("key="+"AKIA"+"IOSFODNN7EXAMPLE"))
 
 	// Fragment 2: clean content, no secret.
-	fb.Append(testSessionA, []byte("ok no secrets here"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("ok no secrets here"))
 
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	if len(matches) != 0 {
 		t.Errorf("secret entirely in older fragment should not trigger cross-request signal, got %d matches: %v", len(matches), matches)
 	}
@@ -627,7 +642,7 @@ func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, 1) // 1s window
 	defer fb.Close()
 
-	fb.Append(testSessionA, []byte("new data"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("new data"))
 
 	// Backdate the first fragment but add a fresh one.
 	fb.mu.Lock()
@@ -635,7 +650,7 @@ func TestFragmentBuffer_CleanupPartialExpiry(t *testing.T) {
 	sb.fragments[0].at = time.Now().Add(-2 * time.Second)
 	fb.mu.Unlock()
 
-	fb.Append(testSessionA, []byte("fresh"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("fresh"))
 
 	fb.cleanup()
 
@@ -659,10 +674,10 @@ func TestFragmentBuffer_Delete(t *testing.T) {
 	fb := NewFragmentBuffer(4096, 100, 60)
 	defer fb.Close()
 
-	fb.Append("sess-a", []byte("fragment-part-1"))
-	fb.Append("sess-b", []byte("other-data"))
+	fb.Append(testCEEIdentity("sess-a"), []byte("fragment-part-1"))
+	fb.Append(testCEEIdentity("sess-b"), []byte("other-data"))
 
-	fb.Delete("sess-a")
+	fb.Delete(testCEEStream("sess-a"))
 
 	// sess-a should be gone - verify via TotalBufferBytes reflecting only sess-b.
 	fb.mu.Lock()
@@ -678,7 +693,7 @@ func TestFragmentBuffer_Delete(t *testing.T) {
 	}
 
 	// Appending to sess-a again should work (creates fresh session).
-	fb.Append("sess-a", []byte("new-data"))
+	fb.Append(testCEEIdentity("sess-a"), []byte("new-data"))
 }
 
 func TestFragmentBuffer_Delete_NonExistent(t *testing.T) {
@@ -686,7 +701,7 @@ func TestFragmentBuffer_Delete_NonExistent(t *testing.T) {
 	defer fb.Close()
 
 	// Should not panic on missing key.
-	fb.Delete("no-such-session")
+	fb.Delete(testCEEStream("no-such-session"))
 }
 
 func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
@@ -694,13 +709,13 @@ func TestFragmentBuffer_AppendAfterClose(t *testing.T) {
 	fb.Close()
 
 	// Append after close should not panic.
-	fb.Append(testSessionA, []byte("data"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("data"))
 
 	sc := testFragmentScanner()
 	defer sc.Close()
 
 	// Scan after close should not panic.
-	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
 	_ = matches
 }
 
@@ -717,7 +732,8 @@ func TestFragmentBuffer_ReloadReenforcesTheGroupBudget(t *testing.T) {
 		payload[i] = 'A'
 	}
 	for i := 0; i < 8; i++ {
-		fb.AppendOwnedInGroup("client-a", "client-a|json", fmt.Sprintf("client-a|bucket/%d", i), payload)
+		owner := testCEEIdentity("client-a")
+		fb.AppendOwnedInGroup(owner, owner.Stream("|json"), owner.Stream(fmt.Sprintf("|bucket/%d", i)), payload)
 	}
 	before := fb.TotalBufferBytes()
 	if before <= 1024 {
@@ -741,8 +757,10 @@ func TestFragmentBuffer_ExpiryDeletesOnlyTheStreamKindThatAgedOut(t *testing.T) 
 	t.Cleanup(fb.Close)
 
 	const shared = "client-a|shared"
-	fb.AppendOwned("client-a", shared, []byte("data-half"))
-	fb.AppendPathSegmentsOwned("client-a", shared, [][]byte{[]byte("path-half")})
+	owner := testCEEIdentity("client-a")
+	sharedStream := owner.Stream("|shared")
+	fb.AppendOwned(owner, sharedStream, []byte("data-half"))
+	fb.AppendPathSegmentsOwned(owner, sharedStream, [][]byte{[]byte("path-half")})
 
 	fb.mu.Lock()
 	// Age the DATA stream past the window while the path stream stays current.
@@ -769,6 +787,6 @@ func TestFragmentBuffer_ExpiryDeletesOnlyTheStreamKindThatAgedOut(t *testing.T) 
 // buffer is the right place for the invariant so a future caller cannot panic.
 func TestFragmentBufferNilDeletesAreSafe(t *testing.T) {
 	var fb *FragmentBuffer
-	fb.Delete("k")
-	fb.DeletePrefix("k|body-json|")
+	fb.Delete(testCEEStream("k"))
+	fb.DeletePrefix(testCEEStream("k|body-json|"))
 }

@@ -29,13 +29,13 @@ func seedJSONBodySecret(t *testing.T, fb *scanner.FragmentBuffer, sc *scanner.Sc
 	for bucket = range buckets {
 	}
 	bodyKey := ceeJSONBodyFragmentSessionKey(liveKey, bucket)
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("first body fragment exceeded capacity")
 	}
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("second body fragment exceeded capacity")
 	}
-	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) == 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(bodyKey), sc); len(matches) == 0 {
 		t.Fatal("control did not reassemble the JSON body stream")
 	}
 	return bodyKey
@@ -65,14 +65,14 @@ func TestResetCEEStateClearsFoldedSelfDeclaredKey(t *testing.T) {
 
 	// Re-prime one fragment, reset, then complete the split. If reset cleared
 	// the right stream the completing suffix cannot reassemble a secret.
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("post-control first fragment exceeded capacity")
 	}
 	ResetCEEState(agent, ip, nil, fb)
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("post-reset second fragment exceeded capacity")
 	}
-	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) != 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(bodyKey), sc); len(matches) != 0 {
 		t.Fatalf("reset left the folded self-declared JSON body stream intact: %#v", matches)
 	}
 }
@@ -85,12 +85,12 @@ func TestResetCEEStateClearsFoldedEntropyKey(t *testing.T) {
 
 	et := scanner.NewEntropyTracker(8, 60)
 	t.Cleanup(et.Close)
-	et.Record(liveKey, []byte("aZ9$kQ2%mV7&pL0#xR4!wB6^tE1@nH3*"))
-	if et.CurrentUsage(liveKey) == 0 {
+	et.Record(testCEEIdentity(liveKey), []byte("aZ9$kQ2%mV7&pL0#xR4!wB6^tE1@nH3*"))
+	if et.CurrentUsage(testCEEIdentity(liveKey)) == 0 {
 		t.Fatal("control: entropy was not recorded under the live key")
 	}
 	ResetCEEState(agent, ip, et, nil)
-	if got := et.CurrentUsage(liveKey); got != 0 {
+	if got := et.CurrentUsage(testCEEIdentity(liveKey)); got != 0 {
 		t.Fatalf("reset left folded entropy usage = %v, want 0", got)
 	}
 }
@@ -113,14 +113,14 @@ func TestResetCEEStateClearsBoundNamedKey(t *testing.T) {
 	t.Cleanup(fb.Close)
 	bodyKey := seedJSONBodySecret(t, fb, sc, liveKey)
 
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("post-control first fragment exceeded capacity")
 	}
 	ResetCEEState(agent, ip, nil, fb)
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("post-reset second fragment exceeded capacity")
 	}
-	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) != 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(bodyKey), sc); len(matches) != 0 {
 		t.Fatalf("reset left the bound named JSON body stream intact: %#v", matches)
 	}
 }
@@ -153,16 +153,16 @@ func TestResetCEEStateBodyJSONPrefixDoesNotReachSiblingSession(t *testing.T) {
 	ResetCEEState("", "10.0.0.5", nil, fb)
 
 	// Victim body stream cleared.
-	if result := fb.Append(victimBody, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(victimBody), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("victim re-prime exceeded capacity")
 	}
-	if result := fb.Append(victimBody, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(victimBody), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("victim complete exceeded capacity")
 	}
 	// After a reset the victim stream started empty, so only prefix+suffix are
 	// present and reassemble once; that is expected. The invariant under test is
 	// the sibling: it must STILL hold its pre-seeded secret untouched.
-	if matches := fb.ScanForSecrets(t.Context(), siblingBody, sc); len(matches) == 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(siblingBody), sc); len(matches) == 0 {
 		t.Fatal("resetting 10.0.0.5 wrongly cleared sibling 10.0.0.50 body-json stream")
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -390,13 +391,14 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 	// function reverse.resolveAgentIdentity uses for the no-edition path.
 	idReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/q?p=abcdefghij0123456789", nil)
 	resolved := edition.ResolveAgentIdentity(idReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
-	expectedKey := ceeSessionKey(resolved.Name, clientHost, resolved.Auth)
+	expectedIdentity := identitykey.NewCEEIdentity(resolved.Name, clientHost, resolved.Auth)
+	expectedKey := expectedIdentity.Key()
 
 	et := p.EntropyTrackerPtr().Load()
 	if et == nil {
 		t.Fatal("entropy tracker not initialized")
 	}
-	if before := et.CurrentUsage(expectedKey); before != 0 {
+	if before := et.CurrentUsage(expectedIdentity); before != 0 {
 		t.Fatalf("entropy usage under shared key should start at 0, got %.4f", before)
 	}
 
@@ -405,7 +407,7 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 		t.Fatalf("reverse request = %d %q, want 200 ok", resp.Code, resp.Body.String())
 	}
 
-	afterReverse := et.CurrentUsage(expectedKey)
+	afterReverse := et.CurrentUsage(expectedIdentity)
 	if afterReverse <= 0 {
 		t.Fatalf("reverse request recorded no cross-request entropy under the shared key %q "+
 			"(usage=%.4f); the reverse CEE join does not use the transport-independent key", expectedKey, afterReverse)
@@ -421,7 +423,7 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 	if forwardRec.Code != http.StatusOK || forwardRec.Body.String() != "ok" {
 		t.Fatalf("forward request = %d %q, want 200 ok", forwardRec.Code, forwardRec.Body.String())
 	}
-	if afterForward := et.CurrentUsage(expectedKey); afterForward <= afterReverse {
+	if afterForward := et.CurrentUsage(expectedIdentity); afterForward <= afterReverse {
 		t.Fatalf("forward request did not add entropy to reverse key %q: before=%.4f after=%.4f", expectedKey, afterReverse, afterForward)
 	}
 
@@ -434,9 +436,10 @@ func TestReverseSharesCEESessionKeyWithForward(t *testing.T) {
 		t.Fatalf("distinct-client forward request = %d, want 200: %s", otherRec.Code, otherRec.Body.String())
 	}
 	otherID := edition.ResolveAgentIdentity(otherReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
-	otherKey := ceeSessionKey(otherID.Name, otherClient, otherID.Auth)
-	if otherKey == expectedKey || et.CurrentUsage(otherKey) <= 0 {
-		t.Fatalf("distinct client did not use an isolated CEE key: shared=%q other=%q usage=%.4f", expectedKey, otherKey, et.CurrentUsage(otherKey))
+	otherIdentity := identitykey.NewCEEIdentity(otherID.Name, otherClient, otherID.Auth)
+	otherKey := otherIdentity.Key()
+	if otherKey == expectedKey || et.CurrentUsage(otherIdentity) <= 0 {
+		t.Fatalf("distinct client did not use an isolated CEE key: shared=%q other=%q usage=%.4f", expectedKey, otherKey, et.CurrentUsage(otherIdentity))
 	}
 }
 

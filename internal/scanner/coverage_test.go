@@ -64,7 +64,7 @@ func TestRateLimiter_CloseIdempotent(t *testing.T) {
 func TestFragmentBuffer_CloseIdempotentCoverage(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, 300)
 
-	fb.Append("session-1", []byte("data"))
+	fb.Append(testCEEIdentity("session-1"), []byte("data"))
 
 	// Close remains safe for callers even though cleanup is opportunistic.
 	fb.Close()
@@ -74,7 +74,7 @@ func TestFragmentBuffer_CloseIdempotentCoverage(t *testing.T) {
 func TestEntropyTracker_CloseIdempotentCoverage(t *testing.T) {
 	et := NewEntropyTracker(4096, 300)
 
-	et.Record("session-1", []byte("test data"))
+	et.Record(testCEEIdentity("session-1"), []byte("test data"))
 
 	// Close remains safe for callers even though cleanup is opportunistic.
 	et.Close()
@@ -111,16 +111,16 @@ func TestEntropyTracker_CleanupLoop_IntervalClamping(t *testing.T) {
 	et := NewEntropyTracker(100, 3600) // 1 hour window
 	defer et.Close()
 	// The tracker should work correctly (cleanup loop started).
-	et.Record("s1", []byte("data"))
-	if et.CurrentUsage("s1") == 0 {
+	et.Record(testCEEIdentity("s1"), []byte("data"))
+	if et.CurrentUsage(testCEEIdentity("s1")) == 0 {
 		t.Error("expected non-zero usage")
 	}
 
 	// Very small window: interval should floor at 1s.
 	et2 := NewEntropyTracker(100, 1)
 	defer et2.Close()
-	et2.Record("s2", []byte("data"))
-	if et2.CurrentUsage("s2") == 0 {
+	et2.Record(testCEEIdentity("s2"), []byte("data"))
+	if et2.CurrentUsage(testCEEIdentity("s2")) == 0 {
 		t.Error("expected non-zero usage")
 	}
 }
@@ -129,7 +129,7 @@ func TestFragmentBuffer_CleanupLoop_IntervalClamping(t *testing.T) {
 	// Very large window: interval caps at 60s.
 	fb := NewFragmentBuffer(65536, 1000, 3600)
 	defer fb.Close()
-	fb.Append("s1", []byte("data"))
+	fb.Append(testCEEIdentity("s1"), []byte("data"))
 	if fb.TotalBufferBytes() == 0 {
 		t.Error("expected non-zero bytes")
 	}
@@ -137,7 +137,7 @@ func TestFragmentBuffer_CleanupLoop_IntervalClamping(t *testing.T) {
 	// Very small window: interval floors at 1s.
 	fb2 := NewFragmentBuffer(65536, 1000, 1)
 	defer fb2.Close()
-	fb2.Append("s2", []byte("data"))
+	fb2.Append(testCEEIdentity("s2"), []byte("data"))
 	if fb2.TotalBufferBytes() == 0 {
 		t.Error("expected non-zero bytes")
 	}

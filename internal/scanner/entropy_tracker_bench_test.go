@@ -16,7 +16,7 @@ func BenchmarkEntropyTracker_Record(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		et.Record("session1", payload)
+		et.Record(testCEEIdentity("session1"), payload)
 	}
 }
 
@@ -34,6 +34,6 @@ func BenchmarkEntropyTracker_RecordMultiSession(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
-		et.Record(keys[i%len(keys)], payload)
+		et.Record(testCEEIdentity(keys[i%len(keys)]), payload)
 	}
 }

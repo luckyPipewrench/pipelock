@@ -14,6 +14,60 @@ import "github.com/luckyPipewrench/pipelock/internal/envelope"
 // exists to prevent.
 const AnonymousAgent = "anonymous"
 
+// CEEIdentity is the opaque owner of cross-request detection state. It can
+// only be created from an identity classification, which keeps request
+// supplied labels from becoming state partitions.
+type CEEIdentity struct{ key string }
+
+// NewCEEIdentity builds the CEE owner from the actual authentication grade at
+// the classification boundary. Unknown and zero-value grades deliberately
+// fold to the client bucket: treating an unclassified label as trusted would
+// make a missing grade a partitioning bypass.
+func NewCEEIdentity(agent, client string, auth envelope.ActorAuth) CEEIdentity {
+	return CEEIdentity{key: CEESafeKey(agent, client, auth)}
+}
+
+// NewMCPCEEIdentity wraps a server-owned MCP session identifier. MCP sessions
+// are minted by the proxy protocol, rather than being caller-supplied actor
+// labels, so they do not pass through ActorAuth classification.
+func NewMCPCEEIdentity(session string) CEEIdentity {
+	return CEEIdentity{key: session}
+}
+
+// CEEStream is an opaque partition within one CEE identity. A partition is
+// deliberately distinct from its owner: a JSON path, query-key stream, or
+// path-position stream cannot substitute for an identity.
+type CEEStream struct {
+	owner CEEIdentity
+	key   string
+}
+
+// Stream returns a partition of this identity's CEE state.
+func (id CEEIdentity) Stream(partition string) CEEStream {
+	return CEEStream{owner: id, key: id.key + partition}
+}
+
+// Key returns the classified key for ledger indexing and audit correlation.
+// The returned string cannot be passed back into a CEE state API.
+func (id CEEIdentity) Key() string { return id.key }
+
+// Key returns the derived stream key for ledger indexing.
+func (stream CEEStream) Key() string { return stream.key }
+
+// Owner returns the classified identity that created this stream.
+func (stream CEEStream) Owner() CEEIdentity { return stream.owner }
+
+// CEECandidateIdentities returns both classifications that an administrative
+// reset may need when its stored session record carries no authentication grade.
+func CEECandidateIdentities(agent, client string) []CEEIdentity {
+	bound := NewCEEIdentity(agent, client, envelope.ActorAuthBound)
+	folded := NewCEEIdentity(agent, client, envelope.ActorAuthSelfDeclared)
+	if bound == folded {
+		return []CEEIdentity{bound}
+	}
+	return []CEEIdentity{bound, folded}
+}
+
 // ForAgentAndClient builds the shared agent/client key shape. Named agents are
 // namespaced ahead of the client identity; unnamed or anonymous agents collapse
 // to the client identity alone.

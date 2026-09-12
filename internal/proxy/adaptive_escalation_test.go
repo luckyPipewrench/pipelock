@@ -1325,8 +1325,9 @@ func TestConnect_Adaptive_PostCEEBlockAllReceipt(t *testing.T) {
 	if et == nil {
 		t.Fatal("entropy tracker not initialized")
 	}
-	et.Record(CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback), []byte("abc123"))
-	if !et.BudgetExceeded(CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)) {
+	identity := testCEEIdentity(CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback))
+	et.Record(identity, []byte("abc123"))
+	if !et.BudgetExceeded(identity) {
 		t.Fatal("precondition: CEE entropy budget not exceeded")
 	}
 

@@ -31,6 +31,57 @@ func TestCEESafeKey_OnlyTrustedAgentAuthNamespacesBucket(t *testing.T) {
 	}
 }
 
+func TestCEEIdentity_AuthGradeControlsOwnerAndStreamDoesNot(t *testing.T) {
+	const agent, client = "agent-a", "203.0.113.10"
+	selfDeclared := NewCEEIdentity(agent, client, envelope.ActorAuthSelfDeclared)
+	otherSelfDeclared := NewCEEIdentity("agent-b", client, envelope.ActorAuthSelfDeclared)
+	bound := NewCEEIdentity(agent, client, envelope.ActorAuthBound)
+
+	if selfDeclared != otherSelfDeclared {
+		t.Fatalf("self-declared identities partitioned: %q != %q", selfDeclared, otherSelfDeclared)
+	}
+	if selfDeclared == bound {
+		t.Fatalf("bound identity unexpectedly folded into %q", selfDeclared)
+	}
+	if selfDeclared.Stream("|keys") == selfDeclared.Stream("|path") {
+		t.Fatal("stream partitions collapsed")
+	}
+}
+
+func TestCEEIdentity_ClassificationAndResetCandidates(t *testing.T) {
+	const client = "203.0.113.10"
+	for _, auth := range []envelope.ActorAuth{"", "unrecognized", envelope.ActorAuthSelfDeclared, envelope.ActorAuthMatched, envelope.ActorAuthBound, envelope.ActorAuthConfigDefault} {
+		t.Run(string(auth), func(t *testing.T) {
+			identity := NewCEEIdentity("agent-a", client, auth)
+			trusted := auth == envelope.ActorAuthBound || auth == envelope.ActorAuthConfigDefault
+			want := client
+			if trusted {
+				want = "agent-a|" + client
+			}
+			if identity.Key() != want {
+				t.Fatalf("key=%q, want %q", identity.Key(), want)
+			}
+			stream := identity.Stream("|keys")
+			if stream.Owner() != identity || stream.Key() != want+"|keys" {
+				t.Fatal("stream lost its classified owner")
+			}
+			found := false
+			for _, candidate := range CEECandidateIdentities("agent-a", client) {
+				found = found || candidate == identity
+			}
+			if !found {
+				t.Fatal("reset cannot reach a live identity")
+			}
+		})
+	}
+	if got := CEECandidateIdentities("", client); len(got) != 1 {
+		t.Fatalf("unnamed reset candidates=%v, want one identity", got)
+	}
+	if id := NewMCPCEEIdentity("server-session"); id.Key() != "server-session" || id.Stream("").Owner() != id {
+		t.Fatal("MCP server session did not preserve its owner")
+	}
+}
+
 func TestCEECandidateKeys(t *testing.T) {
 	tests := []struct {
 		name   string

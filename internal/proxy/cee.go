@@ -145,14 +145,14 @@ func captureSessionKeyOriginal(agent, clientIP string) string {
 // fragment state behind on any of them.
 // Safe to call with nil trackers (CEE disabled).
 func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scanner.FragmentBuffer) {
-	for _, key := range identitykey.CEECandidateKeys(agent, clientIP) {
+	for _, identity := range identitykey.CEECandidateIdentities(agent, clientIP) {
 		if et != nil {
-			et.Delete(key)
+			et.Delete(identity)
 		}
 		if fb != nil {
-			fb.Delete(key)
+			fb.Delete(identity.Stream(""))
 			for _, suffix := range ceeFragmentStreamSuffixes {
-				fb.Delete(key + suffix)
+				fb.Delete(identity.Stream(suffix))
 			}
 			// The JSON body streams are key + "|body-json|" + bucket. The
 			// "|body-json|" delimiter after the full session key means this
@@ -160,7 +160,7 @@ func ResetCEEState(agent, clientIP string, et *scanner.EntropyTracker, fb *scann
 			// prefix of this one (for example 10.0.0.5 vs 10.0.0.50): agent
 			// names cannot contain "|", so no base key is a structural prefix
 			// of another base key's body-json namespace.
-			fb.DeletePrefix(key + ceeJSONBodyStreamPrefix)
+			fb.DeletePrefix(identity.Stream(ceeJSONBodyStreamPrefix))
 		}
 	}
 }
@@ -542,7 +542,7 @@ type ceeResult struct {
 // invites argument-order errors, and every added stream lengthened it further
 // (see the options-struct convention in CLAUDE.md).
 type ceeAdmitOptions struct {
-	SessionKey           string
+	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
 	PartitionReason      string
@@ -561,7 +561,8 @@ type ceeAdmitOptions struct {
 }
 
 func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
-	sessionKey := opts.SessionKey
+	identity := identitykey.NewCEEIdentity(opts.Agent, opts.ClientIP, opts.ActorAuth)
+	sessionKey := identity.Key()
 	outbound, bodyFragmentPayloads, keyPayload := opts.Outbound, opts.BodyFragmentPayloads, opts.KeyPayload
 	pathPayload := opts.PathPayload
 	targetURL, agent := opts.TargetURL, opts.Agent
@@ -587,16 +588,16 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	entropyExempt := ceeEntropyExempt(targetURL, ceeCfg.EntropyBudget.ExemptDomains)
 	if et != nil && ceeCfg.EntropyBudget.Enabled && !entropyExempt && (len(outbound) > 0 || len(keyPayload) > 0) {
 		if len(outbound) > 0 {
-			et.Record(sessionKey, outbound)
+			et.Record(identity, outbound)
 		}
 		if len(keyPayload) > 0 {
-			et.Record(sessionKey, keyPayload)
+			et.Record(identity, keyPayload)
 		}
-		if et.BudgetExceeded(sessionKey) {
+		if et.BudgetExceeded(identity) {
 			result.EntropyHit = true
 			m.RecordCrossRequestEntropyExceeded()
 			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
-				et.CurrentUsage(sessionKey), et.Budget())
+				et.CurrentUsage(identity), et.Budget())
 			actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
 				logger.LogBlocked(actx, "cross_request_entropy", detail)
@@ -627,6 +628,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	// Fragment reassembly DLP check (legacy raw, body fields, keys, paths).
 	sctx := ceeStreamContext{
 		SessionKey: sessionKey,
+		Identity:   identity,
 		TargetURL:  targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID,
 		Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
 	}
@@ -693,6 +695,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 // three positional signatures again (CLAUDE.md options-struct convention).
 type ceeStreamContext struct {
 	SessionKey string
+	Identity   identitykey.CEEIdentity
 	TargetURL  string
 	Agent      string
 	ClientIP   string
@@ -716,14 +719,13 @@ func ceeFragmentScanInGroup(ctx context.Context, bufferKey, group string, data [
 	if len(data) == 0 {
 		return nil
 	}
-	owner := sctx.SessionKey
-	if owner == "" {
-		owner = bufferKey
-	}
 	if group == "" {
 		group = bufferKey
 	}
-	return ceeFragmentEvaluate(ctx, bufferKey, fb.AppendOwnedInGroup(owner, group, bufferKey, data), false, sctx)
+	stream := sctx.Identity.Stream(strings.TrimPrefix(bufferKey, sctx.SessionKey))
+	budget := sctx.Identity.Stream(strings.TrimPrefix(group, sctx.SessionKey))
+	appendResult, matches := fb.AppendAndScanOwnedInGroup(ctx, sctx.Identity, budget, stream, data, sctx.Scanner)
+	return ceeFragmentEvaluate(ctx, appendResult, matches, sctx)
 }
 
 // ceeFragmentScanSegments is ceeFragmentScan for a position-aware path stream.
@@ -736,22 +738,18 @@ func ceeFragmentScanSegments(ctx context.Context, bufferKey string, payload *cee
 	}
 	// Over-depth paths are denied earlier in ceeAdmit, before the
 	// fragment-reassembly gate, so they never reach this point.
-	owner := sctx.SessionKey
-	if owner == "" {
-		owner = bufferKey
-	}
-	appendResult := fb.AppendPathSegmentsOwned(owner, bufferKey, payload.segments)
-	return ceeFragmentEvaluate(ctx, bufferKey, appendResult, true, sctx)
+	stream := sctx.Identity.Stream(strings.TrimPrefix(bufferKey, sctx.SessionKey))
+	appendResult, matches := fb.AppendAndScanPathSegmentsOwned(ctx, sctx.Identity, stream, payload.segments, sctx.Scanner)
+	return ceeFragmentEvaluate(ctx, appendResult, matches, sctx)
 }
 
 // ceeFragmentEvaluate turns an append outcome into a CEE result: it fails
-// closed on capacity exhaustion, then scans the reassembled stream for DLP
-// matches. Shared so every fragment stream reports identically.
-func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult scanner.FragmentAppendResult, pathStream bool, sctx ceeStreamContext) *ceeResult {
+// closed on capacity exhaustion and reports DLP matches from the pre-eviction
+// snapshot. Shared so every fragment stream reports identically.
+func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppendResult, matches []scanner.DLPMatch, sctx ceeStreamContext) *ceeResult {
 	targetURL, agent := sctx.TargetURL, sctx.Agent
 	clientIP, requestID := sctx.ClientIP, sctx.RequestID
 	ceeCfg := sctx.Config
-	fb, sc := sctx.Fragments, sctx.Scanner
 	logger, m := sctx.Logger, sctx.Metrics
 	if appendResult.PathDepthExceeded {
 		m.RecordCrossRequestPathDepthExceeded()
@@ -788,10 +786,6 @@ func ceeFragmentEvaluate(ctx context.Context, bufferKey string, appendResult sca
 			FragmentHit: true,
 			Reason:      detail,
 		}
-	}
-	matches := fb.ScanForSecrets(ctx, bufferKey, sc)
-	if pathStream {
-		matches = fb.ScanPathForSecrets(ctx, bufferKey, sc)
 	}
 	if len(matches) == 0 {
 		return nil

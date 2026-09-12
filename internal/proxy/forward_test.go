@@ -4858,7 +4858,7 @@ func TestConnectCEEEntropyNotFed(t *testing.T) {
 	}
 
 	sessionKey := CeeSessionKey(agentAnonymous, adaptiveSessionKeyLoopback)
-	usageBefore := et.CurrentUsage(sessionKey)
+	usageBefore := et.CurrentUsage(testCEEIdentity(sessionKey))
 
 	// Send 10 CONNECT requests to the same host. If hostname were still
 	// recorded, this would easily exceed the 10-bit budget.
@@ -4881,13 +4881,13 @@ func TestConnectCEEEntropyNotFed(t *testing.T) {
 		_ = conn.Close()
 	}
 
-	usageAfter := et.CurrentUsage(sessionKey)
+	usageAfter := et.CurrentUsage(testCEEIdentity(sessionKey))
 	if usageAfter != usageBefore {
 		t.Errorf("entropy usage changed after %d CONNECT requests: before=%.2f after=%.2f; "+
 			"CONNECT hostname must not be recorded to entropy budget", rounds, usageBefore, usageAfter)
 	}
 
-	if et.BudgetExceeded(sessionKey) {
+	if et.BudgetExceeded(testCEEIdentity(sessionKey)) {
 		t.Error("entropy budget exceeded after CONNECT-only traffic; hostname must not feed budget")
 	}
 }

@@ -325,24 +325,24 @@ func TestResetCEEStateClearsJSONBodyStreams(t *testing.T) {
 	}
 	bodyKey := ceeJSONBodyFragmentSessionKey(sessionKey, bucket)
 
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("first body fragment exceeded capacity")
 	}
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("second body fragment exceeded capacity")
 	}
-	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) == 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(bodyKey), sc); len(matches) == 0 {
 		t.Fatal("control did not reassemble the JSON body stream")
 	}
 
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeyPrefix)); result.CapacityExceeded {
 		t.Fatal("post-control first fragment exceeded capacity")
 	}
 	ResetCEEState(testCEEAgent, testCEEClientIP, nil, fb)
-	if result := fb.Append(bodyKey, []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
+	if result := fb.Append(testCEEIdentity(bodyKey), []byte(testCEEAWSKeySuffix)); result.CapacityExceeded {
 		t.Fatal("post-reset second fragment exceeded capacity")
 	}
-	if matches := fb.ScanForSecrets(t.Context(), bodyKey, sc); len(matches) != 0 {
+	if matches := fb.ScanForSecrets(t.Context(), testCEEStream(bodyKey), sc); len(matches) != 0 {
 		t.Fatalf("reset retained JSON body fragments: %#v", matches)
 	}
 }
@@ -374,8 +374,8 @@ func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
 	const sessionKey = "victim-session"
 	admit := func() ceeResult {
 		return ceeAdmit(t.Context(), ceeAdmitOptions{
-			SessionKey: sessionKey, Outbound: []byte("ordinary"),
-			TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
+			Outbound: []byte("ordinary"),
+			ClientIP: sessionKey, TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
 			Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
 		})
 	}
@@ -387,7 +387,8 @@ func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
 	}
 
 	fb.Close()
-	if seeded := fb.AppendOwned("another-identity", sessionKey, []byte("foreign")); seeded.OwnerMismatch || seeded.CapacityExceeded {
+	foreign := testCEEIdentity("victim")
+	if seeded := fb.AppendOwned(foreign, foreign.Stream("-session"), []byte("foreign")); seeded.OwnerMismatch || seeded.CapacityExceeded {
 		t.Fatalf("seeding a foreign-owned stream = %+v, want admission", seeded)
 	}
 	result := admit()
@@ -432,8 +433,8 @@ func TestCEEFragmentGlobalCapacityFailsClosed(t *testing.T) {
 
 	admit := func(sessionKey string, buckets map[string][]byte) ceeResult {
 		return ceeAdmit(t.Context(), ceeAdmitOptions{
-			SessionKey: sessionKey, Outbound: []byte("ordinary"), BodyFragmentPayloads: buckets,
-			TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
+			Outbound: []byte("ordinary"), BodyFragmentPayloads: buckets,
+			ClientIP: sessionKey, TargetURL: "http://api.vendor.example", Config: cfg.CrossRequestDetection,
 			Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
 		})
 	}
@@ -650,13 +651,13 @@ func TestCeeAdmit_EmptyOutbound(t *testing.T) {
 	ceeCfg := config.CrossRequestDetection{
 		EntropyBudget: config.CrossRequestEntropyBudget{Enabled: true},
 	}
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg})
 	if result.Blocked || result.EntropyHit || result.FragmentHit {
 		t.Error("expected clean result for empty outbound")
 	}
 
 	// Also test zero-length slice.
-	result = ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte{}, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg})
+	result = ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte{}, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg})
 	if result.Blocked || result.EntropyHit || result.FragmentHit {
 		t.Error("expected clean result for zero-length outbound")
 	}
@@ -679,7 +680,7 @@ func TestCeeAdmit_EntropyBudgetBlock(t *testing.T) {
 	}
 
 	payload := []byte("some outbound data with entropy")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 	if !result.Blocked {
 		t.Fatal("expected block on entropy budget exceeded")
 	}
@@ -708,7 +709,7 @@ func TestCeeAdmit_EntropyBudgetWarn(t *testing.T) {
 	}
 
 	payload := []byte("outbound data that exceeds budget")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 	if result.Blocked {
 		t.Error("expected no block in warn mode")
 	}
@@ -753,7 +754,7 @@ func TestCeeAdmit_EntropyBudgetActionWinsOverSectionAction(t *testing.T) {
 	}
 
 	payload := []byte("outbound data that exceeds budget")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: payload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 
 	if result.Blocked {
 		t.Fatal("entropy budget action warn must decide; a section action of block does not apply to budget crossings")
@@ -788,12 +789,12 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	part1 := "AKI" + "A"
 	part2 := "IOSF" + "ODNN7EXAMPLE"
 
-	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(part1), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(part1), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result1.Blocked {
 		t.Fatal("first fragment should not block")
 	}
 
-	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(part2), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(part2), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result2.Blocked {
 		t.Fatal("expected block after fragment reassembly completes secret")
 	}
@@ -811,7 +812,8 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 
 	fb := scanner.NewFragmentBuffer(65536, 1, 300)
 	t.Cleanup(fb.Close)
-	if result := fb.Append("trusted-session", []byte("first fragment")); result.CapacityExceeded {
+	trusted := testCEEIdentity(testCEEClientIP)
+	if result := fb.Append(trusted, []byte("first fragment")); result.CapacityExceeded {
 		t.Fatal("trusted session did not fit")
 	}
 	m := metrics.New()
@@ -825,11 +827,11 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 		Action: config.ActionWarn,
 	}
 
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: "new-session", Outbound: []byte("new fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("new fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: "new-client", RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result.Blocked || !strings.Contains(result.Reason, "session capacity exhausted") {
 		t.Fatalf("capacity result = %+v, want visible fail-closed capacity denial", result)
 	}
-	established := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: "trusted-session", Outbound: []byte("second fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	established := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("second fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if established.Blocked {
 		t.Fatalf("established session = %+v, want admission at capacity", established)
 	}
@@ -873,13 +875,13 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	suffix := "IOSF" + "ODNN7EXAMPLE"
 
 	// First request - prefix only.
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(prefix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(prefix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result.FragmentHit {
 		t.Error("prefix alone should not trigger FragmentHit")
 	}
 
 	// Second request - suffix completes the secret across fragments.
-	result = ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(suffix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: "req-2", Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result = ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(suffix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: "req-2", Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result.Blocked {
 		t.Error("expected no block in warn mode")
 	}
@@ -912,7 +914,7 @@ func TestCeeAdmit_SingleBodyNoFragmentHit(t *testing.T) {
 	}
 
 	fakeKey := "AKI" + "A" + "IOSF" + "ODNN7EXAMPLE"
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(fakeKey), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(fakeKey), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result.FragmentHit {
 		t.Error("single-body secret should NOT trigger FragmentHit (body DLP handles it)")
 	}
@@ -951,14 +953,14 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 
 	// First request - prefix only. Entropy will fire on this one (tiny budget).
 	prefix := "AKI" + "A"
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(prefix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(prefix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result.EntropyHit {
 		t.Error("expected EntropyHit = true on first request (tiny budget)")
 	}
 
 	// Second request - suffix completes secret across fragments AND entropy.
 	suffix := "IOSF" + "ODNN7EXAMPLE"
-	result = ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte(suffix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: "req-2", Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result = ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(suffix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: "req-2", Config: ceeCfg, Entropy: et, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result.FragmentHit {
 		t.Error("expected FragmentHit = true for cross-request secret")
 	}
@@ -1157,13 +1159,13 @@ func TestCeeAdmit_KeyFragmentDLPBlock(t *testing.T) {
 	keyPart2 := []byte("IOSF" + "ODNN7EXAMPLE")
 
 	// Request 1: first key fragment.
-	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte("1"), KeyPayload: keyPart1, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("1"), KeyPayload: keyPart1, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result1.Blocked {
 		t.Fatal("first key fragment should not block")
 	}
 
 	// Request 2: second key fragment completes the secret.
-	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte("2"), KeyPayload: keyPart2, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("2"), KeyPayload: keyPart2, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result2.Blocked {
 		t.Fatal("expected block after key-fragment reassembly completes secret")
 	}
@@ -1192,7 +1194,7 @@ func TestCeeAdmit_KeyEntropyTracked(t *testing.T) {
 
 	// keyPayload carries all the entropy; outbound value is just "1".
 	keyPayload := []byte("x7k9mQ2pR4wL8nJ5vB3cT6yH0")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: []byte("1"), KeyPayload: keyPayload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("1"), KeyPayload: keyPayload, TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 	if !result.Blocked {
 		t.Fatal("expected block: high-entropy key payload should exceed 1-bit budget")
 	}
@@ -1276,7 +1278,7 @@ func TestCeeAdmit_EntropyBudgetRecordsOutboundBytes(t *testing.T) {
 	}
 
 	outbound := []byte("opaque-outbound-x7k9mQ2pR4wL8nJ5")
-	result := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: outbound, TargetURL: "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
+	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: outbound, TargetURL: "http://example.com/api/tokens/x7k9mQ2pR4wL8nJ5", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Entropy: et, Logger: logger, Metrics: m})
 	if !result.Blocked {
 		t.Fatal("expected block: high-entropy outbound bytes should exceed 1-bit budget")
 	}
@@ -1314,14 +1316,14 @@ func TestCeeAdmit_OutboundFragmentReassemblySecret(t *testing.T) {
 	// First request: secret prefix spans path and query data.
 	// Passed directly to ceeAdmit (not via urlPayload which excludes paths).
 	payload1 := []byte("/check/" + "AKI" + "A" + "IOSF")
-	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: payload1, TargetURL: "http://example.com/check", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result1 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: payload1, TargetURL: "http://example.com/check", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if result1.Blocked {
 		t.Fatal("first fragment should not block")
 	}
 
 	// Second request: remaining secret suffix.
 	payload2 := []byte("ODNN7EXAMPLE1234")
-	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{SessionKey: testCEESessionKey, Outbound: payload2, TargetURL: "http://example.com/data", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
+	result2 := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: payload2, TargetURL: "http://example.com/data", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if !result2.Blocked {
 		t.Fatal("expected block after fragment reassembly completes secret across path/query boundary")
 	}
@@ -1482,8 +1484,8 @@ func TestReload_CEEPreservesStateAndAppliesLimits(t *testing.T) {
 
 	tracker := p.EntropyTrackerPtr().Load()
 	buffer := p.FragmentBufferPtr().Load()
-	tracker.Record("session", []byte("abc"))
-	buffer.Append("session", []byte("first-"))
+	tracker.Record(testCEEIdentity("session"), []byte("abc"))
+	buffer.Append(testCEEIdentity("session"), []byte("first-"))
 
 	unrelated := cfg.Clone()
 	unrelated.KillSwitch.Message = "preserve CEE history"
@@ -1493,8 +1495,8 @@ func TestReload_CEEPreservesStateAndAppliesLimits(t *testing.T) {
 	if p.EntropyTrackerPtr().Load() != tracker || p.FragmentBufferPtr().Load() != buffer {
 		t.Fatal("unrelated reload replaced CEE state")
 	}
-	tracker.Record("session", []byte("abc"))
-	if !tracker.BudgetExceeded("session") {
+	tracker.Record(testCEEIdentity("session"), []byte("abc"))
+	if !tracker.BudgetExceeded(testCEEIdentity("session")) {
 		t.Fatal("unrelated reload cleared entropy history")
 	}
 
@@ -1510,7 +1512,7 @@ func TestReload_CEEPreservesStateAndAppliesLimits(t *testing.T) {
 	if got := tracker.Budget(); got != 6 {
 		t.Fatalf("entropy budget after reload = %v, want 6", got)
 	}
-	buffer.Append("session", []byte("second"))
+	buffer.Append(testCEEIdentity("session"), []byte("second"))
 	if got := buffer.TotalBufferBytes(); got > 8 {
 		t.Fatalf("fragment buffer retained %d bytes after limit reload, want at most 8", got)
 	}
@@ -1532,7 +1534,7 @@ func TestReload_CEEPathPositionStatePersistsAndAppliesLimits(t *testing.T) {
 
 	buffer := p.FragmentBufferPtr().Load()
 	const pathKey = "path-session|path"
-	buffer.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("one")})
+	buffer.AppendPathSegments(testCEEIdentity(pathKey), [][]byte{[]byte("upload"), []byte("one")})
 
 	unrelated := cfg.Clone()
 	unrelated.KillSwitch.Message = "preserve path CEE history"
@@ -1542,7 +1544,7 @@ func TestReload_CEEPathPositionStatePersistsAndAppliesLimits(t *testing.T) {
 	if p.FragmentBufferPtr().Load() != buffer {
 		t.Fatal("unrelated reload replaced path CEE state")
 	}
-	buffer.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("two")})
+	buffer.AppendPathSegments(testCEEIdentity(pathKey), [][]byte{[]byte("upload"), []byte("two")})
 	if got, want := buffer.TotalBufferBytes(), len("uploadonetwo"); got != want {
 		t.Fatalf("reload lost path position state: buffered %d bytes, want %d", got, want)
 	}
@@ -1582,7 +1584,7 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	admissionDone := make(chan ceeAdmission, 1)
 	go func() {
 		admissionDone <- p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
-			SessionKey: "session", Outbound: []byte("abc"), TargetURL: "https://api.vendor.example",
+			Outbound: []byte("abc"), TargetURL: "https://api.vendor.example",
 			ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
 		})
 	}()
@@ -1621,7 +1623,7 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 	}
 	p.ceeAdmissionLocked = nil
 	admission = p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
-		SessionKey: "session", Outbound: []byte(""), TargetURL: "https://api.vendor.example",
+		Outbound: []byte(""), TargetURL: "https://api.vendor.example",
 		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
 	})
 	if !admission.Active || admission.Result.Blocked || admission.Config.EntropyBudget.BitsPerWindow != 1000 {
@@ -1648,7 +1650,7 @@ func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
 
 	const payload = "reload_secret_"
 	before := p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
-		SessionKey: "session", Outbound: []byte(payload), TargetURL: "https://api.vendor.example",
+		Outbound: []byte(payload), TargetURL: "https://api.vendor.example",
 		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
 	})
 	if !before.Active || before.Result.FragmentHit {
@@ -1669,7 +1671,7 @@ func TestReload_CEEAdmissionUsesLiveScannerAndMetadata(t *testing.T) {
 	}
 
 	after := p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
-		SessionKey: "session", Outbound: []byte("canary"), TargetURL: "https://api.vendor.example",
+		Outbound: []byte("canary"), TargetURL: "https://api.vendor.example",
 		ClientIP: "127.0.0.1", RequestID: "req", IncludeFragments: true,
 	})
 	if !after.Active || !after.Result.Blocked || !after.Result.FragmentHit {
@@ -1699,7 +1701,7 @@ func TestCurrentCEEEntropySnapshotsAdaptiveGeneration(t *testing.T) {
 	t.Cleanup(p.Close)
 
 	const sessionKey = "connect-session"
-	p.entropyTrackerPtr.Load().Record(sessionKey, []byte("high-entropy-payload-abcdefghijklmnop"))
+	p.entropyTrackerPtr.Load().Record(testCEEIdentity(sessionKey), []byte("high-entropy-payload-abcdefghijklmnop"))
 
 	reloaded := cfg.Clone()
 	reloaded.AdaptiveEnforcement.EscalationThreshold = 1
@@ -1709,7 +1711,7 @@ func TestCurrentCEEEntropySnapshotsAdaptiveGeneration(t *testing.T) {
 		t.Fatal("adaptive policy reload failed")
 	}
 
-	snapshot := p.currentCEEEntropy(sessionKey)
+	snapshot := p.currentCEEEntropy(testCEEIdentity(sessionKey))
 	if !snapshot.Active || !snapshot.Exceeded {
 		t.Fatalf("entropy snapshot = %+v, want active exceeded state", snapshot)
 	}
@@ -1884,31 +1886,31 @@ func TestResetCEEState(t *testing.T) {
 	pathKey := key + ceeStreamPathSuffix
 
 	// Build up state.
-	et.Record(key, []byte("high-entropy-payload-abcdefghijklmnop"))
-	fb.Append(key, []byte("fragment-a"))
-	fb.Append(keysKey, []byte("fragment-b"))
-	fb.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("path-data")})
+	et.Record(testCEEIdentity(key), []byte("high-entropy-payload-abcdefghijklmnop"))
+	fb.Append(testCEEIdentity(key), []byte("fragment-a"))
+	fb.Append(testCEEIdentity(keysKey), []byte("fragment-b"))
+	fb.AppendPathSegments(testCEEIdentity(pathKey), [][]byte{[]byte("upload"), []byte("path-data")})
 
-	if et.CurrentUsage(key) == 0 {
+	if et.CurrentUsage(testCEEIdentity(key)) == 0 {
 		t.Fatal("expected non-zero entropy before reset")
 	}
 
 	ResetCEEState(agent, ip, et, fb)
 
-	if et.CurrentUsage(key) != 0 {
+	if et.CurrentUsage(testCEEIdentity(key)) != 0 {
 		t.Error("entropy should be cleared after reset")
 	}
-	fb.AppendPathSegments(pathKey, [][]byte{[]byte("upload"), []byte("IOSFODNN7EXAMPLE")})
+	fb.AppendPathSegments(testCEEIdentity(pathKey), [][]byte{[]byte("upload"), []byte("IOSFODNN7EXAMPLE")})
 	sc := scanner.MustNew(config.Defaults())
 	defer sc.Close()
-	if matches := fb.ScanPathForSecrets(t.Context(), pathKey, sc); len(matches) != 0 {
+	if matches := fb.ScanPathForSecrets(t.Context(), testCEEStream(pathKey), sc); len(matches) != 0 {
 		t.Errorf("reset retained path-position fragments: got %d cross-request matches", len(matches))
 	}
 
 	// Verify fragment buffer is cleared: append a partial secret suffix after
 	// reset. If old fragments were still present, concatenation with the old
 	// prefix could produce a match. An empty buffer + this suffix alone cannot.
-	fb.Append(key, []byte("OSFODNN7EXAMPLE"))
+	fb.Append(testCEEIdentity(key), []byte("OSFODNN7EXAMPLE"))
 	totalAfter := fb.TotalBufferBytes()
 	// Only post-reset data should be present: the generic suffix plus the
 	// position-aware path's static route and suffix.

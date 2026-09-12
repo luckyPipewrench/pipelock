@@ -1282,7 +1282,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
 		ceeAdmission := rp.owner.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-			SessionKey: ceeSession, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+			ActorAuth: actorAuth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
 			PartitionReason: ceePayloads.partitionReason,
 			KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 			RequestID: requestID, IncludeFragments: true,

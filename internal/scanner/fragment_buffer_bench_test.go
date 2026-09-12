@@ -19,7 +19,7 @@ func BenchmarkFragmentBuffer_Append(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		fb.Append("session1", payload)
+		fb.Append(testCEEIdentity("session1"), payload)
 	}
 }
 
@@ -37,8 +37,9 @@ func BenchmarkFragmentBuffer_AppendAndScan(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		fb.Append("session1", payload)
-		fb.ScanForSecrets(context.Background(), "session1", sc)
+		identity := testCEEIdentity("session1")
+		fb.Append(identity, payload)
+		fb.ScanForSecrets(context.Background(), identity.Stream(""), sc)
 	}
 }
 
@@ -52,7 +53,7 @@ func BenchmarkFragmentBufferDeletePrefix(b *testing.B) {
 		fb := NewFragmentBuffer(65536, sessions, 300)
 		for i := 0; i < sessions; i++ {
 			key := "10.0.0.5|body-json|" + strconv.Itoa(i)
-			fb.Append(key, []byte("value"))
+			fb.Append(testCEEIdentity(key), []byte("value"))
 		}
 		return fb
 	}
@@ -61,7 +62,7 @@ func BenchmarkFragmentBufferDeletePrefix(b *testing.B) {
 		b.StopTimer()
 		fb := build()
 		b.StartTimer()
-		fb.DeletePrefix("10.0.0.5|body-json|")
+		fb.DeletePrefix(testCEEStream("10.0.0.5|body-json|"))
 		b.StopTimer()
 		fb.Close()
 	}

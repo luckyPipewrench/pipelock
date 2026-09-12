@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -36,8 +37,8 @@ func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	if oldTracker == nil || oldCfg.EntropyBudget.BitsPerWindow != 1 {
 		t.Fatalf("old CEE snapshot = tracker:%p cfg:%+v", oldTracker, oldCfg)
 	}
-	oldTracker.Record(testMCPSessionKey, []byte("abc"))
-	if !oldTracker.BudgetExceeded(testMCPSessionKey) {
+	oldTracker.Record(testMCPCEEIdentity(testMCPSessionKey), []byte("abc"))
+	if !oldTracker.BudgetExceeded(testMCPCEEIdentity(testMCPSessionKey)) {
 		t.Fatal("strict snapshot did not enforce its own budget")
 	}
 
@@ -69,7 +70,7 @@ func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	if newCfg.EntropyBudget.BitsPerWindow != 1000 {
 		t.Fatalf("new policy budget = %v, want 1000", newCfg.EntropyBudget.BitsPerWindow)
 	}
-	if newTracker.BudgetExceeded(testMCPSessionKey) {
+	if newTracker.BudgetExceeded(testMCPCEEIdentity(testMCPSessionKey)) {
 		t.Fatal("new permissive snapshot retained the old strict limit")
 	}
 }
@@ -88,7 +89,7 @@ func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
 	if oldTracker == nil || oldBuffer != nil {
 		t.Fatalf("initial components = tracker:%p buffer:%p", oldTracker, oldBuffer)
 	}
-	oldTracker.Record(testMCPSessionKey, []byte("secret state"))
+	oldTracker.Record(testMCPCEEIdentity(testMCPSessionKey), []byte("secret state"))
 
 	cfg.EntropyBudget.Enabled = false
 	cfg.FragmentReassembly.Enabled = true
@@ -99,10 +100,10 @@ func TestCEEDepsReconfigure_RetiresAndRecreatesComponents(t *testing.T) {
 	if tracker != nil || oldBuffer == nil {
 		t.Fatalf("fragment-only components = tracker:%p buffer:%p", tracker, oldBuffer)
 	}
-	if got := oldTracker.CurrentUsage(testMCPSessionKey); got != 0 {
+	if got := oldTracker.CurrentUsage(testMCPCEEIdentity(testMCPSessionKey)); got != 0 {
 		t.Fatalf("retired tracker retained %.1f bits", got)
 	}
-	oldBuffer.Append(testMCPSessionKey, []byte("split-secret"))
+	oldBuffer.Append(testMCPCEEIdentity(testMCPSessionKey), []byte("split-secret"))
 
 	cfg.EntropyBudget.Enabled = true
 	cfg.FragmentReassembly.Enabled = false
@@ -129,10 +130,10 @@ func TestCEEDepsFragmentMaxSessionsAppliesAtConstructionAndReload(t *testing.T) 
 	if buffer == nil {
 		t.Fatal("NewCEEDeps did not construct fragment buffer")
 	}
-	if result := buffer.Append("first", []byte("one")); result.CapacityExceeded {
+	if result := buffer.Append(testMCPCEEIdentity("first"), []byte("one")); result.CapacityExceeded {
 		t.Fatalf("first stream result = %+v, want admission", result)
 	}
-	if result := buffer.Append("second", []byte("two")); !result.CapacityExceeded {
+	if result := buffer.Append(testMCPCEEIdentity("second"), []byte("two")); !result.CapacityExceeded {
 		t.Fatalf("second stream result = %+v, want configured capacity denial", result)
 	}
 
@@ -143,7 +144,7 @@ func TestCEEDepsFragmentMaxSessionsAppliesAtConstructionAndReload(t *testing.T) 
 	if reloaded != buffer {
 		t.Fatal("reload replaced fragment buffer instead of applying configured capacity")
 	}
-	if result := reloaded.Append("second", []byte("two")); result.CapacityExceeded {
+	if result := reloaded.Append(testMCPCEEIdentity("second"), []byte("two")); result.CapacityExceeded {
 		t.Fatalf("reloaded second stream result = %+v, want admission", result)
 	}
 }
@@ -157,25 +158,25 @@ func TestCEEDepsReconfigure_PreservesHistoryAndAppliesStricterPolicy(t *testing.
 	}
 	cee := NewCEEDeps(cfg, metrics.New())
 	tracker, _ := cee.Components()
-	tracker.Record(testMCPSessionKey, []byte("recorded-before-reload"))
+	tracker.Record(testMCPCEEIdentity(testMCPSessionKey), []byte("recorded-before-reload"))
 
 	cee.Reconfigure(cfg, metrics.New())
 	unchanged, _ := cee.Components()
-	if unchanged != tracker || unchanged.CurrentUsage(testMCPSessionKey) == 0 {
+	if unchanged != tracker || unchanged.CurrentUsage(testMCPCEEIdentity(testMCPSessionKey)) == 0 {
 		t.Fatal("unrelated reload discarded the active entropy tracker or its history")
 	}
 
 	cfg.EntropyBudget.BitsPerWindow = 1
 	cee.Reconfigure(cfg, metrics.New())
 	strict, _ := cee.Components()
-	if strict != tracker || !strict.BudgetExceeded(testMCPSessionKey) {
+	if strict != tracker || !strict.BudgetExceeded(testMCPCEEIdentity(testMCPSessionKey)) {
 		t.Fatal("stricter reload did not apply to retained entropy history")
 	}
 
 	cfg.Enabled = false
 	cee.Reconfigure(cfg, metrics.New())
 	retired, buffer := cee.Components()
-	if retired != nil || buffer != nil || tracker.CurrentUsage(testMCPSessionKey) != 0 {
+	if retired != nil || buffer != nil || tracker.CurrentUsage(testMCPCEEIdentity(testMCPSessionKey)) != 0 {
 		t.Fatal("disabled reload retained active or buffered CEE state")
 	}
 }
@@ -190,6 +191,10 @@ const (
 	// 300 second window (5 minutes), matching entropy budget default.
 	testMCPWindowSecs = 300
 )
+
+func testMCPCEEIdentity(session string) identitykey.CEEIdentity {
+	return identitykey.NewMCPCEEIdentity(session)
+}
 
 // testMCPScanner creates a Scanner with default DLP patterns and SSRF disabled.
 func testMCPScanner() *scanner.Scanner {
@@ -771,8 +776,8 @@ func TestCeeRecordMCP_OwnerMismatchFailsClosed(t *testing.T) {
 	}
 
 	buffer.Close()
-	fragmentKey := mcpCEEFragmentSessionKey(testMCPSessionKey, "")
-	if seeded := buffer.AppendOwned("another-session", fragmentKey, []byte("foreign")); seeded.OwnerMismatch {
+	foreign := identitykey.NewMCPCEEIdentity("session")
+	if seeded := buffer.AppendOwned(foreign, foreign.Stream("-001"), []byte("foreign")); seeded.OwnerMismatch {
 		t.Fatalf("seeding a foreign-owned stream = %+v, want admission", seeded)
 	}
 	reason := record()
@@ -1136,7 +1141,7 @@ func TestCeeRecordMCP_FragmentDLPBlock(t *testing.T) {
 func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 	fb := scanner.NewFragmentBuffer(65536, 1, testMCPWindowSecs)
 	t.Cleanup(fb.Close)
-	if result := fb.Append("trusted-session", []byte("first fragment")); result.CapacityExceeded {
+	if result := fb.Append(testMCPCEEIdentity("trusted-session"), []byte("first fragment")); result.CapacityExceeded {
 		t.Fatal("trusted session did not fit")
 	}
 

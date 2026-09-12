@@ -37,15 +37,14 @@ func TestReload_CEEPathEnforcementSurvivesUnrelatedReload(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 
-	const sessionKey = "reload-enforce"
 	admit := func(path string) ceeAdmission {
 		u, parseErr := url.Parse("http://example.com" + path)
 		if parseErr != nil {
 			t.Fatalf("parse: %v", parseErr)
 		}
 		return p.admitCurrentCEE(t.Context(), ceeAdmitRequest{
-			SessionKey: sessionKey, PathPayload: pathSegments(u),
-			TargetURL: u.String(), Agent: "agent", ClientIP: "1.2.3.4",
+			PathPayload: pathSegments(u),
+			TargetURL:   u.String(), Agent: "agent", ClientIP: "1.2.3.4",
 			RequestID: "req", IncludeFragments: true,
 		})
 	}

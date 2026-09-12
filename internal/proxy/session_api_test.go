@@ -20,6 +20,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -711,13 +713,13 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	sm.GetOrCreate("agent|10.0.0.1")
 
 	// Build up CEE state.
-	key := CeeSessionKey("agent", "10.0.0.1")
-	et.Record(key, []byte("high-entropy-payload-for-testing"))
-	fb.Append(key, []byte("fragment-data"))
-	fb.Append(key+"|keys", []byte("keys-data"))
-	fb.AppendPathSegments(key+"|path", [][]byte{[]byte("upload"), []byte("path-data")})
+	identity := identitykey.NewCEEIdentity("agent", "10.0.0.1", envelope.ActorAuthSelfDeclared)
+	et.Record(identity, []byte("high-entropy-payload-for-testing"))
+	fb.Append(identity, []byte("fragment-data"))
+	fb.AppendOwned(identity, identity.Stream("|keys"), []byte("keys-data"))
+	fb.AppendPathSegments(identity, [][]byte{[]byte("upload"), []byte("path-data")})
 
-	if et.CurrentUsage(key) == 0 {
+	if et.CurrentUsage(identity) == 0 {
 		t.Fatal("expected non-zero entropy before reset")
 	}
 
@@ -747,7 +749,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	}
 
 	// Entropy should be cleared.
-	if et.CurrentUsage(key) != 0 {
+	if et.CurrentUsage(identity) != 0 {
 		t.Error("entropy should be cleared after reset")
 	}
 

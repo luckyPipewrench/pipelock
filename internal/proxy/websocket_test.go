@@ -3563,8 +3563,17 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
 
+	// Block the backend by its exact host rather than a bare "*". A bare
+	// wildcard is not a loadable blocklist entry: config.Validate refuses it
+	// through ValidateHostMatchList, so this test was exercising a config no
+	// operator can produce. Blocking the literal backend host is the same
+	// scenario and is a pattern the validator accepts.
+	backendHost, _, err := net.SplitHostPort(backendAddr)
+	if err != nil {
+		t.Fatalf("split backend addr %q: %v", backendAddr, err)
+	}
 	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
-		cfg.FetchProxy.Monitoring.Blocklist = []string{"*"}
+		cfg.FetchProxy.Monitoring.Blocklist = []string{backendHost}
 		cfg.Enforce = new(bool) // enforce=false (audit mode)
 	})
 	defer cleanup()
@@ -3573,8 +3582,7 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello))
-	if err != nil {
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	msg, _, err := wsutil.ReadServerData(conn)

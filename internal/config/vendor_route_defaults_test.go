@@ -135,13 +135,28 @@ func TestYAMLExplicitShippedRoutesKeepTheirGovernance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	// Assert the FULL round trip, not just the expiry. The YAML supplies five
+	// fields; checking two would let a loader silently drop the reason or the
+	// owner while this test still reported the operator's list as preserved,
+	// and those two fields are exactly what the governance advisories read.
+	defaults := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions
 	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
-	if len(got) != len(config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions) {
+	if len(got) != len(defaults) {
 		t.Fatalf("operator list was not preserved: %+v", got)
 	}
 	for i, e := range got {
-		if e.Expires != "2020-01-01" {
-			t.Fatalf("entry %d lost the operator's expiry: %+v", i, e)
+		want := config.PathEntropyExclusion{
+			// Load fills an omitted scheme with https; asserting it here pins
+			// that normalization rather than letting it drift unnoticed.
+			Scheme:     "https",
+			Host:       defaults[i].Host,
+			PathPrefix: defaults[i].PathPrefix,
+			Reason:     "operator copy",
+			Owner:      "ops",
+			Expires:    "2020-01-01",
+		}
+		if e != want {
+			t.Fatalf("entry %d round-tripped as %+v, want %+v", i, e, want)
 		}
 	}
 }

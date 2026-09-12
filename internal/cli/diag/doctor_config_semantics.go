@@ -836,6 +836,15 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 // An operator who hand-writes precisely the shipped set is indistinguishable and
 // is treated as inherited. That is the one remaining ambiguity and it is benign:
 // the entries are ours either way.
+// normalizedExclusionScheme folds an omitted scheme to the value Load fills in,
+// so a comparison does not turn a defaulting difference into a provenance one.
+func normalizedExclusionScheme(scheme string) string {
+	if scheme == "" {
+		return "https"
+	}
+	return scheme
+}
+
 func pathEntropyExclusionsAreInherited(cfg *config.Config) bool {
 	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
 	want := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions
@@ -852,8 +861,15 @@ func pathEntropyExclusionsAreInherited(cfg *config.Config) bool {
 		if !strings.EqualFold(got[i].Host, want[i].Host) {
 			return false
 		}
+		// Compare against the NORMALIZED default, not the raw one. Load fills an
+		// omitted Scheme with https, so a config that inherited the defaults
+		// carries https while Defaults() leaves the field empty. Comparing the
+		// raw structs made every inherited entry look operator-authored, which
+		// would have greeted a fresh install with an advisory per shipped route
+		// telling the operator to own a route they never added.
 		a, b := got[i], want[i]
 		a.Host, b.Host = "", ""
+		a.Scheme, b.Scheme = normalizedExclusionScheme(a.Scheme), normalizedExclusionScheme(b.Scheme)
 		if a != b {
 			return false
 		}

@@ -4,6 +4,8 @@
 package diag
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -158,5 +160,37 @@ func TestExplicitShippedRoutesWithExpiryStillWarn(t *testing.T) {
 	}
 	if expired != len(operatorCopy) {
 		t.Fatalf("expiry advisories = %d, want %d; a lapsed operator exemption was silenced", expired, len(operatorCopy))
+	}
+}
+
+// TestLoadedDefaultsAreStillInherited asserts provenance through config.Load,
+// the seam every deployment actually goes through, rather than Defaults().
+//
+// This is the case the Defaults()-only tests could not see: Load fills an
+// omitted Scheme with https while Defaults() leaves it empty, so a raw struct
+// comparison classified an inherited list as operator-authored and would have
+// greeted a fresh install with one advisory per shipped route. Testing a state
+// production never occupies is how that reached a push.
+func TestLoadedDefaultsAreStillInherited(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(path, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.FetchProxy.Monitoring.PathEntropyExclusions) == 0 {
+		t.Fatal("a loaded config inherited no shipped routes; this test is calibrated against a non-empty set")
+	}
+	if !pathEntropyExclusionsAreInherited(cfg) {
+		t.Fatalf("a loaded config that omitted the field was not recognized as inherited: %+v",
+			cfg.FetchProxy.Monitoring.PathEntropyExclusions)
+	}
+	for _, f := range analyzeDoctorPathEntropyExclusions(cfg) {
+		t.Errorf("a fresh install produced an advisory the operator cannot act on: %s", f.Detail)
 	}
 }

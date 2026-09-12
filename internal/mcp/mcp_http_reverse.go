@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -211,6 +212,9 @@ func RunHTTPListenerProxy(
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
 	listenerClients.resetAuthorityToolCfgFn = opts.toolCfg
+	// Bounds presented-but-invalid listener bearer tokens per client address
+	// for the lifetime of this listener.
+	listenerAuthFailures := authlimit.NewDefault()
 	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.ListenerDriftResetFile != "" {
 		if authority, authorityErr := listenerClients.authorityForToolDriftReset(toolCfg); authorityErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: tool drift reset authority unavailable: %v\n", authorityErr)
@@ -359,6 +363,32 @@ func RunHTTPListenerProxy(
 				return
 			}
 		}
+		// Bearer guessing bound. Runs BEFORE the bearer compare so a spent
+		// budget yields no oracle and a parallel burst cannot outrun the count.
+		// Only a request that presents a credential to a token-protected
+		// listener reserves a slot: tokenless listeners never count, and a
+		// bare 407 challenge round trip is free. A resolver-backed principal
+		// (mTLS, OAuth) is still admitted when the address's bearer budget is
+		// spent, so a co-located guesser cannot lock out a verified client.
+		authClientKey := authlimit.ClientKey(r)
+		listenerClients.authMu.Lock()
+		configuredListenerToken, cfgTokenErr := listenerBearerTokenForRequest(opts)
+		listenerClients.authMu.Unlock()
+		if cfgTokenErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
+			http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		credentialPresented := len(r.Header.Values(listenerProxyAuthorization)) > 0 || len(r.Header.Values(listenerAuthorization)) > 0
+		if configuredListenerToken != "" && credentialPresented {
+			if allowed, retry := listenerAuthFailures.Admit(authClientKey); !allowed {
+				principal, principalErr := listenerPrincipalForRequest(r, opts, listenerClients)
+				if principalErr != nil || principal.key == "" {
+					authlimit.Refuse(w, retry)
+					return
+				}
+			}
+		}
 		listenerToken, consumedAuthHeader, authorized, listenerPrincipal, tokenErr := listenerAuthenticationForRequest(r, opts, listenerClients)
 		if tokenErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
@@ -377,6 +407,9 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Proxy-Authenticate", `Bearer realm="pipelock-mcp"`)
 			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 			return
+		}
+		if listenerToken != "" && authorized {
+			listenerAuthFailures.Reset(authClientKey)
 		}
 		// The listener credential is an access-control secret, not agent data
 		// destined for the upstream. Remove it before header DLP and forwarding:

@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -87,6 +88,22 @@ type Handler struct {
 	// Per-token rate limiters.
 	mu       sync.Mutex
 	limiters map[string]scanAPITokenLimiter
+
+	// authFailures bounds presented-but-invalid bearer tokens per client
+	// address; the per-token limiters above only ever see valid tokens.
+	authFailures *authlimit.Limiter
+}
+
+// retryAfterSeconds formats a Retry-After value in whole seconds, rounded up.
+func retryAfterSeconds(d time.Duration) string {
+	secs := int64(d / time.Second)
+	if d%time.Second != 0 {
+		secs++
+	}
+	if secs < 1 {
+		secs = 1
+	}
+	return strconv.FormatInt(secs, 10)
 }
 
 type scanAPITokenLimiter struct {
@@ -104,12 +121,13 @@ func NewHandler(
 	version string,
 ) *Handler {
 	return &Handler{
-		cfg:       cfg,
-		scanner:   sc,
-		policyCfg: policyCfg,
-		metrics:   m,
-		version:   version,
-		limiters:  make(map[string]scanAPITokenLimiter),
+		cfg:          cfg,
+		scanner:      sc,
+		policyCfg:    policyCfg,
+		metrics:      m,
+		version:      version,
+		limiters:     make(map[string]scanAPITokenLimiter),
+		authFailures: authlimit.NewDefault(),
 	}
 }
 
@@ -147,12 +165,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auth: extract and validate bearer token.
+	// Auth: a presented bearer token first reserves one evaluation slot for
+	// the client address, atomically, and is compared only if a slot was free.
+	// A spent budget is refused before the compare so a guesser gets no oracle
+	// and a parallel burst cannot outrun the count. Presenting no token is
+	// rejected but not counted; a valid token releases the reservations.
 	token := extractBearerToken(r)
-	if token == "" || !h.validTokenFor(token, cfg) {
+	if token == "" {
 		h.writeError(w, http.StatusUnauthorized, "", "unauthorized", "Missing or invalid bearer token", false)
 		return
 	}
+	clientKey := authlimit.ClientKey(r)
+	if allowed, retry := h.authFailures.Admit(clientKey); !allowed {
+		w.Header().Set("Retry-After", retryAfterSeconds(retry))
+		h.writeError(w, http.StatusTooManyRequests, "", "rate_limited", "Too many failed authentication attempts", true)
+		return
+	}
+	if !h.validTokenFor(token, cfg) {
+		h.writeError(w, http.StatusUnauthorized, "", "unauthorized", "Missing or invalid bearer token", false)
+		return
+	}
+	h.authFailures.Reset(clientKey)
 
 	// Rate limit: per-token token bucket.
 	if !h.allowRequestFor(token, cfg) {

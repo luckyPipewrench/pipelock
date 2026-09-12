@@ -78,6 +78,13 @@ DIFF_FETCH_ATTEMPTS = 2
 # bound literal and small; a second connection failure remains incomplete work,
 # not an invitation to keep spending the review budget.
 MODEL_CONNECTION_ATTEMPTS = 2
+# A 429 is retried, unlike every other non-200, because the provider rejected
+# the request without doing the work. The ceiling is small and the total sleep
+# is bounded so a sustained outage still ends the run promptly instead of
+# burning the wall-clock budget one chunk at a time.
+MODEL_RATE_LIMIT_ATTEMPTS = 4
+MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS = 2.0
+MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS = 30.0
 # Bounds the admission scan on a pull request with a very long comment history.
 ADMISSION_COMMENT_PAGES = 10
 # A running marker older than any possible job (10-minute admit plus 45-minute
@@ -185,6 +192,17 @@ class ModelTimeout(ReviewError):
 
 class ModelOutputError(ReviewError):
     """A provider response was not a complete, valid structured result."""
+
+
+class ModelRateLimited(ReviewError):
+    """The provider REJECTED the request with 429 and did no work.
+
+    Kept distinct from ModelOutputError because the no-retry policy elsewhere in
+    this file exists to avoid paying twice for a request the provider may have
+    completed. A 429 is the one failure that proves the opposite: nothing was
+    processed and nothing was billed, so retrying is safe and is the only way a
+    transient quota dip does not silently cost a whole review.
+    """
 
 
 class ModelConnectionError(ModelOutputError):
@@ -940,6 +958,27 @@ def budget_allows(deadline: float, mode: str, phase: str = "") -> bool:
     return deadline - time.monotonic() >= llm_call_budget_for(mode, phase)
 
 
+def retry_after_seconds(header: str | None) -> float | None:
+    """Parse a Retry-After header into a bounded sleep, or None when unusable.
+
+    Only the delta-seconds form is honoured. The HTTP-date form is accepted by
+    the spec but depends on clock agreement with the provider, and a skewed
+    clock would turn a short wait into a long one; falling back to the local
+    backoff curve is the safer reading. Anything negative, unparseable, or
+    beyond the ceiling falls back too, so a hostile or mistaken header cannot
+    stall the run.
+    """
+    if not header:
+        return None
+    try:
+        seconds = float(header.strip())
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return min(seconds, MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS)
+
+
 def call_model(system: str, user: str, mode: str, phase: str, correlation: str) -> object:
     api_url, api_key = provider_configuration()
     model = model_for_phase(mode, phase)
@@ -954,7 +993,15 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
         "X-Client-Request-Id": str(uuid.uuid4()),
     }
     payload = build_llm_payload(model, system, user, mode, phase)
-    for attempt in range(1, MODEL_CONNECTION_ATTEMPTS + 1):
+    # Connection retries and rate-limit retries are counted SEPARATELY. They
+    # exist for different reasons: a connect timeout proves non-delivery, while
+    # a 429 proves non-processing. Sharing one counter would let a burst of
+    # rate limits consume the connection budget, or the reverse.
+    connect_attempt = 0
+    rate_limit_attempt = 1
+    while True:
+        connect_attempt += 1
+        attempt = connect_attempt
         try:
             response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
         except requests.ConnectTimeout as exc:
@@ -963,7 +1010,7 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
             # have seen or billed it. This clause must stay ABOVE Timeout,
             # which ConnectTimeout also subclasses, or it never runs.
             log_phase(phase, attempt=attempt, status="connect-timeout", correlation=correlation)
-            if attempt == MODEL_CONNECTION_ATTEMPTS:
+            if connect_attempt >= MODEL_CONNECTION_ATTEMPTS:
                 raise ModelConnectionError("provider connection failed after one retry") from exc
             continue
         except requests.Timeout as exc:
@@ -980,6 +1027,26 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
             log_phase(phase, attempt=attempt, status="request-error", correlation=correlation)
             raise ModelOutputError("provider request failed") from exc
         log_phase(phase, attempt=attempt, status=response.status_code, correlation=correlation)
+        if response.status_code == 429:
+            # Safe to retry, and ONLY this status is: a 429 means the provider
+            # refused to process the request, so there is no completed work to
+            # be billed twice. Honour Retry-After when the provider sends it,
+            # since it knows when the window reopens better than a fixed curve.
+            if rate_limit_attempt >= MODEL_RATE_LIMIT_ATTEMPTS:
+                raise ModelRateLimited(
+                    f"provider rate limited the request (HTTP 429) after {rate_limit_attempt} attempts"
+                )
+            delay = retry_after_seconds(response.headers.get("Retry-After"))
+            if delay is None:
+                delay = min(
+                    MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS * (2 ** (rate_limit_attempt - 1)),
+                    MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS,
+                )
+            log_phase(phase, attempt=attempt, status=f"rate-limited-sleep-{delay:.0f}s", correlation=correlation)
+            time.sleep(delay)
+            rate_limit_attempt += 1
+            connect_attempt -= 1  # a rate limit is not a connection attempt
+            continue
         if response.status_code != 200:
             raise ModelOutputError(f"provider returned HTTP {response.status_code}")
         try:
@@ -997,7 +1064,7 @@ def call_model(system: str, user: str, mode: str, phase: str, correlation: str) 
             return json.loads(_content_from_response(data))
         except (ValueError, json.JSONDecodeError) as exc:
             raise ModelOutputError("provider did not return JSON") from exc
-    raise AssertionError("connection retry loop must return or raise")
+    raise AssertionError("retry loop must return or raise")
 
 
 def _required_string(value: object, field_name: str, *, limit: int) -> str:
@@ -3290,13 +3357,27 @@ def run_review(
                     f"review chunk {chunk_index} could not connect after one retry"
                 )
                 continue
-            except ModelOutputError:
+            except ModelRateLimited as exc:
+                # Name the rate limit. The generic message below describes a
+                # malformed payload, and reporting a quota failure in those
+                # words sent readers looking for a parse bug in the diff
+                # instead of at the provider account.
+                progress.incomplete_reasons.append(
+                    f"review chunk {chunk_index} was rate limited by the provider and not reviewed ({exc})"
+                )
+                continue
+            except ModelOutputError as exc:
                 # A provider 500 or malformed response is localized to this
                 # chunk. Later chunks remain independently reviewable; the
                 # missing unit and this reason make derive_state report partial
                 # rather than allowing their success to read as clean.
+                #
+                # The underlying cause is carried through verbatim. Collapsing
+                # every non-200 into "invalid structured response" hid the real
+                # HTTP status from the published comment, so the run log was the
+                # only place the truth existed.
                 progress.incomplete_reasons.append(
-                    f"review chunk {chunk_index} returned an incomplete or invalid structured response"
+                    f"review chunk {chunk_index} failed: {exc}"
                 )
                 continue
             progress.reviewed_units += len(chunk)

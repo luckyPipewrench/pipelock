@@ -4115,3 +4115,83 @@ class LedgerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RateLimitRetryTest(unittest.TestCase):
+    """A 429 is the one non-200 that is safe to retry, and it must say so.
+
+    The runner deliberately never retries a failure that the provider may have
+    completed and billed. A 429 is the opposite case: the request was refused,
+    so nothing was processed. Before this, a transient quota dip cost a whole
+    review AND was published as "an incomplete or invalid structured response",
+    which reads as a malformed payload and sent readers hunting a parse bug.
+    """
+
+    def _response(self, status, headers=None):
+        resp = mock.Mock()
+        resp.status_code = status
+        resp.headers = headers or {}
+        resp.json.return_value = {
+            "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]
+        }
+        return resp
+
+    def test_429_is_retried_then_succeeds(self):
+        ok = self._response(200)
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
+             mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
+             mock.patch.object(pr_review, "llm_timeout_for", return_value=1), \
+             mock.patch.object(pr_review, "build_llm_payload", return_value={}), \
+             mock.patch.object(pr_review, "_content_from_response", return_value="{}"), \
+             mock.patch.object(pr_review.time, "sleep") as slept, \
+             mock.patch.object(pr_review.requests, "post",
+                               side_effect=[self._response(429), self._response(429), ok]) as post:
+            pr_review.call_model("s", "u", "default", "review-chunk-1", "corr")
+        self.assertEqual(post.call_count, 3, "a 429 must be retried, not surfaced as a failure")
+        self.assertTrue(slept.called, "a retry without backoff would hammer a rate-limited provider")
+
+    def test_sustained_429_raises_a_rate_limit_error(self):
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
+             mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
+             mock.patch.object(pr_review, "llm_timeout_for", return_value=1), \
+             mock.patch.object(pr_review, "build_llm_payload", return_value={}), \
+             mock.patch.object(pr_review.time, "sleep"), \
+             mock.patch.object(pr_review.requests, "post", return_value=self._response(429)):
+            with self.assertRaises(pr_review.ModelRateLimited):
+                pr_review.call_model("s", "u", "default", "review-chunk-1", "corr")
+
+    def test_rate_limit_does_not_consume_the_connection_budget(self):
+        """A burst of 429s must not exhaust the retry reserved for connect timeouts."""
+        ok = self._response(200)
+        responses = [self._response(429)] * (pr_review.MODEL_CONNECTION_ATTEMPTS + 1) + [ok]
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
+             mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
+             mock.patch.object(pr_review, "llm_timeout_for", return_value=1), \
+             mock.patch.object(pr_review, "build_llm_payload", return_value={}), \
+             mock.patch.object(pr_review, "_content_from_response", return_value="{}"), \
+             mock.patch.object(pr_review.time, "sleep"), \
+             mock.patch.object(pr_review.requests, "post", side_effect=responses) as post:
+            pr_review.call_model("s", "u", "default", "review-chunk-1", "corr")
+        self.assertEqual(post.call_count, len(responses))
+
+    def test_retry_after_header_is_honoured_and_bounded(self):
+        self.assertEqual(pr_review.retry_after_seconds("5"), 5.0)
+        self.assertIsNone(pr_review.retry_after_seconds(None))
+        self.assertIsNone(pr_review.retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT"))
+        self.assertIsNone(pr_review.retry_after_seconds("-1"))
+        self.assertEqual(
+            pr_review.retry_after_seconds("99999"),
+            pr_review.MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS,
+            "a hostile or mistaken header must not stall the run",
+        )
+
+    def test_non_429_is_still_not_retried(self):
+        """The no-duplicate-charge policy must survive this change."""
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
+             mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
+             mock.patch.object(pr_review, "llm_timeout_for", return_value=1), \
+             mock.patch.object(pr_review, "build_llm_payload", return_value={}), \
+             mock.patch.object(pr_review.requests, "post", return_value=self._response(500)) as post:
+            with self.assertRaises(pr_review.ModelOutputError):
+                pr_review.call_model("s", "u", "default", "review-chunk-1", "corr")
+        self.assertEqual(post.call_count, 1, "a 500 may have been billed and must not be retried")

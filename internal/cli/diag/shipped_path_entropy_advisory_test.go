@@ -128,3 +128,35 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 		}
 	}
 }
+
+// TestExplicitShippedRoutesWithExpiryStillWarn is the YAML-provenance case: an
+// operator writes the five shipped routes verbatim but adds their own expiry,
+// which has lapsed. ApplyDefaults leaves that list alone, so those entries are
+// operator-owned and the expiry advisory must fire. Comparing only host and
+// path prefix treated them as inherited and silenced it.
+func TestExplicitShippedRoutesWithExpiryStillWarn(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	operatorCopy := make([]config.PathEntropyExclusion, 0, len(cfg.FetchProxy.Monitoring.PathEntropyExclusions))
+	for _, def := range cfg.FetchProxy.Monitoring.PathEntropyExclusions {
+		def.Reason = "operator copy"
+		def.Owner = "ops"
+		def.Expires = "2020-01-01"
+		operatorCopy = append(operatorCopy, def)
+	}
+	cfg.FetchProxy.Monitoring.PathEntropyExclusions = operatorCopy
+
+	if pathEntropyExclusionsAreInherited(cfg) {
+		t.Fatal("an operator list carrying its own lifecycle metadata was read as inherited")
+	}
+	expired := 0
+	for _, f := range analyzeDoctorPathEntropyExclusions(cfg) {
+		if strings.Contains(f.Detail, "expired on") {
+			expired++
+		}
+	}
+	if expired != len(operatorCopy) {
+		t.Fatalf("expiry advisories = %d, want %d; a lapsed operator exemption was silenced", expired, len(operatorCopy))
+	}
+}

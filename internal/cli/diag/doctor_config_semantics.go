@@ -843,7 +843,18 @@ func pathEntropyExclusionsAreInherited(cfg *config.Config) bool {
 		return false
 	}
 	for i := range got {
-		if !strings.EqualFold(got[i].Host, want[i].Host) || got[i].PathPrefix != want[i].PathPrefix {
+		// Compare the WHOLE entry, not just the route. Comparing host and prefix
+		// alone let an operator write all five routes with their own governance
+		// metadata - including a past Expires - and still read as inherited, so
+		// the expiry advisory was skipped on an exemption that had lapsed. The
+		// field is inherited only when it is byte-for-byte what ApplyDefaults
+		// would have written, which is the same test ApplyDefaults itself makes.
+		if !strings.EqualFold(got[i].Host, want[i].Host) {
+			return false
+		}
+		a, b := got[i], want[i]
+		a.Host, b.Host = "", ""
+		if a != b {
 			return false
 		}
 	}

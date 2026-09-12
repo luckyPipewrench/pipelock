@@ -5,8 +5,10 @@ package config_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -108,5 +110,38 @@ func TestVendorRouteDefaultsReachAYAMLBackedConfig(t *testing.T) {
 	}
 	if n := len(cfg2.FetchProxy.Monitoring.PathEntropyExclusions); n != 0 {
 		t.Fatalf("an explicit empty list was refilled with %d shipped routes; the operator's opt-out was overridden", n)
+	}
+}
+
+// TestYAMLExplicitShippedRoutesKeepTheirGovernance is the provenance case that
+// route-value comparison could not see. An operator may write all five shipped
+// routes in YAML with their OWN lifecycle metadata, including a past expiry.
+// ApplyDefaults leaves that list alone because it is not nil, so those entries
+// are operator-owned and must keep their advisories. Treating them as inherited
+// silences the expiry warning on an exemption that has already lapsed.
+func TestYAMLExplicitShippedRoutesKeepTheirGovernance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+
+	var b strings.Builder
+	b.WriteString("mode: balanced\nfetch_proxy:\n  monitoring:\n    path_entropy_exclusions:\n")
+	for _, def := range config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions {
+		fmt.Fprintf(&b, "      - host: %q\n        path_prefix: %q\n        reason: \"operator copy\"\n        owner: \"ops\"\n        expires: \"2020-01-01\"\n", def.Host, def.PathPrefix)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
+	if len(got) != len(config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions) {
+		t.Fatalf("operator list was not preserved: %+v", got)
+	}
+	for i, e := range got {
+		if e.Expires != "2020-01-01" {
+			t.Fatalf("entry %d lost the operator's expiry: %+v", i, e)
+		}
 	}
 }

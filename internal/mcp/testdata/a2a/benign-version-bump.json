@@ -1,0 +1,17 @@
+{
+  "name": "Vendor Search Agent",
+  "description": "Searches vendor documentation and returns relevant passages.",
+  "url": "https://agent.vendor.example/a2a",
+  "version": "2.1.0",
+  "provider": {"name": "Vendor Inc", "url": "https://vendor.example"},
+  "skills": [
+    {"id": "search", "name": "Search", "description": "Searches the documentation corpus."}
+  ],
+  "supportedInterfaces": [
+    {"url": "https://agent.vendor.example/a2a", "protocolBinding": "jsonrpc"}
+  ],
+  "capabilities": {"streaming": true},
+  "securitySchemes": {"apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"}},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"]
+}

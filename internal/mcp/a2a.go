@@ -4,9 +4,12 @@
 package mcp
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"mime"
 	"regexp"
 	"sort"
@@ -532,37 +535,40 @@ type A2APushNotificationConfig struct {
 // HashAgentCard computes a deterministic hash of the semantic content of an
 // Agent Card, excluding signatures (re-signing is not drift), provider
 // (metadata), and version (version bumps are expected).
+//
+// Every variable-length field is LENGTH-PREFIXED rather than separated by a
+// delimiter. A delimiter only frames fields unambiguously when it cannot occur
+// inside one, and these fields carry attacker-controlled JSON strings that may
+// contain any byte including NUL: with NUL separators the field pair
+// ("a\x00b", "") and the pair ("a", "b\x00") produce identical hash input, so
+// two materially different cards collide. That matters because
+// cardStructuralDigest reuses this encoding to decide whether an endpoint or
+// interface CHANGED, and a collision there reads as "structure unchanged" and
+// downgrades a blocking structural change into an adopted descriptive one.
+// Length prefixes remove the class rather than escaping one byte of it.
+//
+// The digest is an in-process TOFU baseline only; it is not persisted, signed,
+// or carried on any wire or receipt surface, so changing the framing needs no
+// migration and no format version.
 func HashAgentCard(card A2AAgentCard) string {
 	h := sha256.New()
 
 	// Identity
-	_, _ = h.Write([]byte(card.Name))
-	h.Write([]byte{0})
-	_, _ = h.Write([]byte(card.Description))
-	h.Write([]byte{0})
-	_, _ = h.Write([]byte(card.URL))
-	h.Write([]byte{0})
+	writeFramed(h, []byte(card.Name))
+	writeFramed(h, []byte(card.Description))
+	writeFramed(h, []byte(card.URL))
 
-	// Skills (sorted by ID for determinism)
+	// Skills (semantically sorted for determinism)
 	skills := make([]A2ASkill, len(card.Skills))
 	copy(skills, card.Skills)
-	sort.Slice(skills, func(i, j int) bool {
-		if skills[i].ID != skills[j].ID {
-			return skills[i].ID < skills[j].ID
-		}
-		return skills[i].Name < skills[j].Name // tie-breaker for empty/duplicate IDs
-	})
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
+	writeCollection(h, "skills", len(skills))
 	for _, s := range skills {
-		_, _ = h.Write([]byte(s.ID))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(s.Name))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(s.Description))
-		h.Write([]byte{0})
-		_, _ = h.Write(canonicalizeJSON(s.InputSchema))
-		h.Write([]byte{0})
-		_, _ = h.Write(canonicalizeJSON(s.OutputSchema))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(s.ID))
+		writeFramed(h, []byte(s.Name))
+		writeFramed(h, []byte(s.Description))
+		writeFramed(h, canonicalizeJSON(s.InputSchema))
+		writeFramed(h, canonicalizeJSON(s.OutputSchema))
 	}
 
 	// Supported interfaces (sorted by URL)
@@ -574,15 +580,12 @@ func HashAgentCard(card A2AAgentCard) string {
 		}
 		return ifaces[i].ProtocolBinding < ifaces[j].ProtocolBinding // tie-breaker
 	})
+	writeCollection(h, "interfaces", len(ifaces))
 	for _, iface := range ifaces {
-		_, _ = h.Write([]byte(iface.URL))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.ProtocolBinding))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.Tenant))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(iface.ProtocolVersion))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(iface.URL))
+		writeFramed(h, []byte(iface.ProtocolBinding))
+		writeFramed(h, []byte(iface.Tenant))
+		writeFramed(h, []byte(iface.ProtocolVersion))
 	}
 
 	// Capabilities
@@ -599,45 +602,71 @@ func HashAgentCard(card A2AAgentCard) string {
 		}
 		return exts[i].Description < exts[j].Description // tie-breaker
 	})
+	writeCollection(h, "extensions", len(exts))
 	for _, ext := range exts {
-		_, _ = h.Write([]byte(ext.URI))
-		h.Write([]byte{0})
-		_, _ = h.Write([]byte(ext.Description))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(ext.URI))
+		writeFramed(h, []byte(ext.Description))
 		if ext.Required {
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
 		}
-		_, _ = h.Write(canonicalizeJSON(ext.Params))
-		h.Write([]byte{0})
+		writeFramed(h, canonicalizeJSON(ext.Params))
 	}
 
 	// Security schemes and requirements - canonicalize JSON so
 	// semantically identical objects with different key order or
 	// whitespace produce the same hash.
-	_, _ = h.Write(canonicalizeJSON(card.SecuritySchemes))
-	h.Write([]byte{0})
-	_, _ = h.Write(canonicalizeJSON(card.SecurityRequirements))
-	h.Write([]byte{0})
+	writeFramed(h, canonicalizeJSON(card.SecuritySchemes))
+	writeFramed(h, canonicalizeJSON(card.SecurityRequirements))
 
 	// Default modes (sorted)
 	inputModes := make([]string, len(card.DefaultInputModes))
 	copy(inputModes, card.DefaultInputModes)
 	sort.Strings(inputModes)
+	writeCollection(h, "input_modes", len(inputModes))
 	for _, m := range inputModes {
-		_, _ = h.Write([]byte(m))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(m))
 	}
 	outputModes := make([]string, len(card.DefaultOutputModes))
 	copy(outputModes, card.DefaultOutputModes)
 	sort.Strings(outputModes)
+	writeCollection(h, "output_modes", len(outputModes))
 	for _, m := range outputModes {
-		_, _ = h.Write([]byte(m))
-		h.Write([]byte{0})
+		writeFramed(h, []byte(m))
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeCollection frames a variable-length collection by its NAME and ITEM
+// COUNT before its items are written. Length-prefixing the individual fields is
+// not enough on its own: four empty skills and five empty interfaces each emit
+// only empty frames, so without a collection boundary two structurally
+// different cards hash identically and cardStructuralDigest reports "no
+// structural change" for a card that gained or moved a capability surface.
+func writeCollection(h hash.Hash, name string, n int) {
+	writeFramed(h, []byte(name))
+	// n is always a slice length and cannot be negative, but it arrives as an
+	// int parameter so that is not provable at this call site; clamp rather than
+	// convert blind, so a future caller cannot wrap a negative into a huge count.
+	var count uint64
+	if n > 0 {
+		count = uint64(n)
+	}
+	var c [8]byte
+	binary.BigEndian.PutUint64(c[:], count)
+	_, _ = h.Write(c[:])
+}
+
+// writeFramed writes a length-prefixed field into the hash. The 8-byte
+// big-endian length makes the field boundary independent of the field's own
+// bytes, so no value can forge a boundary the way a delimiter allows.
+func writeFramed(h hash.Hash, b []byte) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+	_, _ = h.Write(n[:])
+	_, _ = h.Write(b)
 }
 
 // canonicalizeJSON parses JSON and re-serializes with sorted keys.
@@ -669,4 +698,112 @@ func writeBool(h interface{ Write([]byte) (int, error) }, v *bool) {
 	} else {
 		_, _ = h.Write([]byte{1})
 	}
+}
+
+// lessA2ASkill imposes a total semantic ordering on skills. IDs and names are
+// normally sufficient, but a malformed card can contain empty or duplicate
+// IDs. The extra non-descriptive tie-breakers keep its digest independent of
+// source-array order. This matters after a structural view blanks names and
+// descriptions: otherwise two distinct empty-ID skills compare equal and a
+// harmless reorder appears to be a structural change.
+func lessA2ASkill(a, b A2ASkill) bool {
+	if a.ID != b.ID {
+		return a.ID < b.ID
+	}
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	if a.Description != b.Description {
+		return a.Description < b.Description
+	}
+	if cmp := bytes.Compare(canonicalizeJSON(a.InputSchema), canonicalizeJSON(b.InputSchema)); cmp != 0 {
+		return cmp < 0
+	}
+	return bytes.Compare(canonicalizeJSON(a.OutputSchema), canonicalizeJSON(b.OutputSchema)) < 0
+}
+
+// --- Agent Card drift discrimination ---
+//
+// An Agent Card carries endpoints and auth by construction (url, provider.url,
+// documentationUrl, securitySchemes), so blocking on the bare fact of a change
+// blocks every legitimate description edit. Drift discrimination splits the card
+// into two views: DESCRIPTIVE free text scanned for introduced cue classes, and
+// a STRUCTURAL/ENDPOINT digest whose change always blocks. Only a change confined
+// to descriptive text that introduces no cue class is adopted as the new
+// baseline. This mirrors the MCP tool-drift discriminator in internal/mcp/tools.
+
+// cardDescriptiveText returns the card's free-text fields - name, description,
+// and each skill's name and description - as one normalized string for cue
+// comparison. Skills use the same semantic ordering as HashAgentCard, so a
+// reorder is not read as a change. Endpoint and structural fields (url,
+// provider, auth, capabilities, schemas, modes, version) are deliberately absent:
+// they belong to the structural digest, not the cue-scanned text, so a URL that a
+// card carries by construction never registers as an egress cue.
+func cardDescriptiveText(card A2AAgentCard) string {
+	skills := make([]A2ASkill, len(card.Skills))
+	copy(skills, card.Skills)
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
+	var b strings.Builder
+	b.WriteString(card.Name)
+	b.WriteByte('\n')
+	b.WriteString(card.Description)
+	for _, s := range skills {
+		b.WriteByte('\n')
+		b.WriteString(s.Name)
+		b.WriteByte('\n')
+		b.WriteString(s.Description)
+	}
+	return b.String()
+}
+
+// cardDescriptiveDigest is the EQUALITY identity for a card's descriptive text.
+// cardDescriptiveText below joins attacker-controlled fields with newlines and
+// is therefore ambiguous: {Name: "A\nB", Description: ""} and {Name: "A",
+// Description: "B\n"} flatten to the same string, so a baseline comparing that
+// text reports no drift for a card whose fields actually changed, recording no
+// adoption and no audit event. The digest frames every field and every
+// collection, so distinct cards cannot collide.
+//
+// The flattened TEXT is still produced, separately, because cue detection needs
+// readable prose to diff. Identity and analysis are two different jobs and this
+// is the split between them.
+func cardDescriptiveDigest(card A2AAgentCard) string {
+	h := sha256.New()
+	writeFramed(h, []byte(card.Name))
+	writeFramed(h, []byte(card.Description))
+	skills := make([]A2ASkill, len(card.Skills))
+	copy(skills, card.Skills)
+	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
+	writeCollection(h, "skills", len(skills))
+	for _, sk := range skills {
+		writeFramed(h, []byte(sk.Name))
+		writeFramed(h, []byte(sk.Description))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// cardStructuralDigest hashes everything HashAgentCard covers EXCEPT the
+// descriptive free text, so a description-only edit leaves it stable and any
+// endpoint/structural change (url, skill ids/schemas, interfaces, capabilities,
+// security schemes/requirements, default modes) moves it. It is computed by
+// blanking the descriptive fields on a copy and reusing HashAgentCard, so the
+// digest cannot drift from the semantic hash's field set and coverage. Version
+// is excluded (HashAgentCard already omits it), matching the rule that a bare
+// version bump is descriptive for drift purposes.
+//
+// Fail direction: any structural field a change touches moves this digest, and a
+// caller treats a moved digest as a block. Fields HashAgentCard does not cover
+// (provider, documentationUrl, iconUrl) are outside this digest exactly as they
+// are outside today's drift hash; widening drift to them is a separate change.
+func cardStructuralDigest(card A2AAgentCard) string {
+	card.Name = ""
+	card.Description = ""
+	blanked := make([]A2ASkill, len(card.Skills))
+	for i, s := range card.Skills {
+		s.Name = ""
+		s.Description = ""
+		blanked[i] = s
+	}
+	card.Skills = blanked
+	return HashAgentCard(card)
 }

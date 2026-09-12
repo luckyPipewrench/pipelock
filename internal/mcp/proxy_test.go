@@ -205,6 +205,17 @@ func fwdScanned(r io.Reader, w io.Writer, logW io.Writer, sc *scanner.Scanner, a
 func newReceiptTestHarness(t *testing.T) (*receipt.Emitter, *recorder.Recorder, string, string) {
 	t.Helper()
 
+	return newReceiptTestHarnessWithObserver(t, nil)
+}
+
+// newReceiptTestHarnessWithObserver is newReceiptTestHarness with the emitter's
+// OnReceipt observer wired up. OnReceipt fires only AFTER a receipt is durably
+// recorded, so a test can use it as an ordering witness: anything that observes
+// the counter it increments knows recording already happened, which a
+// both-things-eventually-occurred assertion cannot establish.
+func newReceiptTestHarnessWithObserver(t *testing.T, onReceipt func(*receipt.Receipt)) (*receipt.Emitter, *recorder.Recorder, string, string) {
+	t.Helper()
+
 	pub, priv, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
@@ -232,6 +243,7 @@ func newReceiptTestHarness(t *testing.T) (*receipt.Emitter, *recorder.Recorder, 
 		ConfigHash: "test-config-hash",
 		Principal:  "local",
 		Actor:      "pipelock",
+		OnReceipt:  onReceipt,
 	})
 
 	return emitter, rec, dir, fmt.Sprintf("%x", pub)

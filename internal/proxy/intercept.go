@@ -337,6 +337,10 @@ const scannerLabelA2A = "a2a_scan"
 // failures distinct from generic A2A content findings).
 const scannerLabelA2ACardSignature = "a2a_card_signature"
 
+// scannerLabelA2ACardDrift identifies Agent Card drift audit events. Benign
+// descriptive drift keeps the response clean but must remain operator-visible.
+const scannerLabelA2ACardDrift = "a2a_card_drift"
+
 // interceptHandshakeTimeout is the maximum time for the client-side TLS
 // handshake during interception. Prevents goroutine/semaphore exhaustion
 // from malicious clients that stall during the handshake.
@@ -2251,6 +2255,9 @@ func newInterceptHandler(
 					if a2aRespResult.Reason == "" {
 						a2aRespResult.Reason = cardResult.Reason
 					}
+				}
+				if cardResult.DriftAdopted {
+					ic.Logger.LogAnomaly(actx, scannerLabelA2ACardDrift, "a2a: Agent Card descriptive drift adopted", 0)
 				}
 				// Positive attestation: emit an allow receipt when the card's
 				// signature verified against a trusted, origin-scoped key.

@@ -137,6 +137,15 @@ func setupForwardProxy(t *testing.T, cfgMod func(*config.Config)) (string, func(
 func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (string, *Proxy, func()) {
 	t.Helper()
 
+	return setupForwardProxyWithLogger(t, nil, cfgMod)
+}
+
+// setupForwardProxyWithLogger is setupForwardProxyWithInstance with a caller
+// supplied audit logger, so a test can assert what the forward path AUDITED and
+// not only what it returned. A nil logger keeps the no-op default.
+func setupForwardProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func(*config.Config)) (string, *Proxy, func()) {
+	t.Helper()
+
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -157,7 +166,9 @@ func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (s
 	cfg.ApplyDefaults()
 	cfg.Internal = savedInternal
 
-	logger := audit.NewNop()
+	if logger == nil {
+		logger = audit.NewNop()
+	}
 	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)

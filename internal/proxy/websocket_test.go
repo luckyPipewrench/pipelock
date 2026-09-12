@@ -276,6 +276,15 @@ func setupWSProxyDefaultWithCaptureAndProxy(t *testing.T, cfgMod func(*config.Co
 func setupWSProxyWithHandlerDone(t *testing.T, cfgMod func(*config.Config), obs capture.CaptureObserver, handlerDone func()) (string, *Proxy, func()) {
 	t.Helper()
 
+	return setupWSProxyWithLogger(t, nil, cfgMod, obs, handlerDone)
+}
+
+// setupWSProxyWithLogger is setupWSProxyWithHandlerDone with a caller-supplied
+// audit logger, so a test can assert what the WebSocket path RECORDED and not
+// only what it returned. A nil logger keeps the no-op default.
+func setupWSProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func(*config.Config), obs capture.CaptureObserver, handlerDone func()) (string, *Proxy, func()) {
+	t.Helper()
+
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -291,7 +300,9 @@ func setupWSProxyWithHandlerDone(t *testing.T, cfgMod func(*config.Config), obs 
 		cfgMod(cfg)
 	}
 
-	logger := audit.NewNop()
+	if logger == nil {
+		logger = audit.NewNop()
+	}
 	sc := scanner.MustNew(cfg)
 	m := metrics.New()
 	var opts []Option
@@ -3572,10 +3583,20 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("split backend addr %q: %v", backendAddr, err)
 	}
-	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
+	// A capturing audit sink, not the no-op default. Echo passthrough alone
+	// proves only that the frame made it through; it is equally satisfied by a
+	// blocklist matcher that never fired, which is the regression this test
+	// exists to catch. The recorded block is what proves audit mode SAW the
+	// match and chose not to enforce it.
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	proxyAddr, _, cleanup := setupWSProxyWithLogger(t, logger, func(cfg *config.Config) {
 		cfg.FetchProxy.Monitoring.Blocklist = []string{backendHost}
 		cfg.Enforce = new(bool) // enforce=false (audit mode)
-	})
+	}, nil, nil)
 	defer cleanup()
 
 	// In audit mode, the blocked URL should pass through.
@@ -3591,6 +3612,21 @@ func TestWSProxyAuditModePassthrough(t *testing.T) {
 	}
 	if string(msg) != testWSHello {
 		t.Errorf("expected echo 'hello', got %q", string(msg))
+	}
+
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	// Assert the SCANNER LABEL, not the host. The host appears in ordinary
+	// request logging whether or not the blocklist matched, so a host-only
+	// check is satisfied by a matcher that never fired. Verified: pointing the
+	// blocklist at an unrelated host leaves this assertion failing and the
+	// host-only version passing.
+	if !strings.Contains(string(data), scanner.ScannerBlocklist) {
+		t.Fatalf("audit mode passed the frame through but recorded no %q scanner event; a disabled blocklist matcher would look identical:\n%s",
+			scanner.ScannerBlocklist, data)
 	}
 }
 

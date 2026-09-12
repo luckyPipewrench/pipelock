@@ -443,42 +443,6 @@ func NewCardBaseline(maxSize int) *CardBaseline {
 	}
 }
 
-// Check compares a card's structural digest and descriptive text against the
-// baseline for the given key. First-seen cards are accepted only when the
-// baseline has room to preserve them (TOFU).
-//
-// Enforcement, in fail-closed order:
-//   - a changed structural/endpoint digest ALWAYS blocks and never auto-promotes
-//     (url, auth, capabilities, skill ids/schemas, modes moved);
-//   - with the structure unchanged, a descriptive change that introduces a cue
-//     class (tool-poison, egress, directive, concealment, cross-tool) blocks and
-//     never auto-promotes;
-//   - a descriptive change that introduces no cue class is adopted as the new
-//     baseline in place and does not block, which is the false-positive the whole
-//     mechanism exists to remove.
-//
-// A blocked change preserves the existing baseline so repeated fetches keep
-// blocking until an operator ResetBaseline accepts it. Auto-promotion is scoped
-// strictly to the benign descriptive case; every other change holds the ledger.
-// The descriptive digest is a PARAMETER rather than something this function
-// derives, and that is deliberate. An earlier version hashed the flattened text
-// here while ScanAgentCard hashed the card's fields, so the two produced
-// different values for the same card: a baseline seeded or reset through this
-// API then reported the unchanged card as drifted and adopted it again. There
-// is exactly one canonical derivation, cardDescriptiveDigest, and every writer
-// of a cardEntry must pass the value it produced.
-func (cb *CardBaseline) Check(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) cardDriftOutcome {
-	outcome := cb.Evaluate(key, structuralDigest, descriptiveDigest, descriptive, skillNames)
-	if outcome.firstSeen || outcome.adopted {
-		// If the baseline moved in between, the decision is stale. Re-evaluate
-		// rather than reporting an adoption that did not happen.
-		if !cb.Commit(key, structuralDigest, descriptiveDigest, descriptive, skillNames) {
-			return cb.Evaluate(key, structuralDigest, descriptiveDigest, descriptive, skillNames)
-		}
-	}
-	return outcome
-}
-
 // Evaluate decides what a card's digests mean against the baseline WITHOUT
 // changing it. Trusting a card is a decision the drift check alone cannot make:
 // the same scan also runs field scanning and signature verification, and a card

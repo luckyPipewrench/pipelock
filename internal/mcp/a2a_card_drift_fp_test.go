@@ -158,10 +158,10 @@ func TestCardStructuralDigest_DescriptiveUnicodeNormalizationIsAdopted(t *testin
 
 	baseline := NewCardBaseline(2)
 	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "")
-	if out := baseline.Check(key, cardStructuralDigest(first), cardDescriptiveDigest(first), cardDescriptiveText(first), nil); !out.firstSeen {
+	if _, out := baseline.CommitOrReevaluate(key, cardStructuralDigest(first), cardDescriptiveDigest(first), cardDescriptiveText(first), nil); !out.firstSeen {
 		t.Fatalf("seed outcome = %+v, want first-seen", out)
 	}
-	if out := baseline.Check(key, cardStructuralDigest(second), cardDescriptiveDigest(second), cardDescriptiveText(second), nil); !out.adopted || out.block {
+	if _, out := baseline.CommitOrReevaluate(key, cardStructuralDigest(second), cardDescriptiveDigest(second), cardDescriptiveText(second), nil); !out.adopted || out.block {
 		t.Fatalf("Unicode normalization update = %+v, want adopted non-blocking drift", out)
 	}
 }
@@ -176,7 +176,7 @@ func TestCardBaseline_ConcurrentDescriptiveAdoption(t *testing.T) {
 	baseline := NewCardBaseline(2)
 	key := CardCacheKeyFromRequest("https://agent.vendor.example/.well-known/agent-card.json", "Bearer tenant-one")
 	structural := cardStructuralDigest(card)
-	if out := baseline.Check(key, structural, cardDescriptiveDigest(card), cardDescriptiveText(card), nil); !out.firstSeen {
+	if _, out := baseline.CommitOrReevaluate(key, structural, cardDescriptiveDigest(card), cardDescriptiveText(card), nil); !out.firstSeen {
 		t.Fatalf("seed outcome = %+v, want first-seen", out)
 	}
 
@@ -192,7 +192,7 @@ func TestCardBaseline_ConcurrentDescriptiveAdoption(t *testing.T) {
 		wg.Go(func() {
 			updated := card
 			updated.Description = description
-			out := baseline.Check(key, structural, cardDescriptiveDigest(updated), cardDescriptiveText(updated), nil)
+			_, out := baseline.CommitOrReevaluate(key, structural, cardDescriptiveDigest(updated), cardDescriptiveText(updated), nil)
 			// Every description here is distinct from the seed, so each call
 			// MUST report a change and adopt it. Accepting a zero outcome as
 			// well would let a regression that silently drops every update

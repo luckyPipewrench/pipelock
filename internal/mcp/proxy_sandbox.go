@@ -62,22 +62,36 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		opts.ContractServer = mcpContractServerFromCommand([]string{sandboxCmd.Path})
 	}
 	isStrict := len(strict) > 0 && strict[0]
-	subreaperEnabled := true
-	enable := enableSubreaper
+	// Probe orphan-cleanup availability. Production reads the memoized
+	// process-wide capability so a startup report and this arming probe the
+	// kernel once between them; the test seam simulates a supporting platform
+	// and runs the injected probe directly so per-test failures stay isolated
+	// from the process-wide cache.
+	var cleanup CleanupCapability
 	if opts.enableSubreaperForTest != nil {
-		enable = opts.enableSubreaperForTest
+		cleanup = classifyCleanupCapability(true, opts.enableSubreaperForTest)
+	} else {
+		cleanup = cleanupCapability()
 	}
-	if err := enable(); err != nil {
-		subreaperEnabled = false
+	subreaperEnabled := cleanup.State == CleanupAvailable
+	if !subreaperEnabled {
 		if isStrict {
-			return fmt.Errorf("strict mode: failed to set child subreaper: %w", err)
+			if cleanup.Err == nil {
+				return errors.New("strict mode: child subreaper is unavailable on this platform")
+			}
+			return fmt.Errorf("strict mode: failed to set child subreaper: %w", cleanup.Err)
 		}
 		// Name the consequence, not just the failed call. An operator reading
 		// "teardown will be incomplete" cannot tell what they are now exposed
 		// to; degraded cleanup here means a detached descendant can outlive
 		// the session and can wedge proxy shutdown by holding inherited I/O.
 		// Use strict mode to refuse the launch instead of accepting that.
-		_, _ = fmt.Fprintf(logW, "pipelock: warning: session descendant cleanup degraded: PR_SET_CHILD_SUBREAPER failed (%v). Detached descendants can survive session exit and can block proxy shutdown by retaining inherited I/O. Run with strict mode to fail closed instead.\n", err)
+		// Suppressed when the caller already reported this at startup, so the
+		// operator sees the warning once; the strict refusal above is never
+		// suppressed, because reporting must not bypass a strict launch.
+		if !opts.StartupCleanupReported {
+			writeCleanupReport(logW, cleanup, true)
+		}
 	}
 	var rec session.Recorder
 	if opts.Store != nil {

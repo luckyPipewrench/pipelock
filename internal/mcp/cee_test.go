@@ -1173,6 +1173,9 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 	if !strings.Contains(reason, "fragment session capacity exhausted") {
 		t.Fatalf("capacity reason = %q, want visible fail-closed denial", reason)
 	}
+	if !strings.Contains(reason, "cross_request_detection.fragment_reassembly.max_sessions") {
+		t.Fatalf("capacity reason = %q, want the consulted capacity setting", reason)
+	}
 	logger.Close()
 	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
 	if err != nil {

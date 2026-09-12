@@ -423,7 +423,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if m != nil {
 					m.RecordCrossRequestFragmentCapacityExceeded()
 				}
-				reason := "cross-request fragment session capacity exhausted; request cannot be safely inspected"
+				reason := "cross-request fragment session capacity exhausted; request cannot be safely inspected; increase cross_request_detection.fragment_reassembly.max_sessions or reduce active sessions"
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
 				if opts.logger != nil {
 					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_capacity", reason)

@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -19,6 +20,58 @@ import (
 )
 
 const ceeWindowBodyBytes = 65536
+
+func TestCEERequestBatch_HTTPJSONFields(t *testing.T) {
+	for _, suffix := range []string{"BBBBBBBB", "BBBBBBB7"} {
+		t.Run(suffix, func(t *testing.T) {
+			cfg := ceeWindowProxyConfig(t, config.ActionBlock, 0)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			fb := scanner.NewFragmentBuffer(ceeWindowBodyBytes, 10, 300)
+			t.Cleanup(fb.Close)
+			extract := func(fields map[string]string) ceeOutboundPayloads {
+				t.Helper()
+				body, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/collect", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return extractOutboundPayloads(req, true, "batch-session", testCEEPartitionKey)
+			}
+			// The keyed bucket order, rather than JSON field order, determines
+			// which stream the sequential implementation would retain first.
+			padding, target := "", ""
+			for n := 0; n < 100 && target == ""; n++ {
+				candidate := "field" + strconv.Itoa(n)
+				probe := extract(map[string]string{"seed": "target", candidate: "padding"})
+				paths := sortedCEEJSONBodyPayloadPaths(probe.bodyFragmentPayloads)
+				if len(paths) == 2 {
+					if string(probe.bodyFragmentPayloads[paths[0]]) == "padding" {
+						padding, target = candidate, "seed"
+					} else {
+						padding, target = "seed", candidate
+					}
+				}
+			}
+			if target == "" {
+				t.Fatal("could not find distinct JSON buckets")
+			}
+			admit := func(fields map[string]string) ceeResult {
+				payloads := extract(fields)
+				return ceeAdmit(t.Context(), ceeAdmitOptions{ClientIP: "203.0.113.10", Outbound: payloads.outbound, BodyFragmentPayloads: payloads.bodyFragmentPayloads, Config: cfg.CrossRequestDetection, Fragments: fb, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New()})
+			}
+			if result := admit(map[string]string{target: strings.Repeat("x", 40000) + "CTOKBBBB"}); result.Blocked || result.FragmentHit {
+				t.Fatalf("clean first body rejected: %+v", result)
+			}
+			result := admit(map[string]string{padding: strings.Repeat("x", 40000), target: suffix})
+			want := suffix == "BBBBBBBB"
+			if result.Blocked != want || result.FragmentHit != want {
+				t.Fatalf("completing body result=%+v, want match=%t", result, want)
+			}
+		})
+	}
+}
 
 func TestCEEAdmit_ScansCompletingHTTPBodyBeforeRetention(t *testing.T) {
 	secret := "CTOK" + strings.Repeat("B", 12)

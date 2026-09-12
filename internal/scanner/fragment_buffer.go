@@ -215,6 +215,62 @@ func (fb *FragmentBuffer) AppendAndScanOwnedInGroup(ctx context.Context, owner i
 	return result, scanFragmentsForSecrets(ctx, sc, snapshot)
 }
 
+// FragmentAppend identifies one stream carried by a request. Streams can share
+// a retention group without allowing one field to evict another before scanning.
+type FragmentAppend struct {
+	Group   identitykey.CEEStream
+	Stream  identitykey.CEEStream
+	Payload []byte
+}
+
+// AppendAndScanOwnedBatch snapshots every request stream before applying any
+// retention limit. Results retain input order. An admission failure returns no
+// findings and must be handled as a refusal by the caller.
+func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner identitykey.CEEIdentity, appends []FragmentAppend, sc *Scanner) (FragmentAppendResult, [][]DLPMatch) {
+	for _, item := range appends {
+		if item.Group.Owner() != owner || item.Stream.Owner() != owner {
+			return FragmentAppendResult{OwnerMismatch: true}, nil
+		}
+	}
+	snapshots := make([][]fragment, len(appends))
+	fb.mu.Lock()
+	fb.maybeCleanupLocked(time.Now())
+	// Check the recorded binding for every stream before changing any state.
+	// Distinct classified identities can still derive colliding string keys.
+	for _, item := range appends {
+		streamID := fragmentStreamID(fragmentStreamKindData, item.Stream.Key())
+		recordedOwner := owner.Key()
+		if recordedOwner == "" {
+			recordedOwner = streamID
+		}
+		if fb.sessions[item.Stream.Key()] != nil && !fb.streamOwnedByLocked(streamID, recordedOwner) {
+			fb.mu.Unlock()
+			return FragmentAppendResult{OwnerMismatch: true}, nil
+		}
+	}
+	var result FragmentAppendResult
+	appended := 0
+	for i, item := range appends {
+		result = fb.appendSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), item.Payload, &snapshots[i])
+		if result != (FragmentAppendResult{}) {
+			break
+		}
+		appended++
+	}
+	for _, item := range appends[:appended] {
+		fb.retainStreamLocked(owner.Key(), item.Stream.Key())
+	}
+	fb.mu.Unlock()
+	if result != (FragmentAppendResult{}) {
+		return result, nil
+	}
+	matches := make([][]DLPMatch, len(snapshots))
+	for i, snapshot := range snapshots {
+		matches[i] = scanFragmentsForSecrets(ctx, sc, snapshot)
+	}
+	return FragmentAppendResult{}, matches
+}
+
 // appendLocked performs the buffer append. Must be called with fb.mu held and
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
@@ -223,6 +279,14 @@ func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload [
 }
 
 func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, payload []byte, snapshot *[]fragment) FragmentAppendResult {
+	result := fb.appendSnapshotLocked(owner, group, streamKey, payload, snapshot)
+	if result == (FragmentAppendResult{}) {
+		fb.retainStreamLocked(owner, streamKey)
+	}
+	return result
+}
+
+func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, payload []byte, snapshot *[]fragment) FragmentAppendResult {
 	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
 	// Normalized once here so everything below can assume a non-empty owner:
 	// a caller that keeps one stream per client passes no owner, and that
@@ -260,7 +324,18 @@ func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey strin
 		// on entry and remain immutable even if the ledger evicts or resets.
 		*snapshot = fb.activeFragmentsLocked(sb.fragments)
 	}
+	return FragmentAppendResult{}
+}
 
+func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
+	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
+	if owner == "" {
+		owner = streamID
+	}
+	sb := fb.sessions[streamKey]
+	if sb == nil {
+		return // another stream's shared budget already evicted this stream
+	}
 	// Evict oldest fragments until within per-session byte cap.
 	// A single fragment larger than maxBytes is truncated to maxBytes.
 	for sb.totalBytes > fb.maxBytes && len(sb.fragments) > 1 {
@@ -276,7 +351,6 @@ func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey strin
 	// The per-stream cap above bounds one stream; this bounds the identity that
 	// owns it, which is the unit the ledger admits.
 	fb.enforceOwnerBudgetLocked(owner, streamID)
-	return FragmentAppendResult{}
 }
 
 func (fb *FragmentBuffer) sessionCountLocked() int {

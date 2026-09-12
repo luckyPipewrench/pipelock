@@ -645,8 +645,23 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 
 		// JSON body leaves are mapped into stable, fixed-cardinality buckets. No
 		// valid leaf is omitted for a per-request path or depth ceiling.
+		bodyAppends := make([]scanner.FragmentAppend, 0, len(bodyFragmentPayloads))
 		for _, path := range sortedCEEJSONBodyPayloadPaths(bodyFragmentPayloads) {
-			if res := ceeFragmentScanInGroup(ctx, ceeJSONBodyFragmentSessionKey(sessionKey, path), sessionKey+ceeJSONBodyStreamPrefix, bodyFragmentPayloads[path], sctx); res != nil {
+			if len(bodyFragmentPayloads[path]) == 0 {
+				continue
+			}
+			bodyAppends = append(bodyAppends, scanner.FragmentAppend{
+				Group:   identity.Stream(ceeJSONBodyStreamPrefix),
+				Stream:  identity.Stream(strings.TrimPrefix(ceeJSONBodyFragmentSessionKey(sessionKey, path), sessionKey)),
+				Payload: bodyFragmentPayloads[path],
+			})
+		}
+		appendResult, bodyMatches := fb.AppendAndScanOwnedBatch(ctx, identity, bodyAppends, sc)
+		if appendResult != (scanner.FragmentAppendResult{}) {
+			return *ceeFragmentEvaluate(ctx, appendResult, nil, sctx)
+		}
+		for _, matches := range bodyMatches {
+			if res := ceeFragmentEvaluate(ctx, scanner.FragmentAppendResult{}, matches, sctx); res != nil {
 				result.FragmentHit = true
 				if res.Blocked {
 					result.Blocked = true

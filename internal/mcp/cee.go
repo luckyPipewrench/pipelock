@@ -372,6 +372,8 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled {
 		seenSingletonFindings := make(map[string]struct{})
 		seenArgumentFindings := make(map[string]struct{})
+		var paths []string
+		var appends []scanner.FragmentAppend
 		for _, path := range mcpCEEFragmentPayloadPaths(fragmentPayloads) {
 			payload := fragmentPayloads[path]
 			if len(payload) == 0 {
@@ -394,7 +396,16 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 			if path != "" {
 				budgetGroup = opts.sessionKey + mcpCEEArgumentStreamSuffix
 			}
-			appendResult, matches := buffer.AppendAndScanOwnedInGroup(context.Background(), identity, identity.Stream(strings.TrimPrefix(budgetGroup, opts.sessionKey)), identity.Stream(strings.TrimPrefix(fragmentKey, opts.sessionKey)), payload, opts.sc)
+			paths = append(paths, path)
+			appends = append(appends, scanner.FragmentAppend{
+				Group:   identity.Stream(strings.TrimPrefix(budgetGroup, opts.sessionKey)),
+				Stream:  identity.Stream(strings.TrimPrefix(fragmentKey, opts.sessionKey)),
+				Payload: payload,
+			})
+		}
+		appendResult, streamMatches := buffer.AppendAndScanOwnedBatch(context.Background(), identity, appends, opts.sc)
+		for i, path := range paths {
+			payload := fragmentPayloads[path]
 			if appendResult.OwnerMismatch {
 				if m != nil {
 					m.RecordCrossRequestFragmentOwnerMismatch()
@@ -419,6 +430,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				}
 				return reason
 			}
+			matches := streamMatches[i]
 			if len(matches) > 0 {
 				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, matches[0].PatternName)
 				if mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {

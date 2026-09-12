@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,34 @@ import (
 )
 
 const ceeWindowMCPBodyBytes = 65536
+
+func TestCEERequestBatch_MCPArguments(t *testing.T) {
+	for _, suffix := range []string{"BBBBBBBB", "BBBBBBB7"} {
+		t.Run(suffix, func(t *testing.T) {
+			cfg := ceeWindowMCPConfig(t, config.ActionBlock, 64)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			cee := NewCEEDeps(cfg.CrossRequestDetection, metrics.New())
+			t.Cleanup(cee.Close)
+			opts := MCPProxyOpts{Scanner: sc, CEE: cee}
+			call := func(args map[string]string) httpInputDecision {
+				t.Helper()
+				msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "transfer", "arguments": args}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return scanHTTPInputDecision(msg, io.Discard, "batch-session", "batch-session", opts)
+			}
+			if result := call(map[string]string{"z": "CTOKBBBB"}); result.Blocked != nil {
+				t.Fatalf("clean first call blocked: %+v", result)
+			}
+			result := call(map[string]string{"a": strings.Repeat("x", 56), "z": suffix})
+			if (result.Blocked != nil) != (suffix == "BBBBBBBB") {
+				t.Fatalf("completing call blocked=%t for suffix %q", result.Blocked != nil, suffix)
+			}
+		})
+	}
+}
 
 func TestCeeRecordMCP_ScansCompletingLeafBeforeRetention(t *testing.T) {
 	secret := "CTOK" + strings.Repeat("B", 12)

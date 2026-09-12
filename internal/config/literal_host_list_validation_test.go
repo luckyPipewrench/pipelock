@@ -24,7 +24,6 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 	}{
 		{name: "exact host", entry: "vendor.example", wantStored: "vendor.example"},
 		{name: "wildcard", entry: "*.vendor.example", wantStored: "*.vendor.example"},
-		{name: "broad wildcard is operator policy on a routing list", entry: "*.com", wantStored: "*.com"},
 		{name: "uppercase is folded to the matcher's view", entry: "Vendor.Example", wantStored: "vendor.example"},
 		{name: "single root dot is canonicalized", entry: "vendor.example.", wantStored: "vendor.example"},
 		{name: "double trailing dot", entry: "vendor.example..", wantErr: "must be written as"},
@@ -37,7 +36,11 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("passthrough/"+tt.name, func(t *testing.T) {
 			cfg := Defaults()
-			cfg.TLSInterception.Enabled = true
+			// Interception stays DISABLED on purpose. Enabling it makes
+			// Validate require a CA certificate on disk, which a clean
+			// runner does not have, and the list check runs ahead of the
+			// enabled gate precisely so a config is checked before the
+			// feature is switched on.
 			cfg.TLSInterception.PassthroughDomains = []string{tt.entry}
 			err := cfg.Validate()
 			assertHostListOutcome(t, err, tt.wantErr,
@@ -59,6 +62,37 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 // checked even when their feature is off. A config is edited and restarted
 // later, so an entry accepted while the feature was disabled would become
 // live without ever passing a check.
+// TestLiteralHostMatchLists_BreadthIsNotJudged pins the CURRENT behavior
+// separately for each list, because the two differ in what a wide wildcard
+// costs and a shared case hid that.
+//
+// forward_proxy.redirect_websocket_hosts routes matching hosts to the /ws
+// proxy, which scans them, so breadth there is a routing preference.
+//
+// tls_interception.passthrough_domains is NOT the same: a matching host is
+// spliced without decryption, so a wide wildcard turns body and response
+// scanning off for everything under that suffix. By the rule this repository
+// already applies to trusted_domains and the exempt lists, that is a
+// breadth-checked class. The check is deliberately NOT added here, because
+// refusing a value an existing deployment already loads is an admission
+// change that stops a running proxy at its next restart, and that is a
+// decision for this repository's operator rather than for the change that
+// first gave this list any validator at all. Tracked as DR-136. If that
+// decision says refuse, this test is where the expectation flips.
+func TestLiteralHostMatchLists_BreadthIsNotJudged(t *testing.T) {
+	cfg := Defaults()
+	cfg.ForwardProxy.RedirectWebSocketHosts = []string{"*.com"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("redirect_websocket_hosts wildcard refused: %v", err)
+	}
+
+	cfg = Defaults()
+	cfg.TLSInterception.PassthroughDomains = []string{"*.com"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("passthrough_domains wildcard refused: %v; see DR-136 before changing this", err)
+	}
+}
+
 func TestLiteralHostMatchLists_ValidatedWhileDisabled(t *testing.T) {
 	cfg := Defaults()
 	cfg.TLSInterception.Enabled = false

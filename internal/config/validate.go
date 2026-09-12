@@ -1285,9 +1285,16 @@ func matcherParityError(raw, normalized string) error {
 // than a bypass, which is why the repair is to refuse the input and to store
 // the canonical form, not to loosen either matcher.
 //
-// Breadth is deliberately not judged. Passthrough and WebSocket redirect are
-// routing decisions, so a wide wildcard is the operator's policy in the same
-// way it is on a blocklist.
+// Breadth is deliberately not judged HERE, and the two lists differ in what
+// that costs. A wide wildcard on forward_proxy.redirect_websocket_hosts
+// routes more traffic into the /ws proxy, which still scans it. A wide
+// wildcard on tls_interception.passthrough_domains SPLICES without
+// decrypting, so it turns body and response scanning off for everything
+// under that suffix, which is the class this repository breadth-checks on
+// trusted_domains and the exempt lists. Adding the check would refuse a
+// value an existing deployment already loads, stopping that proxy at its
+// next restart, so it is an admission decision rather than part of giving
+// this list a validator at all. Tracked as DR-136.
 func validateLiteralHostMatchList(label string, entries []string) error {
 	if err := ValidateHostMatchList(entries, label); err != nil {
 		return err

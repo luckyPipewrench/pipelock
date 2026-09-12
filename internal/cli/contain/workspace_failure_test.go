@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,12 @@ func TestRunContainRun_InventoryFailureStopsBeforePreflight(t *testing.T) {
 			}
 			if !malformed && !errors.Is(err, os.ErrPermission) {
 				t.Fatalf("read error lost its cause: %v", err)
+			}
+			if malformed {
+				var syntaxErr *json.SyntaxError
+				if !errors.As(err, &syntaxErr) {
+					t.Fatalf("malformed inventory error lost its cause: %v", err)
+				}
 			}
 			if out.Len() != 0 || postureCalls != 0 || launches != 0 {
 				t.Fatalf("unreadable inventory reached preflight/posture/launch: output=%q, posture=%d, launches=%d", out.String(), postureCalls, launches)

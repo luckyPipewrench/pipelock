@@ -1053,7 +1053,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	}
 	dest, destinationOK := urlDestination(parsed, hostname)
 	if !destinationOK {
-		return Result{Allowed: false, Reason: "invalid destination port", Scanner: ScannerParser, Score: 1.0}
+		return Result{Allowed: false, Reason: "invalid destination host or port", Scanner: ScannerParser, Score: 1.0}
 	}
 
 	// CRLF injection check - %0D%0A in URLs enables header injection.

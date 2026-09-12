@@ -1,0 +1,250 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package rules
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+)
+
+// withConfiguredProxy makes the proxy resolver report that this process routes
+// through a proxy, which is the provenance signal the block attribution
+// requires. Tests that assert Pipelock attribution must opt in: the default is
+// no proxy, because a header alone is not evidence a Pipelock was in the path.
+func withConfiguredProxy(t *testing.T) {
+	t.Helper()
+	prev := proxyResolver
+	proxyResolver = func(*http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: "127.0.0.1:8888"}, nil
+	}
+	t.Cleanup(func() { proxyResolver = prev })
+}
+
+// blockedBundleServer answers every request with status and the given headers,
+// standing in for a Pipelock proxy that refused to release a bundle.
+func blockedBundleServer(t *testing.T, status int, set func(http.Header)) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if set != nil {
+			set(w.Header())
+		}
+		http.Error(w, "blocked: response contains injection", status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestFetchNamesPipelockOnBlockedResponse: the reason a bundle install fails
+// has to reach the operator. A Pipelock 403 arriving as a bare "status 403" is
+// indistinguishable from the registry being down.
+func TestFetchNamesPipelockOnBlockedResponse(t *testing.T) {
+	withConfiguredProxy(t)
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		info, err := blockreason.NewForReason(blockreason.PromptInjection)
+		if err != nil {
+			t.Fatalf("NewForReason: %v", err)
+		}
+		info, err = info.WithLayer("response_scan")
+		if err != nil {
+			t.Fatalf("WithLayer: %v", err)
+		}
+		info.SetHeaders(h)
+	})
+
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/rules/pipelock-community/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error from a 403")
+	}
+	msg := err.Error()
+
+	for _, want := range []string{
+		"Pipelock",
+		// The message states what the response CARRIES, not who decided; the
+		// CLI has no authenticated signal for provenance. See
+		// TestStatusErrorDoesNotClaimPipelockBlocked.
+		"carries Pipelock block-reason headers",
+		"prompt_injection",
+		"response_scan",
+		"response_scanning",
+		"authenticated_artifacts",
+		"bundle_name",
+		`path: "/rules/pipelock-community/bundle.yaml"`,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message omits %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "blocked: response contains injection") {
+		t.Errorf("error message echoed the response body:\n%s", msg)
+	}
+}
+
+// TestBlockWithoutLayerStillNamesPipelock: Layer is optional in the header set,
+// and a block that omits it is still a Pipelock block. The operator gets "unset"
+// rather than a message that trails off.
+func TestBlockWithoutLayerStillNamesPipelock(t *testing.T) {
+	withConfiguredProxy(t)
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.KillSwitchActive))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "layer=unset") {
+		t.Errorf("a layerless block should report layer=unset:\n%s", msg)
+	}
+	if !strings.Contains(msg, "kill_switch_active") {
+		t.Errorf("lost the reason:\n%s", msg)
+	}
+	if strings.Contains(msg, "authenticated_artifacts") {
+		t.Errorf("offered an inert remedy for a kill-switch block:\n%s", msg)
+	}
+}
+
+// TestFetchDoesNotMislabelOrdinaryUpstreamError is the negative direction. An
+// upstream 403 with no Pipelock headers must stay a plain status error, or the
+// CLI blames the operator's proxy for something it never did.
+func TestFetchDoesNotMislabelOrdinaryUpstreamError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		set    func(http.Header)
+	}{
+		{"plain 403", http.StatusForbidden, nil},
+		{"plain 404", http.StatusNotFound, nil},
+		{"502 from a CDN", http.StatusBadGateway, func(h http.Header) {
+			h.Set("Server", "cloudflare")
+		}},
+		{"unknown reason code", http.StatusForbidden, func(h http.Header) {
+			h.Set(blockreason.HeaderReason, "something_else_entirely")
+		}},
+		// The sharp one: a RECOGNIZED reason from an ordinary server. The header
+		// carries no trust, so an origin that simply sets it must not earn a
+		// "blocked by Pipelock" message or configuration advice for a proxy that
+		// was never in the path. No proxy is configured in this test, which is
+		// the signal the client actually has.
+		{"recognized reason from an untrusted server", http.StatusForbidden, func(h http.Header) {
+			h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+			h.Set(blockreason.HeaderLayer, "response_scanning")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := blockedBundleServer(t, tc.status, tc.set)
+			_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			msg := err.Error()
+			if strings.Contains(msg, "Pipelock") || strings.Contains(msg, "authenticated_artifacts") {
+				t.Fatalf("an ordinary upstream error was reported as a Pipelock block:\n%s", msg)
+			}
+			if !strings.Contains(msg, "status") {
+				t.Fatalf("lost the status code:\n%s", msg)
+			}
+		})
+	}
+}
+
+// TestRemedyOnlyOfferedForTheLayerItGoverns: authenticated_artifacts is
+// consulted only on the response-injection path. Offering it for a block from
+// any other layer would be an inert remedy - it would not have changed the
+// outcome, so it teaches the operator that policy changed when nothing did.
+func TestRemedyOnlyOfferedForTheLayerItGoverns(t *testing.T) {
+	t.Parallel()
+	bundleURL := "https://pipelab.org/rules/pipelock-community/bundle.yaml"
+
+	if got := authenticatedArtifactRemedy(bundleURL, blockreason.PromptInjection); got == "" {
+		t.Fatal("prompt_injection is exactly the block this exception governs; remedy must be offered")
+	}
+
+	for _, reason := range blockreason.AllReasons() {
+		if reason == blockreason.PromptInjection {
+			continue
+		}
+		if got := authenticatedArtifactRemedy(bundleURL, reason); got != "" {
+			t.Errorf("offered the authenticated_artifacts remedy for %q, which it would not have unblocked", reason)
+		}
+	}
+}
+
+func TestRemedyUsesTheStringsTheProxyCompares(t *testing.T) {
+	t.Parallel()
+	// The proxy matches on URL.Hostname() and URL.EscapedPath(), so a remedy
+	// quoting anything else sends the operator to a config that will not match.
+	got := authenticatedArtifactRemedy("https://PipeLab.org:443/rules/a%2Bb/bundle.yaml", blockreason.PromptInjection)
+	if !strings.Contains(got, `host: "PipeLab.org"`) {
+		t.Errorf("remedy lost the host:\n%s", got)
+	}
+	if !strings.Contains(got, `path: "/rules/a%2Bb/bundle.yaml"`) {
+		t.Errorf("remedy did not use the escaped path:\n%s", got)
+	}
+}
+
+func TestRemedyAbsentForAnUnparseableURL(t *testing.T) {
+	t.Parallel()
+	if got := authenticatedArtifactRemedy("://not a url", blockreason.PromptInjection); got != "" {
+		t.Errorf("invented a remedy for an unparseable URL:\n%s", got)
+	}
+}
+
+// TestStatusErrorDoesNotClaimPipelockBlocked pins the wording invariant. The CLI
+// has no authenticated signal that a Pipelock produced a response: the headers
+// carry no proof, and a configured proxy may be an ordinary corporate proxy
+// forwarding an upstream 403. So the message must report what the response
+// CARRIES and must never assert who decided.
+func TestStatusErrorDoesNotClaimPipelockBlocked(t *testing.T) {
+	withConfiguredProxy(t)
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	for _, claim := range []string{"blocked by Pipelock", "not by the server"} {
+		if strings.Contains(msg, claim) {
+			t.Fatalf("message asserts provenance it cannot establish (%q):\n%s", claim, msg)
+		}
+	}
+	if !strings.Contains(msg, "carries Pipelock block-reason headers") {
+		t.Fatalf("message lost the observable fact that makes it useful:\n%s", msg)
+	}
+}
+
+// TestProxyResolverErrorSuppressesAttribution covers the error path: when the
+// proxy lookup itself fails we cannot tell whether anything is in front of this
+// fetch, so the remedy must not be printed. Fail closed, not open.
+func TestProxyResolverErrorSuppressesAttribution(t *testing.T) {
+	prev := proxyResolver
+	proxyResolver = func(*http.Request) (*url.URL, error) {
+		return nil, errors.New("malformed proxy configuration")
+	}
+	t.Cleanup(func() { proxyResolver = prev })
+
+	srv := blockedBundleServer(t, http.StatusForbidden, func(h http.Header) {
+		h.Set(blockreason.HeaderReason, string(blockreason.PromptInjection))
+	})
+	_, err := httpGetWithClient(context.Background(), srv.URL+"/bundle.yaml", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "Pipelock") || strings.Contains(msg, "authenticated_artifacts") {
+		t.Fatalf("a proxy-resolver error still produced Pipelock guidance:\n%s", msg)
+	}
+	if !strings.Contains(msg, "status") {
+		t.Fatalf("lost the status code:\n%s", msg)
+	}
+}

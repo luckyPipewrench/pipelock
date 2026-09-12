@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
@@ -563,7 +564,7 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
+		return nil, statusError(url, resp)
 	}
 
 	// Enforce size limit.
@@ -578,6 +579,123 @@ func httpGetWithClient(ctx context.Context, url string, client *http.Client) ([]
 	}
 
 	return data, nil
+}
+
+// statusError turns a non-200 bundle fetch into an operator-readable error.
+//
+// A Pipelock proxy sitting between this command and the registry answers a
+// blocked fetch with its own 403 and the block-reason header set. Without this,
+// that arrives as a bare "status 403" indistinguishable from the registry being
+// down, and nothing tells the operator that their own proxy made the decision
+// or which control governs it.
+//
+// Only the headers are read. The body is attacker-influenced bytes of
+// arbitrary content and echoing it into an operator's terminal buys nothing the
+// bounded reason vocabulary does not already say.
+//
+// This message does NOT claim who blocked the request, because nothing here can
+// establish that. blockreason.FromHeader performs no trust check, the headers
+// carry no authenticated Pipelock signal, and a configured proxy is not
+// necessarily a Pipelock: an ordinary corporate proxy forwarding an upstream 403
+// satisfies both conditions. So the wording reports what is actually known, that
+// the response CARRIES these headers, and leaves attribution to the operator who
+// knows their own topology.
+//
+// The proxy check is kept as a relevance gate rather than as proof. With no
+// proxy configured for this request there is nothing in the path to have set the
+// headers on our behalf, so printing proxy configuration advice would send the
+// operator to a control they do not have.
+func statusError(url string, resp *http.Response) error {
+	info, ok := blockreason.FromHeader(resp.Header)
+	if !ok || !proxyConfiguredFor(resp.Request) {
+		return fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
+	}
+	msg := fmt.Sprintf(
+		"HTTP GET %s: status %d: the response carries Pipelock block-reason headers (reason=%s, layer=%s), so a proxy in front of this fetch refused to release the bundle rather than the registry being down",
+		url, resp.StatusCode, info.Reason, layerOrUnset(info.Layer),
+	)
+	if remedy := authenticatedArtifactRemedy(url, info.Reason); remedy != "" {
+		msg += remedy
+	}
+	return errors.New(msg)
+}
+
+// proxyConfiguredFor reports whether this request would have been routed through
+// a proxy. It asks the SAME resolver net/http used to dial, so the answer tracks
+// the actual route rather than a guess at the environment: HTTP_PROXY,
+// HTTPS_PROXY, NO_PROXY and their lowercase forms are all honored, including a
+// NO_PROXY entry that exempts this specific host.
+//
+// A nil request or a resolver error is treated as "no proxy", which keeps the
+// attribution fail-closed: the worst case is a real Pipelock block reported as a
+// bare status code, which is the behavior that shipped before this message
+// existed. The opposite default would let any server borrow Pipelock's name.
+func proxyConfiguredFor(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	proxyURL, err := proxyResolver(&http.Request{URL: req.URL})
+	return err == nil && proxyURL != nil
+}
+
+// proxyResolver is the proxy lookup, indirected so a test can drive both
+// directions. It is NOT merely a convenience: http.ProxyFromEnvironment reads
+// the environment once per process and caches it, so the attribution branch
+// would otherwise be decided by whatever was set when the binary started and
+// could not be exercised either way from a test.
+var proxyResolver = http.ProxyFromEnvironment
+
+func layerOrUnset(layer string) string {
+	if layer == "" {
+		return "unset"
+	}
+	return layer
+}
+
+// authenticatedArtifactRemedy names the one control that would have changed
+// this outcome, and returns empty when no control would have.
+//
+// The exception is scoped to response injection scanning, so it is offered only
+// for a prompt_injection block: response_scanning.authenticated_artifacts is
+// consulted in the proxy's response path before injection matching runs
+// (internal/proxy/authenticated_artifact.go, wired into both the forward proxy
+// and decrypted CONNECT). A block from any other layer would be unaffected by
+// it, and pointing an operator at a setting that would not have helped teaches
+// them policy changed when nothing did.
+//
+// host and path are the exact strings the proxy compares against, so they are
+// taken from the URL rather than described. bundle_name cannot be: it must
+// equal the name field inside the bundle that was just refused, which this
+// command never got to read.
+func authenticatedArtifactRemedy(rawURL string, reason blockreason.Reason) string {
+	if reason != blockreason.PromptInjection {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+A rules bundle is a list of detection patterns, so its own contents read as injection
+text to a response scanner. Pipelock can verify and release this exact artifact instead
+of scanning it. In the PROXY's config (not this machine's rules directory):
+
+  response_scanning:
+    authenticated_artifacts:
+      - host: %q
+        path: %q
+        bundle_name: "<the bundle's own name field>"
+
+The proxy then re-fetches the signature itself and verifies the bundle against its
+official keyring before releasing the body. Only injection matching is skipped;
+request-side DLP, an unsigned bundle, a non-official signer, a redirect, and any
+other host or path are all still refused.
+
+bundle_name is required and must equal the name field inside the bundle itself;
+the placeholder above is not valid configuration. docs/rules.md names the value
+for the official bundle, and for any other bundle it is the top-level name in its
+YAML.`, parsed.Hostname(), parsed.EscapedPath())
 }
 
 // decodeSignatureBytes decodes a base64-encoded signature from raw bytes.

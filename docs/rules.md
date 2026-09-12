@@ -19,6 +19,30 @@ Bundles are stored in `$XDG_DATA_HOME/pipelock/rules/` by default (typically `~/
 
 > **Note:** Official bundle verification works in source builds because the official rules signing public key is compiled into the source. Release binaries additionally embed the rules keyring via ldflags. Use `trusted_keys` for third-party bundles signed by keys outside the official keyring.
 
+## Installing a bundle through a Pipelock proxy
+
+A rules bundle is a list of detection patterns, so the bundle's own contents read as injection text to a response scanner. If `pipelock rules install` runs behind a Pipelock proxy whose `response_scanning.action` is `block` or `ask` — the `strict`, `hostile-model`, `claude-code`, and `cursor` presets — that proxy scans the bundle it is fetching and refuses to release it. A proxy left on the default `warn` logs the finding and passes the bundle through, but adaptive enforcement can upgrade a warn to a block, so the same install can start failing on a session that has escalated. When it is refused, the install fails with a 403 and the command reports which side made that decision:
+
+```
+HTTP GET https://pipelab.org/rules/pipelock-community/bundle.yaml: status 403: blocked by Pipelock, not by the server (reason=prompt_injection, layer=response_scan)
+```
+
+The fix belongs in the **proxy's** config, not in the rules directory on the machine running the install. Name the exact artifact under `response_scanning.authenticated_artifacts`:
+
+```yaml
+response_scanning:
+  authenticated_artifacts:
+    - host: "pipelab.org"
+      path: "/rules/pipelock-community/bundle.yaml"
+      bundle_name: "pipelock-community"
+```
+
+`bundle_name` must equal the `name` field inside that bundle; the proxy refuses the artifact if they disagree, so the entry cannot be pointed at a different bundle later served from the same path.
+
+This is not a destination exemption and it does not turn scanning off for the host. The proxy buffers that one response, fetches the `.sig` sidecar itself with a fresh request, verifies the signature against its embedded official keyring, and releases the body only if the signer is in the official tier and the bundle's name matches. Everything else still applies: request-side DLP, an unsigned bundle, a third-party signer, a redirect, a non-443 port, a URL carrying a query string or userinfo, any method other than GET, and any other host or path are all still refused. Only injection matching on that verified artifact is skipped.
+
+No entry ships enabled in any preset. A standing exception to injection scanning is the operator's decision to make, and an operator who never installs a rules bundle should not be carrying one.
+
 ## Updating and Removing
 
 ```bash

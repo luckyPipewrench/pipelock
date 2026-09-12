@@ -38,9 +38,13 @@ func TestParseSigV4Credential_ScopeComponentGrammar(t *testing.T) {
 		regions := []string{
 			"us-east-1", "us-west-2", "eu-central-1", "ap-southeast-2",
 			"sa-east-1", "ca-central-1", "me-south-1", "af-south-1",
-			"il-central-1", "ap-south-2", "us-gov-west-1", "cn-north-1",
+			"il-central-1", "ap-south-2", "ap-southeast-7", "eu-central-2",
+			"us-gov-east-1", "us-gov-west-1", "cn-north-1", "cn-northwest-1",
 		}
-		services := []string{"s3", "execute-api", "dynamodb", "lambda", "sts", "es"}
+		services := []string{
+			"application-autoscaling", "s3", "s3express", "s3-object-lambda", "s3-outposts",
+			"execute-api", "dynamodb", "lambda", "sts", "es",
+		}
 		for _, region := range regions {
 			for _, service := range services {
 				gotKey, gotDate, ok := parseSigV4Credential(credential(region, service))

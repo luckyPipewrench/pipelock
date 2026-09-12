@@ -161,17 +161,20 @@ func fileSentryArmErrorMustFailClosed(err error) bool {
 // preserving the original error chain. The count includes omitted diagnostics.
 func fileSentryArmFailure(err error, degradedSubtrees int) error {
 	return fmt.Errorf("%s\n%s\ndetails:\n%w",
-		fileSentryArmFailureSummary(degradedSubtrees),
+		fileSentryArmFailureSummary(err, degradedSubtrees),
 		fileSentryArmRemedy(err),
 		err)
 }
 
-func fileSentryArmFailureSummary(degradedSubtrees int) string {
+func fileSentryArmFailureSummary(err error, degradedSubtrees int) string {
 	const head = "file sentry failed to arm watches (feature is enabled)"
 	if degradedSubtrees > 0 {
 		return fmt.Sprintf("%s: %d skipped/unarmed watch subtree(s)", head, degradedSubtrees)
 	}
-	return head + ": no watch paths could be armed"
+	if errors.Is(err, filesentry.ErrNoWatchPaths) {
+		return head + ": no watch paths could be armed"
+	}
+	return head
 }
 
 // fileSentryArmRemedy offers best_effort only when it can resolve the failure.
@@ -180,7 +183,7 @@ func fileSentryArmRemedy(err error) string {
 		return "remedies: ensure at least one file_sentry.watch_paths entry names an existing directory the user pipelock runs as can read and execute, and that file_sentry.ignore_patterns does not exclude it. file_sentry.best_effort does NOT apply to this failure: at least one path must be watchable"
 	}
 	if fileSentryArmErrorMustFailClosed(err) {
-		return "remedies: grant the user pipelock runs as read and execute access to each listed directory; or adjust file_sentry.ignore_patterns to exclude inaccessible paths while retaining at least one watchable directory. file_sentry.best_effort does NOT apply to this failure: required watch coverage must be available"
+		return "remedies: create missing required directories or correct their file_sentry.watch_paths entries; grant the user pipelock runs as read and execute access to each listed directory; or adjust file_sentry.ignore_patterns to exclude inaccessible paths while retaining at least one watchable directory. file_sentry.best_effort does NOT apply to this failure: required watch coverage must be available"
 	}
 	return "remedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or set file_sentry.best_effort: true to trade coverage for availability"
 }

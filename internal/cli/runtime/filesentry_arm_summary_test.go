@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +80,12 @@ func TestFileSentryArmFailureStandaloneSummary(t *testing.T) {
 			mustFailClosed:  true,
 			wantDetailLines: []string{"no watch paths armed"},
 			forbidFirstLine: []string{"no watch paths armed"},
+		},
+		{
+			name:            "uncounted generic failure",
+			armErr:          errors.New("watch backend unavailable"),
+			wantSummary:     "file sentry failed to arm watches (feature is enabled)",
+			wantDetailLines: []string{"watch backend unavailable"},
 		},
 		{
 			name:            "incomplete coverage best_effort applies",
@@ -177,34 +184,69 @@ func TestFileSentryArmFailureStandaloneSummary(t *testing.T) {
 // consumer must render the standalone summary (not the fused headline) while
 // keeping the fail-closed sentinel chain intact.
 func TestServer_StartFileSentryFailureShowsStandaloneSummary(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []config.WatchPath{
-		{Path: filepath.Join(t.TempDir(), "nonexistent-required"), Required: true},
+	for _, count := range []int{1, 3} {
+		t.Run(fmt.Sprintf("missing-%d", count), func(t *testing.T) {
+			root := t.TempDir()
+			cfg := config.Defaults()
+			cfg.FileSentry.Enabled = true
+			cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: root}}
+			for i := range count {
+				cfg.FileSentry.WatchPaths = append(cfg.FileSentry.WatchPaths, config.WatchPath{
+					Path: filepath.Join(root, fmt.Sprintf("missing-%d", i)), Required: true,
+				})
+			}
+			s, _ := newTestServer(t, nil)
+			_, err := s.startFileSentry(context.Background(), cfg, func() {})
+			if !errors.Is(err, filesentry.ErrRequiredWatchPath) {
+				t.Fatalf("required missing paths: got %v, want ErrRequiredWatchPath", err)
+			}
+			firstLine := strings.SplitN(err.Error(), "\n", 2)[0]
+			want := fmt.Sprintf("file sentry failed to arm watches (feature is enabled): %d skipped/unarmed watch subtree(s)", count)
+			if firstLine != want {
+				t.Fatalf("summary = %q, want %q", firstLine, want)
+			}
+			if !strings.Contains(err.Error(), "create missing required directories or correct their file_sentry.watch_paths entries") {
+				t.Fatalf("missing remedy for required directories: %v", err)
+			}
+			if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
+				t.Fatalf("required-root failure offered best_effort: %v", err)
+			}
+			// Apply the remedy to a partially armed configuration and retry startup.
+			for _, path := range cfg.FileSentry.WatchPaths[1:] {
+				if err := os.Mkdir(path.Path, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stop, err := s.startFileSentry(context.Background(), cfg, func() {})
+			if err != nil {
+				t.Fatalf("startup after creating required directories: %v", err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
-	s, _ := newTestServer(t, nil)
+}
 
-	_, err := s.startFileSentry(context.Background(), cfg, func() {})
-	if err == nil {
-		t.Fatal("startFileSentry returned nil; a required nonexistent root must fail closed")
-	}
-	if !errors.Is(err, filesentry.ErrRequiredWatchPath) {
-		t.Fatalf("errors.Is(err, ErrRequiredWatchPath) = false; got %v", err)
-	}
-
-	firstLine := strings.SplitN(err.Error(), "\n", 2)[0]
-	if !strings.HasPrefix(firstLine, "file sentry failed to arm watches (feature is enabled): ") {
-		t.Fatalf("first line is not the standalone summary: %q", firstLine)
-	}
-	if !strings.Contains(firstLine, "skipped/unarmed watch subtree(s)") {
-		t.Fatalf("summary missing a real skipped/unarmed count: %q", firstLine)
-	}
-	if strings.Contains(firstLine, "incomplete watch coverage") {
-		t.Fatalf("headline fused with the joined detail chain: %q", firstLine)
-	}
-	// A required-root failure must not advertise best_effort as a fix.
-	if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
-		t.Errorf("required-root failure offered best_effort:\n%s", err.Error())
+func TestMcpProxyCmd_FileSentrySummaryCountsMissingPaths(t *testing.T) {
+	for _, count := range []int{1, 3} {
+		t.Run(fmt.Sprintf("missing-%d", count), func(t *testing.T) {
+			root := t.TempDir()
+			paths := make([]string, count)
+			for i := range paths {
+				paths[i] = filepath.Join(root, fmt.Sprintf("missing-%d", i))
+			}
+			cfg := writeMCPFileSentryConfig(t, false, paths...)
+			_, _, err := runMCPProxyCommand(t, cfg)
+			if err == nil {
+				t.Fatal("startup with zero armed paths succeeded")
+			}
+			firstLine := strings.SplitN(err.Error(), "\n", 2)[0]
+			want := fmt.Sprintf("file sentry failed to arm watches (feature is enabled): %d skipped/unarmed watch subtree(s)", count)
+			if firstLine != want {
+				t.Fatalf("summary = %q, want %q", firstLine, want)
+			}
+		})
 	}
 }
 

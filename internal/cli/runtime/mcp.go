@@ -1758,6 +1758,12 @@ Key-free evidence capture:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
 					serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction, workspace)
+				// Report orphan-cleanup availability once, before the server
+				// launches, so the operator learns it up front. The proxy path
+				// still runs the authoritative strict refusal against the same
+				// probe result, so this report cannot bypass a strict launch.
+				mcp.ReportCleanupCapability(cmd.ErrOrStderr(), !mcpStrict)
+				proxyOpts.StartupCleanupReported = true
 				if err := mcp.RunProxyWithSandboxLaunch(ctx, sandboxLaunch, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 						return heartbeatErr
@@ -1912,6 +1918,11 @@ Key-free evidence capture:
 			respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+			// Report orphan-cleanup availability once, before the server
+			// launches. The plain stdio path has no strict mode, so this is
+			// informational, with no strict-mode remedy hint.
+			mcp.ReportCleanupCapability(logW, false)
+			proxyOpts.StartupCleanupReported = true
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				if fileSentryErr := stopFileSentry(); fileSentryErr != nil {
 					return fileSentryErr

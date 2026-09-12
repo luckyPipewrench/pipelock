@@ -1285,18 +1285,33 @@ func matcherParityError(raw, normalized string) error {
 // than a bypass, which is why the repair is to refuse the input and to store
 // the canonical form, not to loosen either matcher.
 //
-// Breadth is deliberately not judged HERE, and the two lists differ in what
-// that costs. A wide wildcard on forward_proxy.redirect_websocket_hosts
-// routes more traffic into the /ws proxy, which still scans it. A wide
-// wildcard on tls_interception.passthrough_domains SPLICES without
-// decrypting, so it turns body and response scanning off for everything
-// under that suffix, which is the class this repository breadth-checks on
-// trusted_domains and the exempt lists. Adding the check would refuse a
-// value an existing deployment already loads, stopping that proxy at its
-// next restart, so it is an admission decision rather than part of giving
-// this list a validator at all. Tracked as DR-136.
-func validateLiteralHostMatchList(label string, entries []string) error {
-	if err := ValidateHostMatchList(entries, label); err != nil {
+// BREADTH is judged for one of the two lists and not the other, because they
+// differ in what a wide wildcard costs.
+//
+// tls_interception.passthrough_domains SPLICES a matching host without
+// decrypting it, so "*.com" there turns body and response scanning off for
+// every .com destination. That is the same detector-off shape this repository
+// already breadth-checks on trusted_domains and the exempt lists, so it gets
+// the grant-list rule: a wildcard whose base is an ICANN public suffix is
+// refused, while a private-suffix base such as "*.s3.amazonaws.com" stays
+// accepted because an operator legitimately writes it.
+//
+// forward_proxy.redirect_websocket_hosts is NOT the same: a wide wildcard
+// routes more traffic INTO the /ws proxy, which still scans it, so breadth
+// there is a routing preference rather than a hole.
+//
+// The admission cost was measured rather than assumed before adding this.
+// Nothing shipped is refused: the default is "*.googlevideo.com", every
+// preset ships an empty list, and the documented examples all survive the
+// predicate. An existing deployment that loads a public-suffix wildcard will
+// now fail validation and can be checked ahead of a restart with
+// `pipelock check --config`, which names the field, index and value.
+func validateLiteralHostMatchList(label string, entries []string, judgeBreadth bool) error {
+	if judgeBreadth {
+		if err := ValidateHostGrantList(entries, label); err != nil {
+			return err
+		}
+	} else if err := ValidateHostMatchList(entries, label); err != nil {
 		return err
 	}
 	// Store the normalized form. These matchers do not trim a trailing dot,
@@ -2862,7 +2877,7 @@ func (c *Config) validateGitProtection() error {
 func (c *Config) validateForwardProxy() error {
 	// Validate forward proxy config
 	if err := validateLiteralHostMatchList(
-		"forward_proxy.redirect_websocket_hosts", c.ForwardProxy.RedirectWebSocketHosts); err != nil {
+		"forward_proxy.redirect_websocket_hosts", c.ForwardProxy.RedirectWebSocketHosts, false); err != nil {
 		return err
 	}
 	if !c.ForwardProxy.Enabled {
@@ -3403,7 +3418,7 @@ func (c *Config) validateCrossRequestDetection(warnings *[]Warning) error {
 func (c *Config) validateTLSInterception() error {
 	// Validate TLS interception config
 	if err := validateLiteralHostMatchList(
-		"tls_interception.passthrough_domains", c.TLSInterception.PassthroughDomains); err != nil {
+		"tls_interception.passthrough_domains", c.TLSInterception.PassthroughDomains, true); err != nil {
 		return err
 	}
 	if !c.TLSInterception.Enabled {

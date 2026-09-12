@@ -68,35 +68,61 @@ func TestLiteralHostMatchLists_RefuseInertEntries(t *testing.T) {
 // checked even when their feature is off. A config is edited and restarted
 // later, so an entry accepted while the feature was disabled would become
 // live without ever passing a check.
-// TestLiteralHostMatchLists_BreadthIsNotJudged pins the CURRENT behavior
-// separately for each list, because the two differ in what a wide wildcard
-// costs and a shared case hid that.
+// TestLiteralHostMatchLists_BreadthPerList pins that breadth is judged for one
+// list and not the other, because the two differ in what a wide wildcard costs.
 //
-// forward_proxy.redirect_websocket_hosts routes matching hosts to the /ws
-// proxy, which scans them, so breadth there is a routing preference.
+// tls_interception.passthrough_domains splices a matching host without
+// decrypting it, so "*.com" there turns body and response scanning off for
+// every .com destination. That is the detector-off class this repository
+// breadth-checks elsewhere, so the grant-list rule applies.
 //
-// tls_interception.passthrough_domains is NOT the same: a matching host is
-// spliced without decryption, so a wide wildcard turns body and response
-// scanning off for everything under that suffix. By the rule this repository
-// already applies to trusted_domains and the exempt lists, that is a
-// breadth-checked class. The check is deliberately NOT added here, because
-// refusing a value an existing deployment already loads is an admission
-// change that stops a running proxy at its next restart, and that is a
-// decision for this repository's operator rather than for the change that
-// first gave this list any validator at all. Tracked as DR-136. If that
-// decision says refuse, this test is where the expectation flips.
-func TestLiteralHostMatchLists_BreadthIsNotJudged(t *testing.T) {
-	cfg := Defaults()
-	cfg.ForwardProxy.RedirectWebSocketHosts = []string{"*.com"}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("redirect_websocket_hosts wildcard refused: %v", err)
-	}
+// forward_proxy.redirect_websocket_hosts routes matching hosts INTO the /ws
+// proxy, which still scans them, so breadth there is a routing preference.
+func TestLiteralHostMatchLists_BreadthPerList(t *testing.T) {
+	t.Run("passthrough refuses a public-suffix wildcard", func(t *testing.T) {
+		for _, entry := range []string{"*.com", "*.co.uk", "*.org"} {
+			cfg := Defaults()
+			cfg.TLSInterception.PassthroughDomains = []string{entry}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("passthrough accepted %q, which splices every host under that suffix", entry)
+			}
+			if !strings.Contains(err.Error(), "passthrough_domains") {
+				t.Fatalf("error does not name the field: %v", err)
+			}
+		}
+	})
 
-	cfg = Defaults()
-	cfg.TLSInterception.PassthroughDomains = []string{"*.com"}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("passthrough_domains wildcard refused: %v; see DR-136 before changing this", err)
-	}
+	// Availability control, and the reason this is a per-list rule rather
+	// than a blanket refusal. A private-suffix base and an ordinary vendor
+	// wildcard are configuration an operator legitimately writes, including
+	// the shipped default.
+	t.Run("passthrough keeps the wildcards operators actually write", func(t *testing.T) {
+		for _, entry := range []string{
+			"*.googlevideo.com", "*.apple.com", "*.s3.amazonaws.com", "mtls.vendor.example",
+		} {
+			cfg := Defaults()
+			cfg.TLSInterception.PassthroughDomains = []string{entry}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("passthrough refused the legitimate entry %q: %v", entry, err)
+			}
+		}
+	})
+
+	t.Run("shipped default survives", func(t *testing.T) {
+		cfg := Defaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("the shipped default passthrough list is refused: %v", err)
+		}
+	})
+
+	t.Run("redirect_websocket_hosts does not judge breadth", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.ForwardProxy.RedirectWebSocketHosts = []string{"*.com"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("redirect_websocket_hosts wildcard refused: %v", err)
+		}
+	})
 }
 
 func TestLiteralHostMatchLists_ValidatedWhileDisabled(t *testing.T) {

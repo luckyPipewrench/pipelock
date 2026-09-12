@@ -31,39 +31,58 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 	// Calibration: the analyzer is NOT inert. An operator's own entry still
 	// gets the full lifecycle treatment, so the silence above is scoping and
 	// not a disabled check.
-	// The NEAR matches are the load-bearing cases. An unrelated host alone
-	// cannot distinguish an exact (host, prefix) match from a matcher that keys
-	// on host only, or on a prefix-of-a-prefix: either would silently suppress
-	// a real operator exemption's advisories while this test still passed. Each
-	// entry below differs from a SHIPPED one in exactly one field.
+	// PROVENANCE, not resemblance. An operator who writes their own list owns
+	// every entry in it, because ApplyDefaults fills the field only when it is
+	// nil. So a config carrying a shipped route PLUS an operator route is
+	// entirely operator-owned and every entry must get its advisories, and an
+	// operator entry that merely duplicates a shipped route must not have its
+	// governance stripped. Matching by host and prefix alone got both wrong.
 	shipped := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions[0]
-	for _, near := range []config.PathEntropyExclusion{
-		{Host: shipped.Host, PathPrefix: "/operator/d/"},
-		{Host: "vendor.example", PathPrefix: shipped.PathPrefix},
-		{Host: shipped.Host, PathPrefix: shipped.PathPrefix + "extra/"},
-	} {
-		if isShippedPathEntropyDefault(near) {
-			t.Errorf("a near match was treated as shipped, so its lifecycle advisories are suppressed: %s%s", near.Host, near.PathPrefix)
-		}
-		cfg := config.Defaults()
-		cfg.FetchProxy.Monitoring.PathEntropyExclusions = append(cfg.FetchProxy.Monitoring.PathEntropyExclusions, near)
-		if len(analyzeDoctorPathEntropyExclusions(cfg)) == 0 {
-			t.Errorf("near match %s%s produced no advisory; a broader matcher is swallowing operator entries", near.Host, near.PathPrefix)
-		}
+
+	explicitDuplicate := config.Defaults()
+	explicitDuplicate.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{
+		{Host: shipped.Host, PathPrefix: shipped.PathPrefix},
+	}
+	if len(analyzeDoctorPathEntropyExclusions(explicitDuplicate)) == 0 {
+		t.Error("an operator entry duplicating a shipped route lost its lifecycle advisories; provenance was decided by resemblance")
 	}
 
-	// Host matching is case-insensitive, so an EQUIVALENT spelling of a shipped
-	// host is still shipped. Without this, a regression from EqualFold to strict
-	// equality passes every case above while telling an operator to own and
-	// renew a route Pipelock ships, under a host DNS considers identical.
-	mixedCase := config.PathEntropyExclusion{Host: strings.ToUpper(shipped.Host), PathPrefix: shipped.PathPrefix}
-	if !isShippedPathEntropyDefault(mixedCase) {
-		t.Errorf("%s%s is an equivalent spelling of a shipped route but was not treated as shipped", mixedCase.Host, mixedCase.PathPrefix)
+	// An expired operator entry on a shipped route must still be reported.
+	expired := config.Defaults()
+	expired.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{
+		{Host: shipped.Host, PathPrefix: shipped.PathPrefix, Reason: "r", Owner: "o", Expires: "2020-01-01"},
 	}
-	mixedCfg := config.Defaults()
-	mixedCfg.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{mixedCase}
-	for _, f := range analyzeDoctorPathEntropyExclusions(mixedCfg) {
-		t.Errorf("an equivalent-cased shipped route produced an advisory the operator cannot act on: %s", f.Detail)
+	sawExpiry := false
+	for _, f := range analyzeDoctorPathEntropyExclusions(expired) {
+		if strings.Contains(f.Detail, "expired on") {
+			sawExpiry = true
+		}
+	}
+	if !sawExpiry {
+		t.Error("an EXPIRED operator entry on a shipped route was silenced; that is the worst case of matching by value")
+	}
+
+	// Adding one operator route alongside the shipped set makes the whole list
+	// operator-owned, so the operator entry is advised.
+	mixedList := config.Defaults()
+	mixedList.FetchProxy.Monitoring.PathEntropyExclusions = append(
+		append([]config.PathEntropyExclusion(nil), config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions...),
+		config.PathEntropyExclusion{Host: "vendor.example", PathPrefix: "/assets/d/"},
+	)
+	if len(analyzeDoctorPathEntropyExclusions(mixedList)) == 0 {
+		t.Error("a list the operator extended produced no advisories; an added entry must not inherit shipped status")
+	}
+
+	// Case-insensitive host matching is still required for the inherited list.
+	mixedCase := config.Defaults()
+	upper := append([]config.PathEntropyExclusion(nil), config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
+	upper[0].Host = strings.ToUpper(upper[0].Host)
+	mixedCase.FetchProxy.Monitoring.PathEntropyExclusions = upper
+	if !pathEntropyExclusionsAreInherited(mixedCase) {
+		t.Error("an equivalent-cased spelling of the shipped list was not recognized as inherited")
+	}
+	for _, f := range analyzeDoctorPathEntropyExclusions(mixedCase) {
+		t.Errorf("an equivalent-cased shipped list produced an advisory the operator cannot act on: %s", f.Detail)
 	}
 
 	operator := config.Defaults()
@@ -75,10 +94,17 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("an operator-added entry with no reason/owner/expires produced no advisory; the analyzer is inert")
 	}
+	// Every entry in an operator-written list is operator-owned, including ones
+	// naming a shipped route, so advisories on those are CORRECT here. What
+	// matters is that the operator's own entry is among them.
+	sawOperatorEntry := false
 	for _, f := range got {
-		if !strings.Contains(f.Subject, "vendor.example") {
-			t.Errorf("advisory targeted a shipped default rather than the operator entry: %s", f.Detail)
+		if strings.Contains(f.Subject, "vendor.example") {
+			sawOperatorEntry = true
 		}
+	}
+	if !sawOperatorEntry {
+		t.Error("the operator's own entry produced no advisory")
 	}
 	// Each lifecycle field is a SEPARATE check, so assert each one by name. A
 	// bare len(got) != 0 passes when only one of the three still fires, which
@@ -88,7 +114,7 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 		want := "is missing advisory " + field
 		found := false
 		for _, f := range got {
-			if strings.Contains(f.Detail, want) {
+			if strings.Contains(f.Subject, "vendor.example") && strings.Contains(f.Detail, want) {
 				found = true
 				break
 			}

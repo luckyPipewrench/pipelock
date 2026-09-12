@@ -80,11 +80,19 @@ func TestVendorRouteDefaultsReachAYAMLBackedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := len(config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions)
+	// Compare CONTENT, not just the count. A count-only check passes for a
+	// wrong set of the same length, which would report the enforcement path as
+	// working while a deployment inherited routes nobody shipped.
+	want := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions
 	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
-	if len(got) != want {
+	if len(got) != len(want) {
 		t.Fatalf("a YAML-backed config inherited %d shipped routes, want %d; the default never reaches a real deployment: %+v",
-			len(got), want, got)
+			len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Host != want[i].Host || got[i].PathPrefix != want[i].PathPrefix {
+			t.Fatalf("inherited route %d = %s%s, want %s%s", i, got[i].Host, got[i].PathPrefix, want[i].Host, want[i].PathPrefix)
+		}
 	}
 
 	// An explicitly empty list is a deliberate opt-out and must be preserved,

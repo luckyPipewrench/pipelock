@@ -738,6 +738,10 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	if len(entries) == 0 {
 		return nil
 	}
+	// Decide provenance ONCE for the list, not per entry: ApplyDefaults fills
+	// the whole field or none of it.
+	inherited := pathEntropyExclusionsAreInherited(cfg)
+
 	var findings []ConfigSemanticFinding
 	for _, entry := range entries {
 		tuple := pathEntropyAdvisoryTuple(entry)
@@ -752,7 +756,7 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 		// also lists the host in subdomain_entropy_exclusions has given up
 		// subdomain-entropy coverage for it, and suppressing that warning would
 		// hide a real detection downgrade behind a route we shipped.
-		shipped := isShippedPathEntropyDefault(entry)
+		shipped := inherited
 		// The inert-while-entropy-disabled notice is skipped for shipped routes:
 		// its remedy is "remove the path exemption", which the operator does not
 		// own, and repeating it once per shipped route buries the one signal
@@ -817,20 +821,33 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	return findings
 }
 
-// isShippedPathEntropyDefault reports whether an entry is one Pipelock ships in
-// Defaults(). It compares against the live default set rather than a second
-// hardcoded list, so adding or removing a shipped route cannot leave this
-// predicate out of date. An operator who types the same host and prefix by hand
-// is indistinguishable here and is treated as shipped, which is the safe
-// direction: the worst case is one missing advisory on a route we already
-// consider correct.
-func isShippedPathEntropyDefault(entry config.PathEntropyExclusion) bool {
-	for _, def := range config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions {
-		if strings.EqualFold(entry.Host, def.Host) && entry.PathPrefix == def.PathPrefix {
-			return true
+// pathEntropyExclusionsAreInherited reports whether this config's exclusion list
+// is the one Pipelock materialized, rather than one the operator wrote.
+//
+// This is PROVENANCE, not resemblance, and the distinction is the point.
+// ApplyDefaults fills the field only when it is nil, so an operator who writes
+// any list at all owns every entry in it, including one that happens to name a
+// shipped route. Matching an entry by host and prefix alone would strip the
+// reason, owner and expiry advisories from that operator's own exemption, and
+// would hide an EXPIRED operator entry that merely shares a route with a
+// default. Comparing the whole list against Defaults() reproduces exactly what
+// ApplyDefaults did and cannot drift from it.
+//
+// An operator who hand-writes precisely the shipped set is indistinguishable and
+// is treated as inherited. That is the one remaining ambiguity and it is benign:
+// the entries are ours either way.
+func pathEntropyExclusionsAreInherited(cfg *config.Config) bool {
+	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
+	want := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if !strings.EqualFold(got[i].Host, want[i].Host) || got[i].PathPrefix != want[i].PathPrefix {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func pathEntropyLifecycleCheck(tuple, field, next string) ConfigSemanticFinding {

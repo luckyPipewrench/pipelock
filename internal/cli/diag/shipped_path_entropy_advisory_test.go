@@ -31,6 +31,27 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 	// Calibration: the analyzer is NOT inert. An operator's own entry still
 	// gets the full lifecycle treatment, so the silence above is scoping and
 	// not a disabled check.
+	// The NEAR matches are the load-bearing cases. An unrelated host alone
+	// cannot distinguish an exact (host, prefix) match from a matcher that keys
+	// on host only, or on a prefix-of-a-prefix: either would silently suppress
+	// a real operator exemption's advisories while this test still passed. Each
+	// entry below differs from a SHIPPED one in exactly one field.
+	shipped := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions[0]
+	for _, near := range []config.PathEntropyExclusion{
+		{Host: shipped.Host, PathPrefix: "/operator/d/"},
+		{Host: "vendor.example", PathPrefix: shipped.PathPrefix},
+		{Host: shipped.Host, PathPrefix: shipped.PathPrefix + "extra/"},
+	} {
+		if isShippedPathEntropyDefault(near) {
+			t.Errorf("a near match was treated as shipped, so its lifecycle advisories are suppressed: %s%s", near.Host, near.PathPrefix)
+		}
+		cfg := config.Defaults()
+		cfg.FetchProxy.Monitoring.PathEntropyExclusions = append(cfg.FetchProxy.Monitoring.PathEntropyExclusions, near)
+		if len(analyzeDoctorPathEntropyExclusions(cfg)) == 0 {
+			t.Errorf("near match %s%s produced no advisory; a broader matcher is swallowing operator entries", near.Host, near.PathPrefix)
+		}
+	}
+
 	operator := config.Defaults()
 	operator.FetchProxy.Monitoring.PathEntropyExclusions = append(
 		operator.FetchProxy.Monitoring.PathEntropyExclusions,

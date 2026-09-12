@@ -150,7 +150,7 @@ fetch_proxy:
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
-| `monitoring.path_entropy_exclusions` | `[]` | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply |
+| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
 
 **Entropy guidance:**
@@ -191,7 +191,24 @@ fetch_proxy:
 
 An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
 
-This ships empty. A vendor route enters the shipped defaults only with that vendor's own published route contract behind it.
+**Shipped defaults.** Five document-sharing routes ship enabled, because an ordinary Google Docs, Sheets, Slides, Forms or Drive link carries an opaque service-issued file ID by construction and was otherwise blocked on a fresh install:
+
+```yaml
+- host: docs.google.com
+  path_prefix: /document/d/
+- host: docs.google.com
+  path_prefix: /spreadsheets/d/
+- host: docs.google.com
+  path_prefix: /presentation/d/
+- host: docs.google.com
+  path_prefix: /forms/d/e/
+- host: drive.google.com
+  path_prefix: /file/d/
+```
+
+What a shipped entry encodes is the vendor's published route shape, never the identifier format. Google documents these product URL shapes; it documents the file ID itself as opaque, with no charset or length, so keying on the ID would be an invented value. A vendor route enters the shipped defaults only on that basis. Setting the field to an empty list removes them; setting your own list replaces them.
+
+Each entry still exempts only the path-entropy gate for that one host and prefix. It does not make the route safe to send secrets to, and the warning above applies with equal force to a shipped entry: an agent that can place a chosen opaque segment on one of these routes and read it back later can carry data out over it.
 
 **Query entropy parameter exclusions** skip only the raw query-value entropy gate for one exact HTTPS endpoint and one exact parameter key. Subdomain entropy, path entropy, query-key entropy, adjacent parameters, DLP, SSRF, rate limits, and data budgets still apply. Use this first when a structured query language or endpoint contract creates a false positive in one parameter.
 

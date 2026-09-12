@@ -738,10 +738,31 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	if len(entries) == 0 {
 		return nil
 	}
+	// Decide provenance ONCE for the list, not per entry: ApplyDefaults fills
+	// the whole field or none of it.
+	inherited := pathEntropyExclusionsAreInherited(cfg)
+
 	var findings []ConfigSemanticFinding
 	for _, entry := range entries {
 		tuple := pathEntropyAdvisoryTuple(entry)
-		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
+		// A shipped default is not an exemption the operator chose, so the
+		// LIFECYCLE advisories below (own it, give it a reason, set and renew an
+		// expiry) name actions they cannot take on a route Pipelock maintains.
+		// Emitting those would put ten warnings in front of every operator on a
+		// fresh install, which is how a diagnostic trains people to ignore it.
+		//
+		// The CROSS-FIELD checks are a different thing and still run on shipped
+		// entries, because their remedy IS operator-controlled: an operator who
+		// also lists the host in subdomain_entropy_exclusions has given up
+		// subdomain-entropy coverage for it, and suppressing that warning would
+		// hide a real detection downgrade behind a route we shipped.
+		shipped := inherited
+		// The inert-while-entropy-disabled notice is skipped for shipped routes:
+		// its remedy is "remove the path exemption", which the operator does not
+		// own, and repeating it once per shipped route buries the one signal
+		// that matters (entropy is off) under five copies about our own
+		// defaults. An operator's own entry still gets it.
+		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 && !shipped {
 			findings = append(findings, newPathEntropyFinding(
 				ConfigSemanticKindInert,
 				tuple,
@@ -759,6 +780,12 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 				fmt.Sprintf("path_entropy_exclusions entry %s is redundant because subdomain_entropy_exclusions already exempts host %s from path entropy", tuple, entry.Host),
 				"keep the narrow path exemption and remove the host from subdomain_entropy_exclusions, which also disables subdomain entropy for that host",
 			))
+		}
+		if shipped {
+			// Lifecycle metadata stops here for a shipped route. Everything
+			// above is either a correctness problem or has an operator-owned
+			// remedy; everything below asks them to own a route they did not add.
+			continue
 		}
 		if strings.TrimSpace(entry.Reason) == "" {
 			findings = append(findings, pathEntropyLifecycleCheck(tuple, "reason", "add a short reason so future operators know why this route is exempt"))
@@ -792,6 +819,62 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 	}
 	sortConfigSemanticFindings(findings)
 	return findings
+}
+
+// pathEntropyExclusionsAreInherited reports whether this config's exclusion list
+// is the one Pipelock materialized, rather than one the operator wrote.
+//
+// This is PROVENANCE, not resemblance, and the distinction is the point.
+// ApplyDefaults fills the field only when it is nil, so an operator who writes
+// any list at all owns every entry in it, including one that happens to name a
+// shipped route. Matching an entry by host and prefix alone would strip the
+// reason, owner and expiry advisories from that operator's own exemption, and
+// would hide an EXPIRED operator entry that merely shares a route with a
+// default. Comparing the whole list against Defaults() reproduces exactly what
+// ApplyDefaults did and cannot drift from it.
+//
+// An operator who hand-writes precisely the shipped set is indistinguishable and
+// is treated as inherited. That is the one remaining ambiguity and it is benign:
+// the entries are ours either way.
+// normalizedExclusionScheme folds an omitted scheme to the value Load fills in,
+// so a comparison does not turn a defaulting difference into a provenance one.
+func normalizedExclusionScheme(scheme string) string {
+	if scheme == "" {
+		return "https"
+	}
+	return scheme
+}
+
+func pathEntropyExclusionsAreInherited(cfg *config.Config) bool {
+	got := cfg.FetchProxy.Monitoring.PathEntropyExclusions
+	want := config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		// Compare the WHOLE entry, not just the route. Comparing host and prefix
+		// alone let an operator write all five routes with their own governance
+		// metadata - including a past Expires - and still read as inherited, so
+		// the expiry advisory was skipped on an exemption that had lapsed. The
+		// field is inherited only when it is byte-for-byte what ApplyDefaults
+		// would have written, which is the same test ApplyDefaults itself makes.
+		if !strings.EqualFold(got[i].Host, want[i].Host) {
+			return false
+		}
+		// Compare against the NORMALIZED default, not the raw one. Load fills an
+		// omitted Scheme with https, so a config that inherited the defaults
+		// carries https while Defaults() leaves the field empty. Comparing the
+		// raw structs made every inherited entry look operator-authored, which
+		// would have greeted a fresh install with an advisory per shipped route
+		// telling the operator to own a route they never added.
+		a, b := got[i], want[i]
+		a.Host, b.Host = "", ""
+		a.Scheme, b.Scheme = normalizedExclusionScheme(a.Scheme), normalizedExclusionScheme(b.Scheme)
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func pathEntropyLifecycleCheck(tuple, field, next string) ConfigSemanticFinding {

@@ -6,7 +6,6 @@ package mcp
 import (
 	"context"
 	"crypto/ed25519"
-	"fmt"
 	"sync"
 	"testing"
 
@@ -214,16 +213,18 @@ func TestApplyFreshDriftOutcome_CapacityForcesBlock(t *testing.T) {
 	}
 }
 
-// TestCommitOrReevaluate_NeverReportsAnUnappliedAdoption is the concurrency
-// case the split Evaluate/Commit shape could not satisfy. Many goroutines race
-// to adopt DIFFERENT descriptive texts for the same card. Exactly one write can
-// win each round, so the invariant is: every outcome reported as adopted must
-// correspond to a write that actually happened, and the baseline's final state
-// must equal one of the texts whose call reported adoption.
+// TestCommitOrReevaluate_ExactlyOneWriterWins is the contention case. Every
+// worker submits the SAME new description, so only one write is legitimate: the
+// winner adopts, and every other call must find the descriptive digest already
+// equal and report neither a write nor an adoption.
+//
+// An earlier version of this test gave each worker a DIFFERENT description,
+// which meant all of them could legitimately adopt in sequence and no call ever
+// took the losing path. It passed while proving nothing about contention.
 //
 // A barrier releases every goroutine at once rather than a sleep, so the
 // interleaving is real rather than hoped for.
-func TestCommitOrReevaluate_NeverReportsAnUnappliedAdoption(t *testing.T) {
+func TestCommitOrReevaluate_ExactlyOneWriterWins(t *testing.T) {
 	base := A2AAgentCard{
 		Name:        "Vendor Agent",
 		Description: "Searches vendor documentation.",
@@ -237,46 +238,62 @@ func TestCommitOrReevaluate_NeverReportsAnUnappliedAdoption(t *testing.T) {
 		t.Fatalf("seed: applied=%v outcome=%+v, want applied first-seen", applied, out)
 	}
 
+	// One shared target: exactly one of these can be a real write.
+	target := base
+	target.Description = "Searches vendor documentation and returns relevant passages."
+	targetDigest := cardDescriptiveDigest(target)
+	targetText := cardDescriptiveText(target)
+
 	const workers = 8
 	var start sync.WaitGroup
 	var done sync.WaitGroup
 	start.Add(1)
 
 	var mu sync.Mutex
-	adoptedTexts := map[string]bool{}
+	var writes, adoptions, noops int
 
-	for i := range workers {
-		card := base
-		card.Description = fmt.Sprintf("Searches vendor documentation, revision %d.", i)
+	for range workers {
 		done.Add(1)
 		go func() {
 			defer done.Done()
 			start.Wait()
-			applied, out := baseline.CommitOrReevaluate(key, structural, cardDescriptiveDigest(card), cardDescriptiveText(card), nil)
-			// The invariant under test: adopted is reported ONLY together with
-			// an applied write. An adopted outcome with applied=false is a scan
-			// claiming a baseline update that never happened.
-			if out.adopted && !applied {
-				t.Errorf("reported adoption without applying it: %+v", out)
-			}
-			if applied && !out.adopted {
-				t.Errorf("applied a write without reporting adoption: %+v", out)
-			}
+			applied, out := baseline.CommitOrReevaluate(key, structural, targetDigest, targetText, nil)
+
+			mu.Lock()
+			defer mu.Unlock()
 			if applied {
-				mu.Lock()
-				adoptedTexts[cardDescriptiveText(card)] = true
-				mu.Unlock()
+				writes++
+			}
+			if out.adopted {
+				adoptions++
+			}
+			if !applied && !out.adopted && !out.changed && !out.block {
+				noops++
+			}
+			// The invariant: a write and an adoption are the same event. Either
+			// both or neither; an adoption without a write is a scan claiming a
+			// baseline update that never happened.
+			if applied != out.adopted {
+				t.Errorf("applied=%v but adopted=%v; these must agree: %+v", applied, out.adopted, out)
+			}
+			if out.block {
+				t.Errorf("a benign shared update was blocked: %+v", out)
 			}
 		}()
 	}
 	start.Done()
 	done.Wait()
 
-	if len(adoptedTexts) == 0 {
-		t.Fatal("no goroutine adopted anything; the test did not exercise the path")
+	if writes != 1 {
+		t.Fatalf("writes = %d, want exactly 1; only one worker can legitimately apply the same new description", writes)
 	}
-	final := baseline.entries[key].descriptive
-	if !adoptedTexts[final] {
-		t.Fatalf("the stored baseline %q was never reported as adopted by any caller", final)
+	if adoptions != 1 {
+		t.Fatalf("adoptions = %d, want exactly 1", adoptions)
+	}
+	if noops != workers-1 {
+		t.Fatalf("no-op outcomes = %d, want %d; every loser must report no write and no adoption", noops, workers-1)
+	}
+	if got := baseline.entries[key].descriptive; got != targetText {
+		t.Fatalf("stored baseline = %q, want the single adopted text %q", got, targetText)
 	}
 }

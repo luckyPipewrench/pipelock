@@ -1272,6 +1272,36 @@ func matcherParityError(raw, normalized string) error {
 	return nil
 }
 
+// validateLiteralHostMatchList validates a host list whose runtime matcher
+// only folds case: it compares the operator's stored string against the
+// request hostname with no trimming at all.
+//
+// Two lists are in that shape, tls_interception.passthrough_domains and
+// forward_proxy.redirect_websocket_hosts, and until now neither had any
+// validator. Every malformed spelling loaded clean and then matched nothing,
+// so the entry was silently inert: a pinned-certificate host written
+// "vendor.example." or " vendor.example" was intercepted anyway, and the
+// operator saw accepted configuration. That is an availability failure rather
+// than a bypass, which is why the repair is to refuse the input and to store
+// the canonical form, not to loosen either matcher.
+//
+// Breadth is deliberately not judged. Passthrough and WebSocket redirect are
+// routing decisions, so a wide wildcard is the operator's policy in the same
+// way it is on a blocklist.
+func validateLiteralHostMatchList(label string, entries []string) error {
+	if err := ValidateHostMatchList(entries, label); err != nil {
+		return err
+	}
+	// Store the normalized form. These matchers do not trim a trailing dot,
+	// so "vendor.example." would otherwise stay stored as typed and never
+	// match a request for "vendor.example", even though the parity check
+	// above accepts that spelling for matchers that do trim one dot.
+	for i, raw := range entries {
+		entries[i] = NormalizeHostPattern(raw)
+	}
+	return nil
+}
+
 func (c *Config) validateLogging() error {
 	switch c.Logging.Format {
 	case DefaultLogFormat, "text":
@@ -2824,6 +2854,10 @@ func (c *Config) validateGitProtection() error {
 
 func (c *Config) validateForwardProxy() error {
 	// Validate forward proxy config
+	if err := validateLiteralHostMatchList(
+		"forward_proxy.redirect_websocket_hosts", c.ForwardProxy.RedirectWebSocketHosts); err != nil {
+		return err
+	}
 	if !c.ForwardProxy.Enabled {
 		return nil
 	}
@@ -3361,6 +3395,10 @@ func (c *Config) validateCrossRequestDetection(warnings *[]Warning) error {
 
 func (c *Config) validateTLSInterception() error {
 	// Validate TLS interception config
+	if err := validateLiteralHostMatchList(
+		"tls_interception.passthrough_domains", c.TLSInterception.PassthroughDomains); err != nil {
+		return err
+	}
 	if !c.TLSInterception.Enabled {
 		return nil
 	}
@@ -4086,6 +4124,18 @@ func (c *Config) validateDNS() error {
 		}
 		if strings.Contains(normalizedHost, "://") || strings.ContainsAny(normalizedHost, "/*?[]:") {
 			return fmt.Errorf("dns.host_overrides: %q must be a hostname, not a URL, wildcard, IP, or host:port", host)
+		}
+		// An empty label means the key can never be reached. The resolver's
+		// own key normalizer removes ONE trailing dot, so "pin.example.com.."
+		// loaded clean, was stored as "pin.example.com." and no lookup for
+		// "pin.example.com" ever matched it: the pin was silently inert while
+		// the operator saw accepted configuration.
+		// The test is against the ONCE-TRIMMED value, which is what the
+		// resolver stores, so a residual trailing dot here means the operator
+		// wrote two.
+		if strings.HasPrefix(normalizedHost, ".") || strings.HasSuffix(normalizedHost, ".") ||
+			strings.Contains(normalizedHost, "..") {
+			return fmt.Errorf("dns.host_overrides: %q has an empty DNS label", host)
 		}
 		// Reject IP-literal keys: the override path is hostname-only, and
 		// allowing an IP-literal key would suggest the operator can rewrite

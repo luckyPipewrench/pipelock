@@ -52,6 +52,20 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 		}
 	}
 
+	// Host matching is case-insensitive, so an EQUIVALENT spelling of a shipped
+	// host is still shipped. Without this, a regression from EqualFold to strict
+	// equality passes every case above while telling an operator to own and
+	// renew a route Pipelock ships, under a host DNS considers identical.
+	mixedCase := config.PathEntropyExclusion{Host: strings.ToUpper(shipped.Host), PathPrefix: shipped.PathPrefix}
+	if !isShippedPathEntropyDefault(mixedCase) {
+		t.Errorf("%s%s is an equivalent spelling of a shipped route but was not treated as shipped", mixedCase.Host, mixedCase.PathPrefix)
+	}
+	mixedCfg := config.Defaults()
+	mixedCfg.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{mixedCase}
+	for _, f := range analyzeDoctorPathEntropyExclusions(mixedCfg) {
+		t.Errorf("an equivalent-cased shipped route produced an advisory the operator cannot act on: %s", f.Detail)
+	}
+
 	operator := config.Defaults()
 	operator.FetchProxy.Monitoring.PathEntropyExclusions = append(
 		operator.FetchProxy.Monitoring.PathEntropyExclusions,

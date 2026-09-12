@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -148,4 +149,71 @@ func TestProxy_EmptyLabelHostBlocksOnEveryTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWebSocketProxy_EmptyLabelHostRefused covers the /ws surface, which
+// builds its destination from the url query parameter rather than from a
+// request line. The review that read this change confirmed statically that
+// the native WebSocket path scans before it dials, and this exercises it, so
+// the transport-parity claim is proven rather than argued.
+func TestWebSocketProxy_EmptyLabelHostRefused(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+	backendHost, backendPort, splitErr := net.SplitHostPort(backendAddr)
+	if splitErr != nil {
+		t.Fatalf("split backend addr: %v", splitErr)
+	}
+
+	const pinnedHost = "ws-pinned.vendor.example"
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.SSRF.IPAllowlist = nil
+		cfg.TrustedDomains = []string{pinnedHost}
+		cfg.DNS.HostOverrides = map[string][]string{pinnedHost: {backendHost}}
+	})
+	defer proxyCleanup()
+
+	// Control first: the exact pinned host upgrades, so a refusal below is
+	// the empty label rather than an unreachable backend.
+	if status := wsUpgradeStatus(t, proxyAddr, net.JoinHostPort(pinnedHost, backendPort)); status != http.StatusSwitchingProtocols {
+		t.Fatalf("control upgrade status %d, want 101", status)
+	}
+
+	for _, host := range []string{pinnedHost + "..", pinnedHost + "..."} {
+		status := wsUpgradeStatus(t, proxyAddr, net.JoinHostPort(host, backendPort))
+		if status == http.StatusSwitchingProtocols {
+			t.Fatalf("host %q upgraded; an empty-label host must be refused before the dial", host)
+		}
+		if status != http.StatusForbidden {
+			t.Fatalf("host %q status %d, want 403", host, status)
+		}
+	}
+}
+
+// wsUpgradeStatus performs one manual WebSocket upgrade through the proxy and
+// returns the status code. It is manual for the same reason the DNS override
+// end-to-end test is: a client-side dialer would resolve the hostname itself,
+// and the point is what pipelock does with the name.
+func wsUpgradeStatus(t *testing.T, proxyAddr, targetHostPort string) int {
+	t.Helper()
+	conn, dialErr := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if dialErr != nil {
+		t.Fatalf("dial proxy: %v", dialErr)
+	}
+	defer func() { _ = conn.Close() }()
+	if deadlineErr := conn.SetDeadline(time.Now().Add(5 * time.Second)); deadlineErr != nil {
+		t.Fatalf("set deadline: %v", deadlineErr)
+	}
+	upgrade := fmt.Sprintf(
+		"%s /ws?url=%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		http.MethodGet, url.QueryEscape("ws://"+targetHostPort+"/echo"), proxyAddr, generateWSKey(t),
+	)
+	if _, writeErr := conn.Write([]byte(upgrade)); writeErr != nil {
+		t.Fatalf("write upgrade: %v", writeErr)
+	}
+	resp, respErr := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if respErr != nil {
+		t.Fatalf("read upgrade response: %v", respErr)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
 }

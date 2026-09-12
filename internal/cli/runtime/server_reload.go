@@ -72,6 +72,16 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	// Host patterns get the same treatment, for the same reason: the file
+	// reloader validates through config.Load, but the Conductor apply boundary
+	// enters here directly and this seam must stay fail-closed for every
+	// caller. A pattern that reaches the live scanner unvalidated can match a
+	// host the operator never wrote.
+	if validationErr := newCfg.ValidateHostPatterns(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: invalid host pattern: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	// Startup refuses block on this listener, so a reload that asks for it is
 	// requesting enforcement this runtime cannot provide. Reject the whole
 	// reload atomically and record it through the reload audit path; applying

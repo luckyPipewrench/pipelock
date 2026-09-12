@@ -3479,7 +3479,8 @@ func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	cfg.APIAllowlist = []string{"*"} // allow all URLs so we reach header scanning
+	// An EMPTY allowlist is the allow-all spelling; a bare "*" is refused by
+	// validation and now by scanner construction, so it never meant this.
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn
 	cfg.RequestBodyScanning.ScanHeaders = true
@@ -3516,7 +3517,7 @@ func TestFetchHandler_HeaderScan_WarnModeCriticalDLPBlocksWhenEnforced(t *testin
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	cfg.APIAllowlist = []string{"*"}
+	// Empty allowlist = allow all; see the sibling test above.
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn
 	cfg.RequestBodyScanning.ScanHeaders = true

@@ -45,4 +45,25 @@ func TestShippedPathEntropyDefaultsProduceNoAdvisories(t *testing.T) {
 			t.Errorf("advisory targeted a shipped default rather than the operator entry: %s", f.Detail)
 		}
 	}
+	// Each lifecycle field is a SEPARATE check, so assert each one by name. A
+	// bare len(got) != 0 passes when only one of the three still fires, which
+	// would let two of them silently go missing while the calibration above
+	// still reported the analyzer as live.
+	for _, field := range []string{"reason", "owner", "expires"} {
+		want := "is missing advisory " + field
+		found := false
+		for _, f := range got {
+			if strings.Contains(f.Detail, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			var details []string
+			for _, f := range got {
+				details = append(details, f.Detail)
+			}
+			t.Errorf("operator entry produced no %q advisory; got:\n%s", field, strings.Join(details, "\n"))
+		}
+	}
 }

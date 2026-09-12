@@ -186,6 +186,9 @@ func runOpenCodeInstall(cmd *cobra.Command, override string, dryRun bool, config
 
 		newServer, meta, plan, err := wrapOpenCodeServer(server, exe, configFile, targetPath, name)
 		if err != nil {
+			if isNormalizationFailure(err) {
+				return fmt.Errorf("server %q: %w", name, err)
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue
 		}
@@ -318,6 +321,16 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 }
 
 func wrapOpenCodeServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *pipelockMeta, *sidecarOp, error) {
+	// Normalize a foreign wrapper down to its bare child before wrapping, so an
+	// upgrade over a pipelock installed at a different path rewraps the ORIGINAL
+	// command instead of nesting proxy invocations. OpenCode carries the
+	// command as a single array, so it uses the array-shaped normalizer; a
+	// recovered remote child needs no type (OpenCode infers it from url).
+	server, normErr := normalizeForeignOpenCodeWrapper(server)
+	if normErr != nil {
+		return nil, nil, nil, normErr
+	}
+
 	_, hasCommand := server[mcpFieldCommand]
 	_, hasURL := server[mcpFieldURL]
 	if hasCommand && hasURL {

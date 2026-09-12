@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 	"github.com/spf13/cobra"
 )
 
@@ -420,7 +421,7 @@ type codexInstallPlan struct {
 
 // planCodexInstall computes the wrap plan for each server. Pure function:
 // no I/O, no exec.
-func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) []codexInstallPlan {
+func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) ([]codexInstallPlan, error) {
 	plans := make([]codexInstallPlan, 0, len(servers))
 	for _, s := range servers {
 		unsupportedReason := unsupportedCodexInstallReason(s)
@@ -438,12 +439,26 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 				Reason: unsupportedReason,
 			})
 		case s.Transport.Type == codexTransportStdio && s.Transport.Command != "":
+			action := codexActionWrapStdio
+			newArgs := wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile)
+			if classifyCodexWrapper(s) == stateForeignWrapper {
+				inner, err := mcpwrap.RecoverInner(s.Transport.Args)
+				if err != nil {
+					return nil, fmt.Errorf("server %q: %w", s.Name, err)
+				}
+				if inner.Transport == mcpwrap.TransportUpstream {
+					action = codexActionWrapURL
+					newArgs = wrapCodexURL(inner.UpstreamURL, configFile)
+				} else {
+					newArgs = wrapCodexArgs(inner.Command, inner.Args, s.Transport.Env, configFile)
+				}
+			}
 			plans = append(plans, codexInstallPlan{
 				Server:   s.Name,
-				Action:   codexActionWrapStdio,
+				Action:   action,
 				Reason:   foreignCodexWrapperReason(s),
 				NewCmd:   pipelockBin,
-				NewArgs:  wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile),
+				NewArgs:  newArgs,
 				Env:      copyStringMap(s.Transport.Env),
 				Original: s.Transport,
 			})
@@ -464,7 +479,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			})
 		}
 	}
-	return plans
+	return plans, nil
 }
 
 // codexRemovePlan describes how to unwrap one server. Pure function output.
@@ -551,7 +566,10 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 	if err != nil {
 		return err
 	}
-	plans := planCodexInstall(servers, pipelockBin, resolvedConfig.Path)
+	plans, err := planCodexInstall(servers, pipelockBin, resolvedConfig.Path)
+	if err != nil {
+		return err
+	}
 
 	wrapped, skipped := 0, 0
 	for _, p := range plans {
@@ -796,6 +814,6 @@ func foreignCodexWrapperReason(server codexMCPServer) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"runs %q with proxy arguments but that is not this pipelock binary; wrapping it, and remove-then-install for a single clean wrap",
+		"runs %q with proxy arguments from another binary; replacing the wrapper from its invocation",
 		server.Transport.Command)
 }

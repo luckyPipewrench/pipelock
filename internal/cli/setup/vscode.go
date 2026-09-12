@@ -314,6 +314,9 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 
 		newServer, meta, plan, err := wrapVscodeServer(server, exe, configFile, targetPath, name)
 		if err != nil {
+			if isNormalizationFailure(err) {
+				return fmt.Errorf("server %q: %w", name, err)
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue
 		}
@@ -496,6 +499,15 @@ func isVscodeHTTPType(t string) bool { return t != vsTypeStdio && t != "" }
 // remove applies deletes only after the restored config is committed; dry-run
 // skips the apply step entirely.
 func wrapVscodeServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *pipelockMeta, *sidecarOp, error) {
+	// Normalize a foreign wrapper down to its bare child before wrapping, so an
+	// upgrade over a pipelock installed at a different path rewraps the ORIGINAL
+	// command instead of nesting proxy invocations. Cline and Zed reach
+	// this function through wrapClineServer, so they are covered here too.
+	server, normErr := normalizeForeignWrapper(server, mcpHTTPWrapType)
+	if normErr != nil {
+		return nil, nil, nil, normErr
+	}
+
 	serverType, _ := server["type"].(string)
 	typeOmitted := serverType == ""
 	if typeOmitted {

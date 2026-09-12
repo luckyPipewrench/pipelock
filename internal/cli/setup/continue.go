@@ -354,6 +354,15 @@ func continueServerName(server map[string]interface{}, index int) string {
 }
 
 func wrapContinueServer(server map[string]interface{}, exe, configFile string) (map[string]interface{}, error) {
+	// Normalize a foreign wrapper down to its bare child before wrapping, so an
+	// upgrade over a pipelock installed at a different path rewraps the ORIGINAL
+	// command instead of nesting proxy invocations. A recovered remote
+	// child needs no type (Continue infers streamable-http from url).
+	server, normErr := normalizeForeignWrapper(server, "")
+	if normErr != nil {
+		return nil, normErr
+	}
+
 	_, hasCommand := server[mcpFieldCommand]
 	_, hasURL := server[mcpFieldURL]
 	if hasCommand == hasURL {

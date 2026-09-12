@@ -91,12 +91,14 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 	}
 
 	if err := watcher.Arm(); err != nil {
+		// Capture the watch failure count before closing the watcher.
+		degraded := watcher.DegradedPathCount()
 		_ = watcher.Close()
 		if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(err) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
 			return func() error { return nil }, nil
 		}
-		return nil, fileSentryArmFailure(err)
+		return nil, fileSentryArmFailure(err, degraded)
 	}
 
 	var findingHook filesentry.FindingHook
@@ -155,16 +157,35 @@ func fileSentryArmErrorMustFailClosed(err error) bool {
 	return errors.Is(err, filesentry.ErrNoWatchPaths) || errors.Is(err, filesentry.ErrRequiredWatchPath)
 }
 
-// fileSentryArmFailure attaches operator remedies to an arming failure, naming
-// only controls the blocking path actually consults. best_effort is offered
-// solely for failures it can resolve: a required root and a no-watch-paths
-// error both stay fail-closed under best_effort, so advertising it there would
-// send an operator to a setting that cannot fix their failure.
-func fileSentryArmFailure(err error) error {
-	if fileSentryArmErrorMustFailClosed(err) {
-		return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w\nremedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or drop required: true from the affected watch_paths entry. file_sentry.best_effort does NOT apply to this failure: a required root and a configuration with no watchable path both stay fail-closed", err)
+// fileSentryArmFailure keeps the summary and remedy ahead of joined details,
+// preserving the original error chain. The count includes omitted diagnostics.
+func fileSentryArmFailure(err error, degradedSubtrees int) error {
+	return fmt.Errorf("%s\n%s\ndetails:\n%w",
+		fileSentryArmFailureSummary(err, degradedSubtrees),
+		fileSentryArmRemedy(err),
+		err)
+}
+
+func fileSentryArmFailureSummary(err error, degradedSubtrees int) string {
+	const head = "file sentry failed to arm watches (feature is enabled)"
+	if degradedSubtrees > 0 {
+		return fmt.Sprintf("%s: %d skipped/unarmed watch subtree(s)", head, degradedSubtrees)
 	}
-	return fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w\nremedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or set file_sentry.best_effort: true to trade coverage for availability", err)
+	if errors.Is(err, filesentry.ErrNoWatchPaths) {
+		return head + ": no watch paths could be armed"
+	}
+	return head
+}
+
+// fileSentryArmRemedy offers best_effort only when it can resolve the failure.
+func fileSentryArmRemedy(err error) string {
+	if errors.Is(err, filesentry.ErrNoWatchPaths) {
+		return "remedies: ensure at least one file_sentry.watch_paths entry names an existing directory the user pipelock runs as can read and execute, and that file_sentry.ignore_patterns does not exclude it. file_sentry.best_effort does NOT apply to this failure: at least one path must be watchable"
+	}
+	if fileSentryArmErrorMustFailClosed(err) {
+		return "remedies: create missing required directories or correct their file_sentry.watch_paths entries; grant the user pipelock runs as read and execute access to each listed directory; or adjust file_sentry.ignore_patterns to exclude inaccessible paths while retaining at least one watchable directory. file_sentry.best_effort does NOT apply to this failure: required watch coverage must be available"
+	}
+	return "remedies: grant the user pipelock runs as read and execute access to each listed directory; add a file_sentry.ignore_patterns entry matching an inaccessible path; or set file_sentry.best_effort: true to trade coverage for availability"
 }
 
 // startupSummaryLine renders the one-line startup diagnostic. fetchAddr is the

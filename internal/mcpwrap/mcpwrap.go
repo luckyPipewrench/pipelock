@@ -59,7 +59,7 @@ const (
 // Names and metadata are not proof: both can be supplied by the config being
 // inspected.
 func ClassifyInvocation(command string, args []string) WrapperState {
-	if command == "" || len(args) < 2 || args[0] != "mcp" || args[1] != "proxy" {
+	if command == "" || len(args) < 2 || args[0] != subcmdMCP || args[1] != subcmdProxy {
 		return WrapperNone
 	}
 	self, err := os.Executable()
@@ -71,7 +71,7 @@ func ClassifyInvocation(command string, args []string) WrapperState {
 // target a different installed Pipelock path than the binary generating the
 // config.
 func ClassifyInvocationAgainst(command string, args []string, expected string) WrapperState {
-	if command == "" || expected == "" || len(args) < 2 || args[0] != "mcp" || args[1] != "proxy" {
+	if command == "" || expected == "" || len(args) < 2 || args[0] != subcmdMCP || args[1] != subcmdProxy {
 		return WrapperNone
 	}
 	return classifyExecutable(command, expected, nil)
@@ -198,6 +198,10 @@ func IsHTTPType(t string) bool { return t != TypeStdio && t != "" }
 //     these hosts infer from the `command` key - so no field foreign to the
 //     host's schema is introduced.
 func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *Meta, *SidecarOp, error) {
+	server, err := recoverForeignServer(server)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	serverType, _ := server[FieldType].(string)
 	typeOmitted := serverType == ""
 	if typeOmitted {

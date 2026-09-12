@@ -167,6 +167,9 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 
 		newServer, meta, err := wrapMCPServer(server, exe, resolvedConfig.Path, sandbox, workspace)
 		if err != nil {
+			if isNormalizationFailure(err) {
+				return fmt.Errorf("server %q: %w", name, err)
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue
 		}

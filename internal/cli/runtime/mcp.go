@@ -1806,12 +1806,14 @@ Key-free evidence capture:
 				// Arm synchronously before child launch.
 				if watcher != nil {
 					if armErr := watcher.Arm(); armErr != nil {
+						// Capture the watch failure count before closing the watcher.
+						degraded := watcher.DegradedPathCount()
 						_ = watcher.Close()
 						if cfg.FileSentry.BestEffort && !fileSentryArmErrorMustFailClosed(armErr) {
 							_, _ = fmt.Fprintf(logW, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", armErr)
 							watcher = nil
 						} else {
-							return fileSentryArmFailure(armErr)
+							return fileSentryArmFailure(armErr, degraded)
 						}
 					}
 				}

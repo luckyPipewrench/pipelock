@@ -26,7 +26,7 @@ const (
 	clineConfigFilename = "mcp.json"
 	clineConfigDirname  = ".cline"
 	clineServersKey     = "mcpServers"
-	clineHTTPProbeType  = "http"
+	clineHTTPProbeType  = mcpHTTPWrapType
 )
 
 // clineMCPConfig represents Cline's mcp.json file. Unknown top-level fields
@@ -179,6 +179,9 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 
 		newServer, meta, plan, err := wrapClineServer(server, exe, configFile, targetPath, name)
 		if err != nil {
+			if isNormalizationFailure(err) {
+				return fmt.Errorf("server %q: %w", name, err)
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue
 		}

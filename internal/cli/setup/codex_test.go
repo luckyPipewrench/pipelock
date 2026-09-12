@@ -475,7 +475,10 @@ func TestPlanCodexInstall(t *testing.T) {
 			},
 		},
 	}
-	plans := planCodexInstall(servers, pipelockBin, cfgPath)
+	plans, err := planCodexInstall(servers, pipelockBin, cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(plans) != 4 {
 		t.Fatalf("expected 4 plans, got %d", len(plans))
 	}
@@ -511,19 +514,7 @@ func TestPlanCodexInstall(t *testing.T) {
 }
 
 func TestPlanCodexInstall_DifferentPipelockBinIsWrapped(t *testing.T) {
-	// A server wrapped by a pipelock at ANOTHER path is wrapped again rather than
-	// skipped, and that inverts what this test used to assert.
-	//
-	// The old behaviour keyed on a "pipelock" basename plus the canonical argument
-	// prefix, so it was location-independent and idempotent across paths. That is a
-	// fail-open: any config can name an attacker binary "pipelock" and be skipped,
-	// leaving it unmediated. Identity cannot be forged by naming, and the installer
-	// cannot prove that some other file called pipelock is pipelock.
-	//
-	// The cost is the nesting this test's original comment worried about. It is
-	// accepted deliberately: the result is still mediated by this binary, the
-	// installer warns, and the operator can remove-then-install for a single clean
-	// wrap. Normalising the nested invocation instead is tracked separately.
+	// Recover the invocation child without trusting the old binary or marker.
 	servers := []codexMCPServer{{
 		Name: "old-wrap",
 		Transport: codexMCPTransport{
@@ -532,9 +523,18 @@ func TestPlanCodexInstall_DifferentPipelockBinIsWrapped(t *testing.T) {
 			Args:    []string{"mcp", "proxy", "--", "node", "x.js"},
 		},
 	}}
-	plans := planCodexInstall(servers, pipelockBin, "")
+	plans, err := planCodexInstall(servers, pipelockBin, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(plans) != 1 {
 		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+	if !reflect.DeepEqual(plans[0].NewArgs, []string{"mcp", "proxy", "--", "node", "x.js"}) {
+		t.Fatalf("foreign wrapper survived: %v", plans[0].NewArgs)
+	}
+	if !reflect.DeepEqual(plans[0].Original, servers[0].Transport) {
+		t.Fatal("upgrade changed the rollback transport")
 	}
 	if plans[0].Action == codexActionSkipWrapped {
 		t.Errorf("a pipelock at another path was skipped; it cannot be proven to be pipelock, so it must be wrapped")
@@ -606,7 +606,10 @@ func TestPlanCodexInstall_SkipsUnsupportedCodexState(t *testing.T) {
 		},
 	}
 
-	plans := planCodexInstall(servers, pipelockBin, "")
+	plans, err := planCodexInstall(servers, pipelockBin, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(plans) != len(servers) {
 		t.Fatalf("expected %d plans, got %d", len(servers), len(plans))
 	}

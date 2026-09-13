@@ -367,11 +367,15 @@ func (e *EntitlementDB) ReportDuplicateActiveTrials(ctx context.Context, log zer
 		log.Warn().Err(err).Msg("could not check for pre-existing duplicate active trials")
 		return
 	}
-	for email, subscriptions := range duplicates {
+	// The order IDs are the reconciliation handle and the grouping already
+	// says which of them belong to one customer, so the address itself adds
+	// nothing an operator needs. Logs ship to a SIEM and are retained, and a
+	// customer email in a log line is personal data this service has no reason
+	// to put there.
+	for _, subscriptions := range duplicates {
 		log.Warn().
-			Str("customer_email", email).
 			Strs("subscription_ids", subscriptions).
-			Msg("multiple active trials exist for one customer email; only the longest-running one holds the trial slot, the others keep running until they expire")
+			Msg("these orders are active trials for one customer; only the longest-running one holds the trial slot, the others keep running until they expire")
 	}
 }
 

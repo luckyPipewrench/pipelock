@@ -903,13 +903,20 @@ func TestReportDuplicateActiveTrials_NamesEachAffectedCustomer(t *testing.T) {
 	var buf bytes.Buffer
 	db.ReportDuplicateActiveTrials(ctx, zerolog.New(&buf))
 	out := buf.String()
-	for _, want := range []string{"rep@example.com", "order_rep_a", "order_rep_b"} {
+	for _, want := range []string{"order_rep_a", "order_rep_b"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("report missing %q: %s", want, out)
 		}
 	}
-	if strings.Contains(out, "solo@example.com") {
+	if strings.Contains(out, "order_rep_solo") {
 		t.Fatalf("single-trial customer was reported as a duplicate: %s", out)
+	}
+	// Logs are retained and shipped, so the address itself must not appear:
+	// the order IDs are the reconciliation handle.
+	for _, forbidden := range []string{"rep@example.com", "Rep@Example.com", "solo@example.com"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("customer email %q was written to the log: %s", forbidden, out)
+		}
 	}
 
 	if err := db.Close(); err != nil {

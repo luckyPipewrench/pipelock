@@ -254,6 +254,23 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 	}
 	edb.journalMode = mode
 
+	// A database that cannot become WAL because it is not on disk keeps nothing
+	// across a restart, which empties the table the one-trial limit is read
+	// from and hands every customer their trial back. Refuse it: a log line
+	// does not stop that, and an operator who wanted an ephemeral store has the
+	// :memory: sentinel to ask for one by name.
+	//
+	// journal_mode=MEMORY on a real on-disk database is a different and
+	// legitimate setting, and it is not caught here: that database accepts the
+	// WAL request above and reports "wal". Only a database with no file behind
+	// it still answers "memory" after being asked.
+	if mode == journalModeMemory && !edb.inMemory {
+		_ = db.Close()
+		return nil, fmt.Errorf(
+			"entitlement database %q opens an in-memory database, which keeps no entitlement or trial state across a restart: point it at a file, or use %q to ask for an ephemeral database on purpose",
+			path, inMemoryPath)
+	}
+
 	return edb, nil
 }
 
@@ -542,19 +559,9 @@ func (e *EntitlementDB) ReportJournalMode(log zerolog.Logger) {
 		return
 	}
 
-	// An in-memory database keeps its own mode and can never be WAL. That is
-	// only expected when the operator asked for one by name.
-	if mode == journalModeMemory {
-		if e.inMemory {
-			return
-		}
-		// A configured URI can carry mode=memory, which opens successfully and
-		// then discards every entitlement and trial slot when the process
-		// stops. That empties the very table the one-trial limit is read from,
-		// so each restart hands every customer their trial back.
-		log.Error().
-			Str("journal_mode", mode).
-			Msg("entitlement database is in memory and keeps nothing across a restart, so trials would be granted again; the configured database URI asks for an in-memory database, which is not a supported way to run this service")
+	// An in-memory database keeps its own mode and can never be WAL. Only the
+	// one asked for by name gets here; OpenEntitlementDB refuses any other.
+	if mode == journalModeMemory && e.inMemory {
 		return
 	}
 

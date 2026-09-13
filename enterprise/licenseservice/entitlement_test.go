@@ -1185,11 +1185,11 @@ func TestDSNPragmas_OmitJournalMode(t *testing.T) {
 // TestReportJournalMode_SpeaksUpOnlyWhenSomethingIsWrong pins what the startup
 // report says about each mode the database can settle in.
 //
-// Two of them are working as intended and stay quiet. A file database that
+// Two of them are working as intended and stay quiet, and a file database that
 // missed write-ahead logging is survivable and warns. An in-memory database
-// the operator did NOT ask for is the severe one: it opens successfully and
-// keeps nothing, so the table the one-trial limit reads is empty after every
-// restart and every customer gets their trial back.
+// nobody asked for never reaches this report at all: OpenEntitlementDB refuses
+// it outright, which
+// TestOpenEntitlementDB_RefusesAConfiguredInMemoryDatabase covers.
 func TestReportJournalMode_SpeaksUpOnlyWhenSomethingIsWrong(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -1207,12 +1207,6 @@ func TestReportJournalMode_SpeaksUpOnlyWhenSomethingIsWrong(t *testing.T) {
 		{
 			name: "the mode could not be read at all", mode: "",
 			wantLevel: "warn", wantSays: "restart this service",
-		},
-		{
-			// A configured URI carrying mode=memory opens fine and then keeps
-			// nothing, which empties the table the one-trial limit reads.
-			name: "a configured URI opened an in-memory database", mode: journalModeMemory,
-			wantLevel: "error", wantSays: "keeps nothing across a restart",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1287,5 +1281,38 @@ func TestEntitlementDSN_RefusesARelativePathItCannotResolve(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolve database path") {
 		t.Fatalf("error = %v, want it to name what could not be resolved", err)
+	}
+}
+
+// TestOpenEntitlementDB_RefusesAConfiguredInMemoryDatabase pins that a database
+// which keeps nothing across a restart is refused rather than merely reported.
+//
+// A configured URI can carry mode=memory. It opens successfully and then
+// discards every entitlement and trial slot when the process stops, so the
+// table the one-trial limit is read from is empty on every start and each
+// customer is handed their trial again. Logging that and serving anyway does
+// not stop it, so startup fails instead.
+func TestOpenEntitlementDB_RefusesAConfiguredInMemoryDatabase(t *testing.T) {
+	uri := "file://" + filepath.Join(t.TempDir(), "ephemeral.db") + "?mode=memory"
+
+	db, err := OpenEntitlementDB(t.Context(), uri)
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("opened an in-memory database from a configured URI, want a refusal")
+	}
+	for _, want := range []string{"keeps no entitlement or trial state", inMemoryPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to mention %q", err, want)
+		}
+	}
+
+	// The sentinel is still how a caller asks for an ephemeral database.
+	sentinel, err := OpenEntitlementDB(t.Context(), inMemoryPath)
+	if err != nil {
+		t.Fatalf("open %s: %v", inMemoryPath, err)
+	}
+	t.Cleanup(func() { _ = sentinel.Close() })
+	if got := sentinel.JournalMode(); got != journalModeMemory {
+		t.Fatalf("sentinel JournalMode() = %q, want %q", got, journalModeMemory)
 	}
 }

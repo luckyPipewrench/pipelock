@@ -928,3 +928,43 @@ func TestReportDuplicateActiveTrials_NamesEachAffectedCustomer(t *testing.T) {
 		t.Fatalf("read failure was not reported: %s", buf.String())
 	}
 }
+
+// TestOpenEntitlementDB_PragmasApplyToEveryConnection pins that the busy
+// timeout, journal mode and foreign-key enforcement come from the DSN rather
+// than a one-off PRAGMA statement. A PRAGMA applies only to the connection that
+// ran it, so a replacement pooled connection would arrive without a busy
+// timeout and a concurrent trial claim would surface SQLITE_BUSY as a failed
+// grant. Reading them back proves the driver applied them at connect time.
+func TestOpenEntitlementDB_PragmasApplyToEveryConnection(t *testing.T) {
+	fileDB, err := OpenEntitlementDB(t.Context(), filepath.Join(t.TempDir(), "pragmas.db"))
+	if err != nil {
+		t.Fatalf("open file db: %v", err)
+	}
+	t.Cleanup(func() { _ = fileDB.Close() })
+
+	for _, db := range []*EntitlementDB{fileDB, openTestDB(t)} {
+		var busyTimeout, foreignKeys int
+		if err := db.db.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("read busy_timeout: %v", err)
+		}
+		if busyTimeout != 5000 {
+			t.Fatalf("busy_timeout = %d, want 5000 on every connection", busyTimeout)
+		}
+		if err := db.db.QueryRowContext(t.Context(), "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+			t.Fatalf("read foreign_keys: %v", err)
+		}
+		if foreignKeys != 1 {
+			t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+		}
+	}
+
+	// A file database takes WAL; :memory: keeps its own journal mode, and the
+	// DSN asking for WAL must not make opening it fail.
+	var journalMode string
+	if err := fileDB.db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal for a file database", journalMode)
+	}
+}

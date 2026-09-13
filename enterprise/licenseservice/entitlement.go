@@ -117,7 +117,16 @@ type entitlementQueryer interface {
 // OpenEntitlementDB opens (or creates) the SQLite database at path and
 // runs migrations. The database uses WAL mode for concurrent read access.
 func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error) {
-	db, err := sql.Open("sqlite", path)
+	// Pragmas go in the DSN, not in an Exec after opening. A PRAGMA statement
+	// applies only to the connection that ran it, so if database/sql ever
+	// replaces the pooled connection (a driver error discards one) the
+	// replacement would come back without a busy timeout, and a concurrent
+	// trial claim would surface SQLITE_BUSY as a failed grant on the billing
+	// path. Set here, the driver applies them to every connection it opens.
+	// journal_mode(WAL) is honored for a file database and is a no-op for
+	// :memory:, which keeps its own journal mode; both are verified by test.
+	const pragmas = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", path+pragmas)
 	if err != nil {
 		return nil, fmt.Errorf("open entitlement db: %w", err)
 	}
@@ -127,24 +136,6 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 	// ensure all queries hit the same underlying database.
 	db.SetMaxOpenConns(1)
 
-	// WAL mode for better concurrent read performance.
-	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
-	}
-	// Wait briefly for another writer to finish instead of leaking SQLITE_BUSY
-	// through the active-trial decision path. The slot constraint then decides
-	// which writer owns the canonical identity.
-	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set busy timeout: %w", err)
-	}
-
-	// Foreign keys on (defensive, even though we have a single table now).
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
 	edb := &EntitlementDB{db: db}
 	if err := edb.migrate(ctx); err != nil {
 		_ = db.Close()

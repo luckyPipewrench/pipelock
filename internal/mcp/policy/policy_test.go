@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const (
@@ -1562,6 +1563,24 @@ func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
 			patch: "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n++++ b/.bashrc\n",
 		},
 		{
+			name:  "README removes a diff example naming a profile",
+			patch: "--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,1 @@\n--- a/.bashrc\n-+++ b/.bashrc\n keep\n",
+		},
+		{
+			name:  "SQL migration removes comment lines",
+			patch: "*** Begin Patch\n*** Update File: migrations/001.sql\n@@\n--- drop the legacy index\n--- see .bashrc for the shell side\n CREATE INDEX i ON t (id);\n*** End Patch",
+		},
+		{
+			name:     "audit log patch target",
+			patch:    "*** Begin Patch\n*** Update File: /var/lib/pipelock/evidence/evidence-proxy-1.jsonl\n@@\n-old\n+new\n*** End Patch",
+			wantRule: "Audit Log Patch",
+		},
+		{
+			name:     "audit log relative git target",
+			patch:    "diff --git a/var/log/audit.log b/var/log/audit.log\nindex 1111111..2222222 100644\n--- a/var/log/audit.log\n+++ b/var/log/audit.log\n@@ -1 +1 @@\n-old\n+new\n",
+			wantRule: "Audit Log Patch",
+		},
+		{
 			name:     "apply patch update header",
 			patch:    "*** Begin Patch\n*** Update File: /home/user/.bashrc\n@@\n-old\n+new\n*** End Patch",
 			wantRule: "Shell Profile Modification",
@@ -1827,6 +1846,63 @@ func TestExtractPatchTargetPathsInspection(t *testing.T) {
 			wantTargets: []string{"dir/file"},
 			inspection:  patchTargetsInspectable,
 		},
+		// Hunk bodies are content. A removed `-- ` comment renders as `--- `,
+		// an added `++ ` line as `+++ `, and neither names a file.
+		{
+			name:        "unified hunk removes dash-dash comment lines",
+			patch:       "--- a/schema.sql\n+++ b/schema.sql\n@@ -1,3 +1,2 @@\n--- old note\n--- second note\n CREATE TABLE t (id int);\n+-- kept\n",
+			wantTargets: []string{"a/schema.sql", "b/schema.sql"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "git hunk removes dash-dash comment line",
+			patch:       "diff --git a/schema.sql b/schema.sql\nindex 1111111..2222222 100644\n--- a/schema.sql\n+++ b/schema.sql\n@@ -1,2 +1,1 @@\n--- old note\n CREATE TABLE t (id int);\n",
+			wantTargets: []string{"a/schema.sql", "b/schema.sql", "a/schema.sql", "b/schema.sql"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "apply patch hunk removes dash-dash comment line",
+			patch:       "*** Begin Patch\n*** Update File: schema.sql\n@@\n--- old note\n CREATE TABLE t (id int);\n*** End Patch",
+			wantTargets: []string{"schema.sql"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "apply patch hunk carries unified header text as content",
+			patch:       "*** Begin Patch\n*** Update File: notes.md\n@@\n+--- a/.bashrc\n++++ b/.bashrc\n*** End Patch",
+			wantTargets: []string{"notes.md"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "hunk body header lookalikes are consumed by the declared counts",
+			patch:       "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n--- a/.bashrc\n-+++ b/.bashrc\n+--- a/.bashrc\n++++ b/.bashrc\n",
+			wantTargets: []string{"a/notes.md", "b/notes.md"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "no newline marker does not count",
+			patch:       "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n",
+			wantTargets: []string{"a/file", "b/file"},
+			inspection:  patchTargetsInspectable,
+		},
+		{
+			name:        "empty body line is context",
+			patch:       "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n",
+			wantTargets: []string{"a/file", "b/file"},
+			inspection:  patchTargetsInspectable,
+		},
+		// A header shadowed by another header before its `+++` partner is leading
+		// text to git apply and GNU patch, which touch only the paired file. The
+		// recorded targets match what the applier changes.
+		{
+			name:        "shadowed old header is leading text",
+			patch:       "--- a/protected\n--- a/benign\n+++ b/benign\n@@ -1 +1 @@\n-safe\n+changed\n",
+			wantTargets: []string{"a/benign", "b/benign"},
+			inspection:  patchTargetsInspectable,
+		},
+		{name: "hunk shorter than declared", patch: "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n-old\n+new\n", wantTargets: []string{"a/file", "b/file"}, inspection: patchTargetsUninspectable},
+		{name: "hunk body with foreign line", patch: "--- a/file\n+++ b/file\n@@ -1 +1 @@\nold\n+new\n", wantTargets: []string{"a/file", "b/file"}, inspection: patchTargetsUninspectable},
+		{name: "hunk overruns declared counts", patch: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n-older\n+new\n", wantTargets: []string{"a/file", "b/file"}, inspection: patchTargetsUninspectable},
+		{name: "hunk count overflows", patch: "--- a/file\n+++ b/file\n@@ -1,99999999999999999999 +1 @@\n-old\n+new\n", wantTargets: []string{"a/file", "b/file"}, inspection: patchTargetsUninspectable},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1836,6 +1912,16 @@ func TestExtractPatchTargetPathsInspection(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("hunk does not continue into the next argument", func(t *testing.T) {
+		gotTargets, gotInspection := extractPatchTargetPaths([]string{
+			"--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n-old\n+new\n",
+			"-older\n+newer\n",
+		})
+		if !slices.Equal(gotTargets, []string{"a/file", "b/file"}) || gotInspection != patchTargetsUninspectable {
+			t.Fatalf("extractPatchTargetPaths() = (%v, %v), want uninspectable file targets", gotTargets, gotInspection)
+		}
+	})
 }
 
 func TestParseGitDiffPaths(t *testing.T) {
@@ -1943,6 +2029,23 @@ func TestDefaultToolPolicyRules_AuditArtifactLocations(t *testing.T) {
 		{name: "system audit delete", toolName: "delete_file", args: map[string]any{"path": "/var/log/audit/audit.log"}, wantRule: "Audit Log Delete"},
 		{name: "receipt namespace delete", toolName: "delete_file", args: map[string]any{"path": "/var/lib/pipelock"}, wantRule: "Audit Log Delete"},
 		{name: "system log namespace delete", toolName: "delete_file", args: map[string]any{"path": "/var/log"}, wantRule: "Audit Log Delete"},
+		// Alternate spellings of the same file. The server resolves each of these
+		// to the protected path, so the rule has to as well.
+		{name: "double slash root delete", toolName: "delete_file", args: map[string]any{"path": "//var/log/audit/audit.log"}, wantRule: "Audit Log Delete"},
+		{name: "dot segment delete", toolName: "delete_file", args: map[string]any{"path": "/./var/log/audit/audit.log"}, wantRule: "Audit Log Delete"},
+		{name: "traversal into receipts move", toolName: "move_file", args: map[string]any{"source": "/tmp/../var/lib/pipelock/evidence/evidence-proxy-1.jsonl", "destination": "/tmp/x"}, wantRule: "Audit Log Move"},
+		{name: "traversal into log namespace chmod", toolName: "chmod_file", args: map[string]any{"path": "/home/v/../../var/log/audit.log", "mode": "0777"}, wantRule: "Audit Log Metadata Change"},
+		{name: "traversal link target", toolName: "create_symlink", args: map[string]any{"target": "/opt/../var/log/audit.log", "linkPath": "/tmp/l"}, wantRule: "Audit Log Link Creation"},
+		{name: "traversal copy destination", toolName: "copy_file", args: map[string]any{"source": "/tmp/fake.log", "destination": "/tmp/../var/log/audit.log"}, wantRule: "Audit Log Copy"},
+		{name: "separator run inside path delete", toolName: "delete_file", args: map[string]any{"path": "/var//log/journal/events"}, wantRule: "Audit Log Delete"},
+		{name: "dot segment inside path delete", toolName: "delete_file", args: map[string]any{"path": "/var/./log/journal/events"}, wantRule: "Audit Log Delete"},
+		{name: "separator run in copy destination", toolName: "copy_file", args: map[string]any{"source": "/tmp/fake.log", "destination": "/var//lib//pipelock/evidence/x.jsonl"}, wantRule: "Audit Log Copy"},
+		{name: "separator run in patch target", toolName: "apply_patch", args: map[string]any{"patch": "*** Begin Patch\n*** Update File: /var//lib/./pipelock/evidence/x.jsonl\n@@\n-old\n+new\n*** End Patch"}, wantRule: "Audit Log Patch"},
+		{name: "receipt chain direct write", toolName: "write_file", args: map[string]any{"path": "/var/lib/pipelock/evidence/evidence-proxy-1.jsonl", "content": ""}, wantRule: "Audit Log Write"},
+		{name: "receipt chain edit", toolName: "edit_file", args: map[string]any{"path": "/var//lib/pipelock/contain/egress-events.jsonl", "old": "denied", "new": "allowed"}, wantRule: "Audit Log Write"},
+		{name: "ordinary log write stays allowed", toolName: "write_file", args: map[string]any{"path": "/var/log/application.log", "content": "ordinary event"}},
+		{name: "similar name outside namespace", toolName: "delete_file", args: map[string]any{"path": "/home/v/varlog/audit.log"}},
+		{name: "hyphenated sibling outside namespace", toolName: "delete_file", args: map[string]any{"path": "/srv/my-var/log/app.log"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1961,6 +2064,58 @@ func TestDefaultToolPolicyRules_AuditArtifactLocations(t *testing.T) {
 			if !v.Matched || !slices.Contains(v.Rules, tc.wantRule) {
 				t.Fatalf("verdict = %+v, want rule %q", v, tc.wantRule)
 			}
+		})
+	}
+}
+
+// TestNormalizeArgTokens_CollapsesPathSeparators: the spellings a filesystem
+// resolves to one separator reach the rules as one separator, while a URL keeps
+// its scheme separator and `..` segments are untouched.
+func TestNormalizeArgTokens_CollapsesPathSeparators(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "/var//log/x", want: "/var/log/x"},
+		{in: "/var/./log/x", want: "/var/log/x"},
+		{in: "//var/log/x", want: "/var/log/x"},
+		{in: "/./var/log/x", want: "/var/log/x"},
+		{in: "/var///.//log/x", want: "/var/log/x"},
+		{in: "/tmp/../var/log/x", want: "/tmp/../var/log/x"},
+		{in: "https://api.vendor.example//x", want: "https://api.vendor.example/x"},
+		{in: "https://api.vendor.example/x", want: "https://api.vendor.example/x"},
+		{in: "dir/.hidden", want: "dir/.hidden"},
+		{in: "rm -rf /var//log/journal", want: "rm -rf /var/log/journal"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			_, joined := normalizeArgTokens([]string{tc.in}, normalize.ForMatching, nil)
+			if joined != tc.want {
+				t.Fatalf("normalizeArgTokens(%q) = %q, want %q", tc.in, joined, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultToolPolicyRules_SeparatorRunsAcrossPathRules: the separator
+// canonicalization is shared, so every path rule sees the resolved spelling.
+func TestDefaultToolPolicyRules_SeparatorRunsAcrossPathRules(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		toolName string
+		args     map[string]any
+		wantRule string
+	}{
+		{name: "persistence write", toolName: "write_file", args: map[string]any{"path": "/etc//systemd/system/p.service", "content": "[Unit]"}, wantRule: "Persistence Path Write"},
+		{name: "credential read", toolName: "read_file", args: map[string]any{"path": "/home/user/.ssh//id_rsa"}, wantRule: "Credential File Access"},
+		{name: "shell profile write", toolName: "write_file", args: map[string]any{"path": "/home/user//.bashrc", "content": "alias ls=rm"}, wantRule: "Shell Profile Modification"},
+		{name: "shell audit delete", toolName: "bash", args: map[string]any{"command": "rm /var//log/journal/events"}, wantRule: "Audit Log Tampering"},
+		{name: "shell audit truncate", toolName: "bash", args: map[string]any{"command": "echo '' > /var/./lib/pipelock/evidence/evidence-proxy-1.jsonl"}, wantRule: "Audit Log Tampering"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertDefaultPolicyRule(t, pc, tc.toolName, tc.args, tc.wantRule)
 		})
 	}
 }

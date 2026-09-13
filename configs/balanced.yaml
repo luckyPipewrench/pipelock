@@ -490,20 +490,27 @@ mcp_tool_policy:
       arg_pattern: '(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)'
     - name: "Audit Log Move"
       tool_pattern: '(?i)^(move_file|file_move|rename_file|move-file)$'
-      arg_pattern: '(?i)(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Copy"
       tool_pattern: '(?i)^(copy_file|file_copy)$'
-      arg_pattern: '(?i)(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
       arg_key: '(?i)^destination$'
     - name: "Audit Log Delete"
       tool_pattern: '(?i)^(delete_file|file_delete)$'
-      arg_pattern: '(?i)(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Metadata Change"
       tool_pattern: '(?i)^(chmod_file|chown_file)$'
-      arg_pattern: '(?i)(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Link Creation"
       tool_pattern: '(?i)^(create_symlink|create_hardlink)$'
-      arg_pattern: '(?i)(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
+    - name: "Audit Log Write"
+      tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
+      arg_pattern: '(?i)(?:^|[\s/])var/lib/pipelock(?:/|$)'
+    - name: "Audit Log Patch"
+      tool_pattern: '(?i)^(apply_patch)$'
+      arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
+      arg_source: patch_targets
     - name: "Audit Log Tampering"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
       arg_pattern: '(?i)(\b(rm|truncate|shred)\b[^;|&]*(/(?:var/log|var/lib/pipelock)/|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(/(?:var/log|var/lib/pipelock)/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)'

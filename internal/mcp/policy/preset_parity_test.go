@@ -101,12 +101,16 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					}
 				}
 				for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
-					if check.baselineRule == "Audit Log Tampering" {
-						continue
+					writeArgs := map[string]any{"path": check.path, "content": "replacement"}
+					switch {
+					case strings.HasPrefix(check.path, "/var/lib/pipelock"):
+						assertPolicyCall(t, pc, toolName, writeArgs, "Audit Log Write", wantAction)
+					case strings.HasPrefix(check.path, "/var/log"):
+						// An application appending to its own log is ordinary.
+						assertPolicyAllowed(t, pc, toolName, writeArgs)
+					default:
+						assertPolicyCall(t, pc, toolName, writeArgs, check.baselineRule, wantAction)
 					}
-					assertPolicyCall(t, pc, toolName, map[string]any{
-						"path": check.path, "content": "replacement",
-					}, check.baselineRule, wantAction)
 				}
 				if check.baselineRule != "Audit Log Tampering" {
 					assertPolicyArgs(t, pc, filePatchToolPattern, map[string]any{
@@ -115,9 +119,23 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					assertPolicyArgs(t, pc, filePatchToolPattern, map[string]any{
 						"patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n", "path": check.path,
 					}, check.baselineRule, wantAction)
-					for _, patch := range protectedPatchTargetFormats(check.path) {
-						assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
-					}
+				}
+				patchRule := check.baselineRule
+				if check.baselineRule == "Audit Log Tampering" {
+					patchRule = "Audit Log Patch"
+				}
+				for _, patch := range protectedPatchTargetFormats(check.path) {
+					assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, patchRule, wantAction)
+				}
+				// Alternate spellings the server resolves to the same protected file.
+				for _, alias := range []string{
+					"/" + check.path,
+					"/." + check.path,
+					"/tmp/.." + check.path,
+					strings.ReplaceAll(check.path, "/", "//"),
+					strings.ReplaceAll(check.path, "/", "/./"),
+				} {
+					assertPolicyCall(t, pc, "delete_file", map[string]any{"path": alias}, protectedPrefix+" Delete", wantAction)
 				}
 				for _, direction := range []string{"source", "destination"} {
 					args := map[string]any{"source": "/tmp/staged", "destination": "/tmp/backup"}
@@ -149,6 +167,8 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 				{toolName: "move_file", args: map[string]any{"source": "app.log", "destination": "app.log.1"}},
 				{toolName: filePatchToolPattern, args: map[string]any{"patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-source ~/.bashrc\n+describe source ~/.bashrc\n"}},
 				{toolName: filePatchToolPattern, args: map[string]any{"patch": "diff --git a/.bashrc b/backup.txt\nsimilarity index 100%\ncopy from .bashrc\ncopy to backup.txt\n"}},
+				{toolName: filePatchToolPattern, args: map[string]any{"patch": "*** Begin Patch\n*** Update File: migrations/001.sql\n@@\n--- drop the legacy index\n CREATE INDEX i ON t (id);\n*** End Patch"}},
+				{toolName: filePatchToolPattern, args: map[string]any{"patch": "--- a/schema.sql\n+++ b/schema.sql\n@@ -1,2 +1,1 @@\n--- old note\n CREATE TABLE t (id int);\n"}},
 			} {
 				assertPolicyAllowed(t, pc, safe.toolName, safe.args)
 			}

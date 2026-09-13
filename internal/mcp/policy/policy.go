@@ -410,9 +410,24 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
+		normalized = collapsePathSeparators(normalized)
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}
 	return tokens, strings.Join(tokens, " ")
+}
+
+// pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem
+// resolves to a single separator. The run must begin at the start of the text
+// or after a character other than `:`, so a URL keeps its `://`.
+var pathSeparatorRunRe = regexp.MustCompile(`(^|[^:/])/(?:\.?/)+`)
+
+// collapsePathSeparators rewrites `/var//log/x`, `/var/./log/x`, and
+// `//var/log/x` to `/var/log/x` before pattern matching, so a path rule sees
+// the spelling the server resolves rather than the one the caller typed.
+// `..` segments are left alone: the path rules match protected namespaces as
+// segments anywhere in the value, so a traversal spelling still matches.
+func collapsePathSeparators(s string) string {
+	return pathSeparatorRunRe.ReplaceAllString(s, "${1}/")
 }
 
 // maxPairwiseTokens caps token count for O(n²) pairwise matching.
@@ -459,6 +474,7 @@ const (
 	gitCopyToHeader        = "copy to "
 	unifiedOldFileHeader   = "--- "
 	unifiedNewFileHeader   = "+++ "
+	applyPatchHeaderPrefix = "*** "
 	applyPatchBeginHeader  = "*** Begin Patch"
 	applyPatchEndHeader    = "*** End Patch"
 	applyPatchUpdateHeader = "*** Update File: "
@@ -499,6 +515,11 @@ func extractPatchTargetPaths(argStrings []string) ([]string, patchTargetInspecti
 	var pendingUnifiedOld string
 	var sawPatchShape, sawTargetHeader, malformed bool
 	var applyPatchBegins, applyPatchEnds int
+	// Hunk bodies are consumed by the line counts in their `@@` header, the way
+	// git apply and GNU patch consume them, so a removed line that begins with
+	// `-- ` or an added line that begins with `++ ` is content and never a file
+	// header. Inside a Codex apply_patch envelope only `*** ` lines are headers.
+	var oldRemaining, newRemaining int
 
 	flushGitSection := func() {
 		if gitSection == nil {
@@ -531,10 +552,34 @@ func extractPatchTargetPaths(argStrings []string) ([]string, patchTargetInspecti
 	}
 
 	for _, arg := range argStrings {
-		for _, rawLine := range strings.Split(arg, "\n") {
+		lines := strings.Split(arg, "\n")
+		if n := len(lines); n > 0 && lines[n-1] == "" {
+			lines = lines[:n-1]
+		}
+		for _, rawLine := range lines {
 			line := strings.TrimSuffix(rawLine, "\r")
 			if isPatchShapeMarker(line) {
 				sawPatchShape = true
+			}
+			if oldRemaining > 0 || newRemaining > 0 {
+				if consumeHunkLine(line, &oldRemaining, &newRemaining) {
+					continue
+				}
+				malformed = true
+				oldRemaining, newRemaining = 0, 0
+			}
+			if applyPatchBegins > applyPatchEnds && !strings.HasPrefix(line, applyPatchHeaderPrefix) {
+				continue
+			}
+			if m := unifiedHunkHeaderRe.FindStringSubmatch(line); m != nil {
+				oldCount, okOld := hunkLineCount(m[1])
+				newCount, okNew := hunkLineCount(m[2])
+				if !okOld || !okNew {
+					malformed = true
+					continue
+				}
+				oldRemaining, newRemaining = oldCount, newCount
+				continue
 			}
 			if strings.HasPrefix(line, gitDiffHeader) {
 				flushGitSection()
@@ -644,6 +689,10 @@ func extractPatchTargetPaths(argStrings []string) ([]string, patchTargetInspecti
 				targets = appendPatchTarget(targets, path)
 			}
 		}
+		if oldRemaining > 0 || newRemaining > 0 {
+			malformed = true
+			oldRemaining, newRemaining = 0, 0
+		}
 	}
 	flushGitSection()
 
@@ -660,6 +709,42 @@ func extractPatchTargetPaths(argStrings []string) ([]string, patchTargetInspecti
 		return targets, patchTargetsUninspectable
 	}
 	return targets, patchTargetsInspectable
+}
+
+// unifiedHunkHeaderRe captures the old and new line counts of a unified hunk
+// header. An omitted count means one line, as in `@@ -1 +1 @@`.
+var unifiedHunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
+
+func hunkLineCount(count string) (int, bool) {
+	if count == "" {
+		return 1, true
+	}
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// consumeHunkLine charges one body line against the counts declared by the
+// enclosing hunk header. It reports false for a line that no applier would
+// accept inside a hunk, or one that overruns the declared counts.
+func consumeHunkLine(line string, oldRemaining, newRemaining *int) bool {
+	switch {
+	case strings.HasPrefix(line, `\ `):
+		// "\ No newline at end of file" annotates the preceding line.
+		return true
+	case line == "" || line[0] == ' ':
+		*oldRemaining--
+		*newRemaining--
+	case line[0] == '-':
+		*oldRemaining--
+	case line[0] == '+':
+		*newRemaining--
+	default:
+		return false
+	}
+	return *oldRemaining >= 0 && *newRemaining >= 0
 }
 
 func isPatchShapeMarker(line string) bool {
@@ -1364,10 +1449,17 @@ const (
 
 	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
 	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
-	auditLogPathPattern     = `(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)`
-	// Shell-context form of the audit namespaces. The bare-argument form above
-	// anchors on start-or-space, which a redirect like `> /var/log/x` consumes
-	// before the alternation is reached.
+	// The audit namespaces are matched as path segments anywhere in the value,
+	// not only at an absolute-path start. A start anchor treated `//var/log/x`,
+	// `/./var/log/x`, and `/tmp/../var/log/x` as unprotected even though the
+	// server resolves all three to the protected file. A relative patch target
+	// such as `var/log/x` is the same file after the applier strips its prefix.
+	auditLogPathPattern = `(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)`
+	// Pipelock's own state directory, the narrower namespace the write rule
+	// guards on its own.
+	pipelockStatePathPattern = `(?:^|[\s/])var/lib/pipelock(?:/|$)`
+	// Shell-context form of the audit namespaces, for command text where the
+	// path follows a redirect or a command word rather than standing alone.
 	auditLogShellPathPattern = `/(?:var/log|var/lib/pipelock)/`
 	// Credential locations accept both separators. A Windows spelling such as
 	// `C:\\Users\\v\\.ssh\\id_rsa` is the same secret as its POSIX form, and a
@@ -1567,6 +1659,23 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Audit Log Link Creation",
 			ToolPattern: `(?i)^(` + fileLinkToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+		},
+		{
+			// Ordinary writes under /var/log stay allowed: an application appending
+			// to its own log is the normal case there. Nothing an agent runs has
+			// a reason to write into Pipelock's own state directory, where the
+			// receipt chain and the containment egress log live.
+			Name:        "Audit Log Write",
+			ToolPattern: `(?i)^(` + fileWriteToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + pipelockStatePathPattern + `)`,
+		},
+		{
+			// A patch edits its target in place, so a patch naming the receipt
+			// chain or an audit log is the same mutation as a direct write.
+			Name:        "Audit Log Patch",
+			ToolPattern: `(?i)^(` + filePatchToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+			ArgSource:   config.ToolPolicyArgSourcePatchTargets,
 		},
 		{
 			Name:        "Audit Log Tampering",

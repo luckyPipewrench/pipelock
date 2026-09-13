@@ -995,6 +995,16 @@ func expandBraces(s string) string {
 
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules
 // covering common dangerous operations that agents might attempt.
+const (
+	fileWriteToolPattern = `write_file|file_write|edit_file|create_file|modify_file|append_file`
+	fileMoveToolPattern  = `move_file|file_move|rename_file|move-file`
+	fileCopyToolPattern  = `copy_file`
+
+	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
+	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
+	auditLogPathPattern     = `/var/log/|\.(?:log|audit|jsonl)\b`
+)
+
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
 	return []config.ToolPolicyRule{
 		{
@@ -1070,8 +1080,18 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// Covers system-wide (/etc/systemd, /lib/systemd) and user-scoped
 			// (~/.config/systemd/user/) systemd paths, plus macOS LaunchAgents/Daemons.
 			Name:        "Persistence Path Write",
-			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
-			ArgPattern:  `(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)`,
+			ToolPattern: `(?i)^(` + fileWriteToolPattern + `|` + fileMoveToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// Copy is destination-scoped: reading a protected source into a safe
+			// backup path remains allowed. The named schema is the one published by
+			// copy_file servers covered by this built-in rule.
+			Name:        "Protected Path Copy",
+			ToolPattern: `(?i)^(` + fileCopyToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `)`,
+			ArgKey:      `(?i)^destination$`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1086,8 +1106,8 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			// File write tools: any mention of a profile file implies modification.
 			Name:        "Shell Profile Modification",
-			ToolPattern: `(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
-			ArgPattern:  `(?i)((?:^|/)\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)`,
+			ToolPattern: `(?i)^(` + fileWriteToolPattern + `|` + fileMoveToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + shellProfilePathPattern + `)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1107,6 +1127,19 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Detached Process Spawning",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)`,
+		},
+		{
+			// Move tools are deliberately unscoped and therefore protect both source
+			// and destination paths.
+			Name:        "Audit Log Move",
+			ToolPattern: `(?i)^(` + fileMoveToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+		},
+		{
+			Name:        "Audit Log Copy",
+			ToolPattern: `(?i)^(` + fileCopyToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+			ArgKey:      `(?i)^destination$`,
 		},
 		{
 			Name:        "Audit Log Tampering",

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
 const (
@@ -1530,6 +1531,87 @@ func TestDefaultToolPolicyRules_MatchZshrcViaWriteFile(t *testing.T) {
 	v := pc.CheckToolCall("write_file", []string{"/home/user/.zshrc"})
 	if !v.Matched {
 		t.Error("expected match for .zshrc write via write_file tool")
+	}
+}
+
+func TestDefaultToolPolicyRules_MatchProtectedPathMoveTools(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		path     string
+		wantRule string
+	}{
+		{name: "persistence", path: "/etc/systemd/system/p.service", wantRule: "Persistence Path Write"},
+		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Shell Profile Modification"},
+		{name: "audit log", path: "/var/log/audit.log", wantRule: "Audit Log Move"},
+	}
+	for _, toolName := range []string{"move_file", "file_move", "rename_file", "move-file"} {
+		for _, tc := range tests {
+			t.Run(toolName+"/source/"+tc.name, func(t *testing.T) {
+				assertDefaultPolicyRule(t, pc, toolName, map[string]any{
+					"source": tc.path, "destination": "/tmp/staged",
+				}, tc.wantRule)
+			})
+			t.Run(toolName+"/destination/"+tc.name, func(t *testing.T) {
+				assertDefaultPolicyRule(t, pc, toolName, map[string]any{
+					"source": "/tmp/staged", "destination": tc.path,
+				}, tc.wantRule)
+			})
+		}
+	}
+}
+
+func TestDefaultToolPolicyRules_CopyProtectedDestinationOnly(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		path     string
+		wantRule string
+	}{
+		{name: "persistence", path: "/etc/systemd/system/p.service", wantRule: "Protected Path Copy"},
+		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Protected Path Copy"},
+		{name: "audit log", path: "/var/log/audit.log", wantRule: "Audit Log Copy"},
+	}
+	for _, tc := range tests {
+		t.Run("destination/"+tc.name, func(t *testing.T) {
+			assertDefaultPolicyRule(t, pc, "copy_file", map[string]any{
+				"source": "/tmp/staged", "destination": tc.path,
+			}, tc.wantRule)
+		})
+		t.Run("source/"+tc.name, func(t *testing.T) {
+			args := map[string]any{"source": tc.path, "destination": "/tmp/backup"}
+			raw, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := pc.CheckToolCallWithArgs("copy_file", []string{tc.path, "/tmp/backup"}, raw)
+			if v.Matched {
+				t.Fatalf("copying from protected path matched rules %v", v.Rules)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_MatchWindowsShellProfilePath(t *testing.T) {
+	pc := defaultConfig(t)
+	assertDefaultPolicyRule(t, pc, "write_file", map[string]any{
+		"path": `C:\\Users\\user\\.bashrc`, "content": "replacement",
+	}, "Shell Profile Modification")
+}
+
+func assertDefaultPolicyRule(t *testing.T, pc *Config, toolName string, args map[string]any, wantRule string) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	v := pc.CheckToolCallWithArgs(toolName, extracted.Strings, raw)
+	if !v.Matched {
+		t.Fatalf("%s(%s) did not match", toolName, raw)
+	}
+	if !slices.Contains(v.Rules, wantRule) {
+		t.Fatalf("%s(%s) rules = %v, want %q", toolName, raw, v.Rules, wantRule)
 	}
 }
 

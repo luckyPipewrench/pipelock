@@ -1018,12 +1018,71 @@ func TestEntitlementDSN_EscapesAwkwardPaths(t *testing.T) {
 		})
 	}
 
-	// An explicit URI keeps its own parameters instead of having them replaced.
-	uri := entitlementDSN("file:/tmp/x.db?mode=ro")
-	if !strings.Contains(uri, "mode=ro") || !strings.Contains(uri, "busy_timeout(5000)") {
-		t.Fatalf("explicit URI lost a parameter: %s", uri)
+	// A filesystem path always becomes an ABSOLUTE file URI. A Windows path
+	// arrives without a leading slash, and without one the driver opens a
+	// database beside the process rather than the configured one.
+	dsn, err := entitlementDSN(filepath.Join(dir, "shape.db"))
+	if err != nil {
+		t.Fatalf("build dsn: %v", err)
 	}
-	if strings.Count(uri, "?") != 1 {
-		t.Fatalf("explicit URI gained a second query separator: %s", uri)
+	if !strings.HasPrefix(dsn, "file:///") {
+		t.Fatalf("filesystem path produced a relative URI: %s", dsn)
+	}
+	if got := fileURI("C:/data/entitlements.db"); !strings.HasPrefix(got, "file:///C:/data/entitlements.db?") {
+		t.Fatalf("windows-shaped path = %s, want an absolute file:///C:/... URI", got)
+	}
+}
+
+// TestEntitlementDSN_ExplicitURIKeepsItsOwnParameters opens the DSN it builds
+// rather than asserting on substrings: the parameters have to be honored by
+// the driver, not merely present in the string.
+func TestEntitlementDSN_ExplicitURIKeepsItsOwnParameters(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "explicit.db")
+	seed, err := OpenEntitlementDB(t.Context(), target)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	dsn, err := entitlementDSN("file:" + target + "?_pragma=cache_size(-2000)")
+	if err != nil {
+		t.Fatalf("build dsn: %v", err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var busyTimeout, cacheSize int
+	if err := db.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000: the merged pragmas were not honored", busyTimeout)
+	}
+	if err := db.QueryRowContext(t.Context(), "PRAGMA cache_size").Scan(&cacheSize); err != nil {
+		t.Fatalf("read cache_size: %v", err)
+	}
+	if cacheSize != -2000 {
+		t.Fatalf("cache_size = %d, want -2000: the URI's own parameter was lost", cacheSize)
+	}
+}
+
+// TestEntitlementDSN_RefusesAFragment pins that a fragment is named at startup
+// rather than carried into the driver. SQLite has no use for one and this
+// driver rejects it at the first query with a syntax error pointing at nothing
+// the operator can act on, long after the service appeared to start.
+func TestEntitlementDSN_RefusesAFragment(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "frag.db")
+	if _, err := entitlementDSN("file:" + target + "?_pragma=cache_size(-2000)#fragment"); err == nil {
+		t.Fatal("a database uri with a fragment was accepted")
+	}
+	if _, err := OpenEntitlementDB(t.Context(), "file:"+target+"#fragment"); err == nil {
+		t.Fatal("OpenEntitlementDB accepted a uri with a fragment")
+	} else if !strings.Contains(err.Error(), "fragment") {
+		t.Fatalf("error does not name the problem: %v", err)
 	}
 }

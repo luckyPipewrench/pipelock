@@ -2171,3 +2171,42 @@ func TestLoadBundles_V2RequiredFeaturesUnknown(t *testing.T) {
 		t.Errorf("expected 0 DLP rules for rejected bundle, got %d", len(result.DLP))
 	}
 }
+
+// TestLoadBundles_ExemptDomainsWarnOncePerBundle pins that a bundle full of
+// rules carrying the ignored field produces one warning naming them all, not
+// one line per rule, so a hostile or sloppy bundle cannot flood the log on
+// every reload.
+func TestLoadBundles_ExemptDomainsWarnOncePerBundle(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("make bundle directory: %v", err)
+	}
+	var rules []Rule
+	for _, id := range []string{"dlp-exempt-a", "dlp-exempt-b", "dlp-exempt-c"} {
+		rule := testDLPRule(id, confidenceHigh, StatusStable)
+		rule.Pattern.ExemptDomains = []string{"safe.vendor.example"}
+		rules = append(rules, rule)
+	}
+	writeUnsignedBundle(t, bundleDir, testBundle(testBundleName, rules))
+
+	result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion})
+	if len(result.Errors) != 0 {
+		t.Fatalf("LoadBundles errors = %v", result.Errors)
+	}
+	exemptWarnings := 0
+	for _, warning := range result.Warnings {
+		if !strings.Contains(warning, "pattern.exempt_domains") {
+			continue
+		}
+		exemptWarnings++
+		for _, id := range []string{"dlp-exempt-a", "dlp-exempt-b", "dlp-exempt-c"} {
+			if !strings.Contains(warning, id) {
+				t.Fatalf("exempt warning %q does not name rule %s", warning, id)
+			}
+		}
+	}
+	if exemptWarnings != 1 {
+		t.Fatalf("exempt_domains warnings = %d, want exactly 1; warnings=%v", exemptWarnings, result.Warnings)
+	}
+}

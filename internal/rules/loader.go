@@ -498,12 +498,15 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 		Unsigned:              lock.Unsigned,
 	}
 
+	// Rules carrying the ignored exempt_domains field are reported once per
+	// bundle, before the status and confidence filters so a filtered rule is
+	// still named, and bounded to one line so a bundle full of them cannot
+	// flood the log on every reload.
+	var exemptRuleIDs []string
 	for i := range bundle.Rules {
 		r := &bundle.Rules[i]
 		if len(r.Pattern.ExemptDomains) > 0 {
-			stagedCtx.Result.Warnings = append(stagedCtx.Result.Warnings, fmt.Sprintf(
-				"bundle %q rule %q sets pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
-				bundle.Name, r.ID))
+			exemptRuleIDs = append(exemptRuleIDs, r.ID)
 		}
 
 		// Status filter: deprecated always skipped.
@@ -549,6 +552,11 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error(), Class: BundleErrorClassIntegrity})
 			return
 		}
+	}
+	if len(exemptRuleIDs) > 0 {
+		stagedCtx.Result.Warnings = append(stagedCtx.Result.Warnings, fmt.Sprintf(
+			"bundle %q rules %s set pattern.exempt_domains, which is ignored; exemptions belong in the local pipelock config, not in a deny-only bundle",
+			bundle.Name, strings.Join(exemptRuleIDs, ", ")))
 	}
 
 	loaded.Rules = loaded.DLP + loaded.Injection + loaded.ToolPoison

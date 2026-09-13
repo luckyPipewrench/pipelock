@@ -634,6 +634,21 @@ func TestPrepareSteps_TemplatesReferenceRealConductorFlags(t *testing.T) {
 		}
 		t.Fatalf("missing required --target-bundle-id was not detected: %v", problems)
 	})
+
+	t.Run("negative empty template", func(t *testing.T) {
+		problems := prepareTemplateFlagProblems("pipelock conductor rollback", subcommands["rollback"])
+		if len(problems) != 1 || problems[0] != "template defines no flags" {
+			t.Fatalf("empty template problems = %v, want exactly [template defines no flags]", problems)
+		}
+	})
+
+	t.Run("negative undefined flag", func(t *testing.T) {
+		command := steps[2].Command + " --not-a-conductor-flag x"
+		problems := prepareTemplateFlagProblems(command, subcommands["rollback"])
+		if len(problems) != 1 || problems[0] != "undefined --not-a-conductor-flag" {
+			t.Fatalf("undefined flag problems = %v, want exactly [undefined --not-a-conductor-flag]", problems)
+		}
+	})
 }
 
 func prepareTemplateFlagProblems(command string, sub *cobra.Command) []string {

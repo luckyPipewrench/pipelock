@@ -193,9 +193,42 @@ func TestDashboardAuthorizerCompositionTruthTable(t *testing.T) {
 							t.Fatalf("failedAuthMode = %q, want %q", got, want.mode)
 						}
 					}
+					// Invoke the composed audit attribution so replacing or dropping
+					// the mTLS override, or the token/OIDC attribution, fails here.
+					info := composition.authAuditInfo(req)
+					if wantMethod := dashboardRegistryAuditMethod(tc.mtls, want.requestCase); info.Method != wantMethod {
+						t.Fatalf("authAuditInfo.Method = %q, want %q", info.Method, wantMethod)
+					}
+					if succeeded := info.FailureReason == ""; succeeded != want.meta {
+						t.Fatalf("authAuditInfo.FailureReason = %q, want empty=%v", info.FailureReason, want.meta)
+					}
+					if tc.mtls && want.requestCase == requestMTLS {
+						if info.MTLSSPKISHA256 == "" || len(info.Roles) != 1 || info.Roles[0] != "evidence-reader" {
+							t.Fatalf("mTLS audit info = %+v, want SPKI fingerprint and mapped role", info)
+						}
+					}
 				})
 			}
 		})
+	}
+}
+
+// dashboardRegistryAuditMethod is the audit Method the composed attribution
+// must report: mTLS is exclusive and attributes every request, otherwise the
+// method follows the credential the request presented.
+func dashboardRegistryAuditMethod(mtlsConfigured bool, requestCase dashboardRegistryRequestCase) string {
+	if mtlsConfigured {
+		return "mtls"
+	}
+	switch requestCase {
+	case requestMetadata, requestTokenBad:
+		return "token"
+	case requestRaw:
+		return "raw-access-token"
+	case requestOIDC, requestOIDCBad:
+		return "oidc"
+	default:
+		return "none"
 	}
 }
 

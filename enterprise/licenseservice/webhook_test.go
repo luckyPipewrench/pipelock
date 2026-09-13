@@ -2660,6 +2660,45 @@ func TestHandleOrderEvent_OneTimeTrial(t *testing.T) {
 	}
 }
 
+func TestHandleActive_ConcurrentTrialClaimReturnsDenial(t *testing.T) {
+	ts := newTestSetup(t)
+	now := time.Now().UTC()
+	first := testEntitlement("order_first_trial")
+	first.CustomerEmail = "buyer@example.com"
+	first.Tier = tierTrial
+	first.BillingInterval = billingIntervalOneTime
+	first.CurrentPeriodEnd = now.Add(time.Hour)
+	if err := ts.db.UpsertWithLicenseIssuance(t.Context(), first, LicenseIssuance{
+		LicenseID:      "lic_first_trial",
+		SubscriptionID: first.SubscriptionID,
+		IssuedAt:       now,
+		ExpiresAt:      first.CurrentPeriodEnd,
+	}); err != nil {
+		t.Fatalf("seed first trial: %v", err)
+	}
+	// A failed denial-ledger write must not turn the expected business denial
+	// into a provider retry that could repeatedly exercise the same order.
+	if err := ts.ledger.Close(); err != nil {
+		t.Fatalf("close denial ledger: %v", err)
+	}
+
+	second := testEntitlement("order_second_trial")
+	second.CustomerEmail = first.CustomerEmail
+	second.Tier = tierTrial
+	second.BillingInterval = billingIntervalOneTime
+	second.CurrentPeriodEnd = now.Add(time.Hour)
+	if err := ts.handler.handleActive(t.Context(), second, nil); err != nil {
+		t.Fatalf("active trial collision returned storage error: %v", err)
+	}
+	got, err := ts.db.GetBySubscriptionID(t.Context(), second.SubscriptionID)
+	if err != nil {
+		t.Fatalf("load denied trial: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("denied concurrent trial was persisted: %+v", got)
+	}
+}
+
 func TestMapOrderProductToTierFailsClosed(t *testing.T) {
 	ts := newTestSetup(t)
 	base := &PolarOrder{

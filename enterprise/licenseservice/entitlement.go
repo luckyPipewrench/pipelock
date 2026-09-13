@@ -93,6 +93,10 @@ var ErrTerminalEntitlement = errors.New("entitlement is terminal")
 // state; they may retry delivery from the persisted record.
 var ErrWebhookAlreadyCommitted = errors.New("webhook already committed")
 
+// ErrActiveTrialExists means another order owns the unexpired trial slot for
+// the entitlement's canonical customer email.
+var ErrActiveTrialExists = errors.New("active trial already exists")
+
 type entitlementExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -119,13 +123,19 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 		_ = db.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
+	// Wait briefly for another writer to finish instead of leaking SQLITE_BUSY
+	// through the active-trial decision path. The slot constraint then decides
+	// which writer owns the canonical identity.
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
 
 	// Foreign keys on (defensive, even though we have a single table now).
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
-
 	edb := &EntitlementDB{db: db}
 	if err := edb.migrate(ctx); err != nil {
 		_ = db.Close()
@@ -177,6 +187,12 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_entitlements_next_refresh ON entitlements(next_refresh_at);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding ON entitlements(founding);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding_reserved ON entitlements(founding_reserved_at);
+
+	CREATE TABLE IF NOT EXISTS active_trial_slots (
+		normalized_email TEXT PRIMARY KEY,
+		subscription_id  TEXT NOT NULL,
+		expires_at       DATETIME NOT NULL
+	);
 
 	CREATE TABLE IF NOT EXISTS license_revocations (
 		license_id      TEXT PRIMARY KEY,
@@ -276,7 +292,19 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_subscription ON imported_issuances(subscription_id);
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_issuer ON imported_issuances(issuer_key_id);
 	`
-	_, err := e.db.ExecContext(ctx, ddl)
+	if _, err := e.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	const backfillTrialSlots = `
+	INSERT OR IGNORE INTO active_trial_slots (normalized_email, subscription_id, expires_at)
+	SELECT customer_email, MIN(subscription_id), MAX(current_period_end)
+	FROM entitlements
+	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
+	GROUP BY customer_email
+	`
+	_, err := e.db.ExecContext(ctx, backfillTrialSlots,
+		tierTrial, tierEnterpriseTrial, statusActive, statusRevoked, time.Now().UTC(),
+	)
 	return err
 }
 
@@ -286,8 +314,42 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	if ent == nil {
 		return errors.New("entitlement is nil")
 	}
-	if err := upsertEntitlement(ctx, e.db, ent); err != nil {
+	if !isTrialTier(ent.Tier) {
+		if err := upsertEntitlement(ctx, e.db, ent); err != nil {
+			return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
+		}
+		return nil
+	}
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin trial entitlement transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := upsertEntitlement(ctx, tx, ent); err != nil {
 		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
+	}
+	if err := syncActiveTrialSlot(ctx, tx, ent); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit trial entitlement transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func syncActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	const query = `
+	UPDATE active_trial_slots SET expires_at = ?
+	WHERE normalized_email = ? AND subscription_id = ?
+	`
+	if _, err := exec.ExecContext(ctx, query, ent.CurrentPeriodEnd.UTC(), ent.CustomerEmail, ent.SubscriptionID); err != nil {
+		return fmt.Errorf("sync active trial slot for %s: %w", ent.SubscriptionID, err)
 	}
 	return nil
 }
@@ -682,6 +744,11 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 			return ErrWebhookAlreadyCommitted
 		}
 	}
+	if isTrialTier(ent.Tier) {
+		if err := claimActiveTrialSlot(ctx, tx, ent); err != nil {
+			return err
+		}
+	}
 	terminal, status, err := currentEntitlementTerminal(ctx, tx, ent.SubscriptionID)
 	if err != nil {
 		return err
@@ -699,6 +766,32 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 		return fmt.Errorf("commit entitlement issuance transaction: %w", err)
 	}
 	committed = true
+	return nil
+}
+
+func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	const query = `
+	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at)
+	VALUES (?, ?, ?)
+	ON CONFLICT(normalized_email) DO UPDATE SET
+		subscription_id = excluded.subscription_id,
+		expires_at = excluded.expires_at
+	WHERE active_trial_slots.expires_at <= ?
+	   OR active_trial_slots.subscription_id = excluded.subscription_id
+	`
+	result, err := exec.ExecContext(ctx, query,
+		ent.CustomerEmail, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("claim active trial slot for %s: %w", ent.SubscriptionID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read active trial slot result for %s: %w", ent.SubscriptionID, err)
+	}
+	if changed == 0 {
+		return fmt.Errorf("%w for this email", ErrActiveTrialExists)
+	}
 	return nil
 }
 

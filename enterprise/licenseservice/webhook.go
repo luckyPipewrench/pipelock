@@ -455,6 +455,17 @@ func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlem
 		ExpiresAt:      expiresAt,
 		IssuedAt:       now,
 	}, msgID, eventType); err != nil {
+		if errors.Is(err, ErrActiveTrialExists) {
+			denial := fmt.Errorf("an active %s already exists for this email", ent.Tier)
+			if lerr := h.ledger.LogError(ent.SubscriptionID, ent.Tier+" denied", denial); lerr != nil {
+				h.log.Warn().Err(lerr).
+					Str("order_id", ent.SubscriptionID).
+					Msg("trial denial could not be recorded in the audit ledger")
+			}
+			h.log.Warn().Str("order_id", ent.SubscriptionID).Str("tier", ent.Tier).
+				Msg("trial order denied: an active trial already exists for this email")
+			return nil
+		}
 		if errors.Is(err, ErrWebhookAlreadyCommitted) {
 			return h.resendSubscriptionIfNeeded(ctx, ent.SubscriptionID)
 		}
@@ -1024,7 +1035,7 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	if existing != nil {
 		periodEnd = existing.CurrentPeriodEnd
 	} else {
-		periodEnd = time.Now().Add(h.tokenLifetimeForTier(tier))
+		periodEnd = time.Now().UTC().Add(h.tokenLifetimeForTier(tier))
 	}
 
 	ent := &Entitlement{

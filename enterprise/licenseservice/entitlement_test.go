@@ -7,9 +7,13 @@ package licenseservice
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,6 +28,105 @@ func openTestDB(t *testing.T) *EntitlementDB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestEntitlementDB_ConcurrentWritersClaimOneActiveTrialSlot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "entitlements.db")
+	first, err := OpenEntitlementDB(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("open first writer: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := OpenEntitlementDB(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("open second writer: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	now := time.Now().UTC()
+	makeTrial := func(id string) (*Entitlement, LicenseIssuance) {
+		ent := testEntitlement(id)
+		ent.CustomerEmail = "buyer@example.com"
+		ent.Tier = tierTrial
+		ent.BillingInterval = billingIntervalOneTime
+		ent.CurrentPeriodEnd = now.Add(time.Hour)
+		issuance := LicenseIssuance{
+			LicenseID:      "lic_" + id,
+			SubscriptionID: id,
+			IssuedAt:       now,
+			ExpiresAt:      ent.CurrentPeriodEnd,
+		}
+		return ent, issuance
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var writers sync.WaitGroup
+	for i, db := range []*EntitlementDB{first, second} {
+		writers.Add(1)
+		go func(i int, db *EntitlementDB) {
+			defer writers.Done()
+			<-start
+			ent, issuance := makeTrial(fmt.Sprintf("order_%d", i))
+			errs <- db.UpsertWithLicenseIssuance(t.Context(), ent, issuance)
+		}(i, db)
+	}
+	close(start)
+	writers.Wait()
+	close(errs)
+
+	succeeded, denied := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrActiveTrialExists):
+			denied++
+		default:
+			t.Fatalf("unexpected writer result: %v", err)
+		}
+	}
+	if succeeded != 1 || denied != 1 {
+		t.Fatalf("writer results: succeeded=%d denied=%d, want 1 each", succeeded, denied)
+	}
+}
+
+type claimResult struct {
+	changed int64
+	err     error
+}
+
+func (r claimResult) LastInsertId() (int64, error) { return 0, nil }
+func (r claimResult) RowsAffected() (int64, error) { return r.changed, r.err }
+
+type claimExecer struct {
+	result sql.Result
+	err    error
+}
+
+func (e claimExecer) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return e.result, e.err
+}
+
+func TestClaimActiveTrialSlotErrorsFailClosed(t *testing.T) {
+	ent := testEntitlement("order_claim_errors")
+	ent.CustomerEmail = "buyer@example.com"
+	ent.Tier = tierTrial
+
+	if err := claimActiveTrialSlot(t.Context(), claimExecer{err: errors.New("write failed")}, ent); err == nil || !strings.Contains(err.Error(), "claim active trial slot") {
+		t.Fatalf("exec error = %v", err)
+	}
+	if err := claimActiveTrialSlot(t.Context(), claimExecer{result: claimResult{err: errors.New("result failed")}}, ent); err == nil || !strings.Contains(err.Error(), "read active trial slot result") {
+		t.Fatalf("result error = %v", err)
+	}
+}
+
+func TestSyncActiveTrialSlotErrorFailsClosed(t *testing.T) {
+	ent := testEntitlement("order_sync_error")
+	err := syncActiveTrialSlot(t.Context(), claimExecer{err: errors.New("write failed")}, ent)
+	if err == nil || !strings.Contains(err.Error(), "sync active trial slot") {
+		t.Fatalf("sync error = %v", err)
+	}
 }
 
 // testEntitlement returns a minimal valid entitlement for testing.
@@ -394,6 +497,14 @@ func TestEntitlementDB_ClosedDBErrors(t *testing.T) {
 	ent := testEntitlement("sub_closed")
 	if err := db.Upsert(ctx, ent); err == nil {
 		t.Error("Upsert on closed DB should error")
+	}
+	trial := testEntitlement("trial_closed")
+	trial.Tier = tierTrial
+	if err := db.Upsert(ctx, trial); err == nil {
+		t.Error("trial Upsert on closed DB should error")
+	}
+	if err := db.migrate(ctx); err == nil {
+		t.Error("migrate on closed DB should error")
 	}
 
 	_, err := db.GetBySubscriptionID(ctx, "sub_closed")

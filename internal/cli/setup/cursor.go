@@ -225,7 +225,8 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	}
 
 	// Merge community rules into config before building scanner.
-	rules.MergeIntoConfig(cfg, cliutil.Version)
+	// Keep stdout JSON contract intact; warnings go to stderr.
+	reportBundleLoadResult(cmd.ErrOrStderr(), rules.MergeIntoConfig(cfg, cliutil.Version))
 
 	// Build scanner and policy.
 	sc, err := scanner.New(cfg)

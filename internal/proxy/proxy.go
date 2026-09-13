@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
@@ -429,8 +430,26 @@ func newConnectAuditContext(reqCtx context.Context, logger *audit.Logger, target
 	return ctx.WithActorAuth(grade)
 }
 
-// Version is set at build time via ldflags.
-var Version = "0.0.0-dev.unknown"
+const defaultVersion = "0.0.0-dev.unknown"
+
+// Version is set at build time via ldflags. Source builds use cliutil's
+// build-info fallback so direct proxy users report the same version as the CLI.
+var Version = defaultVersion
+
+// init propagates the CLI's resolved version whenever this package was not
+// stamped itself. The secondary build targets in the Makefile and release
+// config stamp only cliutil.Version, so removing this would return those
+// binaries to reporting the dev placeholder in startup logs and /health.
+func init() {
+	Version = resolvedVersion(Version, cliutil.Version)
+}
+
+func resolvedVersion(version, cliVersion string) string {
+	if version != defaultVersion {
+		return version
+	}
+	return cliVersion
+}
 
 // editionSnapshot wraps an Edition for atomic pointer storage.
 type editionSnapshot struct{ edition.Edition }

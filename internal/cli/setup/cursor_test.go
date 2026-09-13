@@ -1105,6 +1105,35 @@ func TestCursorHookCmd_ConfigError(t *testing.T) {
 	}
 }
 
+func TestCursorHookCmd_ReportsBundleLoadError(t *testing.T) {
+	dir := t.TempDir()
+	rulesDir := filepath.Join(dir, "rules")
+	if err := os.MkdirAll(filepath.Join(rulesDir, "broken-bundle"), 0o750); err != nil {
+		t.Fatalf("make broken bundle directory: %v", err)
+	}
+
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgContent := "version: 1\nrules:\n  rules_dir: " + rulesDir + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	input := `{"hook_event_name":"beforeShellExecution","command":"ls","cwd":"/tmp","conversation_id":"abc","generation_id":"def"}`
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"hook", "--config", cfgPath})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "pipelock: warning: bundle broken-bundle:") {
+		t.Fatalf("stderr = %q, want bundle load warning", stderr.String())
+	}
+}
+
 func TestCursorHookCmd_MCPCleanTool(t *testing.T) {
 	input := `{"hook_event_name":"beforeMCPExecution","server":"test-server","tool_name":"list_files","tool_input":"{\"path\":\"/tmp\"}","conversation_id":"abc","generation_id":"def"}`
 

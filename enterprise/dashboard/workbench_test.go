@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/cli/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -586,11 +587,8 @@ func TestWorkbench_ReplayViewHelperBranches(t *testing.T) {
 }
 
 // TestPrepareSteps_TemplatesReferenceRealConductorFlags is a drift guard: every
-// --flag in a workbench prepare template must exist on the matching shipped
-// conductor subcommand. Without it, a flag rename in conductor publish/kill/
-// rollback silently leaves the dashboard telling operators to run a command
-// that no longer parses (the exact defect this replaced: rollback used the
-// nonexistent --to-version, and publish/kill omitted mandatory auth/TLS flags).
+// template flag must exist on its shipped conductor subcommand, and every flag
+// Cobra marks required on that subcommand must appear in the template.
 func TestPrepareSteps_TemplatesReferenceRealConductorFlags(t *testing.T) {
 	kindToSubcommand := map[string]string{
 		actionKindPublish:    "publish",
@@ -604,7 +602,8 @@ func TestPrepareSteps_TemplatesReferenceRealConductorFlags(t *testing.T) {
 		subcommands[c.Name()] = c
 	}
 
-	for _, step := range prepareSteps() {
+	steps := prepareSteps()
+	for _, step := range steps {
 		step := step
 		t.Run(step.Kind, func(t *testing.T) {
 			name, ok := kindToSubcommand[step.Kind]
@@ -615,18 +614,65 @@ func TestPrepareSteps_TemplatesReferenceRealConductorFlags(t *testing.T) {
 			if !ok {
 				t.Fatalf("conductor has no %q subcommand", name)
 			}
-			flags := prepareTemplateFlags(step.Command)
-			if len(flags) == 0 {
-				t.Fatalf("template for %q defines no flags: %q", step.Kind, step.Command)
-			}
-			for _, flag := range flags {
-				if sub.Flag(flag) == nil {
-					t.Errorf("template for %q references --%s, which conductor %s does not define",
-						step.Kind, flag, name)
-				}
+			for _, problem := range prepareTemplateFlagProblems(step.Command, sub) {
+				t.Errorf("template for %q and conductor %s drifted: %s", step.Kind, name, problem)
 			}
 		})
 	}
+
+	t.Run("negative missing required flag", func(t *testing.T) {
+		rollback, ok := subcommands["rollback"]
+		if !ok {
+			t.Fatal("conductor has no rollback subcommand")
+		}
+		command := strings.Replace(steps[2].Command, "--target-bundle-id <id> ", "", 1)
+		problems := prepareTemplateFlagProblems(command, rollback)
+		for _, problem := range problems {
+			if problem == "required --target-bundle-id is missing" {
+				return
+			}
+		}
+		t.Fatalf("missing required --target-bundle-id was not detected: %v", problems)
+	})
+
+	t.Run("negative empty template", func(t *testing.T) {
+		problems := prepareTemplateFlagProblems("pipelock conductor rollback", subcommands["rollback"])
+		if len(problems) != 1 || problems[0] != "template defines no flags" {
+			t.Fatalf("empty template problems = %v, want exactly [template defines no flags]", problems)
+		}
+	})
+
+	t.Run("negative undefined flag", func(t *testing.T) {
+		command := steps[2].Command + " --not-a-conductor-flag x"
+		problems := prepareTemplateFlagProblems(command, subcommands["rollback"])
+		if len(problems) != 1 || problems[0] != "undefined --not-a-conductor-flag" {
+			t.Fatalf("undefined flag problems = %v, want exactly [undefined --not-a-conductor-flag]", problems)
+		}
+	})
+}
+
+func prepareTemplateFlagProblems(command string, sub *cobra.Command) []string {
+	flags := prepareTemplateFlags(command)
+	if len(flags) == 0 {
+		return []string{"template defines no flags"}
+	}
+	present := make(map[string]struct{}, len(flags))
+	var problems []string
+	for _, name := range flags {
+		present[name] = struct{}{}
+		if sub.Flag(name) == nil {
+			problems = append(problems, "undefined --"+name)
+		}
+	}
+	sub.Flags().VisitAll(func(flag *pflag.Flag) {
+		if len(flag.Annotations[cobra.BashCompOneRequiredFlag]) == 0 {
+			return
+		}
+		if _, ok := present[flag.Name]; !ok {
+			problems = append(problems, "required --"+flag.Name+" is missing")
+		}
+	})
+	return problems
 }
 
 // prepareTemplateFlags extracts the long-flag names ("--foo bar" -> "foo") from

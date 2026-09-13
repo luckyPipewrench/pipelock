@@ -424,16 +424,13 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 // that can create a trial: a missing row means this subscription owns no slot,
 // and treating that as success is how a second trial gets in.
 func syncActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	// Any failure to canonicalize means this subscription can own no slot, so
+	// there is nothing to refresh. Skip rather than fail: this path grants
+	// nothing, and failing here would block revoking or status-mirroring an
+	// entitlement whose email predates canonicalization.
 	email, err := trialSlotKey(ent)
-	if errors.Is(err, ErrTrialEmailNotCanonical) {
-		// No canonical key means no slot exists to refresh. Skip rather than
-		// fail: this path grants nothing, and failing here would block
-		// revoking or status-mirroring an entitlement whose email predates
-		// canonicalization.
-		return nil
-	}
 	if err != nil {
-		return err
+		return nil
 	}
 	const query = `
 	UPDATE active_trial_slots SET expires_at = ?

@@ -762,3 +762,68 @@ func TestBackfillActiveTrialSlots_FailsClosedOnStoreErrors(t *testing.T) {
 		t.Fatal("backfill on a closed database returned success")
 	}
 }
+
+// TestBackfillActiveTrialSlots_SkipsUncanonicalizableRows pins that the
+// migration gives no slot to an address it cannot canonicalize. Seeding one
+// under a raw key would create a slot no later claim could ever match, which
+// silently exempts that address from the one-active-trial rule forever.
+func TestBackfillActiveTrialSlots_SkipsUncanonicalizableRows(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	seed := []*Entitlement{
+		trialEntitlement("order_garbage", "not-an-email", periodEnd),
+		trialEntitlement("order_good", "Good@Example.com", periodEnd),
+	}
+	for _, row := range seed {
+		if err := upsertEntitlement(ctx, db.db, row); err != nil {
+			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
+		}
+	}
+	if _, err := db.db.ExecContext(ctx, `DELETE FROM active_trial_slots`); err != nil {
+		t.Fatalf("clear slots: %v", err)
+	}
+	if err := db.backfillActiveTrialSlots(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var email string
+	var count int
+	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_trial_slots`).Scan(&count); err != nil {
+		t.Fatalf("count slots: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("slot rows = %d, want 1: only the canonicalizable address gets a slot", count)
+	}
+	if err := db.db.QueryRowContext(ctx, `SELECT normalized_email FROM active_trial_slots`).Scan(&email); err != nil {
+		t.Fatalf("read slot: %v", err)
+	}
+	if email != "good@example.com" {
+		t.Fatalf("slot key = %q, want the canonical good address", email)
+	}
+}
+
+// TestUpsert_ActiveTrialDeniedWhenSlotIsHeld pins that a collision detected
+// inside Upsert surfaces as a denial instead of committing a second active
+// trial for one canonical email.
+func TestUpsert_ActiveTrialDeniedWhenSlotIsHeld(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	if err := issueTrial(t, db, trialEntitlement("order_holder", "Shared@Example.com", periodEnd)); err != nil {
+		t.Fatalf("seed holder: %v", err)
+	}
+	err := db.Upsert(ctx, trialEntitlement("order_intruder", "shared@example.com", periodEnd))
+	if !errors.Is(err, ErrActiveTrialExists) {
+		t.Fatalf("Upsert into a held slot: err = %v, want ErrActiveTrialExists", err)
+	}
+	got, lerr := db.GetBySubscriptionID(ctx, "order_intruder")
+	if lerr != nil {
+		t.Fatalf("load intruder: %v", lerr)
+	}
+	if got != nil {
+		t.Fatalf("denied trial was persisted: %+v", got)
+	}
+}

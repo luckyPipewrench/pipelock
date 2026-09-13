@@ -1793,7 +1793,8 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertEqual(pr_review.llm_timeout_for("deep", "judge-repair"), pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS)
         self.assertEqual(
             pr_review.llm_call_budget_for("deep", "judge-repair"),
-            pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS * pr_review.MODEL_CONNECTION_ATTEMPTS
+            pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS
+            + pr_review.MODEL_CONNECT_TIMEOUT_SECONDS * (pr_review.MODEL_CONNECTION_ATTEMPTS - 1)
             + pr_review.MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (pr_review.MODEL_RATE_LIMIT_ATTEMPTS - 1),
         )
         self.assertLess(payload["max_completion_tokens"], pr_review.DEEP_MAX_COMPLETION_TOKENS)
@@ -2265,12 +2266,10 @@ class FailureDirectionTest(unittest.TestCase):
         self.assertEqual(result, {"findings": []})
         self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-terra")
         self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "high")
-        self.assertIn(
-            mock.call(
-            "judge-usage", status="prompt-123-completion-17", correlation="correlation"
-            ),
-            log_phase.call_args_list,
-        )
+        usage_calls = [call for call in log_phase.call_args_list if call.args and call.args[0] == "judge-usage"]
+        self.assertEqual(len(usage_calls), 1)
+        self.assertEqual(usage_calls[0].kwargs["correlation"], "correlation")
+        self.assertRegex(usage_calls[0].kwargs["status"], r"^prompt-123-completion-17-elapsed-\d+s$")
 
     def test_bound_diff_retries_once_then_fails(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
@@ -2289,6 +2288,69 @@ class FailureDirectionTest(unittest.TestCase):
         # without the test noticing.
         self.assertEqual(pr_review.DIFF_FETCH_ATTEMPTS, 2)
         self.assertEqual(get.call_count, 2)
+
+    def test_provider_call_bounds_connect_and_read_separately(self) -> None:
+        # A connect that never completes must fail at the short connect bound,
+        # not after the whole read timeout, or the retry inherits nothing.
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json() -> object:
+                return {"choices": [{"message": {"content": '{"findings":[]}'}}]}
+
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", return_value=Response()
+        ) as post:
+            pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
+        self.assertEqual(
+            post.call_args.kwargs["timeout"],
+            (pr_review.MODEL_CONNECT_TIMEOUT_SECONDS, pr_review.DEFAULT_LLM_TIMEOUT_SECONDS),
+        )
+        # Assert the literals, not only the constants: the timeout is sized
+        # from DEFAULT_MAX_COMPLETION_TOKENS at roughly 80 tokens a second, so
+        # a change to either number has to be argued here.
+        self.assertEqual(pr_review.DEFAULT_LLM_TIMEOUT_SECONDS, 420)
+        self.assertEqual(pr_review.MODEL_CONNECT_TIMEOUT_SECONDS, 20)
+        self.assertGreaterEqual(
+            pr_review.DEFAULT_LLM_TIMEOUT_SECONDS * 80, pr_review.DEFAULT_MAX_COMPLETION_TOKENS
+        )
+
+    def test_call_budget_reserves_one_read_timeout_plus_failed_connects(self) -> None:
+        expected = (
+            pr_review.DEFAULT_LLM_TIMEOUT_SECONDS
+            + pr_review.MODEL_CONNECT_TIMEOUT_SECONDS * (pr_review.MODEL_CONNECTION_ATTEMPTS - 1)
+            + pr_review.MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (pr_review.MODEL_RATE_LIMIT_ATTEMPTS - 1)
+        )
+        self.assertEqual(pr_review.llm_call_budget_for("default"), expected)
+        self.assertEqual(pr_review.llm_call_budget_for("default"), 530)
+        self.assertLess(
+            pr_review.llm_call_budget_for("default"),
+            pr_review.DEFAULT_LLM_TIMEOUT_SECONDS * pr_review.MODEL_CONNECTION_ATTEMPTS,
+            "a read timeout is never retried, so it must not be reserved twice",
+        )
+
+    def test_default_review_of_four_chunks_fits_the_wall_clock(self) -> None:
+        # Four discovery chunks, the judge, and its repair pass at full reserve
+        # must fit, or a default review of an ordinary large pull request
+        # reports partial by construction rather than by provider behavior.
+        needed = (
+            4 * pr_review.llm_call_budget_for("default")
+            + pr_review.llm_call_budget_for("default", "judge")
+            + pr_review.llm_call_budget_for("default", "judge-repair")
+        )
+        self.assertLessEqual(needed, pr_review.REVIEW_WALL_CLOCK_SECONDS)
+
+    def test_review_job_timeout_exceeds_the_wall_clock_with_finalization_margin(self) -> None:
+        # The job timeout kills the process without finalizing the status
+        # comment, so the reviewer's own deadline must come first with room for
+        # the checkouts before it and the comment update after it.
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        job_seconds = int(workflow["jobs"]["review"]["timeout-minutes"]) * 60
+        self.assertGreaterEqual(job_seconds - pr_review.REVIEW_WALL_CLOCK_SECONDS, 300)
+        # The stale marker age covers admission plus the whole review job.
+        admit_seconds = int(workflow["jobs"]["admit"]["timeout-minutes"]) * 60
+        self.assertGreaterEqual(pr_review.STALE_RUNNING_MINUTES * 60, admit_seconds + job_seconds)
 
     def test_provider_timeout_is_distinguished_from_schema_failure(self) -> None:
         with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
@@ -4225,8 +4287,9 @@ class RateLimitRetryTest(unittest.TestCase):
              mock.patch.object(pr_review.time, "sleep") as slept, \
              mock.patch.object(pr_review.requests, "post", side_effect=[self._response(429, {"Retry-After": "30"}), ok]) as post:
             pr_review.call_model("s", "u", "default", "review-chunk-1", "corr", deadline=110.0)
-        self.assertEqual(post.call_args_list[0].kwargs["timeout"], 10.0)
-        self.assertEqual(post.call_args_list[1].kwargs["timeout"], 8.0)
+        # The remaining deadline caps both the connect and the read bound.
+        self.assertEqual(post.call_args_list[0].kwargs["timeout"], (10.0, 10.0))
+        self.assertEqual(post.call_args_list[1].kwargs["timeout"], (8.0, 8.0))
         slept.assert_called_once_with(9.0)
 
     def test_rate_limit_sleep_that_consumes_deadline_stops_before_another_request(self):
@@ -4245,7 +4308,7 @@ class RateLimitRetryTest(unittest.TestCase):
             with self.assertRaises(pr_review.ModelTimeout):
                 pr_review.call_model("s", "u", "default", "review-chunk-1", "corr", deadline=110.0)
         self.assertEqual(post.call_count, 1, "the deadline must prevent a second provider request")
-        self.assertEqual(post.call_args.kwargs["timeout"], 10.0)
+        self.assertEqual(post.call_args.kwargs["timeout"], (10.0, 10.0))
         slept.assert_called_once_with(10.0)
 
     def _run_phase_rate_limit(self, *, synthesis: bool) -> tuple[str, object]:

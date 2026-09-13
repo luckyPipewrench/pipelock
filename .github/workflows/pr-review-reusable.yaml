@@ -99,7 +99,9 @@ jobs:
     needs: admit
     if: needs.admit.outputs.claimed == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Must exceed the reviewer's REVIEW_WALL_CLOCK_SECONDS with room for the
+    # checkouts and finalization; the reviewer's test suite pins the margin.
+    timeout-minutes: 60
     outputs:
       state: ${{ steps.openai.outputs.state || steps.nocreds.outputs.state }}
       complete: ${{ steps.openai.outputs.complete || steps.nocreds.outputs.complete }}

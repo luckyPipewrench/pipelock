@@ -120,6 +120,11 @@ Values must name models available through the direct OpenAI API.
 
 - Only runs from an authorized `/review` comment (no auto-review on push)
 - Never retries an ambiguous provider timeout, which could double-spend
+- Sizes each provider call's timeout from its output allowance at the observed
+  generation rate, and holds the whole review under a wall clock the job
+  timeout exceeds, so a slow provider yields a `partial` verdict rather than a
+  stranded status comment. Each completed call logs its elapsed seconds beside
+  its token usage so the next resize is measured, not guessed.
 - Uses explicit token budgets; deep mode splits an oversized hunk into complete
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default

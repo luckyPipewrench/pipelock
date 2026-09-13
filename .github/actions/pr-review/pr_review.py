@@ -39,9 +39,10 @@ DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
 # is the availability risk this trades against. It fails in the safe direction:
 # a timed-out chunk sets timed_out, derive_state turns that into `partial`, and
 # the workflow's completeness gate fails the run, so a slow discovery pass shows
-# up as a red review rather than a clean one. Raise the timeout from observed
-# partials, not preemptively; it is reserved at twice its value per call against
-# REVIEW_WALL_CLOCK_SECONDS, so raising it alone buys depth by dropping chunks.
+# up as a red review rather than a clean one. The timeout is sized from the
+# output cap below at the observed generation rate, and the per-call reserve
+# against REVIEW_WALL_CLOCK_SECONDS is the read timeout plus one connect attempt,
+# so raising the timeout keeps its chunks as long as the wall clock grows with it.
 FAST_REASONING_EFFORT = "high"
 DEEP_REASONING_EFFORT = "xhigh"
 JUDGE_REASONING_EFFORT = "high"
@@ -56,11 +57,24 @@ DEEP_MAX_COMPLETION_TOKENS = 64_000
 # expire before any visible decision is produced.
 JUDGE_MAX_COMPLETION_TOKENS = 32_768
 JUDGE_REPAIR_MAX_COMPLETION_TOKENS = 4_096
-DEFAULT_LLM_TIMEOUT_SECONDS = 120
+# A discovery chunk at high reasoning emits 7,000 to 12,000 completion tokens
+# on this repository's ordinary pull requests, which finished inside the old
+# 120-second timeout only while the provider generated around 100 tokens a
+# second. On 2026-09-13 nine of twelve chunk calls timed out at that bound while
+# emitting the same volume, so the timeout was sitting at the edge of normal
+# rather than above it. This value covers the full DEFAULT_MAX_COMPLETION_TOKENS
+# allowance at roughly 80 tokens a second, the same ratio the deep timeout
+# already holds against its own cap.
+DEFAULT_LLM_TIMEOUT_SECONDS = 420
 # Deep calls previously died at roughly 287 seconds.  This is deliberately a
 # single longer attempt: retrying an ambiguous timeout can bill the same review
 # twice, so completeness records the timeout instead of retrying the provider.
 DEEP_LLM_TIMEOUT_SECONDS = 720
+# The connect phase has its own bound. A provider that never accepts the
+# connection used to consume the whole read timeout before the retry ran, so
+# each call had to reserve two full timeouts against the wall clock. A connect
+# either completes in seconds or proves non-delivery; it does not need minutes.
+MODEL_CONNECT_TIMEOUT_SECONDS = 20
 # The follow-up carries only unresolved candidates and already-collected
 # evidence. Giving it the deep review's twelve-minute window would let a small
 # repair call strand finalization after the primary judge consumed its budget.
@@ -70,7 +84,10 @@ JUDGE_REPAIR_TIMEOUT_SECONDS = 120
 # job timeout kills the process outright, so finalization never runs and the
 # status comment is stranded on "running".  This budget is held below the job
 # timeout so the run can refuse a call it cannot finish and report partial.
-REVIEW_WALL_CLOCK_SECONDS = 2_100
+# Sized so a default review of four chunks, the judge, and its repair pass all
+# fit at their full reserves, with five minutes left under the 60-minute review
+# job for checkout and finalization. The test suite pins that relationship.
+REVIEW_WALL_CLOCK_SECONDS = 3_300
 DIFF_FETCH_ATTEMPTS = 2
 # A connection failure before the provider returns a response is the one
 # request-error class worth retrying: it costs no completed review result and
@@ -86,12 +103,12 @@ MODEL_RATE_LIMIT_BASE_SLEEP_SECONDS = 2.0
 MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS = 30.0
 # Bounds the admission scan on a pull request with a very long comment history.
 ADMISSION_COMMENT_PAGES = 10
-# A running marker older than any possible job (10-minute admit plus 45-minute
+# A running marker older than any possible job (10-minute admit plus 60-minute
 # review) belongs to a run that died without finalizing. The always() finalizer
 # covers a timeout or a cancellation, but it cannot run when the checkout it
 # needs is the thing that failed, so treating an ancient marker as stale is what
 # stops a dead run from wedging every later review on the same head.
-STALE_RUNNING_MINUTES = 90
+STALE_RUNNING_MINUTES = 105
 # The compare endpoint returns at most this many files and commits before it
 # truncates, and the diff media type gives no indication that it did.
 COMPARE_FILE_LIMIT = 300
@@ -942,9 +959,16 @@ def llm_timeout_for(mode: str, phase: str = "") -> int:
 
 
 def llm_call_budget_for(mode: str, phase: str = "") -> int:
-    """Reserve the longest delivery-proven retry path for one provider call."""
+    """Reserve the longest delivery-proven retry path for one provider call.
+
+    The worst path is every permitted connect attempt but the last failing at
+    the connect bound, the last attempt running to its full read timeout, and
+    the rate-limit sleeps in between. A read timeout is never retried, so it is
+    counted once.
+    """
     retry_sleep_budget = MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (MODEL_RATE_LIMIT_ATTEMPTS - 1)
-    return llm_timeout_for(mode, phase) * MODEL_CONNECTION_ATTEMPTS + retry_sleep_budget
+    failed_connects = MODEL_CONNECT_TIMEOUT_SECONDS * (MODEL_CONNECTION_ATTEMPTS - 1)
+    return int(llm_timeout_for(mode, phase) + failed_connects + retry_sleep_budget)
 
 
 def budget_allows(deadline: float, mode: str, phase: str = "") -> bool:
@@ -1008,15 +1032,24 @@ def call_model(
     rate_limit_attempt = 1
     while True:
         request_timeout = timeout
+        started = time.monotonic()
         if deadline is not None:
-            remaining = deadline - time.monotonic()
+            remaining = deadline - started
             if remaining <= 0:
                 raise ModelTimeout("provider call exceeded the review deadline")
             request_timeout = min(request_timeout, remaining)
         connect_attempt += 1
         attempt = connect_attempt
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=request_timeout)
+            # The connect bound is separate from the read bound so a provider
+            # that never answers the connection fails in seconds and leaves the
+            # read timeout to the one retry that can actually use it.
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=(min(MODEL_CONNECT_TIMEOUT_SECONDS, request_timeout), request_timeout),
+            )
         except requests.ConnectTimeout as exc:
             # The only failure that proves the request was never delivered: the
             # connection itself was never established, so the provider cannot
@@ -1073,9 +1106,13 @@ def call_model(
                 prompt_tokens = usage.get("prompt_tokens")
                 completion_tokens = usage.get("completion_tokens")
                 if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+                    # Elapsed seconds ride with the token counts so the next
+                    # timeout resize can be measured from the log rather than
+                    # inferred from which chunks happened to finish.
+                    elapsed = int(time.monotonic() - started)
                     log_phase(
                         f"{phase}-usage",
-                        status=f"prompt-{prompt_tokens}-completion-{completion_tokens}",
+                        status=f"prompt-{prompt_tokens}-completion-{completion_tokens}-elapsed-{elapsed}s",
                         correlation=correlation,
                     )
             return json.loads(_content_from_response(data))

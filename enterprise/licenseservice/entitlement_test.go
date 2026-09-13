@@ -566,3 +566,144 @@ func TestEntitlementDB_UpsertPreservesLicenseState(t *testing.T) {
 		t.Errorf("CustomerEmail = %q, want %q", got.CustomerEmail, testEmailNew)
 	}
 }
+
+// trialEntitlement builds an active one-time trial for slot tests.
+func trialEntitlement(subscriptionID, email string, periodEnd time.Time) *Entitlement {
+	return &Entitlement{
+		SubscriptionID:   subscriptionID,
+		CustomerEmail:    email,
+		ProductID:        "prod_trial_free",
+		Tier:             tierTrial,
+		Status:           statusActive,
+		BillingInterval:  billingIntervalOneTime,
+		CurrentPeriodEnd: periodEnd,
+	}
+}
+
+func issueTrial(t *testing.T, db *EntitlementDB, ent *Entitlement) error {
+	t.Helper()
+	return db.UpsertWithLicenseIssuanceAndWebhook(t.Context(), ent, LicenseIssuance{
+		LicenseID:      "lic_" + ent.SubscriptionID,
+		SubscriptionID: ent.SubscriptionID,
+		IssuedAt:       time.Now().UTC(),
+		ExpiresAt:      ent.CurrentPeriodEnd,
+	}, "msg_"+ent.SubscriptionID, "order.paid")
+}
+
+// TestActiveTrialSlot_CaseAndWhitespaceVariantsShareOneSlot pins the identity
+// the slot is keyed by. The column is named normalized_email, and if the value
+// is not actually canonical then "Buyer@Example.com" and " buyer@example.com "
+// own separate slots and the one-active-trial rule enforces nothing.
+func TestActiveTrialSlot_CaseAndWhitespaceVariantsShareOneSlot(t *testing.T) {
+	db := openTestDB(t)
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	if err := issueTrial(t, db, trialEntitlement("order_mixed_case", "Buyer@Example.com", periodEnd)); err != nil {
+		t.Fatalf("first trial: %v", err)
+	}
+	for _, variant := range []string{" buyer@example.com ", "BUYER@EXAMPLE.COM", "Buyer@example.com"} {
+		err := issueTrial(t, db, trialEntitlement("order_variant", variant, periodEnd))
+		if !errors.Is(err, ErrActiveTrialExists) {
+			t.Fatalf("variant %q: err = %v, want ErrActiveTrialExists", variant, err)
+		}
+	}
+	// A genuinely different address is unaffected.
+	if err := issueTrial(t, db, trialEntitlement("order_other", "someone@example.com", periodEnd)); err != nil {
+		t.Fatalf("different email denied: %v", err)
+	}
+}
+
+// TestUpsert_ActiveTrialClaimsItsSlot pins the bypass that update-only
+// synchronization left open: an active trial written through Upsert must OWN a
+// slot, or a different subscription can claim the still-free slot afterwards
+// and two active trials exist for one email.
+func TestUpsert_ActiveTrialClaimsItsSlot(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	if err := db.Upsert(ctx, trialEntitlement("order_upsert_trial", "holder@example.com", periodEnd)); err != nil {
+		t.Fatalf("upsert active trial: %v", err)
+	}
+	err := issueTrial(t, db, trialEntitlement("order_second", "holder@example.com", periodEnd))
+	if !errors.Is(err, ErrActiveTrialExists) {
+		t.Fatalf("second trial after Upsert: err = %v, want ErrActiveTrialExists", err)
+	}
+	// The same subscription may still renew its own slot.
+	renewal := trialEntitlement("order_upsert_trial", "holder@example.com", periodEnd.Add(24*time.Hour))
+	if err := db.Upsert(ctx, renewal); err != nil {
+		t.Fatalf("renew own trial: %v", err)
+	}
+
+	// A revocation is a record, not a claim: it must not be refused.
+	revoked := trialEntitlement("order_revoked", "revoked@example.com", periodEnd)
+	revoked.Status = statusRevoked
+	if err := db.Upsert(ctx, revoked); err != nil {
+		t.Fatalf("revoked trial upsert: %v", err)
+	}
+}
+
+// TestBackfillActiveTrialSlots_BindsOwnerToItsOwnExpiry pins that the migration
+// takes the owner and the expiry from the SAME entitlement. Selecting them with
+// independent aggregates can seed one trial's owner beside another trial's end
+// date, and a later write for that owner then shortens the slot while the
+// longer trial is still running, freeing a trial early.
+func TestBackfillActiveTrialSlots_BindsOwnerToItsOwnExpiry(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	shortEnd := now.Add(24 * time.Hour)
+	longEnd := now.Add(240 * time.Hour)
+
+	// Legacy state: two active trials on one canonical email. The
+	// lowest-sorting subscription ID deliberately holds the SHORTER trial, so
+	// a min-id/max-expiry pairing would bind "order_aaa" to longEnd.
+	legacy := []*Entitlement{
+		trialEntitlement("order_aaa", "Legacy@Example.com", shortEnd),
+		trialEntitlement("order_zzz", "legacy@example.com", longEnd),
+	}
+	for _, row := range legacy {
+		if err := upsertEntitlement(ctx, db.db, row); err != nil {
+			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
+		}
+	}
+	if _, err := db.db.ExecContext(ctx, `DELETE FROM active_trial_slots`); err != nil {
+		t.Fatalf("clear slots: %v", err)
+	}
+	if err := db.backfillActiveTrialSlots(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var (
+		email    string
+		owner    string
+		expires  time.Time
+		rowsSeen int
+	)
+	rows, err := db.db.QueryContext(ctx, `SELECT normalized_email, subscription_id, expires_at FROM active_trial_slots`)
+	if err != nil {
+		t.Fatalf("read slots: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if err := rows.Scan(&email, &owner, &expires); err != nil {
+			t.Fatalf("scan slot: %v", err)
+		}
+		rowsSeen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate slots: %v", err)
+	}
+	if rowsSeen != 1 {
+		t.Fatalf("slot rows = %d, want exactly 1 canonical slot", rowsSeen)
+	}
+	if email != "legacy@example.com" {
+		t.Fatalf("slot key = %q, want the canonical address", email)
+	}
+	if owner != "order_zzz" {
+		t.Fatalf("slot owner = %q, want order_zzz, the subscription that owns the latest expiry", owner)
+	}
+	if !expires.UTC().Equal(longEnd.Truncate(time.Second)) && expires.UTC().Sub(longEnd).Abs() > time.Second {
+		t.Fatalf("slot expiry = %v, want %v (the owner's own expiry)", expires.UTC(), longEnd)
+	}
+}

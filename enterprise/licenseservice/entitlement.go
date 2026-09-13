@@ -97,6 +97,13 @@ var ErrWebhookAlreadyCommitted = errors.New("webhook already committed")
 // the entitlement's canonical customer email.
 var ErrActiveTrialExists = errors.New("active trial already exists")
 
+// ErrTrialEmailNotCanonical means the entitlement's customer email cannot be
+// canonicalized, so it can hold no trial slot and the one-active-trial rule
+// cannot be enforced for it. Granting a trial on this address is refused;
+// merely RECORDING an entitlement is not, because refusing that would block
+// revoking or status-mirroring a legacy row and buys no enforcement.
+var ErrTrialEmailNotCanonical = errors.New("trial email cannot be canonicalized")
+
 type entitlementExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -295,17 +302,75 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	if _, err := e.db.ExecContext(ctx, ddl); err != nil {
 		return err
 	}
-	const backfillTrialSlots = `
-	INSERT OR IGNORE INTO active_trial_slots (normalized_email, subscription_id, expires_at)
-	SELECT customer_email, MIN(subscription_id), MAX(current_period_end)
+	return e.backfillActiveTrialSlots(ctx)
+}
+
+// backfillActiveTrialSlots seeds one slot per canonical email from existing
+// trial entitlements.
+//
+// It reads and groups in Go rather than in SQL for two reasons the SQL form got
+// wrong. First, the slot is keyed by CANONICAL email, and only NormalizeEmail
+// decides that, so "A@x.com" and "a@x.com" must collapse to one slot here or the
+// migration itself seeds the bypass it exists to close. Second, the owner and
+// the expiry must come from the SAME entitlement: an aggregate pairing
+// MIN(subscription_id) with MAX(current_period_end) can hand the slot one
+// trial's owner and another trial's end date, and a later write for that owner
+// then shortens the slot while the longer trial is still running, freeing a
+// trial early. Ties break on subscription_id so a rerun is deterministic.
+func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
+	const selectTrials = `
+	SELECT customer_email, subscription_id, current_period_end
 	FROM entitlements
 	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
-	GROUP BY customer_email
+	ORDER BY current_period_end DESC, subscription_id ASC
 	`
-	_, err := e.db.ExecContext(ctx, backfillTrialSlots,
+	rows, err := e.db.QueryContext(ctx, selectTrials,
 		tierTrial, tierEnterpriseTrial, statusActive, statusRevoked, time.Now().UTC(),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("read trial entitlements for slot backfill: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type slot struct {
+		subscriptionID string
+		expiresAt      time.Time
+	}
+	// Rows arrive newest-expiry first, so the first canonical key wins and
+	// later duplicates are skipped rather than overwriting a longer trial.
+	claimed := make(map[string]slot)
+	for rows.Next() {
+		var rawEmail, subscriptionID string
+		var expiresAt time.Time
+		if err := rows.Scan(&rawEmail, &subscriptionID, &expiresAt); err != nil {
+			return fmt.Errorf("scan trial entitlement for slot backfill: %w", err)
+		}
+		canonical, nerr := NormalizeEmail(rawEmail)
+		if nerr != nil {
+			// An address this package cannot canonicalize gets no slot. It is
+			// not silently given one under a raw key, which would be a slot no
+			// later claim could ever match.
+			continue
+		}
+		if _, seen := claimed[canonical]; seen {
+			continue
+		}
+		claimed[canonical] = slot{subscriptionID: subscriptionID, expiresAt: expiresAt.UTC()}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate trial entitlements for slot backfill: %w", err)
+	}
+
+	const insertSlot = `
+	INSERT OR IGNORE INTO active_trial_slots (normalized_email, subscription_id, expires_at)
+	VALUES (?, ?, ?)
+	`
+	for email, s := range claimed {
+		if _, err := e.db.ExecContext(ctx, insertSlot, email, s.subscriptionID, s.expiresAt); err != nil {
+			return fmt.Errorf("backfill active trial slot for %s: %w", s.subscriptionID, err)
+		}
+	}
+	return nil
 }
 
 // Upsert inserts or updates an entitlement record. Updates the updated_at
@@ -333,7 +398,18 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	if err := upsertEntitlement(ctx, tx, ent); err != nil {
 		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
 	}
-	if err := syncActiveTrialSlot(ctx, tx, ent); err != nil {
+	// An ACTIVE trial written through this path must claim its slot, exactly as
+	// the issuance path does. syncActiveTrialSlot alone is update-only and
+	// reports success when no row matched, so a trial could commit owning
+	// nothing and a later subscription would then claim the free slot: two
+	// active trials for one email. A non-active status (revoked, canceled, or a
+	// cron status mirror) only refreshes a slot it already holds, so revocation
+	// never tries to take one.
+	if ent.Status == statusActive {
+		if err := claimActiveTrialSlot(ctx, tx, ent); err != nil && !errors.Is(err, ErrTrialEmailNotCanonical) {
+			return err
+		}
+	} else if err := syncActiveTrialSlot(ctx, tx, ent); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -343,12 +419,27 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	return nil
 }
 
+// syncActiveTrialSlot refreshes the expiry of a slot this subscription ALREADY
+// owns. It is update-only on purpose and must never be the sole guard on a path
+// that can create a trial: a missing row means this subscription owns no slot,
+// and treating that as success is how a second trial gets in.
 func syncActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	email, err := trialSlotKey(ent)
+	if errors.Is(err, ErrTrialEmailNotCanonical) {
+		// No canonical key means no slot exists to refresh. Skip rather than
+		// fail: this path grants nothing, and failing here would block
+		// revoking or status-mirroring an entitlement whose email predates
+		// canonicalization.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	const query = `
 	UPDATE active_trial_slots SET expires_at = ?
 	WHERE normalized_email = ? AND subscription_id = ?
 	`
-	if _, err := exec.ExecContext(ctx, query, ent.CurrentPeriodEnd.UTC(), ent.CustomerEmail, ent.SubscriptionID); err != nil {
+	if _, err := exec.ExecContext(ctx, query, ent.CurrentPeriodEnd.UTC(), email, ent.SubscriptionID); err != nil {
 		return fmt.Errorf("sync active trial slot for %s: %w", ent.SubscriptionID, err)
 	}
 	return nil
@@ -769,7 +860,24 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 	return nil
 }
 
+// trialSlotKey is the canonical identity a trial slot is keyed by. The column
+// is named normalized_email and must actually hold one: without this, "A@x.com"
+// and "a@x.com" own separate slots and the one-active-trial rule buys nothing.
+// It fails CLOSED. An address this package cannot canonicalize gets no slot,
+// which denies a trial rather than handing out an unbounded one.
+func trialSlotKey(ent *Entitlement) (string, error) {
+	canonical, err := NormalizeEmail(ent.CustomerEmail)
+	if err != nil {
+		return "", fmt.Errorf("%w for %s: %w", ErrTrialEmailNotCanonical, ent.SubscriptionID, err)
+	}
+	return canonical, nil
+}
+
 func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	email, err := trialSlotKey(ent)
+	if err != nil {
+		return err
+	}
 	const query = `
 	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at)
 	VALUES (?, ?, ?)
@@ -780,7 +888,7 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	   OR active_trial_slots.subscription_id = excluded.subscription_id
 	`
 	result, err := exec.ExecContext(ctx, query,
-		ent.CustomerEmail, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), time.Now().UTC(),
+		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("claim active trial slot for %s: %w", ent.SubscriptionID, err)

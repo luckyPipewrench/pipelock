@@ -379,8 +379,13 @@ func TestCountActiveTrialForEmailCanonicalizesLegacyRows(t *testing.T) {
 			CurrentPeriodEnd: now.Add(-time.Hour),
 		},
 	}
+	// Seed the entitlement rows directly. These represent state written BEFORE
+	// active_trial_slots existed, including two active trials on one canonical
+	// email, which is exactly what the counter has to canonicalize. Upsert now
+	// enforces one active trial per canonical email, so it cannot construct the
+	// legacy state this test is about.
 	for _, row := range rows {
-		if err := db.Upsert(ctx, row); err != nil {
+		if err := upsertEntitlement(ctx, db.db, row); err != nil {
 			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
 		}
 	}

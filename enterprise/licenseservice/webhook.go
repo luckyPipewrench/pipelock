@@ -455,12 +455,27 @@ func (h *WebhookHandler) handleActiveDelivery(ctx context.Context, ent *Entitlem
 		ExpiresAt:      expiresAt,
 		IssuedAt:       now,
 	}, msgID, eventType); err != nil {
-		if errors.Is(err, ErrActiveTrialExists) {
+		if errors.Is(err, ErrActiveTrialExists) || errors.Is(err, ErrTrialEmailNotCanonical) {
 			denial := fmt.Errorf("an active %s already exists for this email", ent.Tier)
+			if errors.Is(err, ErrTrialEmailNotCanonical) {
+				// The address cannot be canonicalized, so no slot can bound it
+				// and the one-active-trial rule cannot be enforced for this
+				// order. Refuse the grant rather than mint an unbounded trial.
+				// This is a permanent property of the address, so it is a
+				// denial rather than a retry.
+				denial = fmt.Errorf("%s cannot be granted: customer email cannot be canonicalized", ent.Tier)
+			}
+			// A denial the ledger cannot record is not acknowledged. Returning
+			// the error leaves the webhook uncommitted so the provider retries
+			// and the security decision reaches durable audit; the retry is
+			// safe because the entitlement transaction already rolled back and
+			// the slot claim denies again identically. Acknowledging here would
+			// end the retries and lose the only record that a trial was refused.
 			if lerr := h.ledger.LogError(ent.SubscriptionID, ent.Tier+" denied", denial); lerr != nil {
-				h.log.Warn().Err(lerr).
+				h.log.Error().Err(lerr).
 					Str("order_id", ent.SubscriptionID).
-					Msg("trial denial could not be recorded in the audit ledger")
+					Msg("trial denial could not be recorded in the audit ledger; not acknowledging")
+				return fmt.Errorf("record %s denial for %s: %w", ent.Tier, ent.SubscriptionID, lerr)
 			}
 			h.log.Warn().Str("order_id", ent.SubscriptionID).Str("tier", ent.Tier).
 				Msg("trial order denied: an active trial already exists for this email")

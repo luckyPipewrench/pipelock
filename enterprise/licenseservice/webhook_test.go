@@ -2676,12 +2676,6 @@ func TestHandleActive_ConcurrentTrialClaimReturnsDenial(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed first trial: %v", err)
 	}
-	// A failed denial-ledger write must not turn the expected business denial
-	// into a provider retry that could repeatedly exercise the same order.
-	if err := ts.ledger.Close(); err != nil {
-		t.Fatalf("close denial ledger: %v", err)
-	}
-
 	second := testEntitlement("order_second_trial")
 	second.CustomerEmail = first.CustomerEmail
 	second.Tier = tierTrial
@@ -2693,6 +2687,53 @@ func TestHandleActive_ConcurrentTrialClaimReturnsDenial(t *testing.T) {
 	got, err := ts.db.GetBySubscriptionID(t.Context(), second.SubscriptionID)
 	if err != nil {
 		t.Fatalf("load denied trial: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("denied concurrent trial was persisted: %+v", got)
+	}
+}
+
+// TestHandleActive_TrialDenialIsNotAcknowledgedWithoutAudit pins the failure
+// direction of a denial the audit ledger cannot record. The trial is still
+// refused, but the webhook is NOT acknowledged, so the provider retries and the
+// decision reaches durable audit once the ledger recovers. Acknowledging here
+// would end the retries and leave no record that a trial was refused. This
+// matches the revocation path in eval.go, which also declines to acknowledge a
+// security decision the ledger could not record.
+func TestHandleActive_TrialDenialIsNotAcknowledgedWithoutAudit(t *testing.T) {
+	ts := newTestSetup(t)
+	now := time.Now().UTC()
+	first := testEntitlement("order_first_trial")
+	first.CustomerEmail = "buyer@example.com"
+	first.Tier = tierTrial
+	first.BillingInterval = billingIntervalOneTime
+	first.CurrentPeriodEnd = now.Add(time.Hour)
+	if err := ts.db.UpsertWithLicenseIssuance(t.Context(), first, LicenseIssuance{
+		LicenseID:      "lic_first_trial",
+		SubscriptionID: first.SubscriptionID,
+		IssuedAt:       now,
+		ExpiresAt:      first.CurrentPeriodEnd,
+	}); err != nil {
+		t.Fatalf("seed first trial: %v", err)
+	}
+	if err := ts.ledger.Close(); err != nil {
+		t.Fatalf("close denial ledger: %v", err)
+	}
+
+	second := testEntitlement("order_second_trial")
+	second.CustomerEmail = first.CustomerEmail
+	second.Tier = tierTrial
+	second.BillingInterval = billingIntervalOneTime
+	second.CurrentPeriodEnd = now.Add(time.Hour)
+	err := ts.handler.handleActive(t.Context(), second, nil)
+	if err == nil {
+		t.Fatal("denial with an unwritable audit ledger was acknowledged; the record would be lost")
+	}
+	// The trial is still refused: the security outcome never depended on the
+	// audit write succeeding.
+	got, lerr := ts.db.GetBySubscriptionID(t.Context(), second.SubscriptionID)
+	if lerr != nil {
+		t.Fatalf("load denied trial: %v", lerr)
 	}
 	if got != nil {
 		t.Fatalf("denied concurrent trial was persisted: %+v", got)

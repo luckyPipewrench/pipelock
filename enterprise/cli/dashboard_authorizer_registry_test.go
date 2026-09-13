@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -60,6 +61,8 @@ func TestDashboardAuthorizerCompositionTruthTable(t *testing.T) {
 		serial: 302, commonName: "unmapped operator", notBefore: now.Add(-time.Hour), notAfter: now.Add(time.Hour),
 	})
 	mappedFingerprint := sha256.Sum256(mappedLeaf.RawSubjectPublicKeyInfo)
+	mappedHex := dashboardClientCertSPKIFingerprint(mappedLeaf)
+	unmappedHex := dashboardClientCertSPKIFingerprint(unmappedLeaf)
 	clientCertAuth := &dashboardClientCertAuthorizer{principals: map[[sha256.Size]byte]dashboardClientCertPrincipal{
 		mappedFingerprint: {
 			role: "evidence-reader",
@@ -193,19 +196,15 @@ func TestDashboardAuthorizerCompositionTruthTable(t *testing.T) {
 							t.Fatalf("failedAuthMode = %q, want %q", got, want.mode)
 						}
 					}
-					// Invoke the composed audit attribution so replacing or dropping
-					// the mTLS override, or the token/OIDC attribution, fails here.
-					info := composition.authAuditInfo(req)
-					if wantMethod := dashboardRegistryAuditMethod(tc.mtls, want.requestCase); info.Method != wantMethod {
-						t.Fatalf("authAuditInfo.Method = %q, want %q", info.Method, wantMethod)
-					}
-					if succeeded := info.FailureReason == ""; succeeded != want.meta {
-						t.Fatalf("authAuditInfo.FailureReason = %q, want empty=%v", info.FailureReason, want.meta)
-					}
-					if tc.mtls && want.requestCase == requestMTLS {
-						if info.MTLSSPKISHA256 == "" || len(info.Roles) != 1 || info.Roles[0] != "evidence-reader" {
-							t.Fatalf("mTLS audit info = %+v, want SPKI fingerprint and mapped role", info)
-						}
+					// Invoke the composed audit attribution and compare every identity
+					// field exactly, so a wrong fingerprint, subject, role or reason
+					// fails here rather than only a missing callback.
+					got := composition.authAuditInfo(req)
+					want := dashboardRegistryExpectedAudit(tc.mtls, want.requestCase, mappedHex, unmappedHex)
+					if got.Method != want.Method || got.Subject != want.Subject ||
+						got.MTLSSPKISHA256 != want.MTLSSPKISHA256 || got.FailureReason != want.FailureReason ||
+						!slices.Equal(got.Roles, want.Roles) {
+						t.Fatalf("authAuditInfo = %+v, want %+v", got, want)
 					}
 				})
 			}
@@ -213,22 +212,34 @@ func TestDashboardAuthorizerCompositionTruthTable(t *testing.T) {
 	}
 }
 
-// dashboardRegistryAuditMethod is the audit Method the composed attribution
-// must report: mTLS is exclusive and attributes every request, otherwise the
-// method follows the credential the request presented.
-func dashboardRegistryAuditMethod(mtlsConfigured bool, requestCase dashboardRegistryRequestCase) string {
+// dashboardRegistryExpectedAudit is the exact audit attribution the composed
+// callback must report. mTLS is exclusive and attributes every request through
+// the certificate authorizer; otherwise attribution follows the credential the
+// request presented.
+func dashboardRegistryExpectedAudit(mtlsConfigured bool, requestCase dashboardRegistryRequestCase, mappedHex, unmappedHex string) dashboard.AuthAuditInfo {
 	if mtlsConfigured {
-		return "mtls"
+		switch requestCase {
+		case requestMTLS:
+			return dashboard.AuthAuditInfo{Method: "mtls", MTLSSPKISHA256: mappedHex, Roles: []string{"evidence-reader"}}
+		case requestMTLSBad:
+			return dashboard.AuthAuditInfo{Method: "mtls", MTLSSPKISHA256: unmappedHex, FailureReason: "unmapped_client_certificate"}
+		default:
+			return dashboard.AuthAuditInfo{Method: "mtls", FailureReason: "missing_client_certificate"}
+		}
 	}
 	switch requestCase {
-	case requestMetadata, requestTokenBad:
-		return "token"
+	case requestMetadata:
+		return dashboard.AuthAuditInfo{Method: "token", Roles: []string{"metadata"}}
 	case requestRaw:
-		return "raw-access-token"
-	case requestOIDC, requestOIDCBad:
-		return "oidc"
+		return dashboard.AuthAuditInfo{Method: "raw-access-token", Roles: []string{"raw"}}
+	case requestTokenBad:
+		return dashboard.AuthAuditInfo{Method: "token", FailureReason: "unknown_principal"}
+	case requestOIDC:
+		return dashboard.AuthAuditInfo{Method: "oidc", Subject: "operator-a", Roles: []string{"evidence-reader"}}
+	case requestOIDCBad:
+		return dashboard.AuthAuditInfo{Method: "oidc", FailureReason: "invalid_token"}
 	default:
-		return "none"
+		return dashboard.AuthAuditInfo{Method: "none", FailureReason: "missing_token"}
 	}
 }
 

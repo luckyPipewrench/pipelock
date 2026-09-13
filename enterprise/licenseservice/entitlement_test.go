@@ -1182,35 +1182,56 @@ func TestDSNPragmas_OmitJournalMode(t *testing.T) {
 	}
 }
 
-// TestReportJournalMode_WarnsOnlyWhenAFileDatabaseMissedWAL pins that the
-// startup report names a database that did not get write-ahead logging, and
-// stays quiet for the two modes that are working as intended. Failing to take
-// WAL is survivable, so nothing fails here; going unmentioned is the failure
-// this guards, because journal_mode persists until something changes it.
-func TestReportJournalMode_WarnsOnlyWhenAFileDatabaseMissedWAL(t *testing.T) {
+// TestReportJournalMode_SpeaksUpOnlyWhenSomethingIsWrong pins what the startup
+// report says about each mode the database can settle in.
+//
+// Two of them are working as intended and stay quiet. A file database that
+// missed write-ahead logging is survivable and warns. An in-memory database
+// the operator did NOT ask for is the severe one: it opens successfully and
+// keeps nothing, so the table the one-trial limit reads is empty after every
+// restart and every customer gets their trial back.
+func TestReportJournalMode_SpeaksUpOnlyWhenSomethingIsWrong(t *testing.T) {
 	for _, tc := range []struct {
-		mode     string
-		wantWarn bool
+		name      string
+		mode      string
+		inMemory  bool
+		wantLevel string
+		wantSays  string
 	}{
-		{mode: journalModeWAL, wantWarn: false},
-		{mode: journalModeMemory, wantWarn: false},
-		{mode: "delete", wantWarn: true},
-		{mode: "", wantWarn: true},
+		{name: "file database took WAL", mode: journalModeWAL},
+		{name: "the operator asked for an in-memory database", mode: journalModeMemory, inMemory: true},
+		{
+			name: "a file database did not get WAL", mode: "delete",
+			wantLevel: "warn", wantSays: "restart this service",
+		},
+		{
+			name: "the mode could not be read at all", mode: "",
+			wantLevel: "warn", wantSays: "restart this service",
+		},
+		{
+			// A configured URI carrying mode=memory opens fine and then keeps
+			// nothing, which empties the table the one-trial limit reads.
+			name: "a configured URI opened an in-memory database", mode: journalModeMemory,
+			wantLevel: "error", wantSays: "keeps nothing across a restart",
+		},
 	} {
-		t.Run("mode="+tc.mode, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			(&EntitlementDB{journalMode: tc.mode}).ReportJournalMode(zerolog.New(&buf))
+			db := &EntitlementDB{journalMode: tc.mode, inMemory: tc.inMemory}
+			db.ReportJournalMode(zerolog.New(&buf))
 
 			out := buf.String()
 			if !strings.Contains(out, `"journal_mode":"`+tc.mode+`"`) {
 				t.Fatalf("report did not record the mode it saw: %s", out)
 			}
-			warned := strings.Contains(out, `"level":"warn"`)
-			if warned != tc.wantWarn {
-				t.Fatalf("warned = %v, want %v for mode %q: %s", warned, tc.wantWarn, tc.mode, out)
+			for _, level := range []string{"warn", "error"} {
+				got := strings.Contains(out, `"level":"`+level+`"`)
+				if got != (tc.wantLevel == level) {
+					t.Fatalf("level %q present = %v, want %v: %s", level, got, tc.wantLevel == level, out)
+				}
 			}
-			if tc.wantWarn && !strings.Contains(out, "restart this service") {
-				t.Fatalf("warning does not tell the operator what to do: %s", out)
+			if tc.wantSays != "" && !strings.Contains(out, tc.wantSays) {
+				t.Fatalf("report does not say %q: %s", tc.wantSays, out)
 			}
 		})
 	}

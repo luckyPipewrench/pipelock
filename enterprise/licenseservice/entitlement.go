@@ -92,6 +92,10 @@ type EntitlementDB struct {
 	// journalMode is the mode the database settled on at open time. See
 	// enableWAL for why it is not guaranteed to be WAL.
 	journalMode string
+
+	// inMemory records that the operator asked for the :memory: sentinel, which
+	// is the only configuration in which an ephemeral store is intended.
+	inMemory bool
 }
 
 // journalModeWAL is the mode a file database is expected to run in.
@@ -99,6 +103,9 @@ const journalModeWAL = "wal"
 
 // journalModeMemory is what an in-memory database reports. It can never be WAL.
 const journalModeMemory = "memory"
+
+// inMemoryPath is the configured path that asks for an ephemeral database.
+const inMemoryPath = ":memory:"
 
 // ErrTerminalEntitlement means a stale active event tried to mint a license
 // after this subscription was already recorded in a terminal state.
@@ -149,7 +156,7 @@ const dsnPragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 // one. An explicit URI has the pragmas merged into its query so its own
 // parameters and any fragment survive.
 func entitlementDSN(path string) (string, error) {
-	if path == ":memory:" {
+	if path == inMemoryPath {
 		return path + "?" + dsnPragmas, nil
 	}
 	if strings.HasPrefix(path, "file:") {
@@ -220,7 +227,7 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 	// ensure all queries hit the same underlying database.
 	db.SetMaxOpenConns(1)
 
-	edb := &EntitlementDB{db: db}
+	edb := &EntitlementDB{db: db, inMemory: path == inMemoryPath}
 
 	// Ask for WAL before migrating so the migration itself runs under it, and
 	// again afterwards if a lock was in the way the first time: by then the
@@ -531,11 +538,26 @@ func (e *EntitlementDB) ReportJournalMode(log zerolog.Logger) {
 	mode := e.JournalMode()
 	log.Info().Str("journal_mode", mode).Msg("entitlement database journal mode")
 
-	// An in-memory database keeps its own mode and can never be WAL, so it is
-	// not a condition to report.
-	if mode == journalModeWAL || mode == journalModeMemory {
+	if mode == journalModeWAL {
 		return
 	}
+
+	// An in-memory database keeps its own mode and can never be WAL. That is
+	// only expected when the operator asked for one by name.
+	if mode == journalModeMemory {
+		if e.inMemory {
+			return
+		}
+		// A configured URI can carry mode=memory, which opens successfully and
+		// then discards every entitlement and trial slot when the process
+		// stops. That empties the very table the one-trial limit is read from,
+		// so each restart hands every customer their trial back.
+		log.Error().
+			Str("journal_mode", mode).
+			Msg("entitlement database is in memory and keeps nothing across a restart, so trials would be granted again; the configured database URI asks for an in-memory database, which is not a supported way to run this service")
+		return
+	}
+
 	log.Warn().
 		Str("journal_mode", mode).
 		Msg("entitlement database is not in write-ahead logging mode because another process held it at startup; restart this service once nothing else has the database open")

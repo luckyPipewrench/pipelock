@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
@@ -156,6 +157,28 @@ func TestServerRefreshRuntimeStateUpdatesExistingMCPDoWRuntime(t *testing.T) {
 	}
 	if !first.Enabled() {
 		t.Fatal("existing MCP DoW runtime was not updated from reloaded config")
+	}
+}
+
+func TestServerRefreshRuntimeStateRebuildsEquivalentOperationPolicy(t *testing.T) {
+	base := config.Defaults()
+	base.MCPToolPolicy = config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules:   nil,
+	}
+	s := &Server{}
+	s.refreshRuntimeState(nil, base, nil, nil)
+	if got := s.currentToolPolicyCfg().CheckToolCall("move_file", []string{"/tmp/staged", "/home/user/.bashrc"}); got.Matched {
+		t.Fatalf("base policy unexpectedly matched move: %+v", got)
+	}
+
+	reloaded := base.Clone()
+	reloaded.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
+	s.refreshRuntimeState(base, reloaded, nil, nil)
+	got := s.currentToolPolicyCfg().CheckToolCall("move_file", []string{"/tmp/staged", "/home/user/.bashrc"})
+	if !got.Matched || got.Action != config.ActionBlock {
+		t.Fatalf("reloaded policy verdict = %+v, want block", got)
 	}
 }
 

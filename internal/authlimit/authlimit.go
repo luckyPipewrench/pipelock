@@ -167,6 +167,28 @@ func (l *Limiter) Blocked(key string) (bool, time.Duration) {
 	return true, retry
 }
 
+// Release returns the newest reservation for key without touching earlier
+// ones. Callers use it when an admitted evaluation turned out not to be a
+// guess at all, for example a request that a separate verifier authenticated
+// while carrying a bearer value meant for something else: the slot goes back,
+// but real earlier failures from the same address still count. A nil limiter
+// or an unknown key is a no-op.
+func (l *Limiter) Release(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e := l.entries[key]
+	if e == nil || len(e.failures) == 0 {
+		return
+	}
+	e.failures = e.failures[:len(e.failures)-1]
+	if len(e.failures) == 0 {
+		delete(l.entries, key)
+	}
+}
+
 // Reset forgets key's reservations. Callers invoke it after a credential
 // verifies, so an operator who mistyped a token once is not carried toward
 // the limit by their own earlier mistake.

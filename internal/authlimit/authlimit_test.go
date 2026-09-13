@@ -236,3 +236,21 @@ func TestLimiter_ParallelBurstCannotExceedBudget(t *testing.T) {
 		t.Fatalf("admitted = %d of %d parallel attempts, want exactly 10", admitted, burst)
 	}
 }
+
+func TestLimiter_ReleaseReturnsOnlyTheNewestSlot(t *testing.T) {
+	l, _ := newTestLimiter(t, 3)
+	const key = "203.0.113.50"
+	l.Admit(key) // a real failure
+	l.Admit(key) // a real failure
+	l.Admit(key) // an evaluation that turned out not to be a guess
+	l.Release(key)
+	if allowed, _ := l.Admit(key); !allowed {
+		t.Fatal("Release did not return the slot")
+	}
+	if allowed, _ := l.Admit(key); allowed {
+		t.Fatal("Release returned more than one slot: earlier failures must still count")
+	}
+	l.Release("unknown-key")
+	var nilLimiter *Limiter
+	nilLimiter.Release(key)
+}

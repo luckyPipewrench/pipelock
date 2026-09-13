@@ -563,8 +563,10 @@ requests per 60-second window. Exceeding it returns `429` with a
 tokens within 60 seconds is refused with `429` and a `Retry-After` header
 before any further token from that address is compared, so the API cannot be
 used as an online guessing oracle. Requests with no token are not counted. A
-correct token clears the address's count. The same bound applies to the Scan
-API, the session admin API, and the MCP HTTP listener's bearer credential.
+correct token clears the address's count while the address is still under the
+limit; once the limit is reached, even the correct token is refused with `429`
+until the 60-second window passes. The same bound applies to the Scan API, the
+session admin API, and the MCP HTTP listener's bearer credential.
 
 **Port isolation:** When `kill_switch.api_listen` is set, the API runs on a
 dedicated port that isn't exposed to the agent. This matters. Without it, a

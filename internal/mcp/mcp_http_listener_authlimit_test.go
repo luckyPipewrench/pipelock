@@ -183,3 +183,75 @@ func TestHTTPListener_ResolverPrincipalSurvivesSpentBearerBudget(t *testing.T) {
 		t.Fatalf("unverified guess after principal request: status = %d, want 429 (budget must not be released by a principal)", got)
 	}
 }
+
+// TestHTTPListener_ResolverTrafficDoesNotSpendBearerBudget pins that a client
+// the resolver authenticates while carrying a bearer meant for something else
+// does not consume the address's bearer budget: after many such requests a
+// bearer-only client on the same address is still evaluated, and a real wrong
+// bearer is still counted.
+func TestHTTPListener_ResolverTrafficDoesNotSpendBearerBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	var verified atomic.Bool
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:             testScannerForHTTP(t),
+		ListenerBearerToken: "listener-secret",
+		ListenerPrincipalResolver: func(*http.Request) (ListenerPrincipal, error) {
+			if verified.Load() {
+				return ListenerPrincipal{Provider: "test", Subject: "alice"}, nil
+			}
+			return ListenerPrincipal{}, nil
+		},
+	})
+	request := func(proxyAuth string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerProtocolVersion, "2025-06-18")
+		req.Header.Set(listenerProxyAuthorization, proxyAuth)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	verified.Store(true)
+	for i := range authlimit.DefaultMaxFailures + 5 {
+		if got := request("Bearer oauth-token-for-the-resolver"); got != http.StatusOK {
+			t.Fatalf("resolver request %d: status = %d, want 200", i, got)
+		}
+	}
+	verified.Store(false)
+	// The bearer budget is untouched: a wrong guess is still evaluated (407,
+	// not 429) and the correct token still works.
+	if got := request("Bearer guess"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("first real guess after resolver traffic: status = %d, want 407", got)
+	}
+	if got := request("Bearer listener-secret"); got != http.StatusOK {
+		t.Fatalf("correct token after resolver traffic: status = %d, want 200", got)
+	}
+	// Real guesses still count: interleave resolver traffic and confirm the
+	// budget is spent by the guesses alone.
+	for range authlimit.DefaultMaxFailures {
+		if got := request("Bearer guess"); got != http.StatusProxyAuthRequired {
+			t.Fatalf("guess: status = %d, want 407", got)
+		}
+		verified.Store(true)
+		if got := request("Bearer oauth-token-for-the-resolver"); got != http.StatusOK {
+			t.Fatalf("interleaved resolver request: status = %d, want 200", got)
+		}
+		verified.Store(false)
+	}
+	if got := request("Bearer guess"); got != http.StatusTooManyRequests {
+		t.Fatalf("over-budget guess after interleaving: status = %d, want 429", got)
+	}
+}

@@ -380,8 +380,14 @@ func RunHTTPListenerProxy(
 			return
 		}
 		credentialPresented := len(r.Header.Values(listenerProxyAuthorization)) > 0 || len(r.Header.Values(listenerAuthorization)) > 0
+		// reservedSlot records whether THIS request holds a budget slot, so a
+		// later release returns only what this request took and never a slot
+		// that a real guess from the same address is holding.
+		reservedSlot := false
 		if configuredListenerToken != "" && credentialPresented {
-			if allowed, retry := listenerAuthFailures.Admit(authClientKey); !allowed {
+			allowed, retry := listenerAuthFailures.Admit(authClientKey)
+			reservedSlot = allowed
+			if !allowed {
 				principal, principalErr := listenerPrincipalForRequest(r, opts, listenerClients)
 				if principalErr != nil || principal.key == "" {
 					authlimit.Refuse(w, retry)
@@ -410,6 +416,12 @@ func RunHTTPListenerProxy(
 		}
 		if listenerToken != "" && authorized {
 			listenerAuthFailures.Reset(authClientKey)
+		} else if reservedSlot && listenerPrincipal.key != "" {
+			// A resolver verified this request (mTLS, OAuth) and the bearer value
+			// it carried was for something else, so the evaluation it reserved
+			// was not a guess. Return that one slot; earlier real failures from
+			// the address still count.
+			listenerAuthFailures.Release(authClientKey)
 		}
 		// The listener credential is an access-control secret, not agent data
 		// destined for the upstream. Remove it before header DLP and forwarding:

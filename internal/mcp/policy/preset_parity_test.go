@@ -45,6 +45,13 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					"path": "/home/user/.ssh/id_rsa",
 				}, "Credential File Access", credentialAction)
 			}
+			for _, toolName := range strings.Split(fileLinkToolPattern, "|") {
+				for _, direction := range []string{"target", "linkPath"} {
+					args := map[string]any{"target": "/tmp/target", "linkPath": "/tmp/link"}
+					args[direction] = "/home/user/.ssh/id_rsa"
+					assertPolicyCall(t, pc, toolName, args, "Credential File Access", credentialAction)
+				}
+			}
 
 			checks := []struct {
 				path         string
@@ -58,6 +65,30 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 			}
 			for _, check := range checks {
 				wantAction := effectiveRuleAction(t, cfg.MCPToolPolicy, check.baselineRule)
+				protectedPrefix := "Protected Path"
+				if check.baselineRule == "Audit Log Tampering" {
+					protectedPrefix = "Audit Log"
+				}
+				for _, class := range []struct {
+					pattern string
+					suffix  string
+				}{
+					{pattern: fileDeleteToolPattern, suffix: "Delete"},
+					{pattern: fileMetadataToolPattern, suffix: "Metadata Change"},
+				} {
+					for _, toolName := range strings.Split(class.pattern, "|") {
+						assertPolicyCall(t, pc, toolName, map[string]any{
+							"path": check.path,
+						}, protectedPrefix+" "+class.suffix, wantAction)
+					}
+				}
+				for _, toolName := range strings.Split(fileLinkToolPattern, "|") {
+					for _, direction := range []string{"target", "linkPath"} {
+						args := map[string]any{"target": "/tmp/target", "linkPath": "/tmp/link"}
+						args[direction] = check.path
+						assertPolicyCall(t, pc, toolName, args, protectedPrefix+" Link Creation", wantAction)
+					}
+				}
 				for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
 					if check.baselineRule == "Audit Log Tampering" {
 						continue

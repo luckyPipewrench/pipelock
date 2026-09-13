@@ -996,10 +996,13 @@ func expandBraces(s string) string {
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules
 // covering common dangerous operations that agents might attempt.
 const (
-	fileReadToolPattern  = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
-	fileWriteToolPattern = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|apply_patch`
-	fileMoveToolPattern  = `move_file|file_move|rename_file|move-file`
-	fileCopyToolPattern  = `copy_file|file_copy`
+	fileReadToolPattern     = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
+	fileWriteToolPattern    = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|apply_patch`
+	fileMoveToolPattern     = `move_file|file_move|rename_file|move-file`
+	fileCopyToolPattern     = `copy_file|file_copy`
+	fileDeleteToolPattern   = `delete_file|file_delete`
+	fileMetadataToolPattern = `chmod_file|chown_file`
+	fileLinkToolPattern     = `create_symlink|create_hardlink`
 
 	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
 	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
@@ -1021,7 +1024,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		},
 		{
 			Name:        "Credential File Access",
-			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `)$`,
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `|` + fileLinkToolPattern + `)$`,
 			ArgPattern:  `(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)`,
 			Action:      config.ActionBlock,
 		},
@@ -1039,6 +1042,27 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Reverse Shell",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
 			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Protected Path Delete",
+			ToolPattern: `(?i)^(` + fileDeleteToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Protected Path Metadata Change",
+			ToolPattern: `(?i)^(` + fileMetadataToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			// Both link arguments are security-sensitive. A protected link path is
+			// replaced directly; a protected target gains an alias that can be used
+			// for later reads or writes outside the visible protected namespace.
+			Name:        "Protected Path Link Creation",
+			ToolPattern: `(?i)^(` + fileLinkToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1141,6 +1165,21 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			ToolPattern: `(?i)^(` + fileCopyToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
 			ArgKey:      `(?i)^destination$`,
+		},
+		{
+			Name:        "Audit Log Delete",
+			ToolPattern: `(?i)^(` + fileDeleteToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+		},
+		{
+			Name:        "Audit Log Metadata Change",
+			ToolPattern: `(?i)^(` + fileMetadataToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
+		},
+		{
+			Name:        "Audit Log Link Creation",
+			ToolPattern: `(?i)^(` + fileLinkToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + auditLogPathPattern + `)`,
 		},
 		{
 			Name:        "Audit Log Tampering",

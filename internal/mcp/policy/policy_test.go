@@ -1618,6 +1618,83 @@ func TestDefaultToolPolicyRules_EquivalentWritesUnderVarLogRemainAllowed(t *test
 	}
 }
 
+func TestDefaultToolPolicyRules_ProtectedPathStateChanges(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		path     string
+		wantRule string
+	}{
+		{name: "persistence", path: "/etc/systemd/system/p.service", wantRule: "Protected Path %s"},
+		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Protected Path %s"},
+		{name: "audit log", path: "/var/log/audit.log", wantRule: "Audit Log %s"},
+	}
+	classes := []struct {
+		name    string
+		pattern string
+		suffix  string
+	}{
+		{name: "delete", pattern: fileDeleteToolPattern, suffix: "Delete"},
+		{name: "metadata", pattern: fileMetadataToolPattern, suffix: "Metadata Change"},
+	}
+	for _, class := range classes {
+		for _, toolName := range strings.Split(class.pattern, "|") {
+			for _, tc := range tests {
+				t.Run(class.name+"/"+toolName+"/"+tc.name, func(t *testing.T) {
+					assertDefaultPolicyRule(t, pc, toolName, map[string]any{
+						"path": tc.path,
+					}, fmt.Sprintf(tc.wantRule, class.suffix))
+				})
+			}
+		}
+	}
+}
+
+func TestDefaultToolPolicyRules_ProtectedPathLinkDirections(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		path     string
+		wantRule string
+	}{
+		{name: "persistence", path: "/etc/systemd/system/p.service", wantRule: "Protected Path Link Creation"},
+		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Protected Path Link Creation"},
+		{name: "audit log", path: "/var/log/audit.log", wantRule: "Audit Log Link Creation"},
+		{name: "credential", path: "/home/user/.ssh/id_rsa", wantRule: "Credential File Access"},
+	}
+	for _, toolName := range strings.Split(fileLinkToolPattern, "|") {
+		for _, tc := range tests {
+			for _, direction := range []string{"target", "linkPath"} {
+				t.Run(toolName+"/"+direction+"/"+tc.name, func(t *testing.T) {
+					args := map[string]any{"target": "/tmp/target", "linkPath": "/tmp/link"}
+					args[direction] = tc.path
+					assertDefaultPolicyRule(t, pc, toolName, args, tc.wantRule)
+				})
+			}
+		}
+	}
+}
+
+func TestDefaultToolPolicyRules_SafeStateChangesRemainAllowed(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, pattern := range []string{fileDeleteToolPattern, fileMetadataToolPattern, fileLinkToolPattern} {
+		for _, toolName := range strings.Split(pattern, "|") {
+			t.Run(toolName, func(t *testing.T) {
+				args := map[string]any{"path": "/tmp/application.txt", "target": "/tmp/target", "linkPath": "/tmp/link"}
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+				v := pc.CheckToolCallWithArgs(toolName, extracted.Strings, raw)
+				if v.Matched {
+					t.Fatalf("safe state change matched rules %v", v.Rules)
+				}
+			})
+		}
+	}
+}
+
 func TestDefaultToolPolicyRules_MatchWindowsShellProfilePath(t *testing.T) {
 	pc := defaultConfig(t)
 	assertDefaultPolicyRule(t, pc, "write_file", map[string]any{

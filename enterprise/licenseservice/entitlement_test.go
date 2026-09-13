@@ -827,3 +827,52 @@ func TestUpsert_ActiveTrialDeniedWhenSlotIsHeld(t *testing.T) {
 		t.Fatalf("denied trial was persisted: %+v", got)
 	}
 }
+
+// TestDuplicateActiveTrialEmails_ReportsPreservedLegacyTrials pins that the
+// migration's preservation of pre-existing duplicates is visible. The slot
+// table holds one owner per canonical email, so a second legacy trial keeps
+// running; an operator has to be told, because reconciling a live paid trial
+// is their decision and not a silent migration side effect.
+func TestDuplicateActiveTrialEmails_ReportsPreservedLegacyTrials(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	seed := []*Entitlement{
+		trialEntitlement("order_dup_a", "Dup@Example.com", periodEnd),
+		trialEntitlement("order_dup_b", "dup@example.com", periodEnd.Add(time.Hour)),
+		trialEntitlement("order_solo", "solo@example.com", periodEnd),
+	}
+	for _, row := range seed {
+		if err := upsertEntitlement(ctx, db.db, row); err != nil {
+			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
+		}
+	}
+
+	duplicates, err := db.DuplicateActiveTrialEmails(ctx)
+	if err != nil {
+		t.Fatalf("duplicate report: %v", err)
+	}
+	if len(duplicates) != 1 {
+		t.Fatalf("duplicate emails = %v, want exactly the one shared address", duplicates)
+	}
+	subs, ok := duplicates["dup@example.com"]
+	if !ok {
+		t.Fatalf("duplicate report = %v, want the canonical shared address", duplicates)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("duplicate subscriptions = %v, want both orders", subs)
+	}
+	// The longest-running trial is named first, which is the one the backfill
+	// gives the slot to.
+	if subs[0] != "order_dup_b" {
+		t.Fatalf("first reported subscription = %q, want the longest-running trial", subs[0])
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if _, err := db.DuplicateActiveTrialEmails(ctx); err == nil {
+		t.Fatal("duplicate report on a closed database returned success")
+	}
+}

@@ -305,6 +305,54 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	return e.backfillActiveTrialSlots(ctx)
 }
 
+// DuplicateActiveTrialEmails reports canonical emails that already hold more
+// than one active trial entitlement, newest expiry first per email.
+//
+// The slot table can represent only ONE owner per canonical email, so the
+// migration seeds the longest-running trial and leaves any others running.
+// Enforcement therefore begins at the migration: pre-existing duplicates are
+// preserved, not revoked, because terminating a customer's live paid trial is
+// a business decision and not something a schema migration should do quietly.
+// This method exists so that preservation is REPORTED rather than silent, and
+// an operator can reconcile deliberately.
+func (e *EntitlementDB) DuplicateActiveTrialEmails(ctx context.Context) (map[string][]string, error) {
+	const query = `
+	SELECT customer_email, subscription_id
+	FROM entitlements
+	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
+	ORDER BY current_period_end DESC, subscription_id ASC
+	`
+	rows, err := e.db.QueryContext(ctx, query,
+		tierTrial, tierEnterpriseTrial, statusActive, statusRevoked, time.Now().UTC(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read trial entitlements for duplicate report: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	byEmail := make(map[string][]string)
+	for rows.Next() {
+		var rawEmail, subscriptionID string
+		if err := rows.Scan(&rawEmail, &subscriptionID); err != nil {
+			return nil, fmt.Errorf("scan trial entitlement for duplicate report: %w", err)
+		}
+		canonical, nerr := NormalizeEmail(rawEmail)
+		if nerr != nil {
+			continue
+		}
+		byEmail[canonical] = append(byEmail[canonical], subscriptionID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trial entitlements for duplicate report: %w", err)
+	}
+	for email, subs := range byEmail {
+		if len(subs) < 2 {
+			delete(byEmail, email)
+		}
+	}
+	return byEmail, nil
+}
+
 // backfillActiveTrialSlots seeds one slot per canonical email from existing
 // trial entitlements.
 //

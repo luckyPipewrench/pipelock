@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	// Pure-Go SQLite driver (no CGO requirement).
 	_ "modernc.org/sqlite"
 )
@@ -351,6 +353,26 @@ func (e *EntitlementDB) DuplicateActiveTrialEmails(ctx context.Context) (map[str
 		}
 	}
 	return byEmail, nil
+}
+
+// ReportDuplicateActiveTrials logs every customer email that already holds more
+// than one active trial. It is called once at startup, after the migration, so
+// the trials the slot table could not bring under the limit are named instead
+// of preserved quietly. A read failure is reported and never fatal: the report
+// is an operator signal, and refusing to start the service over it would trade
+// a billing outage for a warning.
+func (e *EntitlementDB) ReportDuplicateActiveTrials(ctx context.Context, log zerolog.Logger) {
+	duplicates, err := e.DuplicateActiveTrialEmails(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("could not check for pre-existing duplicate active trials")
+		return
+	}
+	for email, subscriptions := range duplicates {
+		log.Warn().
+			Str("customer_email", email).
+			Strs("subscription_ids", subscriptions).
+			Msg("multiple active trials exist for one customer email; only the longest-running one holds the trial slot, the others keep running until they expire")
+	}
 }
 
 // backfillActiveTrialSlots seeds one slot per canonical email from existing

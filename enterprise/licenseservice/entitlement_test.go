@@ -6,6 +6,7 @@
 package licenseservice
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // openTestDB creates an in-memory SQLite database for testing.
@@ -874,5 +877,47 @@ func TestDuplicateActiveTrialEmails_ReportsPreservedLegacyTrials(t *testing.T) {
 	}
 	if _, err := db.DuplicateActiveTrialEmails(ctx); err == nil {
 		t.Fatal("duplicate report on a closed database returned success")
+	}
+}
+
+// TestReportDuplicateActiveTrials_NamesEachAffectedCustomer pins the operator
+// signal: every customer the migration could not bring under the limit is named
+// with its order IDs, a customer with a single trial is not, and a read failure
+// warns instead of taking the service down over a report.
+func TestReportDuplicateActiveTrials_NamesEachAffectedCustomer(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	seed := []*Entitlement{
+		trialEntitlement("order_rep_a", "Rep@Example.com", periodEnd),
+		trialEntitlement("order_rep_b", "rep@example.com", periodEnd.Add(time.Hour)),
+		trialEntitlement("order_rep_solo", "solo@example.com", periodEnd),
+	}
+	for _, row := range seed {
+		if err := upsertEntitlement(ctx, db.db, row); err != nil {
+			t.Fatalf("seed %s: %v", row.SubscriptionID, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	db.ReportDuplicateActiveTrials(ctx, zerolog.New(&buf))
+	out := buf.String()
+	for _, want := range []string{"rep@example.com", "order_rep_a", "order_rep_b"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "solo@example.com") {
+		t.Fatalf("single-trial customer was reported as a duplicate: %s", out)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	buf.Reset()
+	db.ReportDuplicateActiveTrials(ctx, zerolog.New(&buf))
+	if !strings.Contains(buf.String(), "could not check") {
+		t.Fatalf("read failure was not reported: %s", buf.String())
 	}
 }

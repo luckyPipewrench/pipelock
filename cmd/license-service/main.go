@@ -118,21 +118,9 @@ func run(log zerolog.Logger) error {
 	defer func() { _ = db.Close() }()
 	log.Info().Str("db_path", cfg.DBPath).Msg("entitlement database ready")
 
-	// One active trial per customer email is enforced from here on, but the
-	// slot table can hold only one owner per email, so any duplicates already
-	// in the data keep running. Report them: preserving a live paid trial is
-	// the safe migration behavior, and reconciling it is an operator decision
-	// that should not be made silently.
-	if duplicates, derr := db.DuplicateActiveTrialEmails(context.Background()); derr != nil {
-		log.Warn().Err(derr).Msg("could not check for pre-existing duplicate active trials")
-	} else {
-		for email, subscriptions := range duplicates {
-			log.Warn().
-				Str("customer_email", email).
-				Strs("subscription_ids", subscriptions).
-				Msg("multiple active trials exist for one customer email; only the longest-running one holds the trial slot, the others keep running until they expire")
-		}
-	}
+	// Name any customers the migration could not bring under the one-trial
+	// limit, so preserving their live trials is visible rather than quiet.
+	db.ReportDuplicateActiveTrials(context.Background(), log)
 
 	// Open the append-only audit ledger.
 	ledger, err := licenseservice.OpenAuditLedger(cfg.LedgerPath)

@@ -99,8 +99,9 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					}, check.baselineRule, wantAction)
 				}
 				if check.baselineRule != "Audit Log Tampering" {
-					patch := "--- a/file\n+++ b" + check.path + "\n@@ -1 +1 @@\n-old\n+new\n"
-					assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
+					for _, patch := range protectedPatchTargetFormats(check.path) {
+						assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
+					}
 				}
 				for _, direction := range []string{"source", "destination"} {
 					args := map[string]any{"source": "/tmp/staged", "destination": "/tmp/backup"}
@@ -123,10 +124,27 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 				{toolName: "delete_file", args: map[string]any{"path": "/home/v/data/train.jsonl"}},
 				{toolName: "move_file", args: map[string]any{"source": "app.log", "destination": "app.log.1"}},
 				{toolName: filePatchToolPattern, args: map[string]any{"patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-source ~/.bashrc\n+describe source ~/.bashrc\n"}},
+				{toolName: filePatchToolPattern, args: map[string]any{"patch": "diff --git a/.bashrc b/backup.txt\nsimilarity index 100%\ncopy from .bashrc\ncopy to backup.txt\n"}},
 			} {
 				assertPolicyAllowed(t, pc, safe.toolName, safe.args)
 			}
 		})
+	}
+}
+
+func protectedPatchTargetFormats(target string) []string {
+	return []string{
+		"diff --git a/file b" + target + "\n--- a/file\n+++ b" + target + "\n@@ -1 +1 @@\n-old\n+new\n",
+		"diff --git a/file b" + target + "\nsimilarity index 100%\nrename from file\nrename to " + strings.TrimPrefix(target, "/") + "\n",
+		"diff --git a/file b" + target + "\nsimilarity index 100%\ncopy from file\ncopy to " + strings.TrimPrefix(target, "/") + "\n",
+		"diff --git a" + target + " b" + target + "\nold mode 100644\nnew mode 100755\n",
+		"diff --git a" + target + " b" + target + "\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b" + target + "\n@@ -0,0 +1 @@\n+new\n",
+		"diff --git a" + target + " b" + target + "\ndeleted file mode 100644\nindex 1111111..0000000\n--- a" + target + "\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+		"diff --git a" + target + " b" + target + "\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nAcmZQz\n",
+		"diff --git a" + target + " b" + target + "\nindex 1111111..2222222 100644\nBinary files a" + target + " and b" + target + " differ\n",
+		"diff --git a" + target + " b" + target + "\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-old\n+new\n",
+		"*** Begin Patch\n*** Update File: file\n*** Move to: " + target + "\n@@\n-old\n+new\n*** End Patch",
+		"diff --git malformed",
 	}
 }
 

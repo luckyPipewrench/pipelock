@@ -1571,6 +1571,100 @@ func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
 			patch:    "--- a/.bashrc\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
 			wantRule: "Shell Profile Modification",
 		},
+		{
+			name:     "git rename destination",
+			patch:    "diff --git a/staged.txt b/.bashrc\nsimilarity index 100%\nrename from staged.txt\nrename to .bashrc\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git rename source",
+			patch:    "diff --git a/.bashrc b/backup.txt\nsimilarity index 100%\nrename from .bashrc\nrename to backup.txt\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git mode change",
+			patch:    "diff --git a/.bashrc b/.bashrc\nold mode 100644\nnew mode 100755\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git rename persistence destination",
+			patch:    "diff --git a/x b/etc/systemd/system/p.service\nsimilarity index 100%\nrename from x\nrename to etc/systemd/system/p.service\n",
+			wantRule: "Persistence Path Write",
+		},
+		{
+			name:     "git header and hunk without unified file headers",
+			patch:    "diff --git a/.bashrc b/.bashrc\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-old\n+new\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git copy destination",
+			patch:    "diff --git a/staged.txt b/.bashrc\nsimilarity index 100%\ncopy from staged.txt\ncopy to .bashrc\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:  "git copy protected source to safe destination",
+			patch: "diff --git a/.bashrc b/backup.txt\nsimilarity index 100%\ncopy from .bashrc\ncopy to backup.txt\n",
+		},
+		{
+			name:     "git new file",
+			patch:    "diff --git a/.bashrc b/.bashrc\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/.bashrc\n@@ -0,0 +1 @@\n+new\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git deleted file",
+			patch:    "diff --git a/.bashrc b/.bashrc\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/.bashrc\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git binary patch",
+			patch:    "diff --git a/.bashrc b/.bashrc\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nAcmZQz\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "git binary files differ",
+			patch:    "diff --git a/.bashrc b/.bashrc\nindex 1111111..2222222 100644\nBinary files a/.bashrc and b/.bashrc differ\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "apply patch move destination",
+			patch:    "*** Begin Patch\n*** Update File: staged.txt\n*** Move to: .bashrc\n@@\n-old\n+new\n*** End Patch",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "apply patch move source",
+			patch:    "*** Begin Patch\n*** Update File: .bashrc\n*** Move to: backup.txt\n@@\n-old\n+new\n*** End Patch",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "apply patch add header",
+			patch:    "*** Begin Patch\n*** Add File: .bashrc\n+new\n*** End Patch",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "apply patch delete header",
+			patch:    "*** Begin Patch\n*** Delete File: .bashrc\n*** End Patch",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "quoted git paths",
+			patch:    "diff --git \"a/.bashrc\" \"b/.bashrc\"\nold mode 100644\nnew mode 100755\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "unquoted git paths with spaces",
+			patch:    "diff --git a/.bashrc backup b/.bashrc backup\nold mode 100644\nnew mode 100755\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "malformed git header fails configured closed",
+			patch:    "diff --git a/.bashrc\nold mode 100644\nnew mode 100755\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "truncated apply patch fails configured closed",
+			patch:    "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n",
+			wantRule: "Shell Profile Modification",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1589,6 +1683,124 @@ func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
 			}
 			if !v.Matched || !slices.Contains(v.Rules, tc.wantRule) {
 				t.Fatalf("verdict = %+v, want rule %q", v, tc.wantRule)
+			}
+		})
+	}
+}
+
+func TestExtractPatchTargetPathsInspection(t *testing.T) {
+	tests := []struct {
+		name        string
+		patch       string
+		wantTargets []string
+		inspectable bool
+	}{
+		{name: "no patch headers", patch: "plain text"},
+		{name: "unpaired unified header", patch: "--- a/file"},
+		{name: "empty unified target", patch: "--- \n+++ b/file"},
+		{name: "invalid quoted unified target", patch: "--- \"a/file\n+++ b/file"},
+		{
+			name:        "unified timestamps and CRLF",
+			patch:       "--- a/file\told-time\r\n+++ b/file\tnew-time\r\n",
+			wantTargets: []string{"a/file", "b/file"},
+			inspectable: true,
+		},
+		{name: "rename header outside git section", patch: "rename from old\nrename to new\n"},
+		{name: "copy header outside git section", patch: "copy from old\ncopy to new\n"},
+		{name: "incomplete git rename", patch: "diff --git a/old b/new\nrename from old\n", wantTargets: []string{"a/old", "b/new", "old"}},
+		{name: "incomplete git copy", patch: "diff --git a/old b/new\ncopy to new\n", wantTargets: []string{"b/new", "new"}},
+		{name: "conflicting git operations", patch: "diff --git a/old b/new\nrename from old\nrename to new\ncopy from old\ncopy to new\n", wantTargets: []string{"b/new", "new"}},
+		{name: "empty apply update path", patch: "*** Update File: "},
+		{name: "empty apply add path", patch: "*** Add File: "},
+		{name: "empty apply delete path", patch: "*** Delete File: "},
+		{name: "empty apply move path", patch: "*** Move to: "},
+		{
+			name:        "quoted apply path",
+			patch:       "*** Begin Patch\n*** Update File: \"dir/file\"\n@@\n-old\n+new\n*** End Patch",
+			wantTargets: []string{"dir/file"},
+			inspectable: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTargets, gotInspectable := extractPatchTargetPaths([]string{tc.patch})
+			if !slices.Equal(gotTargets, tc.wantTargets) || gotInspectable != tc.inspectable {
+				t.Fatalf("extractPatchTargetPaths() = (%v, %v), want (%v, %v)", gotTargets, gotInspectable, tc.wantTargets, tc.inspectable)
+			}
+		})
+	}
+}
+
+func TestParseGitDiffPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		input        string
+		wantOld      string
+		wantNew      string
+		wantAccepted bool
+	}{
+		{name: "same unquoted path", input: "a/file b/file", wantOld: "a/file", wantNew: "b/file", wantAccepted: true},
+		{name: "renamed unquoted path", input: "a/old b/new", wantOld: "a/old", wantNew: "b/new", wantAccepted: true},
+		{name: "same unquoted path containing delimiter", input: "a/dir b/file b/dir b/file", wantOld: "a/dir b/file", wantNew: "b/dir b/file", wantAccepted: true},
+		{name: "missing destination", input: "a/file"},
+		{name: "quoted paths", input: `"a/old name" "b/new name"`, wantOld: "a/old name", wantNew: "b/new name", wantAccepted: true},
+		{name: "invalid quoted source", input: `"a/old b/new`},
+		{name: "missing quoted destination", input: `"a/old"`},
+		{name: "invalid quoted destination", input: `"a/old" "b/new`},
+		{name: "trailing data", input: `"a/old" "b/new" extra`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldPath, newPath, accepted := parseGitDiffPaths(tc.input)
+			if oldPath != tc.wantOld || newPath != tc.wantNew || accepted != tc.wantAccepted {
+				t.Fatalf("parseGitDiffPaths(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.input, oldPath, newPath, accepted, tc.wantOld, tc.wantNew, tc.wantAccepted)
+			}
+		})
+	}
+}
+
+func TestParseGitPathToken(t *testing.T) {
+	for _, tc := range []struct {
+		input        string
+		wantPath     string
+		wantRest     string
+		wantAccepted bool
+	}{
+		{},
+		{input: "plain", wantPath: "plain", wantAccepted: true},
+		{input: "plain rest", wantPath: "plain", wantRest: " rest", wantAccepted: true},
+		{input: `"quoted\tpath" rest`, wantPath: "quoted\tpath", wantRest: " rest", wantAccepted: true},
+		{input: `"bad\q"`},
+		{input: `"unfinished`},
+		{input: `"unfinished\\`},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			path, rest, accepted := parseGitPathToken(tc.input)
+			if path != tc.wantPath || rest != tc.wantRest || accepted != tc.wantAccepted {
+				t.Fatalf("parseGitPathToken(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.input, path, rest, accepted, tc.wantPath, tc.wantRest, tc.wantAccepted)
+			}
+		})
+	}
+}
+
+func TestParsePatchPath(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		input        string
+		stripTime    bool
+		want         string
+		wantAccepted bool
+	}{
+		{name: "unquoted", input: " path ", want: "path", wantAccepted: true},
+		{name: "timestamp", input: "path\tdate", stripTime: true, want: "path", wantAccepted: true},
+		{name: "empty", input: " "},
+		{name: "quoted", input: `"dir/file"`, want: "dir/file", wantAccepted: true},
+		{name: "quoted empty", input: `""`},
+		{name: "invalid quote", input: `"dir/file`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, accepted := parsePatchPath(tc.input, tc.stripTime)
+			if path != tc.want || accepted != tc.wantAccepted {
+				t.Fatalf("parsePatchPath(%q) = (%q, %v), want (%q, %v)", tc.input, path, accepted, tc.want, tc.wantAccepted)
 			}
 		})
 	}

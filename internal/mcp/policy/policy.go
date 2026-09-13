@@ -291,6 +291,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
+		argSourceUninspectable := false
 		if rule.ArgKey != nil && len(rawArgs) == 0 {
 			if rule.hasStructuralValidators() {
 				return uninspectableStructuralArgsVerdict(rule.Name)
@@ -308,13 +309,14 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
-			patchTargets := extractPatchTargetPaths(argStrings)
+			patchTargets, inspectable := extractPatchTargetPaths(argStrings)
+			argSourceUninspectable = !inspectable
 			ruleTokens, ruleJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(patchTargets, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, nil)
 		}
 
-		argPatternMatched := rule.ArgPattern == nil ||
+		argPatternMatched := argSourceUninspectable || rule.ArgPattern == nil ||
 			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
@@ -429,42 +431,282 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 	return false
 }
 
-// extractPatchTargetPaths returns only file paths named by unified-diff or
-// apply-patch target headers. Patch body and context lines are intentionally
-// ignored so documentation that merely discusses a protected path cannot
-// trigger a file-target policy rule.
-func extractPatchTargetPaths(argStrings []string) []string {
+const (
+	gitDiffHeader          = "diff --git "
+	gitRenameFromHeader    = "rename from "
+	gitRenameToHeader      = "rename to "
+	gitCopyFromHeader      = "copy from "
+	gitCopyToHeader        = "copy to "
+	unifiedOldFileHeader   = "--- "
+	unifiedNewFileHeader   = "+++ "
+	applyPatchBeginHeader  = "*** Begin Patch"
+	applyPatchEndHeader    = "*** End Patch"
+	applyPatchUpdateHeader = "*** Update File: "
+	applyPatchAddHeader    = "*** Add File: "
+	applyPatchDeleteHeader = "*** Delete File: "
+	applyPatchMoveHeader   = "*** Move to: "
+)
+
+type gitPatchTargets struct {
+	oldPath    string
+	newPath    string
+	oldHeader  string
+	newHeader  string
+	renameFrom string
+	renameTo   string
+	copyFrom   string
+	copyTo     string
+}
+
+// extractPatchTargetPaths returns the semantic file targets named by Git,
+// unified-diff, or Codex apply_patch headers. Move-class operations expose both
+// sides because they can remove or replace either protected path. Copy-class
+// operations expose only the destination so a protected source may be backed
+// up to an ordinary path. The bool is false when patch-shaped input cannot be
+// inspected; callers then match the configured patch rules rather than skip
+// them, preserving each rule's effective action while failing configured-closed.
+func extractPatchTargetPaths(argStrings []string) ([]string, bool) {
 	var targets []string
+	var gitSection *gitPatchTargets
+	var pendingUnifiedOld string
+	var sawTargetHeader, malformed bool
+	var applyPatchBegins, applyPatchEnds int
+
+	flushGitSection := func() {
+		if gitSection == nil {
+			return
+		}
+		copyOperation := gitSection.copyFrom != "" || gitSection.copyTo != ""
+		renameOperation := gitSection.renameFrom != "" || gitSection.renameTo != ""
+		if (gitSection.copyFrom == "") != (gitSection.copyTo == "") ||
+			(gitSection.renameFrom == "") != (gitSection.renameTo == "") ||
+			copyOperation && renameOperation {
+			malformed = true
+		}
+		if copyOperation {
+			for _, target := range []string{gitSection.newPath, gitSection.newHeader, gitSection.copyTo} {
+				targets = appendPatchTarget(targets, target)
+			}
+		} else {
+			for _, target := range []string{
+				gitSection.oldPath,
+				gitSection.newPath,
+				gitSection.oldHeader,
+				gitSection.newHeader,
+				gitSection.renameFrom,
+				gitSection.renameTo,
+			} {
+				targets = appendPatchTarget(targets, target)
+			}
+		}
+		gitSection = nil
+	}
+
 	for _, arg := range argStrings {
-		for _, line := range strings.Split(arg, "\n") {
-			line = strings.TrimSuffix(line, "\r")
-			var target string
-			switch {
-			case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
-				target = line[4:]
-				if before, _, ok := strings.Cut(target, "\t"); ok {
-					target = before
+		for _, rawLine := range strings.Split(arg, "\n") {
+			line := strings.TrimSuffix(rawLine, "\r")
+			if strings.HasPrefix(line, gitDiffHeader) {
+				flushGitSection()
+				sawTargetHeader = true
+				oldPath, newPath, ok := parseGitDiffPaths(strings.TrimPrefix(line, gitDiffHeader))
+				if !ok {
+					malformed = true
+					continue
 				}
-			case strings.HasPrefix(line, "*** Update File: "):
-				target = strings.TrimPrefix(line, "*** Update File: ")
-			case strings.HasPrefix(line, "*** Add File: "):
-				target = strings.TrimPrefix(line, "*** Add File: ")
-			case strings.HasPrefix(line, "*** Delete File: "):
-				target = strings.TrimPrefix(line, "*** Delete File: ")
-			default:
+				gitSection = &gitPatchTargets{oldPath: oldPath, newPath: newPath}
 				continue
 			}
-			target = strings.TrimSpace(target)
-			if target == "" || target == "/dev/null" {
-				continue
+
+			switch {
+			case line == applyPatchBeginHeader:
+				applyPatchBegins++
+			case line == applyPatchEndHeader:
+				applyPatchEnds++
+			case strings.HasPrefix(line, unifiedOldFileHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, unifiedOldFileHeader), true)
+				if !ok {
+					malformed = true
+					continue
+				}
+				pendingUnifiedOld = path
+				if gitSection != nil {
+					gitSection.oldHeader = path
+				}
+			case strings.HasPrefix(line, unifiedNewFileHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, unifiedNewFileHeader), true)
+				if !ok {
+					malformed = true
+					continue
+				}
+				if gitSection != nil {
+					gitSection.newHeader = path
+				} else if pendingUnifiedOld != "" {
+					targets = appendPatchTarget(targets, pendingUnifiedOld)
+					targets = appendPatchTarget(targets, path)
+				}
+				pendingUnifiedOld = ""
+			case strings.HasPrefix(line, gitRenameFromHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, gitRenameFromHeader), false)
+				if !ok || gitSection == nil {
+					malformed = true
+					continue
+				}
+				gitSection.renameFrom = path
+			case strings.HasPrefix(line, gitRenameToHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, gitRenameToHeader), false)
+				if !ok || gitSection == nil {
+					malformed = true
+					continue
+				}
+				gitSection.renameTo = path
+			case strings.HasPrefix(line, gitCopyFromHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, gitCopyFromHeader), false)
+				if !ok || gitSection == nil {
+					malformed = true
+					continue
+				}
+				gitSection.copyFrom = path
+			case strings.HasPrefix(line, gitCopyToHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, gitCopyToHeader), false)
+				if !ok || gitSection == nil {
+					malformed = true
+					continue
+				}
+				gitSection.copyTo = path
+			case strings.HasPrefix(line, applyPatchUpdateHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, applyPatchUpdateHeader), false)
+				if !ok {
+					malformed = true
+					continue
+				}
+				targets = appendPatchTarget(targets, path)
+			case strings.HasPrefix(line, applyPatchAddHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, applyPatchAddHeader), false)
+				if !ok {
+					malformed = true
+					continue
+				}
+				targets = appendPatchTarget(targets, path)
+			case strings.HasPrefix(line, applyPatchDeleteHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, applyPatchDeleteHeader), false)
+				if !ok {
+					malformed = true
+					continue
+				}
+				targets = appendPatchTarget(targets, path)
+			case strings.HasPrefix(line, applyPatchMoveHeader):
+				sawTargetHeader = true
+				path, ok := parsePatchPath(strings.TrimPrefix(line, applyPatchMoveHeader), false)
+				if !ok {
+					malformed = true
+					continue
+				}
+				targets = appendPatchTarget(targets, path)
 			}
-			if unquoted, err := strconv.Unquote(target); err == nil {
-				target = unquoted
-			}
-			targets = append(targets, target)
 		}
 	}
-	return targets
+	flushGitSection()
+
+	if pendingUnifiedOld != "" {
+		malformed = true
+	}
+	if applyPatchBegins != applyPatchEnds {
+		malformed = true
+	}
+	return targets, sawTargetHeader && !malformed
+}
+
+func appendPatchTarget(targets []string, target string) []string {
+	if target == "" || target == "/dev/null" {
+		return targets
+	}
+	return append(targets, target)
+}
+
+func parseGitDiffPaths(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "\"") {
+		var fallbackOld, fallbackNew string
+		for offset := 0; ; {
+			rel := strings.Index(value[offset:], " b/")
+			if rel < 0 {
+				break
+			}
+			delim := offset + rel
+			oldPath, newPath := value[:delim], value[delim+1:]
+			if strings.HasPrefix(oldPath, "a/") && strings.HasPrefix(newPath, "b/") {
+				fallbackOld, fallbackNew = oldPath, newPath
+				if strings.TrimPrefix(oldPath, "a/") == strings.TrimPrefix(newPath, "b/") {
+					return oldPath, newPath, true
+				}
+			}
+			offset = delim + len(" b/")
+		}
+		return fallbackOld, fallbackNew, fallbackOld != ""
+	}
+
+	oldPath, rest, ok := parseGitPathToken(value)
+	if !ok {
+		return "", "", false
+	}
+	newPath, rest, ok := parseGitPathToken(strings.TrimLeft(rest, " \t"))
+	if !ok || strings.TrimSpace(rest) != "" {
+		return "", "", false
+	}
+	return oldPath, newPath, true
+}
+
+func parseGitPathToken(value string) (string, string, bool) {
+	if value == "" {
+		return "", "", false
+	}
+	if value[0] != '"' {
+		end := strings.IndexAny(value, " \t")
+		if end < 0 {
+			return value, "", value != ""
+		}
+		return value[:end], value[end:], end > 0
+	}
+	for i, escaped := 1, false; i < len(value); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case value[i] == '\\':
+			escaped = true
+		case value[i] == '"':
+			path, err := strconv.Unquote(value[:i+1])
+			return path, value[i+1:], err == nil && path != ""
+		}
+	}
+	return "", "", false
+}
+
+func parsePatchPath(value string, stripTimestamp bool) (string, bool) {
+	if stripTimestamp {
+		if before, _, ok := strings.Cut(value, "\t"); ok {
+			value = before
+		}
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	if value[0] == '"' {
+		unquoted, err := strconv.Unquote(value)
+		if err != nil || unquoted == "" {
+			return "", false
+		}
+		return unquoted, true
+	}
+	return value, true
 }
 
 const structuralMaxArgDepth = 64

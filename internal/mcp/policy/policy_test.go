@@ -2044,6 +2044,13 @@ func TestDefaultToolPolicyRules_AuditArtifactLocations(t *testing.T) {
 		{name: "receipt chain direct write", toolName: "write_file", args: map[string]any{"path": "/var/lib/pipelock/evidence/evidence-proxy-1.jsonl", "content": ""}, wantRule: "Audit Log Write"},
 		{name: "receipt chain edit", toolName: "edit_file", args: map[string]any{"path": "/var//lib/pipelock/contain/egress-events.jsonl", "old": "denied", "new": "allowed"}, wantRule: "Audit Log Write"},
 		{name: "ordinary log write stays allowed", toolName: "write_file", args: map[string]any{"path": "/var/log/application.log", "content": "ordinary event"}},
+		{name: "ordinary nested log write stays allowed", toolName: "append_file", args: map[string]any{"path": "/var/log/myapp/worker.log", "content": "ordinary event"}},
+		{name: "auth log direct write", toolName: "write_file", args: map[string]any{"path": "/var/log/auth.log", "content": ""}, wantRule: "Audit Log Write"},
+		{name: "auditd log direct write", toolName: "write_file", args: map[string]any{"path": "/var/log/audit/audit.log", "content": ""}, wantRule: "Audit Log Write"},
+		{name: "auditd log separator run write", toolName: "edit_file", args: map[string]any{"path": "/var//log/audit.log", "old": "denied", "new": ""}, wantRule: "Audit Log Write"},
+		{name: "login records direct write", toolName: "write_file_binary", args: map[string]any{"path": "/var/log/wtmp", "content": ""}, wantRule: "Audit Log Write"},
+		{name: "journal direct write", toolName: "write_file", args: map[string]any{"path": "/var/log/journal/abc/system.journal", "content": ""}, wantRule: "Audit Log Write"},
+		{name: "system log name in another directory stays allowed", toolName: "write_file", args: map[string]any{"path": "/home/v/project/auth.log", "content": "test fixture"}},
 		{name: "similar name outside namespace", toolName: "delete_file", args: map[string]any{"path": "/home/v/varlog/audit.log"}},
 		{name: "hyphenated sibling outside namespace", toolName: "delete_file", args: map[string]any{"path": "/srv/my-var/log/app.log"}},
 	}

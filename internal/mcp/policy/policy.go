@@ -1458,6 +1458,10 @@ const (
 	// Pipelock's own state directory, the narrower namespace the write rule
 	// guards on its own.
 	pipelockStatePathPattern = `(?:^|[\s/])var/lib/pipelock(?:/|$)`
+	// The system's own security and login records under /var/log: the syslog
+	// family, auditd's default log directory and file name, and the login
+	// accounting files. An application's log next to them stays ordinary.
+	systemLogPathPattern = `(?:^|[\s/])var/log/(?:auth\.log|secure|syslog|messages|kern\.log|audit\.log|audit/|wtmp|btmp|lastlog|faillog|journal/)`
 	// Shell-context form of the audit namespaces, for command text where the
 	// path follows a redirect or a command word rather than standing alone.
 	auditLogShellPathPattern = `/(?:var/log|var/lib/pipelock)/`
@@ -1664,10 +1668,11 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// Ordinary writes under /var/log stay allowed: an application appending
 			// to its own log is the normal case there. Nothing an agent runs has
 			// a reason to write into Pipelock's own state directory, where the
-			// receipt chain and the containment egress log live.
+			// receipt chain and the containment egress log live, or into the
+			// system's security and login records.
 			Name:        "Audit Log Write",
 			ToolPattern: `(?i)^(` + fileWriteToolPattern + `)$`,
-			ArgPattern:  `(?i)(` + pipelockStatePathPattern + `)`,
+			ArgPattern:  `(?i)(` + pipelockStatePathPattern + `|` + systemLogPathPattern + `)`,
 		},
 		{
 			// A patch edits its target in place, so a patch naming the receipt

@@ -103,11 +103,11 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 				for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
 					writeArgs := map[string]any{"path": check.path, "content": "replacement"}
 					switch {
-					case strings.HasPrefix(check.path, "/var/lib/pipelock"):
+					case strings.HasPrefix(check.path, "/var/lib/pipelock"), strings.HasPrefix(check.path, "/var/log"):
+						// Pipelock's own state and the system's security records.
 						assertPolicyCall(t, pc, toolName, writeArgs, "Audit Log Write", wantAction)
-					case strings.HasPrefix(check.path, "/var/log"):
 						// An application appending to its own log is ordinary.
-						assertPolicyAllowed(t, pc, toolName, writeArgs)
+						assertPolicyAllowed(t, pc, toolName, map[string]any{"path": "/var/log/application.log", "content": "ordinary event"})
 					default:
 						assertPolicyCall(t, pc, toolName, writeArgs, check.baselineRule, wantAction)
 					}

@@ -54,7 +54,7 @@ pipelock contain run: session contract for claude
   agent user:       pipelock-agent
   proxy egress:     http://127.0.0.1:8888 (loopback proxy only; direct egress denied by nftables)
   posture capsule:  /var/lib/pipelock/contain/posture/proof.json
-  agent /tmp:       private (isolated from the operator)
+  agent temp dirs:  /tmp and /var/tmp private (isolated from the operator)
   registered tools: claude, codex
   workspaces:
     /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
@@ -177,10 +177,12 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify is read-only. It walks 14 fixed probes in order (plus a conditional
-workspace probe, numbered 15, when workspaces are configured) and prints pass /
-fail / skip / unknown per probe. It does not require root. Probe numbers are an
-operator contract; new probes are appended above the existing range rather than
+Verify normally makes no host changes. It walks 15 fixed probes in order (plus a
+conditional workspace probe, numbered 16, when workspaces are configured) and
+prints pass / fail / skip / unknown per probe. Probe 15 temporarily creates and
+removes one canary in each host temporary directory; it requires root to start
+the transient service and otherwise skips. Probe numbers are an operator
+contract; new probes are appended above the existing range rather than
 renumbering the ones already published.
 
 ```bash
@@ -203,7 +205,8 @@ pipelock contain verify
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 | 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |
-| 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. |
+| 15 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
+| 16 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. |
 
 ### Managed metrics invariant
 
@@ -284,7 +287,7 @@ This makes compatible tooling work; it does **not** widen egress. Direct (proxy-
 
 ### Filesystem sharing
 
-`contain run` starts the agent in a transient systemd service with private `/tmp` and `/var/tmp`. `contain verify` creates and removes canaries in both host directories, then proves the transient service cannot see them before `contain run` advertises private temporary storage in its session contract. Do not use `/tmp` to hand secrets to or from the agent: it is intentionally not shared. The supported, audited way to share a directory with the agent is a workspace grant (`contain grant-workspace`), which is recorded, listable, and revocable.
+`contain run` requires systemd 254 or newer and starts the agent in a transient service with private `/tmp` and `/var/tmp`. `contain verify` creates and removes canaries in both host directories, then proves the transient service cannot see them before `contain run` advertises private temporary storage in its session contract. Do not use `/tmp` to hand secrets to or from the agent: it is intentionally not shared. The supported, audited way to share a directory with the agent is a workspace grant (`contain grant-workspace`), which is recorded, listable, and revocable.
 
 ## `pipelock contain doctor`
 

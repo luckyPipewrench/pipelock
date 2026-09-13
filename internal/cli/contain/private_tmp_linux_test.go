@@ -54,6 +54,22 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 	}
 }
 
+func TestSystemdMainSignal(t *testing.T) {
+	for _, output := range []string{
+		"Main processes terminated with: code=killed/status=TERM\n",
+		"Main process exited, code=killed, status=15/TERM\n",
+		"Main process exited, code=dumped, status=11/SEGV\n",
+	} {
+		signal, ok := systemdMainSignal(output)
+		if !ok || signal == 0 {
+			t.Fatalf("systemdMainSignal(%q) = %v, %t; want signal", output, signal, ok)
+		}
+	}
+	if _, ok := systemdMainSignal("Main process exited, code=exited, status=0/SUCCESS\n"); ok {
+		t.Fatal("ordinary exit was classified as a signal")
+	}
+}
+
 func TestSupplementaryGroupIDs_DeduplicatesAndOmitsPrimary(t *testing.T) {
 	if got, want := strings.Join(supplementaryGroupIDs([]uint32{966, 1001, 1001, 966, 1002}, 966), ","), "1001,1002"; got != want {
 		t.Fatalf("supplementary groups = %q, want %q", got, want)
@@ -82,6 +98,9 @@ func TestProbePrivateTmp_UsesAndRemovesOperatorCanary(t *testing.T) {
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name != systemdRunPath {
 			t.Fatalf("command = %q, want %q", name, systemdRunPath)
+		}
+		if len(args) == 1 && args[0] == "--version" {
+			return "systemd 258 (258.10)", 0, nil
 		}
 		joined := strings.Join(args, " ")
 		for _, want := range []string{"--property=PrivateTmp=true", "--pipe", "/usr/bin/test ! -e "} {
@@ -133,7 +152,10 @@ func TestProbePrivateTmp_FailsWhenAgentCanSeeCanary(t *testing.T) {
 	t.Cleanup(func() { privateTmpCanaryRoot = oldRoot })
 
 	env := containRunLinuxGuardEnv("966", "966", defaultLaunchScript)
-	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+	env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+		if len(args) == 1 && args[0] == "--version" {
+			return "systemd 258", 0, nil
+		}
 		return "canary visible", 1, nil
 	}
 	status, detail := probePrivateTmp(context.Background(), env)
@@ -150,6 +172,37 @@ func TestProbePrivateTmp_SkipsWithoutRoot(t *testing.T) {
 	status, _ := probePrivateTmp(context.Background(), containRunLinuxGuardEnv("966", "966", defaultLaunchScript))
 	if status != statusSkip {
 		t.Fatalf("status = %q, want skip", status)
+	}
+}
+
+func TestProbePrivateTmp_RequiresSystemd254(t *testing.T) {
+	oldRoot, oldVersion := privateTmpCanaryRoot, privateTmpVersion
+	privateTmpCanaryRoot = func() bool { return true }
+	t.Cleanup(func() {
+		privateTmpCanaryRoot = oldRoot
+		privateTmpVersion = oldVersion
+	})
+
+	tests := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "old release", output: "systemd 253"},
+		{name: "unrecognized output", output: "systemd"},
+		{name: "command failure", err: errors.New("version unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			privateTmpVersion = func(context.Context) (string, error) {
+				return tt.output, tt.err
+			}
+			env := containRunLinuxGuardEnv("966", "966", defaultLaunchScript)
+			status, detail := probePrivateTmp(context.Background(), env)
+			if status != statusFail || !strings.Contains(detail, "systemd") {
+				t.Fatalf("status/detail = %q/%q, want systemd compatibility failure", status, detail)
+			}
+		})
 	}
 }
 
@@ -233,7 +286,10 @@ func TestProbePrivateTmp_FailsWhenCanaryCannotBePrepared(t *testing.T) {
 	t.Run("service startup", func(t *testing.T) {
 		privateTmpCreateTemp = oldCreate
 		env := containRunLinuxGuardEnv("966", "966", defaultLaunchScript)
-		env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+			if len(args) == 1 && args[0] == "--version" {
+				return "systemd 258", 0, nil
+			}
 			return "", -1, errors.New("systemd unavailable")
 		}
 		status, detail := probePrivateTmp(context.Background(), env)

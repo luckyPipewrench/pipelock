@@ -6,12 +6,15 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,6 +24,10 @@ const systemdRunPath = "systemd-run"
 var (
 	privateTmpCanaryRoot = isRoot
 	privateTmpCreateTemp = os.CreateTemp
+	privateTmpVersion    = func(ctx context.Context) (string, error) {
+		out, err := exec.CommandContext(ctx, systemdRunPath, "--version").Output()
+		return string(out), err
+	}
 )
 
 // privateTmpSystemdRunArgs returns the transient-service invocation used for
@@ -30,7 +37,6 @@ var (
 // env-clearing contract still apply inside that namespace.
 func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, launchEnv, command []string, interactive bool) []string {
 	args := []string{
-		"--quiet",
 		"--wait",
 		"--collect",
 		"--service-type=exec",
@@ -71,15 +77,45 @@ func supplementaryGroupIDs(groups []uint32, primary uint32) []string {
 	return ids
 }
 
-func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) *exec.Cmd {
+func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.Cmd, *bytes.Buffer) {
 	command := append([]string{defaultLaunchScript}, opts.args...)
 	launchEnv := containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
 	cmd := exec.CommandContext(opts.ctx, systemdRunPath)
 	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, launchEnv, command, isTerminalReader(opts.stdin))...)
 	cmd.Stdin = opts.stdin
 	cmd.Stdout = opts.stdout
-	cmd.Stderr = opts.stderr
-	return cmd
+	statusOutput := &bytes.Buffer{}
+	cmd.Stderr = io.MultiWriter(opts.stderr, statusOutput)
+	return cmd, statusOutput
+}
+
+// systemdMainSignal extracts the transient service's signal result from
+// systemd-run --wait output. systemd itself treats several terminating signals
+// as clean for non-oneshot services, so the wrapper's process status alone is
+// insufficient to preserve the contained tool's shell-compatible exit code.
+func systemdMainSignal(output string) (syscall.Signal, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "code=killed") && !strings.Contains(line, "code=dumped") {
+			continue
+		}
+		const marker = "status="
+		idx := strings.Index(line, marker)
+		if idx < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[idx+len(marker):])
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) == 2 {
+			name = parts[1]
+		}
+		name = strings.TrimPrefix(name, "SIG")
+		for signal := syscall.Signal(1); signal < 65; signal++ {
+			if strings.TrimPrefix(unix.SignalName(signal), "SIG") == name {
+				return signal, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // probePrivateTmp proves that systemd creates a private mount namespace for a
@@ -93,6 +129,18 @@ func probePrivateTmp(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	if !privateTmpCanaryRoot() {
 		return statusSkip, "private temporary-directory canary requires root to start a transient systemd service"
+	}
+	versionOutput, versionErr := privateTmpVersion(ctx)
+	if versionErr != nil {
+		return statusFail, fmt.Sprintf("check systemd version for private temporary directories: %v", versionErr)
+	}
+	fields := strings.Fields(versionOutput)
+	if len(fields) < 2 {
+		return statusFail, fmt.Sprintf("check systemd version for private temporary directories: unrecognized output %q", oneLine(versionOutput))
+	}
+	version, err := strconv.Atoi(fields[1])
+	if err != nil || version < 254 {
+		return statusFail, fmt.Sprintf("private temporary directories require systemd 254 or newer (found %q)", fields[1])
 	}
 	// Create the canary in /tmp explicitly, never os.CreateTemp's "" default:
 	// the default honors $TMPDIR, which sudo can preserve, and would place the

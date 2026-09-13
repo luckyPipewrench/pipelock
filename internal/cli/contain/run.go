@@ -301,9 +301,9 @@ func renderSessionContract(w io.Writer, c sessionContract) error {
 	_, _ = fmt.Fprintf(out, "  proxy egress:     %s (loopback proxy only; direct egress denied by nftables)\n", c.ProxyURL)
 	_, _ = fmt.Fprintf(out, "  posture capsule:  %s\n", c.PostureCapsule)
 	if c.PrivateTmp {
-		_, _ = fmt.Fprintln(out, "  agent /tmp:       private (isolated from the operator)")
+		_, _ = fmt.Fprintln(out, "  agent temp dirs:  /tmp and /var/tmp private (isolated from the operator)")
 	} else {
-		_, _ = fmt.Fprintln(out, "  agent /tmp:       shared with the operator (not private)")
+		_, _ = fmt.Fprintln(out, "  agent temp dirs:  /tmp and /var/tmp shared with the operator (not private)")
 	}
 	if len(c.RegisteredTools) == 0 {
 		_, _ = fmt.Fprintln(out, "  registered tools: (none)")

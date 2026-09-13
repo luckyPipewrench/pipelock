@@ -6,6 +6,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -78,7 +79,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd := containedAgentCommand(containedAgentCommandOptions{
+	cmd, systemdStatus := containedAgentCommand(containedAgentCommandOptions{
 		ctx:              ctx,
 		agentUserName:    env.agentUserName,
 		homeDir:          homeDir,
@@ -93,20 +94,24 @@ func launchContainedAgent(
 		stderr:           stderr,
 	})
 
-	if err := runContainedAgentCommand(cmd); err != nil {
+	runErr := runContainedAgentCommand(cmd)
+	if signal, ok := systemdMainSignal(systemdStatus.String()); ok {
+		return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
+	}
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 				signal := status.Signal()
 				return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
 			}
 			exitCode := exitErr.ExitCode()
 			if exitCode < 0 {
-				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", err))
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", runErr))
 			}
 			return cliutil.ExitCodeError(exitCode, fmt.Errorf("contained agent exited with status %d", exitCode))
 		}
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, err))
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, runErr))
 	}
 	return nil
 }
@@ -126,6 +131,6 @@ type containedAgentCommandOptions struct {
 	stderr           io.Writer
 }
 
-func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
+func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, *bytes.Buffer) {
 	return containedAgentPrivateTmpCommand(opts)
 }

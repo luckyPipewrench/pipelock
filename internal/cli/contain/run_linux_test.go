@@ -243,6 +243,28 @@ func TestLaunchContainedAgent_MapsSignaledContainedExit(t *testing.T) {
 	}
 }
 
+func TestLaunchContainedAgent_MapsSystemdMainSignal(t *testing.T) {
+	current := testContainedAgentUser()
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser:    func(string) (*user.User, error) { return current, nil },
+		groupIDs:      func(*user.User) ([]string, error) { return []string{current.Gid}, nil },
+	}
+
+	oldRun := runContainedAgentCommand
+	t.Cleanup(func() { runContainedAgentCommand = oldRun })
+	runContainedAgentCommand = func(cmd *exec.Cmd) error {
+		_, _ = io.WriteString(cmd.Stderr, "Main processes terminated with: code=killed/status=TERM\n")
+		return nil // systemd considers SIGTERM clean for a non-oneshot service.
+	}
+
+	err := launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
+	if got, want := cliutil.ExitCodeOf(err), 128+int(syscall.SIGTERM); got != want {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, want, err)
+	}
+}
+
 func TestLaunchContainedAgent_WrapsStartupFailure(t *testing.T) {
 	current := testContainedAgentUser()
 
@@ -281,7 +303,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	groups := []uint32{966, 1001}
 
 	const customProof = "/custom/posture/proof.json"
-	cmd := containedAgentCommand(containedAgentCommandOptions{
+	cmd, _ := containedAgentCommand(containedAgentCommandOptions{
 		ctx:              context.Background(),
 		agentUserName:    testAgentUser,
 		homeDir:          "/home/" + testAgentUser,
@@ -313,7 +335,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 			t.Fatalf("args = %q, missing %q", args, want)
 		}
 	}
-	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
+	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr == nil {
 		t.Fatal("command stdio was not wired through")
 	}
 	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)

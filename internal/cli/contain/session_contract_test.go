@@ -32,7 +32,7 @@ func TestRenderSessionContract_ExactText(t *testing.T) {
 		"  agent user:       pipelock-agent",
 		"  proxy egress:     http://127.0.0.1:8888 (loopback proxy only; direct egress denied by nftables)",
 		"  posture capsule:  /var/lib/pipelock/contain/posture/proof.json",
-		"  agent /tmp:       shared with the operator (not private)",
+		"  agent temp dirs:  /tmp and /var/tmp shared with the operator (not private)",
 		"  registered tools: claude, codex",
 		"  workspaces:",
 		"    /home/dev/proj  read-write  owner=josh  created=2026-01-02T03:04:05Z  expires=never  [active]",

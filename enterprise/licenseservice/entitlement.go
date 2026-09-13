@@ -18,7 +18,8 @@ import (
 	"github.com/rs/zerolog"
 
 	// Pure-Go SQLite driver (no CGO requirement).
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Entitlement represents a customer's subscription state and the last
@@ -87,7 +88,14 @@ type LicenseIssuance struct {
 // EntitlementDB manages the SQLite entitlement store.
 type EntitlementDB struct {
 	db *sql.DB
+
+	// journalMode is the mode the database settled on at open time. See
+	// enableWAL for why it is not guaranteed to be WAL.
+	journalMode string
 }
+
+// journalModeWAL is the mode a file database is expected to run in.
+const journalModeWAL = "wal"
 
 // ErrTerminalEntitlement means a stale active event tried to mint a license
 // after this subscription was already recorded in a terminal state.
@@ -123,9 +131,11 @@ type entitlementQueryer interface {
 // because a PRAGMA statement applies only to the connection that ran it: if
 // database/sql replaces the pooled connection, the replacement would come back
 // with no busy timeout and a concurrent trial claim would surface SQLITE_BUSY
-// as a failed grant on the billing path. journal_mode(WAL) is honored for a
-// file database and is a no-op for :memory:, which keeps its own journal mode.
-const dsnPragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+// as a failed grant on the billing path.
+//
+// journal_mode is deliberately absent. It is a property of the database file
+// rather than of a connection, so it is set once by enableWAL instead.
+const dsnPragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 
 // entitlementDSN builds the driver connection string for path.
 //
@@ -144,10 +154,12 @@ func entitlementDSN(path string) (string, error) {
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		// Abs only fails when the working directory is unavailable. Fall back
-		// to the configured path: a relative URI still opens the intended
-		// database relative to the process, which is what a bare path did.
-		absolute = path
+		// Abs only fails when the working directory is unavailable, and there
+		// is no safe fallback: a relative path handed to fileURI would gain a
+		// leading slash and silently name a database at the filesystem root
+		// instead of the configured one. Refuse rather than open the wrong
+		// entitlement state.
+		return "", fmt.Errorf("resolve database path %q: %w", path, err)
 	}
 	return fileURI(filepath.ToSlash(absolute)), nil
 }
@@ -206,10 +218,31 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 	db.SetMaxOpenConns(1)
 
 	edb := &EntitlementDB{db: db}
+
+	// Ask for WAL before migrating so the migration itself runs under it, and
+	// again afterwards if a lock was in the way the first time: by then the
+	// migration has held and released its own lock, which is long enough for a
+	// brief contender to have finished.
+	mode, err := enableWAL(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	if err := edb.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate entitlement db: %w", err)
 	}
+
+	if mode != journalModeWAL {
+		if retried, err := enableWAL(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, err
+		} else if retried != "" {
+			mode = retried
+		}
+	}
+	edb.journalMode = mode
 
 	return edb, nil
 }
@@ -217,6 +250,50 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 // Close closes the underlying database connection.
 func (e *EntitlementDB) Close() error {
 	return e.db.Close()
+}
+
+// JournalMode reports the journal mode the database ended up in.
+//
+// A file database is expected to report "wal". Anything else means enableWAL
+// could not take the exclusive lock it needs, which the caller reports so the
+// condition does not pass silently.
+func (e *EntitlementDB) JournalMode() string {
+	return e.journalMode
+}
+
+// isBusyError reports whether err is SQLite refusing to take a lock another
+// connection holds. Only that is transient; an I/O or corruption error is not.
+func isBusyError(err error) bool {
+	var serr *sqlite.Error
+	if errors.As(err, &serr) {
+		code := serr.Code()
+		return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
+	}
+	return false
+}
+
+// enableWAL puts the database in write-ahead logging mode and reports the mode
+// it settled on.
+//
+// This cannot be a DSN pragma. Changing journal_mode needs an exclusive lock,
+// and SQLite refuses that request immediately instead of waiting out
+// busy_timeout, so a database another process held for even a moment would
+// fail every connection the driver opened and the service would not start. A
+// lock is a transient condition; refusing to boot over it is not a trade worth
+// making, because trial-claim correctness rests on the transactional slot
+// constraint rather than on WAL.
+//
+// Unlike busy_timeout and foreign_keys, journal_mode persists in the database
+// file, so setting it once on any connection is enough.
+func enableWAL(ctx context.Context, db *sql.DB) (string, error) {
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+		if isBusyError(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("enable write-ahead logging: %w", err)
+	}
+	return strings.ToLower(mode), nil
 }
 
 // migrate creates the entitlements table if it doesn't exist.

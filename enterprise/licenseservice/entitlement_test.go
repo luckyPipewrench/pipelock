@@ -972,8 +972,11 @@ func TestOpenEntitlementDB_PragmasApplyToEveryConnection(t *testing.T) {
 	assertPragmas(t, fileDB, "file, second replacement connection")
 	fileDB.db.SetMaxIdleConns(2)
 
-	// A file database takes WAL; :memory: keeps its own journal mode, and the
-	// connection string asking for WAL must not make opening it fail.
+	// A file database takes WAL; :memory: keeps its own journal mode, and
+	// asking for WAL must not make opening it fail.
+	if got := fileDB.JournalMode(); got != journalModeWAL {
+		t.Fatalf("JournalMode() = %q, want %q for a file database", got, journalModeWAL)
+	}
 	var journalMode string
 	if err := fileDB.db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&journalMode); err != nil {
 		t.Fatalf("read journal_mode: %v", err)
@@ -1084,5 +1087,97 @@ func TestEntitlementDSN_RefusesAFragment(t *testing.T) {
 		t.Fatal("OpenEntitlementDB accepted a uri with a fragment")
 	} else if !strings.Contains(err.Error(), "fragment") {
 		t.Fatalf("error does not name the problem: %v", err)
+	}
+}
+
+// TestEnableWAL_ToleratesAnotherWriterHoldingTheDatabase pins that a locked
+// database does not stop the service from starting.
+//
+// Changing journal_mode needs an exclusive lock, and SQLite refuses that
+// request immediately rather than waiting out busy_timeout. While WAL was a
+// connection-string pragma that refusal failed every connection the driver
+// opened, at zero elapsed time, so a database another process held for even a
+// moment took the whole service down with it. Trial-claim correctness rests on
+// the transactional slot constraint rather than on WAL, so a lock here is a
+// condition to report, not to die on.
+//
+// An ordinary write does still wait out busy_timeout and then fail, which is
+// correct: migration cannot proceed without writing. The difference this pins
+// is that the JOURNAL MODE alone no longer gets a vote.
+func TestEnableWAL_ToleratesAnotherWriterHoldingTheDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locked.db")
+
+	// Create the database in the default rollback-journal mode, so enabling WAL
+	// genuinely has to CHANGE the mode rather than finding it already set.
+	holder, err := sql.Open("sqlite", "file://"+path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	if _, err := holder.ExecContext(t.Context(), "CREATE TABLE lock_probe (x INTEGER)"); err != nil {
+		t.Fatalf("seed holder: %v", err)
+	}
+	var seeded string
+	if err := holder.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&seeded); err != nil {
+		t.Fatalf("read seeded journal_mode: %v", err)
+	}
+	if seeded == journalModeWAL {
+		t.Fatalf("seeded journal_mode = %q, want a rollback-journal mode so this exercises a real mode change", seeded)
+	}
+
+	// Take a write lock and hold it across the WAL attempt.
+	tx, err := holder.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO lock_probe VALUES (1)"); err != nil {
+		t.Fatalf("hold write lock: %v", err)
+	}
+
+	contender, err := sql.Open("sqlite", "file://"+path+"?"+dsnPragmas)
+	if err != nil {
+		t.Fatalf("open contender: %v", err)
+	}
+	t.Cleanup(func() { _ = contender.Close() })
+
+	mode, err := enableWAL(t.Context(), contender)
+	if err != nil {
+		t.Fatalf("enableWAL while another writer holds the lock = %v, want it tolerated", err)
+	}
+	if mode == journalModeWAL {
+		t.Fatalf("enableWAL reported %q while the lock was held, want it to report it did not get WAL", mode)
+	}
+
+	// WAL is not abandoned: it is taken once nothing holds the lock.
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("release lock: %v", err)
+	}
+	db, err := OpenEntitlementDB(t.Context(), path)
+	if err != nil {
+		t.Fatalf("open once the lock cleared: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if got := db.JournalMode(); got != journalModeWAL {
+		t.Fatalf("JournalMode() = %q, want %q once nothing holds the lock", got, journalModeWAL)
+	}
+
+	// And the store works: the slot constraint is what enforces one trial.
+	ent := trialEntitlement("sub_locked", "owner@vendor.example", time.Now().Add(24*time.Hour))
+	if err := db.Upsert(t.Context(), ent); err != nil {
+		t.Fatalf("upsert after the lock cleared: %v", err)
+	}
+}
+
+// TestDSNPragmas_OmitJournalMode pins that journal_mode is not a connection
+// pragma. It is a property of the database file, and asking for it per
+// connection is what coupled a transient lock to a failed startup.
+func TestDSNPragmas_OmitJournalMode(t *testing.T) {
+	if strings.Contains(dsnPragmas, "journal_mode") {
+		t.Fatalf("dsnPragmas = %q, want journal_mode set once by enableWAL instead", dsnPragmas)
+	}
+	for _, required := range []string{"busy_timeout(5000)", "foreign_keys(1)"} {
+		if !strings.Contains(dsnPragmas, required) {
+			t.Fatalf("dsnPragmas = %q, want it to carry %s on every connection", dsnPragmas, required)
+		}
 	}
 }

@@ -116,7 +116,19 @@ func run(log zerolog.Logger) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	log.Info().Str("db_path", cfg.DBPath).Msg("entitlement database ready")
+	log.Info().Str("db_path", cfg.DBPath).Str("journal_mode", db.JournalMode()).Msg("entitlement database ready")
+
+	// A file database should be running in write-ahead logging mode. Failing to
+	// take it is survivable and does not affect the one-trial limit, but it is
+	// not something to pass over in silence: another process was holding the
+	// database when the service started, and the mode persists until something
+	// changes it.
+	if cfg.DBPath != ":memory:" && db.JournalMode() != "wal" {
+		log.Warn().
+			Str("db_path", cfg.DBPath).
+			Str("journal_mode", db.JournalMode()).
+			Msg("entitlement database is not in write-ahead logging mode; another process held it at startup. Restart the service once nothing else has the database open.")
+	}
 
 	// Name any customers the migration could not bring under the one-trial
 	// limit, so preserving their live trials is visible rather than quiet.

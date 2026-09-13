@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -114,19 +116,40 @@ type entitlementQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// entitlementDSN builds the driver connection string for path.
+//
+// The pragmas belong here rather than in an Exec after opening, because a
+// PRAGMA statement applies only to the connection that ran it: if database/sql
+// ever replaces the pooled connection, the replacement would come back with no
+// busy timeout and a concurrent trial claim would surface SQLITE_BUSY as a
+// failed grant on the billing path. In the connection string, the driver
+// applies them to every connection it opens.
+//
+// A filesystem path is escaped into a file: URI rather than concatenated. The
+// driver reads '?' as the start of its parameters even in a bare path, so
+// concatenating would both select a different database and silently drop the
+// pragmas for any operator whose configured path contains one. Escaping fixes
+// both: file:/dir/we%3Fird.db opens the file actually named we?ird.db with the
+// pragmas applied. journal_mode(WAL) is honored for a file database and is a
+// no-op for :memory:, which keeps its own journal mode.
+func entitlementDSN(path string) string {
+	const params = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	// An explicit URI or the in-memory name is passed through, with its own
+	// parameters preserved rather than replaced.
+	if path == ":memory:" || strings.HasPrefix(path, "file:") {
+		separator := "?"
+		if strings.Contains(path, "?") {
+			separator = "&"
+		}
+		return path + separator + params
+	}
+	return "file:" + (&url.URL{Path: path}).EscapedPath() + "?" + params
+}
+
 // OpenEntitlementDB opens (or creates) the SQLite database at path and
 // runs migrations. The database uses WAL mode for concurrent read access.
 func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error) {
-	// Pragmas go in the DSN, not in an Exec after opening. A PRAGMA statement
-	// applies only to the connection that ran it, so if database/sql ever
-	// replaces the pooled connection (a driver error discards one) the
-	// replacement would come back without a busy timeout, and a concurrent
-	// trial claim would surface SQLITE_BUSY as a failed grant on the billing
-	// path. Set here, the driver applies them to every connection it opens.
-	// journal_mode(WAL) is honored for a file database and is a no-op for
-	// :memory:, which keeps its own journal mode; both are verified by test.
-	const pragmas = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", path+pragmas)
+	db, err := sql.Open("sqlite", entitlementDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open entitlement db: %w", err)
 	}

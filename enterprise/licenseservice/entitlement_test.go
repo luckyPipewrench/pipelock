@@ -930,11 +930,11 @@ func TestReportDuplicateActiveTrials_NamesEachAffectedCustomer(t *testing.T) {
 }
 
 // TestOpenEntitlementDB_PragmasApplyToEveryConnection pins that the busy
-// timeout, journal mode and foreign-key enforcement come from the DSN rather
-// than a one-off PRAGMA statement. A PRAGMA applies only to the connection that
-// ran it, so a replacement pooled connection would arrive without a busy
-// timeout and a concurrent trial claim would surface SQLITE_BUSY as a failed
-// grant. Reading them back proves the driver applied them at connect time.
+// timeout, journal mode and foreign-key enforcement come from the connection
+// string rather than a one-off PRAGMA statement, INCLUDING on a connection the
+// pool opens later. A PRAGMA applies only to the connection that ran it, so a
+// replacement connection would otherwise arrive without a busy timeout and a
+// concurrent trial claim would surface SQLITE_BUSY as a failed grant.
 func TestOpenEntitlementDB_PragmasApplyToEveryConnection(t *testing.T) {
 	fileDB, err := OpenEntitlementDB(t.Context(), filepath.Join(t.TempDir(), "pragmas.db"))
 	if err != nil {
@@ -942,29 +942,88 @@ func TestOpenEntitlementDB_PragmasApplyToEveryConnection(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = fileDB.Close() })
 
-	for _, db := range []*EntitlementDB{fileDB, openTestDB(t)} {
+	assertPragmas := func(t *testing.T, db *EntitlementDB, label string) {
+		t.Helper()
 		var busyTimeout, foreignKeys int
 		if err := db.db.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
-			t.Fatalf("read busy_timeout: %v", err)
+			t.Fatalf("%s: read busy_timeout: %v", label, err)
 		}
 		if busyTimeout != 5000 {
-			t.Fatalf("busy_timeout = %d, want 5000 on every connection", busyTimeout)
+			t.Fatalf("%s: busy_timeout = %d, want 5000", label, busyTimeout)
 		}
 		if err := db.db.QueryRowContext(t.Context(), "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
-			t.Fatalf("read foreign_keys: %v", err)
+			t.Fatalf("%s: read foreign_keys: %v", label, err)
 		}
 		if foreignKeys != 1 {
-			t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+			t.Fatalf("%s: foreign_keys = %d, want 1", label, foreignKeys)
 		}
 	}
 
+	assertPragmas(t, fileDB, "file, first connection")
+	assertPragmas(t, openTestDB(t), "memory, first connection")
+
+	// Stop the pool from keeping the connection idle, so releasing it closes it
+	// and the next query opens a new one. Without the connection string
+	// carrying the pragmas, that replacement comes back with busy_timeout 0.
+	// MaxOpenConns stays as production sets it, and no sleep is involved: the
+	// turnover is a property of the pool settings, not of timing.
+	fileDB.db.SetMaxIdleConns(0)
+	assertPragmas(t, fileDB, "file, replacement connection")
+	assertPragmas(t, fileDB, "file, second replacement connection")
+	fileDB.db.SetMaxIdleConns(2)
+
 	// A file database takes WAL; :memory: keeps its own journal mode, and the
-	// DSN asking for WAL must not make opening it fail.
+	// connection string asking for WAL must not make opening it fail.
 	var journalMode string
 	if err := fileDB.db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&journalMode); err != nil {
 		t.Fatalf("read journal_mode: %v", err)
 	}
 	if journalMode != "wal" {
 		t.Fatalf("journal_mode = %q, want wal for a file database", journalMode)
+	}
+	if err := openTestDB(t).db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("read in-memory journal_mode: %v", err)
+	}
+	if journalMode != "memory" {
+		t.Fatalf("in-memory journal_mode = %q, want memory", journalMode)
+	}
+}
+
+// TestEntitlementDSN_EscapesAwkwardPaths pins that a configured database path
+// selects the file it names and still receives the pragmas. The driver reads
+// '?' as the start of its parameters even in a bare path, so concatenating the
+// pragmas onto /dir/we?ird.db both opened a different database and silently
+// dropped the busy timeout.
+func TestEntitlementDSN_EscapesAwkwardPaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"plain.db", "we?ird.db", "sp ace&x.db", "hash#tag.db"} {
+		t.Run(name, func(t *testing.T) {
+			target := filepath.Join(dir, name)
+			db, err := OpenEntitlementDB(t.Context(), target)
+			if err != nil {
+				t.Fatalf("open %q: %v", name, err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			var busyTimeout int
+			if err := db.db.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+				t.Fatalf("read busy_timeout: %v", err)
+			}
+			if busyTimeout != 5000 {
+				t.Fatalf("busy_timeout = %d for %q, want 5000", busyTimeout, name)
+			}
+			if _, err := os.Stat(target); err != nil {
+				t.Fatalf("database was not created at the configured path %q: %v", target, err)
+			}
+		})
+	}
+
+	// An explicit URI keeps its own parameters instead of having them replaced.
+	uri := entitlementDSN("file:/tmp/x.db?mode=ro")
+	if !strings.Contains(uri, "mode=ro") || !strings.Contains(uri, "busy_timeout(5000)") {
+		t.Fatalf("explicit URI lost a parameter: %s", uri)
+	}
+	if strings.Count(uri, "?") != 1 {
+		t.Fatalf("explicit URI gained a second query separator: %s", uri)
 	}
 }

@@ -959,12 +959,22 @@ def llm_timeout_for(mode: str, phase: str = "") -> int:
 
 
 def llm_call_budget_for(mode: str, phase: str = "") -> int:
-    """Reserve the longest delivery-proven retry path for one provider call.
+    """Reserve one completing provider call, not an unbounded refusal streak.
 
-    The worst path is every permitted connect attempt but the last failing at
-    the connect bound, the last attempt running to its full read timeout, and
-    the rate-limit sleeps in between. A read timeout is never retried, so it is
-    counted once.
+    The reserved path is every permitted connect attempt but the last failing
+    at the connect bound, the last attempt running to its full read timeout,
+    and the rate-limit sleeps in between. A read timeout is never retried, so
+    it is counted once.
+
+    This deliberately does NOT reserve a read timeout for each permitted
+    rate-limit attempt. A provider that answers 429 slowly, four times, can
+    outlast this reserve; the review deadline, not this number, is what bounds
+    that. Reserving the refusal path instead would make one call's reserve 1,790
+    seconds and a four-chunk review 159 minutes, so the reviewer would refuse to
+    start chunks far more often than a provider actually rate-limits it, and
+    report partial for the budget's own reason. What the reserve does promise is
+    that an admitted call's FIRST request receives its full read timeout, which
+    is the case the timeout was sized for.
     """
     retry_sleep_budget = MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS * (MODEL_RATE_LIMIT_ATTEMPTS - 1)
     failed_connects = MODEL_CONNECT_TIMEOUT_SECONDS * (MODEL_CONNECTION_ATTEMPTS - 1)
@@ -1030,6 +1040,11 @@ def call_model(
     # rate limits consume the connection budget, or the reverse.
     connect_attempt = 0
     rate_limit_attempt = 1
+    # Call-level, so the logged elapsed time covers failed connect attempts and
+    # rate-limit sleeps rather than only the attempt that succeeded. A figure
+    # that omitted them would understate latency in exactly the log the next
+    # timeout resize reads.
+    call_started = time.monotonic()
     while True:
         request_timeout = timeout
         started = time.monotonic()
@@ -1108,11 +1123,20 @@ def call_model(
                 if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
                     # Elapsed seconds ride with the token counts so the next
                     # timeout resize can be measured from the log rather than
-                    # inferred from which chunks happened to finish.
-                    elapsed = int(time.monotonic() - started)
+                    # inferred from which chunks happened to finish. Both
+                    # figures are logged: the read timeout bounds one attempt,
+                    # so `elapsed` is what a resize compares against, while
+                    # `total` includes retries and sleeps and is what the wall
+                    # clock actually spent.
+                    now = time.monotonic()
+                    elapsed = int(now - started)
+                    total = int(now - call_started)
                     log_phase(
                         f"{phase}-usage",
-                        status=f"prompt-{prompt_tokens}-completion-{completion_tokens}-elapsed-{elapsed}s",
+                        status=(
+                            f"prompt-{prompt_tokens}-completion-{completion_tokens}"
+                            f"-elapsed-{elapsed}s-total-{total}s"
+                        ),
                         correlation=correlation,
                     )
             return json.loads(_content_from_response(data))

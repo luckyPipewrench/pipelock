@@ -2269,7 +2269,9 @@ class FailureDirectionTest(unittest.TestCase):
         usage_calls = [call for call in log_phase.call_args_list if call.args and call.args[0] == "judge-usage"]
         self.assertEqual(len(usage_calls), 1)
         self.assertEqual(usage_calls[0].kwargs["correlation"], "correlation")
-        self.assertRegex(usage_calls[0].kwargs["status"], r"^prompt-123-completion-17-elapsed-\d+s$")
+        self.assertRegex(
+            usage_calls[0].kwargs["status"], r"^prompt-123-completion-17-elapsed-\d+s-total-\d+s$"
+        )
 
     def test_bound_diff_retries_once_then_fails(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
@@ -2314,6 +2316,62 @@ class FailureDirectionTest(unittest.TestCase):
         self.assertEqual(pr_review.MODEL_CONNECT_TIMEOUT_SECONDS, 20)
         self.assertGreaterEqual(
             pr_review.DEFAULT_LLM_TIMEOUT_SECONDS * 80, pr_review.DEFAULT_MAX_COMPLETION_TOKENS
+        )
+
+    def test_usage_total_covers_retry_overhead_not_only_the_last_attempt(self) -> None:
+        # A connect timeout and its retry: the successful attempt is fast, but
+        # the call spent the failed connect too. Reading only the attempt would
+        # understate latency in the log a timeout resize depends on.
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json() -> object:
+                return {
+                    "choices": [{"message": {"content": '{"findings":[]}'}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+                }
+
+        clock = iter([1000.0, 1000.0, 1040.0, 1041.0, 1041.0])
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", side_effect=[pr_review.requests.ConnectTimeout("no route"), Response()]
+        ), mock.patch.object(pr_review.time, "monotonic", side_effect=lambda: next(clock)), mock.patch.object(
+            pr_review, "log_phase"
+        ) as log_phase:
+            pr_review.call_model("system", "user", "default", "review-chunk-1", "correlation")
+        usage = [call for call in log_phase.call_args_list if call.args and call.args[0].endswith("-usage")]
+        self.assertEqual(len(usage), 1)
+        # One second of successful attempt, forty-one seconds of call.
+        self.assertEqual(usage[0].kwargs["status"], "prompt-10-completion-20-elapsed-1s-total-41s")
+
+    def test_admitted_call_gives_its_first_request_the_full_read_timeout(self) -> None:
+        # This is what the per-call reserve promises. It does not promise to
+        # outlast a streak of slow provider refusals; the review deadline bounds
+        # that, and reserving for it would make a four-chunk review 159 minutes.
+        reserve = pr_review.llm_call_budget_for("default")
+        self.assertGreaterEqual(
+            reserve,
+            pr_review.DEFAULT_LLM_TIMEOUT_SECONDS
+            + pr_review.MODEL_CONNECT_TIMEOUT_SECONDS * (pr_review.MODEL_CONNECTION_ATTEMPTS - 1),
+            "an admitted call must be able to spend every failed connect and still read in full",
+        )
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json() -> object:
+                return {"choices": [{"message": {"content": '{"findings":[]}'}}]}
+
+        now = 5_000.0
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "key"}, clear=True), mock.patch.object(
+            pr_review.requests, "post", return_value=Response()
+        ) as post, mock.patch.object(pr_review.time, "monotonic", return_value=now):
+            pr_review.call_model("s", "u", "default", "review-chunk-1", "corr", deadline=now + reserve)
+        self.assertEqual(
+            post.call_args.kwargs["timeout"],
+            (pr_review.MODEL_CONNECT_TIMEOUT_SECONDS, pr_review.DEFAULT_LLM_TIMEOUT_SECONDS),
+            "the deadline must not truncate the first request of a call the budget admitted",
         )
 
     def test_call_budget_reserves_one_read_timeout_plus_failed_connects(self) -> None:
@@ -4277,7 +4335,9 @@ class RateLimitRetryTest(unittest.TestCase):
 
     def test_deadline_caps_request_timeout_and_rate_limit_sleep(self):
         ok = self._response(200)
-        clock = iter([100.0, 101.0, 102.0])
+        # The first read is the call-level start used for total elapsed time;
+        # the rest are the per-attempt reads this test's assertions describe.
+        clock = iter([99.0, 100.0, 101.0, 102.0])
         with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
              mock.patch.object(pr_review, "model_for_phase", return_value="m"), \
              mock.patch.object(pr_review, "llm_timeout_for", return_value=120), \

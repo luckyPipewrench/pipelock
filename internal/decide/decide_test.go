@@ -182,6 +182,22 @@ func TestDecide_MCPExecution(t *testing.T) {
 	}
 }
 
+func TestDecide_MCPAndGenericToolUseBlockProtectedPathMove(t *testing.T) {
+	cfg, sc, pc := testSetup(t)
+	t.Cleanup(sc.Close)
+	toolInput := `{"source":"/tmp/staged","destination":"/home/user/.bashrc"}`
+
+	for _, action := range []Action{
+		{Kind: EventMCPExecution, MCP: &MCPPayload{ToolName: "move_file", ToolInput: toolInput}},
+		{Kind: EventToolUse, ToolUse: &ToolUsePayload{ToolName: "move_file", ToolInput: toolInput}},
+	} {
+		decision := Decide(context.Background(), cfg, sc, pc, action)
+		if decision.Outcome != Deny || !evidenceContainsPattern(decision.Evidence, "Shell Profile Modification") {
+			t.Fatalf("%s decision = %+v, want Shell Profile Modification denial", action.Kind, decision)
+		}
+	}
+}
+
 func TestDecide_MCPOverDepthToolInputFailsClosed(t *testing.T) {
 	cfg, sc, pc := testSetup(t)
 	value := "depth-regression-sentinel"

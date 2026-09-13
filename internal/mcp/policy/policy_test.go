@@ -1599,6 +1599,45 @@ func TestDefaultToolPolicyRules_MatchWindowsShellProfilePath(t *testing.T) {
 	}, "Shell Profile Modification")
 }
 
+func TestDefaultToolPolicyRules_EquivalentOperationRequestShapes(t *testing.T) {
+	pc := defaultConfig(t)
+	call := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`
+	tests := map[string]string{
+		"request":      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`,
+		"notification": call,
+		"batch":        `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},` + call + `]`,
+		"nested args":  `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"operation":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}}`,
+	}
+	for name, request := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := pc.CheckRequest([]byte(request))
+			if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.Rules, "Shell Profile Modification") {
+				t.Fatalf("verdict = %+v, want Shell Profile Modification block", v)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_ProtectedPathSpellings(t *testing.T) {
+	pc := defaultConfig(t)
+	for name, path := range map[string]string{
+		"home variable":          `$HOME/.bashrc`,
+		"tilde":                  `~/.bashrc`,
+		"absolute":               `/home/user/.bashrc`,
+		"relative":               `.bashrc`,
+		"dot slash":              `.//.bashrc`,
+		"dot dot":                `/home/user/work/../.bashrc`,
+		"trailing dot":           `/home/user/.bashrc.`,
+		"trailing space":         `/home/user/.bashrc `,
+		"ASCII case insensitive": `/home/user/.BASHRC`,
+		"Cyrillic confusable":    `/home/user/.bаshrc`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertDefaultPolicyRule(t, pc, "write_file", map[string]any{"path": path}, "Shell Profile Modification")
+		})
+	}
+}
+
 func assertDefaultPolicyRule(t *testing.T, pc *Config, toolName string, args map[string]any, wantRule string) {
 	t.Helper()
 	raw, err := json.Marshal(args)

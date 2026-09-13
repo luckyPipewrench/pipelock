@@ -97,6 +97,9 @@ type EntitlementDB struct {
 // journalModeWAL is the mode a file database is expected to run in.
 const journalModeWAL = "wal"
 
+// journalModeMemory is what an in-memory database reports. It can never be WAL.
+const journalModeMemory = "memory"
+
 // ErrTerminalEntitlement means a stale active event tried to mint a license
 // after this subscription was already recorded in a terminal state.
 var ErrTerminalEntitlement = errors.New("entitlement is terminal")
@@ -514,6 +517,28 @@ func (e *EntitlementDB) ReportDuplicateActiveTrials(ctx context.Context, log zer
 			Strs("subscription_ids", subscriptions).
 			Msg("these orders are active trials for one customer; only the longest-running one holds the trial slot, the others keep running until they expire")
 	}
+}
+
+// ReportJournalMode records the journal mode the database is running in, and
+// warns when a file database did not get write-ahead logging.
+//
+// Failing to take WAL is survivable and does not affect the one-trial limit,
+// but it is not something to pass over in silence: another process held the
+// database when this service started, and journal_mode persists in the file
+// until something changes it. Restarting once nothing else has the database
+// open is the operator's move, and the message says so.
+func (e *EntitlementDB) ReportJournalMode(log zerolog.Logger) {
+	mode := e.JournalMode()
+	log.Info().Str("journal_mode", mode).Msg("entitlement database journal mode")
+
+	// An in-memory database keeps its own mode and can never be WAL, so it is
+	// not a condition to report.
+	if mode == journalModeWAL || mode == journalModeMemory {
+		return
+	}
+	log.Warn().
+		Str("journal_mode", mode).
+		Msg("entitlement database is not in write-ahead logging mode because another process held it at startup; restart this service once nothing else has the database open")
 }
 
 // backfillActiveTrialSlots seeds one slot per canonical email from existing

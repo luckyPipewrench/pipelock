@@ -1181,3 +1181,90 @@ func TestDSNPragmas_OmitJournalMode(t *testing.T) {
 		}
 	}
 }
+
+// TestReportJournalMode_WarnsOnlyWhenAFileDatabaseMissedWAL pins that the
+// startup report names a database that did not get write-ahead logging, and
+// stays quiet for the two modes that are working as intended. Failing to take
+// WAL is survivable, so nothing fails here; going unmentioned is the failure
+// this guards, because journal_mode persists until something changes it.
+func TestReportJournalMode_WarnsOnlyWhenAFileDatabaseMissedWAL(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		wantWarn bool
+	}{
+		{mode: journalModeWAL, wantWarn: false},
+		{mode: journalModeMemory, wantWarn: false},
+		{mode: "delete", wantWarn: true},
+		{mode: "", wantWarn: true},
+	} {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			var buf bytes.Buffer
+			(&EntitlementDB{journalMode: tc.mode}).ReportJournalMode(zerolog.New(&buf))
+
+			out := buf.String()
+			if !strings.Contains(out, `"journal_mode":"`+tc.mode+`"`) {
+				t.Fatalf("report did not record the mode it saw: %s", out)
+			}
+			warned := strings.Contains(out, `"level":"warn"`)
+			if warned != tc.wantWarn {
+				t.Fatalf("warned = %v, want %v for mode %q: %s", warned, tc.wantWarn, tc.mode, out)
+			}
+			if tc.wantWarn && !strings.Contains(out, "restart this service") {
+				t.Fatalf("warning does not tell the operator what to do: %s", out)
+			}
+		})
+	}
+}
+
+// TestEnableWAL_FailsClosedOnANonLockError pins that only a lock is tolerated.
+// A lock is transient and another process's doing; an I/O or corruption error
+// is neither, and starting anyway would hide it.
+func TestEnableWAL_FailsClosedOnANonLockError(t *testing.T) {
+	db, err := sql.Open("sqlite", "file://"+filepath.Join(t.TempDir(), "closed.db")+"?"+dsnPragmas)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	mode, err := enableWAL(t.Context(), db)
+	if err == nil {
+		t.Fatalf("enableWAL on a closed database = %q, want an error", mode)
+	}
+	if !strings.Contains(err.Error(), "enable write-ahead logging") {
+		t.Fatalf("error = %v, want it to name the operation", err)
+	}
+}
+
+// TestEntitlementDSN_RefusesARelativePathItCannotResolve pins that a path the
+// service cannot make absolute is refused rather than guessed at.
+//
+// filepath.Abs fails only when the working directory is gone. The fallback
+// that used to stand here kept the relative path, which then picked up a
+// leading slash on its way into a file: URI and named a database at the
+// filesystem ROOT: a different, empty entitlement store that would have
+// re-granted every trial the real one had already spent.
+func TestEntitlementDSN_RefusesARelativePathItCannotResolve(t *testing.T) {
+	// Sit in a directory and then remove it, which is what makes the working
+	// directory unavailable. t.Chdir restores the original when the test ends.
+	dir := filepath.Join(t.TempDir(), "vanishing")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	t.Chdir(dir)
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("remove dir: %v", err)
+	}
+	if _, err := os.Getwd(); err == nil {
+		t.Skip("this platform still resolves a removed working directory, so Abs cannot fail here")
+	}
+
+	dsn, err := entitlementDSN("entitlements.db")
+	if err == nil {
+		t.Fatalf("entitlementDSN = %q, want a refusal rather than a guessed path", dsn)
+	}
+	if !strings.Contains(err.Error(), "resolve database path") {
+		t.Fatalf("error = %v, want it to name what could not be resolved", err)
+	}
+}

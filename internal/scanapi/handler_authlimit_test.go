@@ -4,10 +4,12 @@
 package scanapi
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 )
@@ -32,9 +34,12 @@ func TestHandler_FailedAuthAttemptsAreRateLimited(t *testing.T) {
 	const attacker = "203.0.113.5:41000"
 	const operator = "198.51.100.9:41000"
 
+	// Each guess arrives from a different ephemeral port on the same host:
+	// the budget keys on the address, so port rotation buys nothing.
 	for i := range authlimit.DefaultMaxFailures {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, scanRequest(t, attacker, "Bearer guess"))
+		addr := fmt.Sprintf("203.0.113.5:%d", 41000+i)
+		h.ServeHTTP(w, scanRequest(t, addr, "Bearer guess"))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("guess %d: status = %d, want 401", i, w.Code)
 		}
@@ -97,5 +102,33 @@ func TestHandler_ValidTokenClearsEarlierFailures(t *testing.T) {
 	h.ServeHTTP(w, scanRequest(t, addr, "Bearer typo"))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("mistake after success: status = %d, want 401", w.Code)
+	}
+}
+
+// TestHandler_FailedAuthBudgetRecoversAfterWindow pins the documented
+// recovery: once the 60-second window passes, the address is evaluated again.
+func TestHandler_FailedAuthBudgetRecoversAfterWindow(t *testing.T) {
+	h := newTestHandler(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	h.authFailures.SetClock(func() time.Time { return now })
+	const addr = "203.0.113.8:41000"
+
+	for range authlimit.DefaultMaxFailures {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, scanRequest(t, addr, "Bearer guess"))
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, scanRequest(t, addr, "Bearer "+testToken))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked address: status = %d, want 429", w.Code)
+	}
+	if got := w.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60 at the start of the window", got)
+	}
+	now = now.Add(authlimit.DefaultWindow + time.Second)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, scanRequest(t, addr, "Bearer "+testToken))
+	if w.Code != http.StatusOK {
+		t.Fatalf("after the window: status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }

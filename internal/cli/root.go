@@ -37,7 +37,6 @@ import (
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 // extraCommands holds commands registered by enterprise packages via init().
@@ -51,7 +50,6 @@ func RegisterCommand(cmd *cobra.Command) {
 
 // Execute runs the root command.
 func Execute() error {
-	proxy.Version = cliutil.Version // sync so /health reports the same version as CLI
 	return rootCmd().Execute()
 }
 

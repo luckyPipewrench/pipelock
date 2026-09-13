@@ -55,9 +55,9 @@ type RulePattern struct {
 	Regex     string `yaml:"regex"`
 	ScanField string `yaml:"scan_field"`
 	Validator string `yaml:"validator,omitempty"`
-	// ExemptDomains is accepted for v1 parse compatibility but silently
-	// ignored at runtime. External bundle rules are deny-only - exemptions
-	// must be configured in the local pipelock config, not in bundles.
+	// ExemptDomains is accepted for v1 parse compatibility. External bundle
+	// rules are deny-only, so bundle exemptions are ignored with a load warning
+	// and must be configured in the local pipelock config.
 	ExemptDomains []string `yaml:"exempt_domains"`
 }
 

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -28,14 +29,56 @@ type APIHandler struct {
 	mu          sync.Mutex
 	reqCount    int
 	windowStart time.Time
+
+	// authFailures bounds presented-but-invalid bearer tokens per client
+	// address. The authenticated request budget above is consumed only by
+	// valid requests, so without this a wrong guess was free.
+	authFailures *authlimit.Limiter
 }
 
 // NewAPIHandler creates an API handler for the given controller.
 func NewAPIHandler(ctrl *Controller) *APIHandler {
 	return &APIHandler{
-		ctrl:        ctrl,
-		windowStart: time.Now(),
+		ctrl:         ctrl,
+		windowStart:  time.Now(),
+		authFailures: authlimit.NewDefault(),
 	}
+}
+
+// authenticate enforces bearer authentication for both API endpoints. It
+// returns false after writing the response when the request must not proceed.
+//
+// Order matters and is deliberate: a presented token first reserves one
+// evaluation slot for the client address, atomically, and is compared only if
+// a slot was free. A spent budget is refused BEFORE the compare, so a guesser
+// gets no oracle from the refusal and a parallel burst cannot outrun the
+// count. A request that presents no token is rejected but not counted. A valid
+// token releases the address's reservations.
+func (h *APIHandler) authenticate(w http.ResponseWriter, r *http.Request) (*runtime, bool) {
+	rt := h.ctrl.cfg.Load()
+	if rt.apiToken == "" {
+		// No token configured - API disabled
+		http.Error(w, "kill switch API not configured (no api_token)", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	token := extractBearerToken(r)
+	if token == "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, false
+	}
+	clientKey := authlimit.ClientKey(r)
+	if allowed, retry := h.authFailures.Admit(clientKey); !allowed {
+		authlimit.Refuse(w, retry)
+		return nil, false
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(rt.apiToken)) != 1 {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, false
+	}
+	h.authFailures.Reset(clientKey)
+	return rt, true
 }
 
 // HandleToggle handles POST /api/v1/killswitch.
@@ -49,18 +92,8 @@ func (h *APIHandler) HandleToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auth check
-	rt := h.ctrl.cfg.Load()
-	if rt.apiToken == "" {
-		// No token configured - API disabled
-		http.Error(w, "kill switch API not configured (no api_token)", http.StatusServiceUnavailable)
-		return
-	}
-
-	token := extractBearerToken(r)
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(rt.apiToken)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	rt, ok := h.authenticate(w, r)
+	if !ok {
 		return
 	}
 
@@ -128,17 +161,8 @@ func (h *APIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auth check (same token)
-	rt := h.ctrl.cfg.Load()
-	if rt.apiToken == "" {
-		http.Error(w, "kill switch API not configured (no api_token)", http.StatusServiceUnavailable)
-		return
-	}
-
-	token := extractBearerToken(r)
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(rt.apiToken)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	rt, ok := h.authenticate(w, r)
+	if !ok {
 		return
 	}
 

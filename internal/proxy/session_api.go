@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -153,6 +154,11 @@ type SessionAPIHandler struct {
 	// vice versa.
 	limitMu  sync.Mutex
 	limiters map[string]*rateLimiterState
+
+	// authFailures bounds presented-but-invalid admin bearer tokens per
+	// client address. The per-action limiters above run after
+	// authentication, so without this a wrong guess consumed nothing.
+	authFailures *authlimit.Limiter
 }
 
 // SessionAPIOptions configures a SessionAPIHandler. Using an options struct
@@ -192,6 +198,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionBaseline:  {windowStart: time.Now()},
 			sessionAPIActionDeferred:  {windowStart: time.Now()},
 		},
+		authFailures: authlimit.NewDefault(),
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via
 	// SetAPIToken so the nil-vs-empty logic stays in one place.
@@ -238,13 +245,33 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
 		token = auth[len(prefix):]
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(activeToken)) != 1 {
+	if token == "" {
 		clientIP, _ := requestMeta(r)
 		h.logSessionAdmin("auth_failure", clientIP, "", "", http.StatusUnauthorized)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
+	// A presented token first reserves one evaluation slot for the client
+	// address, atomically, and is compared only if a slot was free. A spent
+	// budget is refused BEFORE the compare, so a guesser gets no oracle and a
+	// parallel burst cannot outrun the count. A valid token releases the
+	// address's reservations.
+	clientKey := authlimit.ClientKey(r)
+	if allowed, retry := h.authFailures.Admit(clientKey); !allowed {
+		clientIP, _ := requestMeta(r)
+		h.logSessionAdmin("auth_rate_limited", clientIP, "", "", http.StatusTooManyRequests)
+		authlimit.Refuse(w, retry)
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(activeToken)) != 1 {
+		clientIP, _ := requestMeta(r)
+		h.logSessionAdmin("auth_failure", clientIP, "", "", http.StatusUnauthorized)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	h.authFailures.Reset(clientKey)
 	return true
 }
 

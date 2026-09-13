@@ -256,6 +256,8 @@ the `pattern.validator` field.
 
 Tool-poison rules with `scan_field: description` scan the tool's `description` and `description` fields nested in its input schema. Built-in scanning still covers every other agent-visible tool field, but those fields do not trigger description-scoped bundle rules.
 
+Bundle rules are deny-only. A `pattern.exempt_domains` field is accepted for compatibility but ignored, and the loader reports a warning naming the rule when it sees one. Configure exemptions in the local Pipelock config instead.
+
 ### Machine-readable reader contract
 
 A release-stamped Pipelock binary can export the rule-bundle contract it enforces:

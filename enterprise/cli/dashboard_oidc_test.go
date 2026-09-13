@@ -1386,21 +1386,22 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
 	auth := newOIDCTestAuthenticator(t, p, now)
-	authorization := newDashboardRequestAuthorization("", "", auth)
-	// Drive the same helper the serve path installs, so a regression in WHICH
+	// Drive the same registry the serve path installs, so a regression in WHICH
 	// authorization callbacks reach the composer fails here instead of passing
 	// because the test rebuilt the wiring itself.
-	metaAuthorized, authorizePermission, rawAuthorized := dashboardServeAuthorizers(nil, authorization)
+	registry := newDashboardAuthorizerRegistry()
+	registry.registerOIDC(auth)
+	composed := registry.compose()
 	var audit strings.Builder
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          func(string) bool { return true },
-		Authorize:           dashboardAuthorizeFunc(metaAuthorized),
-		AuthorizePermission: authorizePermission,
-		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
+		Authorize:           dashboardAuthorizeFunc(composed.metaAuthorized),
+		AuthorizePermission: composed.authorizePermission,
+		AuthorizeRaw:        dashboardAuthorizeFunc(composed.rawAuthorized),
 		AuditWriter:         &audit,
 	})
-	handler := auth.middleware(dashboardAuthHandler(metaAuthorized, authorization.authAuditInfo, &audit, nil, nil, inner))
+	handler := composed.wrap(dashboardAuthHandler(composed.metaAuthorized, composed.authAuditInfo, &audit, nil, nil, inner))
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, requestWithBearer(t, p.token(t, p.validClaims(now))))
@@ -1434,7 +1435,7 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 			t.Fatalf("permission-denied audit missing %q: %s", want, log)
 		}
 	}
-	if rawAuthorized(req) {
+	if composed.rawAuthorized(req) {
 		t.Fatal("mapped OIDC principal unexpectedly received raw permission")
 	}
 }

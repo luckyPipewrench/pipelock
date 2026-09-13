@@ -3835,3 +3835,28 @@ func TestHandleOrderRefund_EnterpriseTrialPendingRefusalFailsWithoutLedger(t *te
 		t.Fatal("pending refund webhook was committed despite the missing audit record")
 	}
 }
+
+// TestHandleActive_UncanonicalizableTrialEmailIsDenied pins the grant refusal
+// for an address the service cannot canonicalize: no slot can bound it, so the
+// order is denied and audited rather than minting an unbounded trial. The
+// refusal is permanent for that address, so it is a denial, not a retry.
+func TestHandleActive_UncanonicalizableTrialEmailIsDenied(t *testing.T) {
+	ts := newTestSetup(t)
+	now := time.Now().UTC()
+
+	ent := testEntitlement("order_bad_email")
+	ent.CustomerEmail = "not-an-email"
+	ent.Tier = tierTrial
+	ent.BillingInterval = billingIntervalOneTime
+	ent.CurrentPeriodEnd = now.Add(time.Hour)
+	if err := ts.handler.handleActive(t.Context(), ent, nil); err != nil {
+		t.Fatalf("denied trial returned storage error: %v", err)
+	}
+	got, err := ts.db.GetBySubscriptionID(t.Context(), ent.SubscriptionID)
+	if err != nil {
+		t.Fatalf("load denied trial: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("trial with an uncanonicalizable email was persisted: %+v", got)
+	}
+}

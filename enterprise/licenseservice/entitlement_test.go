@@ -707,3 +707,58 @@ func TestBackfillActiveTrialSlots_BindsOwnerToItsOwnExpiry(t *testing.T) {
 		t.Fatalf("slot expiry = %v, want %v (the owner's own expiry)", expires.UTC(), longEnd)
 	}
 }
+
+// TestTrialSlot_UncanonicalizableEmailIsRecordedButNeverGranted pins the split
+// between enforcement and record. An address the service cannot canonicalize
+// can hold no slot, so the one-active-trial rule cannot bound it: a GRANT is
+// refused rather than minted unbounded. Merely RECORDING such an entitlement
+// still succeeds, because refusing that would block revoking a legacy row and
+// would buy no enforcement.
+func TestTrialSlot_UncanonicalizableEmailIsRecordedButNeverGranted(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	periodEnd := time.Now().UTC().Add(24 * time.Hour)
+
+	grant := trialEntitlement("order_bad_email_grant", "not-an-email", periodEnd)
+	err := issueTrial(t, db, grant)
+	if !errors.Is(err, ErrTrialEmailNotCanonical) {
+		t.Fatalf("grant with uncanonicalizable email: err = %v, want ErrTrialEmailNotCanonical", err)
+	}
+
+	// Recording the same entitlement succeeds and leaves no slot behind.
+	record := trialEntitlement("order_bad_email_record", "not-an-email", periodEnd)
+	if err := db.Upsert(ctx, record); err != nil {
+		t.Fatalf("record active trial with uncanonicalizable email: %v", err)
+	}
+	var slots int
+	if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_trial_slots`).Scan(&slots); err != nil {
+		t.Fatalf("count slots: %v", err)
+	}
+	if slots != 0 {
+		t.Fatalf("slot rows = %d, want 0: an uncanonicalizable address must hold no slot", slots)
+	}
+
+	// Revoking it also succeeds: the update-only refresh skips the missing slot
+	// instead of failing the write.
+	record.Status = statusRevoked
+	if err := db.Upsert(ctx, record); err != nil {
+		t.Fatalf("revoke trial with uncanonicalizable email: %v", err)
+	}
+}
+
+// TestBackfillActiveTrialSlots_FailsClosedOnStoreErrors pins that the migration
+// reports a store failure instead of returning success with an empty or partial
+// slot table, which would silently disable the one-active-trial rule.
+func TestBackfillActiveTrialSlots_FailsClosedOnStoreErrors(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	if err := upsertEntitlement(ctx, db.db, trialEntitlement("order_backfill", "backfill@example.com", time.Now().UTC().Add(24*time.Hour))); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if err := db.backfillActiveTrialSlots(ctx); err == nil {
+		t.Fatal("backfill on a closed database returned success")
+	}
+}

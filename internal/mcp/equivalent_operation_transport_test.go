@@ -10,10 +10,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
+
+const uninspectablePatchTargetsReason = "uninspectable_patch_targets"
+
+type toolPolicyCaptureObserver struct {
+	capture.NopObserver
+	records chan capture.ToolPolicyRecord
+}
+
+func (o *toolPolicyCaptureObserver) ObserveToolPolicyVerdict(_ context.Context, record *capture.ToolPolicyRecord) {
+	o.records <- *record
+}
 
 func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 	sc := testInputScanner(t)
@@ -33,6 +45,7 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 		{name: "delete", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file","arguments":{"path":"/home/user/.bashrc"}}}`, wantRule: "Protected Path Delete"},
 		{name: "metadata", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chmod_file","arguments":{"path":"/home/user/.bashrc","mode":"0600"}}}`, wantRule: "Protected Path Metadata Change"},
 		{name: "link", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_symlink","arguments":{"target":"/home/user/.bashrc","linkPath":"/tmp/profile"}}}`, wantRule: "Protected Path Link Creation"},
+		{name: "uninspectable patch", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"patch":"diff --git a/file"}}}`, wantRule: uninspectablePatchTargetsReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			msg := []byte(tc.msg)
@@ -51,6 +64,74 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUninspectablePatchReasonReachesTransportEvidence(t *testing.T) {
+	sc := testInputScanner(t)
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules:   policy.DefaultToolPolicyRules(),
+	})
+	request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"patch":"diff --git a/file"}}}`
+	observer := &toolPolicyCaptureObserver{records: make(chan capture.ToolPolicyRecord, 2)}
+
+	httpOpts := testOpts(sc)
+	httpOpts.PolicyCfg = policyCfg
+	httpOpts.CaptureObs = observer
+	httpOpts.Transport = transportMCPHTTP
+	var httpLog bytes.Buffer
+	if decision := scanHTTPInputDecision([]byte(request), &httpLog, "session", "session", httpOpts); decision.Blocked == nil {
+		t.Fatal("HTTP request was not blocked")
+	}
+	assertUninspectablePatchLog(t, "HTTP", httpLog.String())
+
+	stdioOpts := testOpts(sc)
+	stdioOpts.PolicyCfg = policyCfg
+	stdioOpts.CaptureObs = observer
+	stdioOpts.Transport = transportMCPStdio
+	var stdioOut, stdioLog bytes.Buffer
+	blocked := make(chan BlockedRequest, 1)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(request+"\n")),
+		transport.NewStdioWriter(&stdioOut),
+		&stdioLog,
+		config.ActionWarn,
+		config.ActionBlock,
+		blocked,
+		nil,
+		nil,
+		stdioOpts,
+	)
+	if len(blocked) != 1 || stdioOut.Len() != 0 {
+		t.Fatalf("stdio blocked=%d output=%q, want one block and no forwarded request", len(blocked), stdioOut.String())
+	}
+	assertUninspectablePatchLog(t, "stdio", stdioLog.String())
+
+	for range 2 {
+		record := <-observer.records
+		if len(record.RawFindings) != 1 || record.RawFindings[0].PolicyRule != uninspectablePatchTargetsReason {
+			t.Fatalf("capture findings = %+v, want only %q", record.RawFindings, uninspectablePatchTargetsReason)
+		}
+	}
+
+	verdict := policyCfg.CheckRequest([]byte(request))
+	layer, pattern, _ := pickAttribution(MCPInputEvaluation{PolicyVerdict: verdict})
+	if layer != mcpReceiptLayerPolicy || pattern != uninspectablePatchTargetsReason {
+		t.Fatalf("receipt attribution = (%q, %q), want (%q, %q)", layer, pattern, mcpReceiptLayerPolicy, uninspectablePatchTargetsReason)
+	}
+}
+
+func assertUninspectablePatchLog(t *testing.T, transportName, log string) {
+	t.Helper()
+	if !strings.Contains(log, "policy:"+uninspectablePatchTargetsReason) {
+		t.Fatalf("%s log=%q, want dedicated patch inspection reason", transportName, log)
+	}
+	for _, falseReason := range []string{"policy:Persistence Path Write", "policy:Shell Profile Modification"} {
+		if strings.Contains(log, falseReason) {
+			t.Fatalf("%s log=%q, contains false reason %q", transportName, log, falseReason)
+		}
 	}
 }
 

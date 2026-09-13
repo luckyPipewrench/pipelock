@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	uninspectableJSONDepthRule = "uninspectable_json_depth"
-	duplicateJSONKeyRule       = "duplicate_json_object_key"
-	malformedA2AParamsRule     = "malformed_a2a_params"
+	uninspectableJSONDepthRule    = "uninspectable_json_depth"
+	uninspectablePatchTargetsRule = "uninspectable_patch_targets"
+	duplicateJSONKeyRule          = "duplicate_json_object_key"
+	malformedA2AParamsRule        = "malformed_a2a_params"
 )
 
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
@@ -291,7 +292,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
-		argSourceUninspectable := false
+		patchInspection := patchTargetsOrdinary
 		if rule.ArgKey != nil && len(rawArgs) == 0 {
 			if rule.hasStructuralValidators() {
 				return uninspectableStructuralArgsVerdict(rule.Name)
@@ -309,14 +310,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
-			patchTargets, inspectable := extractPatchTargetPaths(argStrings)
-			argSourceUninspectable = !inspectable
-			ruleTokens, ruleJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, policyPreNormalize)
-			ruleAltTokens, ruleAltJoined = normalizeArgTokens(patchTargets, normalize.ForPolicy, policyPreNormalize)
-			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, nil)
+			patchTargets, inspection := extractPatchTargetPaths(argStrings)
+			patchInspection = inspection
+			if inspection != patchTargetsOrdinary {
+				ruleTokens, ruleJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, policyPreNormalize)
+				ruleAltTokens, ruleAltJoined = normalizeArgTokens(patchTargets, normalize.ForPolicy, policyPreNormalize)
+				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, nil)
+			}
 		}
 
-		argPatternMatched := argSourceUninspectable || rule.ArgPattern == nil ||
+		argPatternMatched := patchInspection == patchTargetsUninspectable || rule.ArgPattern == nil ||
 			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
@@ -332,7 +335,13 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			continue
 		}
 
-		matchedRules = append(matchedRules, rule.Name)
+		matchedRule := rule.Name
+		if patchInspection == patchTargetsUninspectable {
+			matchedRule = uninspectablePatchTargetsRule
+			matchedRules = appendUniqueRule(matchedRules, matchedRule)
+		} else {
+			matchedRules = append(matchedRules, matchedRule)
+		}
 		action := rule.Action
 		if action == "" {
 			action = pc.Action
@@ -366,6 +375,15 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
 	}
+}
+
+func appendUniqueRule(rules []string, rule string) []string {
+	for _, existing := range rules {
+		if existing == rule {
+			return rules
+		}
+	}
+	return append(rules, rule)
 }
 
 // normalizeArgTokens applies an optional pre-normalizer, a Unicode normalization
@@ -432,7 +450,8 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 }
 
 const (
-	gitDiffHeader          = "diff --git "
+	gitDiffMarker          = "diff --git"
+	gitDiffHeader          = gitDiffMarker + " "
 	gitRenameFromHeader    = "rename from "
 	gitRenameToHeader      = "rename to "
 	gitCopyFromHeader      = "copy from "
@@ -458,18 +477,26 @@ type gitPatchTargets struct {
 	copyTo     string
 }
 
+type patchTargetInspection uint8
+
+const (
+	patchTargetsOrdinary patchTargetInspection = iota
+	patchTargetsInspectable
+	patchTargetsUninspectable
+)
+
 // extractPatchTargetPaths returns the semantic file targets named by Git,
 // unified-diff, or Codex apply_patch headers. Move-class operations expose both
 // sides because they can remove or replace either protected path. Copy-class
 // operations expose only the destination so a protected source may be backed
-// up to an ordinary path. The bool is false when patch-shaped input cannot be
-// inspected; callers then match the configured patch rules rather than skip
-// them, preserving each rule's effective action while failing configured-closed.
-func extractPatchTargetPaths(argStrings []string) ([]string, bool) {
+// up to an ordinary path. Input without a patch framing or target header is
+// ordinary structured tool input and falls back to all-argument matching.
+// Patch-shaped input that cannot be inspected fails in the configured direction.
+func extractPatchTargetPaths(argStrings []string) ([]string, patchTargetInspection) {
 	var targets []string
 	var gitSection *gitPatchTargets
 	var pendingUnifiedOld string
-	var sawTargetHeader, malformed bool
+	var sawPatchShape, sawTargetHeader, malformed bool
 	var applyPatchBegins, applyPatchEnds int
 
 	flushGitSection := func() {
@@ -505,6 +532,9 @@ func extractPatchTargetPaths(argStrings []string) ([]string, bool) {
 	for _, arg := range argStrings {
 		for _, rawLine := range strings.Split(arg, "\n") {
 			line := strings.TrimSuffix(rawLine, "\r")
+			if isPatchShapeMarker(line) {
+				sawPatchShape = true
+			}
 			if strings.HasPrefix(line, gitDiffHeader) {
 				flushGitSection()
 				sawTargetHeader = true
@@ -622,7 +652,28 @@ func extractPatchTargetPaths(argStrings []string) ([]string, bool) {
 	if applyPatchBegins != applyPatchEnds {
 		malformed = true
 	}
-	return targets, sawTargetHeader && !malformed
+	if !sawPatchShape {
+		return nil, patchTargetsOrdinary
+	}
+	if !sawTargetHeader || malformed {
+		return targets, patchTargetsUninspectable
+	}
+	return targets, patchTargetsInspectable
+}
+
+func isPatchShapeMarker(line string) bool {
+	return line == gitDiffMarker ||
+		strings.HasPrefix(line, gitDiffHeader) ||
+		line == strings.TrimSpace(unifiedOldFileHeader) ||
+		strings.HasPrefix(line, unifiedOldFileHeader) ||
+		line == strings.TrimSpace(unifiedNewFileHeader) ||
+		strings.HasPrefix(line, unifiedNewFileHeader) ||
+		line == applyPatchBeginHeader ||
+		line == applyPatchEndHeader ||
+		strings.HasPrefix(line, strings.TrimSuffix(applyPatchUpdateHeader, " ")) ||
+		strings.HasPrefix(line, strings.TrimSuffix(applyPatchAddHeader, " ")) ||
+		strings.HasPrefix(line, strings.TrimSuffix(applyPatchDeleteHeader, " ")) ||
+		strings.HasPrefix(line, strings.TrimSuffix(applyPatchMoveHeader, " "))
 }
 
 func appendPatchTarget(targets []string, target string) []string {

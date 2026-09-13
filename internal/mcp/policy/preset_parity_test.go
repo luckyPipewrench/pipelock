@@ -39,6 +39,16 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 				t.Fatal("preset tool policy is disabled")
 			}
 
+			for _, args := range []any{
+				map[string]any{"file": "main.go", "edits": []map[string]string{{"old": "x := 1", "new": "x := 2"}}},
+				map[string]any{"path": "main.go", "content": "package main\n"},
+				map[string]any{"patch": ""},
+				map[string]any{},
+				"please update the readme for me",
+			} {
+				assertPolicyArgsAllowed(t, pc, filePatchToolPattern, args)
+			}
+
 			credentialAction := effectiveRuleAction(t, cfg.MCPToolPolicy, "Credential File Access")
 			for _, toolName := range strings.Split(fileReadToolPattern, "|") {
 				assertPolicyCall(t, pc, toolName, map[string]any{
@@ -99,6 +109,9 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					}, check.baselineRule, wantAction)
 				}
 				if check.baselineRule != "Audit Log Tampering" {
+					assertPolicyArgs(t, pc, filePatchToolPattern, map[string]any{
+						"path": check.path, "content": "replacement",
+					}, check.baselineRule, wantAction)
 					for _, patch := range protectedPatchTargetFormats(check.path) {
 						assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
 					}
@@ -113,6 +126,14 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 						"source": "/tmp/staged", "destination": check.path,
 					}, check.copyRule, wantAction)
 				}
+			}
+
+			uninspectableAction := effectiveRuleAction(t, cfg.MCPToolPolicy, "Persistence Path Write")
+			for _, args := range []any{
+				map[string]any{"patch": "diff --git a/file"},
+				map[string]any{"patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n"},
+			} {
+				assertPolicyArgs(t, pc, filePatchToolPattern, args, uninspectablePatchTargetsRule, uninspectableAction)
 			}
 
 			for _, safe := range []struct {
@@ -132,6 +153,24 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 	}
 }
 
+func assertPolicyArgsAllowed(t *testing.T, pc *Config, toolName string, args any) {
+	t.Helper()
+	if v := pc.CheckRequest(toolCallRequest(t, toolName, args)); v.Matched {
+		t.Fatalf("%s arguments matched rules %v, want allowed", toolName, v.Rules)
+	}
+}
+
+func assertPolicyArgs(t *testing.T, pc *Config, toolName string, args any, wantRule, wantAction string) {
+	t.Helper()
+	v := pc.CheckRequest(toolCallRequest(t, toolName, args))
+	if !v.Matched || !slices.Equal(v.Rules, []string{wantRule}) {
+		t.Fatalf("%s verdict = %+v, want only rule %q", toolName, v, wantRule)
+	}
+	if v.Action != wantAction {
+		t.Fatalf("%s action = %q, want preserved action %q", toolName, v.Action, wantAction)
+	}
+}
+
 func protectedPatchTargetFormats(target string) []string {
 	return []string{
 		"diff --git a/file b" + target + "\n--- a/file\n+++ b" + target + "\n@@ -1 +1 @@\n-old\n+new\n",
@@ -144,7 +183,6 @@ func protectedPatchTargetFormats(target string) []string {
 		"diff --git a" + target + " b" + target + "\nindex 1111111..2222222 100644\nBinary files a" + target + " and b" + target + " differ\n",
 		"diff --git a" + target + " b" + target + "\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-old\n+new\n",
 		"*** Begin Patch\n*** Update File: file\n*** Move to: " + target + "\n@@\n-old\n+new\n*** End Patch",
-		"diff --git malformed",
 	}
 }
 

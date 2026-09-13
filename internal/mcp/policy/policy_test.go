@@ -1658,12 +1658,12 @@ func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
 		{
 			name:     "malformed git header fails configured closed",
 			patch:    "diff --git a/.bashrc\nold mode 100644\nnew mode 100755\n",
-			wantRule: "Shell Profile Modification",
+			wantRule: uninspectablePatchTargetsRule,
 		},
 		{
 			name:     "truncated apply patch fails configured closed",
 			patch:    "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n",
-			wantRule: "Shell Profile Modification",
+			wantRule: uninspectablePatchTargetsRule,
 		},
 	}
 	for _, tc := range tests {
@@ -1688,44 +1688,120 @@ func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
 	}
 }
 
+func TestDefaultToolPolicyRules_ApplyPatchOrdinaryArgumentFallback(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name string
+		args any
+	}{
+		{name: "structured edits", args: map[string]any{"file": "main.go", "edits": []map[string]string{{"old": "x := 1", "new": "x := 2"}}}},
+		{name: "path and content", args: map[string]any{"path": "main.go", "content": "package main\n"}},
+		{name: "empty patch", args: map[string]any{"patch": ""}},
+		{name: "empty object", args: map[string]any{}},
+		{name: "plain string", args: "please update the readme for me"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := toolCallRequest(t, "apply_patch", tc.args)
+			if v := pc.CheckRequest(request); v.Matched {
+				t.Fatalf("verdict = %+v, want allowed", v)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		args     any
+		wantRule string
+	}{
+		{name: "structured shell profile path", args: map[string]any{"path": "/home/user/.bashrc", "content": "replacement"}, wantRule: "Shell Profile Modification"},
+		{name: "structured persistence path", args: map[string]any{"file": "/etc/systemd/system/p.service", "edits": []map[string]string{{"old": "x", "new": "y"}}}, wantRule: "Persistence Path Write"},
+		{name: "plain shell profile path", args: "replace /home/user/.bashrc", wantRule: "Shell Profile Modification"},
+		{name: "plain persistence path", args: "replace /etc/systemd/system/p.service", wantRule: "Persistence Path Write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest(toolCallRequest(t, "apply_patch", tc.args))
+			if !v.Matched || !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("verdict = %+v, want %q", v, tc.wantRule)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_UninspectablePatchTargets(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name  string
+		patch string
+	}{
+		{name: "malformed git header", patch: "diff --git a/file"},
+		{name: "truncated apply patch", patch: "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest(toolCallRequest(t, "apply_patch", map[string]any{"patch": tc.patch}))
+			if !v.Matched || v.Action != config.ActionBlock || !slices.Equal(v.Rules, []string{uninspectablePatchTargetsRule}) {
+				t.Fatalf("verdict = %+v, want dedicated configured-closed verdict", v)
+			}
+		})
+	}
+}
+
+func toolCallRequest(t *testing.T, toolName string, args any) []byte {
+	t.Helper()
+	request, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      toolName,
+			"arguments": args,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
 func TestExtractPatchTargetPathsInspection(t *testing.T) {
 	tests := []struct {
 		name        string
 		patch       string
 		wantTargets []string
-		inspectable bool
+		inspection  patchTargetInspection
 	}{
 		{name: "no patch headers", patch: "plain text"},
-		{name: "unpaired unified header", patch: "--- a/file"},
-		{name: "empty unified target", patch: "--- \n+++ b/file"},
-		{name: "invalid quoted unified target", patch: "--- \"a/file\n+++ b/file"},
+		{name: "git-like prose", patch: "diff --github settings"},
+		{name: "unpaired unified header", patch: "--- a/file", inspection: patchTargetsUninspectable},
+		{name: "empty unified target", patch: "--- \n+++ b/file", inspection: patchTargetsUninspectable},
+		{name: "invalid quoted unified target", patch: "--- \"a/file\n+++ b/file", inspection: patchTargetsUninspectable},
 		{
 			name:        "unified timestamps and CRLF",
 			patch:       "--- a/file\told-time\r\n+++ b/file\tnew-time\r\n",
 			wantTargets: []string{"a/file", "b/file"},
-			inspectable: true,
+			inspection:  patchTargetsInspectable,
 		},
 		{name: "rename header outside git section", patch: "rename from old\nrename to new\n"},
 		{name: "copy header outside git section", patch: "copy from old\ncopy to new\n"},
-		{name: "incomplete git rename", patch: "diff --git a/old b/new\nrename from old\n", wantTargets: []string{"a/old", "b/new", "old"}},
-		{name: "incomplete git copy", patch: "diff --git a/old b/new\ncopy to new\n", wantTargets: []string{"b/new", "new"}},
-		{name: "conflicting git operations", patch: "diff --git a/old b/new\nrename from old\nrename to new\ncopy from old\ncopy to new\n", wantTargets: []string{"b/new", "new"}},
-		{name: "empty apply update path", patch: "*** Update File: "},
-		{name: "empty apply add path", patch: "*** Add File: "},
-		{name: "empty apply delete path", patch: "*** Delete File: "},
-		{name: "empty apply move path", patch: "*** Move to: "},
+		{name: "incomplete git rename", patch: "diff --git a/old b/new\nrename from old\n", wantTargets: []string{"a/old", "b/new", "old"}, inspection: patchTargetsUninspectable},
+		{name: "incomplete git copy", patch: "diff --git a/old b/new\ncopy to new\n", wantTargets: []string{"b/new", "new"}, inspection: patchTargetsUninspectable},
+		{name: "conflicting git operations", patch: "diff --git a/old b/new\nrename from old\nrename to new\ncopy from old\ncopy to new\n", wantTargets: []string{"b/new", "new"}, inspection: patchTargetsUninspectable},
+		{name: "empty apply update path", patch: "*** Update File: ", inspection: patchTargetsUninspectable},
+		{name: "empty apply add path", patch: "*** Add File: ", inspection: patchTargetsUninspectable},
+		{name: "empty apply delete path", patch: "*** Delete File: ", inspection: patchTargetsUninspectable},
+		{name: "empty apply move path", patch: "*** Move to: ", inspection: patchTargetsUninspectable},
 		{
 			name:        "quoted apply path",
 			patch:       "*** Begin Patch\n*** Update File: \"dir/file\"\n@@\n-old\n+new\n*** End Patch",
 			wantTargets: []string{"dir/file"},
-			inspectable: true,
+			inspection:  patchTargetsInspectable,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotTargets, gotInspectable := extractPatchTargetPaths([]string{tc.patch})
-			if !slices.Equal(gotTargets, tc.wantTargets) || gotInspectable != tc.inspectable {
-				t.Fatalf("extractPatchTargetPaths() = (%v, %v), want (%v, %v)", gotTargets, gotInspectable, tc.wantTargets, tc.inspectable)
+			gotTargets, gotInspection := extractPatchTargetPaths([]string{tc.patch})
+			if !slices.Equal(gotTargets, tc.wantTargets) || gotInspection != tc.inspection {
+				t.Fatalf("extractPatchTargetPaths() = (%v, %v), want (%v, %v)", gotTargets, gotInspection, tc.wantTargets, tc.inspection)
 			}
 		})
 	}

@@ -1541,6 +1541,111 @@ func TestDefaultToolPolicyRules_MatchZshrcViaWriteFile(t *testing.T) {
 	}
 }
 
+func TestDefaultToolPolicyRules_ApplyPatchTargetsOnly(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		patch    string
+		wantRule string
+	}{
+		{
+			name:  "README context mentions profile",
+			patch: "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-source ~/.bashrc\n+describe source ~/.bashrc\n",
+		},
+		{
+			name:     "profile target header",
+			patch:    "--- a/.bashrc\n+++ b/.bashrc\n@@ -1 +1 @@\n-old\n+new\n",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:  "README contains added diff example",
+			patch: "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n++++ b/.bashrc\n",
+		},
+		{
+			name:     "apply patch update header",
+			patch:    "*** Begin Patch\n*** Update File: /home/user/.bashrc\n@@\n-old\n+new\n*** End Patch",
+			wantRule: "Shell Profile Modification",
+		},
+		{
+			name:     "unified deletion old-file header",
+			patch:    "--- a/.bashrc\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+			wantRule: "Shell Profile Modification",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := map[string]any{"patch": tc.patch}
+			raw, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+			v := pc.CheckToolCallWithArgs("apply_patch", extracted.Strings, raw)
+			if tc.wantRule == "" {
+				if v.Matched {
+					t.Fatalf("documentation patch matched rules %v", v.Rules)
+				}
+				return
+			}
+			if !v.Matched || !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("verdict = %+v, want rule %q", v, tc.wantRule)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_MaintenanceCommandsRemainAllowed(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, command := range []string{
+		"pipelock evidence compact --receipt-dir /var/lib/pipelock/evidence --session proxy --key public.key",
+		"pipelock contain rollback --keep-data",
+	} {
+		t.Run(command, func(t *testing.T) {
+			if v := pc.CheckToolCall("bash", []string{command}); v.Matched {
+				t.Fatalf("maintenance command matched rules %v", v.Rules)
+			}
+		})
+	}
+}
+
+func TestDefaultToolPolicyRules_AuditArtifactLocations(t *testing.T) {
+	pc := defaultConfig(t)
+	tests := []struct {
+		name     string
+		toolName string
+		args     map[string]any
+		wantRule string
+	}{
+		{name: "own app log delete", toolName: "delete_file", args: map[string]any{"path": "/home/v/myapp/app.log"}},
+		{name: "build log chmod", toolName: "chmod_file", args: map[string]any{"path": "/tmp/build.log"}},
+		{name: "JSONL dataset delete", toolName: "delete_file", args: map[string]any{"path": "/home/v/data/train.jsonl"}},
+		{name: "rotate own log", toolName: "move_file", args: map[string]any{"source": "app.log", "destination": "app.log.1"}},
+		{name: "receipt chain delete", toolName: "delete_file", args: map[string]any{"path": "/var/lib/pipelock/evidence/evidence-proxy-1.jsonl"}, wantRule: "Audit Log Delete"},
+		{name: "system audit delete", toolName: "delete_file", args: map[string]any{"path": "/var/log/audit/audit.log"}, wantRule: "Audit Log Delete"},
+		{name: "receipt namespace delete", toolName: "delete_file", args: map[string]any{"path": "/var/lib/pipelock"}, wantRule: "Audit Log Delete"},
+		{name: "system log namespace delete", toolName: "delete_file", args: map[string]any{"path": "/var/log"}, wantRule: "Audit Log Delete"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+			v := pc.CheckToolCallWithArgs(tc.toolName, extracted.Strings, raw)
+			if tc.wantRule == "" {
+				if v.Matched {
+					t.Fatalf("ordinary file matched rules %v", v.Rules)
+				}
+				return
+			}
+			if !v.Matched || !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("verdict = %+v, want rule %q", v, tc.wantRule)
+			}
+		})
+	}
+}
+
 func TestDefaultToolPolicyRules_MatchProtectedPathMoveTools(t *testing.T) {
 	pc := defaultConfig(t)
 	tests := []struct {

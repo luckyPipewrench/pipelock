@@ -273,6 +273,9 @@ func validateConductorBundleRawToolPolicyRules(rules []ToolPolicyRule) error {
 		} else if hasStructuralValidators {
 			return fmt.Errorf("mcp_tool_policy rule %q has structural argument validators but no arg_key", r.Name)
 		}
+		if err := validateToolPolicyArgSource(r); err != nil {
+			return err
+		}
 		if err := validateToolPolicyStructuralArgs(r); err != nil {
 			return err
 		}
@@ -566,5 +569,5 @@ func mergeConductorBundleToolPolicyRules(local, bundle []ToolPolicyRule) ([]Tool
 }
 
 func toolPolicyRuleIdentity(rule ToolPolicyRule) string {
-	return rule.Name + "\x00" + rule.ToolPattern + "\x00" + rule.ArgPattern + "\x00" + rule.ArgKey
+	return rule.Name + "\x00" + rule.ToolPattern + "\x00" + rule.ArgPattern + "\x00" + rule.ArgKey + "\x00" + rule.ArgSource
 }

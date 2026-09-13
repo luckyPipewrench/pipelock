@@ -5596,6 +5596,51 @@ func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
 	}
 }
 
+func TestValidate_MCPToolPolicyArgSource(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rule    ToolPolicyRule
+		wantErr string
+	}{
+		{
+			name: "patch targets is valid",
+			rule: ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgPattern: "profile", ArgSource: ToolPolicyArgSourcePatchTargets},
+		},
+		{
+			name:    "unknown source",
+			rule:    ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgPattern: "profile", ArgSource: "body_lines"},
+			wantErr: "invalid arg_source",
+		},
+		{
+			name:    "source without pattern",
+			rule:    ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgSource: ToolPolicyArgSourcePatchTargets},
+			wantErr: "arg_source without arg_pattern",
+		},
+		{
+			name:    "source with key",
+			rule:    ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgPattern: "profile", ArgKey: "^patch$", ArgSource: ToolPolicyArgSourcePatchTargets},
+			wantErr: "combines arg_source with arg_key",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.MCPToolPolicy.Enabled = true
+			cfg.MCPToolPolicy.Action = ActionBlock
+			cfg.MCPToolPolicy.Rules = []ToolPolicyRule{tc.rule}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_StructuralValidators(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

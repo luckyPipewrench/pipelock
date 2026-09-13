@@ -62,6 +62,7 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 				{path: "/etc/systemd/system/p.service", moveRule: "Persistence Path Write", copyRule: "Protected Path Copy", baselineRule: "Persistence Path Write"},
 				{path: "/home/user/.bashrc", moveRule: "Shell Profile Modification", copyRule: "Protected Path Copy", baselineRule: "Shell Profile Modification"},
 				{path: "/var/log/audit.log", moveRule: "Audit Log Move", copyRule: "Audit Log Copy", baselineRule: "Audit Log Tampering"},
+				{path: "/var/lib/pipelock/evidence/evidence-proxy-1.jsonl", moveRule: "Audit Log Move", copyRule: "Audit Log Copy", baselineRule: "Audit Log Tampering"},
 			}
 			for _, check := range checks {
 				wantAction := effectiveRuleAction(t, cfg.MCPToolPolicy, check.baselineRule)
@@ -97,6 +98,10 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 						"path": check.path, "content": "replacement",
 					}, check.baselineRule, wantAction)
 				}
+				if check.baselineRule != "Audit Log Tampering" {
+					patch := "--- a/file\n+++ b" + check.path + "\n@@ -1 +1 @@\n-old\n+new\n"
+					assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
+				}
 				for _, direction := range []string{"source", "destination"} {
 					args := map[string]any{"source": "/tmp/staged", "destination": "/tmp/backup"}
 					args[direction] = check.path
@@ -108,7 +113,32 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					}, check.copyRule, wantAction)
 				}
 			}
+
+			for _, safe := range []struct {
+				toolName string
+				args     map[string]any
+			}{
+				{toolName: "delete_file", args: map[string]any{"path": "/home/v/myapp/app.log"}},
+				{toolName: "chmod_file", args: map[string]any{"path": "/tmp/build.log"}},
+				{toolName: "delete_file", args: map[string]any{"path": "/home/v/data/train.jsonl"}},
+				{toolName: "move_file", args: map[string]any{"source": "app.log", "destination": "app.log.1"}},
+				{toolName: filePatchToolPattern, args: map[string]any{"patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-source ~/.bashrc\n+describe source ~/.bashrc\n"}},
+			} {
+				assertPolicyAllowed(t, pc, safe.toolName, safe.args)
+			}
 		})
+	}
+}
+
+func assertPolicyAllowed(t *testing.T, pc *Config, toolName string, args map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	if v := pc.CheckToolCallWithArgs(toolName, extracted.Strings, raw); v.Matched {
+		t.Fatalf("%s(%s) matched rules %v, want allowed", toolName, raw, v.Rules)
 	}
 }
 

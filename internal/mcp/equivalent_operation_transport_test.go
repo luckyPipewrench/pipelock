@@ -28,7 +28,7 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 		wantRule string
 	}{
 		{name: "move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
-		{name: "content mutation", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"path":"/home/user/.bashrc","patch":"replacement"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "content mutation", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"patch":"--- a/.bashrc\n+++ b/.bashrc\n@@ -1 +1 @@\n-old\n+new\n"}}}`, wantRule: "Shell Profile Modification"},
 		{name: "credential read", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_text_file","arguments":{"path":"/home/user/.ssh/id_rsa"}}}`, wantRule: "Credential File Access"},
 		{name: "delete", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file","arguments":{"path":"/home/user/.bashrc"}}}`, wantRule: "Protected Path Delete"},
 		{name: "metadata", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chmod_file","arguments":{"path":"/home/user/.bashrc","mode":"0600"}}}`, wantRule: "Protected Path Metadata Change"},

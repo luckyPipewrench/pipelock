@@ -148,6 +148,7 @@ type CompiledRule struct {
 	ToolPattern      *regexp.Regexp
 	ArgPattern       *regexp.Regexp // nil = match on tool name alone
 	ArgKey           *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
+	ArgSource        string
 	ArgType          string
 	ArgNumberGT      *json.Number
 	ArgNumberLT      *json.Number
@@ -184,6 +185,7 @@ func New(cfg config.MCPToolPolicy) *Config {
 		compiled := &CompiledRule{
 			Name:            r.Name,
 			ToolPattern:     regexp.MustCompile(r.ToolPattern),
+			ArgSource:       r.ArgSource,
 			ArgType:         r.ArgType,
 			ArgNumberGT:     r.ArgNumberGT,
 			ArgNumberLT:     r.ArgNumberLT,
@@ -305,6 +307,12 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
 		}
+		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
+			patchTargets := extractPatchTargetPaths(argStrings)
+			ruleTokens, ruleJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, policyPreNormalize)
+			ruleAltTokens, ruleAltJoined = normalizeArgTokens(patchTargets, normalize.ForPolicy, policyPreNormalize)
+			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, nil)
+		}
 
 		argPatternMatched := rule.ArgPattern == nil ||
 			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
@@ -419,6 +427,44 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 		}
 	}
 	return false
+}
+
+// extractPatchTargetPaths returns only file paths named by unified-diff or
+// apply-patch target headers. Patch body and context lines are intentionally
+// ignored so documentation that merely discusses a protected path cannot
+// trigger a file-target policy rule.
+func extractPatchTargetPaths(argStrings []string) []string {
+	var targets []string
+	for _, arg := range argStrings {
+		for _, line := range strings.Split(arg, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			var target string
+			switch {
+			case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+				target = line[4:]
+				if before, _, ok := strings.Cut(target, "\t"); ok {
+					target = before
+				}
+			case strings.HasPrefix(line, "*** Update File: "):
+				target = strings.TrimPrefix(line, "*** Update File: ")
+			case strings.HasPrefix(line, "*** Add File: "):
+				target = strings.TrimPrefix(line, "*** Add File: ")
+			case strings.HasPrefix(line, "*** Delete File: "):
+				target = strings.TrimPrefix(line, "*** Delete File: ")
+			default:
+				continue
+			}
+			target = strings.TrimSpace(target)
+			if target == "" || target == "/dev/null" {
+				continue
+			}
+			if unquoted, err := strconv.Unquote(target); err == nil {
+				target = unquoted
+			}
+			targets = append(targets, target)
+		}
+	}
+	return targets
 }
 
 const structuralMaxArgDepth = 64
@@ -997,7 +1043,8 @@ func expandBraces(s string) string {
 // covering common dangerous operations that agents might attempt.
 const (
 	fileReadToolPattern     = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
-	fileWriteToolPattern    = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|apply_patch`
+	fileWriteToolPattern    = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked`
+	filePatchToolPattern    = `apply_patch`
 	fileMoveToolPattern     = `move_file|file_move|rename_file|move-file`
 	fileCopyToolPattern     = `copy_file|file_copy`
 	fileDeleteToolPattern   = `delete_file|file_delete`
@@ -1006,7 +1053,7 @@ const (
 
 	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
 	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
-	auditLogPathPattern     = `/var/log/|\.(?:log|audit|jsonl)\b`
+	auditLogPathPattern     = `(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
@@ -1110,6 +1157,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Action:      config.ActionBlock,
 		},
 		{
+			Name:        "Persistence Path Write",
+			ToolPattern: `(?i)^(` + filePatchToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `)`,
+			ArgSource:   config.ToolPolicyArgSourcePatchTargets,
+			Action:      config.ActionBlock,
+		},
+		{
 			// Copy is destination-scoped: reading a protected source into a safe
 			// backup path remains allowed. The named schema is the one published by
 			// copy_file servers covered by this built-in rule.
@@ -1129,10 +1183,17 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Action:      config.ActionBlock,
 		},
 		{
-			// File write tools: any mention of a profile file implies modification.
+			// File write tools directly name the file they modify.
 			Name:        "Shell Profile Modification",
 			ToolPattern: `(?i)^(` + fileWriteToolPattern + `|` + fileMoveToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + shellProfilePathPattern + `)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Shell Profile Modification",
+			ToolPattern: `(?i)^(` + filePatchToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + shellProfilePathPattern + `)`,
+			ArgSource:   config.ToolPolicyArgSourcePatchTargets,
 			Action:      config.ActionBlock,
 		},
 		{

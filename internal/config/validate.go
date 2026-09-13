@@ -2319,6 +2319,9 @@ func (c *Config) validateMCPToolPolicy() error {
 		} else if hasStructuralValidators {
 			return fmt.Errorf("mcp_tool_policy rule %q has structural argument validators but no arg_key", r.Name)
 		}
+		if err := validateToolPolicyArgSource(r); err != nil {
+			return err
+		}
 		if err := validateToolPolicyStructuralArgs(r); err != nil {
 			return err
 		}
@@ -2365,6 +2368,19 @@ func (c *Config) validateMCPToolPolicy() error {
 				return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", r.Name)
 			}
 		}
+	}
+	return nil
+}
+
+func validateToolPolicyArgSource(r ToolPolicyRule) error {
+	if r.ArgSource != "" && r.ArgSource != ToolPolicyArgSourcePatchTargets {
+		return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_source %q", r.Name, r.ArgSource)
+	}
+	if r.ArgSource != "" && r.ArgPattern == "" {
+		return fmt.Errorf("mcp_tool_policy rule %q has arg_source without arg_pattern", r.Name)
+	}
+	if r.ArgSource != "" && r.ArgKey != "" {
+		return fmt.Errorf("mcp_tool_policy rule %q combines arg_source with arg_key", r.Name)
 	}
 	return nil
 }

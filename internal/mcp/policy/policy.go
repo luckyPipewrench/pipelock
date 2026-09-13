@@ -1365,6 +1365,17 @@ const (
 	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
 	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
 	auditLogPathPattern     = `(?:^|\s)/(?:var/log|var/lib/pipelock)(?:/|$)`
+	// Shell-context form of the audit namespaces. The bare-argument form above
+	// anchors on start-or-space, which a redirect like `> /var/log/x` consumes
+	// before the alternation is reached.
+	auditLogShellPathPattern = `/(?:var/log|var/lib/pipelock)/`
+	// Credential locations accept both separators. A Windows spelling such as
+	// `C:\\Users\\v\\.ssh\\id_rsa` is the same secret as its POSIX form, and a
+	// slash-only pattern matched neither the read nor the relocate route. The
+	// separator is OPTIONAL because policy normalization strips a backslash that
+	// precedes a word character, so a Windows spelling reaches the matcher with
+	// no separator left between the directory and the file name.
+	sensitiveFilePathPattern = `\.ssh[\\/]?(id_|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
@@ -1381,9 +1392,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			ArgPattern:  `(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b`,
 		},
 		{
+			// Move and copy are matched unscoped, so the credential matches on the
+			// SOURCE side. This is the mirror of the destination-protection rules:
+			// for a secret the danger is relocating it somewhere unguarded and
+			// reading it there, so copying a credential OUT is itself the finding.
 			Name:        "Credential File Access",
-			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `|` + fileLinkToolPattern + `)$`,
-			ArgPattern:  `(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)`,
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `|` + fileLinkToolPattern + `|` + fileMoveToolPattern + `|` + fileCopyToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + sensitiveFilePathPattern + `)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1556,7 +1571,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Audit Log Tampering",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileWriteToolPattern + `)$`,
-			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*/var/log/|\b(rm|truncate|shred)\b[^;|&]*\.(log|audit|jsonl)\b|>{1,2}\s*[^;|&]*(/var/log/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
+			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
 		},
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -18,13 +19,26 @@ import (
 
 const uninspectablePatchTargetsReason = "uninspectable_patch_targets"
 
+// toolPolicyCaptureObserver collects records in a slice rather than a channel.
+// A fixed-capacity channel makes this test's outcome depend on how many records
+// the producers emit: one emission short and the receive blocks, one too many and
+// the send blocks, and either way the test hangs instead of failing.
 type toolPolicyCaptureObserver struct {
 	capture.NopObserver
-	records chan capture.ToolPolicyRecord
+	mu      sync.Mutex
+	records []capture.ToolPolicyRecord
 }
 
 func (o *toolPolicyCaptureObserver) ObserveToolPolicyVerdict(_ context.Context, record *capture.ToolPolicyRecord) {
-	o.records <- *record
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.records = append(o.records, *record)
+}
+
+func (o *toolPolicyCaptureObserver) snapshot() []capture.ToolPolicyRecord {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]capture.ToolPolicyRecord(nil), o.records...)
 }
 
 func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
@@ -75,7 +89,7 @@ func TestUninspectablePatchReasonReachesTransportEvidence(t *testing.T) {
 		Rules:   policy.DefaultToolPolicyRules(),
 	})
 	request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"patch":"diff --git a/file"}}}`
-	observer := &toolPolicyCaptureObserver{records: make(chan capture.ToolPolicyRecord, 2)}
+	observer := &toolPolicyCaptureObserver{}
 
 	httpOpts := testOpts(sc)
 	httpOpts.PolicyCfg = policyCfg
@@ -109,8 +123,11 @@ func TestUninspectablePatchReasonReachesTransportEvidence(t *testing.T) {
 	}
 	assertUninspectablePatchLog(t, "stdio", stdioLog.String())
 
-	for range 2 {
-		record := <-observer.records
+	records := observer.snapshot()
+	if len(records) != 2 {
+		t.Fatalf("captured %d tool policy records, want one per transport", len(records))
+	}
+	for _, record := range records {
 		if len(record.RawFindings) != 1 || record.RawFindings[0].PolicyRule != uninspectablePatchTargetsReason {
 			t.Fatalf("capture findings = %+v, want only %q", record.RawFindings, uninspectablePatchTargetsReason)
 		}

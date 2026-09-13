@@ -58,14 +58,24 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 			}
 			for _, check := range checks {
 				wantAction := effectiveRuleAction(t, cfg.MCPToolPolicy, check.baselineRule)
+				for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
+					if check.baselineRule == "Audit Log Tampering" {
+						continue
+					}
+					assertPolicyCall(t, pc, toolName, map[string]any{
+						"path": check.path, "content": "replacement",
+					}, check.baselineRule, wantAction)
+				}
 				for _, direction := range []string{"source", "destination"} {
 					args := map[string]any{"source": "/tmp/staged", "destination": "/tmp/backup"}
 					args[direction] = check.path
 					assertPolicyCall(t, pc, "move_file", args, check.moveRule, wantAction)
 				}
-				assertPolicyCall(t, pc, "copy_file", map[string]any{
-					"source": "/tmp/staged", "destination": check.path,
-				}, check.copyRule, wantAction)
+				for _, toolName := range strings.Split(fileCopyToolPattern, "|") {
+					assertPolicyCall(t, pc, toolName, map[string]any{
+						"source": "/tmp/staged", "destination": check.path,
+					}, check.copyRule, wantAction)
+				}
 			}
 		})
 	}

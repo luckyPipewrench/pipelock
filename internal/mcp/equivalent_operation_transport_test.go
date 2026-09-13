@@ -22,20 +22,32 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 		Action:  config.ActionWarn,
 		Rules:   policy.DefaultToolPolicyRules(),
 	})
-	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`)
-	frame := ParseMCPFrame(msg)
-	opts := testOpts(sc)
-	opts.PolicyCfg = policyCfg
-
-	httpEval := EvaluateMCPInputGates(context.Background(), frame, msg, "session", opts, config.ActionWarn, config.ActionBlock, true)
-	stdioEval := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil, opts, config.ActionWarn, config.ActionBlock)
-	for name, verdict := range map[string]policy.Verdict{
-		"HTTP":  httpEval.PolicyVerdict,
-		"stdio": stdioEval.PolicyVerdict,
+	for _, tc := range []struct {
+		name     string
+		msg      string
+		wantRule string
+	}{
+		{name: "move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "content mutation", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"path":"/home/user/.bashrc","patch":"replacement"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "credential read", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_text_file","arguments":{"path":"/home/user/.ssh/id_rsa"}}}`, wantRule: "Credential File Access"},
 	} {
-		if !verdict.Matched || verdict.Action != config.ActionBlock || !slices.Contains(verdict.Rules, "Shell Profile Modification") {
-			t.Fatalf("%s policy verdict = %+v, want Shell Profile Modification block", name, verdict)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			msg := []byte(tc.msg)
+			frame := ParseMCPFrame(msg)
+			opts := testOpts(sc)
+			opts.PolicyCfg = policyCfg
+
+			httpEval := EvaluateMCPInputGates(context.Background(), frame, msg, "session", opts, config.ActionWarn, config.ActionBlock, true)
+			stdioEval := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil, opts, config.ActionWarn, config.ActionBlock)
+			for name, verdict := range map[string]policy.Verdict{
+				"HTTP":  httpEval.PolicyVerdict,
+				"stdio": stdioEval.PolicyVerdict,
+			} {
+				if !verdict.Matched || verdict.Action != config.ActionBlock || !slices.Contains(verdict.Rules, tc.wantRule) {
+					t.Fatalf("%s policy verdict = %+v, want %s block", name, verdict, tc.wantRule)
+				}
+			}
+		})
 	}
 }
 

@@ -997,9 +997,9 @@ func expandBraces(s string) string {
 // covering common dangerous operations that agents might attempt.
 const (
 	fileReadToolPattern  = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
-	fileWriteToolPattern = `write_file|file_write|edit_file|create_file|modify_file|append_file`
+	fileWriteToolPattern = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|apply_patch`
 	fileMoveToolPattern  = `move_file|file_move|rename_file|move-file`
-	fileCopyToolPattern  = `copy_file`
+	fileCopyToolPattern  = `copy_file|file_copy`
 
 	persistencePathPattern  = `/etc/crontab\b|/etc/cron\.(?:d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(?:Daemons|Agents)/`
 	shellProfilePathPattern = `(?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b`
@@ -1144,7 +1144,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		},
 		{
 			Name:        "Audit Log Tampering",
-			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file)$`,
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileWriteToolPattern + `)$`,
 			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*/var/log/|\b(rm|truncate|shred)\b[^;|&]*\.(log|audit|jsonl)\b|>{1,2}\s*[^;|&]*(/var/log/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
 		},
 	}

@@ -1532,9 +1532,12 @@ func TestDefaultToolPolicyRules_MatchAliasInjection(t *testing.T) {
 
 func TestDefaultToolPolicyRules_MatchZshrcViaWriteFile(t *testing.T) {
 	pc := defaultConfig(t)
-	v := pc.CheckToolCall("write_file", []string{"/home/user/.zshrc"})
-	if !v.Matched {
-		t.Error("expected match for .zshrc write via write_file tool")
+	for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
+		t.Run(toolName, func(t *testing.T) {
+			assertDefaultPolicyRule(t, pc, toolName, map[string]any{
+				"path": "/home/user/.zshrc", "content": "replacement",
+			}, "Shell Profile Modification")
+		})
 	}
 }
 
@@ -1576,21 +1579,40 @@ func TestDefaultToolPolicyRules_CopyProtectedDestinationOnly(t *testing.T) {
 		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Protected Path Copy"},
 		{name: "audit log", path: "/var/log/audit.log", wantRule: "Audit Log Copy"},
 	}
-	for _, tc := range tests {
-		t.Run("destination/"+tc.name, func(t *testing.T) {
-			assertDefaultPolicyRule(t, pc, "copy_file", map[string]any{
-				"source": "/tmp/staged", "destination": tc.path,
-			}, tc.wantRule)
-		})
-		t.Run("source/"+tc.name, func(t *testing.T) {
-			args := map[string]any{"source": tc.path, "destination": "/tmp/backup"}
+	for _, toolName := range strings.Split(fileCopyToolPattern, "|") {
+		for _, tc := range tests {
+			t.Run(toolName+"/destination/"+tc.name, func(t *testing.T) {
+				assertDefaultPolicyRule(t, pc, toolName, map[string]any{
+					"source": "/tmp/staged", "destination": tc.path,
+				}, tc.wantRule)
+			})
+			t.Run(toolName+"/source/"+tc.name, func(t *testing.T) {
+				args := map[string]any{"source": tc.path, "destination": "/tmp/backup"}
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				v := pc.CheckToolCallWithArgs(toolName, []string{tc.path, "/tmp/backup"}, raw)
+				if v.Matched {
+					t.Fatalf("copying from protected path matched rules %v", v.Rules)
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultToolPolicyRules_EquivalentWritesUnderVarLogRemainAllowed(t *testing.T) {
+	pc := defaultConfig(t)
+	for _, toolName := range strings.Split(fileWriteToolPattern, "|") {
+		t.Run(toolName, func(t *testing.T) {
+			args := map[string]any{"path": "/var/log/application.log", "content": "ordinary event"}
 			raw, err := json.Marshal(args)
 			if err != nil {
 				t.Fatal(err)
 			}
-			v := pc.CheckToolCallWithArgs("copy_file", []string{tc.path, "/tmp/backup"}, raw)
+			v := pc.CheckToolCallWithArgs(toolName, []string{"/var/log/application.log", "ordinary event"}, raw)
 			if v.Matched {
-				t.Fatalf("copying from protected path matched rules %v", v.Rules)
+				t.Fatalf("safe log write matched rules %v", v.Rules)
 			}
 		})
 	}

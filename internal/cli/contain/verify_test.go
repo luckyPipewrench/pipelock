@@ -3025,8 +3025,12 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 		if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
 			t.Fatalf("line %d: parse: %v (line=%q)", i, err, lines[i])
 		}
-		if rec.Probe != i+1 {
-			t.Errorf("line %d: probe=%d, want %d", i, rec.Probe, i+1)
+		wantProbe := i + 1
+		if i == 14 {
+			wantProbe = 16 // published probe 15 remains reserved for conditional workspace_access.
+		}
+		if rec.Probe != wantProbe {
+			t.Errorf("line %d: probe=%d, want %d", i, rec.Probe, wantProbe)
 		}
 		if rec.Status != statusPass {
 			t.Errorf("line %d: status=%q, want pass", i, rec.Status)

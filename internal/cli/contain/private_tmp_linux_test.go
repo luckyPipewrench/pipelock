@@ -20,14 +20,13 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 	for _, tt := range []struct {
 		name        string
 		interactive bool
-		want        string
-		dontWant    string
+		want        []string
 	}{
-		{name: "piped", want: "--pipe", dontWant: "--pty"},
-		{name: "interactive", interactive: true, want: "--pty", dontWant: "--pipe"},
+		{name: "piped", want: []string{"--pipe"}},
+		{name: "interactive", interactive: true, want: []string{"--pipe", "--pty"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			args := privateTmpSystemdRunArgs(966, 966, []uint32{966, 1001}, "/home/agent", []string{"HOME=/home/agent"}, []string{defaultLaunchScript, "claude", "$HOME/literal"}, tt.interactive)
+			args := privateTmpSystemdRunArgs(966, 966, []uint32{966, 1001}, "/home/agent", []string{"HOME=/home/agent"}, []string{defaultLaunchScript, "claude", "$HOME/literal"}, tt.interactive, true, "test-unit")
 			joined := strings.Join(args, " ")
 			for _, want := range []string{
 				"--expand-environment=no",
@@ -38,14 +37,16 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 				"--setenv=HOME=/home/agent",
 				"--working-directory=/home/agent",
 				"-- " + defaultLaunchScript + " claude $HOME/literal",
-				tt.want,
+				"--unit=test-unit",
 			} {
 				if !strings.Contains(joined, want) {
 					t.Fatalf("args = %q, missing %q", joined, want)
 				}
 			}
-			if strings.Contains(joined, tt.dontWant) {
-				t.Fatalf("args = %q, unexpectedly contains %q", joined, tt.dontWant)
+			for _, want := range tt.want {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("args = %q, missing terminal mode %q", joined, want)
+				}
 			}
 			if got := args[len(args)-1]; got != "$HOME/literal" {
 				t.Fatalf("literal tool argument = %q, want $HOME/literal", got)
@@ -56,16 +57,15 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 
 func TestSystemdMainSignal(t *testing.T) {
 	for _, output := range []string{
-		"Main processes terminated with: code=killed/status=TERM\n",
-		"Main process exited, code=killed, status=15/TERM\n",
-		"Main process exited, code=dumped, status=11/SEGV\n",
+		"killed\n15\n",
+		"dumped\n11\n",
 	} {
 		signal, ok := systemdMainSignal(output)
 		if !ok || signal == 0 {
 			t.Fatalf("systemdMainSignal(%q) = %v, %t; want signal", output, signal, ok)
 		}
 	}
-	if _, ok := systemdMainSignal("Main process exited, code=exited, status=0/SUCCESS\n"); ok {
+	if _, ok := systemdMainSignal("exited\n0\n"); ok {
 		t.Fatal("ordinary exit was classified as a signal")
 	}
 }
@@ -77,6 +77,7 @@ func TestSupplementaryGroupIDs_DeduplicatesAndOmitsPrimary(t *testing.T) {
 }
 
 func TestProbePrivateTmp_UsesAndRemovesOperatorCanary(t *testing.T) {
+	stubSupportedSystemd(t)
 	oldRoot := privateTmpCanaryRoot
 	privateTmpCanaryRoot = func() bool { return true }
 	t.Cleanup(func() { privateTmpCanaryRoot = oldRoot })
@@ -147,6 +148,7 @@ func TestProbePrivateTmp_UsesAndRemovesOperatorCanary(t *testing.T) {
 }
 
 func TestProbePrivateTmp_FailsWhenAgentCanSeeCanary(t *testing.T) {
+	stubSupportedSystemd(t)
 	oldRoot := privateTmpCanaryRoot
 	privateTmpCanaryRoot = func() bool { return true }
 	t.Cleanup(func() { privateTmpCanaryRoot = oldRoot })
@@ -207,6 +209,7 @@ func TestProbePrivateTmp_RequiresSystemd254(t *testing.T) {
 }
 
 func TestProbePrivateTmp_FailsWhenCanaryCannotBePrepared(t *testing.T) {
+	stubSupportedSystemd(t)
 	oldRoot, oldCreate := privateTmpCanaryRoot, privateTmpCreateTemp
 	privateTmpCanaryRoot = func() bool { return true }
 	t.Cleanup(func() {
@@ -297,6 +300,13 @@ func TestProbePrivateTmp_FailsWhenCanaryCannotBePrepared(t *testing.T) {
 			t.Fatalf("status/detail = %q/%q, want service-startup failure", status, detail)
 		}
 	})
+}
+
+func stubSupportedSystemd(t *testing.T) {
+	t.Helper()
+	oldVersion := privateTmpVersion
+	privateTmpVersion = func(context.Context) (string, error) { return "systemd 254", nil }
+	t.Cleanup(func() { privateTmpVersion = oldVersion })
 }
 
 func TestPrivateTmpSystemdRunArgsForAgent_FailsClosedOnInvalidIdentity(t *testing.T) {

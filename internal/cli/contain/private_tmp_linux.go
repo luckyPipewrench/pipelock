@@ -6,20 +6,21 @@
 package contain
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 const systemdRunPath = "systemd-run"
+
+var privateTmpUnitSequence atomic.Uint64
 
 var (
 	privateTmpCanaryRoot = isRoot
@@ -35,16 +36,21 @@ var (
 // required because PrivateTmp creates the service's private mount namespace.
 // plk-launch remains the final process so the existing allow-list and
 // env-clearing contract still apply inside that namespace.
-func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, launchEnv, command []string, interactive bool) []string {
+func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, launchEnv, command []string, interactive, collect bool, unit string) []string {
 	args := []string{
 		"--wait",
-		"--collect",
-		"--service-type=exec",
+		"--service-type=oneshot",
 		"--expand-environment=no",
 		"--property=PrivateTmp=true",
 		"--uid=" + strconv.FormatUint(uint64(uid), 10),
 		"--gid=" + strconv.FormatUint(uint64(gid), 10),
 		"--working-directory=" + homeDir,
+	}
+	if collect {
+		args = append(args, "--collect")
+	}
+	if unit != "" {
+		args = append(args, "--unit="+unit)
 	}
 	if supplementary := supplementaryGroupIDs(groups, gid); len(supplementary) > 0 {
 		args = append(args, "--property=SupplementaryGroups="+strings.Join(supplementary, " "))
@@ -53,7 +59,7 @@ func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, 
 		args = append(args, "--setenv="+entry)
 	}
 	if interactive {
-		args = append(args, "--pty")
+		args = append(args, "--pipe", "--pty")
 	} else {
 		args = append(args, "--pipe")
 	}
@@ -77,45 +83,30 @@ func supplementaryGroupIDs(groups []uint32, primary uint32) []string {
 	return ids
 }
 
-func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.Cmd, *bytes.Buffer) {
+func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {
 	command := append([]string{defaultLaunchScript}, opts.args...)
 	launchEnv := containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
+	unit := fmt.Sprintf("pipelock-contain-%d-%d", os.Getpid(), privateTmpUnitSequence.Add(1))
 	cmd := exec.CommandContext(opts.ctx, systemdRunPath)
-	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, launchEnv, command, isTerminalReader(opts.stdin))...)
+	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, launchEnv, command, isTerminalReader(opts.stdin), false, unit)...)
 	cmd.Stdin = opts.stdin
 	cmd.Stdout = opts.stdout
-	statusOutput := &bytes.Buffer{}
-	cmd.Stderr = io.MultiWriter(opts.stderr, statusOutput)
-	return cmd, statusOutput
+	cmd.Stderr = opts.stderr
+	return cmd, unit
 }
 
-// systemdMainSignal extracts the transient service's signal result from
-// systemd-run --wait output. systemd itself treats several terminating signals
-// as clean for non-oneshot services, so the wrapper's process status alone is
-// insufficient to preserve the contained tool's shell-compatible exit code.
+// systemdMainSignal decodes the trusted ExecMainCode and ExecMainStatus values
+// returned by systemctl show for an explicitly named transient unit.
 func systemdMainSignal(output string) (syscall.Signal, bool) {
-	for _, line := range strings.Split(output, "\n") {
-		if !strings.Contains(line, "code=killed") && !strings.Contains(line, "code=dumped") {
-			continue
-		}
-		const marker = "status="
-		idx := strings.Index(line, marker)
-		if idx < 0 {
-			continue
-		}
-		name := strings.TrimSpace(line[idx+len(marker):])
-		parts := strings.SplitN(name, "/", 2)
-		if len(parts) == 2 {
-			name = parts[1]
-		}
-		name = strings.TrimPrefix(name, "SIG")
-		for signal := syscall.Signal(1); signal < 65; signal++ {
-			if strings.TrimPrefix(unix.SignalName(signal), "SIG") == name {
-				return signal, true
-			}
-		}
+	fields := strings.Fields(output)
+	if len(fields) != 2 || (fields[0] != "killed" && fields[0] != "dumped") {
+		return 0, false
 	}
-	return 0, false
+	value, err := strconv.Atoi(fields[1])
+	if err != nil || value <= 0 || value >= 65 {
+		return 0, false
+	}
+	return syscall.Signal(value), true
 }
 
 // probePrivateTmp proves that systemd creates a private mount namespace for a
@@ -201,7 +192,7 @@ func privateTmpSystemdRunArgsForAgent(env *probeEnv, command []string) ([]string
 	if err != nil {
 		return nil, fmt.Errorf("group ids for %s: %w", env.agentUserName, err)
 	}
-	return privateTmpSystemdRunArgs(uint32(uid), uint32(gid), groups, u.HomeDir, nil, command, false), nil
+	return privateTmpSystemdRunArgs(uint32(uid), uint32(gid), groups, u.HomeDir, nil, command, false, true, ""), nil
 }
 
 func isTerminalReader(reader any) bool {

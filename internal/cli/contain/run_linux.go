@@ -6,7 +6,6 @@
 package contain
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,6 +30,20 @@ func containRunSupported() bool {
 var runContainedAgentCommand = func(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
+
+var (
+	containedAgentSystemdStatus = func(ctx context.Context, unit string) (string, error) {
+		cmd := exec.CommandContext(ctx, "systemctl")
+		cmd.Args = []string{"systemctl", "show", unit, "--property=ExecMainCode", "--property=ExecMainStatus", "--value"}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	containedAgentSystemdCleanup = func(ctx context.Context, unit string) {
+		cmd := exec.CommandContext(ctx, "systemctl")
+		cmd.Args = []string{"systemctl", "reset-failed", unit}
+		_ = cmd.Run()
+	}
+)
 
 func launchContainedAgent(
 	ctx context.Context,
@@ -79,7 +92,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd, systemdStatus := containedAgentCommand(containedAgentCommandOptions{
+	cmd, systemdUnit := containedAgentCommand(containedAgentCommandOptions{
 		ctx:              ctx,
 		agentUserName:    env.agentUserName,
 		homeDir:          homeDir,
@@ -95,8 +108,16 @@ func launchContainedAgent(
 	})
 
 	runErr := runContainedAgentCommand(cmd)
-	if signal, ok := systemdMainSignal(systemdStatus.String()); ok {
-		return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
+	defer containedAgentSystemdCleanup(context.WithoutCancel(ctx), systemdUnit)
+	var systemdExitErr *exec.ExitError
+	if errors.As(runErr, &systemdExitErr) && systemdExitErr.ExitCode() == 255 {
+		status, statusErr := containedAgentSystemdStatus(context.WithoutCancel(ctx), systemdUnit)
+		if statusErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("inspect contained agent status: %w", statusErr))
+		}
+		if signal, ok := systemdMainSignal(status); ok {
+			return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
+		}
 	}
 	if runErr != nil {
 		var exitErr *exec.ExitError
@@ -131,6 +152,6 @@ type containedAgentCommandOptions struct {
 	stderr           io.Writer
 }
 
-func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, *bytes.Buffer) {
+func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {
 	return containedAgentPrivateTmpCommand(opts)
 }

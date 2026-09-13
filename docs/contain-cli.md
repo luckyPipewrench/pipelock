@@ -177,9 +177,9 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 15 fixed probes in order (plus a
-conditional workspace probe, numbered 16, when workspaces are configured) and
-prints pass / fail / skip / unknown per probe. Probe 15 temporarily creates and
+Verify normally makes no host changes. It walks 15 fixed probes (numbered 1–14
+and 16) plus the existing conditional workspace probe, numbered 15, when
+workspaces are configured. It prints pass / fail / skip / unknown per probe. Probe 16 temporarily creates and
 removes one canary in each host temporary directory; it requires root to start
 the transient service and otherwise skips. Probe numbers are an operator
 contract; new probes are appended above the existing range rather than
@@ -205,8 +205,8 @@ pipelock contain verify
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 | 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |
-| 15 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
-| 16 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. |
+| 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
+| 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 
 ### Managed metrics invariant
 

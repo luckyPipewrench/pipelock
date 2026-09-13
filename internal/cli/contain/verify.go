@@ -352,7 +352,7 @@ func allProbes() []probe {
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
-		{15, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
+		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
 	}
 }
 
@@ -366,12 +366,13 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	// Conditional workspace probe. Numbered 16 (above the fixed allProbes range,
-	// which now tops out at 15) so adding the private-temp canary did not renumber
-	// any fixed probe. Appears when workspaces are passed via --workspace or when
-	// the recorded inventory has grants to check for readability and expiry.
+	// Preserve workspace_access as published probe 15. The new private-temp probe
+	// is 16; insert the conditional workspace result before it so configured
+	// output remains numerically ordered without renumbering the existing result.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		probes = append(probes, probe{16, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+		privateTmp := probes[len(probes)-1]
+		probes[len(probes)-1] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
+		probes = append(probes, privateTmp)
 	}
 	return probes
 }

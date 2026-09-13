@@ -320,7 +320,7 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "expired") {
 			t.Fatalf("dry-run err = %v, want expired-grant refusal", err)
 		}
-		if !strings.Contains(buf.String(), "[FAIL] probe 16") || !strings.Contains(buf.String(), "revoke-workspace") {
+		if !strings.Contains(buf.String(), "[FAIL] probe 15") || !strings.Contains(buf.String(), "revoke-workspace") {
 			t.Fatalf("dry-run did not surface the expired grant through the workspace probe:\n%s", buf.String())
 		}
 		if launched || posture {

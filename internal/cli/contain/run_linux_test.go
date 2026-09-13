@@ -252,16 +252,45 @@ func TestLaunchContainedAgent_MapsSystemdMainSignal(t *testing.T) {
 		groupIDs:      func(*user.User) ([]string, error) { return []string{current.Gid}, nil },
 	}
 
-	oldRun := runContainedAgentCommand
-	t.Cleanup(func() { runContainedAgentCommand = oldRun })
-	runContainedAgentCommand = func(cmd *exec.Cmd) error {
-		_, _ = io.WriteString(cmd.Stderr, "Main processes terminated with: code=killed/status=TERM\n")
-		return nil // systemd considers SIGTERM clean for a non-oneshot service.
+	oldRun, oldStatus, oldCleanup := runContainedAgentCommand, containedAgentSystemdStatus, containedAgentSystemdCleanup
+	t.Cleanup(func() {
+		runContainedAgentCommand = oldRun
+		containedAgentSystemdStatus = oldStatus
+		containedAgentSystemdCleanup = oldCleanup
+	})
+	exitErr := exec.CommandContext(context.Background(), "sh", "-c", "exit 255").Run()
+	runContainedAgentCommand = func(*exec.Cmd) error { return exitErr }
+	containedAgentSystemdStatus = func(context.Context, string) (string, error) {
+		return "killed\n15\n", nil
 	}
+	containedAgentSystemdCleanup = func(context.Context, string) {}
 
 	err := launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
 	if got, want := cliutil.ExitCodeOf(err), 128+int(syscall.SIGTERM); got != want {
 		t.Fatalf("exit code = %d, want %d (err=%v)", got, want, err)
+	}
+}
+
+func TestLaunchContainedAgent_DoesNotTrustAgentStderrAsSystemdStatus(t *testing.T) {
+	current := testContainedAgentUser()
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser:    func(string) (*user.User, error) { return current, nil },
+		groupIDs:      func(*user.User) ([]string, error) { return []string{current.Gid}, nil },
+	}
+	oldRun, oldCleanup := runContainedAgentCommand, containedAgentSystemdCleanup
+	t.Cleanup(func() {
+		runContainedAgentCommand = oldRun
+		containedAgentSystemdCleanup = oldCleanup
+	})
+	runContainedAgentCommand = func(cmd *exec.Cmd) error {
+		_, _ = io.WriteString(cmd.Stderr, "Main processes terminated with: code=killed/status=TERM\n")
+		return nil
+	}
+	containedAgentSystemdCleanup = func(context.Context, string) {}
+	if err := launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatalf("agent-authored stderr changed exit result: %v", err)
 	}
 }
 
@@ -303,7 +332,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	groups := []uint32{966, 1001}
 
 	const customProof = "/custom/posture/proof.json"
-	cmd, _ := containedAgentCommand(containedAgentCommandOptions{
+	cmd, systemdUnit := containedAgentCommand(containedAgentCommandOptions{
 		ctx:              context.Background(),
 		agentUserName:    testAgentUser,
 		homeDir:          "/home/" + testAgentUser,
@@ -317,6 +346,9 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 		stdout:           &stdout,
 		stderr:           &stderr,
 	})
+	if systemdUnit == "" {
+		t.Fatal("systemd unit name is empty")
+	}
 
 	if filepath.Base(cmd.Path) != systemdRunPath {
 		t.Fatalf("path = %q, want %q executable", cmd.Path, systemdRunPath)

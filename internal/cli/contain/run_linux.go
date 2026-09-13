@@ -127,30 +127,5 @@ type containedAgentCommandOptions struct {
 }
 
 func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
-	cmd := exec.CommandContext(opts.ctx, defaultLaunchScript)
-	cmd.Args = append([]string{defaultLaunchScript}, opts.args...)
-	cmd.Stdin = opts.stdin
-	cmd.Stdout = opts.stdout
-	cmd.Stderr = opts.stderr
-	cmd.Dir = opts.homeDir
-	cmd.Env = containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
-	cmd.SysProcAttr = agentSysProcAttr(opts.uid, opts.gid, opts.groups)
-	return cmd
-}
-
-// agentSysProcAttr builds the credential the contained tool launches under.
-// NoSetGroups stays false (the zero value) so the kernel runs setgroups(2) and
-// the child drops the launcher's (root's) supplementary groups instead of
-// inheriting them; groups carries the agent's own group set (primary plus
-// supplementary), matching what `sudo -u <agent>` grants via initgroups.
-// Pdeathsig terminates the contained tool if this launcher dies.
-func agentSysProcAttr(uid, gid uint32, groups []uint32) *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			Uid:    uid,
-			Gid:    gid,
-			Groups: groups,
-		},
-		Pdeathsig: syscall.SIGTERM,
-	}
+	return containedAgentPrivateTmpCommand(opts)
 }

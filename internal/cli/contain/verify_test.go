@@ -2997,10 +2997,10 @@ func TestRunVerify_TextOutput_AllPass(t *testing.T) {
 	if !strings.HasPrefix(out, "pipelock contain verify") {
 		t.Errorf("missing header: %q", out)
 	}
-	if strings.Count(out, "[PASS]") != 14 {
-		t.Errorf("want 14 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
+	if strings.Count(out, "[PASS]") != 15 {
+		t.Errorf("want 15 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
 	}
-	if !strings.Contains(out, "14 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "15 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing aggregate: %q", out)
 	}
 }
@@ -3017,10 +3017,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 15 {
-		t.Fatalf("expected 15 JSON records (14 probes + aggregate), got %d: %q", len(lines), buf.String())
+	if len(lines) != 16 {
+		t.Fatalf("expected 16 JSON records (15 probes + aggregate), got %d: %q", len(lines), buf.String())
 	}
-	for i := 0; i < 14; i++ {
+	for i := 0; i < 15; i++ {
 		var rec probeRecord
 		if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
 			t.Fatalf("line %d: parse: %v (line=%q)", i, err, lines[i])
@@ -3033,10 +3033,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 		}
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[14]), &agg); err != nil {
-		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[14])
+	if err := json.Unmarshal([]byte(lines[15]), &agg); err != nil {
+		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[15])
 	}
-	if agg.Aggregate.Pass != 14 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
+	if agg.Aggregate.Pass != 15 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
 		t.Errorf("aggregate counts: %+v", agg.Aggregate)
 	}
 	if agg.Aggregate.ExitCode != cliutil.ExitOK {
@@ -3081,7 +3081,7 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	if strings.Contains(out, "probe 2:") || strings.Contains(out, "probe 6:") {
 		t.Errorf("liveness probes should be omitted: %q", out)
 	}
-	if !strings.Contains(out, "12 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "13 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing enforcement-only aggregate: %q", out)
 	}
 	if !strings.Contains(out, "probe 10: deployed pipelock binary matches TOFU pin; running-service image is not verified") ||
@@ -3297,8 +3297,8 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 15 {
-		t.Fatalf("JSON record count = %d, want 15: %q", len(lines), buf.String())
+	if len(lines) != 16 {
+		t.Fatalf("JSON record count = %d, want 16: %q", len(lines), buf.String())
 	}
 	var canary probeRecord
 	if err := json.Unmarshal([]byte(lines[7]), &canary); err != nil {
@@ -3308,11 +3308,11 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 		t.Fatalf("canary record = %+v, want probe 8 unknown", canary)
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[14]), &agg); err != nil {
+	if err := json.Unmarshal([]byte(lines[15]), &agg); err != nil {
 		t.Fatalf("decode aggregate: %v", err)
 	}
-	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 13 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
-		t.Fatalf("aggregate = %+v, want 13 pass / 1 unknown / exit 2", agg.Aggregate)
+	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 14 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
+		t.Fatalf("aggregate = %+v, want 14 pass / 1 unknown / exit 2", agg.Aggregate)
 	}
 }
 
@@ -3349,14 +3349,14 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 10 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 11 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 2 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 10 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 11 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "10 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "11 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -3380,9 +3380,9 @@ func TestRunVerify_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text probe", successfulWrites: 1, want: "writing probe 1 text"},
-		{name: "text aggregate", successfulWrites: 15, want: "writing verify aggregate"},
+		{name: "text aggregate", successfulWrites: 16, want: "writing verify aggregate"},
 		{name: "JSON probe", jsonOutput: true, want: "encoding probe 1 JSON"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 14, want: "encoding aggregate JSON"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 15, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {
@@ -3617,6 +3617,9 @@ func containsArg(args []string, needle string) bool {
 func allPassEnv(t *testing.T) *probeEnv {
 	t.Helper()
 	env := makeProbeEnv(t)
+	env.privateTmpProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "test private temporary-directory canary passed"
+	}
 	env.operatorUser = testOperatorUser
 	env.nftRulesPath = filepath.Join(t.TempDir(), "50-pipelock-containment.nft")
 	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")

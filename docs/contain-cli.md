@@ -44,6 +44,7 @@ Before it starts the tool, `contain run` fails closed unless every containment p
 
 - system users, systemd service, nftables owner-match rules, wrappers, CA bundle, loopback proxy, `NO_PROXY`, binary-integrity pin, allow-list enforcement, and registered tool targets must all be healthy;
 - the direct-egress canary from `pipelock-agent` must fail while the operator can still reach the internet, proving the negative probe is meaningful rather than a generic outage;
+- a transient service launched as `pipelock-agent` must not see operator canaries in either `/tmp` or `/var/tmp`, proving the launch has private temporary directories;
 - `pipelock-agent` must not be able to run `sudo -n true`, so the launch path refuses a host where the agent can trivially sudo back out.
 
 After preflight, and before it launches, `contain run` prints a **session contract**: the exact boundary the agent is about to receive, derived from the same preflight state the launch uses. It lists the agent user, the proxy egress posture, the posture-capsule destination, whether the agent's `/tmp` is private, the registered tools, and every workspace grant with its owner, creation time, expiry, and status:
@@ -53,7 +54,7 @@ pipelock contain run: session contract for claude
   agent user:       pipelock-agent
   proxy egress:     http://127.0.0.1:8888 (loopback proxy only; direct egress denied by nftables)
   posture capsule:  /var/lib/pipelock/contain/posture/proof.json
-  agent /tmp:       shared with the operator (not private)
+  agent /tmp:       private (isolated from the operator)
   registered tools: claude, codex
   workspaces:
     /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
@@ -61,7 +62,7 @@ pipelock contain run: session contract for claude
 
 Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch, so an expired grant prints `[expired]` and exits non-zero.
 
-If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then launches `/usr/local/bin/plk-launch <tool> ...` directly as `pipelock-agent`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 Flags:
 
@@ -283,7 +284,7 @@ This makes compatible tooling work; it does **not** widen egress. Direct (proxy-
 
 ### Filesystem sharing
 
-The contained agent runs as its own system user, but `contain run` does not currently give it a private `/tmp`: the agent and the operator share `/tmp` and `/var/tmp`, so at the usual `umask 022` the agent can read operator scratch files. The session contract reports this as `agent /tmp: shared with the operator (not private)`. Do not use `/tmp` to hand secrets to or from the agent. The supported, audited way to share a directory with the agent is a workspace grant (`contain grant-workspace`), which is recorded, listable, and revocable.
+`contain run` starts the agent in a transient systemd service with private `/tmp` and `/var/tmp`. `contain verify` creates and removes canaries in both host directories, then proves the transient service cannot see them before `contain run` advertises private temporary storage in its session contract. Do not use `/tmp` to hand secrets to or from the agent: it is intentionally not shared. The supported, audited way to share a directory with the agent is a workspace grant (`contain grant-workspace`), which is recorded, listable, and revocable.
 
 ## `pipelock contain doctor`
 

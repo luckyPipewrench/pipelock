@@ -23,7 +23,7 @@ Subcommands:
   install     Create users, systemd unit, nft rules, wrappers, sudoers.
   upgrade     Download, verify, replace, re-pin, restart, verify (one command).
   run         Verify containment, then launch a registered agent tool.
-  verify      Run read-only probes; report pass/fail/skip.
+  verify      Run containment probes; report pass/fail/skip.
   doctor      Live self-test of the runtime contract; report remediation.
   rollback    Undo install (idempotent).
   add-tool    Drop a new /usr/local/bin/plk-<name> wrapper.

@@ -12,39 +12,13 @@ import (
 	"io"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
-
-// TestAgentSysProcAttr_DropsCallerGroups locks in the privilege-separation
-// invariant for the contained launch: setgroups(2) MUST run (NoSetGroups
-// false) so the child drops root's supplementary groups instead of inheriting
-// them, and it launches under exactly the agent's resolved group set.
-func TestAgentSysProcAttr_DropsCallerGroups(t *testing.T) {
-	groups := []uint32{966, 1001}
-	attr := agentSysProcAttr(966, 966, groups)
-
-	if attr.Credential == nil {
-		t.Fatal("credential must not be nil")
-	}
-	if attr.Credential.NoSetGroups {
-		t.Fatal("NoSetGroups must be false so setgroups(2) drops the launcher's (root's) supplementary groups")
-	}
-	if attr.Credential.Uid != 966 || attr.Credential.Gid != 966 {
-		t.Fatalf("uid/gid = %d/%d, want 966/966", attr.Credential.Uid, attr.Credential.Gid)
-	}
-	if !equalGIDs(attr.Credential.Groups, groups) {
-		t.Fatalf("groups = %v, want %v", attr.Credential.Groups, groups)
-	}
-	for _, g := range attr.Credential.Groups {
-		if g == 0 {
-			t.Fatalf("contained launch must not carry root group 0: %v", attr.Credential.Groups)
-		}
-	}
-}
 
 func TestLaunchContainedAgent_RejectsRootUIDOrGID(t *testing.T) {
 	tests := []struct {
@@ -183,11 +157,14 @@ func TestLaunchContainedAgent_RunsVerifiedCommandAsAgent(t *testing.T) {
 	if got == nil {
 		t.Fatal("runner was not called")
 	}
-	if got.Path != defaultLaunchScript {
-		t.Fatalf("path = %q, want %q", got.Path, defaultLaunchScript)
+	if filepath.Base(got.Path) != systemdRunPath {
+		t.Fatalf("path = %q, want %q executable", got.Path, systemdRunPath)
 	}
-	if want := defaultLaunchScript + " claude --version"; strings.Join(got.Args, " ") != want {
-		t.Fatalf("args = %q, want %q", strings.Join(got.Args, " "), want)
+	if !strings.Contains(strings.Join(got.Args, " "), "--property=PrivateTmp=true") {
+		t.Fatalf("args = %q, want PrivateTmp transient service", strings.Join(got.Args, " "))
+	}
+	if !strings.HasSuffix(strings.Join(got.Args, " "), "-- "+defaultLaunchScript+" claude --version") {
+		t.Fatalf("args = %q, want final plk-launch command", strings.Join(got.Args, " "))
 	}
 }
 
@@ -319,34 +296,31 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 		stderr:           &stderr,
 	})
 
-	if cmd.Path != defaultLaunchScript {
-		t.Fatalf("path = %q, want %q", cmd.Path, defaultLaunchScript)
+	if filepath.Base(cmd.Path) != systemdRunPath {
+		t.Fatalf("path = %q, want %q executable", cmd.Path, systemdRunPath)
 	}
-	if got, want := strings.Join(cmd.Args, " "), defaultLaunchScript+" claude --help"; got != want {
-		t.Fatalf("args = %q, want %q", got, want)
+	args := strings.Join(cmd.Args, " ")
+	for _, want := range []string{
+		"--property=PrivateTmp=true",
+		"--uid=966",
+		"--gid=966",
+		"--property=SupplementaryGroups=1001",
+		"--working-directory=/home/" + testAgentUser,
+		"--pipe",
+		"-- " + defaultLaunchScript + " claude --help",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("args = %q, missing %q", args, want)
+		}
 	}
 	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
 		t.Fatal("command stdio was not wired through")
 	}
-	if cmd.Dir != "/home/"+testAgentUser {
-		t.Fatalf("dir = %q, want contained agent home", cmd.Dir)
-	}
 	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)
-	if got, want := strings.Join(cmd.Env, "\n"), strings.Join(wantEnv, "\n"); got != want {
-		t.Fatalf("env =\n%s\nwant:\n%s", got, want)
-	}
-	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Credential == nil {
-		t.Fatal("command missing launch credential")
-	}
-	cred := cmd.SysProcAttr.Credential
-	if cred.Uid != 966 || cred.Gid != 966 {
-		t.Fatalf("uid/gid = %d/%d, want 966/966", cred.Uid, cred.Gid)
-	}
-	if cred.NoSetGroups {
-		t.Fatal("NoSetGroups must stay false")
-	}
-	if !equalGIDs(cred.Groups, groups) {
-		t.Fatalf("groups = %v, want %v", cred.Groups, groups)
+	for _, entry := range wantEnv {
+		if !strings.Contains(args, "--setenv="+entry) {
+			t.Fatalf("args = %q, missing runtime environment %q", args, entry)
+		}
 	}
 }
 

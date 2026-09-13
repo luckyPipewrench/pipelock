@@ -69,8 +69,8 @@ func TestBuildSessionContract_DerivesFromPreflightState(t *testing.T) {
 	if c.Tool != "claude" || c.AgentUser != "pipelock-agent" || c.ProxyURL != "http://127.0.0.1:8888" {
 		t.Fatalf("scalar fields wrong: %+v", c)
 	}
-	if c.PrivateTmp {
-		t.Fatal("PrivateTmp must be false until private-tmp isolation ships")
+	if !c.PrivateTmp {
+		t.Fatal("PrivateTmp must be true after the private-temp preflight canary passes")
 	}
 	if strings.Join(c.RegisteredTools, ",") != "claude,codex" {
 		t.Fatalf("registered tools = %v, want claude,codex", c.RegisteredTools)

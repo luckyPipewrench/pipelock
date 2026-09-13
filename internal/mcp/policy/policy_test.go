@@ -1728,6 +1728,37 @@ func TestDefaultToolPolicyRules_ApplyPatchOrdinaryArgumentFallback(t *testing.T)
 	}
 }
 
+func TestDefaultToolPolicyRules_ApplyPatchMixedArguments(t *testing.T) {
+	pc := defaultConfig(t)
+	safePatch := "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-source ~/.bashrc\n+describe source ~/.bashrc\n"
+
+	if v := pc.CheckRequest(toolCallRequest(t, "apply_patch", map[string]any{
+		"patch": safePatch,
+		"path":  "main.go",
+	})); v.Matched {
+		t.Fatalf("safe mixed arguments matched rules %v", v.Rules)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		path     string
+		wantRule string
+	}{
+		{name: "shell profile", path: "/home/user/.bashrc", wantRule: "Shell Profile Modification"},
+		{name: "persistence", path: "/etc/systemd/system/p.service", wantRule: "Persistence Path Write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest(toolCallRequest(t, "apply_patch", map[string]any{
+				"patch": safePatch,
+				"path":  tc.path,
+			}))
+			if !v.Matched || !slices.Equal(v.Rules, []string{tc.wantRule}) {
+				t.Fatalf("mixed target %q verdict = %+v, want only %q", tc.path, v, tc.wantRule)
+			}
+		})
+	}
+}
+
 func TestDefaultToolPolicyRules_UninspectablePatchTargets(t *testing.T) {
 	pc := defaultConfig(t)
 	for _, tc := range []struct {

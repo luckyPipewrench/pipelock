@@ -112,6 +112,9 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 					assertPolicyArgs(t, pc, filePatchToolPattern, map[string]any{
 						"path": check.path, "content": "replacement",
 					}, check.baselineRule, wantAction)
+					assertPolicyArgs(t, pc, filePatchToolPattern, map[string]any{
+						"patch": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n", "path": check.path,
+					}, check.baselineRule, wantAction)
 					for _, patch := range protectedPatchTargetFormats(check.path) {
 						assertPolicyCall(t, pc, filePatchToolPattern, map[string]any{"patch": patch}, check.baselineRule, wantAction)
 					}

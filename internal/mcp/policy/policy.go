@@ -313,9 +313,10 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				ruleTokens, ruleJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, policyPreNormalize)
-				ruleAltTokens, ruleAltJoined = normalizeArgTokens(patchTargets, normalize.ForPolicy, policyPreNormalize)
-				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(patchTargets, normalize.ForMatching, nil)
+				matchStrings := patchTargetMatchStrings(argStrings, patchTargets)
+				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
+				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
+				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
 			}
 		}
 
@@ -674,6 +675,23 @@ func isPatchShapeMarker(line string) bool {
 		strings.HasPrefix(line, strings.TrimSuffix(applyPatchAddHeader, " ")) ||
 		strings.HasPrefix(line, strings.TrimSuffix(applyPatchDeleteHeader, " ")) ||
 		strings.HasPrefix(line, strings.TrimSuffix(applyPatchMoveHeader, " "))
+}
+
+func patchTargetMatchStrings(argStrings, patchTargets []string) []string {
+	matchStrings := append([]string(nil), patchTargets...)
+	for _, arg := range argStrings {
+		patchShaped := false
+		for _, rawLine := range strings.Split(arg, "\n") {
+			if isPatchShapeMarker(strings.TrimSuffix(rawLine, "\r")) {
+				patchShaped = true
+				break
+			}
+		}
+		if !patchShaped {
+			matchStrings = append(matchStrings, arg)
+		}
+	}
+	return matchStrings
 }
 
 func appendPatchTarget(targets []string, target string) []string {

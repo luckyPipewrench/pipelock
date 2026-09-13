@@ -61,12 +61,28 @@ type Limiter struct {
 
 	mu      sync.Mutex
 	entries map[string]*entry
+	nextID  uint64
 }
 
 type entry struct {
-	// failures holds the timestamps of admitted evaluations inside the
-	// window, oldest first. It never grows past maxFailures entries.
-	failures []time.Time
+	// failures holds the admitted evaluations inside the window, oldest
+	// first. It never grows past maxFailures entries.
+	failures []slot
+}
+
+// slot is one admitted evaluation: when it was admitted and an id that lets
+// the request that took it give back exactly that slot.
+type slot struct {
+	id uint64
+	at time.Time
+}
+
+// Reservation identifies one admitted evaluation so the caller can release
+// exactly the slot it took, never a slot another request is holding. The zero
+// Reservation releases nothing.
+type Reservation struct {
+	key string
+	id  uint64
 }
 
 // New returns a limiter allowing maxFailures presented-but-invalid credentials
@@ -111,10 +127,18 @@ func (l *Limiter) SetClock(now func() time.Time) {
 // separate check-then-record pair lets a burst of parallel guesses all observe
 // "not blocked" before any of them is recorded, which is a fail-open. A slot
 // reserved for a credential that then verifies is released by Reset. A nil
-// limiter admits everything.
+// limiter admits everything. Callers that may need to give a slot back use
+// Reserve, which also returns the handle.
 func (l *Limiter) Admit(key string) (bool, time.Duration) {
+	_, allowed, retry := l.Reserve(key)
+	return allowed, retry
+}
+
+// Reserve is Admit with a handle: on success the returned Reservation names
+// exactly the slot this call took, for a later Release.
+func (l *Limiter) Reserve(key string) (Reservation, bool, time.Duration) {
 	if l == nil {
-		return true, 0
+		return Reservation{}, true, 0
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -133,14 +157,15 @@ func (l *Limiter) Admit(key string) (bool, time.Duration) {
 		// spent budget does not extend itself on every further attempt, which
 		// would let an attacker lock an operator out indefinitely from a
 		// shared address. It simply stays spent until the window passes.
-		retry := e.failures[0].Add(l.window).Sub(now)
+		retry := e.failures[0].at.Add(l.window).Sub(now)
 		if retry <= 0 {
 			retry = time.Second
 		}
-		return false, retry
+		return Reservation{}, false, retry
 	}
-	e.failures = append(e.failures, now)
-	return true, 0
+	l.nextID++
+	e.failures = append(e.failures, slot{id: l.nextID, at: now})
+	return Reservation{key: key, id: l.nextID}, true, 0
 }
 
 // Blocked reports whether key has spent its budget without reserving a slot.
@@ -160,32 +185,38 @@ func (l *Limiter) Blocked(key string) (bool, time.Duration) {
 	if len(e.failures) < l.maxFailures {
 		return false, 0
 	}
-	retry := e.failures[0].Add(l.window).Sub(now)
+	retry := e.failures[0].at.Add(l.window).Sub(now)
 	if retry <= 0 {
 		retry = time.Second
 	}
 	return true, retry
 }
 
-// Release returns the newest reservation for key without touching earlier
-// ones. Callers use it when an admitted evaluation turned out not to be a
-// guess at all, for example a request that a separate verifier authenticated
-// while carrying a bearer value meant for something else: the slot goes back,
-// but real earlier failures from the same address still count. A nil limiter
-// or an unknown key is a no-op.
-func (l *Limiter) Release(key string) {
-	if l == nil {
+// Release gives back exactly the slot res names, leaving every other
+// reservation on that key untouched. Callers use it when an admitted
+// evaluation turned out not to be a guess at all, for example a request that
+// a separate verifier authenticated while carrying a bearer value meant for
+// something else, or a request that failed for a reason unrelated to the
+// credential. A nil limiter, the zero Reservation, or a slot that has already
+// expired or been reset is a no-op.
+func (l *Limiter) Release(res Reservation) {
+	if l == nil || res.id == 0 {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.entries[key]
-	if e == nil || len(e.failures) == 0 {
+	e := l.entries[res.key]
+	if e == nil {
 		return
 	}
-	e.failures = e.failures[:len(e.failures)-1]
+	for i, s := range e.failures {
+		if s.id == res.id {
+			e.failures = append(e.failures[:i], e.failures[i+1:]...)
+			break
+		}
+	}
 	if len(e.failures) == 0 {
-		delete(l.entries, key)
+		delete(l.entries, res.key)
 	}
 }
 
@@ -215,7 +246,7 @@ func (l *Limiter) Len() int {
 func (l *Limiter) prune(e *entry, now time.Time) {
 	cutoff := now.Add(-l.window)
 	i := 0
-	for i < len(e.failures) && !e.failures[i].After(cutoff) {
+	for i < len(e.failures) && !e.failures[i].at.After(cutoff) {
 		i++
 	}
 	if i > 0 {
@@ -238,7 +269,7 @@ func (l *Limiter) evictOne(now time.Time) {
 			found = true
 			continue
 		}
-		newest := e.failures[len(e.failures)-1]
+		newest := e.failures[len(e.failures)-1].at
 		if victim == "" || newest.Before(victimAge) {
 			victim, victimAge = k, newest
 		}

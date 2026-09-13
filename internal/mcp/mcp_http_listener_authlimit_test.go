@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -253,5 +254,61 @@ func TestHTTPListener_ResolverTrafficDoesNotSpendBearerBudget(t *testing.T) {
 	}
 	if got := request("Bearer guess"); got != http.StatusTooManyRequests {
 		t.Fatalf("over-budget guess after interleaving: status = %d, want 429", got)
+	}
+}
+
+// TestHTTPListener_AuthOutageDoesNotSpendBearerBudget pins that a request
+// refused with 503 because the principal resolver failed was never a guess:
+// repeated outages leave the address's budget intact, so the correct bearer
+// works as soon as the resolver recovers. (A token-refresh failure is refused
+// before any slot is reserved, so the resolver is the path that must release.)
+func TestHTTPListener_AuthOutageDoesNotSpendBearerBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	defer upstream.Close()
+
+	var outage atomic.Bool
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:             testScannerForHTTP(t),
+		ListenerBearerToken: "listener-secret",
+		ListenerPrincipalResolver: func(*http.Request) (ListenerPrincipal, error) {
+			if outage.Load() {
+				return ListenerPrincipal{}, errors.New("identity provider unavailable")
+			}
+			return ListenerPrincipal{}, nil
+		},
+	})
+	request := func(proxyAuth string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(listenerProtocolVersion, "2025-06-18")
+		req.Header.Set(listenerProxyAuthorization, proxyAuth)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// One real guess first, so a leaked slot would be visible as an early 429.
+	if got := request("Bearer guess"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("guess: status = %d, want 407", got)
+	}
+	outage.Store(true)
+	for i := range authlimit.DefaultMaxFailures + 5 {
+		if got := request("Bearer listener-secret"); got != http.StatusServiceUnavailable {
+			t.Fatalf("outage request %d: status = %d, want 503", i, got)
+		}
+	}
+	outage.Store(false)
+	if got := request("Bearer listener-secret"); got != http.StatusOK {
+		t.Fatalf("correct token after the outage: status = %d, want 200 (outage must not spend the budget)", got)
 	}
 }

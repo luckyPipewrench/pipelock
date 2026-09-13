@@ -237,20 +237,54 @@ func TestLimiter_ParallelBurstCannotExceedBudget(t *testing.T) {
 	}
 }
 
-func TestLimiter_ReleaseReturnsOnlyTheNewestSlot(t *testing.T) {
+func TestLimiter_ReleaseReturnsOnlyTheCallersSlot(t *testing.T) {
 	l, _ := newTestLimiter(t, 3)
 	const key = "203.0.113.50"
-	l.Admit(key) // a real failure
-	l.Admit(key) // a real failure
-	l.Admit(key) // an evaluation that turned out not to be a guess
-	l.Release(key)
-	if allowed, _ := l.Admit(key); !allowed {
-		t.Fatal("Release did not return the slot")
+	// Request A reserves first, request B then records a real failure, and A
+	// releases afterwards: B's slot must survive.
+	resA, ok, _ := l.Reserve(key)
+	if !ok {
+		t.Fatal("A not admitted")
 	}
-	if allowed, _ := l.Admit(key); allowed {
-		t.Fatal("Release returned more than one slot: earlier failures must still count")
+	if _, ok, _ := l.Reserve(key); !ok { // B, a real failure
+		t.Fatal("B not admitted")
 	}
-	l.Release("unknown-key")
+	l.Release(resA)
+	if l.entries[key] == nil || len(l.entries[key].failures) != 1 {
+		t.Fatalf("after releasing A, slots = %+v, want exactly B's", l.entries[key])
+	}
+	// Releasing A twice, the zero reservation, or an unknown key changes nothing.
+	l.Release(resA)
+	l.Release(Reservation{})
+	l.Release(Reservation{key: "unknown", id: 99})
+	if len(l.entries[key].failures) != 1 {
+		t.Fatalf("idempotent release changed the count: %+v", l.entries[key])
+	}
 	var nilLimiter *Limiter
-	nilLimiter.Release(key)
+	nilLimiter.Release(resA)
+	// Reset then Release of a stale handle is a no-op.
+	l.Reset(key)
+	l.Release(resA)
+	if l.Len() != 0 {
+		t.Fatalf("Len = %d after Reset, want 0", l.Len())
+	}
+}
+
+// TestLimiter_ReleaseOutOfOrderKeepsWindowAnchor pins the accounting the
+// ownership-aware handle exists for: with A admitted before B, releasing A
+// leaves B's own timestamp as the window anchor, so B's failure still counts
+// for its full window rather than expiring early on A's older timestamp.
+func TestLimiter_ReleaseOutOfOrderKeepsWindowAnchor(t *testing.T) {
+	l, clk := newTestLimiter(t, 1)
+	const key = "203.0.113.51"
+	resA, _, _ := l.Reserve(key)
+	clk.advance(50 * time.Second)
+	l.Release(resA)
+	if _, ok, _ := l.Reserve(key); !ok { // B, at t+50s
+		t.Fatal("B not admitted after A released")
+	}
+	clk.advance(11 * time.Second) // t+61s: A's slot would have expired, B's must not
+	if _, ok, retry := l.Reserve(key); ok || retry <= 0 {
+		t.Fatalf("B's failure expired early: admitted=%v retry=%v", ok, retry)
+	}
 }

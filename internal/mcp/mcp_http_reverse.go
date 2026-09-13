@@ -383,9 +383,12 @@ func RunHTTPListenerProxy(
 		// reservedSlot records whether THIS request holds a budget slot, so a
 		// later release returns only what this request took and never a slot
 		// that a real guess from the same address is holding.
+		var reservation authlimit.Reservation
 		reservedSlot := false
 		if configuredListenerToken != "" && credentialPresented {
-			allowed, retry := listenerAuthFailures.Admit(authClientKey)
+			var allowed bool
+			var retry time.Duration
+			reservation, allowed, retry = listenerAuthFailures.Reserve(authClientKey)
 			reservedSlot = allowed
 			if !allowed {
 				principal, principalErr := listenerPrincipalForRequest(r, opts, listenerClients)
@@ -397,6 +400,12 @@ func RunHTTPListenerProxy(
 		}
 		listenerToken, consumedAuthHeader, authorized, listenerPrincipal, tokenErr := listenerAuthenticationForRequest(r, opts, listenerClients)
 		if tokenErr != nil {
+			// The credential was never compared, so this was not a guess: give
+			// the slot back, or ten resolver or token-refresh outages would lock
+			// the address out of a working listener.
+			if reservedSlot {
+				listenerAuthFailures.Release(reservation)
+			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
 			http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
 			return
@@ -419,9 +428,9 @@ func RunHTTPListenerProxy(
 		} else if reservedSlot && listenerPrincipal.key != "" {
 			// A resolver verified this request (mTLS, OAuth) and the bearer value
 			// it carried was for something else, so the evaluation it reserved
-			// was not a guess. Return that one slot; earlier real failures from
-			// the address still count.
-			listenerAuthFailures.Release(authClientKey)
+			// was not a guess. Return exactly that slot; earlier real failures
+			// from the address still count.
+			listenerAuthFailures.Release(reservation)
 		}
 		// The listener credential is an access-control secret, not agent data
 		// destined for the upstream. Remove it before header DLP and forwarding:

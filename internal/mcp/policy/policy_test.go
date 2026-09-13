@@ -1231,9 +1231,13 @@ func TestDefaultToolPolicyRules_MatchDestructiveDelete(t *testing.T) {
 
 func TestDefaultToolPolicyRules_MatchCredentialAccess(t *testing.T) {
 	pc := defaultConfig(t)
-	v := pc.CheckToolCall("read_file", []string{"/home/user/.ssh/id_rsa"})
-	if !v.Matched {
-		t.Error("expected match for .ssh credential access")
+	for _, toolName := range strings.Split(fileReadToolPattern, "|") {
+		t.Run(toolName, func(t *testing.T) {
+			v := pc.CheckToolCall(toolName, []string{"/home/user/.ssh/id_rsa"})
+			if !v.Matched || !slices.Contains(v.Rules, "Credential File Access") {
+				t.Fatalf("verdict = %+v, want Credential File Access", v)
+			}
+		})
 	}
 }
 

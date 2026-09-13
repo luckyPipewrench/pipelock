@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -36,6 +37,13 @@ func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) 
 			pc := New(cfg.MCPToolPolicy)
 			if pc == nil {
 				t.Fatal("preset tool policy is disabled")
+			}
+
+			credentialAction := effectiveRuleAction(t, cfg.MCPToolPolicy, "Credential File Access")
+			for _, toolName := range strings.Split(fileReadToolPattern, "|") {
+				assertPolicyCall(t, pc, toolName, map[string]any{
+					"path": "/home/user/.ssh/id_rsa",
+				}, "Credential File Access", credentialAction)
 			}
 
 			checks := []struct {

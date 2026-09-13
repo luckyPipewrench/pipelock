@@ -996,6 +996,7 @@ func expandBraces(s string) string {
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules
 // covering common dangerous operations that agents might attempt.
 const (
+	fileReadToolPattern  = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
 	fileWriteToolPattern = `write_file|file_write|edit_file|create_file|modify_file|append_file`
 	fileMoveToolPattern  = `move_file|file_move|rename_file|move-file`
 	fileCopyToolPattern  = `copy_file`
@@ -1020,7 +1021,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		},
 		{
 			Name:        "Credential File Access",
-			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$`,
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `)$`,
 			ArgPattern:  `(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)`,
 			Action:      config.ActionBlock,
 		},

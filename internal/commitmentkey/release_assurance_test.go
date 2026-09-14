@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -161,8 +162,12 @@ func TestReleaseAssuranceFailedWritesPreserveCommittedKeyrings(t *testing.T) {
 			t.Fatalf("Symlink: %v", err)
 		}
 
+		snapshot := cloneKeyring(keyring)
 		if _, err := keyring.rotate(link, time.Unix(1_700_000_100, 0)); !errors.Is(err, ErrSymlink) {
 			t.Fatalf("rotate through substituted destination = %v, want ErrSymlink", err)
+		}
+		if !reflect.DeepEqual(keyring, snapshot) {
+			t.Fatal("rejected rotation changed the receiver")
 		}
 		after, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
@@ -177,4 +182,72 @@ func TestReleaseAssuranceFailedWritesPreserveCommittedKeyrings(t *testing.T) {
 		}
 		openTestReceipt(t, restarted, receipt)
 	})
+}
+
+func TestReleaseAssuranceRetirementPreservesReceiverUntilSaved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink privileges and semantics differ from Unix O_NOFOLLOW handling")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := keyring.Active()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keyring.rotate(path, time.Unix(1_700_000_100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := cloneKeyring(keyring)
+	link := filepath.Join(dir, "substituted.json")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyring.retire(link, old.KeyID, old.Epoch, true); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("retire = %v, want ErrSymlink", err)
+	}
+	if !reflect.DeepEqual(keyring, snapshot) {
+		t.Fatal("failed retirement changed the receiver")
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reloaded, snapshot) {
+		t.Fatal("failed retirement changed the persisted keyring")
+	}
+	if err := keyring.retire(path, old.KeyID, old.Epoch, true); err != nil {
+		t.Fatalf("valid retirement: %v", err)
+	}
+	if _, err := keyring.Open(old.KeyID, old.Epoch); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("retired key remains in receiver: %v", err)
+	}
+	reloaded, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloaded.Open(old.KeyID, old.Epoch); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("retired key remains persisted: %v", err)
+	}
+}
+
+func TestReleaseAssuranceRotationEntropyFailurePreservesReceiver(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	keyring, err := Initialize(path, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := cloneKeyring(keyring)
+	originalReader := cryptorand.Reader
+	cryptorand.Reader = &entropyFailureReader{}
+	t.Cleanup(func() { cryptorand.Reader = originalReader })
+	if _, err := keyring.rotate(path, time.Unix(1_700_000_100, 0)); err == nil {
+		t.Fatal("rotation accepted unavailable entropy")
+	}
+	if !reflect.DeepEqual(keyring, snapshot) {
+		t.Fatal("failed key generation changed the receiver")
+	}
 }

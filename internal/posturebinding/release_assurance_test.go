@@ -25,17 +25,17 @@ func TestReleaseAssuranceUnreadableProofWarningDescribesKnownAndUnknownOwnership
 	tests := []struct {
 		name string
 		path string
-		want string
+		want []string
 	}{
 		{
 			name: "inspectable proof",
 			path: knownPath,
-			want: "owner ",
+			want: []string{"owner ", "group "},
 		},
 		{
 			name: "uninspectable path",
 			path: filepath.Join(t.TempDir(), "missing", "proof.json"),
-			want: "owner/group could not be inspected",
+			want: []string{"owner/group could not be inspected"},
 		},
 	}
 
@@ -45,8 +45,10 @@ func TestReleaseAssuranceUnreadableProofWarningDescribesKnownAndUnknownOwnership
 				Path:  tt.path,
 				Cause: errors.New("permission denied"),
 			})
-			if !strings.Contains(warning, tt.want) {
-				t.Fatalf("warning = %q, want %q", warning, tt.want)
+			for _, want := range tt.want {
+				if !strings.Contains(warning, want) {
+					t.Fatalf("warning = %q, want %q", warning, want)
+				}
 			}
 			if !strings.Contains(warning, "permission denied") {
 				t.Fatalf("warning = %q, want underlying read failure", warning)

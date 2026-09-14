@@ -250,6 +250,11 @@ func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
 	if err := k.Validate(); err != nil {
 		return Handle{}, err
 	}
+	// Publish the new receiver state only after persistence succeeds.
+	original := k
+	candidate := *k
+	candidate.Keys = append([]Entry(nil), k.Keys...)
+	k = &candidate
 	for i := range k.Keys {
 		if k.Keys[i].State == StateActive {
 			k.Keys[i].State = StateRetired
@@ -271,6 +276,7 @@ func (k *Keyring) rotate(path string, now time.Time) (Handle, error) {
 	if err := k.saveLocked(path); err != nil {
 		return Handle{}, err
 	}
+	*original = *k
 	return handle, nil
 }
 
@@ -308,8 +314,15 @@ func (k *Keyring) retire(path, keyID string, epoch uint64, acceptLoss bool) erro
 	if !acceptLoss {
 		return fmt.Errorf("%w: no authoritative retained-evidence inventory exists; --accept-loss is required to destroy key_id=%q epoch=%d", ErrRetainedKey, keyID, epoch)
 	}
-	k.Keys = append(k.Keys[:index], k.Keys[index+1:]...)
-	return k.saveLocked(path)
+	candidate := *k
+	candidate.Keys = make([]Entry, 0, len(k.Keys)-1)
+	candidate.Keys = append(candidate.Keys, k.Keys[:index]...)
+	candidate.Keys = append(candidate.Keys, k.Keys[index+1:]...)
+	if err := candidate.saveLocked(path); err != nil {
+		return err
+	}
+	*k = candidate
+	return nil
 }
 
 // saveLocked persists a validated lifecycle mutation. Callers must hold the

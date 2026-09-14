@@ -1508,7 +1508,7 @@ func newInterceptHandler(
 					ActionID:   actionID,
 					Verdict:    config.ActionBlock,
 					Layer:      "cross_request",
-					Pattern:    ceeRes.Reason,
+					Pattern:    ceeReceiptPattern(ceeRes),
 					Transport:  "intercept",
 					Method:     r.Method,
 					Target:     targetURL,

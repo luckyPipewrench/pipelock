@@ -514,10 +514,35 @@ func ceeEffectiveConfig(ceeCfg config.CrossRequestDetection, enforcing bool) con
 
 // ceeResult holds the outcome of a CEE admission check.
 type ceeResult struct {
-	Blocked     bool
-	Reason      string
+	Blocked bool
+	Reason  string
+	// BlockKind is the stable machine token identifying why CEE denied the
+	// request, or the matched DLP pattern name for a fragment match. Client
+	// reasons are deliberately neutral prose, so signed receipts key on this
+	// field instead: a receipt whose Pattern held a sentence carried no
+	// queryable evidence of which control fired.
+	BlockKind   string
 	EntropyHit  bool // entropy budget exceeded (for metrics/signals)
 	FragmentHit bool // fragment DLP match (for metrics/signals)
+}
+
+// CEE block kinds. These tokens are byte-identical to the MCP transport's
+// ceeBlockKind* constants so one deny reads the same across transports.
+const (
+	ceeBlockKindEntropyBudget   = "entropy_budget"
+	ceeBlockKindInspectionDepth = "inspection_depth"
+	ceeBlockKindSessionCapacity = "session_capacity"
+	ceeBlockKindOwnerMismatch   = "fragment_owner_mismatch"
+)
+
+// ceeReceiptPattern is the receipt Pattern field for a CEE denial. It prefers
+// the stable block kind and falls back to the reason only if a future block
+// site forgets to set one, so a receipt is never empty.
+func ceeReceiptPattern(res ceeResult) string {
+	if res.BlockKind != "" {
+		return res.BlockKind
+	}
+	return res.Reason
 }
 
 // ceeAdmit runs cross-request exfiltration detection on outbound payload data.
@@ -610,6 +635,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 				logger.LogBlocked(actx, "cross_request_entropy", detail)
 				result.Blocked = true
 				result.Reason = "cross-request entropy budget exceeded"
+				result.BlockKind = ceeBlockKindEntropyBudget
 				return result
 			}
 			logger.LogAnomaly(actx, "cross_request_entropy", detail, 0)
@@ -629,6 +655,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		result.Blocked = true
 		result.FragmentHit = true
 		result.Reason = "cross-request inspection depth exceeded"
+		result.BlockKind = ceeBlockKindInspectionDepth
 		return result
 	}
 
@@ -646,6 +673,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			if res.Blocked {
 				result.Blocked = true
 				result.Reason = res.Reason
+				result.BlockKind = res.BlockKind
 				return result
 			}
 		}
@@ -673,6 +701,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 				if res.Blocked {
 					result.Blocked = true
 					result.Reason = res.Reason
+					result.BlockKind = res.BlockKind
 					return result
 				}
 			}
@@ -687,6 +716,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 				if res.Blocked {
 					result.Blocked = true
 					result.Reason = res.Reason
+					result.BlockKind = res.BlockKind
 					return result
 				}
 			}
@@ -701,6 +731,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 				if res.Blocked {
 					result.Blocked = true
 					result.Reason = res.Reason
+					result.BlockKind = res.BlockKind
 					return result
 				}
 			}
@@ -782,6 +813,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      "cross-request inspection depth exceeded",
+			BlockKind:   ceeBlockKindInspectionDepth,
 		}
 	}
 	if appendResult.OwnerMismatch {
@@ -796,6 +828,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      detail,
+			BlockKind:   ceeBlockKindOwnerMismatch,
 		}
 	}
 	if appendResult.CapacityExceeded {
@@ -807,6 +840,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      "cross-request inspection capacity exhausted",
+			BlockKind:   ceeBlockKindSessionCapacity,
 		}
 	}
 	if len(matches) == 0 {
@@ -821,6 +855,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      "cross-request exfiltration attempt blocked",
+			BlockKind:   matches[0].PatternName,
 		}
 	}
 	logger.LogAnomaly(actx, "cross_request_fragment", detail, 0)

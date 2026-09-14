@@ -645,7 +645,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Verdict:    config.ActionBlock,
 				Layer:      "cross_request",
 				PolicyHash: ceeAdmission.PolicyHash,
-				Pattern:    ceeRes.Reason,
+				Pattern:    ceeReceiptPattern(ceeRes),
 				Transport:  TransportWS,
 				Method:     "WS",
 				Target:     targetURL,
@@ -1515,7 +1515,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 		r.proxy.metrics.RecordWSScanHit("cross_request")
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "cross_request",
-			PolicyHash: ceeAdmission.PolicyHash, Pattern: ceeRes.Reason, Transport: TransportWS,
+			PolicyHash: ceeAdmission.PolicyHash, Pattern: ceeReceiptPattern(ceeRes), Transport: TransportWS,
 			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")

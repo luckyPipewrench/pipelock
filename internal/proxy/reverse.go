@@ -1306,7 +1306,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Verdict:    config.ActionBlock,
 					Layer:      "cross_request",
 					PolicyHash: ceeAdmission.PolicyHash,
-					Pattern:    ceeRes.Reason,
+					Pattern:    ceeReceiptPattern(ceeRes),
 					Transport:  TransportReverse,
 					Method:     r.Method,
 					Target:     targetURL,

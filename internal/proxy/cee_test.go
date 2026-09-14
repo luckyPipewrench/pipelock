@@ -828,8 +828,13 @@ func TestCeeAdmit_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) {
 	}
 
 	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("new fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: "new-client", RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
-	if !result.Blocked || !strings.Contains(result.Reason, "session capacity exhausted") {
-		t.Fatalf("capacity result = %+v, want visible fail-closed capacity denial", result)
+	// The client reason is deliberately neutral: the capacity knob stays in the
+	// operator log and audit record. The receipt-facing evidence is BlockKind.
+	if !result.Blocked || result.Reason != "cross-request inspection capacity exhausted" {
+		t.Fatalf("capacity result = %+v, want neutral fail-closed capacity denial", result)
+	}
+	if result.BlockKind != ceeBlockKindSessionCapacity {
+		t.Fatalf("capacity BlockKind = %q, want %q", result.BlockKind, ceeBlockKindSessionCapacity)
 	}
 	established := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte("second fragment"), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})
 	if established.Blocked {
@@ -1931,5 +1936,49 @@ func TestCeeSessionKey_Exported(t *testing.T) {
 	}
 	if got := CeeSessionKey("", "10.0.0.1"); got != "10.0.0.1" {
 		t.Errorf("anonymous: got %q, want 10.0.0.1", got)
+	}
+}
+
+// TestCEEFragmentEvaluate_BlockKindKeysReceiptEvidence proves every CEE denial
+// carries a stable machine token for the signed receipt Pattern field. Client
+// reasons are neutral prose by design, so without this token the receipt would
+// record a sentence and lose which control fired and which pattern matched.
+func TestCEEFragmentEvaluate_BlockKindKeysReceiptEvidence(t *testing.T) {
+	logger := audit.NewNop()
+	sctx := ceeStreamContext{
+		TargetURL: "http://example.com", Agent: testCEEAgent,
+		ClientIP: testCEEClientIP, RequestID: testCEERequestID,
+		Config: config.CrossRequestDetection{Action: config.ActionBlock},
+		Logger: logger, Metrics: metrics.New(),
+	}
+
+	tests := []struct {
+		name     string
+		appended scanner.FragmentAppendResult
+		matches  []scanner.DLPMatch
+		wantKind string
+	}{
+		{name: "depth", appended: scanner.FragmentAppendResult{PathDepthExceeded: true}, wantKind: ceeBlockKindInspectionDepth},
+		{name: "owner mismatch", appended: scanner.FragmentAppendResult{OwnerMismatch: true}, wantKind: ceeBlockKindOwnerMismatch},
+		{name: "capacity", appended: scanner.FragmentAppendResult{CapacityExceeded: true}, wantKind: ceeBlockKindSessionCapacity},
+		{name: "dlp match", matches: []scanner.DLPMatch{{PatternName: "aws_access_key"}}, wantKind: "aws_access_key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := ceeFragmentEvaluate(context.Background(), tt.appended, tt.matches, sctx)
+			if res == nil || !res.Blocked {
+				t.Fatalf("result = %+v, want a block", res)
+			}
+			if res.BlockKind != tt.wantKind {
+				t.Fatalf("BlockKind = %q, want %q", res.BlockKind, tt.wantKind)
+			}
+			pattern := ceeReceiptPattern(*res)
+			if pattern != tt.wantKind {
+				t.Fatalf("receipt pattern = %q, want %q", pattern, tt.wantKind)
+			}
+			if strings.Contains(pattern, " ") {
+				t.Fatalf("receipt pattern must be a machine token, got prose: %q", pattern)
+			}
+		})
 	}
 }

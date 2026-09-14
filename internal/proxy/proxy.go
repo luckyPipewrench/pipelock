@@ -5178,7 +5178,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Verdict:             config.ActionBlock,
 				Layer:               "cross_request",
 				PolicyHash:          admission.PolicyHash,
-				Pattern:             ceeRes.Reason,
+				Pattern:             ceeReceiptPattern(ceeRes),
 				Transport:           "fetch",
 				Method:              http.MethodGet,
 				Target:              displayURL,

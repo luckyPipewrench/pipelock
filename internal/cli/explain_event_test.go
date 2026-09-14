@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -75,6 +76,120 @@ func TestExplainEventCmd_JSONFallbackRemediation(t *testing.T) {
 	}
 	if report.Scanner != scanner.ScannerDLP {
 		t.Fatalf("scanner = %q, want %q", report.Scanner, scanner.ScannerDLP)
+	}
+}
+
+func TestExplainEventCmd_ExplainsRecordedResponseOutcomes(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	lines := []string{
+		`{"event":"response_scan","request_id":"req-warn","url":"https://api.vendor.example/response","scanner":"response_scan","action":"warn","patterns":["prompt_override"]}`,
+		`{"event":"blocked","request_id":"req-size","url":"https://api.vendor.example/response","scanner":"response_scan","reason":"response scan ceiling exceeded"}`,
+		`{"event":"blocked","request_id":"req-shield-block","url":"https://api.vendor.example/response","scanner":"shield_oversize","reason":"response exceeds browser_shield.max_shield_bytes"}`,
+		`{"event":"response_scan_exempt","request_id":"req-unscanned","url":"https://api.vendor.example/response","effect":"response_scanning.exempt_domains is a full-trust valve: injection scanning is disabled for ALL responses from this host, including oversized over-cap responses that stream unscanned"}`,
+		`{"action_id":"act-shield","request_id":"req-shield","verdict":"allow","layer":"browser_shield","shield":{"body_bytes":4096,"scanned_bytes":1024,"partial":true}}`,
+		`{"action_id":"act-malformed","request_id":"req-malformed","verdict":"allow","layer":"browser_shield","shield":{"partial":"true"}}`,
+		`{"action_id":"act-blocked-partial","verdict":"block","layer":"browser_shield","shield":{"partial":true}}`,
+		`{"action_id":"act-invalid-count","verdict":"allow","layer":"browser_shield","shield":{"partial":true,"body_bytes":"password=placeholder","scanned_bytes":10}}`,
+		`{"event":"response_scan","request_id":"req-unknown","url":"https://api.vendor.example/response","scanner":"response_scan","action":"ask"}`,
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	tests := []struct {
+		id       string
+		outcome  string
+		pattern  string
+		remedy   string
+		contains []string
+	}{
+		{id: "req-warn", outcome: explainEventOutcomeWarned, pattern: "prompt_override", contains: []string{"action warn", "does not show a block"}},
+		{id: "req-size", outcome: explainEventOutcomeBlocked, remedy: "exact transport response ceiling"},
+		{id: "req-shield-block", outcome: explainEventOutcomeBlocked, remedy: "browser_shield.oversize_action"},
+		{id: "req-unscanned", outcome: explainEventOutcomePartial, contains: []string{"partial", "does not establish that the full response was scanned"}},
+		{id: "act-shield", outcome: explainEventOutcomePartial, contains: []string{"1024 of 4096", "not a clean full-response verdict"}},
+		{id: "act-malformed", outcome: "", contains: []string{"recorded outcome is unknown"}},
+		{id: "act-blocked-partial", outcome: explainEventOutcomeBlocked},
+		{id: "act-invalid-count", outcome: "", contains: []string{"recorded outcome is unknown"}},
+		{id: "req-unknown", outcome: "", contains: []string{"recorded outcome is unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			out, err := runExplainCmd(t, "event", tt.id, "--log", logPath, "--json")
+			if err != nil {
+				t.Fatalf("explain event failed: %v\n%s", err, out)
+			}
+			var report explainEventReport
+			if err := json.Unmarshal([]byte(out), &report); err != nil {
+				t.Fatalf("decode JSON: %v\n%s", err, out)
+			}
+			if report.Outcome != tt.outcome {
+				t.Fatalf("outcome = %q, want %q", report.Outcome, tt.outcome)
+			}
+			if report.PatternName != tt.pattern {
+				t.Fatalf("pattern = %q, want %q", report.PatternName, tt.pattern)
+			}
+			if !strings.Contains(report.RemediationHint, tt.remedy) {
+				t.Fatalf("remediation = %q, want %q", report.RemediationHint, tt.remedy)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(strings.Join(report.Notes, "\n"), want) {
+					t.Fatalf("notes = %q, want %q", report.Notes, want)
+				}
+			}
+		})
+	}
+}
+
+func TestExplainEventCmd_UsesResponseScanAuditProducer(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logPath, true, true)
+	if err != nil {
+		t.Fatalf("create audit logger: %v", err)
+	}
+	t.Cleanup(logger.Close)
+
+	for _, tt := range []struct {
+		requestID string
+		action    string
+		outcome   string
+	}{
+		{requestID: "req-producer-warn", action: config.ActionWarn, outcome: explainEventOutcomeWarned},
+		{requestID: "req-producer-block", action: config.ActionBlock, outcome: explainEventOutcomeBlocked},
+		{requestID: "req-producer-ask-allow", action: "ask:allow", outcome: explainEventOutcomeAllowed},
+		{requestID: "req-producer-ask-strip", action: "ask:strip", outcome: explainEventOutcomeModified},
+	} {
+		ctx, err := audit.NewHTTPLogContext("GET", "https://api.vendor.example/response", "127.0.0.1", tt.requestID, "agent")
+		if err != nil {
+			t.Fatalf("create audit context: %v", err)
+		}
+		logger.LogResponseScan(ctx, tt.action, 1, []string{"prompt_override"}, nil)
+	}
+	logger.Close()
+
+	for _, tt := range []struct {
+		requestID string
+		outcome   string
+	}{
+		{requestID: "req-producer-warn", outcome: explainEventOutcomeWarned},
+		{requestID: "req-producer-block", outcome: explainEventOutcomeBlocked},
+		{requestID: "req-producer-ask-allow", outcome: explainEventOutcomeAllowed},
+		{requestID: "req-producer-ask-strip", outcome: explainEventOutcomeModified},
+	} {
+		t.Run(tt.requestID, func(t *testing.T) {
+			out, err := runExplainCmd(t, "event", tt.requestID, "--log", logPath, "--json")
+			if err != nil {
+				t.Fatalf("explain event failed: %v\n%s", err, out)
+			}
+			var report explainEventReport
+			if err := json.Unmarshal([]byte(out), &report); err != nil {
+				t.Fatalf("decode JSON: %v\n%s", err, out)
+			}
+			if report.Outcome != tt.outcome || report.PatternName != "prompt_override" {
+				t.Fatalf("report = %+v, want outcome %q and recorded pattern", report, tt.outcome)
+			}
+		})
 	}
 }
 

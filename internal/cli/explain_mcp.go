@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,9 +62,16 @@ type mcpExplainRemediation struct {
 // JSON consumer can tell the surfaces apart.
 const explainMCPResponseScanner = "mcp_response_scanning"
 
+// explainA2AScanner identifies findings returned by the A2A response
+// dispatcher. It is the configured A2A policy surface, not a response-scanning
+// suppress target.
+const explainA2AScanner = "a2a_scanning"
+
 func explainMCPResponseCmd() *cobra.Command {
 	var configFile string
 	var serverName string
+	var a2aMethod string
+	var a2aOrigin string
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
@@ -85,6 +93,12 @@ names that target, which only takes effect when the proxy is launched with
 through for THAT server's responses only; scope it to a first-party server you
 control.
 
+To evaluate A2A response policy, supply both --a2a-method and --a2a-origin
+from the matching request. These checks use a2a_scanning and do not consult
+response_scanning suppress entries. Incomplete context is an error. Without
+both flags, the report covers generic MCP scanning only. A one-shot report
+cannot evaluate Agent Card drift against a previous baseline.
+
 explain mcp-response performs no network access.
 
 Examples:
@@ -102,7 +116,10 @@ Examples:
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read MCP response from stdin: %w", err))
 			}
-			report, err := buildMCPExplainReport(cfg, cfgLabel, serverName, line)
+			report, err := buildMCPExplainReportWithA2AContext(cfg, cfgLabel, serverName, line, mcpExplainA2AContext{
+				Method: a2aMethod,
+				Origin: a2aOrigin,
+			})
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
@@ -129,6 +146,8 @@ Examples:
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
 	cmd.Flags().StringVar(&serverName, "server-name", "", "MCP server identity for the suggested suppress target (mcp://<name>/response)")
+	cmd.Flags().StringVar(&a2aMethod, "a2a-method", "", "A2A request method paired with this response")
+	cmd.Flags().StringVar(&a2aOrigin, "a2a-origin", "", "A2A request URL or origin paired with this response")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 
 	return cmd
@@ -159,7 +178,45 @@ func mcpResponseTargetDisplay(serverName string) string {
 	return "mcp://<server-name>/response"
 }
 
-func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line []byte) (mcpExplainReport, error) {
+// mcpExplainA2AContext is the request evidence needed to reproduce the live
+// A2A response dispatcher for one response. It is deliberately optional:
+// stdin contains only a response, and without its paired request explain must
+// retain generic MCP dispatch rather than infer a protocol from loose shapes.
+type mcpExplainA2AContext struct {
+	Method string
+	Origin string
+}
+
+// complete validates optional request evidence as a pair. A response alone is
+// a valid generic MCP explanation, but a partly supplied A2A request must not
+// quietly downgrade to a generic verdict.
+func (c mcpExplainA2AContext) complete() (bool, error) {
+	if c.Method == "" && c.Origin == "" {
+		return false, nil
+	}
+	if c.Method == "" {
+		return false, fmt.Errorf("--a2a-method is required when --a2a-origin is set")
+	}
+	if c.Origin == "" {
+		return false, fmt.Errorf("--a2a-origin is required when --a2a-method is set")
+	}
+	if !mcp.IsA2AMethod(c.Method) {
+		return false, fmt.Errorf("--a2a-method must name a supported A2A method")
+	}
+	if mcp.CardOriginFromURL(c.Origin) == "" {
+		return false, fmt.Errorf("--a2a-origin must be an absolute http or https URL or origin")
+	}
+	return true, nil
+}
+
+func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverName string, line []byte, a2aContext mcpExplainA2AContext) (mcpExplainReport, error) {
+	a2aRequested, err := a2aContext.complete()
+	if err != nil {
+		return mcpExplainReport{}, err
+	}
+	if a2aRequested && bytes.HasPrefix(bytes.TrimSpace(line), []byte("[")) {
+		return mcpExplainReport{}, fmt.Errorf("A2A request context requires one JSON-RPC response, not a batch; explain each response with its matching request")
+	}
 	report := mcpExplainReport{
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
@@ -197,14 +254,38 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 
 	// Scan with NO suppression so explain reports what WOULD be detected; the
 	// remediation then names the suppress entry that lifts a blocking untrusted
-	// finding. Dispatch exactly as the runtime proxy does (tools/list responses
-	// bypass generic response scanning when tool scanning is enabled) so explain
-	// never reports a block the proxy would not produce.
-	verdict := mcp.ScanResponseDispatch(line, sc, cfg.MCPToolScanning.Enabled, mcp.ResponseScanOptions{
+	// finding. The generic path retains ScanResponseDispatch because tools/list
+	// responses have distinct scanning and suppression behavior. The live proxy
+	// can select its A2A dispatcher only after correlating a request; use it here
+	// only when the operator supplies the same method and origin evidence.
+	scanOpts := mcp.ResponseScanOptions{
 		Target:         mcpResponseTarget(serverName),
 		ActionOverride: action,
 		TrustClass:     trust,
-	})
+	}
+	var verdict jsonrpc.ScanVerdict
+	a2aActive := a2aRequested && cfg.A2AScanning.Enabled
+	if a2aRequested {
+		verdict = mcp.ScanResponseA2A(line, sc, &mcp.A2AResponseOpts{
+			Cfg:      &cfg.A2AScanning,
+			CardKey:  mcp.CardCacheKeyFromRequest(a2aContext.Origin, ""),
+			Method:   a2aContext.Method,
+			ScanOpts: scanOpts,
+		})
+		if a2aActive {
+			// The dispatcher does not expose which individual A2A checks ran.
+			// In particular, signature-only card policy need not scan content.
+			report.Scanned = nil
+			report.Notes = append(report.Notes,
+				"A2A response policy used the supplied request method and origin. The dispatcher does not report individual check coverage, so the scanned list is omitted rather than claiming generic injection or DLP coverage.",
+				"This one-shot explanation has no prior Agent Card baseline, so it does not evaluate stateful card drift.")
+		} else {
+			report.Notes = append(report.Notes, "A2A request context was supplied, but a2a_scanning is disabled by this configuration; the runtime A2A dispatcher used its generic fallback.")
+		}
+	} else {
+		verdict = mcp.ScanResponseDispatch(line, sc, cfg.MCPToolScanning.Enabled, scanOpts)
+		report.Notes = append(report.Notes, "A2A request context was not supplied; generic MCP response scanning was used, so this result does not evaluate A2A-specific response or Agent Card signature policy.")
+	}
 
 	if verdict.Error != "" {
 		report.Error = verdict.Error
@@ -215,11 +296,24 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 		return report, nil
 	}
 
-	report.Scanner = explainMCPResponseScanner
+	if a2aActive {
+		report.Scanner = explainA2AScanner
+	} else {
+		report.Scanner = explainMCPResponseScanner
+	}
 	report.Action = effectiveMCPExplainAction(verdict)
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
-	if !report.Allowed && len(verdict.DLPMatches) == 0 {
+	if a2aActive {
+		if len(report.Patterns) == 0 {
+			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust; response_scanning suppress entries are not consulted.")
+		} else {
+			report.Notes = append(report.Notes, "A2A findings are controlled by a2a_scanning, not response_scanning; response_scanning suppress entries are not consulted.")
+		}
+		if report.Allowed {
+			report.Notes = append(report.Notes, "a2a_scanning.action is warn, so runtime forwards this response and logs the A2A finding.")
+		}
+	} else if !report.Allowed && len(verdict.DLPMatches) == 0 {
 		report.Remediation = mcpExplainRemediationFor(report.Patterns, serverName)
 		for _, pattern := range report.Patterns {
 			if config.IsCoreResponsePatternName(pattern) {
@@ -227,10 +321,10 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 			}
 		}
 	}
-	if len(verdict.DLPMatches) > 0 {
+	if !a2aActive && len(verdict.DLPMatches) > 0 {
 		report.Notes = append(report.Notes, "inbound DLP findings cannot be suppressed through response_scanning; Pipelock blocks them when this server's trust action is block.")
 	}
-	if report.Allowed {
+	if report.Allowed && !a2aActive {
 		report.Notes = append(report.Notes, "MCP response trust class "+trust+" maps this finding to warn; runtime forwards the response and logs the match.")
 	}
 	// Only worth saying when a suppress entry could actually match: for an

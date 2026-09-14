@@ -47,6 +47,10 @@ log and explains the operator-facing reason. It matches `request_id` first,
 then `event_id` and `id`, and it uses the configured DLP rules when redacting
 untrusted log content before printing it.
 
+The report only describes the recorded outcome. A response finding logged with `warn` is reported as warned, and a rewritten response is reported as modified. An operator-approved response is reported as allowed with a note that the scan found a match.
+
+When the record says a response was only partly scanned or shielded, the report says `partial` instead of `allowed` and includes recorded byte coverage when it is available. An explicit block remains blocked even when coverage was partial. A partial result doesn't prove the full response was scanned. Records without a terminal outcome remain unknown.
+
 ```bash
 pipelock explain event req-abc-123 \
   --config /etc/pipelock/pipelock.yaml \
@@ -61,6 +65,20 @@ pipelock explain event req-abc-123 \
 When `--log` is omitted, the command uses `logging.file` from the config when
 that config writes JSONL audit events to a file. The command is read-only: it
 does not contact the proxy and does not mutate the log.
+
+## `pipelock explain mcp-response`
+
+`pipelock explain mcp-response` reads a JSON-RPC response from standard input and runs the configured response checks without contacting the upstream server. Supply the matching request's A2A method and URL to evaluate A2A response policy, including Agent Card signatures:
+
+```bash
+pipelock explain mcp-response \
+  --config /etc/pipelock/pipelock.yaml \
+  --a2a-method GetExtendedAgentCard \
+  --a2a-origin https://agent.vendor.example/.well-known/agent-card.json \
+  --json < response.json
+```
+
+Both A2A flags must be supplied together. Without them, the report covers generic MCP response scanning and explicitly says A2A policy was not evaluated. A one-shot explanation has no previous Agent Card baseline and cannot evaluate stateful card drift.
 
 ## URL explanation exit codes
 

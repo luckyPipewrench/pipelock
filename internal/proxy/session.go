@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -1373,6 +1374,31 @@ func (sm *SessionManager) EnableBaseline(cfg *config.BehavioralBaseline) error {
 	}
 	sm.baselinePtr.Store(snap)
 	return nil
+}
+
+// WarnUnproducibleBaselineProfiles emits one migration warning for each
+// persisted pending or locked profile that no HTTP session shape can reach
+// under the current configured identity names.
+func (sm *SessionManager) WarnUnproducibleBaselineProfiles(configuredNames map[string]struct{}) {
+	if sm.logger == nil {
+		return
+	}
+	mgr := sm.BaselineManager()
+	if mgr == nil {
+		return
+	}
+	for _, profile := range mgr.ListProfiles() {
+		if profile.State != baseline.StateRatify && profile.State != baseline.StateLocked {
+			continue
+		}
+		if identitykey.IsFoldedBaselineKey(profile.AgentKey) {
+			continue
+		}
+		if _, ok := configuredNames[profile.AgentKey]; ok {
+			continue
+		}
+		sm.logger.LogAnomaly(audit.NewMethodLogContext("BASELINE"), "", "persisted baseline profile "+profile.AgentKey+" no longer matches a producible session shape", 0)
+	}
 }
 
 func newBaselineSnapshot(cfg *config.BehavioralBaseline) (*baselineSnapshot, error) {

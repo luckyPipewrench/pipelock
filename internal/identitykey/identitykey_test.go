@@ -49,6 +49,22 @@ func TestBaselineKeyForSessionKey(t *testing.T) {
 	}
 }
 
+func TestIsFoldedBaselineKey(t *testing.T) {
+	for _, tt := range []struct {
+		key  string
+		want bool
+	}{
+		{key: "ip4-cb007101", want: true},
+		{key: "ip6-20010db8000000000000000000000001", want: true},
+		{key: "agent-a", want: false},
+		{key: "ip4-nothex", want: false},
+	} {
+		if got := IsFoldedBaselineKey(tt.key); got != tt.want {
+			t.Errorf("IsFoldedBaselineKey(%q) = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+}
+
 func TestCEEIdentity_AuthGradeControlsOwnerAndStreamDoesNot(t *testing.T) {
 	const agent, client = "agent-a", "203.0.113.10"
 	selfDeclared := NewCEEIdentity(agent, client, envelope.ActorAuthSelfDeclared)

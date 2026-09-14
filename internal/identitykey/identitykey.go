@@ -8,10 +8,13 @@ package identitykey
 import (
 	"encoding/hex"
 	"net/netip"
+	"regexp"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
+
+var foldedBaselineKeyRe = regexp.MustCompile(`^ip(?:4-[0-9a-f]{8}|6-[0-9a-f]{32})$`)
 
 // AnonymousAgent is the unattributed agent name. It lives here because both
 // this package and internal/proxy must agree on it exactly: if the two ever
@@ -116,6 +119,13 @@ func BaselineKeyForSessionKey(sessionKey string) string {
 		return "ip6-" + hex.EncodeToString(ip.AsSlice())
 	}
 	return "ip-" + hex.EncodeToString([]byte(sessionKey))
+}
+
+// IsFoldedBaselineKey reports whether key is in the namespace reserved for a
+// client-address-derived behavioral baseline. Configured agent names may not
+// use this namespace, so a named identity cannot collide with a folded client.
+func IsFoldedBaselineKey(key string) bool {
+	return foldedBaselineKeyRe.MatchString(key)
 }
 
 // CEECandidateKeys returns every distinct CEE state key that CEESafeKey could

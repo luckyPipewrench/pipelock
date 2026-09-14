@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -77,6 +78,82 @@ func TestRecordSessionActivity_BaselineBlockAfterLock(t *testing.T) {
 	})
 	if !second.Blocked {
 		t.Fatalf("deviating locked profile allowed: %+v", second)
+	}
+}
+
+func TestRecordSessionActivity_SelfDeclaredLegacyNameProfileDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.BehavioralBaseline = *testBaselineBlockConfig(t)
+
+	sm := NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+	t.Cleanup(sm.Close)
+	if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+		t.Fatalf("EnableBaseline: %v", err)
+	}
+	// See docs/cli/baseline.md's upgrade note: a self-declared name no longer
+	// addresses its old name-keyed profile after session identity folding.
+	legacy := sm.GetOrCreate("agent-a|10.0.0.98")
+	legacy.RecordRequest("steady.example", &cfg.SessionProfiling)
+	sm.RecordBaselineForAgent("agent-a", legacy)
+	if state := sm.BaselineManager().GetState("agent-a"); state != baseline.StateLocked {
+		t.Fatalf("legacy profile state = %q, want locked", state)
+	}
+
+	p := &Proxy{metrics: metrics.New()}
+	p.sessionMgrPtr.Store(sm)
+	result := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP: "10.0.0.98", Agent: "agent-a", Hostname: "deviant.example",
+		RequestID: "req-legacy", ActorAuth: envelope.ActorAuthSelfDeclared,
+		Result: scanner.Result{Allowed: true}, Config: cfg, Logger: audit.NewNop(),
+	})
+	if result.Blocked {
+		t.Fatalf("self-declared request unexpectedly consulted legacy name profile: %+v", result)
+	}
+}
+
+func TestRecordSessionActivity_ConfigDefaultBaselineKeepsAgentKey(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.BehavioralBaseline = *testBaselineBlockConfig(t)
+	const agent, client = "default-agent", "10.0.0.97"
+
+	sm := NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+	t.Cleanup(sm.Close)
+	if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+		t.Fatalf("EnableBaseline: %v", err)
+	}
+	key := sessionKeyFor(agent, client, envelope.ActorAuthConfigDefault)
+	if key != agent+"|"+client {
+		t.Fatalf("config-default session key = %q, want %q", key, agent+"|"+client)
+	}
+	lockHTTPBaseline(t, sm, key)
+	if state := sm.BaselineManager().GetState(agent); state != baseline.StateLocked {
+		t.Fatalf("config-default baseline state = %q, want locked", state)
+	}
+
+	p := &Proxy{metrics: metrics.New()}
+	p.sessionMgrPtr.Store(sm)
+	clean := scanner.Result{Allowed: true}
+	first := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP: client, Agent: agent, Hostname: "steady.example", RequestID: "req-default-1",
+		ActorAuth: envelope.ActorAuthConfigDefault, Result: clean, Config: cfg, Logger: audit.NewNop(),
+	})
+	if first.Blocked {
+		t.Fatalf("config-default request blocked before deviation: %+v", first)
+	}
+	second := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP: client, Agent: agent, Hostname: "deviant.example", RequestID: "req-default-2",
+		ActorAuth: envelope.ActorAuthConfigDefault, Result: clean, Config: cfg, Logger: audit.NewNop(),
+	})
+	if !second.Blocked {
+		t.Fatalf("config-default locked profile did not block deviation: %+v", second)
 	}
 }
 

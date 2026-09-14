@@ -1493,7 +1493,7 @@ behavioral_baseline:
 | `poison_resistance` | `true` | Trim high-sigma training outliers before building the profile |
 | `seasonality_mode` | `"none"` | Seasonality mode; only `none` is currently enforced |
 
-Profiles persist as one JSON file per agent in `profile_dir`. A learned profile moves to `ratify`, but it does not enforce until an operator runs `pipelock baseline ratify <agent>` against the authenticated admin API. `pipelock baseline show <agent>` displays learned per-dimension ranges plus retained, observed, and trimmed session counts so the operator can approve the profile with context. `pipelock baseline forget <agent>` removes the persisted profile and returns the agent to observe/relearn state.
+Profiles persist as one JSON file per agent key in `profile_dir`. A learned profile moves to `ratify`, but it does not enforce until an operator runs `pipelock baseline ratify <agent>` against the authenticated admin API. `pipelock baseline show <agent>` displays learned per-dimension ranges plus retained, observed, and trimmed session counts so the operator can approve the profile with context. `pipelock baseline forget <agent>` removes the persisted profile and returns the agent to observe/relearn state. Name-keyed profiles apply only to bound or config-default identities. Self-declared, matched, and unknown identities are profiled under their client address as `ip4-<hex>` or `ip6-<hex>`; ratifying a self-declared name addresses no live profile.
 
 The baseline admin endpoints (list, show, ratify, forget) are only mounted on the dedicated admin API listener. Set both `kill_switch.api_token` and `kill_switch.api_listen`; the endpoints are not registered on the agent-facing main proxy port.
 

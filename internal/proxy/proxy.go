@@ -739,6 +739,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				sm.Close()
 				return nil, fmt.Errorf("behavioral baseline init: %w", err)
 			}
+			sm.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 		}
 		p.sessionMgrPtr.Store(sm)
 	}
@@ -2051,6 +2052,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 					}
 					return false
 				}
+				stagedSessionMgr.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 			}
 		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
 			if sm := p.sessionMgrPtr.Load(); sm != nil {
@@ -2063,6 +2065,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 					}
 					return false
 				}
+				sm.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 			}
 		}
 	}
@@ -3232,6 +3235,17 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 
 func baselineAgentKeyForSessionKey(key string) string {
 	return identitykey.BaselineKeyForSessionKey(key)
+}
+
+func baselineConfiguredIdentityNames(cfg *config.Config) map[string]struct{} {
+	names := make(map[string]struct{}, len(cfg.Agents)+1)
+	for name := range cfg.Agents {
+		names[name] = struct{}{}
+	}
+	if cfg.DefaultAgentIdentity != "" {
+		names[cfg.DefaultAgentIdentity] = struct{}{}
+	}
+	return names
 }
 
 func classifiedDenialParams(ep decide.EscalationParams, scannerName, reason, policyHash string) decide.EscalationParams {

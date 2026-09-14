@@ -2460,11 +2460,19 @@ func TestWSProxyHeaderDLPSessionAnomalyBlocksHandshake(t *testing.T) {
 	defer proxyCleanup()
 
 	sm := p.sessionMgrPtr.Load()
+	first := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
+		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
+		AgentHeader:     []string{"agent-a"},
+	})
+	if first.StatusCode != http.StatusSwitchingProtocols {
+		_ = first.Body.Close()
+		t.Fatalf("pre-lock status = %d, want %d", first.StatusCode, http.StatusSwitchingProtocols)
+	}
+	_ = first.Body.Close()
 	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthSelfDeclared))
 
 	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
-		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
-		AgentHeader:     []string{"agent-a"},
+		AgentHeader: []string{"agent-a"},
 	})
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {

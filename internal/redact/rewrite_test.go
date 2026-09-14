@@ -421,7 +421,7 @@ func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
 	}
 	key := "AKIA" + "IOSFODNN7EXAMPLE"
 	url := "https://examplebucket.s3.amazonaws.com/file?X-Amz-Credential=" + key +
-		"%2F20260528%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=deadbeefcafe"
+		"%2F20260528%2Fus-east-1%2Fapplication-autoscaling%2Faws4_request&X-Amz-Signature=deadbeefcafe"
 	body := []byte(`{"data":{"jobNoteAddAttachment":{"attachmentsToBeAdded":[{"url":"` + url + `"}]}}}`)
 	out, _, err := RewriteJSON(body, m, NewRedactor(), Limits{})
 	if err != nil {

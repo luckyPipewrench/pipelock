@@ -391,6 +391,12 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 func TestRenderSystemUnit_ReloadSignalsMainProcess(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderSystemUnit(env)
+	if !strings.Contains(body, "Type=notify-reload") {
+		t.Fatalf("system unit does not wait for the daemon reload verdict:\n%s", body)
+	}
+	if !strings.Contains(body, "NotifyAccess=main") {
+		t.Fatalf("system unit does not permit the main daemon to notify systemd:\n%s", body)
+	}
 	if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
 		t.Fatalf("system unit does not route reload to the running Pipelock process:\n%s", body)
 	}

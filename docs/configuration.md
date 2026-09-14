@@ -22,6 +22,8 @@ notes and output-file confirmations go to stderr.
 
 Config changes are picked up automatically via a file watcher or a SIGHUP signal (100ms debounce). Most fields reload without restart. Fields that require a restart are marked below. Strict mode and required security controls can reject security downgrades, including expanded `trusted_domains` or `ssrf.ip_allowlist` lists. A rejected reload keeps the running configuration active and logs the refusal. Restart Pipelock to apply a refused trust expansion.
 
+For a containment-installed service, `systemctl reload pipelock` waits until the daemon has finished evaluating the SIGHUP reload. Exit status 0 means the evaluation completed; it does not mean a rejected candidate became active. The daemon reports `config reload applied` or `config reload rejected: ...` in the unit Status line (`systemctl status pipelock`) and the journal. Filesystem-triggered reloads keep their normal asynchronous behavior.
+
 On reload, the scanner and session manager are atomically swapped. Runtime
 kill-switch state is preserved, including the API, signal, Conductor remote,
 and Conductor stale-bundle sources. Existing MCP sessions retain the old

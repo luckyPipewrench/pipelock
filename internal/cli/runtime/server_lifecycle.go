@@ -411,14 +411,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		reloadWG.Add(1)
 		go func() {
 			defer reloadWG.Done()
-			for newCfg := range reloader.Changes() {
-				if err := s.Reload(newCfg); err != nil {
-					s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
-				}
-				// Signal reload-cycle completion for tests (no-op in
-				// production). Fires per delivered config so reload tests can
-				// block on the event instead of polling stderr on a deadline.
-				fireReloadCompletedHook()
+			for event := range reloader.Reloads() {
+				s.handleConfigReload(event)
 			}
 		}()
 	}
@@ -493,6 +487,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	}
 	defer func() { _ = fetchLn.Close() }()
 	boundFetchAddr := fetchLn.Addr().String()
+	readyNotified := false
+	defer func() {
+		if readyNotified {
+			sdNotifyOrLog(s.opts.Stderr, "STOPPING=1")
+		}
+	}()
 
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
 	_, _ = fmt.Fprintln(s.opts.Stderr, s.startupSummaryLine(cfg, boundFetchAddr))
@@ -1253,6 +1253,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// cancelled or error). The listener was already bound above, so an error
 	// here is a serve/runtime failure, not a bind failure — do not relabel it as
 	// a bind error.
+	// All configured listeners are bound and auxiliary serving goroutines are
+	// running; the main proxy begins serving immediately below. Type=notify-reload
+	// uses this point for startup readiness.
+	sdNotifyOrLog(s.opts.Stderr, "READY=1")
+	readyNotified = true
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
@@ -1310,6 +1315,29 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	s.logger.LogShutdown("signal received")
 	_, _ = fmt.Fprintln(s.opts.Stderr, "\nPipelock stopped.")
 	return nil
+}
+
+// handleConfigReload completes one file-watcher reload. Only SIGHUP-triggered
+// events participate in systemd's notify-reload protocol; filesystem updates
+// remain asynchronous and must not create unsolicited reload state.
+func (s *Server) handleConfigReload(event config.ReloadEvent) {
+	if event.Trigger == config.ReloadTriggerSignal {
+		sdNotifyReloading(s.opts.Stderr)
+	}
+	err := event.Err
+	if err == nil {
+		err = s.Reload(event.Config)
+	}
+	if err != nil {
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
+	}
+	if event.Trigger == config.ReloadTriggerSignal {
+		sdNotifyReloadComplete(s.opts.Stderr, err)
+	}
+	// Signal reload-cycle completion for tests (no-op in production). Fires per
+	// delivered config so reload tests can block on the event instead of polling
+	// stderr on a deadline.
+	fireReloadCompletedHook()
 }
 
 func preferFileSentryRuntimeError(startErr, fileSentryErr error) error {

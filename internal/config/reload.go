@@ -21,6 +21,7 @@ import (
 type Reloader struct {
 	path      string
 	onChange  chan *Config
+	reloads   chan ReloadEvent
 	done      chan struct{}
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -29,12 +30,31 @@ type Reloader struct {
 	started   bool
 }
 
+// ReloadTrigger identifies what requested a configuration reload.
+type ReloadTrigger uint8
+
+const (
+	// ReloadTriggerFile is a reload requested by the configuration file watcher.
+	ReloadTriggerFile ReloadTrigger = iota
+	// ReloadTriggerSignal is a reload requested by SIGHUP on supported platforms.
+	ReloadTriggerSignal
+)
+
+// ReloadEvent reports the outcome of one reload attempt. Config is nil when
+// loading failed; Err then describes why the active configuration was kept.
+type ReloadEvent struct {
+	Config  *Config
+	Trigger ReloadTrigger
+	Err     error
+}
+
 // NewReloader creates a config reloader that watches path for changes.
 // Start must be called to begin watching.
 func NewReloader(path string) *Reloader {
 	return &Reloader{
 		path:     path,
 		onChange: make(chan *Config, 1),
+		reloads:  make(chan ReloadEvent, 1),
 		done:     make(chan struct{}),
 		ready:    make(chan struct{}),
 	}
@@ -43,6 +63,13 @@ func NewReloader(path string) *Reloader {
 // Changes returns a channel that receives new configs on successful reload.
 func (r *Reloader) Changes() <-chan *Config {
 	return r.onChange
+}
+
+// Reloads returns every delivered reload outcome together with its trigger.
+// It lets runtime integrations distinguish an operator SIGHUP from an
+// automatic filesystem reload without changing the existing Changes contract.
+func (r *Reloader) Reloads() <-chan ReloadEvent {
+	return r.reloads
 }
 
 // Ready returns a channel closed once the file watch is established (or once
@@ -68,6 +95,7 @@ func (r *Reloader) Start(ctx context.Context) error {
 	r.startMu.Unlock()
 
 	defer close(r.onChange)
+	defer close(r.reloads)
 	// Guarantee Ready() resolves on every exit path. The success path closes it
 	// below once watcher.Add succeeds; this backstop closes it if Start returns
 	// first (e.g. watcher creation/Add failure) so a Ready() waiter cannot
@@ -123,10 +151,10 @@ func (r *Reloader) Start(ctx context.Context) error {
 				debounce = time.After(100 * time.Millisecond)
 			}
 		case <-debounce:
-			r.tryReload()
+			r.tryReload(ReloadTriggerFile)
 			debounce = nil
 		case <-sigCh:
-			r.tryReload()
+			r.tryReload(ReloadTriggerSignal)
 		case _, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -139,12 +167,18 @@ func (r *Reloader) Start(ctx context.Context) error {
 // tryReload attempts to load and validate the config, sending it to the
 // onChange channel on success. On failure it logs to stderr and keeps the
 // old config.
-func (r *Reloader) tryReload() {
+func (r *Reloader) tryReload(triggers ...ReloadTrigger) {
+	trigger := ReloadTriggerFile
+	if len(triggers) > 0 {
+		trigger = triggers[0]
+	}
 	cfg, err := Load(r.path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pipelock: config reload failed: %v\n", err)
+		r.sendReload(ReloadEvent{Trigger: trigger, Err: err})
 		return
 	}
+	r.sendReload(ReloadEvent{Config: cfg, Trigger: trigger})
 
 	// Coalesce-to-latest: the buffer holds one pending config. If the consumer
 	// has not drained the previous reload, replace it with this fresher one
@@ -167,6 +201,27 @@ func (r *Reloader) tryReload() {
 			// discarded value is older than cfg by construction.
 			select {
 			case <-r.onChange:
+			default:
+			}
+		}
+	}
+}
+
+func (r *Reloader) sendReload(event ReloadEvent) {
+	for {
+		select {
+		case r.reloads <- event:
+			return
+		default:
+			select {
+			case pending := <-r.reloads:
+				// A filesystem event can be coalesced away, but never replace
+				// a queued SIGHUP: systemd is waiting for that exact reload
+				// cycle to report completion.
+				if pending.Trigger == ReloadTriggerSignal && event.Trigger == ReloadTriggerFile {
+					r.reloads <- pending
+					return
+				}
 			default:
 			}
 		}

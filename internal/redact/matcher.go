@@ -175,7 +175,8 @@ func (m *Matcher) Scan(s string) []Match {
 			// trailing credential-scope and, when set, the leading
 			// X-Amz-Credential= prefix must match, so a SigV4-shaped substring
 			// in arbitrary text is still redacted.
-			if cp.skipTrailing != nil && cp.skipTrailing.MatchString(s[loc[1]:]) &&
+			if (cp.skipTrailing != nil && cp.skipTrailing.MatchString(s[loc[1]:]) ||
+				cp.skipTrailingFunc != nil && cp.skipTrailingFunc(s[loc[1]:])) &&
 				(cp.skipLeading == nil || cp.skipLeading.MatchString(s[:loc[0]])) {
 				continue
 			}

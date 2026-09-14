@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+
+	"github.com/luckyPipewrench/pipelock/internal/sigv4scope"
 )
 
 // A classPattern associates a secret class with a compiled regex that
@@ -23,6 +25,9 @@ type classPattern struct {
 	// value that is a protocol artifact rather than a leaked secret (e.g. an
 	// AWS access key ID inside a SigV4 pre-signed URL).
 	skipTrailing *regexp.Regexp
+	// skipTrailingFunc is the predicate equivalent of skipTrailing for a
+	// protocol grammar that cannot safely live in an independent regex.
+	skipTrailingFunc func(string) bool
 	// skipLeading, when non-nil, additionally requires the text immediately
 	// BEFORE the match to match this regex (anchored at its end) for the skip
 	// to apply. Combined with skipTrailing it scopes the carve-out to a real
@@ -31,15 +36,13 @@ type classPattern struct {
 	skipLeading *regexp.Regexp
 }
 
-// sigV4CredentialScope matches the credential-scope tail that follows an AWS
-// access key ID in a SigV4 pre-signed URL: AKIA<16> then
-// /YYYYMMDD/<region>/<service>/aws4_request, with either literal slashes or
-// URL-encoded %2F. The access key ID in a pre-signed URL is the public half of
-// the credential pair (the secret signing key is never transmitted; only a
-// derived signature is), so redacting it leaks no secret and corrupts the URL.
-// A bare access key ID, or one not in this scope shape, is still redacted.
-var sigV4CredentialScope = regexp.MustCompile(
-	`^(?:/|%2[Ff])[0-9]{8}(?:/|%2[Ff])[A-Za-z0-9-]{1,30}(?:/|%2[Ff])[A-Za-z0-9]{1,20}(?:/|%2[Ff])aws4_request\b`)
+// IsSigV4CredentialScopeTail reports whether tail begins with a well-formed
+// SigV4 credential scope, accepting literal and percent-encoded separators.
+// It shares the scanner's grammar so a signed URL is never redacted solely
+// because the two components disagree about its credential scope.
+func IsSigV4CredentialScopeTail(tail string) bool {
+	return sigv4scope.IsScopeTail(tail)
+}
 
 // sigV4CredentialPrefix matches the X-Amz-Credential query-parameter key that
 // immediately precedes the access key ID in a SigV4 pre-signed URL. Anchored
@@ -111,7 +114,7 @@ func tokenClasses() []classPattern {
 		// corrupt a legitimate request. The broad detector (config.AWSAccessIDRegex)
 		// still flags those, plus any overlong or obfuscated form; matches the
 		// redactor cannot map back to raw text stay detection-only and fail closed.
-		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
+		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), priority: 100, skipTrailingFunc: IsSigV4CredentialScopeTail, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`), priority: 100},
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?i)(?:(?:ghp|gho|ghu|ghr)_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,}|github_pat_[A-Za-z0-9_]{36,})`), priority: 100},

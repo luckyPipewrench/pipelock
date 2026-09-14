@@ -361,3 +361,57 @@ func TestSDNotifyFileReloadDoesNotSignalSystemd(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 	}
 }
+
+// TestConsumeReloadsAbortsWhenStartupNeverSettles covers the two ways the
+// readiness gate releases without readiness ever being published. Neither may
+// apply the queued configuration: it was queued before a start that failed or
+// was cancelled, so applying it would put a configuration into a server that
+// is on its way down.
+func TestConsumeReloadsAbortsWhenStartupNeverSettles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		abort func(cancel context.CancelFunc, settled chan struct{})
+	}{
+		{"context cancelled", func(cancel context.CancelFunc, _ chan struct{}) { cancel() }},
+		{"startup settled without readiness", func(_ context.CancelFunc, settled chan struct{}) { close(settled) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newTestServer(t, nil)
+			before := s.proxy.CurrentConfig()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			settled := make(chan struct{})
+
+			events := make(chan config.ReloadEvent, 1)
+			events <- config.ReloadEvent{Config: before.Clone(), Trigger: config.ReloadTriggerSignal}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.consumeReloads(ctx, events, settled)
+			}()
+
+			tc.abort(cancel, settled)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the reload consumer did not stop when startup never settled")
+			}
+			if s.proxy.CurrentConfig() != before {
+				t.Fatal("a configuration queued before an aborted start was applied anyway")
+			}
+		})
+	}
+}
+
+// TestSDNotifyReloadCompleteRetriesReadyAlone covers the send-failure path: the
+// combined datagram is what carries READY, so if it cannot be written the
+// completion is retried on its own rather than left for systemd to wait on.
+func TestSDNotifyReloadCompleteRetriesReadyAlone(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", filepath.Join(shortSocketDir(t), "absent.sock"))
+	var stderr bytes.Buffer
+	sdNotifyReloadComplete(&stderr, errors.New("rejected: nothing will reach the socket"))
+	if got := strings.Count(stderr.String(), "systemd notification failed"); got != 2 {
+		t.Fatalf("stderr reported %d failures, want the combined send and the bare READY retry:\n%s", got, stderr.String())
+	}
+}

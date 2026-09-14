@@ -419,25 +419,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		reloadWG.Add(1)
 		go func() {
 			defer reloadWG.Done()
-			for event := range reloader.Reloads() {
-				// Hold a signal-triggered event until startup readiness has
-				// been reported. Handling one before that point would either
-				// skip the envelope systemd is waiting on or send a READY that
-				// completes the start job early, depending on which side of the
-				// READY datagram the state was published.
-				if event.Trigger == config.ReloadTriggerSignal {
-					select {
-					case <-s.startupNotified():
-					case <-ctx.Done():
-						// Shutdown or a failed start: stop consuming rather
-						// than applying a configuration queued before it.
-						return
-					case <-startupSettled:
-						return
-					}
-				}
-				s.handleConfigReload(event)
-			}
+			s.consumeReloads(ctx, reloader.Reloads(), startupSettled)
 		}()
 	}
 
@@ -1415,4 +1397,28 @@ func mcpAirlockConfigFor(c *config.Config) *config.Airlock {
 		return nil
 	}
 	return &c.Airlock
+}
+
+// consumeReloads applies reload events until the channel closes, holding a
+// signal-triggered event until startup readiness has been reported. Handling
+// one before that point would either skip the envelope systemd is waiting on
+// or send a READY that completes the start job early, depending on which side
+// of the READY datagram the state was published.
+//
+// Cancellation and a startup that settles without publishing readiness both
+// end the loop rather than releasing the queued event: a configuration queued
+// before a failed or aborted start must not be applied after it.
+func (s *Server) consumeReloads(ctx context.Context, events <-chan config.ReloadEvent, startupSettled <-chan struct{}) {
+	for event := range events {
+		if event.Trigger == config.ReloadTriggerSignal {
+			select {
+			case <-s.startupNotified():
+			case <-ctx.Done():
+				return
+			case <-startupSettled:
+				return
+			}
+		}
+		s.handleConfigReload(event)
+	}
 }

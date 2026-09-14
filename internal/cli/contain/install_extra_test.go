@@ -462,6 +462,14 @@ func TestDetectSystemdVersion(t *testing.T) {
 		{name: "manager unreadable", manager: reply{code: 1}, client: reply{out: "systemd 249 (249.11-0ubuntu3)\n"}, want: 0},
 		{name: "manager value unparseable", manager: reply{out: "something else"}, want: 0},
 		{name: "manager empty value", manager: reply{out: "\n"}, want: 0},
+		{
+			// A digit run too long for a machine integer still reads as
+			// digits, so the parse is what has to refuse it. Refusing means
+			// the older unit shape, which every manager can load.
+			name:    "manager version overflows an integer",
+			manager: reply{out: "999999999999999999999.1\n"},
+			want:    0,
+		},
 		{name: "no systemctl at all", manager: reply{err: errors.New("no systemctl")}, want: 0},
 	}
 	for _, tc := range cases {

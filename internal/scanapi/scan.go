@@ -391,7 +391,12 @@ func (h *Handler) scanToolCall(
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
 		if verdict.Matched {
-			resp.Decision = policyDecision(verdict.Action)
+			// A decision only escalates. A DLP or injection finding above
+			// already set deny; a warn-configured policy match must not
+			// downgrade that to warn.
+			if resp.Decision != DecisionDeny {
+				resp.Decision = policyDecision(verdict.Action)
+			}
 			resp.Findings = append(resp.Findings, policyFindings(verdict)...)
 		}
 	}
@@ -494,9 +499,13 @@ func policyFindings(verdict policy.Verdict) []Finding {
 	}
 	if len(findings) == 0 {
 		// Matched but no named rules (unnamed policy match).
+		ruleID := "POLICY-DENY"
+		if verdict.Action == config.ActionWarn {
+			ruleID = "POLICY-WARN"
+		}
 		findings = append(findings, Finding{
 			Scanner:  "tool_policy",
-			RuleID:   "POLICY-DENY",
+			RuleID:   ruleID,
 			Severity: severity,
 			Message:  message,
 		})

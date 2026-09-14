@@ -921,6 +921,62 @@ func TestScanToolCall_PolicyActions(t *testing.T) {
 	}
 }
 
+// TestScanToolCall_WarnPolicyCannotDowngradeDLPDeny pins the escalate-only
+// rule: a DLP finding in the arguments already decided deny, and a later
+// warn-configured policy match must not overwrite that with warn.
+func TestScanToolCall_WarnPolicyCannotDowngradeDLPDeny(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.MCPInputScanning.Enabled = false
+	h := NewHandler(cfg, scanner.MustNew(cfg), policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{{
+			Name:        "warned-rule",
+			ToolPattern: "dangerous_tool",
+			Action:      config.ActionWarn,
+		}},
+	}), metrics.New(), "test-version")
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	resp, status := h.executeScan(t.Context(), &Request{
+		Kind:  KindToolCall,
+		Input: Input{ToolName: "dangerous_tool", Arguments: RawJSON(`{"argument":"token=` + secret + `"}`)},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("decision = %q, want %q: a warn policy match downgraded a DLP deny", resp.Decision, DecisionDeny)
+	}
+	var sawDLP, sawPolicy bool
+	for _, f := range resp.Findings {
+		switch f.Scanner {
+		case "dlp":
+			sawDLP = true
+		case "tool_policy":
+			sawPolicy = true
+			if f.Severity != "medium" {
+				t.Errorf("policy finding severity = %q, want medium for a warn rule", f.Severity)
+			}
+		}
+	}
+	if !sawDLP || !sawPolicy {
+		t.Fatalf("findings must carry both the DLP and the policy match, got %+v", resp.Findings)
+	}
+}
+
+func TestPolicyFindings_UnnamedWarnRuleID(t *testing.T) {
+	findings := policyFindings(policy.Verdict{Matched: true, Action: config.ActionWarn})
+	if len(findings) != 1 || findings[0].RuleID != "POLICY-WARN" || findings[0].Severity != "medium" {
+		t.Fatalf("unnamed warn match = %+v, want one POLICY-WARN medium finding", findings)
+	}
+	findings = policyFindings(policy.Verdict{Matched: true, Action: config.ActionBlock})
+	if len(findings) != 1 || findings[0].RuleID != "POLICY-DENY" || findings[0].Severity != "high" {
+		t.Fatalf("unnamed block match = %+v, want one POLICY-DENY high finding", findings)
+	}
+}
+
 func TestPolicyDecisionUnknownOrEmptyFailsClosed(t *testing.T) {
 	for _, action := range []string{"", "unknown"} {
 		t.Run(action, func(t *testing.T) {

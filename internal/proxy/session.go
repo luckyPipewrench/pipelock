@@ -1325,6 +1325,14 @@ type SessionManager struct {
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
 	baselinePtr atomic.Pointer[baselineSnapshot]
+
+	// baselineWarningMu guards baselineUnproducibleWarned. A legacy profile is
+	// actionable on the first startup or reload that observes it, but repeating
+	// the same warning on every otherwise-successful reload trains operators to
+	// ignore it. Removing a key that becomes producible lets a later regression
+	// warn again.
+	baselineWarningMu          sync.Mutex
+	baselineUnproducibleWarned map[string]struct{}
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -1387,6 +1395,7 @@ func (sm *SessionManager) WarnUnproducibleBaselineProfiles(configuredNames map[s
 	if mgr == nil {
 		return
 	}
+	unproducible := make(map[string]struct{})
 	for _, profile := range mgr.ListProfiles() {
 		if profile.State != baseline.StateRatify && profile.State != baseline.StateLocked {
 			continue
@@ -1397,7 +1406,30 @@ func (sm *SessionManager) WarnUnproducibleBaselineProfiles(configuredNames map[s
 		if _, ok := configuredNames[profile.AgentKey]; ok {
 			continue
 		}
-		sm.logger.LogAnomaly(audit.NewMethodLogContext("BASELINE"), "", "persisted baseline profile "+profile.AgentKey+" no longer matches a producible session shape", 0)
+		unproducible[profile.AgentKey] = struct{}{}
+	}
+
+	sm.baselineWarningMu.Lock()
+	if sm.baselineUnproducibleWarned == nil {
+		sm.baselineUnproducibleWarned = make(map[string]struct{}, len(unproducible))
+	}
+	for key := range sm.baselineUnproducibleWarned {
+		if _, stillUnproducible := unproducible[key]; !stillUnproducible {
+			delete(sm.baselineUnproducibleWarned, key)
+		}
+	}
+	toWarn := make([]string, 0, len(unproducible))
+	for key := range unproducible {
+		if _, alreadyWarned := sm.baselineUnproducibleWarned[key]; alreadyWarned {
+			continue
+		}
+		sm.baselineUnproducibleWarned[key] = struct{}{}
+		toWarn = append(toWarn, key)
+	}
+	sm.baselineWarningMu.Unlock()
+
+	for _, key := range toWarn {
+		sm.logger.LogAnomaly(audit.NewMethodLogContext("BASELINE"), "", "persisted baseline profile "+key+" no longer matches a producible session shape", 0)
 	}
 }
 

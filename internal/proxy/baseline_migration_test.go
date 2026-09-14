@@ -53,16 +53,21 @@ func TestSessionManagerWarnsForUnproduciblePersistedBaselineProfiles(t *testing.
 		t.Fatalf("reload ReconfigureBaseline: %v", err)
 	}
 	current.WarnUnproducibleBaselineProfiles(nil)
-	if got := strings.Count(output.String(), "legacy-agent"); got != 2 {
-		t.Fatalf("reload warning count = %d, want 2; logs=%s", got, output.String())
+	if got := strings.Count(output.String(), "legacy-agent"); got != 1 {
+		t.Fatalf("unchanged reload warning count = %d, want 1; logs=%s", got, output.String())
 	}
 
 	if err := current.ReconfigureBaseline(baselineCfg); err != nil {
 		t.Fatalf("clean reload ReconfigureBaseline: %v", err)
 	}
 	current.WarnUnproducibleBaselineProfiles(map[string]struct{}{"legacy-agent": {}})
-	if got := strings.Count(output.String(), "legacy-agent"); got != 2 {
+	if got := strings.Count(output.String(), "legacy-agent"); got != 1 {
 		t.Fatalf("reload without unreachable profile emitted warning; count=%d logs=%s", got, output.String())
+	}
+
+	current.WarnUnproducibleBaselineProfiles(nil)
+	if got := strings.Count(output.String(), "legacy-agent"); got != 2 {
+		t.Fatalf("profile becoming unreachable again warning count = %d, want 2; logs=%s", got, output.String())
 	}
 }
 

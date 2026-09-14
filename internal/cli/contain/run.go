@@ -226,9 +226,8 @@ type sessionContract struct {
 	RegisteredTools []string
 	Workspaces      []contractWorkspace
 	// PrivateTmp reports whether the agent's /tmp is isolated from the operator.
-	// It is false today: contain run shares /tmp with the operator (see the
-	// "private /tmp" item in the containment guide). The field exists so the
-	// contract stops advertising a boundary the moment one is added.
+	// contain run preflight proves the transient-service canary before this
+	// contract is rendered, so this field is never true without that evidence.
 	PrivateTmp bool
 }
 
@@ -270,7 +269,7 @@ func buildSessionContract(env *probeEnv, tool string, tools []toolsListEntry, gr
 		PostureCapsule:  proofPath,
 		RegisteredTools: names,
 		Workspaces:      workspaces,
-		PrivateTmp:      false,
+		PrivateTmp:      true,
 	}
 }
 
@@ -302,9 +301,9 @@ func renderSessionContract(w io.Writer, c sessionContract) error {
 	_, _ = fmt.Fprintf(out, "  proxy egress:     %s (loopback proxy only; direct egress denied by nftables)\n", c.ProxyURL)
 	_, _ = fmt.Fprintf(out, "  posture capsule:  %s\n", c.PostureCapsule)
 	if c.PrivateTmp {
-		_, _ = fmt.Fprintln(out, "  agent /tmp:       private (isolated from the operator)")
+		_, _ = fmt.Fprintln(out, "  agent temp dirs:  /tmp and /var/tmp private (isolated from the operator)")
 	} else {
-		_, _ = fmt.Fprintln(out, "  agent /tmp:       shared with the operator (not private)")
+		_, _ = fmt.Fprintln(out, "  agent temp dirs:  /tmp and /var/tmp shared with the operator (not private)")
 	}
 	if len(c.RegisteredTools) == 0 {
 		_, _ = fmt.Fprintln(out, "  registered tools: (none)")
@@ -368,19 +367,19 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 		}
 	}
 
-	// Numbered above the verify probe range (allProbes tops out at 14 after the
-	// launch-environment allow-list probe; the conditional workspace_access
-	// probe is 15) so these run-only checks never collide with a verify probe
+	// Numbered above the verify probe range (allProbes tops out at 15 after the
+	// private-temp canary; the conditional workspace_access probe is 16) so
+	// these run-only checks never collide with a verify probe
 	// number operators may key off.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
-	writeTextLine(out, probe{n: 16, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
+	writeTextLine(out, probe{n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at %s: %s: %s", containRunPrivilegeProbe, status, detail))
 	}
 
 	entries, status, detail := probeRequestedToolRegistered(env, tool)
-	writeTextLine(out, probe{n: 17, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
+	writeTextLine(out, probe{n: 18, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))

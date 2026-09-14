@@ -32,7 +32,7 @@ func TestRenderSessionContract_ExactText(t *testing.T) {
 		"  agent user:       pipelock-agent",
 		"  proxy egress:     http://127.0.0.1:8888 (loopback proxy only; direct egress denied by nftables)",
 		"  posture capsule:  /var/lib/pipelock/contain/posture/proof.json",
-		"  agent /tmp:       shared with the operator (not private)",
+		"  agent temp dirs:  /tmp and /var/tmp shared with the operator (not private)",
 		"  registered tools: claude, codex",
 		"  workspaces:",
 		"    /home/dev/proj  read-write  owner=josh  created=2026-01-02T03:04:05Z  expires=never  [active]",
@@ -69,8 +69,8 @@ func TestBuildSessionContract_DerivesFromPreflightState(t *testing.T) {
 	if c.Tool != "claude" || c.AgentUser != "pipelock-agent" || c.ProxyURL != "http://127.0.0.1:8888" {
 		t.Fatalf("scalar fields wrong: %+v", c)
 	}
-	if c.PrivateTmp {
-		t.Fatal("PrivateTmp must be false until private-tmp isolation ships")
+	if !c.PrivateTmp {
+		t.Fatal("PrivateTmp must be true after the private-temp preflight canary passes")
 	}
 	if strings.Join(c.RegisteredTools, ",") != "claude,codex" {
 		t.Fatalf("registered tools = %v, want claude,codex", c.RegisteredTools)

@@ -164,17 +164,18 @@ type probeEnv struct {
 
 	now func() time.Time
 
-	runCmd      runCommand
-	dropCounter dropCounterFunc
-	dialCtx     dialFunc
-	wait        waitFunc
-	lookupUser  lookupUserFunc
-	groupIDs    groupIDsFunc
-	stat        func(path string) (os.FileInfo, error)
-	readFile    func(path string) ([]byte, error)
-	readLink    func(path string) (string, error)
-	selfPath    func() (string, error)
-	hashFile    func(path string) (string, error)
+	runCmd          runCommand
+	dropCounter     dropCounterFunc
+	dialCtx         dialFunc
+	wait            waitFunc
+	lookupUser      lookupUserFunc
+	groupIDs        groupIDsFunc
+	stat            func(path string) (os.FileInfo, error)
+	readFile        func(path string) ([]byte, error)
+	readLink        func(path string) (string, error)
+	selfPath        func() (string, error)
+	hashFile        func(path string) (string, error)
+	privateTmpProbe func(context.Context, *probeEnv) (string, string)
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -351,6 +352,7 @@ func allProbes() []probe {
 		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
+		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
 	}
 }
 
@@ -364,12 +366,13 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	// Conditional workspace probe. Numbered 15 (above the fixed allProbes range,
-	// which now tops out at 14) so adding the launch-env probe did not renumber
-	// any fixed probe. Appears when workspaces are passed via --workspace or when
-	// the recorded inventory has grants to check for readability and expiry.
+	// Preserve workspace_access as published probe 15. The new private-temp probe
+	// is 16; insert the conditional workspace result before it so configured
+	// output remains numerically ordered without renumbering the existing result.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		probes = append(probes, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+		privateTmp := probes[len(probes)-1]
+		probes[len(probes)-1] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
+		probes = append(probes, privateTmp)
 	}
 	return probes
 }
@@ -1162,9 +1165,10 @@ func verifyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Run read-only probes against the containment model",
-		Long: `Run fourteen read-only probes to verify the workstation containment model
-is installed correctly and the boundary is intact.
+		Short: "Run containment probes against the containment model",
+		Long: `Run fifteen fixed probes to verify the workstation containment model
+is installed correctly and the boundary is intact. A conditional workspace
+probe runs as a sixteenth result when workspace paths or grants are present.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
 wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY
@@ -1173,14 +1177,18 @@ directly; the operator user must still reach the internet), verify the
 deployed and running service binaries match the TOFU integrity pin written at
 install time, exercise plk-launch end-to-end with a sentinel tool to confirm
 the allow-list enforcement path actually fires, and check that the managed
-config keeps metrics on loopback or uses a current, source-scoped exception. Pass --workspace to also
+config keeps metrics on loopback or uses a current, source-scoped exception. It
+also creates and removes an operator /tmp canary, then starts the same transient
+service shape used by contain run to prove the contained agent cannot see it.
+Pass --workspace to also
 verify that pipelock-agent can read/traverse real project directories.
 Pass --enforcement-only when another process owns the proxy lifecycle;
 that mode verifies the kernel/user/wrapper controls and the pinned file at the
 deployed path, while skipping proxy liveness and running-service-image checks.
 
-verify never mutates state. Probes that require root visibility
-(nft list ruleset) record skip when run unprivileged.
+verify removes its temporary /tmp and /var/tmp canaries before returning.
+Probes that require root visibility (nft list ruleset and the private-temp
+canary) record skip when run unprivileged.
 
 Exit codes:
   0  All probes passed.

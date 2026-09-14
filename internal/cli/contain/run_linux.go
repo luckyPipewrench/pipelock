@@ -31,6 +31,20 @@ var runContainedAgentCommand = func(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
 
+var (
+	containedAgentSystemdStatus = func(ctx context.Context, unit string) (string, error) {
+		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl")
+		cmd.Args = []string{"/usr/bin/systemctl", "show", unit, "--property=ExecMainCode", "--property=ExecMainStatus", "--value"}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	containedAgentSystemdCleanup = func(ctx context.Context, unit string) {
+		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl")
+		cmd.Args = []string{"/usr/bin/systemctl", "reset-failed", unit}
+		_ = cmd.Run()
+	}
+)
+
 func launchContainedAgent(
 	ctx context.Context,
 	env *probeEnv,
@@ -78,7 +92,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd := containedAgentCommand(containedAgentCommandOptions{
+	cmd, systemdUnit := containedAgentCommand(containedAgentCommandOptions{
 		ctx:              ctx,
 		agentUserName:    env.agentUserName,
 		homeDir:          homeDir,
@@ -93,20 +107,32 @@ func launchContainedAgent(
 		stderr:           stderr,
 	})
 
-	if err := runContainedAgentCommand(cmd); err != nil {
+	runErr := runContainedAgentCommand(cmd)
+	defer containedAgentSystemdCleanup(context.WithoutCancel(ctx), systemdUnit)
+	var systemdExitErr *exec.ExitError
+	if errors.As(runErr, &systemdExitErr) && systemdExitErr.ExitCode() == 255 {
+		status, statusErr := containedAgentSystemdStatus(context.WithoutCancel(ctx), systemdUnit)
+		if statusErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("inspect contained agent status: %w", statusErr))
+		}
+		if signal, ok := systemdMainSignal(status); ok {
+			return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
+		}
+	}
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 				signal := status.Signal()
 				return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
 			}
 			exitCode := exitErr.ExitCode()
 			if exitCode < 0 {
-				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", err))
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", runErr))
 			}
 			return cliutil.ExitCodeError(exitCode, fmt.Errorf("contained agent exited with status %d", exitCode))
 		}
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, err))
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, runErr))
 	}
 	return nil
 }
@@ -126,31 +152,6 @@ type containedAgentCommandOptions struct {
 	stderr           io.Writer
 }
 
-func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
-	cmd := exec.CommandContext(opts.ctx, defaultLaunchScript)
-	cmd.Args = append([]string{defaultLaunchScript}, opts.args...)
-	cmd.Stdin = opts.stdin
-	cmd.Stdout = opts.stdout
-	cmd.Stderr = opts.stderr
-	cmd.Dir = opts.homeDir
-	cmd.Env = containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
-	cmd.SysProcAttr = agentSysProcAttr(opts.uid, opts.gid, opts.groups)
-	return cmd
-}
-
-// agentSysProcAttr builds the credential the contained tool launches under.
-// NoSetGroups stays false (the zero value) so the kernel runs setgroups(2) and
-// the child drops the launcher's (root's) supplementary groups instead of
-// inheriting them; groups carries the agent's own group set (primary plus
-// supplementary), matching what `sudo -u <agent>` grants via initgroups.
-// Pdeathsig terminates the contained tool if this launcher dies.
-func agentSysProcAttr(uid, gid uint32, groups []uint32) *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			Uid:    uid,
-			Gid:    gid,
-			Groups: groups,
-		},
-		Pdeathsig: syscall.SIGTERM,
-	}
+func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {
+	return containedAgentPrivateTmpCommand(opts)
 }

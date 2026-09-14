@@ -741,7 +741,9 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.workspacePaths = []string{"/workspace"}
 		})
 		probes := probesForEnv(env)
-		if len(probes) != len(allProbes())+1 || probes[len(probes)-1].name != "workspace_access" {
+		if len(probes) != len(allProbes())+1 ||
+			probes[len(probes)-2].name != "workspace_access" || probes[len(probes)-2].n != 15 ||
+			probes[len(probes)-1].name != "private_tmp_isolation" || probes[len(probes)-1].n != 16 {
 			t.Fatalf("probes = %v", probes)
 		}
 	})

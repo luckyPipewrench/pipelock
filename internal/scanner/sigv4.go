@@ -248,16 +248,10 @@ func parseSigV4Credential(cred string) (keyID, date string, ok bool) {
 	if !sigV4AccessKeyAnchored.MatchString(parts[0]) {
 		return "", "", false
 	}
-	if !IsSigV4CredentialScope(strings.Join(parts[1:], "/")) {
+	if !sigv4scope.IsScope(strings.Join(parts[1:], "/")) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
-}
-
-// IsSigV4CredentialScope reports whether scope has the shared SigV4
-// date/region/service/aws4_request grammar.
-func IsSigV4CredentialScope(scope string) bool {
-	return sigv4scope.IsScope(scope)
 }
 
 func validSigV4SignedHeaders(raw string) bool {

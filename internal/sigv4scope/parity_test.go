@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/sigv4scope"
 )
 
-func TestScannerAndRedactorCredentialScopeParity(t *testing.T) {
+func TestScopeAndRedactorCredentialScopeParity(t *testing.T) {
 	long := strings.Repeat("a", 64)
 	tooLong := strings.Repeat("a", 65)
 	tests := []struct {
@@ -32,15 +32,39 @@ func TestScannerAndRedactorCredentialScopeParity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scannerAccepted := scanner.IsSigV4CredentialScope(tt.scope)
+			scannerAccepted := sigv4scope.IsScope(tt.scope)
 			if scannerAccepted != tt.want {
-				t.Fatalf("scanner acceptance = %v, want %v", scannerAccepted, tt.want)
+				t.Fatalf("scope acceptance = %v, want %v", scannerAccepted, tt.want)
 			}
 			for _, tail := range []string{"/" + tt.scope, "%2F" + strings.ReplaceAll(tt.scope, "/", "%2F")} {
 				if redactorAccepted := redact.IsSigV4CredentialScopeTail(tail); redactorAccepted != scannerAccepted {
-					t.Fatalf("redactor acceptance for %q = %v, scanner = %v", tail, redactorAccepted, scannerAccepted)
+					t.Fatalf("redactor acceptance for %q = %v, scope = %v", tail, redactorAccepted, scannerAccepted)
 				}
 			}
 		})
+	}
+}
+
+// TestScopeTailRejectsExtendedTerminator pins the redactor's tail predicate to
+// the scanner's whole-value grammar at the one point where a prefix match and
+// a whole-value match can disagree: text appended to aws4_request. Each tail
+// below carries a credential value the scanner rejects, so redacting the
+// access key ID must not be skipped for any of them.
+func TestScopeTailRejectsExtendedTerminator(t *testing.T) {
+	base := "/20260528/us-east-1/s3/aws4_request"
+	for _, suffix := range []string{"/extra", "%2Fextra", "%2fextra", "-x", "%2", "%"} {
+		tail := base + suffix
+		if sigv4scope.IsScopeTail(tail) {
+			t.Errorf("IsScopeTail(%q) = true, want false", tail)
+		}
+		if redact.IsSigV4CredentialScopeTail(tail) {
+			t.Errorf("redactor skipped redaction for %q", tail)
+		}
+	}
+	for _, suffix := range []string{"", "&X-Amz-Signature=beef", "\"", " ", "\n", "?x"} {
+		tail := base + suffix
+		if !sigv4scope.IsScopeTail(tail) {
+			t.Errorf("IsScopeTail(%q) = false, want true", tail)
+		}
 	}
 }

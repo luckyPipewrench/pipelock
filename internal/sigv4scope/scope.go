@@ -44,7 +44,8 @@ func IsScope(scope string) bool {
 
 // IsScopeTail reports whether value starts with a SigV4 credential scope
 // tail. It accepts the literal and percent-encoded slash forms accepted by
-// query strings, and requires a word boundary after aws4_request.
+// query strings, and requires that nothing continues or extends the scope
+// after aws4_request, so it accepts exactly the scopes IsScope accepts.
 func IsScopeTail(value string) bool {
 	parts := make([]string, 0, 4)
 	for range 3 {
@@ -64,7 +65,27 @@ func IsScopeTail(value string) bool {
 	}
 	parts = append(parts, terminator)
 	value = strings.TrimPrefix(value, terminator)
-	return IsScope(strings.Join(parts, "/")) && (value == "" || !isWordByte(value[0]))
+	return IsScope(strings.Join(parts, "/")) && terminatorEnds(value)
+}
+
+// terminatorEnds reports whether remainder, the text immediately after
+// aws4_request, ends the credential value. The scanner validates a whole
+// X-Amz-Credential value, so a scope with anything appended to its final
+// segment is not a credential scope to it. The redactor sees the scope
+// embedded in arbitrary text and has no value delimiter, so it refuses any
+// byte that could continue the segment (a word byte or the hyphen a scope
+// component allows) or start another one (a literal or percent-encoded
+// slash, or a truncated percent escape). A real pre-signed URL ends the
+// value with a query, quote, or whitespace byte, none of which are refused.
+func terminatorEnds(remainder string) bool {
+	if remainder == "" {
+		return true
+	}
+	switch remainder[0] {
+	case '-', '/', '%':
+		return false
+	}
+	return !isWordByte(remainder[0])
 }
 
 func consumeSeparator(value string) (string, bool) {

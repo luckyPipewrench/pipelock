@@ -117,6 +117,10 @@ type installEnv struct {
 	serviceBinaryChanged     bool
 	serviceConfigChanged     bool
 	serviceUnitChanged       bool
+	// systemdVersion is the running systemd major version read from
+	// `systemctl --version` before the unit is rendered. Zero means unknown,
+	// which renders the legacy simple unit because that shape loads everywhere.
+	systemdVersion           int
 	installServiceWasActive  bool
 	installServiceStateKnown bool
 	deferServiceRestart      bool

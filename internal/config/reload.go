@@ -167,11 +167,7 @@ func (r *Reloader) Start(ctx context.Context) error {
 // tryReload attempts to load and validate the config, sending it to the
 // onChange channel on success. On failure it logs to stderr and keeps the
 // old config.
-func (r *Reloader) tryReload(triggers ...ReloadTrigger) {
-	trigger := ReloadTriggerFile
-	if len(triggers) > 0 {
-		trigger = triggers[0]
-	}
+func (r *Reloader) tryReload(trigger ReloadTrigger) {
 	cfg, err := Load(r.path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pipelock: config reload failed: %v\n", err)

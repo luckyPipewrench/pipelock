@@ -1258,6 +1258,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// uses this point for startup readiness.
 	sdNotifyOrLog(s.opts.Stderr, "READY=1")
 	readyNotified = true
+	s.sdStartupNotified.Store(true)
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
@@ -1321,7 +1322,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 // events participate in systemd's notify-reload protocol; filesystem updates
 // remain asynchronous and must not create unsolicited reload state.
 func (s *Server) handleConfigReload(event config.ReloadEvent) {
-	if event.Trigger == config.ReloadTriggerSignal {
+	// Only a SIGHUP that arrives after startup readiness participates in the
+	// notify-reload protocol. Before that, READY=1 would report startup, not a
+	// reload verdict, and systemd would start dependent units against a proxy
+	// whose listeners are not up yet.
+	notifySystemd := event.Trigger == config.ReloadTriggerSignal && s.sdStartupNotified.Load()
+	if notifySystemd {
 		sdNotifyReloading(s.opts.Stderr)
 	}
 	err := event.Err
@@ -1331,7 +1337,7 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	if err != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
 	}
-	if event.Trigger == config.ReloadTriggerSignal {
+	if notifySystemd {
 		sdNotifyReloadComplete(s.opts.Stderr, err)
 	}
 	// Signal reload-cycle completion for tests (no-op in production). Fires per

@@ -390,6 +390,7 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 
 func TestRenderSystemUnit_ReloadSignalsMainProcess(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
+	env.systemdVersion = systemdNotifyReloadMinVersion
 	body := renderSystemUnit(env)
 	if !strings.Contains(body, "Type=notify-reload") {
 		t.Fatalf("system unit does not wait for the daemon reload verdict:\n%s", body)
@@ -397,8 +398,58 @@ func TestRenderSystemUnit_ReloadSignalsMainProcess(t *testing.T) {
 	if !strings.Contains(body, "NotifyAccess=main") {
 		t.Fatalf("system unit does not permit the main daemon to notify systemd:\n%s", body)
 	}
-	if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
-		t.Fatalf("system unit does not route reload to the running Pipelock process:\n%s", body)
+	if strings.Contains(body, "ExecReload=") {
+		// systemd sends SIGHUP itself under Type=notify-reload; an ExecReload
+		// that sends a second SIGHUP runs the whole reload twice.
+		t.Fatalf("system unit duplicates the reload trigger:\n%s", body)
+	}
+}
+
+// TestRenderSystemUnit_LegacySystemdKeepsSimpleUnit pins the availability
+// direction: systemd older than 253 cannot load Type=notify-reload, so the
+// installer must keep rendering the unit shape that loads there, and an
+// unreadable version must be treated the same way rather than as an error.
+func TestRenderSystemUnit_LegacySystemdKeepsSimpleUnit(t *testing.T) {
+	for _, version := range []int{0, 249, 252} {
+		env, _, _ := newFakeEnv(t)
+		env.systemdVersion = version
+		body := renderSystemUnit(env)
+		if !strings.Contains(body, "Type=simple") || strings.Contains(body, "notify") {
+			t.Fatalf("systemd %d rendered a unit it cannot load:\n%s", version, body)
+		}
+		if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
+			t.Fatalf("systemd %d lost the signal-only reload path:\n%s", version, body)
+		}
+	}
+}
+
+func TestDetectSystemdVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		code int
+		err  error
+		want int
+	}{
+		{name: "modern", out: "systemd 258 (258.1-1.fc43)\n+PAM +AUDIT", code: 0, want: 258},
+		{name: "legacy", out: "systemd 252 (252.36-1~deb12u1)", code: 0, want: 252},
+		{name: "unparseable", out: "something else", code: 0, want: 0},
+		{name: "nonzero exit", out: "systemd 258", code: 1, want: 0},
+		{name: "exec error", out: "", code: 0, err: errors.New("no systemctl"), want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "systemctl" || len(args) != 1 || args[0] != "--version" {
+					t.Fatalf("unexpected command %s %v", name, args)
+				}
+				return tc.out, tc.code, tc.err
+			}
+			if got := detectSystemdVersion(context.Background(), env); got != tc.want {
+				t.Fatalf("detectSystemdVersion = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -120,6 +120,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 	t.Run("signal reload reports accepted verdict", func(t *testing.T) {
 		messages := newNotifySocket(t)
 		s, _ := newTestServer(t, nil)
+		s.sdStartupNotified.Store(true)
 		s.handleConfigReload(config.ReloadEvent{Config: s.proxy.CurrentConfig().Clone(), Trigger: config.ReloadTriggerSignal})
 		first := receiveNotify(t, messages)
 		second := receiveNotify(t, messages)
@@ -137,6 +138,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 			opts.Mode = config.ModeStrict
 			opts.ModeChanged = true
 		})
+		s.sdStartupNotified.Store(true)
 		old := s.proxy.CurrentConfig()
 		candidate := old.Clone()
 		candidate.Mode = config.ModeBalanced
@@ -149,6 +151,17 @@ func TestServerSystemdNotifications(t *testing.T) {
 			t.Fatal("rejected reload replaced the active configuration")
 		}
 	})
+}
+
+func TestSDNotifySignalReloadBeforeStartupReadyIsSilent(t *testing.T) {
+	messages := newNotifySocket(t)
+	s, _ := newTestServer(t, nil)
+	s.handleConfigReload(config.ReloadEvent{Config: s.proxy.CurrentConfig().Clone(), Trigger: config.ReloadTriggerSignal})
+	select {
+	case message := <-messages:
+		t.Fatalf("pre-readiness SIGHUP notified systemd: %q", message)
+	default:
+	}
 }
 
 func monotonicUsec(message string) bool {

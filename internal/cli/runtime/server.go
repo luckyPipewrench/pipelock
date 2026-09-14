@@ -112,6 +112,11 @@ type Server struct {
 	// containmentMetricsDenyLog bounds attacker-driven audit volume from the
 	// unauthenticated observability listener.
 	containmentMetricsDenyLog *rate.Limiter
+	// sdStartupNotified records that startup readiness was already reported to
+	// systemd. A SIGHUP that lands before that point must not send the
+	// notify-reload envelope: its READY=1 would make systemd consider the start
+	// job finished while listeners are still being bound.
+	sdStartupNotified atomic.Bool
 
 	cfg          *config.Config
 	bundleResult *rules.LoadResult

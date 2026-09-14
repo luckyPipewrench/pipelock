@@ -124,12 +124,12 @@ func TestReloader_CoalesceKeepsLatest(t *testing.T) {
 	// (Both modes here are valid without extra config - strict would fail
 	// validation for lack of api_allowlist and never reach the buffer.)
 	writeTestConfig(t, cfgPath, ModeBalanced)
-	r.tryReload()
+	r.tryReload(ReloadTriggerFile)
 
 	// Second reload: audit. Buffer is full, so the fix must discard the stale
 	// balanced config and enqueue audit rather than dropping audit.
 	writeTestConfig(t, cfgPath, ModeAudit)
-	r.tryReload()
+	r.tryReload(ReloadTriggerFile)
 
 	select {
 	case cfg := <-r.Changes():
@@ -190,7 +190,7 @@ func TestReloader_RejectsUnenforcedConcurrentToolLimit(t *testing.T) {
 
 	r := NewReloader(path)
 	defer r.Close()
-	r.tryReload()
+	r.tryReload(ReloadTriggerFile)
 
 	select {
 	case cfg := <-r.Changes():

@@ -112,6 +112,15 @@ type Server struct {
 	// containmentMetricsDenyLog bounds attacker-driven audit volume from the
 	// unauthenticated observability listener.
 	containmentMetricsDenyLog *rate.Limiter
+	// sdStartupReady is closed once startup readiness has been reported to
+	// systemd. A SIGHUP that lands before that point must not send the
+	// notify-reload envelope: its READY=1 would make systemd consider the start
+	// job finished while listeners are still being bound. The reload consumer
+	// waits on this rather than testing a flag when it handles an event, so a
+	// signal that arrives during startup is held and then handled with its
+	// envelope, instead of being handled envelope-less while systemd waits.
+	sdStartupReady     chan struct{}
+	sdStartupReadyOnce sync.Once
 
 	cfg          *config.Config
 	bundleResult *rules.LoadResult

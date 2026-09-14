@@ -16430,7 +16430,7 @@ func TestBestEffortConfigHorizon_RefusesLoadAndDoesNotPublishReload(t *testing.T
 		t.Fatalf("write config: %v", err)
 	}
 	reloader := NewReloader(path)
-	reloader.tryReload()
+	reloader.tryReload(ReloadTriggerFile)
 	select {
 	case cfg := <-reloader.Changes():
 		t.Fatalf("reloader published invalid config: %+v", cfg.Sandbox)

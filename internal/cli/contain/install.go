@@ -1397,8 +1397,9 @@ func stepWriteSystemUnit() step {
 	return step{
 		name: "write-system-unit",
 		desc: "write /etc/systemd/system/pipelock.service",
-		apply: func(_ context.Context, env *installEnv) (bool, error) {
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			env.serviceUnitChanged = false
+			env.systemdVersion = detectSystemdVersion(ctx, env)
 			body := renderSystemUnit(env)
 			// Idempotency: only write if content differs.
 			if existing, err := env.readFile(env.systemUnitPath); err == nil && string(existing) == body {
@@ -1422,6 +1423,64 @@ func stepWriteSystemUnit() step {
 	}
 }
 
+// systemdNotifyReloadMinVersion is the first systemd release that understands
+// Type=notify-reload (systemd.service(5): "Added in version 253"). Older
+// systemd refuses to load such a unit, so the installer renders the legacy
+// simple unit there instead of breaking the whole install.
+const systemdNotifyReloadMinVersion = 253
+
+// detectSystemdVersion reports the major version of the systemd that will
+// actually load the unit, or 0 when it cannot be read. The caller treats 0 as
+// "render the shape that loads everywhere", so an unreadable version costs the
+// newer unit type and never costs the install.
+//
+// The ONLY authority is the running manager's own Version property, read from
+// PID 1 by `systemctl show --property=Version`. There is deliberately no
+// fallback to `systemctl --version`, which reports the version of the systemctl
+// BINARY: on any host that upgraded the systemd package without rebooting, the
+// binary is newer than PID 1, so trusting it renders Type=notify-reload for a
+// manager that cannot load the unit and the proxy service stops starting. A
+// fallback can only ever over-read here, because the one case it would cover is
+// the one case where the two versions disagree. Failing to legacy is the
+// availability-safe direction: the legacy unit loads on every systemd.
+func detectSystemdVersion(ctx context.Context, env *installEnv) int {
+	out, code, err := env.runCmd(ctx, "systemctl", "show", "--property=Version", "--value")
+	if err != nil || code != 0 {
+		return 0
+	}
+	field := strings.TrimPrefix(strings.TrimSpace(firstLine(out)), "Version=")
+	field = strings.Trim(field, `"`)
+	return leadingVersionNumber(field)
+}
+
+// firstLine returns the first line of out, which is where the version probe
+// puts the value.
+func firstLine(out string) string {
+	if index := strings.IndexByte(out, '\n'); index >= 0 {
+		return out[:index]
+	}
+	return out
+}
+
+// leadingVersionNumber reads the leading integer of a systemd version string
+// such as "258", "252.36-1~deb12u1" or "258~rc1", and returns 0 when there is
+// none. Only the leading digits are read, so a distribution's package suffix
+// can never be mistaken for the version.
+func leadingVersionNumber(field string) int {
+	end := 0
+	for end < len(field) && field[end] >= '0' && field[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	version, err := strconv.Atoi(field[:end])
+	if err != nil || version <= 0 {
+		return 0
+	}
+	return version
+}
+
 // renderSystemUnit produces the pipelock.service body. Inline here so tests
 // can call it directly without a tmpdir. The hardening directives mirror
 // the runbook; the firewall is the real boundary, these are defense in
@@ -1429,7 +1488,19 @@ func stepWriteSystemUnit() step {
 func renderSystemUnit(env *installEnv) string {
 	configPath := managedPipelockConfigPath(env)
 	capturePath := filepath.Join(env.dataDir, "captures")
-	body := strings.Join([]string{
+	// On systemd 253+ the unit is Type=notify-reload: systemd sends SIGHUP
+	// itself and `systemctl reload` waits for the daemon's own verdict. No
+	// ExecReload there, because one that also sends SIGHUP would run every
+	// reload twice. Older systemd cannot load that type, so it gets the
+	// legacy simple unit whose reload only confirms signal delivery; the
+	// daemon's notifier is a no-op there because no NOTIFY_SOCKET exists.
+	serviceType := "Type=simple"
+	reloadLines := []string{"ExecReload=/bin/kill -HUP $MAINPID"}
+	if env.systemdVersion >= systemdNotifyReloadMinVersion {
+		serviceType = "Type=notify-reload"
+		reloadLines = []string{"NotifyAccess=main"}
+	}
+	lines := []string{
 		"[Unit]",
 		"Description=Pipelock AI Egress Proxy",
 		"Documentation=https://github.com/luckyPipewrench/pipelock",
@@ -1437,18 +1508,27 @@ func renderSystemUnit(env *installEnv) string {
 		"Wants=network-online.target",
 		"",
 		"[Service]",
-		"Type=simple",
+		serviceType,
 		"User=" + env.proxyUserName,
 		"Group=" + env.proxyUserName,
 		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
 		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
-		"ExecReload=/bin/kill -HUP $MAINPID",
+	}
+	lines = append(lines, reloadLines...)
+	lines = append(lines,
 		"Restart=on-failure",
 		"RestartSec=5",
+		// Stated rather than inherited: under Type=notify-reload the start job
+		// is bounded by this budget until READY=1 arrives, and a host that
+		// overrides DefaultTimeoutStartSec to infinity would otherwise turn a
+		// stuck start into a hung boot dependency. 90 s is systemd's stock
+		// default, so ordinary hosts see no change.
+		"TimeoutStartSec=90",
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-	}, "\n")
+	)
+	body := strings.Join(lines, "\n")
 	hasProtectedHomePath := false
 	for _, path := range env.serviceReadOnlyPaths {
 		if isProtectedHomePath(path) {

@@ -390,9 +390,142 @@ func TestRenderSystemUnit_WithoutFileSentryKeepsHomeInaccessible(t *testing.T) {
 
 func TestRenderSystemUnit_ReloadSignalsMainProcess(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
+	env.systemdVersion = systemdNotifyReloadMinVersion
 	body := renderSystemUnit(env)
-	if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
-		t.Fatalf("system unit does not route reload to the running Pipelock process:\n%s", body)
+	if !strings.Contains(body, "Type=notify-reload") {
+		t.Fatalf("system unit does not wait for the daemon reload verdict:\n%s", body)
+	}
+	if !strings.Contains(body, "NotifyAccess=main") {
+		t.Fatalf("system unit does not permit the main daemon to notify systemd:\n%s", body)
+	}
+	if strings.Contains(body, "ExecReload=") {
+		// systemd sends SIGHUP itself under Type=notify-reload; an ExecReload
+		// that sends a second SIGHUP runs the whole reload twice.
+		t.Fatalf("system unit duplicates the reload trigger:\n%s", body)
+	}
+}
+
+// TestRenderSystemUnit_LegacySystemdKeepsSimpleUnit pins the availability
+// direction: systemd older than 253 cannot load Type=notify-reload, so the
+// installer must keep rendering the unit shape that loads there, and an
+// unreadable version must be treated the same way rather than as an error.
+func TestRenderSystemUnit_LegacySystemdKeepsSimpleUnit(t *testing.T) {
+	for _, version := range []int{0, 249, 252} {
+		env, _, _ := newFakeEnv(t)
+		env.systemdVersion = version
+		body := renderSystemUnit(env)
+		if !strings.Contains(body, "Type=simple") || strings.Contains(body, "notify") {
+			t.Fatalf("systemd %d rendered a unit it cannot load:\n%s", version, body)
+		}
+		if !strings.Contains(body, "ExecReload=/bin/kill -HUP $MAINPID") {
+			t.Fatalf("systemd %d lost the signal-only reload path:\n%s", version, body)
+		}
+	}
+}
+
+func TestDetectSystemdVersion(t *testing.T) {
+	type reply struct {
+		out  string
+		code int
+		err  error
+	}
+	cases := []struct {
+		name    string
+		manager reply
+		client  reply
+		want    int
+	}{
+		{name: "manager modern", manager: reply{out: "258.10-1.fc43\n"}, want: 258},
+		{name: "manager legacy", manager: reply{out: "252.36-1~deb12u1\n"}, want: 252},
+		{name: "manager property form", manager: reply{out: "Version=253\n"}, want: 253},
+		{name: "manager prerelease", manager: reply{out: "258~rc1\n"}, want: 258},
+		{
+			// The host upgraded the systemd package to 253 but has not
+			// rebooted, so PID 1 is still 252 and cannot load
+			// Type=notify-reload. The manager, not the client binary, decides.
+			name:    "client newer than the running manager",
+			manager: reply{out: "252.36-1~deb12u1\n"},
+			client:  reply{out: "systemd 253 (253-1)\n"},
+			want:    252,
+		},
+		{
+			// The decisive case, and the reason there is no client fallback.
+			// An unreadable manager version on a host whose systemctl binary
+			// reports 253+ must NOT enable notify-reload: the binary is newer
+			// than PID 1 exactly when the two disagree, so a fallback can only
+			// over-read and leave the proxy with a unit its manager refuses.
+			name:    "manager unreadable while the client reports a modern version",
+			manager: reply{code: 1, out: "Unknown property"},
+			client:  reply{out: "systemd 258 (258.10-1.fc43)\n"},
+			want:    0,
+		},
+		{name: "manager unreadable", manager: reply{code: 1}, client: reply{out: "systemd 249 (249.11-0ubuntu3)\n"}, want: 0},
+		{name: "manager value unparseable", manager: reply{out: "something else"}, want: 0},
+		{name: "manager empty value", manager: reply{out: "\n"}, want: 0},
+		{
+			// A digit run too long for a machine integer still reads as
+			// digits, so the parse is what has to refuse it. Refusing means
+			// the older unit shape, which every manager can load.
+			name:    "manager version overflows an integer",
+			manager: reply{out: "999999999999999999999.1\n"},
+			want:    0,
+		},
+		{name: "no systemctl at all", manager: reply{err: errors.New("no systemctl")}, want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "systemctl" {
+					t.Fatalf("unexpected command %s %v", name, args)
+				}
+				switch strings.Join(args, " ") {
+				case "show --property=Version --value":
+					return tc.manager.out, tc.manager.code, tc.manager.err
+				case "--version":
+					t.Fatalf("detectSystemdVersion consulted the systemctl binary; only the running manager decides")
+				}
+				t.Fatalf("unexpected systemctl args %v", args)
+				return "", 0, nil
+			}
+			if got := detectSystemdVersion(context.Background(), env); got != tc.want {
+				t.Fatalf("detectSystemdVersion = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStepWriteSystemUnit_RendersShapeForDetectedSystemd covers both unit
+// shapes end to end through the install step rather than only through
+// renderSystemUnit, so the probe and the renderer are proven to agree.
+func TestStepWriteSystemUnit_RendersShapeForDetectedSystemd(t *testing.T) {
+	cases := []struct {
+		name       string
+		managerOut string
+		wantType   string
+		wantAbsent string
+	}{
+		{name: "modern", managerOut: "258.10-1.fc43\n", wantType: "Type=notify-reload", wantAbsent: "ExecReload="},
+		{name: "legacy", managerOut: "252.36-1~deb12u1\n", wantType: "Type=simple", wantAbsent: "notify-reload"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			runner.on(argvFor(testSystemctl, "show", "--property=Version", "--value"), tc.managerOut, 0, nil)
+			if _, err := stepWriteSystemUnit().apply(context.Background(), env); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			body, err := env.readFile(env.systemUnitPath)
+			if err != nil {
+				t.Fatalf("read unit: %v", err)
+			}
+			if !strings.Contains(string(body), tc.wantType) {
+				t.Fatalf("unit is not %s:\n%s", tc.wantType, body)
+			}
+			if strings.Contains(string(body), tc.wantAbsent) {
+				t.Fatalf("unit still contains %q:\n%s", tc.wantAbsent, body)
+			}
+		})
 	}
 }
 

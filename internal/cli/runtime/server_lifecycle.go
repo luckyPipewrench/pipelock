@@ -408,18 +408,18 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		case <-ctx.Done():
 		}
 
+		// Closed when Start returns, so a startup that fails before publishing
+		// readiness still releases the reload consumer. Without it the consumer
+		// could wait on a gate that will never close while Start waits on the
+		// consumer, and neither the context nor the reloader has to be closed
+		// for that to happen.
+		startupSettled := make(chan struct{})
+		defer close(startupSettled)
+
 		reloadWG.Add(1)
 		go func() {
 			defer reloadWG.Done()
-			for newCfg := range reloader.Changes() {
-				if err := s.Reload(newCfg); err != nil {
-					s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
-				}
-				// Signal reload-cycle completion for tests (no-op in
-				// production). Fires per delivered config so reload tests can
-				// block on the event instead of polling stderr on a deadline.
-				fireReloadCompletedHook()
-			}
+			s.consumeReloads(ctx, reloader.Reloads(), startupSettled)
 		}()
 	}
 
@@ -493,6 +493,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	}
 	defer func() { _ = fetchLn.Close() }()
 	boundFetchAddr := fetchLn.Addr().String()
+	readyNotified := false
+	defer func() {
+		if readyNotified {
+			sdNotifyOrLog(s.opts.Stderr, "STOPPING=1")
+		}
+	}()
 
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
 	_, _ = fmt.Fprintln(s.opts.Stderr, s.startupSummaryLine(cfg, boundFetchAddr))
@@ -1253,6 +1259,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// cancelled or error). The listener was already bound above, so an error
 	// here is a serve/runtime failure, not a bind failure — do not relabel it as
 	// a bind error.
+	// All configured listeners are bound and auxiliary serving goroutines are
+	// running; the main proxy begins serving immediately below. Type=notify-reload
+	// uses this point for startup readiness.
+	sdNotifyOrLog(s.opts.Stderr, "READY=1")
+	readyNotified = true
+	s.markStartupNotified()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
@@ -1312,6 +1324,63 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	return nil
 }
 
+// startupNotified returns a channel closed once startup readiness has been
+// reported to systemd. It is lazily created so a Server built by a test that
+// never starts still has a usable gate.
+func (s *Server) startupNotified() <-chan struct{} {
+	s.sdStartupReadyOnce.Do(func() { s.sdStartupReady = make(chan struct{}) })
+	return s.sdStartupReady
+}
+
+// markStartupNotified publishes startup readiness exactly once.
+func (s *Server) markStartupNotified() {
+	ready := s.startupNotified()
+	select {
+	case <-ready:
+	default:
+		close(s.sdStartupReady)
+	}
+}
+
+// startupNotifiedAlready reports whether readiness has been published, without
+// waiting for it.
+func (s *Server) startupNotifiedAlready() bool {
+	select {
+	case <-s.startupNotified():
+		return true
+	default:
+		return false
+	}
+}
+
+// handleConfigReload completes one file-watcher reload. Only SIGHUP-triggered
+// events participate in systemd's notify-reload protocol; filesystem updates
+// remain asynchronous and must not create unsolicited reload state.
+func (s *Server) handleConfigReload(event config.ReloadEvent) {
+	// Only a SIGHUP that arrives after startup readiness participates in the
+	// notify-reload protocol. Before that, READY=1 would report startup, not a
+	// reload verdict, and systemd would start dependent units against a proxy
+	// whose listeners are not up yet.
+	notifySystemd := event.Trigger == config.ReloadTriggerSignal && s.startupNotifiedAlready()
+	if notifySystemd {
+		sdNotifyReloading(s.opts.Stderr)
+	}
+	err := event.Err
+	if err == nil {
+		err = s.Reload(event.Config)
+	}
+	if err != nil {
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
+	}
+	if notifySystemd {
+		sdNotifyReloadComplete(s.opts.Stderr, err)
+	}
+	// Signal reload-cycle completion for tests (no-op in production). Fires per
+	// delivered config so reload tests can block on the event instead of polling
+	// stderr on a deadline.
+	fireReloadCompletedHook()
+}
+
 func preferFileSentryRuntimeError(startErr, fileSentryErr error) error {
 	if fileSentryErr != nil && (startErr == nil || errors.Is(startErr, context.Canceled)) {
 		return fileSentryErr
@@ -1328,4 +1397,28 @@ func mcpAirlockConfigFor(c *config.Config) *config.Airlock {
 		return nil
 	}
 	return &c.Airlock
+}
+
+// consumeReloads applies reload events until the channel closes, holding a
+// signal-triggered event until startup readiness has been reported. Handling
+// one before that point would either skip the envelope systemd is waiting on
+// or send a READY that completes the start job early, depending on which side
+// of the READY datagram the state was published.
+//
+// Cancellation and a startup that settles without publishing readiness both
+// end the loop rather than releasing the queued event: a configuration queued
+// before a failed or aborted start must not be applied after it.
+func (s *Server) consumeReloads(ctx context.Context, events <-chan config.ReloadEvent, startupSettled <-chan struct{}) {
+	for event := range events {
+		if event.Trigger == config.ReloadTriggerSignal {
+			select {
+			case <-s.startupNotified():
+			case <-ctx.Done():
+				return
+			case <-startupSettled:
+				return
+			}
+		}
+		s.handleConfigReload(event)
+	}
 }

@@ -708,7 +708,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// caller-controlled name would let a client rotate that name to
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
-		if reason := ceeRecordMCP(ceeRecordMCPOptions{
+		inspectionMode, fallbackReason, matchedPattern := "", "", ""
+		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
 			frame:          frame,
@@ -716,7 +717,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			sc:             sc,
 			logW:           logW,
 			logger:         auditLogger,
-		}); reason != "" {
+			inspectionMode: &inspectionMode,
+			fallbackReason: &fallbackReason,
+			matchedPattern: &matchedPattern,
+		}
+		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict.
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface:        "cee_mcp_http",
@@ -733,8 +738,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}},
 				EffectiveAction: config.ActionBlock,
 				Outcome:         capture.OutcomeBlocked,
+				InspectionMode:  inspectionMode,
+				FallbackReason:  fallbackReason,
 			})
 			receiptVerdict = config.ActionBlock
+			receiptLayer = "cross_request"
+			receiptPattern = matchedPattern
+			if receiptPattern == "" {
+				receiptPattern = reason
+			}
+			receiptSeverity = "critical"
 			result.Blocked = &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -1175,7 +1188,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// caller-controlled name would let a client rotate that name to
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
-		if reason := ceeRecordMCP(ceeRecordMCPOptions{
+		inspectionMode, fallbackReason, matchedPattern := "", "", ""
+		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
 			frame:          frame,
@@ -1183,7 +1197,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			sc:             sc,
 			logW:           logW,
 			logger:         auditLogger,
-		}); reason != "" {
+			inspectionMode: &inspectionMode,
+			fallbackReason: &fallbackReason,
+			matchedPattern: &matchedPattern,
+		}
+		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict (warn-path).
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface:        "cee_mcp_http",
@@ -1200,8 +1218,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}},
 				EffectiveAction: config.ActionBlock,
 				Outcome:         capture.OutcomeBlocked,
+				InspectionMode:  inspectionMode,
+				FallbackReason:  fallbackReason,
 			})
 			receiptVerdict = config.ActionBlock
+			receiptLayer = "cross_request"
+			receiptPattern = matchedPattern
+			if receiptPattern == "" {
+				receiptPattern = reason
+			}
+			receiptSeverity = "critical"
 			result.Blocked = &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),

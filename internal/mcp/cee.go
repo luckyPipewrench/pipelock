@@ -303,6 +303,9 @@ type ceeRecordMCPOptions struct {
 	sc               *scanner.Scanner
 	logW             io.Writer
 	logger           *audit.Logger
+	inspectionMode   *string
+	fallbackReason   *string
+	matchedPattern   *string
 }
 
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
@@ -323,6 +326,16 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled && fragmentPayloads == nil {
 		var fallbackReason string
 		fragmentPayloads, fallbackReason = mcpCEEFragmentPayloads(opts.frame)
+		inspectionMode := "partitioned"
+		if fallbackReason != "" || !opts.frame.IsToolsCall() {
+			inspectionMode = "raw"
+		}
+		if opts.inspectionMode != nil {
+			*opts.inspectionMode = inspectionMode
+		}
+		if opts.fallbackReason != nil {
+			*opts.fallbackReason = fallbackReason
+		}
 		// A tools/call frame that could not be partitioned into per-argument
 		// streams falls back to scanning the whole raw frame. Record the same
 		// partition-fallback counter the forward proxy uses so operators see the
@@ -439,17 +452,20 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if m != nil {
 					m.RecordCrossRequestDLPMatch()
 				}
-				reason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
-				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
+				operatorReason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
+				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
 				if ceeCfg.Action == config.ActionBlock {
-					if opts.logger != nil {
-						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", reason)
+					if opts.matchedPattern != nil {
+						*opts.matchedPattern = matches[0].PatternName
 					}
-					return reason
+					if opts.logger != nil {
+						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason)
+					}
+					return "cross-request exfiltration attempt blocked"
 				}
 				// Warn mode: emit structured anomaly event for audit trail.
 				if opts.logger != nil {
-					opts.logger.LogAnomaly(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", reason, 0)
+					opts.logger.LogAnomaly(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason, 0)
 				}
 			}
 		}

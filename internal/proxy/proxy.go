@@ -5154,6 +5154,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			EffectiveFindings: ceeFindings,
 			EffectiveAction:   ceeAction,
 			Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+			InspectionMode:    "raw",
 		})
 
 		var ceeRec session.Recorder

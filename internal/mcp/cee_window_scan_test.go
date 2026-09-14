@@ -72,7 +72,7 @@ func TestCeeRecordMCP_ScansCompletingLeafBeforeRetention(t *testing.T) {
 				t.Fatalf("first individually clean MCP leaf blocked: %s", reason)
 			}
 			reason, log := ceeWindowMCPRecord(cee, sc, second)
-			if tc.block && !strings.Contains(reason, "cross-request fragment DLP match") {
+			if tc.block && reason != "cross-request exfiltration attempt blocked" {
 				t.Fatalf("completing MCP leaf reason = %q, want block", reason)
 			}
 			if !tc.block && reason != "" {

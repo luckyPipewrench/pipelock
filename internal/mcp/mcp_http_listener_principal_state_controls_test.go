@@ -259,7 +259,7 @@ func TestHTTPListener_PrincipalControls_CEEPersistsAndIsolatesVerifiedSubjects(t
 	if status, body := request("bob", principalControlCEEChunk(2, testMCPAWSKeySuffix)); status != http.StatusOK || strings.Contains(body, "cross-request fragment DLP match") {
 		t.Fatalf("bob isolated suffix = status %d body %s, want allowed", status, body)
 	}
-	if status, body := request("alice", principalControlCEEChunk(3, testMCPAWSKeySuffix)); status != http.StatusOK || !strings.Contains(body, "cross-request fragment DLP match") {
+	if status, body := request("alice", principalControlCEEChunk(3, testMCPAWSKeySuffix)); status != http.StatusOK || !strings.Contains(body, "cross-request exfiltration attempt blocked") {
 		t.Fatalf("alice reassembled fragments = status %d body %s, want CEE block", status, body)
 	}
 	if got := upstreamCalls.Load(); got != 2 {

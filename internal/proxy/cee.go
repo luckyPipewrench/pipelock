@@ -209,6 +209,13 @@ type ceeOutboundPayloads struct {
 	partitionReason      string
 }
 
+func (p ceeOutboundPayloads) inspectionMode() string {
+	if p.partitionReason != "" || len(p.bodyFragmentPayloads) == 0 {
+		return "raw"
+	}
+	return "partitioned"
+}
+
 const (
 	ceeJSONPartitionReasonMalformed  = "malformed"
 	ceeJSONPartitionReasonIncomplete = "incomplete"

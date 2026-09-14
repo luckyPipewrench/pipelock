@@ -5703,7 +5703,7 @@ func TestScanHTTPInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 	if blocked == nil {
 		t.Fatal("second fragment was allowed, want cross-request fragment DLP block")
 	}
-	if blocked.ErrorCode != -32005 || !strings.Contains(blocked.ErrorMessage, "cross-request fragment DLP match") {
+	if blocked.ErrorCode != -32005 || blocked.ErrorMessage != "pipelock: cross-request exfiltration attempt blocked" {
 		t.Fatalf("blocked request = %+v, want cross-request fragment DLP block", blocked)
 	}
 }

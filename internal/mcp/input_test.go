@@ -4120,6 +4120,7 @@ func TestForwardScannedInput_CEEBlocksCleanMessage(t *testing.T) {
 func TestForwardScannedInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 	sc := testInputScanner(t)
 	cee := testMCPCEEFragmentBlock(t)
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
 	first := mcpChunkedCEERequest(1, "AKI"+"A")
 	second := mcpChunkedCEERequest(2, testMCPAWSKeySuffix)
 
@@ -4130,7 +4131,7 @@ func TestForwardScannedInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T
 		transport.NewStdioReader(strings.NewReader(string(first)+"\n"+string(second)+"\n")),
 		transport.NewStdioWriter(&serverIn),
 		&logBuf, config.ActionBlock, config.ActionBlock, blockedCh,
-		nil, nil, MCPProxyOpts{Scanner: sc, CEE: cee},
+		nil, nil, MCPProxyOpts{Scanner: sc, CEE: cee, ReceiptEmitter: emitter, Transport: transportMCPStdio},
 	)
 
 	var blocked []BlockedRequest
@@ -4140,14 +4141,36 @@ func TestForwardScannedInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T
 	if len(blocked) != 1 {
 		t.Fatalf("blocked requests = %d, want 1; log=%s", len(blocked), logBuf.String())
 	}
-	if blocked[0].ErrorCode != -32005 || !strings.Contains(blocked[0].ErrorMessage, "cross-request fragment DLP match") {
+	if blocked[0].ErrorCode != -32005 || blocked[0].ErrorMessage != "pipelock: cross-request exfiltration attempt blocked" {
 		t.Fatalf("blocked request = %+v, want cross-request fragment DLP block", blocked[0])
+	}
+	if strings.Contains(blocked[0].ErrorMessage, "max_buffer_bytes") || strings.Contains(blocked[0].ErrorMessage, "fragment_reassembly") {
+		t.Fatalf("client error leaked tuning guidance: %q", blocked[0].ErrorMessage)
+	}
+	if !strings.Contains(logBuf.String(), "max_buffer_bytes") {
+		t.Fatalf("operator log lost tuning guidance: %s", logBuf.String())
 	}
 	if !strings.Contains(serverIn.String(), `"id":1`) {
 		t.Fatalf("first fragment was not forwarded: %s", serverIn.String())
 	}
 	if strings.Contains(serverIn.String(), `"id":2`) {
 		t.Fatalf("second fragment was forwarded after CEE block: %s", serverIn.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	var blockReceipts []receipt.Receipt
+	for _, item := range receipts {
+		if item.ActionRecord.Verdict == config.ActionBlock {
+			blockReceipts = append(blockReceipts, item)
+		}
+	}
+	if len(blockReceipts) != 1 {
+		t.Fatalf("block receipt count = %d, want 1; all receipts=%+v", len(blockReceipts), receipts)
+	}
+	if got := blockReceipts[0].ActionRecord; got.Layer != "cross_request" || got.Pattern != "AWS Access ID" {
+		t.Fatalf("receipt = %+v, want cross_request/AWS Access ID/block", got)
 	}
 }
 

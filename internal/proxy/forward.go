@@ -1802,6 +1802,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			EffectiveFindings: ceeFindings,
 			EffectiveAction:   ceeAction,
 			Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+			InspectionMode:    ceePayloads.inspectionMode(),
+			FallbackReason:    ceePayloads.partitionReason,
 		})
 
 		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {

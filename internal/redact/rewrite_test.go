@@ -421,7 +421,7 @@ func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
 	}
 	key := "AKIA" + "IOSFODNN7EXAMPLE"
 	url := "https://examplebucket.s3.amazonaws.com/file?X-Amz-Credential=" + key +
-		"%2F20260528%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=deadbeefcafe"
+		"%2F20260528%2Fus-east-1%2Fapplication-autoscaling%2Faws4_request&X-Amz-Signature=deadbeefcafe"
 	body := []byte(`{"data":{"jobNoteAddAttachment":{"attachmentsToBeAdded":[{"url":"` + url + `"}]}}}`)
 	out, _, err := RewriteJSON(body, m, NewRedactor(), Limits{})
 	if err != nil {
@@ -432,5 +432,36 @@ func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
 	}
 	if strings.Contains(string(out), "<pl:aws-access-key") {
 		t.Errorf("unexpected aws-access-key placeholder in output:\n%s", out)
+	}
+}
+
+// TestRewriteJSON_SigV4ExtendedTerminatorStillRedacted is the negative half of
+// TestRewriteJSON_SigV4PresignedURLSurvives. The credential scope here ends in
+// aws4_request/extra, which the scanner's carve-out rejects because the value
+// has six segments. The redactor must reject it too, or appending a segment to
+// a fabricated credential parameter carries an access key ID through redaction.
+func TestRewriteJSON_SigV4ExtendedTerminatorStillRedacted(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles:       map[string]ProfileSpec{"code": {Classes: []string{"aws-access-key"}}},
+	}
+	m, err := cfg.BuildMatcher("code")
+	if err != nil {
+		t.Fatalf("BuildMatcher: %v", err)
+	}
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, suffix := range []string{"%2Fextra", "-x"} {
+		url := "https://examplebucket.s3.amazonaws.com/file?X-Amz-Credential=" + key +
+			"%2F20260528%2Fus-east-1%2Fs3%2Faws4_request" + suffix + "&X-Amz-Signature=deadbeefcafe"
+		body := []byte(`{"url":"` + url + `"}`)
+		out, _, err := RewriteJSON(body, m, NewRedactor(), Limits{})
+		if err != nil {
+			t.Fatalf("RewriteJSON: %v", err)
+		}
+		if strings.Contains(string(out), key) {
+			t.Errorf("access key ID survived redaction for suffix %q:\n%s", suffix, out)
+		}
 	}
 }

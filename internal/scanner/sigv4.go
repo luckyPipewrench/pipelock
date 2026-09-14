@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/sigv4scope"
 )
 
 // AWS Signature Version 4 (SigV4) credential carve-out.
@@ -65,20 +67,6 @@ import (
 const (
 	// sigV4AlgorithmValue is the canonical SigV4 algorithm identifier.
 	sigV4AlgorithmValue = "AWS4-HMAC-SHA256"
-
-	// sigV4CredentialScopeTerminator is the fixed trailing segment of an
-	// X-Amz-Credential scope: <key>/<date>/<region>/<service>/aws4_request.
-	sigV4CredentialScopeTerminator = "aws4_request"
-
-	// sigV4MaxScopeComponentLen bounds a region or service segment. The
-	// longest published AWS region and service names are well under this, so
-	// it refuses a padded blob without being close to any real value. A bound
-	// is needed because the shape alone accepts any length.
-	sigV4MaxScopeComponentLen = 64
-
-	// sigV4CredentialScopeSegments is the required segment count after
-	// splitting an X-Amz-Credential value on "/".
-	sigV4CredentialScopeSegments = 5
 
 	// sigV4AccessKeyLength is the exact length of AWS access key IDs:
 	// 20 characters. AWS uses both 4-char prefixes (AKIA, ASIA, AGPA, AIDA,
@@ -140,35 +128,6 @@ var (
 	// sigV4SignatureRe matches the hex-encoded HMAC-SHA256 signature
 	// (case-insensitive). Some SDKs emit upper-case hex, others lower.
 	sigV4SignatureRe = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-
-	// sigV4ScopeDateRe matches the YYYYMMDD prefix of a credential scope.
-	sigV4ScopeDateRe = regexp.MustCompile(`^[0-9]{8}$`)
-
-	// sigV4ScopeComponentRe matches the region and service segments of a
-	// credential scope. AWS's SigV4 signing reference specifies the scope as
-	// date/region/service/aws4_request with lowercase region and service
-	// names, and every published region ("us-east-1", "ap-southeast-2",
-	// "eu-central-1", "il-central-1") and service ("s3", "execute-api",
-	// "dynamodb") fits this shape.
-	//
-	// It is deliberately the SHAPE rather than an enumeration. A list of
-	// regions and services is a value that rots: AWS adds both, and a
-	// carve-out that refuses a real new region would make Pipelock block a
-	// legitimate signed request to the customer's own endpoint, which is the
-	// availability failure an operator responds to by turning the check off.
-	//
-	// WHAT THIS BUYS, stated precisely because an earlier round got it wrong:
-	// correctness and a smaller accepted-input surface, NOT secret
-	// containment. The parser previously accepted any non-empty region and
-	// service, so it admitted values AWS itself would never produce. It is
-	// TEMPTING to call that a secret-containment fix, because a 40-character
-	// secret-shaped value fits either field. It is not one: the same value
-	// also travels as "Bearer <value>" and bare, so tightening this grammar
-	// closes one field while every other route stays open. ACCEPTED RESIDUAL,
-	// recorded rather than discovered later: an all-lowercase-hex
-	// 40-character value still fits this shape, and one of 64 hex characters
-	// still fits the Signature field. Containment is a different control.
-	sigV4ScopeComponentRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 	// sigV4SignedHeaderNameRe accepts the lowercase header-name shape used
 	// in SigV4 canonical requests. Empty or malformed list members invalidate
@@ -283,22 +242,13 @@ func parseSigV4Credential(cred string) (keyID, date string, ok bool) {
 		return "", "", false
 	}
 	parts := strings.Split(cred, "/")
-	if len(parts) != sigV4CredentialScopeSegments {
-		return "", "", false
-	}
-	if parts[sigV4CredentialScopeSegments-1] != sigV4CredentialScopeTerminator {
+	if len(parts) != 5 {
 		return "", "", false
 	}
 	if !sigV4AccessKeyAnchored.MatchString(parts[0]) {
 		return "", "", false
 	}
-	if !sigV4ScopeDateRe.MatchString(parts[1]) {
-		return "", "", false
-	}
-	if !sigV4ScopeComponentRe.MatchString(parts[2]) || !sigV4ScopeComponentRe.MatchString(parts[3]) {
-		return "", "", false
-	}
-	if len(parts[2]) > sigV4MaxScopeComponentLen || len(parts[3]) > sigV4MaxScopeComponentLen {
+	if !sigv4scope.IsScope(strings.Join(parts[1:], "/")) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true

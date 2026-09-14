@@ -308,6 +308,11 @@ type ceeRecordMCPOptions struct {
 	matchedPattern   *string
 }
 
+// ceeFragmentBlockClientReason is the neutral client-visible reason for a
+// cross-request fragment DLP block. The operator log and audit record keep the
+// full reason, including the tuning knob, which the client must not learn.
+const ceeFragmentBlockClientReason = "cross-request exfiltration attempt blocked"
+
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
 // Returns a non-empty reason string if the request should be blocked.
 // Returns "" if clean or CEE is disabled.
@@ -461,7 +466,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					if opts.logger != nil {
 						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason)
 					}
-					return "cross-request exfiltration attempt blocked"
+					return ceeFragmentBlockClientReason
 				}
 				// Warn mode: emit structured anomaly event for audit trail.
 				if opts.logger != nil {

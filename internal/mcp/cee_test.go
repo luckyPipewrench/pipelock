@@ -671,11 +671,14 @@ func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 		t.Fatalf("first fragment blocked: %s", reason)
 	}
 	reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf})
-	if !strings.Contains(reason, "cross-request fragment DLP match") {
+	if reason != ceeFragmentBlockClientReason {
 		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
 	}
-	if !strings.Contains(reason, "cross_request_detection.fragment_reassembly.max_buffer_bytes") {
-		t.Fatalf("fragment block missing live remediation knob: %q", reason)
+	if strings.Contains(reason, "max_buffer_bytes") || strings.Contains(reason, "AWS Access ID") {
+		t.Fatalf("client reason leaked tuning or pattern detail: %q", reason)
+	}
+	if !strings.Contains(logBuf.String(), "cross_request_detection.fragment_reassembly.max_buffer_bytes") {
+		t.Fatalf("operator log missing live remediation knob: %q", logBuf.String())
 	}
 }
 
@@ -692,7 +695,7 @@ func TestCeeRecordMCP_ReassemblesRotatedSingletonArgumentsAcrossCalls(t *testing
 		t.Fatalf("first rotated fragment blocked: %s", reason)
 	}
 	reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf})
-	if !strings.Contains(reason, "cross-request fragment DLP match") {
+	if reason != ceeFragmentBlockClientReason {
 		t.Fatalf("second rotated fragment reason = %q, want fragment DLP block", reason)
 	}
 }
@@ -709,7 +712,7 @@ func TestCeeRecordMCP_ReassemblesSamePathWithinTool(t *testing.T) {
 	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf}); reason != "" {
 		t.Fatalf("first same-path fragment blocked: %s", reason)
 	}
-	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); !strings.Contains(reason, "cross-request fragment DLP match") {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); reason != ceeFragmentBlockClientReason {
 		t.Fatalf("same-path fragments within one tool = %q, want fragment DLP block", reason)
 	}
 }
@@ -822,7 +825,7 @@ func TestCeeRecordMCP_HighLeafFallbackPreservesExistingFragment(t *testing.T) {
 	}
 
 	second := ParseMCPFrame(mcpSingletonCEERequest(3, "alpha", "integrity_checker", testMCPAWSKeySuffix))
-	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); !strings.Contains(reason, "cross-request fragment DLP match") {
+	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf}); reason != ceeFragmentBlockClientReason {
 		t.Fatalf("secret split around high-leaf frame = %q, want fragment DLP block", reason)
 	}
 }
@@ -941,7 +944,7 @@ func TestCeeRecordMCP_FragmentSkipsEmptyPayloads(t *testing.T) {
 			"$/active": second,
 		},
 		cee: cee, sc: sc, logW: &logBuf,
-	}); !strings.Contains(reason, "cross-request fragment DLP match") {
+	}); reason != ceeFragmentBlockClientReason {
 		t.Fatalf("second fragment reason = %q, want fragment DLP block", reason)
 	}
 }

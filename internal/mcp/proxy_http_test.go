@@ -8566,3 +8566,72 @@ func listenerPost(t *testing.T, baseURL, token, body string) string {
 	_ = resp.Body.Close()
 	return string(payload)
 }
+
+// ceeCaptureObserver collects CEE capture records so a test can assert the
+// inspection-mode evidence fields the record site populates.
+type ceeCaptureObserver struct {
+	capture.NopObserver
+	mu      sync.Mutex
+	records []capture.CEERecord
+}
+
+func (o *ceeCaptureObserver) ObserveCEEVerdict(_ context.Context, rec *capture.CEERecord) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.records = append(o.records, *rec)
+}
+
+func (o *ceeCaptureObserver) snapshot() []capture.CEERecord {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]capture.CEERecord(nil), o.records...)
+}
+
+// TestScanHTTPInput_CEEBlockEmitsAttributedReceiptAndInspectionMode proves the
+// HTTP/SSE CEE block path reaches its deferred receipt emission with the
+// cross-request attribution applied, and that the capture record carries the
+// partitioned inspection mode rather than an empty string.
+func TestScanHTTPInput_CEEBlockEmitsAttributedReceiptAndInspectionMode(t *testing.T) {
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	cee := testMCPCEEFragmentBlock(t)
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	obs := &ceeCaptureObserver{}
+	opts := MCPProxyOpts{Scanner: sc, CEE: cee, ReceiptEmitter: emitter, Transport: transportMCPHTTP, CaptureObs: obs}
+
+	if blocked := scanHTTPInput(mcpChunkedCEERequest(1, "AKI"+"A"), io.Discard, "mcp-session", "mcp-session", opts); blocked != nil {
+		t.Fatalf("first fragment blocked: %+v", blocked)
+	}
+	blocked := scanHTTPInput(mcpChunkedCEERequest(2, testMCPAWSKeySuffix), io.Discard, "mcp-session", "mcp-session", opts)
+	if blocked == nil {
+		t.Fatal("second fragment was allowed, want cross-request fragment DLP block")
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	var blockReceipts []receipt.Receipt
+	for _, item := range readActionReceipts(t, dir) {
+		if item.ActionRecord.Verdict == config.ActionBlock {
+			blockReceipts = append(blockReceipts, item)
+		}
+	}
+	if len(blockReceipts) != 1 {
+		t.Fatalf("block receipt count = %d, want 1", len(blockReceipts))
+	}
+	got := blockReceipts[0].ActionRecord
+	if got.Layer != "cross_request" || got.Pattern != "AWS Access ID" || got.Severity != "critical" {
+		t.Fatalf("receipt attribution = %+v, want cross_request/AWS Access ID/critical", got)
+	}
+
+	records := obs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("CEE capture records = %d, want 1", len(records))
+	}
+	if records[0].InspectionMode != "partitioned" {
+		t.Fatalf("InspectionMode = %q, want partitioned", records[0].InspectionMode)
+	}
+	if records[0].FallbackReason != "" {
+		t.Fatalf("FallbackReason = %q, want empty for a partitioned frame", records[0].FallbackReason)
+	}
+}

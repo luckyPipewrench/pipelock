@@ -1491,6 +1491,8 @@ func newInterceptHandler(
 					EffectiveFindings: ceeFindings,
 					EffectiveAction:   ceeAction,
 					Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
+					InspectionMode:    outboundPayloads.inspectionMode(),
+					FallbackReason:    outboundPayloads.partitionReason,
 				})
 			}
 

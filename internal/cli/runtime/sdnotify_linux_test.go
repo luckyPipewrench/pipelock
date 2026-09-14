@@ -6,7 +6,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,6 +71,59 @@ func receiveNotify(t *testing.T, messages <-chan string) string {
 		t.Fatal("timed out waiting for systemd notification")
 		return ""
 	}
+}
+
+// TestSDNotifyErrorPaths covers the failure branches of the notifier. Every one
+// of them must report the error and leave the proxy serving: a systemd socket
+// that cannot be reached is an availability concern for the start job, never a
+// reason to stop mediating traffic.
+func TestSDNotifyErrorPaths(t *testing.T) {
+	t.Run("dial failure is reported", func(t *testing.T) {
+		t.Setenv("NOTIFY_SOCKET", filepath.Join(shortSocketDir(t), "absent.sock"))
+		sent, err := sdNotify("READY=1")
+		if sent || err == nil {
+			t.Fatalf("sdNotify to an absent socket = %v, %v; want a reported failure", sent, err)
+		}
+		if !strings.Contains(err.Error(), "dial NOTIFY_SOCKET") {
+			t.Fatalf("error = %v, want the dial stage named", err)
+		}
+	})
+
+	t.Run("failure is logged and swallowed by the or-log wrapper", func(t *testing.T) {
+		t.Setenv("NOTIFY_SOCKET", filepath.Join(shortSocketDir(t), "absent.sock"))
+		var stderr bytes.Buffer
+		sdNotifyOrLog(&stderr, "READY=1")
+		if !strings.Contains(stderr.String(), "systemd notification failed") {
+			t.Fatalf("stderr = %q, want the failure reported", stderr.String())
+		}
+	})
+
+	t.Run("reloading envelope carries a monotonic timestamp", func(t *testing.T) {
+		messages := newNotifySocket(t)
+		sdNotifyReloading(io.Discard)
+		got := receiveNotify(t, messages)
+		if !strings.HasPrefix(got, "RELOADING=1\nMONOTONIC_USEC=") {
+			t.Fatalf("reloading notification = %q, want RELOADING with MONOTONIC_USEC", got)
+		}
+		value := strings.TrimPrefix(got, "RELOADING=1\nMONOTONIC_USEC=")
+		if value == "" {
+			t.Fatalf("reloading notification carries no timestamp: %q", got)
+		}
+		for _, digit := range value {
+			if digit < '0' || digit > '9' {
+				t.Fatalf("monotonic timestamp %q is not an integer", value)
+			}
+		}
+	})
+
+	t.Run("rejected reload reports its reason without the rejected prefix", func(t *testing.T) {
+		messages := newNotifySocket(t)
+		sdNotifyReloadComplete(io.Discard, errors.New("rejected: security downgrade from strict\nsecond line"))
+		got := receiveNotify(t, messages)
+		if got != "READY=1\nSTATUS=config reload rejected: security downgrade from strict" {
+			t.Fatalf("rejected reload notification = %q", got)
+		}
+	})
 }
 
 func TestSDNotify(t *testing.T) {

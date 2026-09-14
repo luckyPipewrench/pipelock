@@ -1081,7 +1081,7 @@ func binaryIntegrityDetail(env *probeEnv, target, pinned string) string {
 }
 
 // systemdExecStartPath extracts the one executable path from systemctl show's
-// stable ExecStart representation. Pipelock's managed service (Type=notify-reload on systemd 253+, Type=simple otherwise) runs
+// stable ExecStart representation. Pipelock's managed service is Type=simple
 // with exactly one command; accepting multiple commands here would leave its
 // running program ambiguous.
 func systemdExecStartPath(raw string) (string, error) {

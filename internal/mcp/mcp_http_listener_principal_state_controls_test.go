@@ -61,6 +61,26 @@ func mustPrincipalControlRPC(t *testing.T, baseURL, bearer string, body []byte) 
 	return status, payload
 }
 
+// principalControlRPCError returns the JSON-RPC error message from a listener
+// response, or "" when the response carries a result instead. Tests compare it
+// exactly so neither an extra detail in a block reason nor a silently renamed
+// one can pass unnoticed.
+func principalControlRPCError(t *testing.T, body string) string {
+	t.Helper()
+	var response struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("decode listener response %q: %v", body, err)
+	}
+	if response.Error == nil {
+		return ""
+	}
+	return response.Error.Message
+}
+
 func principalControlToolsList(id int) []byte {
 	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}}}`, id, currentMCPVersion))
 }
@@ -253,14 +273,35 @@ func TestHTTPListener_PrincipalControls_CEEPersistsAndIsolatesVerifiedSubjects(t
 		return mustPrincipalControlRPC(t, baseURL, principalStateTestBearer, body)
 	}
 
-	if status, body := request("alice", principalControlCEEChunk(1, "AKI"+"A")); status != http.StatusOK || strings.Contains(body, "cross-request fragment DLP match") {
+	// Decode the RPC error rather than substring-matching the body. A negative
+	// substring check against a message the code no longer emits passes for a
+	// blocked request too, so it would stop witnessing the isolation it names;
+	// a positive one passes even if the body also carries a pattern name or
+	// tuning value, which is what the neutral client reason exists to withhold.
+	if status, body := request("alice", principalControlCEEChunk(1, "AKI"+"A")); status != http.StatusOK || principalControlRPCError(t, body) != "" {
 		t.Fatalf("alice first fragment = status %d body %s, want allowed", status, body)
 	}
-	if status, body := request("bob", principalControlCEEChunk(2, testMCPAWSKeySuffix)); status != http.StatusOK || strings.Contains(body, "cross-request fragment DLP match") {
+	if status, body := request("bob", principalControlCEEChunk(2, testMCPAWSKeySuffix)); status != http.StatusOK || principalControlRPCError(t, body) != "" {
 		t.Fatalf("bob isolated suffix = status %d body %s, want allowed", status, body)
 	}
-	if status, body := request("alice", principalControlCEEChunk(3, testMCPAWSKeySuffix)); status != http.StatusOK || !strings.Contains(body, "cross-request exfiltration attempt blocked") {
-		t.Fatalf("alice reassembled fragments = status %d body %s, want CEE block", status, body)
+	status, body := request("alice", principalControlCEEChunk(3, testMCPAWSKeySuffix))
+	blockMessage := principalControlRPCError(t, body)
+	if status != http.StatusOK || blockMessage != "pipelock: "+ceeFragmentBlockClientReason {
+		t.Fatalf("alice reassembled fragments = status %d body %s, want the neutral CEE block reason", status, body)
+	}
+	// Stated in literals on purpose. The comparison above moves with the
+	// constant, so on its own it pins consistency rather than the property:
+	// the agent learns neither what matched nor how to widen the window.
+	for _, leak := range []string{"AWS", "Access ID", "max_buffer_bytes", "fragment_reassembly", "bits", "0123456789"} {
+		if leak == "0123456789" {
+			if strings.ContainsAny(blockMessage, leak) {
+				t.Fatalf("client block reason carries a number: %q", blockMessage)
+			}
+			continue
+		}
+		if strings.Contains(blockMessage, leak) {
+			t.Fatalf("client block reason leaked %q: %q", leak, blockMessage)
+		}
 	}
 	if got := upstreamCalls.Load(); got != 2 {
 		t.Fatalf("upstream calls = %d, want 2; same-principal CEE block must not forward", got)

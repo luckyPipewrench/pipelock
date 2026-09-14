@@ -956,6 +956,17 @@ func ForwardScannedInput(
 					ErrorCode:      -32005,
 					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 				}
+				// A method that carries neither a tool call nor required receipt
+				// metadata never minted a receipt identity, and the emitter drops
+				// a receipt with an empty action ID. Mint one here so a CEE block
+				// on any method leaves evidence, exactly as the authorization
+				// block below this loop already does.
+				if actionID == "" {
+					actionID = receipt.NewActionID()
+				}
+				if receiptTarget == "" {
+					receiptTarget = verdict.Method
+				}
 				receiptLayerOverride = "cross_request"
 				receiptPatternOverride = ceeBlockKind
 				if matchedPattern != "" {
@@ -1522,6 +1533,17 @@ func ForwardScannedInput(
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
 					ErrorCode:      -32005,
 					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+				}
+				// A method that carries neither a tool call nor required receipt
+				// metadata never minted a receipt identity, and the emitter drops
+				// a receipt with an empty action ID. Mint one here so a CEE block
+				// on any method leaves evidence, exactly as the authorization
+				// block below this loop already does.
+				if actionID == "" {
+					actionID = receipt.NewActionID()
+				}
+				if receiptTarget == "" {
+					receiptTarget = verdict.Method
 				}
 				receiptLayerOverride = "cross_request"
 				receiptPatternOverride = ceeBlockKind

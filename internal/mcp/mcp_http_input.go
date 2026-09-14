@@ -742,6 +742,17 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				InspectionMode:  inspectionMode,
 				FallbackReason:  fallbackReason,
 			})
+			// A method that carries neither a tool call nor required receipt
+			// metadata never minted a receipt identity, and the emitter drops a
+			// receipt with an empty action ID. Mint one here so a CEE block on
+			// any method leaves evidence, matching the authorization path in
+			// the deferred finalizer above.
+			if actionID == "" {
+				actionID = receipt.NewActionID()
+			}
+			if toolName == "" {
+				toolName = mcpMethod
+			}
 			receiptVerdict = config.ActionBlock
 			receiptLayer = "cross_request"
 			receiptPattern = ceeBlockKind
@@ -1223,6 +1234,17 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				InspectionMode:  inspectionMode,
 				FallbackReason:  fallbackReason,
 			})
+			// A method that carries neither a tool call nor required receipt
+			// metadata never minted a receipt identity, and the emitter drops a
+			// receipt with an empty action ID. Mint one here so a CEE block on
+			// any method leaves evidence, matching the authorization path in
+			// the deferred finalizer above.
+			if actionID == "" {
+				actionID = receipt.NewActionID()
+			}
+			if toolName == "" {
+				toolName = mcpMethod
+			}
 			receiptVerdict = config.ActionBlock
 			receiptLayer = "cross_request"
 			receiptPattern = ceeBlockKind

@@ -8636,6 +8636,51 @@ func TestScanHTTPInput_CEEBlockEmitsAttributedReceiptAndInspectionMode(t *testin
 	}
 }
 
+// TestScanHTTPInput_CEEBlockOnGenericMethodEmitsReceipt is the HTTP twin of the
+// stdio generic-method case. A method that is neither a tool call nor a
+// required-metadata method mints no receipt identity up front, and the emitter
+// drops a receipt with an empty action ID, so the CEE block would fire and
+// leave nothing behind.
+func TestScanHTTPInput_CEEBlockOnGenericMethodEmitsReceipt(t *testing.T) {
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	cee := NewCEEDeps(config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1,
+			WindowMinutes: testMCPWindowSecs / 60,
+			Action:        config.ActionBlock,
+		},
+	}, metrics.New())
+	t.Cleanup(cee.Close)
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	opts := MCPProxyOpts{Scanner: sc, CEE: cee, ReceiptEmitter: emitter, Transport: transportMCPHTTP}
+
+	const generic = `{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"file:///etc/hosts"}}`
+	blocked := scanHTTPInput([]byte(generic), io.Discard, "mcp-session", "mcp-session", opts)
+	if blocked == nil {
+		t.Fatal("generic-method entropy request was allowed, want CEE block")
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
+	if len(blockReceipts) != 1 {
+		t.Fatalf("block receipt count = %d, want 1 for a CEE block on a generic method", len(blockReceipts))
+	}
+	got := blockReceipts[0].ActionRecord
+	if got.ActionID == "" {
+		t.Fatalf("receipt has no action id: %+v", got)
+	}
+	if got.Target != "resources/read" {
+		t.Fatalf("receipt target = %q, want the method", got.Target)
+	}
+	if got.Layer != "cross_request" {
+		t.Fatalf("receipt layer = %q, want cross_request", got.Layer)
+	}
+}
+
 func TestScanHTTPInput_CEEEntropyReceiptUsesStablePattern(t *testing.T) {
 	sc := testMCPScanner()
 	t.Cleanup(sc.Close)

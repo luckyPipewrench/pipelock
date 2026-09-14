@@ -1034,17 +1034,17 @@ func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
-	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "UNAUTHENTICATED: no signed checkpoint") {
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "UNANCHORED: no signed checkpoint") {
 		t.Fatalf("checkpoint-less sealed session must be refused by default err=%v\n%s", err, out.String())
 	}
 	out.Reset()
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub), "--allow-unsigned-checkpoints"})
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub), "--allow-unanchored-seal"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("whole-recorder restart-chain verification: %v\n%s", err, out.String())
 	}
-	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "no signed checkpoint (accepted by --allow-unsigned-checkpoints)"} {
+	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "no signed checkpoint (accepted by --allow-unanchored-seal)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("whole-recorder restart-chain output missing %q:\n%s", want, out.String())
 		}

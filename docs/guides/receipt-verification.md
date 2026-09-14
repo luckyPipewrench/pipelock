@@ -206,12 +206,14 @@ checkpoint the recorder writes after it; any other entry after the seal is repor
 INCOMPLETE, because the seal never committed to it. Entries that are not receipts
 (decisions, captures) are authenticated only through signed checkpoints: each one signs
 the chain hash of everything before it, and `--whole-recorder` verifies those signatures
-against the pinned keys and reports the anchor state. A recorder with no signed
-checkpoint (none present, or none carrying a signature) is refused, because a rewrite
-could have stripped or removed them; if the recorder really runs with
-`flight_recorder.sign_checkpoints: false`, pass `--allow-unsigned-checkpoints` to
-accept it, and the output then states that entries other than receipts are hash-linked
-but not authenticated.
+against the pinned keys and reports the anchor state. The seal itself must be covered
+by a signed checkpoint, which is the trailing checkpoint the recorder writes after the
+root; a recorder where no signed checkpoint follows the seal (checkpoints absent,
+unsigned, or the trailing one missing) is refused, because a rewrite could have
+stripped or removed it while an older checkpoint still verifies. If the recorder really
+runs with `flight_recorder.sign_checkpoints: false`, or its last entry filled a shard so
+no trailing checkpoint was written, pass `--allow-unanchored-seal` to accept it, and the
+output then states which entries are hash-linked but not authenticated.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning

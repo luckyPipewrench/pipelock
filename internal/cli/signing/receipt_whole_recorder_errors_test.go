@@ -319,10 +319,10 @@ func TestVerifyReceiptCmd_WholeRecorderSignedCheckpointAnchor(t *testing.T) {
 		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
 		mutated := rewriteRecorderEntries(t, unsignedPath, "rewritten-unsigned.jsonl", tamperDecision)
 		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
-		if err == nil || !strings.Contains(err.Error(), "--allow-unsigned-checkpoints") || strings.Contains(out, "Seal:      sealed at seq") {
+		if err == nil || !strings.Contains(err.Error(), "--allow-unanchored-seal") || strings.Contains(out, "Seal:      sealed at seq") {
 			t.Fatalf("unsigned recorder must fail closed by default err=%v output:\n%s", err, out)
 		}
-		out, err = runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unsigned-checkpoints")
+		out, err = runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unanchored-seal")
 		if err != nil || !strings.Contains(out, "hash-linked but not authenticated") {
 			t.Fatalf("unsigned recorder must state its limit when allowed err=%v output:\n%s", err, out)
 		}
@@ -371,7 +371,7 @@ func TestVerifyReceiptCmd_WholeRecorderSignedCheckpointAnchor(t *testing.T) {
 			}
 			return entries
 		})
-		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unsigned-checkpoints")
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unanchored-seal")
 		if err != nil || !strings.Contains(out, "not authenticated") {
 			t.Fatalf("unsigned recorder must report the unauthenticated state err=%v output:\n%s", err, out)
 		}
@@ -587,4 +587,46 @@ func TestVerifyReceiptCmd_WholeRecorderCheckpointSpanAndTailEdges(t *testing.T) 
 			t.Fatalf("decision after seal err = %v", err)
 		}
 	})
+}
+
+func TestVerifyReceiptCmd_WholeRecorderSealMustBeCoveredBySignedCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONLWith(t, true, 1)
+	key := hex.EncodeToString(pub)
+	entries, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	last := len(entries) - 1
+	if entries[last].Type != "checkpoint" || entries[last-1].Type != "transcript_root" {
+		t.Fatal("fixture must end with transcript_root then checkpoint")
+	}
+
+	// Drop the trailing checkpoint and relink: an earlier signed checkpoint
+	// still verifies, but nothing signed covers the seal any more.
+	truncated := filepath.Join(t.TempDir(), "no-trailing-checkpoint.jsonl")
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if err := os.WriteFile(truncated, []byte(strings.Join(lines[:last], "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := runVerifyReceipt(t, truncated, "--whole-recorder", "--key", key)
+	if err == nil || !strings.Contains(err.Error(), "no signed checkpoint covers the transcript_root seal") || strings.Contains(out, "Seal:      sealed at seq") {
+		t.Fatalf("seal without a covering checkpoint must be refused err=%v output:\n%s", err, out)
+	}
+	out, err = runVerifyReceipt(t, truncated, "--whole-recorder", "--key", key, "--allow-unanchored-seal")
+	if err != nil || !strings.Contains(out, "none after the seal (accepted by --allow-unanchored-seal)") {
+		t.Fatalf("explicitly accepted unanchored seal err=%v output:\n%s", err, out)
+	}
+
+	// Positive control: the untouched fixture is covered and says so.
+	out, err = runVerifyReceipt(t, path, "--whole-recorder", "--key", key)
+	if err != nil || !strings.Contains(out, "every entry through the seal is committed by a trusted key") {
+		t.Fatalf("covered seal err=%v output:\n%s", err, out)
+	}
 }

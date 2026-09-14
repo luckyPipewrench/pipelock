@@ -39,6 +39,7 @@ func TestBaselineKeyForSessionKey(t *testing.T) {
 		{"ipv4 folded", "203.0.113.1", "ip4-cb007101"},
 		{"ipv6 folded", "2001:db8::1", "ip6-20010db8000000000000000000000001"},
 		{"bracketed ipv6 folded", "[2001:db8::1]", "ip6-20010db8000000000000000000000001"},
+		{"ipv4-mapped ipv6 folds to the ipv4 key", "::ffff:203.0.113.1", "ip4-cb007101"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

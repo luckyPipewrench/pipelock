@@ -113,6 +113,7 @@ func BaselineKeyForSessionKey(sessionKey string) string {
 	}
 	client := strings.Trim(strings.TrimSpace(sessionKey), "[]")
 	if ip, err := netip.ParseAddr(client); err == nil {
+		ip = ip.Unmap()
 		if ip.Is4() {
 			return "ip4-" + hex.EncodeToString(ip.AsSlice())
 		}

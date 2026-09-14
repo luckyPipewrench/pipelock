@@ -9,6 +9,39 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+func TestMCPToolNameAlias(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{name: "bare", input: "write_file", want: "write_file", ok: true},
+		{name: "claude namespace", input: "mcp__filesystem__write_file", want: "write_file", ok: true},
+		{name: "uppercase claude namespace", input: "MCP__filesystem__write_file", want: "write_file", ok: true},
+		{name: "plugin namespace", input: "mcp__plugin_filesystem_local__write_file", want: "write_file", ok: true},
+		{name: "dot heuristic", input: "filesystem.write_file", want: "write_file", ok: true},
+		{name: "colon heuristic", input: "filesystem:write_file", want: "write_file", ok: true},
+		{name: "hyphenated namespace", input: "file-system:write-file", want: "write-file", ok: true},
+		{name: "deceptive mcp suffix", input: "mcp__filesystem__write_file__extra", ok: false},
+		{name: "deceptive dot suffix", input: "filesystem.write_file.extra", ok: false},
+		{name: "deceptive colon suffix", input: "filesystem:write_file:extra", ok: false},
+		{name: "empty namespace", input: ".write_file", ok: false},
+		{name: "unicode namespace", input: "fílesystem.write_file", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := MCPToolNameAlias(tt.input)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("MCPToolNameAlias(%q) = (%q, %t), want (%q, %t)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
 // TestForDLP_Parity verifies ForDLP produces identical output to the
 // inline 5-step pipeline (StripControlChars → StripExoticWhitespace →
 // NFKC → ConfusableToASCII → StripCombiningMarks). Each row runs the

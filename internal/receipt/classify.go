@@ -6,6 +6,7 @@ package receipt
 import (
 	"net/http"
 
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -113,6 +114,37 @@ func ClassifySessionAction(action session.ActionClass) ActionType {
 // classifyToolName attempts to classify an MCP tool call by name.
 // Uses common prefixes/keywords. Defaults to unclassified for unknown tools.
 func classifyToolName(name string) ActionType {
+	raw := classifyToolNamePrefix(name)
+	alias, ok := normalize.MCPToolNameAlias(name)
+	if !ok || alias == name {
+		return raw
+	}
+	return moreSideEffectingToolAction(raw, classifyToolNamePrefix(alias))
+}
+
+// moreSideEffectingToolAction preserves a raw recognized name while avoiding
+// an alias that understates a write or delegated execution as a read.
+func moreSideEffectingToolAction(first, second ActionType) ActionType {
+	if toolActionRank(second) > toolActionRank(first) {
+		return second
+	}
+	return first
+}
+
+func toolActionRank(action ActionType) int {
+	switch action {
+	case ActionDelegate:
+		return 3
+	case ActionWrite:
+		return 2
+	case ActionRead:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func classifyToolNamePrefix(name string) ActionType {
 	if name == "" {
 		return ActionUnclassified
 	}
@@ -134,7 +166,7 @@ func classifyToolName(name string) ActionType {
 	}
 
 	// Check for execution/delegation patterns
-	execPrefixes := []string{"run", "exec", "execute", "spawn", "invoke", "call"}
+	execPrefixes := []string{"run", "exec", "execute", "terminal", "spawn", "invoke", "call"}
 	for _, prefix := range execPrefixes {
 		if hasPrefix(name, prefix) {
 			return ActionDelegate

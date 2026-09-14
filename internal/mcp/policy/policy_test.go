@@ -3528,6 +3528,68 @@ func newDefaultConfig() *Config {
 	})
 }
 
+func TestDefaultToolPolicyRules_BoundedToolNameAliases(t *testing.T) {
+	t.Parallel()
+
+	pc := newDefaultConfig()
+	tests := []struct {
+		name     string
+		toolName string
+		matched  bool
+	}{
+		{name: "bare write", toolName: "write_file", matched: true},
+		{name: "claude namespace write", toolName: "mcp__filesystem__write_file", matched: true},
+		{name: "plugin namespace write", toolName: "mcp__plugin_filesystem_local__write_file", matched: true},
+		{name: "dot namespace write", toolName: "filesystem.write_file", matched: true},
+		{name: "colon namespace write", toolName: "filesystem:write_file", matched: true},
+		{name: "claude namespace shell", toolName: "mcp__shell__bash", matched: true},
+		{name: "ambiguous mcp suffix is rejected", toolName: "mcp__filesystem__write_file__extra"},
+		{name: "deceptive dot suffix", toolName: "filesystem.write_file.extra"},
+		{name: "deceptive colon suffix", toolName: "filesystem:write_file:extra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := pc.CheckToolCall(tt.toolName, []string{"/home/user/.bashrc", "rm -rf /"})
+			if verdict.Matched != tt.matched {
+				t.Fatalf("CheckToolCall(%q) matched = %t, want %t (verdict=%+v)", tt.toolName, verdict.Matched, tt.matched, verdict)
+			}
+		})
+	}
+}
+
+func TestCustomToolPatternUsesRawToolName(t *testing.T) {
+	t.Parallel()
+
+	pc := New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules: []config.ToolPolicyRule{{
+			Name:        "operator exact name",
+			ToolPattern: `^filesystem\.write_file$`,
+		}},
+	})
+	if pc == nil {
+		t.Fatal("custom policy config is nil")
+	}
+
+	for _, tt := range []struct {
+		name     string
+		toolName string
+		matched  bool
+	}{
+		{name: "operator literal", toolName: "filesystem.write_file", matched: true},
+		{name: "claude namespace remains distinct", toolName: "mcp__filesystem__write_file"},
+		{name: "bare tool remains distinct", toolName: "write_file"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pc.CheckToolCall(tt.toolName, nil).Matched; got != tt.matched {
+				t.Fatalf("CheckToolCall(%q) matched = %t, want %t", tt.toolName, got, tt.matched)
+			}
+		})
+	}
+}
+
 // --- External Creative Security Round Tests ---
 
 func TestCheckToolCall_FullwidthCommandObfuscation(t *testing.T) {

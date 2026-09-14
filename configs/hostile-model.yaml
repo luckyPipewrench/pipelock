@@ -378,127 +378,127 @@ mcp_tool_policy:
   action: block
   rules:
     - name: "Destructive File Delete"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
       action: block
     - name: "Recursive Permission Change"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
       action: block
     - name: "Credential File Access"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read|create_symlink|create_hardlink|move_file|file_move|rename_file|move-file|copy_file|file_copy)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read|create_symlink|create_hardlink|move_file|file_move|rename_file|move-file|copy_file|file_copy)$'
       arg_pattern: '(?i)(\.ssh[\\/]?(id_|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow|\.kube[\\/]?config|\.docker[\\/]?config)'
       action: block
     - name: "Network Exfiltration"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(curl|wget|nc|ncat|socat)\b'
       action: block
     - name: "Reverse Shell"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
       action: block
     - name: "Disk Wipe Command"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b'
       action: block
     - name: "Package Install"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
       action: block
     - name: "Destructive Git Operation"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
       arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
       action: block
     - name: "Encoded Command Execution"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
       action: block
     - name: "Cron Job Persistence"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)'
       action: block
     - name: "Systemd Service Persistence"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b'
       action: block
     - name: "Persistence Path Write"
-      tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
       action: block
     - name: "Persistence Path Write"
-      tool_pattern: '(?i)^(apply_patch)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(apply_patch)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
       arg_source: patch_targets
       action: block
     - name: "Protected Path Copy"
-      tool_pattern: '(?i)^(copy_file|file_copy)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(copy_file|file_copy)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       arg_key: '(?i)^destination$'
       action: block
     - name: "Protected Path Delete"
-      tool_pattern: '(?i)^(delete_file|file_delete)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(delete_file|file_delete)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       action: block
     - name: "Protected Path Metadata Change"
-      tool_pattern: '(?i)^(chmod_file|chown_file)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(chmod_file|chown_file)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       action: block
     - name: "Protected Path Link Creation"
-      tool_pattern: '(?i)^(create_symlink|create_hardlink)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(create_symlink|create_hardlink)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       action: block
     - name: "Persistence Path Write via Command"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))'
       action: block
     - name: "Shell Profile Modification"
-      tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
       arg_pattern: '(?i)((?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       action: block
     - name: "Shell Profile Modification"
-      tool_pattern: '(?i)^(apply_patch)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(apply_patch)$'
       arg_pattern: '(?i)((?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       arg_source: patch_targets
       action: block
     - name: "Shell Profile Write via Command"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$)'
       action: block
     - name: "Detached Process Spawning"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)'
       action: block
     - name: "Audit Log Move"
-      tool_pattern: '(?i)^(move_file|file_move|rename_file|move-file)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(move_file|file_move|rename_file|move-file)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
       action: block
     - name: "Audit Log Copy"
-      tool_pattern: '(?i)^(copy_file|file_copy)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(copy_file|file_copy)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
       arg_key: '(?i)^destination$'
       action: block
     - name: "Audit Log Delete"
-      tool_pattern: '(?i)^(delete_file|file_delete)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(delete_file|file_delete)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Metadata Change"
-      tool_pattern: '(?i)^(chmod_file|chown_file)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(chmod_file|chown_file)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Link Creation"
-      tool_pattern: '(?i)^(create_symlink|create_hardlink)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(create_symlink|create_hardlink)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
     - name: "Audit Log Write"
-      tool_pattern: '(?i)^(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
       arg_pattern: '(?i)((?:^|[\s/])var/lib/pipelock(?:/|$)|(?:^|[\s/])var/log/(?:auth\.log|secure|syslog|messages|kern\.log|audit\.log|audit/|wtmp|btmp|lastlog|faillog|journal/))'
     - name: "Audit Log Patch"
-      tool_pattern: '(?i)^(apply_patch)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(apply_patch)$'
       arg_pattern: '(?i)(?:^|[\s/])(?:var/log|var/lib/pipelock)(?:/|$)'
       arg_source: patch_targets
     - name: "Audit Log Tampering"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec|write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
       arg_pattern: '(?i)(\b(rm|truncate|shred)\b[^;|&]*(/(?:var/log|var/lib/pipelock)/|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(/(?:var/log|var/lib/pipelock)/|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)'
       action: block
     - name: "Environment Dump"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(printenv|env\b|set\b|export\s+-p)'
       action: block
 

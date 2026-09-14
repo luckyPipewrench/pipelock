@@ -1475,7 +1475,7 @@ const (
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
-	return []config.ToolPolicyRule{
+	rules := []config.ToolPolicyRule{
 		{
 			Name:        "Destructive File Delete",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
@@ -1688,4 +1688,21 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
 		},
 	}
+	return withBuiltinToolNameAliases(rules)
+}
+
+const builtinToolNameAliasPrefix = `(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])`
+
+// withBuiltinToolNameAliases adds bounded presentation aliases to Pipelock's
+// own anchored tool patterns. Operator-supplied patterns stay verbatim: a tool
+// name is still passed raw to CheckToolCallWithArgs, and only shipped rules opt
+// into the heuristic aliases.
+func withBuiltinToolNameAliases(rules []config.ToolPolicyRule) []config.ToolPolicyRule {
+	const prefix = `(?i)^`
+	for index := range rules {
+		pattern := rules[index].ToolPattern
+		body := strings.TrimSuffix(strings.TrimPrefix(pattern, prefix), `$`)
+		rules[index].ToolPattern = prefix + `(?:` + builtinToolNameAliasPrefix + `)?` + body + `$`
+	}
+	return rules
 }

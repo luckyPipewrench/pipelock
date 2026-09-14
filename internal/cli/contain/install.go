@@ -1429,12 +1429,25 @@ func stepWriteSystemUnit() step {
 // simple unit there instead of breaking the whole install.
 const systemdNotifyReloadMinVersion = 253
 
-// detectSystemdVersion parses the major version from `systemctl --version`,
-// whose first line is "systemd NNN (...)". It returns 0 when the version
-// cannot be read, and the caller treats 0 as "render the shape that loads
-// everywhere" rather than as an error: a version probe failing must not fail
-// the install.
+// detectSystemdVersion reports the major version of the systemd that will
+// actually load the unit, or 0 when it cannot be read. The caller treats 0 as
+// "render the shape that loads everywhere" rather than as an error: a version
+// probe failing must not fail the install.
+//
+// The authority is the running manager's own Version property, read from PID 1
+// over D-Bus by `systemctl show --property=Version`. `systemctl --version`
+// reports the version of the systemctl BINARY, which is newer than PID 1 on any
+// host that has upgraded the systemd package without rebooting yet. Trusting
+// the binary there renders Type=notify-reload for a manager that cannot load
+// it, so the binary is only the fallback for a manager too old to answer.
 func detectSystemdVersion(ctx context.Context, env *installEnv) int {
+	if out, code, err := env.runCmd(ctx, "systemctl", "show", "--property=Version", "--value"); err == nil && code == 0 {
+		field := strings.TrimPrefix(strings.TrimSpace(firstLine(out)), "Version=")
+		field = strings.Trim(field, `"`)
+		if version := leadingVersionNumber(field); version > 0 {
+			return version
+		}
+	}
 	out, code, err := env.runCmd(ctx, "systemctl", "--version")
 	if err != nil || code != 0 {
 		return 0
@@ -1443,7 +1456,31 @@ func detectSystemdVersion(ctx context.Context, env *installEnv) int {
 	if len(fields) < 2 || fields[0] != "systemd" {
 		return 0
 	}
-	version, err := strconv.Atoi(fields[1])
+	return leadingVersionNumber(fields[1])
+}
+
+// firstLine returns the first line of out, which is where both version probes
+// put the value.
+func firstLine(out string) string {
+	if index := strings.IndexByte(out, '\n'); index >= 0 {
+		return out[:index]
+	}
+	return out
+}
+
+// leadingVersionNumber reads the leading integer of a systemd version string
+// such as "258", "252.36-1~deb12u1" or "258~rc1", and returns 0 when there is
+// none. Only the leading digits are read, so a distribution's package suffix
+// can never be mistaken for the version.
+func leadingVersionNumber(field string) int {
+	end := 0
+	for end < len(field) && field[end] >= '0' && field[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	version, err := strconv.Atoi(field[:end])
 	if err != nil || version <= 0 {
 		return 0
 	}
@@ -1487,6 +1524,12 @@ func renderSystemUnit(env *installEnv) string {
 	lines = append(lines,
 		"Restart=on-failure",
 		"RestartSec=5",
+		// Stated rather than inherited: under Type=notify-reload the start job
+		// is bounded by this budget until READY=1 arrives, and a host that
+		// overrides DefaultTimeoutStartSec to infinity would otherwise turn a
+		// stuck start into a hung boot dependency. 90 s is systemd's stock
+		// default, so ordinary hosts see no change.
+		"TimeoutStartSec=90",
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",

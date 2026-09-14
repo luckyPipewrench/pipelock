@@ -424,30 +424,92 @@ func TestRenderSystemUnit_LegacySystemdKeepsSimpleUnit(t *testing.T) {
 }
 
 func TestDetectSystemdVersion(t *testing.T) {
-	cases := []struct {
-		name string
+	type reply struct {
 		out  string
 		code int
 		err  error
-		want int
+	}
+	cases := []struct {
+		name    string
+		manager reply
+		client  reply
+		want    int
 	}{
-		{name: "modern", out: "systemd 258 (258.1-1.fc43)\n+PAM +AUDIT", code: 0, want: 258},
-		{name: "legacy", out: "systemd 252 (252.36-1~deb12u1)", code: 0, want: 252},
-		{name: "unparseable", out: "something else", code: 0, want: 0},
-		{name: "nonzero exit", out: "systemd 258", code: 1, want: 0},
-		{name: "exec error", out: "", code: 0, err: errors.New("no systemctl"), want: 0},
+		{name: "manager modern", manager: reply{out: "258.10-1.fc43\n"}, want: 258},
+		{name: "manager legacy", manager: reply{out: "252.36-1~deb12u1\n"}, want: 252},
+		{name: "manager property form", manager: reply{out: "Version=253\n"}, want: 253},
+		{name: "manager prerelease", manager: reply{out: "258~rc1\n"}, want: 258},
+		{
+			// The host upgraded the systemd package to 253 but has not
+			// rebooted, so PID 1 is still 252 and cannot load
+			// Type=notify-reload. The manager, not the client binary, decides.
+			name:    "client newer than the running manager",
+			manager: reply{out: "252.36-1~deb12u1\n"},
+			client:  reply{out: "systemd 253 (253-1)\n"},
+			want:    252,
+		},
+		{
+			name:    "manager unavailable falls back to the client",
+			manager: reply{code: 1, out: "Unknown property"},
+			client:  reply{out: "systemd 249 (249.11-0ubuntu3)\n"},
+			want:    249,
+		},
+		{name: "both unreadable", manager: reply{code: 1}, client: reply{out: "something else"}, want: 0},
+		{name: "client nonzero exit", manager: reply{code: 1}, client: reply{out: "systemd 258", code: 1}, want: 0},
+		{name: "no systemctl at all", manager: reply{err: errors.New("no systemctl")}, client: reply{err: errors.New("no systemctl")}, want: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
 			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-				if name != "systemctl" || len(args) != 1 || args[0] != "--version" {
+				if name != "systemctl" {
 					t.Fatalf("unexpected command %s %v", name, args)
 				}
-				return tc.out, tc.code, tc.err
+				switch strings.Join(args, " ") {
+				case "show --property=Version --value":
+					return tc.manager.out, tc.manager.code, tc.manager.err
+				case "--version":
+					return tc.client.out, tc.client.code, tc.client.err
+				}
+				t.Fatalf("unexpected systemctl args %v", args)
+				return "", 0, nil
 			}
 			if got := detectSystemdVersion(context.Background(), env); got != tc.want {
 				t.Fatalf("detectSystemdVersion = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStepWriteSystemUnit_RendersShapeForDetectedSystemd covers both unit
+// shapes end to end through the install step rather than only through
+// renderSystemUnit, so the probe and the renderer are proven to agree.
+func TestStepWriteSystemUnit_RendersShapeForDetectedSystemd(t *testing.T) {
+	cases := []struct {
+		name       string
+		managerOut string
+		wantType   string
+		wantAbsent string
+	}{
+		{name: "modern", managerOut: "258.10-1.fc43\n", wantType: "Type=notify-reload", wantAbsent: "ExecReload="},
+		{name: "legacy", managerOut: "252.36-1~deb12u1\n", wantType: "Type=simple", wantAbsent: "notify-reload"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			runner.on(argvFor(testSystemctl, "show", "--property=Version", "--value"), tc.managerOut, 0, nil)
+			if _, err := stepWriteSystemUnit().apply(context.Background(), env); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			body, err := env.readFile(env.systemUnitPath)
+			if err != nil {
+				t.Fatalf("read unit: %v", err)
+			}
+			if !strings.Contains(string(body), tc.wantType) {
+				t.Fatalf("unit is not %s:\n%s", tc.wantType, body)
+			}
+			if strings.Contains(string(body), tc.wantAbsent) {
+				t.Fatalf("unit still contains %q:\n%s", tc.wantAbsent, body)
 			}
 		})
 	}

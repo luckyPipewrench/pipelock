@@ -40,6 +40,7 @@ func TestBaselineKeyForSessionKey(t *testing.T) {
 		{"ipv6 folded", "2001:db8::1", "ip6-20010db8000000000000000000000001"},
 		{"bracketed ipv6 folded", "[2001:db8::1]", "ip6-20010db8000000000000000000000001"},
 		{"ipv4-mapped ipv6 folds to the ipv4 key", "::ffff:203.0.113.1", "ip4-cb007101"},
+		{"non-IP peer identifier", "unix-peer", "ip-756e69782d70656572"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,6 +58,7 @@ func TestIsFoldedBaselineKey(t *testing.T) {
 	}{
 		{key: "ip4-cb007101", want: true},
 		{key: "ip6-20010db8000000000000000000000001", want: true},
+		{key: "ip-756e69782d70656572", want: true},
 		{key: "agent-a", want: false},
 		{key: "ip4-nothex", want: false},
 	} {

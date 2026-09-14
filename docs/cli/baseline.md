@@ -81,7 +81,7 @@ Recover by restoring the matching integrity manifest/key/high-water set, or by p
 
 ## Upgrade note: folded client profiles
 
-Name-keyed profiles apply only to bound or config-default identities. Self-declared, matched, and unknown identities are profiled under their client address as `ip4-<hex>` or `ip6-<hex>`; list and ratify that displayed key. Ratifying a self-declared name addresses no live profile after this upgrade.
+Name-keyed profiles apply only to bound or config-default identities. Self-declared, matched, and unknown identities are profiled under their client address as `ip4-<hex>` or `ip6-<hex>`; list and ratify that displayed key. An embedded non-TCP listener encodes its non-IP peer identifier as `ip-<hex>`, which is also a folded key. Ratifying a self-declared name addresses no live profile after this upgrade.
 
 ## Exit Codes
 

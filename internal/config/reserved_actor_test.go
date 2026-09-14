@@ -60,7 +60,7 @@ func TestValidateAgents_AcceptsOrdinaryAgentName(t *testing.T) {
 
 func TestValidateAgents_RejectsFoldedBaselineIdentityNames(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"ip4-cb007101", "ip6-20010db8000000000000000000000001"} {
+	for _, name := range []string{"ip4-cb007101", "ip6-20010db8000000000000000000000001", "ip-756e69782d70656572"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			c := &Config{Agents: map[string]AgentProfile{name: {}}}
@@ -98,9 +98,14 @@ func TestValidateDefaultAgentIdentity_AcceptsOrdinaryIdentity(t *testing.T) {
 
 func TestValidateDefaultAgentIdentity_RejectsFoldedBaselineIdentity(t *testing.T) {
 	t.Parallel()
-	c := &Config{DefaultAgentIdentity: "ip4-cb007101"}
-	if err := c.validateDefaultAgentIdentity(); err == nil || !strings.Contains(err.Error(), "folded behavioral-baseline") {
-		t.Fatalf("validateDefaultAgentIdentity() = %v, want folded baseline rejection", err)
+	for _, identity := range []string{"ip4-cb007101", "ip-756e69782d70656572"} {
+		t.Run(identity, func(t *testing.T) {
+			t.Parallel()
+			c := &Config{DefaultAgentIdentity: identity}
+			if err := c.validateDefaultAgentIdentity(); err == nil || !strings.Contains(err.Error(), "folded behavioral-baseline") {
+				t.Fatalf("validateDefaultAgentIdentity() = %v, want folded baseline rejection", err)
+			}
+		})
 	}
 }
 

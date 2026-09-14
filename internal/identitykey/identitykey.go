@@ -14,7 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
-var foldedBaselineKeyRe = regexp.MustCompile(`^ip(?:4-[0-9a-f]{8}|6-[0-9a-f]{32})$`)
+var foldedBaselineKeyRe = regexp.MustCompile(`^ip(?:4-[0-9a-f]{8}|6-[0-9a-f]{32}|-[0-9a-f]*)$`)
 
 // AnonymousAgent is the unattributed agent name. It lives here because both
 // this package and internal/proxy must agree on it exactly: if the two ever
@@ -105,8 +105,10 @@ func CEESafeKey(agent, client string, auth envelope.ActorAuth) string {
 
 // BaselineKeyForSessionKey derives the behavioral-baseline profile key from a
 // classified HTTP session key. Named sessions retain their agent key. Folded
-// sessions use the reserved ip4-/ip6- namespace so IPv6 is safe for baseline
-// persistence and admin URL paths, and every address has one canonical form.
+// IP sessions use the reserved ip4-/ip6- namespace so IPv6 is safe for
+// baseline persistence and admin URL paths. Non-IP peer identifiers from an
+// embedded listener use the reserved ip- namespace instead of colliding with a
+// configured identity name.
 func BaselineKeyForSessionKey(sessionKey string) string {
 	if idx := strings.LastIndex(sessionKey, "|"); idx > 0 {
 		return sessionKey[:idx]

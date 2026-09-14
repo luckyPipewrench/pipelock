@@ -3231,11 +3231,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 }
 
 func baselineAgentKeyForSessionKey(key string) string {
-	kind, agent, _ := classifySessionKey(key)
-	if kind == sessionKindIdentity && agent != "" {
-		return agent
-	}
-	return key
+	return identitykey.BaselineKeyForSessionKey(key)
 }
 
 func classifiedDenialParams(ep decide.EscalationParams, scannerName, reason, policyHash string) decide.EscalationParams {

@@ -2460,7 +2460,7 @@ func TestWSProxyHeaderDLPSessionAnomalyBlocksHandshake(t *testing.T) {
 	defer proxyCleanup()
 
 	sm := p.sessionMgrPtr.Load()
-	lockHTTPBaseline(t, sm, "agent-a")
+	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthSelfDeclared))
 
 	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
 		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},

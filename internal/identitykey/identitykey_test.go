@@ -31,6 +31,24 @@ func TestCEESafeKey_OnlyTrustedAgentAuthNamespacesBucket(t *testing.T) {
 	}
 }
 
+func TestBaselineKeyForSessionKey(t *testing.T) {
+	tests := []struct {
+		name, sessionKey, want string
+	}{
+		{"bound identity", "agent-a|203.0.113.1", "agent-a"},
+		{"ipv4 folded", "203.0.113.1", "ip4-cb007101"},
+		{"ipv6 folded", "2001:db8::1", "ip6-20010db8000000000000000000000001"},
+		{"bracketed ipv6 folded", "[2001:db8::1]", "ip6-20010db8000000000000000000000001"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BaselineKeyForSessionKey(tt.sessionKey); got != tt.want {
+				t.Fatalf("BaselineKeyForSessionKey(%q) = %q, want %q", tt.sessionKey, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCEEIdentity_AuthGradeControlsOwnerAndStreamDoesNot(t *testing.T) {
 	const agent, client = "agent-a", "203.0.113.10"
 	selfDeclared := NewCEEIdentity(agent, client, envelope.ActorAuthSelfDeclared)

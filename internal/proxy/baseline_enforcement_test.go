@@ -9,6 +9,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -27,13 +28,17 @@ func testBaselineBlockConfig(t *testing.T) *config.BehavioralBaseline {
 	}
 }
 
-func lockHTTPBaseline(t *testing.T, sm *SessionManager, agent string) {
+func lockHTTPBaseline(t *testing.T, sm *SessionManager, sessionKey string) {
 	t.Helper()
 	cfg := testSessionConfig()
-	learned := sm.GetOrCreate(agent + "|10.0.0.1")
+	learned := sm.GetOrCreate(sessionKey)
 	learned.RecordRequest("steady.example", cfg)
 	sm.recordSessionBaseline(learned)
-	if state := sm.BaselineManager().GetState(agent); state != "locked" {
+	sm.mu.Lock()
+	delete(sm.sessions, sessionKey)
+	sm.mu.Unlock()
+	baselineKey := baselineAgentKeyForSessionKey(sessionKey)
+	if state := sm.BaselineManager().GetState(baselineKey); state != "locked" {
 		t.Fatalf("baseline state = %q, want locked", state)
 	}
 }
@@ -51,7 +56,7 @@ func TestRecordSessionActivity_BaselineBlockAfterLock(t *testing.T) {
 	if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
 		t.Fatalf("EnableBaseline: %v", err)
 	}
-	lockHTTPBaseline(t, sm, "agent-a")
+	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "10.0.0.99", envelope.ActorAuthSelfDeclared))
 
 	p := &Proxy{metrics: metrics.New()}
 	p.sessionMgrPtr.Store(sm)
@@ -148,7 +153,7 @@ func TestSessionManager_ReconfigureBaselinePreservesLockedProfile(t *testing.T) 
 	if err := sm.EnableBaseline(bb); err != nil {
 		t.Fatalf("EnableBaseline: %v", err)
 	}
-	lockHTTPBaseline(t, sm, "agent-b")
+	lockHTTPBaseline(t, sm, "agent-b|10.0.0.1")
 
 	reloaded := *bb
 	reloaded.DeviationAction = config.ActionWarn
@@ -178,7 +183,7 @@ func TestSessionManager_CheckBaselineRaceWithReconfigure(t *testing.T) {
 	if err := sm.EnableBaseline(bb); err != nil {
 		t.Fatalf("EnableBaseline: %v", err)
 	}
-	lockHTTPBaseline(t, sm, "agent-race")
+	lockHTTPBaseline(t, sm, "agent-race|10.0.0.1")
 	deviant := sm.GetOrCreate("agent-race|10.0.0.99")
 	deviant.RecordRequest("one.example", cfg)
 	deviant.RecordRequest("two.example", cfg)

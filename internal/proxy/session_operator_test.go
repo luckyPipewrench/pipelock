@@ -9,6 +9,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -328,7 +329,7 @@ func TestRecordSessionActivity_RecordsBlockEvent(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	key := operAgent + "|" + operIP
+	key := sessionKeyFor(operAgent, operIP, envelope.ActorAuthUnknown)
 	sess := sm.SessionByKey(key)
 	if sess == nil {
 		t.Fatalf("expected session %q", key)

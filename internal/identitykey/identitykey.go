@@ -5,7 +5,13 @@
 // stateful proxy detectors.
 package identitykey
 
-import "github.com/luckyPipewrench/pipelock/internal/envelope"
+import (
+	"encoding/hex"
+	"net/netip"
+	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+)
 
 // AnonymousAgent is the unattributed agent name. It lives here because both
 // this package and internal/proxy must agree on it exactly: if the two ever
@@ -92,6 +98,24 @@ func CEESafeAgent(agent string, auth envelope.ActorAuth) string {
 // CEESafeKey builds the partition-resistant state key used by CEE and MCP DoW.
 func CEESafeKey(agent, client string, auth envelope.ActorAuth) string {
 	return ForAgentAndClient(CEESafeAgent(agent, auth), client)
+}
+
+// BaselineKeyForSessionKey derives the behavioral-baseline profile key from a
+// classified HTTP session key. Named sessions retain their agent key. Folded
+// sessions use the reserved ip4-/ip6- namespace so IPv6 is safe for baseline
+// persistence and admin URL paths, and every address has one canonical form.
+func BaselineKeyForSessionKey(sessionKey string) string {
+	if idx := strings.LastIndex(sessionKey, "|"); idx > 0 {
+		return sessionKey[:idx]
+	}
+	client := strings.Trim(strings.TrimSpace(sessionKey), "[]")
+	if ip, err := netip.ParseAddr(client); err == nil {
+		if ip.Is4() {
+			return "ip4-" + hex.EncodeToString(ip.AsSlice())
+		}
+		return "ip6-" + hex.EncodeToString(ip.AsSlice())
+	}
+	return "ip-" + hex.EncodeToString([]byte(sessionKey))
 }
 
 // CEECandidateKeys returns every distinct CEE state key that CEESafeKey could

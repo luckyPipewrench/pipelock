@@ -1607,12 +1607,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 		return
 	}
 
-	_, agent, _ := classifySessionKey(key)
-	if agent == "" {
-		// Fall back to full key when no "|" separator exists.
-		agent = key
-	}
-	sm.RecordBaselineForAgent(agent, sess)
+	sm.RecordBaselineForAgent(baselineAgentKeyForSessionKey(key), sess)
 }
 
 // GetOrCreate returns the session for a key, creating if needed.

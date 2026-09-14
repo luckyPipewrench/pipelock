@@ -56,6 +56,63 @@ func rewriteRecorderEntries(t *testing.T, path, name string, mutate func([]recor
 	return out
 }
 
+// relinkRecorderLines edits recorder JSONL lines in place while keeping every
+// untouched entry's detail bytes, and therefore its hash, exactly as written.
+// mutate receives each line as a map and reports whether it changed the
+// detail; the helper then re-hashes changed entries from their new detail
+// bytes and re-links every later entry so the outer chain stays valid. Unlike
+// rewriteRecorderEntries this preserves earlier checkpoint signatures, which
+// sign the chain hash before them.
+func relinkRecorderLines(t *testing.T, path, name string, mutate func(i int, line map[string]any) bool) string {
+	t.Helper()
+	entries, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != len(entries) {
+		t.Fatalf("line count %d != entry count %d", len(lines), len(entries))
+	}
+	var rewritten strings.Builder
+	for i := range entries {
+		var line map[string]any
+		if err := json.Unmarshal([]byte(lines[i]), &line); err != nil {
+			t.Fatalf("Unmarshal line %d: %v", i, err)
+		}
+		if mutate(i, line) {
+			detailJSON, err := json.Marshal(line["detail"])
+			if err != nil {
+				t.Fatalf("Marshal detail %d: %v", i, err)
+			}
+			entries[i].RawDetail = detailJSON
+			line["detail"] = json.RawMessage(detailJSON)
+		} else {
+			line["detail"] = entries[i].RawDetail
+		}
+		if i > 0 {
+			entries[i].PrevHash = entries[i-1].Hash
+		}
+		entries[i].Hash = recorder.ComputeHash(entries[i])
+		line["prev_hash"] = entries[i].PrevHash
+		line["hash"] = entries[i].Hash
+		data, err := json.Marshal(line)
+		if err != nil {
+			t.Fatalf("Marshal line %d: %v", i, err)
+		}
+		rewritten.Write(data)
+		rewritten.WriteByte('\n')
+	}
+	out := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(out, []byte(rewritten.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return out
+}
+
 func runVerifyReceipt(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := VerifyReceiptCmd()
@@ -258,38 +315,85 @@ func TestVerifyReceiptCmd_WholeRecorderSignedCheckpointAnchor(t *testing.T) {
 		}
 	})
 
-	t.Run("unsigned checkpoints report no authentication", func(t *testing.T) {
+	t.Run("unsigned checkpoints are refused unless explicitly allowed, and then reported", func(t *testing.T) {
 		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
 		mutated := rewriteRecorderEntries(t, unsignedPath, "rewritten-unsigned.jsonl", tamperDecision)
 		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
-		if err != nil || !strings.Contains(out, "checkpoints unsigned; recorder entries other than receipts are hash-linked but not authenticated") {
-			t.Fatalf("unsigned recorder must state its limit err=%v output:\n%s", err, out)
+		if err == nil || !strings.Contains(err.Error(), "--allow-unsigned-checkpoints") || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("unsigned recorder must fail closed by default err=%v output:\n%s", err, out)
+		}
+		out, err = runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unsigned-checkpoints")
+		if err != nil || !strings.Contains(out, "hash-linked but not authenticated") {
+			t.Fatalf("unsigned recorder must state its limit when allowed err=%v output:\n%s", err, out)
 		}
 	})
 
-	t.Run("decision relabeled as a trailing checkpoint is refused", func(t *testing.T) {
-		// Unsigned fixture: with signatures the rewrite already fails at the
-		// real checkpoint, so this exercises the span-shape check on its own.
-		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
-		key := hex.EncodeToString(unsignedPub)
-		mutated := rewriteRecorderEntries(t, unsignedPath, "relabeled.jsonl", func(entries []recorder.Entry) []recorder.Entry {
-			last := entries[len(entries)-1]
-			return append(entries, recorder.Entry{
-				Version: last.Version, Timestamp: last.Timestamp, SessionID: last.SessionID,
+	t.Run("relabeled trailing entry without a signature is refused on a signed recorder", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, path, "relabeled-signed.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := len(entries) - 1
+			if entries[last].Type != "checkpoint" || entries[last-1].Type != "transcript_root" {
+				t.Fatal("fixture must end with transcript_root then checkpoint")
+			}
+			// Replace the trailing checkpoint with a relabeled operational entry
+			// whose span is self-consistent but which carries no signature.
+			entries[last] = recorder.Entry{
+				Version: entries[last].Version, Timestamp: entries[last].Timestamp, SessionID: entries[last].SessionID,
 				Type: "checkpoint", Transport: "fetch", EventKind: "url", Summary: "smuggled after the seal",
-				Detail: map[string]any{"verdict": "allow", "target": "https://api.vendor.example/x"},
-			})
+				Detail: map[string]any{"entry_count": last, "first_seq": 0, "last_seq": last - 1, "signature": ""},
+			}
+			return entries
 		})
 		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
-		if err == nil || !strings.Contains(err.Error(), "span ends at seq") || strings.Contains(out, "Seal:      sealed at seq") {
-			t.Fatalf("relabeled checkpoint err=%v output:\n%s", err, out)
+		if err == nil || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("relabeled trailing entry err=%v output:\n%s", err, out)
 		}
 	})
 
-	t.Run("signed checkpoint with no pinned key is refused", func(t *testing.T) {
+	t.Run("two entries after the seal are refused even when both are checkpoints", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, path, "double-trailing.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := entries[len(entries)-1]
+			return append(entries, last)
+		})
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
+		if err == nil || !strings.Contains(err.Error(), "seal precedes later unsealed checkpoint entry") || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("double trailing checkpoint err=%v output:\n%s", err, out)
+		}
+	})
+
+	t.Run("unsigned recorder cannot authenticate a relabeled trailing entry and says so", func(t *testing.T) {
+		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+		mutated := rewriteRecorderEntries(t, unsignedPath, "relabeled-unsigned.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := len(entries) - 1
+			entries[last] = recorder.Entry{
+				Version: entries[last].Version, Timestamp: entries[last].Timestamp, SessionID: entries[last].SessionID,
+				Type: "checkpoint", Transport: "fetch", EventKind: "url", Summary: "smuggled after the seal",
+				Detail: map[string]any{"entry_count": last, "first_seq": 0, "last_seq": last - 1, "signature": ""},
+			}
+			return entries
+		})
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub), "--allow-unsigned-checkpoints")
+		if err != nil || !strings.Contains(out, "not authenticated") {
+			t.Fatalf("unsigned recorder must report the unauthenticated state err=%v output:\n%s", err, out)
+		}
+	})
+
+	t.Run("checkpoint span that does not count its entries is refused", func(t *testing.T) {
+		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+		mutated := rewriteRecorderEntries(t, unsignedPath, "bad-span.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := len(entries) - 1
+			entries[last].Detail = map[string]any{"entry_count": 1, "first_seq": 0, "last_seq": last - 1, "signature": ""}
+			return entries
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
+		if err == nil || !strings.Contains(err.Error(), "does not hold 1 entries") {
+			t.Fatalf("bad span err = %v", err)
+		}
+	})
+
+	t.Run("unpinned run verifies checkpoints against the trust-on-first-use signer", func(t *testing.T) {
 		out, err := runVerifyReceipt(t, path, "--whole-recorder", "--allow-unpinned")
-		if err == nil || strings.Contains(out, "Seal:      sealed at seq") {
-			t.Fatalf("unpinned signed recorder must not present a sealed result err=%v output:\n%s", err, out)
+		if err != nil || !strings.Contains(out, "UNPINNED") || !strings.Contains(out, "signed checkpoints verified") {
+			t.Fatalf("unpinned signed recorder err=%v output:\n%s", err, out)
 		}
 	})
 }
@@ -304,7 +408,7 @@ func TestVerifyReceiptCmd_WholeRecorderCheckpointShapeErrors(t *testing.T) {
 		mutated := rewriteRecorderEntries(t, signedPath, "bad-hex-signature.jsonl", func(entries []recorder.Entry) []recorder.Entry {
 			for i := range entries {
 				if entries[i].Type == "checkpoint" {
-					entries[i].Detail = map[string]any{"entry_count": 0, "first_seq": 0, "last_seq": entries[i-1].Sequence, "signature": "zz"}
+					entries[i].Detail = map[string]any{"entry_count": entries[i-1].Sequence + 1, "first_seq": 0, "last_seq": entries[i-1].Sequence, "signature": "zz"}
 				}
 			}
 			return entries
@@ -348,6 +452,139 @@ func TestVerifyReceiptCmd_WholeRecorderCheckpointShapeErrors(t *testing.T) {
 		out, err := runVerifyReceipt(t, signedPath, "--whole-recorder", "--key", "not-hex")
 		if err == nil || strings.Contains(out, "Seal:      sealed at seq") {
 			t.Fatalf("bad trusted key err=%v output:\n%s", err, out)
+		}
+	})
+}
+
+func TestVerifyReceiptCmd_WholeRecorderMixedCheckpointSignaturesRefused(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONLWith(t, true, 1)
+	key := hex.EncodeToString(pub)
+	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", key)
+	if err != nil || !strings.Contains(out, "signed checkpoints verified") {
+		t.Fatalf("multi-checkpoint fixture err=%v output:\n%s", err, out)
+	}
+	entries, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	var checkpoints []int
+	for i := range entries {
+		if entries[i].Type == "checkpoint" {
+			checkpoints = append(checkpoints, i)
+		}
+	}
+	if len(checkpoints) < 2 {
+		t.Fatalf("fixture has %d checkpoints, want at least 2", len(checkpoints))
+	}
+
+	// A relink that changes nothing must still verify: proves the helper
+	// preserves hashes and signatures rather than the test passing by accident.
+	untouched := relinkRecorderLines(t, path, "untouched.jsonl", func(int, map[string]any) bool { return false })
+	if out, err := runVerifyReceipt(t, untouched, "--whole-recorder", "--key", key); err != nil {
+		t.Fatalf("relinked untouched fixture err=%v output:\n%s", err, out)
+	}
+
+	strip := func(target int) func(int, map[string]any) bool {
+		return func(i int, line map[string]any) bool {
+			if i != target {
+				return false
+			}
+			detail, ok := line["detail"].(map[string]any)
+			if !ok {
+				t.Fatalf("checkpoint detail is %T", line["detail"])
+			}
+			detail["signature"] = ""
+			line["detail"] = detail
+			return true
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		target int
+		want   string
+	}{
+		{"last checkpoint stripped", checkpoints[len(checkpoints)-1], "is unsigned while earlier checkpoints in this session are signed"},
+		{"first checkpoint stripped", checkpoints[0], "is signed while earlier checkpoints in this session are unsigned"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := relinkRecorderLines(t, path, "mixed.jsonl", strip(tc.target))
+			out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(out, "Seal:      sealed at seq") {
+				t.Fatalf("mixed signatures err=%v output:\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderCheckpointSpanAndTailEdges(t *testing.T) {
+	t.Parallel()
+
+	signedPath, signedPub := buildSealedRecorderJSONLWith(t, true, 1)
+	signedKey := hex.EncodeToString(signedPub)
+	unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+	unsignedKey := hex.EncodeToString(unsignedPub)
+
+	t.Run("span that reaches back inside the previous checkpoint", func(t *testing.T) {
+		entries, err := recorder.ReadEntries(signedPath)
+		if err != nil {
+			t.Fatalf("ReadEntries: %v", err)
+		}
+		second := -1
+		for i := range entries {
+			if entries[i].Type == "checkpoint" {
+				if second >= 0 {
+					second = i
+					break
+				}
+				second = i
+			}
+		}
+		mutated := relinkRecorderLines(t, signedPath, "overlap.jsonl", func(i int, line map[string]any) bool {
+			if i != second {
+				return false
+			}
+			detail := line["detail"].(map[string]any)
+			detail["first_seq"] = 0
+			detail["entry_count"] = second
+			line["detail"] = detail
+			return true
+		})
+		_, err = runVerifyReceipt(t, mutated, "--whole-recorder", "--key", signedKey)
+		if err == nil || !strings.Contains(err.Error(), "inside the previous checkpoint") {
+			t.Fatalf("overlapping span err = %v", err)
+		}
+	})
+
+	t.Run("span that ends before the preceding entry", func(t *testing.T) {
+		mutated := relinkRecorderLines(t, unsignedPath, "short-span.jsonl", func(i int, line map[string]any) bool {
+			if line["type"] != "checkpoint" {
+				return false
+			}
+			detail := line["detail"].(map[string]any)
+			detail["last_seq"] = i - 2
+			line["detail"] = detail
+			return true
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", unsignedKey)
+		if err == nil || !strings.Contains(err.Error(), "span ends at seq") {
+			t.Fatalf("short span err = %v", err)
+		}
+	})
+
+	t.Run("operational entry directly after the seal", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, unsignedPath, "decision-first.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := entries[len(entries)-1]
+			entries[len(entries)-1] = recorder.Entry{
+				Version: last.Version, Timestamp: last.Timestamp, SessionID: last.SessionID,
+				Type: "decision", Transport: "fetch", EventKind: "url", Summary: "replaced the trailing checkpoint",
+			}
+			return entries
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", unsignedKey)
+		if err == nil || !strings.Contains(err.Error(), "seal precedes later unsealed decision entry") {
+			t.Fatalf("decision after seal err = %v", err)
 		}
 	})
 }

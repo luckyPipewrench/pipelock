@@ -869,7 +869,7 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 
 func buildSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
-	return buildSealedRecorderJSONLSigned(t, false)
+	return buildSealedRecorderJSONLSigned(t, true)
 }
 
 // buildSealedRecorderJSONLSigned builds a sealed single-session recorder file.
@@ -877,13 +877,21 @@ func buildSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
 // that signs receipts, which is the production default.
 func buildSealedRecorderJSONLSigned(t *testing.T, signCheckpoints bool) (string, ed25519.PublicKey) {
 	t.Helper()
+	return buildSealedRecorderJSONLWith(t, signCheckpoints, 1000)
+}
+
+// buildSealedRecorderJSONLWith also sets the checkpoint interval; an interval
+// of 1 writes a checkpoint after every entry, which gives a session more than
+// one checkpoint to reason about.
+func buildSealedRecorderJSONLWith(t *testing.T, signCheckpoints bool, checkpointInterval int) (string, ed25519.PublicKey) {
+	t.Helper()
 
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, SignCheckpoints: signCheckpoints}, nil, priv)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: checkpointInterval, SignCheckpoints: signCheckpoints}, nil, priv)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
@@ -1017,15 +1025,26 @@ func TestVerifyReceiptCmd_WholeRecorderSealAndIncompleteStates(t *testing.T) {
 func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
 	t.Parallel()
 
+	// Every entry here filled its own shard, so the writer never persisted a
+	// checkpoint: the session is sealed but nothing anchors its non-receipt
+	// entries. Default verification refuses that; the explicit flag accepts
+	// it and names the state.
 	dir, pub := buildSealedRestartRecorderDir(t, 1, 1)
 	cmd := VerifyReceiptCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "UNAUTHENTICATED: no signed checkpoint") {
+		t.Fatalf("checkpoint-less sealed session must be refused by default err=%v\n%s", err, out.String())
+	}
+	out.Reset()
+	cmd = VerifyReceiptCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub), "--allow-unsigned-checkpoints"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("whole-recorder restart-chain verification: %v\n%s", err, out.String())
 	}
-	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3"} {
+	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "no signed checkpoint (accepted by --allow-unsigned-checkpoints)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("whole-recorder restart-chain output missing %q:\n%s", want, out.String())
 		}
@@ -1272,6 +1291,7 @@ func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKe
 			Dir:                dir,
 			CheckpointInterval: 1000,
 			MaxEntriesPerFile:  1,
+			SignCheckpoints:    true,
 		}, nil, priv)
 		if err != nil {
 			t.Fatalf("recorder.New[%d]: %v", i, err)
@@ -1317,7 +1337,7 @@ func buildSealedRestartRecorderDir(t *testing.T, counts ...int) (string, ed25519
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	for i, count := range counts {
-		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, MaxEntriesPerFile: 1}, nil, priv)
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, MaxEntriesPerFile: 1, SignCheckpoints: true}, nil, priv)
 		if err != nil {
 			t.Fatalf("recorder.New[%d]: %v", i, err)
 		}

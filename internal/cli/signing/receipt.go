@@ -39,6 +39,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var sessionID string
 	var locationID string
 	var allowUnpinned bool
+	var allowUnsignedCheckpoints bool
 	var fleetReport bool
 	var cleanReport string
 	var showRaw bool
@@ -129,8 +130,9 @@ Examples:
 				return fmt.Errorf("--whole-recorder cannot be combined with --clean-report")
 			}
 			verifyOpts := verifyReceiptOptions{
-				AllowUnpinned: allowUnpinned,
-				SessionID:     sessionID,
+				AllowUnpinned:            allowUnpinned,
+				AllowUnsignedCheckpoints: allowUnsignedCheckpoints,
+				SessionID:                sessionID,
 				Print: receiptPrintOptions{
 					ShowRaw: showRaw,
 					Hexdump: hexdump,
@@ -215,6 +217,7 @@ Examples:
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
+	cmd.Flags().BoolVar(&allowUnsignedCheckpoints, "allow-unsigned-checkpoints", false, "with --whole-recorder, accept a recorder whose checkpoints are unsigned (non-receipt entries are then hash-linked but not authenticated)")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
 	cmd.Flags().StringVar(&cleanReport, "clean-report", "", "write minimal offline-verifiable action report after chain and defer-pair validation")
 	cmd.Flags().BoolVar(&showRaw, "show-raw", false, "append raw display fields in human output")
@@ -244,11 +247,12 @@ type receiptPostureOptions struct {
 }
 
 type verifyReceiptOptions struct {
-	AllowUnpinned        bool
-	SessionID            string
-	Print                receiptPrintOptions
-	Posture              receiptPostureOptions
-	RotationEndorsements []receipt.RotationEndorsement
+	AllowUnpinned            bool
+	AllowUnsignedCheckpoints bool
+	SessionID                string
+	Print                    receiptPrintOptions
+	Posture                  receiptPostureOptions
+	RotationEndorsements     []receipt.RotationEndorsement
 }
 
 func verifyWholeRecorderFromFile(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
@@ -318,23 +322,35 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		_, _ = fmt.Fprintf(out, "  INCOMPLETE: transcript_root seal precedes later unsealed entries (first: %s at seq %d)\n", unsealed.Type, unsealed.Sequence)
 		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.Type, unsealed.Sequence)
 	}
-	anchor, err := verifyCheckpointAnchors(entries, trustedKeys)
+	// The receipt chain already verified every signer, including a successor
+	// authorized by a rotation endorsement, so its signer set is the trusted
+	// set for checkpoint signatures after a rotation.
+	anchor, err := verifyCheckpointAnchors(entries, append(append([]string{}, trustedKeys...), chain.SignerKeys...))
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "  ANCHOR MISMATCH: %v\n", err)
 		return fmt.Errorf("checkpoint anchor verification failed: %w", err)
+	}
+	// A recorder that signs checkpoints (the default) can have every
+	// signature stripped, or every checkpoint removed, by whoever rewrites
+	// the file, so a recorder with no signed checkpoint is not accepted as
+	// sealed unless the operator says the recorder never signed. Otherwise a
+	// rewrite would read as a downgrade the verifier merely mentions. The
+	// writer can also legitimately end a session without a trailing
+	// checkpoint when its last entry filled a shard; that state is accepted
+	// only through the same explicit flag.
+	if anchor.signed == 0 && !opts.AllowUnsignedCheckpoints {
+		_, _ = fmt.Fprintln(out, "  UNAUTHENTICATED: no signed checkpoint anchors this recorder; entries other than receipts are hash-linked but not authenticated")
+		return fmt.Errorf("whole-recorder verification unauthenticated: no signed checkpoint present (checkpoints absent or unsigned); pass --allow-unsigned-checkpoints to accept hash linkage only")
 	}
 	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
-	switch {
-	case anchor.unsigned == 0 && anchor.signed > 0:
+	if anchor.signed > 0 {
 		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified; every entry before the final checkpoint is committed by a trusted key\n", anchor.signed)
-	case anchor.signed > 0:
-		_, _ = fmt.Fprintf(out, "  Anchor:    %d of %d checkpoints unsigned; entries after the last signed checkpoint are hash-linked but not authenticated\n", anchor.unsigned, anchor.signed+anchor.unsigned)
-	default:
-		_, _ = fmt.Fprintln(out, "  Anchor:    checkpoints unsigned; recorder entries other than receipts are hash-linked but not authenticated (enable flight_recorder.sign_checkpoints)")
+	} else {
+		_, _ = fmt.Fprintln(out, "  Anchor:    no signed checkpoint (accepted by --allow-unsigned-checkpoints); recorder entries other than receipts are hash-linked but not authenticated")
 	}
 	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; only the recorder's trailing checkpoint may follow it, hash-chain-verified but not sealed")
 	return nil
@@ -347,18 +363,27 @@ type checkpointAnchor struct {
 	unsigned int
 }
 
-// verifyCheckpointAnchors checks every checkpoint entry's shape and, when it
+// verifyCheckpointAnchors checks every checkpoint entry's span and, when it
 // carries a signature, verifies that signature against the trusted keys. A
 // signed checkpoint commits the chain hash of every entry before it, so it is
 // the only authenticated anchor for entries that are not receipts; an unsigned
-// checkpoint proves nothing beyond hash linkage. A checkpoint whose detail does
-// not parse, whose span disagrees with its position, or whose signature
-// verifies against no trusted key fails closed: a rewritten recorder cannot
-// relabel an entry as a checkpoint or forge the anchor without the key.
+// checkpoint proves nothing beyond hash linkage. The span must match the
+// checkpoint's position: it ends at the preceding entry, starts after the
+// previous checkpoint, and counts exactly the entries between. A recorder
+// signs either every checkpoint or none for its whole life, so a session
+// that mixes signed and unsigned checkpoints is a rewrite and is refused;
+// otherwise an attacker could drop the signature from one checkpoint and
+// have the rest vouch for it. A checkpoint whose detail does not parse, whose
+// span disagrees with its position, or whose signature verifies against no
+// trusted key fails closed. What this cannot catch: on a recorder that never
+// signed, a rewritten trailing entry with a self-consistent span; the output
+// reports that state as unauthenticated.
 func verifyCheckpointAnchors(entries []recorder.Entry, trustedKeys []string) (checkpointAnchor, error) {
 	var anchor checkpointAnchor
 	var pubs []ed25519.PublicKey
-	for i, entry := range entries {
+	var prevCheckpoint *recorder.Entry
+	for i := range entries {
+		entry := entries[i]
 		if entry.Type != "checkpoint" {
 			continue
 		}
@@ -373,9 +398,22 @@ func verifyCheckpointAnchors(entries []recorder.Entry, trustedKeys []string) (ch
 		if i == 0 || detail.LastSeq != entries[i-1].Sequence {
 			return anchor, fmt.Errorf("checkpoint at seq %d: span ends at seq %d but the preceding entry is seq %d", entry.Sequence, detail.LastSeq, precedingSequence(entries, i))
 		}
+		if detail.FirstSeq > detail.LastSeq || detail.EntryCount != detail.LastSeq-detail.FirstSeq+1 {
+			return anchor, fmt.Errorf("checkpoint at seq %d: span %d-%d does not hold %d entries", entry.Sequence, detail.FirstSeq, detail.LastSeq, detail.EntryCount)
+		}
+		if prevCheckpoint != nil && detail.FirstSeq <= prevCheckpoint.Sequence {
+			return anchor, fmt.Errorf("checkpoint at seq %d: span starts at seq %d, inside the previous checkpoint at seq %d", entry.Sequence, detail.FirstSeq, prevCheckpoint.Sequence)
+		}
+		prevCheckpoint = &entries[i]
 		if detail.Signature == "" {
+			if anchor.signed > 0 {
+				return anchor, fmt.Errorf("checkpoint at seq %d is unsigned while earlier checkpoints in this session are signed", entry.Sequence)
+			}
 			anchor.unsigned++
 			continue
+		}
+		if anchor.unsigned > 0 {
+			return anchor, fmt.Errorf("checkpoint at seq %d is signed while earlier checkpoints in this session are unsigned", entry.Sequence)
 		}
 		if pubs == nil {
 			pubs, err = trustedCheckpointKeys(trustedKeys)
@@ -465,15 +503,22 @@ func receiptEntriesBefore(entries []recorder.Entry, index int) int {
 }
 
 // firstUnsealedEntryAfter returns the first entry after the transcript_root
-// seal that the seal does not account for. The recorder writes its final
-// checkpoint after the root on clean shutdown, so checkpoints are the only
-// entries a sealed recorder may carry past the seal; any other type there is
-// evidence the seal never committed to, and the file is incomplete.
+// seal that the seal does not account for. The recorder writes exactly one
+// checkpoint after the root on clean shutdown (either the threshold
+// checkpoint the root itself triggers or the final one Close writes, never
+// both), so a sealed recorder may carry at most one entry past the seal and
+// it must be a checkpoint. Anything else there is evidence the seal never
+// committed to, and the file is incomplete.
 func firstUnsealedEntryAfter(entries []recorder.Entry, index int) (recorder.Entry, bool) {
-	for _, entry := range entries[index+1:] {
-		if entry.Type != "checkpoint" {
-			return entry, true
-		}
+	tail := entries[index+1:]
+	if len(tail) == 0 {
+		return recorder.Entry{}, false
+	}
+	if tail[0].Type != "checkpoint" {
+		return tail[0], true
+	}
+	if len(tail) > 1 {
+		return tail[1], true
 	}
 	return recorder.Entry{}, false
 }

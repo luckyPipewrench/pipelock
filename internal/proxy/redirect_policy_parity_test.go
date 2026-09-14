@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -55,7 +56,7 @@ func TestCheckRedirect_TaintedProtectedActionBlocks(t *testing.T) {
 		Scope:       taintScopeAction,
 		ActionMatch: "publish:post:https://source.vendor.example/start",
 	}}
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, rec))
 	originalReq = originalReq.WithContext(context.WithValue(originalReq.Context(), ctxKeyRedirectSessionRecorder, rec))
@@ -84,7 +85,7 @@ func TestCheckRedirect_TaintedProtectedActionBlocks(t *testing.T) {
 func TestCheckRedirect_ResolvesAirlockSessionAfterManagerReplacement(t *testing.T) {
 	p, cfg, sc := redirectPolicyTestProxy(t)
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
-	key := sessionKeyFor(agentAnonymous, "127.0.0.1")
+	key := sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectAirlockSession, key))
 	originalReq = originalReq.WithContext(context.WithValue(originalReq.Context(), ctxKeyRedirectAirlockSession, key))
 
@@ -127,7 +128,7 @@ func TestCheckRedirect_TaintedProtectedActionExplicitApprovalAllows(t *testing.T
 		Scope:       taintScopeAction,
 		ActionMatch: "publish:post:https://source.vendor.example/start",
 	}}
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, rec))
@@ -166,7 +167,7 @@ func TestCheckRedirect_TaintedProtectedActionPolicyBlockIgnoresApprover(t *testi
 		Scope:       taintScopeAction,
 		ActionMatch: "publish:post:https://source.vendor.example/start",
 	}}
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	// promptHit escalates the source to hostile, which is the level the
 	// matrix answers with block rather than ask.
 	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", true)
@@ -193,7 +194,7 @@ func TestCheckRedirect_TaintedProtectedActionPolicyBlockIgnoresApprover(t *testi
 
 func TestCheckRedirect_ScopedAirlockBlocks(t *testing.T) {
 	p, cfg, sc := redirectPolicyTestProxy(t)
-	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, sess))
 	originalReq = originalReq.WithContext(context.WithValue(originalReq.Context(), ctxKeyRedirectSessionRecorder, sess))
@@ -217,7 +218,7 @@ func TestCheckRedirect_ScopedAirlockBlocks(t *testing.T) {
 func TestCheckRedirect_SessionPoliciesAllowHarmlessRedirect(t *testing.T) {
 	p, cfg, sc := redirectPolicyTestProxy(t)
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
-	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, sess))
 	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err != nil {
 		t.Fatalf("clean session redirect blocked: %v", err)
@@ -239,7 +240,7 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 			setup: func(t *testing.T, p *Proxy) {
 				t.Helper()
 				cfg := p.CurrentConfig()
-				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 				observeHTTPResponseTaint(sess, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
 			},
 		},
@@ -247,7 +248,7 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 			name: "scoped airlock",
 			setup: func(t *testing.T, p *Proxy) {
 				t.Helper()
-				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 				if changed, _, _ := sess.AirlockForScope(adaptiveScopeForHost("api.vendor.example")).ForceSetTier(config.AirlockTierDrain); !changed {
 					t.Fatal("target scope did not enter drain tier")
 				}
@@ -338,7 +339,7 @@ func TestFetchRedirect_ScopedAirlockBlocksBeforeRedirectedEgress(t *testing.T) {
 		cfg.SessionProfiling.Enabled = true
 	})
 	defer cleanup()
-	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	if changed, _, _ := sess.AirlockForScope(adaptiveScopeForHost("api.vendor.example")).ForceSetTier(config.AirlockTierDrain); !changed {
 		t.Fatal("target scope did not enter drain tier")
 	}

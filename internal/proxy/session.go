@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -2187,7 +2188,9 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 }
 
 func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami {
-	key := sessionKeyFor(agent, clientIP)
+	// The status endpoint has no actor-auth context. Treat its caller-supplied
+	// agent name as unknown so lookup cannot create a trusted name partition.
+	key := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
 	out := AdaptiveWhoami{
 		ClientIP:        clientIP,
 		Agent:           agent,

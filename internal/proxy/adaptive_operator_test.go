@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	adaptiveAPIIdentityKey   = "agent-a|203.0.113.9"
+	adaptiveAPIIdentityKey   = "203.0.113.9"
 	adaptiveAPIInvocationKey = "mcp-stdio-adaptive"
 	adaptiveAPIAgent         = "agent-a"
 	adaptiveAPIClientIP      = "203.0.113.9"

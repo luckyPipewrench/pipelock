@@ -14,7 +14,9 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -63,6 +65,32 @@ func TestSessionAPI_HandleTerminate_HappyPath(t *testing.T) {
 	}
 	if postSnap.AirlockTier != config.AirlockTierNone {
 		t.Errorf("post tier: got %q, want none", postSnap.AirlockTier)
+	}
+}
+
+func TestSessionAPI_HandleTerminate_ClearsFoldedSelfDeclaredAdaptiveState(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	const clientIP = "192.0.2.42"
+	key := sessionKeyFor("rotated-agent", clientIP, envelope.ActorAuthSelfDeclared)
+	sess := sm.GetOrCreate(key)
+	_, _, _ = sess.RecordSignal(session.SignalBlock, 1)
+	if got := sess.EscalationLevel(); got == 0 {
+		t.Fatal("precondition: folded self-declared state did not escalate")
+	}
+
+	handler := newTestSessionAPIHandler(t, sm)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(key), nil)
+	req.Header.Set("Authorization", terminateAuthHeader)
+	w := httptest.NewRecorder()
+	handler.HandleTerminate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := sess.EscalationLevel(); got != 0 {
+		t.Fatalf("terminate left folded self-declared adaptive level = %d, want 0", got)
 	}
 }
 

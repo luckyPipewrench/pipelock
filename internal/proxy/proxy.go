@@ -132,13 +132,10 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
-	// ctxKeyRedirectAirlockSession carries the RAW adaptive session key (the
-	// airlock writer's key, sessionKeyFor(agent, clientIP)) into CheckRedirect so a
-	// redirect hop admits airlock against the same session the writer raised the
-	// tier on - not the CEE-safe taint recorder in ctxKeyRedirectSessionRecorder,
-	// whose key folds a named agent to the client IP and would miss that tier.
-	// Redirect taint stays on ctxKeyRedirectSessionRecorder; only airlock
-	// admission reads this one. See airlockSessionForIdentity.
+	// ctxKeyRedirectAirlockSession carries the adaptive session key into
+	// CheckRedirect so every hop admits airlock against the same state the
+	// writer raised. Request-controlled identities use the folded CEE-safe key;
+	// trusted identities retain their agent namespace.
 	ctxKeyRedirectAirlockSession
 	// ctxKeyEntropyWarnRoute binds a request-body entropy warning exception to
 	// its exact admitted HTTPS destination. CheckRedirect refuses a replay to
@@ -3008,7 +3005,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		return SessionResult{}
 	}
 
-	key := sessionKeyFor(agent, clientIP)
+	key := sessionKeyFor(agent, clientIP, opts.ActorAuth)
 	sess := sm.GetOrCreate(key)
 
 	// On-entry de-escalation: recover sessions stuck at block_all.
@@ -3750,7 +3747,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	if sm == nil {
 		return
 	}
-	sessionKey := sessionKeyFor(actx.Agent(), clientIP)
+	sessionKey := sessionKeyFor(actx.Agent(), clientIP, envelope.NormalizeActorAuth(actx.AgentAuth()))
 	sess := sm.GetOrCreate(sessionKey)
 	for i := 0; i < signals; i++ {
 		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, decide.EscalationParams{
@@ -4748,12 +4745,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
 	// Airlock check: drain tier blocks all traffic including fetch. Admission
-	// reads the RAW adaptive session (sessionKeyFor) via airlockSessionForIdentity
-	// - the one the airlock writer (recordSessionActivityWithUserAgent) raised
-	// the tier on - NOT the CEE-safe taint recorder above. This same raw session
-	// is carried into the redirect context below so every hop admits against the
-	// writer's session too. See airlockSessionForIdentity for the fail-open the
-	// CEE-safe key would open.
+	// reads the same CEE-safe session the writer raised, and carries that key
+	// into redirect context so every hop admits against the same state.
 	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
 	if fetchSess := fetchAirlockSess; fetchSess != nil {
 		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
@@ -4836,7 +4829,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP)
+			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			adaptiveDetail := fmt.Sprintf("%s (escalated by %s level=%s auto_recover_at=%s hint=%s)", result.Reason, adaptiveEnforcementLayer, session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
 			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail, auditDetailFromResult(result))
@@ -4919,7 +4912,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// session is at an escalation level with block_all=true. UpgradeAction
 	// with an empty base action returns "block" only when block_all is set.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := sessionKeyFor(agent, clientIP)
+		sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		adaptiveDetail := fmt.Sprintf("session escalation level %s; auto_recover_at=%s; hint=%s", session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
 		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail)
@@ -5836,6 +5829,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				content:        content,
 				displayURL:     displayURL,
 				agent:          agent,
+				actorAuth:      id.Auth,
 				clientIP:       clientIP,
 				requestID:      requestID,
 				actionID:       actionID,
@@ -5966,6 +5960,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			content:        content,
 			displayURL:     displayURL,
 			agent:          agent,
+			actorAuth:      id.Auth,
 			clientIP:       clientIP,
 			requestID:      requestID,
 			actionID:       actionID,
@@ -6000,7 +5995,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		fetchScope := adaptiveScopeForHost(parsed.Hostname())
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
-			sessionKey: sessionKeyFor(agent, clientIP),
+			sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
 			scope:      fetchScope,
 			reason:     adaptiveRecoveryClean,
 			clientIP:   clientIP,
@@ -6074,6 +6069,7 @@ type responseScanContext struct {
 	content        string
 	displayURL     string
 	agent          string
+	actorAuth      envelope.ActorAuth
 	clientIP       string
 	requestID      string
 	actionID       string
@@ -6099,6 +6095,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	content := in.content
 	displayURL := in.displayURL
 	agent := in.agent
+	actorAuth := in.actorAuth
 	clientIP := in.clientIP
 	requestID := in.requestID
 	actionID := in.actionID
@@ -6151,7 +6148,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
-		sessionKey := sessionKeyFor(agent, clientIP)
+		sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 	}
 	if action == config.ActionStrip && result.TransformedContent == "" {
@@ -6170,7 +6167,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			return
 		}
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-			sessionKey := sessionKeyFor(agent, clientIP)
+			sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
 			sess := sm.GetOrCreate(sessionKey)
 			recordAdaptiveSignalForScope(sess, responseScope, sig, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,

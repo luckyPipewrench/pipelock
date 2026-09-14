@@ -1787,7 +1787,7 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 				t.Fatalf("read response: %v", err)
 			}
 
-			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 			risk := sess.RiskSnapshot()
 			if risk.Contaminated != tt.wantTainted {
 				t.Fatalf("contaminated = %v, want %v", risk.Contaminated, tt.wantTainted)

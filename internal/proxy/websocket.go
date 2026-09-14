@@ -168,7 +168,7 @@ func (r *wsRelay) recordFinding(sig session.SignalType, log *audit.Logger, scann
 	if r.rec == nil || !r.cfg.AdaptiveEnforcement.Enabled {
 		return
 	}
-	sessionKey := sessionKeyFor(r.agent, r.clientIP)
+	sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 	policyHash := ""
 	if r.cfg != nil {
 		policyHash = r.cfg.CanonicalPolicyHash()
@@ -392,7 +392,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP)
+			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
@@ -436,7 +436,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// block_all enforcement: deny ALL traffic (including clean) when the
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := sessionKeyFor(agent, clientIP)
+		sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		p.metrics.RecordWSBlocked()
 		emitWebSocketReceipt(receipt.EmitOpts{
@@ -541,7 +541,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if !wsHeaderBlocked && cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 {
 			effectiveAction := decide.UpgradeAction(action, headerSR.Level, &cfg.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
-				sessionKey := sessionKeyFor(agent, clientIP)
+				sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 				recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: action, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: clientIP, RequestID: requestID})
 				action = effectiveAction
 				reason += " (escalated)"
@@ -594,7 +594,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Re-check block_all after header DLP may have escalated the session.
 		if cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 &&
 			decide.UpgradeAction("", headerSR.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP)
+			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
@@ -1721,7 +1721,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if effectiveAction == config.ActionBlock {
 			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
+			sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
@@ -1777,7 +1777,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		originalAddrAction := addrAction
 		addrAction = decide.UpgradeAction(addrAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 		if addrAction != originalAddrAction {
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
+			sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAddrAction, ToAction: addrAction, Scanner: scannerLabelAddressProtection, ClientIP: r.clientIP, RequestID: r.requestID})
 		}
 		if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
@@ -2064,7 +2064,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	originalAction := action
 	action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	if action != originalAction {
-		sessionKey := sessionKeyFor(r.agent, r.clientIP)
+		sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAction, ToAction: action, Scanner: scannerLabel, ClientIP: r.clientIP, RequestID: r.requestID})
 	}
 
@@ -2216,7 +2216,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		// On-entry de-escalation for long-lived WebSocket connections.
 		_, _, _ = trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
-			sessionKey: sessionKeyFor(r.agent, r.clientIP),
+			sessionKey: sessionKeyFor(r.agent, r.clientIP, r.actorAuth),
 			reason:     adaptiveRecoveryTimer,
 			clientIP:   r.clientIP,
 			requestID:  r.requestID,
@@ -2228,7 +2228,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// block_all=true, close the WebSocket immediately. This prevents
 		// clean frames from flowing after escalation during long-lived connections.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
+			sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
 				_ = r.emitReceipt(receipt.EmitOpts{
@@ -2550,7 +2550,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		wsAction = decide.UpgradeAction(wsAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	}
 	if wsAction != originalWSAction {
-		sessionKey := sessionKeyFor(r.agent, r.clientIP)
+		sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalWSAction, ToAction: wsAction, Scanner: responseScanLayer, ClientIP: r.clientIP, RequestID: r.requestID})
 	}
 
@@ -2676,7 +2676,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// On-entry de-escalation for long-lived WebSocket connections.
 		_, _, _ = trySessionRecovery(r.rec, &r.cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
-			sessionKey: sessionKeyFor(r.agent, r.clientIP),
+			sessionKey: sessionKeyFor(r.agent, r.clientIP, r.actorAuth),
 			reason:     adaptiveRecoveryTimer,
 			clientIP:   r.clientIP,
 			requestID:  r.requestID,
@@ -2687,7 +2687,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately.
 		if decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(r.agent, r.clientIP)
+			sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
 				_ = r.emitReceipt(receipt.EmitOpts{

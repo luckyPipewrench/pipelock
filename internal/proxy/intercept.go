@@ -155,7 +155,7 @@ func interceptRecordFinding(ic *InterceptContext, sig session.SignalType, scanne
 	if !ic.Config.AdaptiveEnforcement.Enabled {
 		return
 	}
-	sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+	sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 	var m *metrics.Metrics
 	if ic.Proxy != nil {
 		m = ic.Proxy.metrics
@@ -612,7 +612,7 @@ func newInterceptHandler(
 		}
 
 		// Airlock classification of the inner request method. Read the
-		// DESTINATION-SCOPED tier of the raw adaptive session the airlock
+		// DESTINATION-SCOPED tier of the adaptive session the airlock
 		// writer raised, via airlockTierForScope - the scoped read that fetch,
 		// forward, opaque CONNECT, and WebSocket already use - NOT the
 		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
@@ -804,7 +804,7 @@ func newInterceptHandler(
 			level := interceptEscalationLevel(ic)
 			effectiveAction := decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
-				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
 				if ic.Proxy != nil {
 					m = ic.Proxy.metrics
@@ -1160,7 +1160,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics
@@ -1364,7 +1364,7 @@ func newInterceptHandler(
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				escalatedBlock := action == config.ActionBlock && originalAction != config.ActionBlock
 				if action != originalAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var metricSet *metrics.Metrics
 					if ic.Proxy != nil {
 						metricSet = ic.Proxy.metrics
@@ -1554,7 +1554,7 @@ func newInterceptHandler(
 			interceptMetrics = ic.Proxy.metrics
 		}
 		_, _, _ = trySessionRecovery(ic.Recorder, &ic.Config.AdaptiveEnforcement, adaptiveRecoveryContext{
-			sessionKey: sessionKeyFor(ic.Agent, ic.ClientIP),
+			sessionKey: sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth),
 			reason:     adaptiveRecoveryTimer,
 			clientIP:   ic.ClientIP,
 			requestID:  ic.RequestID,
@@ -1566,7 +1566,7 @@ func newInterceptHandler(
 		// session is at an escalation level with block_all=true.
 		level := interceptEscalationLevel(ic)
 		if ic.Recorder != nil && decide.UpgradeAction("", level, &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 			var m *metrics.Metrics
 			if ic.Proxy != nil {
 				m = ic.Proxy.metrics
@@ -2413,7 +2413,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
+					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics

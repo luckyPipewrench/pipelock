@@ -77,7 +77,7 @@ func setupDrainedRecoveredSession(t *testing.T, p *Proxy, agent string) {
 		t.Fatal("session manager not initialized")
 	}
 	sess := sm.GetOrCreate(responseTaintSessionKey(agent, ip, envelope.ActorAuthSelfDeclared))
-	profileSess := sm.GetOrCreate(sessionKeyFor(agent, ip))
+	profileSess := sm.GetOrCreate(sessionKeyFor(agent, ip, envelope.ActorAuthUnknown))
 	if sess == nil {
 		t.Fatal("expected a session for the raw key")
 	}
@@ -169,7 +169,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 
 		status, reason := doFetchWithAgent(t, "http://"+proxyAddr, "http://"+airlockSessionKeyTarget+"/", rotatedAgent)
 		if status != http.StatusForbidden || reason != airlockActiveReason {
-			t.Fatalf("fetch admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent)",
+			t.Fatalf("fetch admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the folded session must refuse the self-declared named agent)",
 				status, reason, airlockActiveReason)
 		}
 	})
@@ -182,7 +182,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 
 		status, reason := doForwardWithAgent(t, proxyAddr, "http://"+airlockSessionKeyTarget+"/", rotatedAgent)
 		if status != http.StatusForbidden || reason != airlockActiveReason {
-			t.Fatalf("forward admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent)",
+			t.Fatalf("forward admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the folded session must refuse the self-declared named agent)",
 				status, reason, airlockActiveReason)
 		}
 	})
@@ -194,7 +194,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 // This locks the "unchanged for anonymous" half of the change.
 func TestAirlockAdmission_AnonymousAgentUnchanged(t *testing.T) {
 	// Anonymous keys are equal on both derivations by construction.
-	rawKey := sessionKeyFor(agentAnonymous, airlockSessionKeyClientIP)
+	rawKey := sessionKeyFor(agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
 	ceeKey := responseTaintSessionKey(agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
 	if rawKey != ceeKey {
 		t.Fatalf("test setup invalid: anonymous raw key %q must equal CEE-safe key %q", rawKey, ceeKey)
@@ -242,7 +242,7 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnConnect(t *testing.T) 
 
 	status, reason := doConnectWithAgent(t, proxyAddr, airlockSessionKeyTarget+":443", agent)
 	if status != http.StatusForbidden || reason != airlockActiveReason {
-		t.Fatalf("CONNECT admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the raw session must refuse the self-declared named agent's opaque CONNECT)",
+		t.Fatalf("CONNECT admission fail-open: status=%d reason=%q, want 403 %q (airlock drain on the folded session must refuse the self-declared named agent's opaque CONNECT)",
 			status, reason, airlockActiveReason)
 	}
 }
@@ -266,11 +266,11 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T)
 		initialHost = "api.example.com"
 	)
 
-	// Prove the two keys diverge for this identity.
-	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP)
+	// Adaptive and CEE state deliberately share the folded key for this identity.
+	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
 	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
-	if rawKey == ceeKey {
-		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
+	if rawKey != ceeKey {
+		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
 
 	// redirectBackend answers the initial host with a 302 to the drained target
@@ -349,8 +349,8 @@ func TestAirlockAdmissionKeyMatchesWriterKey(t *testing.T) {
 		auth    envelope.ActorAuth
 		wantKey string
 	}{
-		{"bound", envelope.ActorAuthBound, sessionKeyFor(agent, ip)},
-		{"config-default", envelope.ActorAuthConfigDefault, sessionKeyFor(agent, ip)},
+		{"bound", envelope.ActorAuthBound, sessionKeyFor(agent, ip, envelope.ActorAuthBound)},
+		{"config-default", envelope.ActorAuthConfigDefault, sessionKeyFor(agent, ip, envelope.ActorAuthConfigDefault)},
 		{"matched", envelope.ActorAuthMatched, ip},
 		{"self-declared", envelope.ActorAuthSelfDeclared, ip},
 	}
@@ -446,7 +446,7 @@ func TestAirlockAdmission_TLSIntercept_RefusedOnScopedDrain(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden || w.Header().Get(blockreason.HeaderReason) != airlockActiveReason {
-		t.Fatalf("intercept admission fail-open: status=%d reason=%q, want 403 %q (a scoped drain on the raw session must refuse the intercepted inner request)",
+		t.Fatalf("intercept admission fail-open: status=%d reason=%q, want 403 %q (a scoped drain on the folded session must refuse the intercepted inner request)",
 			w.Code, w.Header().Get(blockreason.HeaderReason), airlockActiveReason)
 	}
 	if upstreamCalls.Load() != 0 {
@@ -491,25 +491,20 @@ func airlockProbeHoldListener(t *testing.T) (net.Listener, <-chan struct{}) {
 // regression guard for opaque CONNECT tunnel teardown (ITEM 2, fail-open
 // containment). A self-declared NAMED agent opens a tunnel while the destination
 // scope is below the trigger, so the tunnel is admitted and its airlock cancel
-// is registered. Adaptive enforcement then escalates the RAW session's scoped
-// tier to drain. Before the fix, the cancel was registered on connectRec
-// (ceeSessionKey), which folds the self-declared name to the client IP: a
-// different SessionState than the one the writer transitions, so escalation
-// never fired the cancel and the tunnel stayed open. After the fix the cancel is
-// registered on the raw session (airlockSessionForIdentity) and escalation tears
-// the tunnel down.
+// is registered. Adaptive enforcement then escalates the folded session's
+// scoped tier to drain. The writer and cancel registration must keep using that
+// same SessionState so escalation tears the tunnel down.
 func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	const (
 		agent    = "named-agent-a"
 		clientIP = airlockSessionKeyClientIP
 	)
 
-	// Prove the two keys diverge for this identity, so a green result cannot
-	// come from the keys accidentally coinciding.
-	rawKey := sessionKeyFor(agent, clientIP)
+	// The teardown reader and adaptive writer must use one folded key.
+	rawKey := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
 	ceeKey := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
-	if rawKey == ceeKey {
-		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
+	if rawKey != ceeKey {
+		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
 
 	target, relayLive := airlockProbeHoldListener(t)
@@ -596,7 +591,7 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	}
 	var nerr net.Error
 	if errors.As(readErr, &nerr) && nerr.Timeout() {
-		t.Fatalf("airlock drain did not tear down the CONNECT tunnel within 5s (read err=%v after %s): the cancel is registered on the folded session, not the raw session the writer transitions", readErr, elapsed)
+		t.Fatalf("airlock drain did not tear down the CONNECT tunnel within 5s (read err=%v after %s): the cancel and writer did not share the folded session", readErr, elapsed)
 	}
 }
 
@@ -618,11 +613,11 @@ func TestAirlockCancel_TLSInterceptTunnel_TornDownOnScopedDrain(t *testing.T) {
 		host     = "127.0.0.1"
 	)
 
-	// Prove the two keys diverge for this identity.
-	rawKey := sessionKeyFor(agent, clientIP)
+	// The interception reader and adaptive writer must use one folded key.
+	rawKey := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
 	ceeKey := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
-	if rawKey == ceeKey {
-		t.Fatalf("test setup invalid: raw key %q must differ from CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
+	if rawKey != ceeKey {
+		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
 
 	// A hold-open TCP target so the CONNECT's initial dial succeeds and the

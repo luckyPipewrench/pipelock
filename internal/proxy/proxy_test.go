@@ -27,6 +27,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -5289,7 +5290,7 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 // recording enough block signals to cross the threshold repeatedly.
 // Returns the session key used.
 func escalateSession(sm *SessionManager, clientIP, agent string, threshold float64, targetLevel int) string {
-	key := sessionKeyFor(agent, clientIP)
+	key := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
 	sess := sm.GetOrCreate(key)
 	// Each escalation doubles the threshold. We need to accumulate enough
 	// points to cross the threshold 'targetLevel' times.

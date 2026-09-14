@@ -43,7 +43,7 @@ import (
 // set (see ResetCEEState). CeeSessionKey remains the source of truth only for
 // the capture recorder directory name, which wants a stable per-agent label.
 func CeeSessionKey(agent, clientIP string) string {
-	return sessionKeyFor(agent, clientIP)
+	return identitykey.ForAgentAndClient(agent, clientIP)
 }
 
 // ceeKeyAgent returns the agent-identity component that is safe to use for
@@ -132,8 +132,8 @@ func captureSessionKeyOriginal(agent, clientIP string) string {
 // The live forward/MCP paths write CEE state under identitykey.CEESafeKey,
 // which folds a self-declared or matched agent name down to the client IP and
 // keeps only a bound or config-default name. The admin reset is keyed by the
-// stored adaptive session key (agent|ip), which does not carry the grade, so it
-// cannot know which of those two shapes holds this session's state. Clearing
+// stored adaptive session key, which does not carry the grade, so it cannot
+// know which of those two shapes holds this session's state. Clearing
 // every candidate key (identitykey.CEECandidateKeys, built through the same
 // CEESafeKey helper the live path uses) closes that gap: reset can never target
 // a key the live path would not have produced, and it fails safe by clearing

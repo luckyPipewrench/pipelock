@@ -1520,14 +1520,21 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, err.Error()
 	}
+	// The base-chain contract comes first. Without the output hook no rule in
+	// this chain is ever reached, so neither the catch-all drop nor a rule
+	// sitting before it means anything, and calling that a containment hole
+	// would report a definite verdict about a chain that enforces nothing.
+	// The doctor maps this wording to UNKNOWN, which is the honest state.
+	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
+		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
+	}
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
 	}
-	// A definite bypass outranks every missing canonical rule: reporting
-	// "proxy accept rule missing" or "DNS drop rule missing" for a chain that
-	// also admits all agent traffic would let the doctor downgrade the hole
-	// to an inconclusive result. Only the catch-all drop is checked first,
-	// because "before the drop" needs the drop to exist.
+	// Within a hooked chain that has the drop, a definite bypass outranks every
+	// missing canonical rule: reporting "proxy accept rule missing" for a chain
+	// that also admits all agent traffic would let the doctor downgrade the
+	// hole to an inconclusive result.
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
 		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
 	}
@@ -1548,9 +1555,6 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
-	}
-	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
-		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
 		if err := verifyNFTPersistence(env, current); err != nil {

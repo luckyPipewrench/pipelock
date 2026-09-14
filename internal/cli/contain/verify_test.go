@@ -641,6 +641,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "no skuid drop rule",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -657,6 +658,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "constrained agent drop is not catch all",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -674,6 +676,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "canary-specific drop before catch all is unexpected",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -692,6 +695,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "broad loopback accept",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta oif "lo" accept
@@ -710,6 +714,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "bare loopback host accept",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			ip daddr 127.0.0.1 accept
@@ -728,6 +733,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "constrained agent drop does not hide broad loopback accept",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 10.0.0.0/8 drop
@@ -747,6 +753,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "missing proxy port allow",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 udp dport 53 drop
@@ -763,6 +770,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "proxy port prefix is not proxy port",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 88880 accept
@@ -780,6 +788,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "proxy loopback allow after agent drop is unreachable",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 udp dport 53 drop
@@ -815,6 +824,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "agent broad accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -833,6 +843,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "agent alternate destination accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -851,6 +862,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "unscoped external accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -869,6 +881,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "agent skuid set accept before drop is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -887,6 +900,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "pre-drop return is fail open under accept policy",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -905,6 +919,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "pre-drop jump is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -923,6 +938,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "pre-drop goto is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -941,6 +957,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "pre-drop queue is fail open",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -959,6 +976,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "loopback address prefix is not proxy address",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.10 tcp dport 8888 accept
@@ -976,6 +994,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "stale agent uid",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 986 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -993,6 +1012,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "missing direct dns drop",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1008,6 +1028,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "dns drops after catch all drop are unreachable",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1025,6 +1046,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "udp dns port prefix is not dns port",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1042,6 +1064,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "tcp dns port prefix is not dns port",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1059,6 +1082,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "constrained udp dns drop is not catch all dns drop",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1076,6 +1100,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "constrained tcp dns drop is not catch all dns drop",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1093,6 +1118,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "constrained proxy accept is not terminal accept",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 ip daddr 127.0.0.1 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1110,6 +1136,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			name: "skuid and drop outside target chain",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
@@ -1388,6 +1415,7 @@ func TestProbeNFTContainment_UsesInstalledOperatorUIDFromRulesFile(t *testing.T)
 
 	liveWithoutOperator1000 := `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
 			meta skuid 987 udp dport 53 drop
@@ -1416,6 +1444,7 @@ func TestProbeNFTContainment_SkuidUIDBoundaryIsExact(t *testing.T) {
 	}
 	liveWithoutOperator98 := `table inet pipelock_containment {
 		chain output_filter {
+			type filter hook output priority filter; policy accept;
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
 			meta skuid 987 udp dport 53 drop
@@ -2525,6 +2554,66 @@ func TestProbeNFTContainment_BypassOutranksMissingCanonicalRules(t *testing.T) {
 		if status != statusFail || !strings.Contains(detail, containmentBypassDetailPrefix) {
 			t.Fatalf("missing %q: probe = (%q, %q), want the definite bypass reported first", missing, status, detail)
 		}
+	}
+}
+
+// TestProbeNFTContainment_MissingBaseChainOutranksBypass pins the reporting
+// order for a chain that is not the managed output base chain. Without the
+// output hook no rule in it is reached, so a pre-drop bare agent accept there
+// is not a containment hole and must not be reported as one: the doctor maps
+// the bypass wording to FAIL and everything else to UNKNOWN, and "this chain
+// enforces nothing" is exactly the inconclusive case.
+// TestProbeNFTContainment_JumpBeforeDropIsNeverPass answers the review question
+// about an agent rule that reaches an accept indirectly. The definite-bypass
+// classifier deliberately covers only the one unambiguous shape, so a jump,
+// goto or return before the drop is NOT reported as a containment hole; what
+// matters is that it is never reported as PASS either. The unexpected-verdict
+// guard refuses to attribute the chain, which the doctor renders as UNKNOWN.
+func TestProbeNFTContainment_JumpBeforeDropIsNeverPass(t *testing.T) {
+	for _, verdict := range []string{"jump escape_chain", "goto escape_chain", "return"} {
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.operatorUser = testOperatorUser
+			e.lookupUser = containTestLookup
+			e.nftRulesPath = ""
+			e.nftPersistUnitPath = ""
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				return strings.Replace(goodNFTContainmentOutput, "\t\tmeta skuid 987 drop\n",
+					"\t\tmeta skuid 987 "+verdict+"\n\t\tmeta skuid 987 drop\n", 1), 0, nil
+			}
+		})
+		status, detail := probeNFTContainment(context.Background(), env)
+		if status == statusPass {
+			t.Fatalf("%q before the agent drop reported PASS: %q", verdict, detail)
+		}
+		if !strings.Contains(detail, "unexpected verdict before agent drop") {
+			t.Fatalf("%q before the agent drop = (%q, %q), want the unexpected-verdict refusal", verdict, status, detail)
+		}
+	}
+}
+
+func TestProbeNFTContainment_MissingBaseChainOutranksBypass(t *testing.T) {
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = ""
+		e.nftPersistUnitPath = ""
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			out := strings.Replace(goodNFTContainmentOutput,
+				"\t\ttype filter hook output priority filter; policy accept;\n", "", 1)
+			out = strings.Replace(out, "\t\tmeta skuid 987 drop\n",
+				"\t\tmeta skuid 987 accept\n\t\tmeta skuid 987 drop\n", 1)
+			return out, 0, nil
+		}
+	})
+	status, detail := probeNFTContainment(context.Background(), env)
+	if status != statusFail {
+		t.Fatalf("probe = (%q, %q), want fail", status, detail)
+	}
+	if strings.Contains(detail, containmentBypassDetailPrefix) {
+		t.Fatalf("probe reported a containment hole for an unhooked chain: %q", detail)
+	}
+	if !strings.Contains(detail, "not the managed output base chain") {
+		t.Fatalf("probe = %q, want the base-chain contract reported first", detail)
 	}
 }
 

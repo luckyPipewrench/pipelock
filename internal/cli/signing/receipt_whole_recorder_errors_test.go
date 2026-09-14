@@ -229,3 +229,125 @@ func TestVerifyReceiptCmd_WholeRecorderDirectFileBoundedRead(t *testing.T) {
 		t.Fatalf("direct file over the read limit err=%v output:\n%s", err, out)
 	}
 }
+
+func TestVerifyReceiptCmd_WholeRecorderSignedCheckpointAnchor(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONLSigned(t, true)
+	key := hex.EncodeToString(pub)
+
+	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", key)
+	if err != nil || !strings.Contains(out, "signed checkpoints verified") {
+		t.Fatalf("signed fixture err=%v output:\n%s", err, out)
+	}
+
+	tamperDecision := func(entries []recorder.Entry) []recorder.Entry {
+		for i := range entries {
+			if entries[i].Type == "decision" {
+				entries[i].Summary = "rewritten operational decision"
+			}
+		}
+		return entries
+	}
+
+	t.Run("rewritten decision breaks the signed anchor", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, path, "rewritten-signed.jsonl", tamperDecision)
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
+		if err == nil || !strings.Contains(err.Error(), "signature verifies against no trusted key") || !strings.Contains(out, "ANCHOR MISMATCH") {
+			t.Fatalf("rewritten signed recorder err=%v output:\n%s", err, out)
+		}
+	})
+
+	t.Run("unsigned checkpoints report no authentication", func(t *testing.T) {
+		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+		mutated := rewriteRecorderEntries(t, unsignedPath, "rewritten-unsigned.jsonl", tamperDecision)
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
+		if err != nil || !strings.Contains(out, "checkpoints unsigned; recorder entries other than receipts are hash-linked but not authenticated") {
+			t.Fatalf("unsigned recorder must state its limit err=%v output:\n%s", err, out)
+		}
+	})
+
+	t.Run("decision relabeled as a trailing checkpoint is refused", func(t *testing.T) {
+		// Unsigned fixture: with signatures the rewrite already fails at the
+		// real checkpoint, so this exercises the span-shape check on its own.
+		unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+		key := hex.EncodeToString(unsignedPub)
+		mutated := rewriteRecorderEntries(t, unsignedPath, "relabeled.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := entries[len(entries)-1]
+			return append(entries, recorder.Entry{
+				Version: last.Version, Timestamp: last.Timestamp, SessionID: last.SessionID,
+				Type: "checkpoint", Transport: "fetch", EventKind: "url", Summary: "smuggled after the seal",
+				Detail: map[string]any{"verdict": "allow", "target": "https://api.vendor.example/x"},
+			})
+		})
+		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
+		if err == nil || !strings.Contains(err.Error(), "span ends at seq") || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("relabeled checkpoint err=%v output:\n%s", err, out)
+		}
+	})
+
+	t.Run("signed checkpoint with no pinned key is refused", func(t *testing.T) {
+		out, err := runVerifyReceipt(t, path, "--whole-recorder", "--allow-unpinned")
+		if err == nil || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("unpinned signed recorder must not present a sealed result err=%v output:\n%s", err, out)
+		}
+	})
+}
+
+func TestVerifyReceiptCmd_WholeRecorderCheckpointShapeErrors(t *testing.T) {
+	t.Parallel()
+
+	signedPath, signedPub := buildSealedRecorderJSONLSigned(t, true)
+	unsignedPath, unsignedPub := buildSealedRecorderJSONLSigned(t, false)
+
+	t.Run("signature that is not hex", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, signedPath, "bad-hex-signature.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			for i := range entries {
+				if entries[i].Type == "checkpoint" {
+					entries[i].Detail = map[string]any{"entry_count": 0, "first_seq": 0, "last_seq": entries[i-1].Sequence, "signature": "zz"}
+				}
+			}
+			return entries
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(signedPub))
+		if err == nil || !strings.Contains(err.Error(), "decoding signature") {
+			t.Fatalf("bad hex signature err = %v", err)
+		}
+	})
+
+	t.Run("detail that is not an object", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, unsignedPath, "string-detail.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			for i := range entries {
+				if entries[i].Type == "checkpoint" {
+					entries[i].Detail = "not a checkpoint"
+				}
+			}
+			return entries
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
+		if err == nil || !strings.Contains(err.Error(), "malformed detail") {
+			t.Fatalf("string detail err = %v", err)
+		}
+	})
+
+	t.Run("checkpoint as the first entry", func(t *testing.T) {
+		mutated := rewriteRecorderEntries(t, unsignedPath, "checkpoint-first.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+			last := entries[len(entries)-1]
+			if last.Type != "checkpoint" {
+				t.Fatal("fixture does not end with a checkpoint")
+			}
+			return append([]recorder.Entry{last}, entries[:len(entries)-1]...)
+		})
+		_, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", hex.EncodeToString(unsignedPub))
+		if err == nil || !strings.Contains(err.Error(), "preceding entry is seq 0") {
+			t.Fatalf("checkpoint-first err = %v", err)
+		}
+	})
+
+	t.Run("trusted key that is not hex", func(t *testing.T) {
+		out, err := runVerifyReceipt(t, signedPath, "--whole-recorder", "--key", "not-hex")
+		if err == nil || strings.Contains(out, "Seal:      sealed at seq") {
+			t.Fatalf("bad trusted key err=%v output:\n%s", err, out)
+		}
+	})
+}

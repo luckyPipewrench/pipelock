@@ -1021,7 +1021,9 @@ type WholeRecorderResult struct {
 // VerifyWholeRecorderEntries verifies every supplied recorder entry before
 // extracting its action receipts. It proves every entry present is chained and
 // in the known taxonomy; like any append-only hash chain, it does not prove the
-// file is complete.
+// file is complete, and hash linkage alone does not authenticate entries that
+// are not receipts. That authentication comes from signed checkpoints, which
+// the verify-receipt command checks against the pinned keys.
 func VerifyWholeRecorderEntries(entries []recorder.Entry) (WholeRecorderResult, error) {
 	for _, e := range entries {
 		if !knownRecorderEntryType(e.Type) {

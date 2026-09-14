@@ -318,13 +318,113 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		_, _ = fmt.Fprintf(out, "  INCOMPLETE: transcript_root seal precedes later unsealed entries (first: %s at seq %d)\n", unsealed.Type, unsealed.Sequence)
 		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.Type, unsealed.Sequence)
 	}
+	anchor, err := verifyCheckpointAnchors(entries, trustedKeys)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "  ANCHOR MISMATCH: %v\n", err)
+		return fmt.Errorf("checkpoint anchor verification failed: %w", err)
+	}
 	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
+	switch {
+	case anchor.unsigned == 0 && anchor.signed > 0:
+		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified; every entry before the final checkpoint is committed by a trusted key\n", anchor.signed)
+	case anchor.signed > 0:
+		_, _ = fmt.Fprintf(out, "  Anchor:    %d of %d checkpoints unsigned; entries after the last signed checkpoint are hash-linked but not authenticated\n", anchor.unsigned, anchor.signed+anchor.unsigned)
+	default:
+		_, _ = fmt.Fprintln(out, "  Anchor:    checkpoints unsigned; recorder entries other than receipts are hash-linked but not authenticated (enable flight_recorder.sign_checkpoints)")
+	}
 	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; only the recorder's trailing checkpoint may follow it, hash-chain-verified but not sealed")
 	return nil
+}
+
+// checkpointAnchor summarizes how many checkpoints carried a signature that
+// verified against a trusted key and how many carried none.
+type checkpointAnchor struct {
+	signed   int
+	unsigned int
+}
+
+// verifyCheckpointAnchors checks every checkpoint entry's shape and, when it
+// carries a signature, verifies that signature against the trusted keys. A
+// signed checkpoint commits the chain hash of every entry before it, so it is
+// the only authenticated anchor for entries that are not receipts; an unsigned
+// checkpoint proves nothing beyond hash linkage. A checkpoint whose detail does
+// not parse, whose span disagrees with its position, or whose signature
+// verifies against no trusted key fails closed: a rewritten recorder cannot
+// relabel an entry as a checkpoint or forge the anchor without the key.
+func verifyCheckpointAnchors(entries []recorder.Entry, trustedKeys []string) (checkpointAnchor, error) {
+	var anchor checkpointAnchor
+	var pubs []ed25519.PublicKey
+	for i, entry := range entries {
+		if entry.Type != "checkpoint" {
+			continue
+		}
+		detailJSON, err := json.Marshal(entry.Detail)
+		if err != nil {
+			return anchor, fmt.Errorf("checkpoint at seq %d: encoding detail: %w", entry.Sequence, err)
+		}
+		var detail recorder.CheckpointDetail
+		if err := json.Unmarshal(detailJSON, &detail); err != nil {
+			return anchor, fmt.Errorf("checkpoint at seq %d: malformed detail: %w", entry.Sequence, err)
+		}
+		if i == 0 || detail.LastSeq != entries[i-1].Sequence {
+			return anchor, fmt.Errorf("checkpoint at seq %d: span ends at seq %d but the preceding entry is seq %d", entry.Sequence, detail.LastSeq, precedingSequence(entries, i))
+		}
+		if detail.Signature == "" {
+			anchor.unsigned++
+			continue
+		}
+		if pubs == nil {
+			pubs, err = trustedCheckpointKeys(trustedKeys)
+			if err != nil {
+				return anchor, err
+			}
+		}
+		sig, err := hex.DecodeString(detail.Signature)
+		if err != nil {
+			return anchor, fmt.Errorf("checkpoint at seq %d: decoding signature: %w", entry.Sequence, err)
+		}
+		verified := false
+		for _, pub := range pubs {
+			if ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
+				verified = true
+				break
+			}
+		}
+		if !verified {
+			return anchor, fmt.Errorf("checkpoint at seq %d: signature verifies against no trusted key", entry.Sequence)
+		}
+		anchor.signed++
+	}
+	return anchor, nil
+}
+
+func precedingSequence(entries []recorder.Entry, i int) uint64 {
+	if i == 0 {
+		return 0
+	}
+	return entries[i-1].Sequence
+}
+
+func trustedCheckpointKeys(trustedKeys []string) ([]ed25519.PublicKey, error) {
+	if len(trustedKeys) == 0 {
+		return nil, fmt.Errorf("signed checkpoint present but no trusted key was pinned")
+	}
+	pubs := make([]ed25519.PublicKey, 0, len(trustedKeys))
+	for _, key := range trustedKeys {
+		raw, err := hex.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("decode trusted key: %w", err)
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("trusted key length=%d want %d", len(raw), ed25519.PublicKeySize)
+		}
+		pubs = append(pubs, ed25519.PublicKey(raw))
+	}
+	return pubs, nil
 }
 
 func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, int, string, bool, error) {

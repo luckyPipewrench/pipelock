@@ -203,7 +203,12 @@ entry type or recorder hash-chain break, verifies the receipt-chain commitment i
 rotation, the root covers the final signing segment while verification checks every
 trusted segment and its rotation continuity. The seal does not cover the trailing
 checkpoint the recorder writes after it; any other entry after the seal is reported as
-INCOMPLETE, because the seal never committed to it.
+INCOMPLETE, because the seal never committed to it. Entries that are not receipts
+(decisions, captures) are authenticated only through signed checkpoints: each one signs
+the chain hash of everything before it, and `--whole-recorder` verifies those signatures
+against the pinned keys and reports the anchor state. With
+`flight_recorder.sign_checkpoints: false` those entries are hash-linked but not
+authenticated, and the output says so.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning

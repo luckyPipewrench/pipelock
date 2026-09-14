@@ -869,13 +869,21 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 
 func buildSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
+	return buildSealedRecorderJSONLSigned(t, false)
+}
+
+// buildSealedRecorderJSONLSigned builds a sealed single-session recorder file.
+// With signCheckpoints the recorder signs its checkpoints with the same key
+// that signs receipts, which is the production default.
+func buildSealedRecorderJSONLSigned(t *testing.T, signCheckpoints bool) (string, ed25519.PublicKey) {
+	t.Helper()
 
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, SignCheckpoints: signCheckpoints}, nil, priv)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}

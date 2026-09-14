@@ -1538,6 +1538,9 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: %s", rule)
+	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
@@ -1834,6 +1837,53 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		}
 		return true
 	})
+}
+
+// agentUIDBareAcceptBeforeDrop identifies the one pre-drop rule shape whose
+// meaning is unambiguous: it admits every packet from the contained agent.
+// Counters, logs, comments, and nft handle annotations are bookkeeping, not
+// predicates. Any additional match predicate intentionally remains unknown.
+func agentUIDBareAcceptBeforeDrop(lines []string, agentUID int) (string, bool) {
+	var offending string
+	found := chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
+		if !lineHasBareAgentUIDAccept(line, agentUID) {
+			return false
+		}
+		offending = strings.TrimSpace(line)
+		return true
+	})
+	return offending, found
+}
+
+func lineHasBareAgentUIDAccept(line string, agentUID int) bool {
+	fields := nftLineFields(line)
+	skuidAt := indexSkuidUID(fields, strconv.Itoa(agentUID))
+	if skuidAt != 2 || fields[0] != "meta" {
+		return false
+	}
+	acceptAt := indexTokenAfter(fields, "accept", skuidAt+1)
+	if acceptAt == -1 {
+		return false
+	}
+	return fieldsAreNFTBookkeeping(fields[skuidAt+1:acceptAt]) &&
+		nftRuleTailIsCommentOnly(fields[acceptAt+1:])
+}
+
+// containmentBypassError preserves a definite structural bypass through the
+// counter-reader API so direct-egress probes can report FAIL rather than hide
+// it behind an otherwise inconclusive attribution error.
+type containmentBypassError struct{ rule string }
+
+func (e *containmentBypassError) Error() string {
+	return fmt.Sprintf("agent UID accept rule bypasses managed catch-all DROP: %s", e.rule)
+}
+
+func definiteContainmentBypassRule(err error) (string, bool) {
+	var bypass *containmentBypassError
+	if !errors.As(err, &bypass) {
+		return "", false
+	}
+	return bypass.rule, true
 }
 
 // lineHasAgentEstablishedReplyAllow recognizes a narrow server reply path.
@@ -2504,6 +2554,9 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
 		return 0, fmt.Errorf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
 	}
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return 0, &containmentBypassError{rule: rule}
+	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", env.nftChain)
 	}
@@ -2644,6 +2697,9 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 	}
 	if isSudoTargetCommandMissing(out) {
 		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", curlPath)
+	}
+	if rule, ok := definiteContainmentBypassRule(beforeErr); ok {
+		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: %s", rule)
 	}
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)

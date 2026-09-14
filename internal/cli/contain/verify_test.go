@@ -827,7 +827,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected verdict",
+			wantDetail: "CONTAINMENT HOLE: agent UID accept rule",
 		},
 		{
 			name: "agent alternate destination accept before drop is fail open",
@@ -2435,6 +2435,49 @@ func TestChainHasManagedOutputBaseChain(t *testing.T) {
 				t.Fatalf("chainHasManagedOutputBaseChain() = %t, want %t for %q", got, tc.want, tc.decl)
 			}
 		})
+	}
+}
+
+func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
+	const agentUID = 987
+	lines := []string{
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+		"meta skuid 987 counter packets 3 bytes 180 accept comment \"foreign rule\"",
+		"meta skuid 987 drop",
+	}
+	rule, ok := agentUIDBareAcceptBeforeDrop(lines, agentUID)
+	if !ok || rule != `meta skuid 987 counter packets 3 bytes 180 accept comment "foreign rule"` {
+		t.Fatalf("bare agent accept = %q, %t", rule, ok)
+	}
+
+	for _, line := range []string{
+		"meta skuid 12345 accept",
+		"ip daddr 10.0.0.0/8 accept",
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+	} {
+		if _, ok := agentUIDBareAcceptBeforeDrop([]string{line, "meta skuid 987 drop"}, agentUID); ok {
+			t.Fatalf("foreign or constrained rule classified as definite bypass: %q", line)
+		}
+	}
+
+	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
+		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
+	}
+}
+
+func TestProbeCCAgentEgressDenied_DefiniteStructuralBypassFails(t *testing.T) {
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.dropCounter = func(context.Context, *probeEnv) (uint64, error) {
+			return 0, &containmentBypassError{rule: "meta skuid 987 accept"}
+		}
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
+		}
+	})
+	status, detail := probeCCAgentEgressDenied(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, "meta skuid 987 accept") {
+		t.Fatalf("probe = (%q, %q), want fail naming offending rule", status, detail)
 	}
 }
 

@@ -54,16 +54,42 @@ func sdNotifyReloading(stderr io.Writer) {
 	sdNotifyOrLog(stderr, fmt.Sprintf("RELOADING=1\nMONOTONIC_USEC=%d", ts.Nano()/int64(time.Microsecond)))
 }
 
+// sdNotifyStatusMaxBytes bounds the reason text that rides in the completion
+// datagram. The reason is derived from configuration the operator controls, so
+// it is unbounded at the source; a datagram too large for the socket fails to
+// send, and READY travels in that same datagram, so an oversized status would
+// cost the completion systemd is waiting on. The operator log keeps the
+// untruncated error either way.
+const sdNotifyStatusMaxBytes = 256
+
 func sdNotifyReloadComplete(stderr io.Writer, reloadErr error) {
 	status := "config reload applied"
 	if reloadErr != nil {
 		status = "config reload rejected: " + sdNotifyStatusReason(reloadErr)
 	}
-	sdNotifyOrLog(stderr, "READY=1\nSTATUS="+status)
+	if _, err := sdNotify("READY=1\nSTATUS=" + status); err != nil {
+		_, _ = fmt.Fprintf(stderr, "pipelock: systemd notification failed: %v\n", err)
+		// Belt and braces: retry the completion on its own. Whatever made the
+		// combined datagram unsendable, systemd is still waiting for READY and
+		// the reload job must not hang on a status string.
+		sdNotifyOrLog(stderr, "READY=1")
+	}
 }
 
+// sdNotifyStatusReason renders an error as one bounded, control-character-free
+// line fit for a systemd status field.
 func sdNotifyStatusReason(err error) string {
 	reason := strings.SplitN(err.Error(), "\n", 2)[0]
 	reason = strings.TrimPrefix(reason, "rejected: ")
-	return strings.TrimSpace(strings.ReplaceAll(reason, "\r", " "))
+	reason = strings.Map(func(r rune) rune {
+		if r == '\t' || (r >= 0x20 && r != 0x7f) {
+			return r
+		}
+		return ' '
+	}, reason)
+	reason = strings.TrimSpace(reason)
+	if len(reason) > sdNotifyStatusMaxBytes {
+		reason = strings.ToValidUTF8(reason[:sdNotifyStatusMaxBytes], "") + "..."
+	}
+	return reason
 }

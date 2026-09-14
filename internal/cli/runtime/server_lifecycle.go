@@ -408,6 +408,14 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		case <-ctx.Done():
 		}
 
+		// Closed when Start returns, so a startup that fails before publishing
+		// readiness still releases the reload consumer. Without it the consumer
+		// could wait on a gate that will never close while Start waits on the
+		// consumer, and neither the context nor the reloader has to be closed
+		// for that to happen.
+		startupSettled := make(chan struct{})
+		defer close(startupSettled)
+
 		reloadWG.Add(1)
 		go func() {
 			defer reloadWG.Done()
@@ -421,6 +429,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 					select {
 					case <-s.startupNotified():
 					case <-ctx.Done():
+						// Shutdown or a failed start: stop consuming rather
+						// than applying a configuration queued before it.
+						return
+					case <-startupSettled:
+						return
 					}
 				}
 				s.handleConfigReload(event)

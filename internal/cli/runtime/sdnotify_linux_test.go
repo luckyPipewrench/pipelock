@@ -233,6 +233,68 @@ func TestServerSystemdNotifications(t *testing.T) {
 // has to answer "not yet" before readiness, hand out a channel that closes when
 // readiness is published, and tolerate a second publish: the shutdown path and
 // the readiness path can both reach it, and a plain close would panic.
+// TestSDNotifyStatusReasonIsBoundedAndClean covers the status text that rides
+// in the completion datagram. It comes from configuration the operator
+// controls, so it is unbounded at the source, and READY travels in the same
+// datagram: an oversized or control-character-laden status would cost the
+// completion systemd is waiting on.
+// TestSDNotifyReloadEventErrorBypassesReload covers the branch where the event
+// already carries a load failure. The configuration never parsed, so there is
+// nothing to apply: the handler must skip Server.Reload entirely, leave the
+// running configuration alone, and still report the rejection so the reload job
+// completes with a verdict instead of timing out.
+func TestSDNotifyReloadEventErrorBypassesReload(t *testing.T) {
+	messages := newNotifySocket(t)
+	s, _ := newTestServer(t, nil)
+	s.markStartupNotified()
+	before := s.proxy.CurrentConfig()
+
+	s.handleConfigReload(config.ReloadEvent{Err: errors.New("rejected: invalid config reload: bad yaml"), Trigger: config.ReloadTriggerSignal})
+
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "RELOADING=1") {
+		t.Fatalf("first notification = %q, want the reloading envelope", got)
+	}
+	got := receiveNotify(t, messages)
+	if !strings.HasPrefix(got, "READY=1") || !strings.Contains(got, "STATUS=config reload rejected: invalid config reload: bad yaml") {
+		t.Fatalf("completion = %q, want a rejected verdict", got)
+	}
+	if s.proxy.CurrentConfig() != before {
+		t.Fatal("a reload event carrying a load failure replaced the running configuration")
+	}
+}
+
+func TestSDNotifyStatusReasonIsBoundedAndClean(t *testing.T) {
+	long := errors.New("rejected: " + strings.Repeat("configuration detail ", 200))
+	got := sdNotifyStatusReason(long)
+	if len(got) > sdNotifyStatusMaxBytes+3 {
+		t.Fatalf("status reason is %d bytes, want it bounded near %d", len(got), sdNotifyStatusMaxBytes)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("a truncated reason does not say so: %q", got)
+	}
+
+	messy := errors.New("rejected: bad\x00value\x07here\nsecond line")
+	got = sdNotifyStatusReason(messy)
+	if strings.ContainsAny(got, "\x00\x07\n\r") {
+		t.Fatalf("status reason kept a control character: %q", got)
+	}
+	if got != "bad value here" {
+		t.Fatalf("status reason = %q, want the first line with controls replaced", got)
+	}
+}
+
+// TestSDNotifyReloadCompleteAlwaysDeliversReady pins the property the retry
+// exists for: whatever happens to the status, the reload job gets its
+// completion, because systemd blocks on READY and nothing else ends the wait.
+func TestSDNotifyReloadCompleteAlwaysDeliversReady(t *testing.T) {
+	messages := newNotifySocket(t)
+	sdNotifyReloadComplete(io.Discard, errors.New("rejected: "+strings.Repeat("x", 4000)))
+	got := receiveNotify(t, messages)
+	if !strings.HasPrefix(got, "READY=1") {
+		t.Fatalf("completion notification = %q, want it to lead with READY", got)
+	}
+}
+
 func TestStartupReadinessGate(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	if s.startupNotifiedAlready() {

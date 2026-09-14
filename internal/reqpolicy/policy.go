@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
 
 // methodOverrideHeaders are the headers some frameworks honor to tunnel a
@@ -535,10 +536,11 @@ func isStandardMethod(method string) bool {
 // it.
 const methodQuery = "QUERY"
 
-// NormalizeHost lowercases a host and strips a DNS trailing dot, optional URL
-// scheme, and optional port. It is deliberately permissive because callers may
-// hand over r.Host, URL.Host, or URL.String-derived values at different hook
-// points.
+// NormalizeHost canonicalizes an IDNA host and strips a DNS trailing dot,
+// optional URL scheme, and optional port. It is deliberately permissive because
+// callers may hand over r.Host, URL.Host, or URL.String-derived values at
+// different hook points. Invalid IDNA keeps its preexisting normalized spelling
+// rather than consuming x/net's partial conversion result.
 func NormalizeHost(raw string) string {
 	raw = strings.TrimSpace(strings.ToLower(raw))
 	if raw == "" {
@@ -551,6 +553,9 @@ func NormalizeHost(raw string) string {
 		raw = h
 	}
 	raw = strings.Trim(raw, "[]")
+	if ascii, err := destination.LookupASCII(raw); err == nil && ascii != "" {
+		raw = ascii
+	}
 	return strings.TrimSuffix(raw, ".")
 }
 

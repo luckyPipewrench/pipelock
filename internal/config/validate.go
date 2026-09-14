@@ -1577,9 +1577,8 @@ func HostPatternBreadthError(normalized string) error {
 // defensive builder and the query-parameter host validator still folding
 // first, which is what this function exists to stop recurring.
 //
-// An ASCII A-label such as "xn--..." is unaffected: that is how an
-// internationalized name is written here, because runtime matching folds case
-// rather than performing IDNA normalization.
+// An ASCII A-label such as "xn--..." is unaffected: configuration stores that
+// spelling while runtime matching canonicalizes it with the same IDNA profile.
 func RawHostASCIIError(raw string) error {
 	if strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
 		return errors.New("host must be ASCII; write an internationalized name in its xn-- A-label form")
@@ -1689,40 +1688,11 @@ func hostLabelGrammarError(base, what string) error {
 			return fmt.Errorf("%s must contain only DNS label characters", what)
 		}
 	}
-	if _, err := hostIDNAProfile.ToASCII(base); err != nil {
+	if _, err := destination.LookupASCII(base); err != nil {
 		return fmt.Errorf("%s must be valid under IDNA lookup processing: %w", what, err)
 	}
 	return nil
 }
-
-// hostIDNAProfile is idna.Lookup with the CheckHyphens rule turned OFF, and
-// nothing else changed.
-//
-// CheckHyphens forbids a hyphen in the third and fourth positions of a label,
-// which is a UTS #46 registration-era rule and NOT a DNS rule: "my--host" and
-// "ab--cd" are legal RFC 1123 hostnames. x/net says so in CheckHyphens' own
-// documentation, naming "r3---sn-apo3qvuoxuxbt-j5pe" as a label in common use,
-// and that is a googlevideo CDN host - a shape this repository's own shipped
-// patterns already reach through *.googlevideo.com.
-//
-// Using idna.Lookup here made validation STRICTER THAN MATCHING, which is the
-// failure direction that gets a check switched off: MatchDomain matches
-// "my--host.example.com" happily, so an operator with one in a host list would
-// have had a config that worked before the upgrade and refuses to load after.
-// Caught in review, and the tests below pin both directions.
-//
-// The ORDER of these options is load-bearing. MapForLookup calls
-// ValidateLabels(true) internally, which sets checkHyphens AND installs the
-// punycode validator; CheckHyphens(false) must come after it to switch off the
-// hyphen rule alone. Reversing them re-enables the rule. Everything Lookup
-// enforces beyond hyphens is retained on purpose, and an invalid xn-- label is
-// still refused - the test asserts that, because dropping IDNA entirely would
-// have "fixed" this finding while silently accepting malformed punycode.
-var hostIDNAProfile = idna.New(
-	idna.MapForLookup(),
-	idna.BidiRule(),
-	idna.CheckHyphens(false),
-)
 
 // wildcardBaseBreadthError reports why `*.base` is too broad to be a scoped
 // match, or nil when it is acceptable.

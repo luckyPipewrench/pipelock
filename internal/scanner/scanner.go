@@ -775,11 +775,19 @@ func (s *Scanner) IsInternalIP(ip net.IP) bool {
 // instead of blocking. IP literals are always rejected - trusted domains
 // only match hostnames to prevent SSRF bypass via raw IP addresses.
 func (s *Scanner) IsTrustedDomain(hostname string) bool {
-	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	hostname = strings.TrimSpace(hostname)
+	// MatchDomain applies IDNA lookup mapping. Check the same spelling here
+	// so a mapped numeric hostname cannot turn an IP entry into an exemption.
+	if ascii, err := destination.LookupASCII(hostname); err == nil {
+		hostname = ascii
+	}
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 	// Reject IP literals: trusted domains match hostnames only.
 	// Without this, an attacker could add a raw IP to trusted_domains
 	// and bypass SSRF protection entirely.
-	if net.ParseIP(hostname) != nil {
+	// MatchDomain also trims a root dot; extra dots must not hide an IP
+	// from this guard even when the request-side parser rejects that input.
+	if net.ParseIP(strings.TrimRight(hostname, ".")) != nil {
 		return false
 	}
 	for _, pattern := range s.trustedDomains {

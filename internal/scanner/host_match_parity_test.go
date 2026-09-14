@@ -107,7 +107,7 @@ func TestTrustedDomainIPLiteralIsInertNotABypass(t *testing.T) {
 	t.Parallel()
 
 	s := &Scanner{trustedDomains: []string{"2001:db8::1", "::1", "127.0.0.1"}}
-	for _, host := range []string{"2001:db8::1", "::1", "127.0.0.1", "[::1]"} {
+	for _, host := range []string{"2001:db8::1", "::1", "127.0.0.1", "[::1]", "１２７.０.０.１", "127。0。0。1", "１２７.０.０.１。", "127.0.0.1..", "１２７.０.０.１。。"} {
 		if s.IsTrustedDomain(host) {
 			t.Errorf("IsTrustedDomain(%q) is true; an IP literal in trusted_domains would bypass the internal-IP check", host)
 		}
@@ -147,5 +147,37 @@ func TestMatchDomainNormalizationAssumptions(t *testing.T) {
 	}
 	if !destination.MatchDomain("blocked.example", "BLOCKED.example") {
 		t.Error("assumption broken: the matcher no longer folds case, so validation would admit patterns that cannot match")
+	}
+}
+
+func TestIDNAHostAliasesHonorBlockAndExemptionLists(t *testing.T) {
+	t.Parallel()
+
+	const (
+		uLabel = "bücher.example"
+		aLabel = "xn--bcher-kva.example"
+	)
+
+	cfg, err := config.LoadBytes([]byte("fetch_proxy:\n  monitoring:\n    blocklist: [\"" + aLabel + "\"]\n"))
+	if err != nil {
+		t.Fatalf("config.LoadBytes: %v", err)
+	}
+	cfg.Internal = nil
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("scanner.New: %v", err)
+	}
+	defer s.Close()
+
+	if result := s.checkBlocklist(uLabel); result.Allowed {
+		t.Fatal("a U-label hostname bypassed an A-label blocklist entry")
+	}
+
+	trusted := &Scanner{trustedDomains: []string{aLabel}}
+	if !trusted.IsTrustedDomain(uLabel) {
+		t.Fatal("a U-label hostname did not honor its equivalent trusted-domain exemption")
+	}
+	if trusted.IsTrustedDomain("other.example") {
+		t.Fatal("an unrelated hostname matched the IDNA trusted-domain exemption")
 	}
 }

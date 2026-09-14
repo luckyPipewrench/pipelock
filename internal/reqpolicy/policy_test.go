@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
 
 func mustMatcher(t *testing.T, rules ...config.RequestPolicyRule) *Matcher {
@@ -365,11 +366,52 @@ func TestNormalizeHost(t *testing.T) {
 		{"https://api.service.example.com:443/path", "api.service.example.com"},
 		{"[2001:db8::1]:443", "2001:db8::1"},
 		{"2001:db8::1", "2001:db8::1"},
+		{"bücher.example", "xn--bcher-kva.example"},
+		{"bücher.example。", "xn--bcher-kva.example"},
+		{"bücher.example..", "xn--bcher-kva.example."},
 	}
 	for _, tc := range tests {
 		if got := NormalizeHost(tc.in); got != tc.want {
 			t.Errorf("NormalizeHost(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestNormalizeHostInvalidIDNAFallback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ in, want string }{
+		{"BAD\u200d.Example.", "bad\u200d.example"},
+		{"xn--a.example", "xn--a.example"},
+	} {
+		if _, err := destination.LookupASCII(tc.in); err == nil {
+			t.Fatalf("LookupASCII(%q) unexpectedly succeeded; fixture must exercise the error fallback", tc.in)
+		}
+		if got := NormalizeHost(tc.in); got != tc.want {
+			t.Errorf("NormalizeHost(%q) = %q, want preserved normalized spelling %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatcher_IDNAHostAliasesHonorDenyRules(t *testing.T) {
+	t.Parallel()
+
+	matcher := mustMatcher(t, config.RequestPolicyRule{
+		Name:   "block-books",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{Hosts: []string{"xn--bcher-kva.example"}},
+	})
+
+	for _, host := range []string{"xn--bcher-kva.example", "bücher.example", "bücher.example。", "bücher.example．", "bücher.example｡"} {
+		t.Run(host, func(t *testing.T) {
+			decision := matcher.Evaluate(RequestMeta{Host: host})
+			if decision.Action != config.ActionBlock {
+				t.Fatalf("Evaluate(%q) action = %q, want block; an equivalent IDNA spelling must not bypass a host deny rule", host, decision.Action)
+			}
+		})
+	}
+
+	if decision := matcher.Evaluate(RequestMeta{Host: "other.example"}); decision.Action != "" {
+		t.Fatalf("unrelated host action = %q, want allow", decision.Action)
 	}
 }
 

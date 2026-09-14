@@ -336,6 +336,86 @@ func TestMatchDomain_IPLiteralsDoNotWildcard(t *testing.T) {
 	}
 }
 
+func TestMatchDomain_IDNAAliases(t *testing.T) {
+	t.Parallel()
+
+	const (
+		uLabel = "bücher.example"
+		aLabel = "xn--bcher-kva.example"
+	)
+
+	for _, tc := range []struct {
+		name     string
+		hostname string
+		pattern  string
+	}{
+		{name: "U-label host matches A-label pattern", hostname: uLabel, pattern: aLabel},
+		{name: "A-label host matches U-label pattern", hostname: aLabel, pattern: uLabel},
+		{name: "U-label host matches A-label wildcard", hostname: "api." + uLabel, pattern: "*." + aLabel},
+		{name: "mapped root dot", hostname: uLabel + "。", pattern: aLabel},
+		{name: "fullwidth root dot", hostname: uLabel + "．", pattern: aLabel},
+		{name: "halfwidth root dot", hostname: uLabel + "｡", pattern: aLabel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !MatchDomain(tc.hostname, tc.pattern) {
+				t.Fatalf("MatchDomain(%q, %q) = false; equivalent IDNA spellings must share one policy", tc.hostname, tc.pattern)
+			}
+		})
+	}
+
+	if MatchDomain("not-bücher.example", aLabel) {
+		t.Error("an unrelated hostname matched an IDNA pattern")
+	}
+	if MatchDomain("bad\u200d.example", aLabel) {
+		t.Error("an invalid IDNA hostname matched a valid pattern")
+	}
+	if !MatchDomain("１２７.０.０.１", "127.0.0.1") {
+		t.Error("a width-normalized IP spelling did not reach exact IP matching")
+	}
+	if MatchDomain("１２７.０.０.１", "*.0.0.1") {
+		t.Error("a width-normalized IP spelling matched a wildcard suffix")
+	}
+	if !MatchDomain("fe80::1%eth0", "fe80::1%eth0") {
+		t.Error("an IPv6 zone stopped matching itself")
+	}
+	if MatchDomain("fe80::1%eth0", "fe80::1") {
+		t.Error("an IPv6 zone was silently stripped during matching")
+	}
+}
+
+func TestMatchDomain_PreservesUnmappedWildcardMatching(t *testing.T) {
+	t.Parallel()
+	for _, host := range []string{"_service.vendor.example", "bad\u200d.vendor.example"} {
+		if !MatchDomain(host, "*.vendor.example") {
+			t.Errorf("MatchDomain(%q) lost an existing wildcard match after failed IDNA conversion", host)
+		}
+		if MatchDomain(host, "*.other.example") {
+			t.Errorf("MatchDomain(%q) matched an unrelated wildcard", host)
+		}
+	}
+}
+
+func TestLookupASCIIProfile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{host: "bücher.example", want: "xn--bcher-kva.example"},
+		{host: "my--host.example", want: "my--host.example"},
+	} {
+		got, err := LookupASCII(tc.host)
+		if err != nil || got != tc.want {
+			t.Errorf("LookupASCII(%q) = %q, %v; want %q", tc.host, got, err, tc.want)
+		}
+	}
+	for _, host := range []string{"bad\u200d.example", "xn--a.example"} {
+		if _, err := LookupASCII(host); err == nil {
+			t.Errorf("LookupASCII(%q) must reject invalid labels", host)
+		}
+	}
+}
+
 // TestDecisionStrings pins the audit renderings, including the zero values,
 // which must never render as an empty string in a log record.
 func TestDecisionStrings(t *testing.T) {

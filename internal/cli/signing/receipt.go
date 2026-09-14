@@ -57,9 +57,9 @@ func VerifyReceiptCmd() *cobra.Command {
 For a single receipt JSON file: verifies the signature and prints details.
 For a flight recorder JSONL file: extracts all receipts and verifies the
 receipt hash chain (prev_hash linkage, seq continuity, signatures). Pass
---whole-recorder to also verify every recorder entry present and its taxonomy.
-For a
-multi-file chain spanning restarts or rotations, pass --chain DIR.
+--whole-recorder to also verify every recorder entry present, its taxonomy,
+and the transcript_root seal. For a multi-file chain spanning restarts or
+rotations, pass --chain DIR.
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -257,16 +257,13 @@ func verifyWholeRecorderFromFile(out io.Writer, path string, trustedKeys []strin
 	if err != nil {
 		return fmt.Errorf("reading recorder file: %w", err)
 	}
-	if _, err := receipt.ExtractAndVerifyWholeRecorderBytes(data); err != nil {
-		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
-	}
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("reading recorder entries: %w", err)
+		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}
 	result, err := receipt.VerifyWholeRecorderEntries(entries)
 	if err != nil {
-		return fmt.Errorf("whole-recorder verification failed: %w", err)
+		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}
 	return verifyWholeRecorderDetailed(out, path, entries, result, trustedKeys, opts)
 }
@@ -293,11 +290,10 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	_, _ = fmt.Fprintf(out, "  Mode:      whole-recorder\n")
 	_, _ = fmt.Fprintf(out, "  Entries:   %d recorder entries hash-chain-verified and in-taxonomy\n", whole.EntryCount)
 	chain := verifiedChainResult(whole.Receipts, trustedKeys, opts)
-	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
-		return err
+	if !chain.Valid || (len(trustedKeys) == 0 && !opts.AllowUnpinned) {
+		return verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts)
 	}
-	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
-	root, found, err := transcriptRootFromEntries(entries)
+	root, rootIndex, rootSessionID, found, err := transcriptRootFromEntries(entries)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "  SEAL MISMATCH: %v\n", err)
 		return fmt.Errorf("seal verification failed: %w", err)
@@ -306,19 +302,35 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no transcript_root seal (recorder still running or tail truncated)")
 		return fmt.Errorf("whole-recorder verification incomplete: no transcript_root seal")
 	}
-	if !chain.Valid || root.FinalSeq != chain.FinalSeq || root.RootHash != chain.RootHash || root.ReceiptCount != chain.ReceiptCount {
+	rootReceiptCount := receiptEntriesBefore(entries, rootIndex)
+	if rootReceiptCount == 0 || rootReceiptCount > len(whole.Receipts) {
 		_, _ = fmt.Fprintln(out, "  SEAL MISMATCH")
-		return fmt.Errorf("seal verification failed: transcript_root does not match the verified receipt chain")
+		return fmt.Errorf("seal verification failed: transcript_root has no matching receipt prefix")
 	}
+	rootChain := verifiedChainResult(whole.Receipts[:rootReceiptCount], trustedKeys, opts)
+	if !rootChain.Valid || !transcriptRootMatchesChainSegment(root, rootSessionID, rootChain) {
+		_, _ = fmt.Fprintln(out, "  SEAL MISMATCH")
+		return fmt.Errorf("seal verification failed: transcript_root does not match its verified receipt-chain segment")
+	}
+	if receiptEntriesAfter(entries, rootIndex) > 0 {
+		_, _ = fmt.Fprintln(out, "  INCOMPLETE: transcript_root seal precedes later receipts")
+		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later receipts")
+	}
+	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
-	_, _ = fmt.Fprintln(out, "  Limit:     entries after the seal are hash-chain-verified but not covered by the seal")
+	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; entries after the seal are hash-chain-verified but not sealed")
 	return nil
 }
 
-func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, bool, error) {
+func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, int, string, bool, error) {
 	var root receipt.TranscriptRoot
+	rootIndex := -1
+	var rootSessionID string
 	found := false
-	for _, entry := range entries {
+	for index, entry := range entries {
 		if entry.Type != "transcript_root" {
 			continue
 		}
@@ -327,15 +339,45 @@ func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot
 			var err error
 			data, err = json.Marshal(entry.Detail)
 			if err != nil {
-				return receipt.TranscriptRoot{}, false, fmt.Errorf("marshal transcript_root detail: %w", err)
+				return receipt.TranscriptRoot{}, -1, "", false, fmt.Errorf("marshal transcript_root detail: %w", err)
 			}
 		}
 		if err := json.Unmarshal(data, &root); err != nil {
-			return receipt.TranscriptRoot{}, false, fmt.Errorf("parse transcript_root detail: %w", err)
+			return receipt.TranscriptRoot{}, -1, "", false, fmt.Errorf("parse transcript_root detail: %w", err)
 		}
+		rootIndex = index
+		rootSessionID = entry.SessionID
 		found = true
 	}
-	return root, found, nil
+	return root, rootIndex, rootSessionID, found, nil
+}
+
+func receiptEntriesBefore(entries []recorder.Entry, index int) int {
+	count := 0
+	for _, entry := range entries[:index] {
+		if entry.Type == "action_receipt" {
+			count++
+		}
+	}
+	return count
+}
+
+func receiptEntriesAfter(entries []recorder.Entry, index int) int {
+	count := 0
+	for _, entry := range entries[index+1:] {
+		if entry.Type == "action_receipt" {
+			count++
+		}
+	}
+	return count
+}
+
+func transcriptRootMatchesChainSegment(root receipt.TranscriptRoot, sessionID string, chain receipt.ChainResult) bool {
+	if root.SessionID != sessionID || len(chain.Segments) == 0 {
+		return false
+	}
+	segment := chain.Segments[len(chain.Segments)-1]
+	return root.FinalSeq == chain.FinalSeq && root.RootHash == chain.RootHash && root.ReceiptCount == segment.Count
 }
 
 func verifiedChainResult(receipts []receipt.Receipt, trustedKeys []string, opts verifyReceiptOptions) receipt.ChainResult {

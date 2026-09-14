@@ -42,14 +42,14 @@ func buildRotatedChainJSONL(t *testing.T, aN, bN int) (dir string, pubA, pubB ed
 	return dir, pa, pb
 }
 
-func buildEndorsedRotatedChainJSONL(t *testing.T) (dir string, pubA ed25519.PublicKey, endorsementPath string) {
+func buildEndorsedRotatedChainJSONL(t *testing.T) (dir string, pubA ed25519.PublicKey, privB ed25519.PrivateKey, endorsementPath string) {
 	t.Helper()
 	dir = t.TempDir()
 	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey A: %v", err)
 	}
-	_, privB, err := ed25519.GenerateKey(rand.Reader)
+	_, privB, err = ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey B: %v", err)
 	}
@@ -92,7 +92,28 @@ func buildEndorsedRotatedChainJSONL(t *testing.T) (dir string, pubA ed25519.Publ
 	if err := os.WriteFile(endorsementPath, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile endorsement: %v", err)
 	}
-	return dir, pubA, endorsementPath
+	return dir, pubA, privB, endorsementPath
+}
+
+func appendTranscriptRoot(t *testing.T, dir string, priv ed25519.PrivateKey) {
+	t.Helper()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, Principal: "test", Actor: "test"})
+	if err := emitter.InitError(); err != nil {
+		t.Fatalf("emitter init error: %v", err)
+	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := emitter.EmitTranscriptRoot("proxy"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
 }
 
 func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx int) {
@@ -209,7 +230,7 @@ func TestVerifyReceiptCmd_RotatedChainTrustOnFirstUseFlags(t *testing.T) {
 }
 
 func TestVerifyReceiptCmd_RotationEndorsementAuthorizesSuccessor(t *testing.T) {
-	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	dir, pubA, _, endorsementPath := buildEndorsedRotatedChainJSONL(t)
 	keyA := hex.EncodeToString(pubA)
 
 	var buf bytes.Buffer
@@ -234,8 +255,27 @@ func TestVerifyReceiptCmd_RotationEndorsementAuthorizesSuccessor(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationMatchesFinalSegmentSeal(t *testing.T) {
+	dir, pubA, privB, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	appendTranscriptRoot(t, dir, privB)
+
+	var buf bytes.Buffer
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("whole-recorder endorsed rotation verification failed: %v\n%s", err, buf.String())
+	}
+	for _, want := range []string{"CHAIN VALID", "(endorsed)", "Seal:      sealed at seq"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("whole-recorder endorsed rotation output missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
 func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *testing.T) {
-	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	dir, pubA, _, endorsementPath := buildEndorsedRotatedChainJSONL(t)
 	query, err := recorder.QuerySession(dir, "proxy", nil)
 	if err != nil {
 		t.Fatalf("QuerySession: %v", err)
@@ -301,7 +341,7 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 }
 
 func TestVerifyReceiptCmd_RotationEndorsementFlagConflicts(t *testing.T) {
-	dir, pubA, endorsementPath := buildEndorsedRotatedChainJSONL(t)
+	dir, pubA, _, endorsementPath := buildEndorsedRotatedChainJSONL(t)
 	keyA := hex.EncodeToString(pubA)
 	files, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
 	if err != nil || len(files) == 0 {

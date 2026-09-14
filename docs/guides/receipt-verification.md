@@ -199,8 +199,10 @@ Chain verification checks:
 By default, this verifies the receipt subsequence only. To verify every present
 flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
 entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
-`transcript_root`, and returns non-zero for an unsealed recorder. The seal does not
-cover entries written after it, including the trailing checkpoint.
+`transcript_root`, and returns non-zero for an unsealed recorder. After a signing-key
+rotation, the root covers the final signing segment while verification checks every
+trusted segment and its rotation continuity. The seal does not cover entries written
+after it, including the trailing checkpoint.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning

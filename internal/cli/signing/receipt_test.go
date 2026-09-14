@@ -1024,47 +1024,111 @@ func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_WholeRecorderReportsReceiptTailAfterSealIncomplete(t *testing.T) {
+	t.Parallel()
+
+	dir, pub := buildRestartedRecorderWithUnsealedReceiptTail(t)
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("whole-recorder accepted receipts after a prior seal:\n%s", out.String())
+	}
+	if got := out.String(); !strings.Contains(got, "INCOMPLETE: transcript_root seal precedes later receipts") || strings.Contains(got, "CHAIN VALID") {
+		t.Fatalf("receipt tail result must be incomplete without a valid conclusion:\n%s", got)
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderRejectsTruncatedSession(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	enc := json.NewEncoder(file)
+	for seq := range recorder.MaxEvidenceReadEntries + 1 {
+		entry := recorder.Entry{
+			Version: recorder.EntryVersion, Sequence: uint64(seq), Timestamp: time.Now().UTC(),
+			SessionID: "proxy", Type: "checkpoint", Transport: "fetch", Summary: "checkpoint", PrevHash: recorder.GenesisHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		if err := enc.Encode(entry); err != nil {
+			_ = file.Close()
+			t.Fatalf("Encode: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir})
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "INCOMPLETE: evidence session proxy exceeded bounded read limits") || strings.Contains(out.String(), "CHAIN VALID") {
+		t.Fatalf("truncated whole-recorder result err=%v output:\n%s", err, out.String())
+	}
+}
+
 func TestVerifyReceiptCmd_WholeRecorderRejectsSealMismatchAndRawReceiptJSONL(t *testing.T) {
 	t.Parallel()
 
 	path, pub := buildSealedRecorderJSONL(t)
-	entries, err := recorder.ReadEntries(path)
-	if err != nil {
-		t.Fatalf("ReadEntries: %v", err)
-	}
-	for i := range entries {
-		if entries[i].Type == "transcript_root" {
-			detail, ok := entries[i].Detail.(map[string]any)
-			if !ok {
-				t.Fatalf("transcript root detail type = %T", entries[i].Detail)
-			}
-			detail["root_hash"] = strings.Repeat("0", 64)
-		}
-		if i > 0 {
-			entries[i].PrevHash = entries[i-1].Hash
-		}
-		entries[i].RawDetail = nil
-		entries[i].Hash = recorder.ComputeHash(entries[i])
-	}
-	var rewritten strings.Builder
-	for _, entry := range entries {
-		data, err := json.Marshal(entry)
+	writeMismatch := func(t *testing.T, name string, mutate func(map[string]any)) string {
+		t.Helper()
+		entries, err := recorder.ReadEntries(path)
 		if err != nil {
-			t.Fatalf("Marshal entry: %v", err)
+			t.Fatalf("ReadEntries: %v", err)
 		}
-		rewritten.Write(data)
-		rewritten.WriteByte('\n')
+		for i := range entries {
+			if entries[i].Type == "transcript_root" {
+				detail, ok := entries[i].Detail.(map[string]any)
+				if !ok {
+					t.Fatalf("transcript root detail type = %T", entries[i].Detail)
+				}
+				mutate(detail)
+			}
+			if i > 0 {
+				entries[i].PrevHash = entries[i-1].Hash
+			}
+			entries[i].RawDetail = nil
+			entries[i].Hash = recorder.ComputeHash(entries[i])
+		}
+		var rewritten strings.Builder
+		for _, entry := range entries {
+			data, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatalf("Marshal entry: %v", err)
+			}
+			rewritten.Write(data)
+			rewritten.WriteByte('\n')
+		}
+		mismatchPath := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(mismatchPath, []byte(rewritten.String()), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		return mismatchPath
 	}
-	mismatchPath := filepath.Join(t.TempDir(), "seal-mismatch.jsonl")
-	if err := os.WriteFile(mismatchPath, []byte(rewritten.String()), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	cmd := VerifyReceiptCmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{mismatchPath, "--whole-recorder", "--key", hex.EncodeToString(pub)})
-	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "SEAL MISMATCH") {
-		t.Fatalf("seal mismatch result err=%v output:\n%s", err, out.String())
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "root hash", mutate: func(detail map[string]any) { detail["root_hash"] = strings.Repeat("0", 64) }},
+		{name: "root session", mutate: func(detail map[string]any) { detail["session_id"] = "another-recorder-session" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := VerifyReceiptCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{writeMismatch(t, "seal-mismatch.jsonl", tc.mutate), "--whole-recorder", "--key", hex.EncodeToString(pub)})
+			if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "SEAL MISMATCH") {
+				t.Fatalf("seal mismatch result err=%v output:\n%s", err, out.String())
+			}
+		})
 	}
 
 	rawSource, rawPub := buildChainJSONL(t, 1)
@@ -1085,7 +1149,8 @@ func TestVerifyReceiptCmd_WholeRecorderRejectsSealMismatchAndRawReceiptJSONL(t *
 	if err := os.WriteFile(rawPath, []byte(raw.String()), 0o600); err != nil {
 		t.Fatalf("WriteFile raw receipts: %v", err)
 	}
-	cmd = VerifyReceiptCmd()
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
 	out.Reset()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{rawPath, "--key", hex.EncodeToString(rawPub)})
@@ -1262,6 +1327,38 @@ func buildSealedRestartRecorderDir(t *testing.T, counts ...int) (string, ed25519
 		}
 		if err := rec.Close(); err != nil {
 			t.Fatalf("recorder.Close[%d]: %v", i, err)
+		}
+	}
+	return dir, pub
+}
+
+func buildRestartedRecorderWithUnsealedReceiptTail(t *testing.T) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	for run := range 2 {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+		if err != nil {
+			t.Fatalf("recorder.New[%d]: %v", run, err)
+		}
+		emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "test-chain-hash", Principal: "test", Actor: "test"})
+		if err := emitter.EmitSessionOpen(); err != nil {
+			t.Fatalf("EmitSessionOpen[%d]: %v", run, err)
+		}
+		if err := emitter.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: "allow", Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/restart"}); err != nil {
+			t.Fatalf("Emit[%d]: %v", run, err)
+		}
+		if run == 0 {
+			if err := emitter.EmitTranscriptRoot("proxy"); err != nil {
+				t.Fatalf("EmitTranscriptRoot: %v", err)
+			}
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close[%d]: %v", run, err)
 		}
 	}
 	return dir, pub

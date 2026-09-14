@@ -1820,12 +1820,11 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	reloaded.ScanAPI.Auth.BearerTokens = []string{"new-token"}
 	cfgVal.Store(reloaded)
 	policyVal.Store(&policy.Config{
-		Action: config.ActionBlock,
+		Action: config.ActionWarn,
 		Rules: []*policy.CompiledRule{
 			{
-				Name:        "block-dangerous",
+				Name:        "warn-dangerous",
 				ToolPattern: regexp.MustCompile(`dangerous_tool`),
-				Action:      config.ActionBlock,
 			},
 		},
 	})
@@ -1839,8 +1838,8 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("new token after reload: status=%d body=%s", code, resp.Status)
 	}
-	if resp.Decision != DecisionDeny {
-		t.Fatalf("new token after reload: decision=%q, want deny", resp.Decision)
+	if resp.Decision != DecisionWarn {
+		t.Fatalf("new token after reload: decision=%q, want warn", resp.Decision)
 	}
 	if len(resp.Findings) == 0 || !strings.HasPrefix(resp.Findings[0].RuleID, "POLICY-") {
 		t.Fatalf("expected policy finding after reload, got %+v", resp.Findings)
@@ -1858,8 +1857,8 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("new token after unrelated reload: status=%d body=%s", code, resp.Status)
 	}
-	if resp.Decision != DecisionDeny {
-		t.Fatalf("new token after unrelated reload: decision=%q, want deny", resp.Decision)
+	if resp.Decision != DecisionWarn {
+		t.Fatalf("new token after unrelated reload: decision=%q, want warn", resp.Decision)
 	}
 
 	policyVal.Store(nil)
@@ -1872,12 +1871,11 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	}
 
 	policyVal.Store(&policy.Config{
-		Action: config.ActionBlock,
+		Action: config.ActionWarn,
 		Rules: []*policy.CompiledRule{
 			{
-				Name:        "block-dangerous",
+				Name:        "warn-dangerous",
 				ToolPattern: regexp.MustCompile(`dangerous_tool`),
-				Action:      config.ActionBlock,
 			},
 		},
 	})
@@ -1885,8 +1883,8 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("new token after policy restore: status=%d body=%s", code, resp.Status)
 	}
-	if resp.Decision != DecisionDeny {
-		t.Fatalf("new token after policy restore: decision=%q, want deny", resp.Decision)
+	if resp.Decision != DecisionWarn {
+		t.Fatalf("new token after policy restore: decision=%q, want warn", resp.Decision)
 	}
 }
 

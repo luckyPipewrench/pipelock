@@ -196,7 +196,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 	t.Run("signal reload reports accepted verdict", func(t *testing.T) {
 		messages := newNotifySocket(t)
 		s, _ := newTestServer(t, nil)
-		s.sdStartupNotified.Store(true)
+		s.markStartupNotified()
 		s.handleConfigReload(config.ReloadEvent{Config: s.proxy.CurrentConfig().Clone(), Trigger: config.ReloadTriggerSignal})
 		first := receiveNotify(t, messages)
 		second := receiveNotify(t, messages)
@@ -214,7 +214,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 			opts.Mode = config.ModeStrict
 			opts.ModeChanged = true
 		})
-		s.sdStartupNotified.Store(true)
+		s.markStartupNotified()
 		old := s.proxy.CurrentConfig()
 		candidate := old.Clone()
 		candidate.Mode = config.ModeBalanced
@@ -229,14 +229,48 @@ func TestServerSystemdNotifications(t *testing.T) {
 	})
 }
 
+// TestStartupReadinessGate covers the gate the reload consumer waits on. It
+// has to answer "not yet" before readiness, hand out a channel that closes when
+// readiness is published, and tolerate a second publish: the shutdown path and
+// the readiness path can both reach it, and a plain close would panic.
+func TestStartupReadinessGate(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	if s.startupNotifiedAlready() {
+		t.Fatal("gate reported readiness before it was published")
+	}
+	select {
+	case <-s.startupNotified():
+		t.Fatal("readiness channel was already closed")
+	default:
+	}
+
+	s.markStartupNotified()
+	if !s.startupNotifiedAlready() {
+		t.Fatal("gate did not report readiness after it was published")
+	}
+	select {
+	case <-s.startupNotified():
+	case <-time.After(time.Second):
+		t.Fatal("readiness channel did not close")
+	}
+
+	s.markStartupNotified()
+	if !s.startupNotifiedAlready() {
+		t.Fatal("a second publish disturbed the gate")
+	}
+}
+
 func TestSDNotifySignalReloadBeforeStartupReadyIsSilent(t *testing.T) {
 	messages := newNotifySocket(t)
 	s, _ := newTestServer(t, nil)
 	s.handleConfigReload(config.ReloadEvent{Config: s.proxy.CurrentConfig().Clone(), Trigger: config.ReloadTriggerSignal})
+	// A bounded window, not an immediate default: the socket reader forwards on
+	// another goroutine, so checking the channel straight away can miss a
+	// notification that is in flight and report silence that never happened.
 	select {
 	case message := <-messages:
 		t.Fatalf("pre-readiness SIGHUP notified systemd: %q", message)
-	default:
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 
@@ -257,9 +291,11 @@ func TestSDNotifyFileReloadDoesNotSignalSystemd(t *testing.T) {
 	messages := newNotifySocket(t)
 	s, _ := newTestServer(t, nil)
 	s.handleConfigReload(config.ReloadEvent{Config: s.proxy.CurrentConfig().Clone(), Trigger: config.ReloadTriggerFile})
+	// Bounded, for the same reason as the pre-readiness case above: the socket
+	// reader forwards on another goroutine.
 	select {
 	case message := <-messages:
 		t.Fatalf("filesystem reload notified systemd: %q", message)
-	default:
+	case <-time.After(250 * time.Millisecond):
 	}
 }

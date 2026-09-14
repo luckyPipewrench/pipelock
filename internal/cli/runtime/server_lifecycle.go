@@ -412,6 +412,17 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		go func() {
 			defer reloadWG.Done()
 			for event := range reloader.Reloads() {
+				// Hold a signal-triggered event until startup readiness has
+				// been reported. Handling one before that point would either
+				// skip the envelope systemd is waiting on or send a READY that
+				// completes the start job early, depending on which side of the
+				// READY datagram the state was published.
+				if event.Trigger == config.ReloadTriggerSignal {
+					select {
+					case <-s.startupNotified():
+					case <-ctx.Done():
+					}
+				}
 				s.handleConfigReload(event)
 			}
 		}()
@@ -1258,7 +1269,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// uses this point for startup readiness.
 	sdNotifyOrLog(s.opts.Stderr, "READY=1")
 	readyNotified = true
-	s.sdStartupNotified.Store(true)
+	s.markStartupNotified()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
@@ -1318,6 +1329,35 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	return nil
 }
 
+// startupNotified returns a channel closed once startup readiness has been
+// reported to systemd. It is lazily created so a Server built by a test that
+// never starts still has a usable gate.
+func (s *Server) startupNotified() <-chan struct{} {
+	s.sdStartupReadyOnce.Do(func() { s.sdStartupReady = make(chan struct{}) })
+	return s.sdStartupReady
+}
+
+// markStartupNotified publishes startup readiness exactly once.
+func (s *Server) markStartupNotified() {
+	ready := s.startupNotified()
+	select {
+	case <-ready:
+	default:
+		close(s.sdStartupReady)
+	}
+}
+
+// startupNotifiedAlready reports whether readiness has been published, without
+// waiting for it.
+func (s *Server) startupNotifiedAlready() bool {
+	select {
+	case <-s.startupNotified():
+		return true
+	default:
+		return false
+	}
+}
+
 // handleConfigReload completes one file-watcher reload. Only SIGHUP-triggered
 // events participate in systemd's notify-reload protocol; filesystem updates
 // remain asynchronous and must not create unsolicited reload state.
@@ -1326,7 +1366,7 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	// notify-reload protocol. Before that, READY=1 would report startup, not a
 	// reload verdict, and systemd would start dependent units against a proxy
 	// whose listeners are not up yet.
-	notifySystemd := event.Trigger == config.ReloadTriggerSignal && s.sdStartupNotified.Load()
+	notifySystemd := event.Trigger == config.ReloadTriggerSignal && s.startupNotifiedAlready()
 	if notifySystemd {
 		sdNotifyReloading(s.opts.Stderr)
 	}

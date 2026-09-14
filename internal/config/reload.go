@@ -203,6 +203,9 @@ func (r *Reloader) tryReload(trigger ReloadTrigger) {
 	}
 }
 
+// sendReload queues an event for the runtime, coalescing when the consumer has
+// not drained the previous one. One producer calls this: the reloader's own
+// watch loop.
 func (r *Reloader) sendReload(event ReloadEvent) {
 	for {
 		select {
@@ -211,17 +214,35 @@ func (r *Reloader) sendReload(event ReloadEvent) {
 		default:
 			select {
 			case pending := <-r.reloads:
-				// A filesystem event can be coalesced away, but never replace
-				// a queued SIGHUP: systemd is waiting for that exact reload
-				// cycle to report completion.
-				if pending.Trigger == ReloadTriggerSignal && event.Trigger == ReloadTriggerFile {
-					r.reloads <- pending
-					return
-				}
+				event = coalesceReloadEvents(pending, event)
 			default:
 			}
 		}
 	}
+}
+
+// coalesceReloadEvents folds a queued event and a newer one into the single
+// event the consumer will see. Two properties have to survive the fold, and
+// discarding either side on its own loses one of them.
+//
+// A queued SIGHUP must still produce a reload cycle, because systemd is waiting
+// on that exact cycle to report completion, so the signal trigger is sticky.
+// And the newest outcome has to win, because a configuration that loaded
+// successfully must not be silently skipped: an earlier version of this
+// function kept the queued SIGHUP and returned, which dropped the newer
+// filesystem event and left its loaded configuration unapplied until something
+// else happened to trigger a reload.
+//
+// The newer outcome wins even when it is a load failure. That is deliberate:
+// the failure describes the file as it stands now, and the runtime's response
+// to a failed load is to keep the running configuration, which is the
+// conservative direction.
+func coalesceReloadEvents(pending, next ReloadEvent) ReloadEvent {
+	merged := next
+	if pending.Trigger == ReloadTriggerSignal {
+		merged.Trigger = ReloadTriggerSignal
+	}
+	return merged
 }
 
 // Close stops the reloader. Safe to call multiple times.

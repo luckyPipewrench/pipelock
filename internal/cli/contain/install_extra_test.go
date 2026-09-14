@@ -449,14 +449,20 @@ func TestDetectSystemdVersion(t *testing.T) {
 			want:    252,
 		},
 		{
-			name:    "manager unavailable falls back to the client",
+			// The decisive case, and the reason there is no client fallback.
+			// An unreadable manager version on a host whose systemctl binary
+			// reports 253+ must NOT enable notify-reload: the binary is newer
+			// than PID 1 exactly when the two disagree, so a fallback can only
+			// over-read and leave the proxy with a unit its manager refuses.
+			name:    "manager unreadable while the client reports a modern version",
 			manager: reply{code: 1, out: "Unknown property"},
-			client:  reply{out: "systemd 249 (249.11-0ubuntu3)\n"},
-			want:    249,
+			client:  reply{out: "systemd 258 (258.10-1.fc43)\n"},
+			want:    0,
 		},
-		{name: "both unreadable", manager: reply{code: 1}, client: reply{out: "something else"}, want: 0},
-		{name: "client nonzero exit", manager: reply{code: 1}, client: reply{out: "systemd 258", code: 1}, want: 0},
-		{name: "no systemctl at all", manager: reply{err: errors.New("no systemctl")}, client: reply{err: errors.New("no systemctl")}, want: 0},
+		{name: "manager unreadable", manager: reply{code: 1}, client: reply{out: "systemd 249 (249.11-0ubuntu3)\n"}, want: 0},
+		{name: "manager value unparseable", manager: reply{out: "something else"}, want: 0},
+		{name: "manager empty value", manager: reply{out: "\n"}, want: 0},
+		{name: "no systemctl at all", manager: reply{err: errors.New("no systemctl")}, want: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -469,7 +475,7 @@ func TestDetectSystemdVersion(t *testing.T) {
 				case "show --property=Version --value":
 					return tc.manager.out, tc.manager.code, tc.manager.err
 				case "--version":
-					return tc.client.out, tc.client.code, tc.client.err
+					t.Fatalf("detectSystemdVersion consulted the systemctl binary; only the running manager decides")
 				}
 				t.Fatalf("unexpected systemctl args %v", args)
 				return "", 0, nil

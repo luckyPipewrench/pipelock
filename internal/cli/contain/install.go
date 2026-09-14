@@ -1431,36 +1431,30 @@ const systemdNotifyReloadMinVersion = 253
 
 // detectSystemdVersion reports the major version of the systemd that will
 // actually load the unit, or 0 when it cannot be read. The caller treats 0 as
-// "render the shape that loads everywhere" rather than as an error: a version
-// probe failing must not fail the install.
+// "render the shape that loads everywhere", so an unreadable version costs the
+// newer unit type and never costs the install.
 //
-// The authority is the running manager's own Version property, read from PID 1
-// over D-Bus by `systemctl show --property=Version`. `systemctl --version`
-// reports the version of the systemctl BINARY, which is newer than PID 1 on any
-// host that has upgraded the systemd package without rebooting yet. Trusting
-// the binary there renders Type=notify-reload for a manager that cannot load
-// it, so the binary is only the fallback for a manager too old to answer.
+// The ONLY authority is the running manager's own Version property, read from
+// PID 1 by `systemctl show --property=Version`. There is deliberately no
+// fallback to `systemctl --version`, which reports the version of the systemctl
+// BINARY: on any host that upgraded the systemd package without rebooting, the
+// binary is newer than PID 1, so trusting it renders Type=notify-reload for a
+// manager that cannot load the unit and the proxy service stops starting. A
+// fallback can only ever over-read here, because the one case it would cover is
+// the one case where the two versions disagree. Failing to legacy is the
+// availability-safe direction: the legacy unit loads on every systemd.
 func detectSystemdVersion(ctx context.Context, env *installEnv) int {
-	if out, code, err := env.runCmd(ctx, "systemctl", "show", "--property=Version", "--value"); err == nil && code == 0 {
-		field := strings.TrimPrefix(strings.TrimSpace(firstLine(out)), "Version=")
-		field = strings.Trim(field, `"`)
-		if version := leadingVersionNumber(field); version > 0 {
-			return version
-		}
-	}
-	out, code, err := env.runCmd(ctx, "systemctl", "--version")
+	out, code, err := env.runCmd(ctx, "systemctl", "show", "--property=Version", "--value")
 	if err != nil || code != 0 {
 		return 0
 	}
-	fields := strings.Fields(out)
-	if len(fields) < 2 || fields[0] != "systemd" {
-		return 0
-	}
-	return leadingVersionNumber(fields[1])
+	field := strings.TrimPrefix(strings.TrimSpace(firstLine(out)), "Version=")
+	field = strings.Trim(field, `"`)
+	return leadingVersionNumber(field)
 }
 
-// firstLine returns the first line of out, which is where both version probes
-// put the value.
+// firstLine returns the first line of out, which is where the version probe
+// puts the value.
 func firstLine(out string) string {
 	if index := strings.IndexByte(out, '\n'); index >= 0 {
 		return out[:index]

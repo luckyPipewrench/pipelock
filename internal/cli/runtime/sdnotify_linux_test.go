@@ -8,6 +8,7 @@ package runtime
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 
 func newNotifySocket(t *testing.T) <-chan string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "notify.sock")
+	path := filepath.Join(shortSocketDir(t), "notify.sock")
 	listener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("listen unixgram: %v", err)
@@ -37,6 +38,25 @@ func newNotifySocket(t *testing.T) <-chan string {
 		}
 	}()
 	return messages
+}
+
+// shortSocketDir returns a directory whose unix socket paths stay under the
+// kernel's sun_path limit (108 bytes including the NUL). t.TempDir honors
+// TMPDIR, and a deep TMPDIR (CI runners, the pre-push gate) makes bind fail
+// with EINVAL, so fall back to a short directory under /tmp in that case.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	const sunPathBudget = 100
+	dir := t.TempDir()
+	if len(filepath.Join(dir, "notify.sock")) <= sunPathBudget {
+		return dir
+	}
+	short, err := os.MkdirTemp("/tmp", "plk-sdn-")
+	if err != nil {
+		t.Fatalf("mkdir short socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	return short
 }
 
 func receiveNotify(t *testing.T, messages <-chan string) string {

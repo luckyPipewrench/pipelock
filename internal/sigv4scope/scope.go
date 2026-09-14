@@ -72,20 +72,21 @@ func IsScopeTail(value string) bool {
 // aws4_request, ends the credential value. The scanner validates a whole
 // X-Amz-Credential value, so a scope with anything appended to its final
 // segment is not a credential scope to it. The redactor sees the scope
-// embedded in arbitrary text and has no value delimiter, so it refuses any
-// byte that could continue the segment (a word byte or the hyphen a scope
-// component allows) or start another one (a literal or percent-encoded
-// slash, or a truncated percent escape). A real pre-signed URL ends the
-// value with a query, quote, or whitespace byte, none of which are refused.
+// embedded in arbitrary text and has no value delimiter, so it accepts only
+// the bytes that can end a query value in a URL, JSON string, or prose (end
+// of text, a query or fragment separator, a quote, whitespace, or a closing
+// bracket) and refuses everything else, including any non-ASCII byte. That
+// is the fail-closed direction: an unrecognized suffix leaves the access key
+// ID redacted rather than carried through.
 func terminatorEnds(remainder string) bool {
 	if remainder == "" {
 		return true
 	}
 	switch remainder[0] {
-	case '-', '/', '%':
-		return false
+	case '&', '#', '?', ';', ',', '"', '\'', '`', ' ', '\t', '\n', '\r', '<', '>', ')', ']', '}', '\\', '|':
+		return true
 	}
-	return !isWordByte(remainder[0])
+	return false
 }
 
 func consumeSeparator(value string) (string, bool) {
@@ -105,8 +106,4 @@ func nextComponent(value string) (string, string) {
 		}
 	}
 	return value, ""
-}
-
-func isWordByte(value byte) bool {
-	return value == '_' || (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9')
 }

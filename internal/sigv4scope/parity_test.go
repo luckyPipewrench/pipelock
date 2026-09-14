@@ -52,7 +52,7 @@ func TestScopeAndRedactorCredentialScopeParity(t *testing.T) {
 // access key ID must not be skipped for any of them.
 func TestScopeTailRejectsExtendedTerminator(t *testing.T) {
 	base := "/20260528/us-east-1/s3/aws4_request"
-	for _, suffix := range []string{"/extra", "%2Fextra", "%2fextra", "-x", "%2", "%"} {
+	for _, suffix := range []string{"/extra", "%2Fextra", "%2fextra", "-x", "%2", "%", "+x", "=x", ".x", "~", "\xc3\xa9", "_x", "9"} {
 		tail := base + suffix
 		if sigv4scope.IsScopeTail(tail) {
 			t.Errorf("IsScopeTail(%q) = true, want false", tail)
@@ -61,7 +61,7 @@ func TestScopeTailRejectsExtendedTerminator(t *testing.T) {
 			t.Errorf("redactor skipped redaction for %q", tail)
 		}
 	}
-	for _, suffix := range []string{"", "&X-Amz-Signature=beef", "\"", " ", "\n", "?x"} {
+	for _, suffix := range []string{"", "&X-Amz-Signature=beef", "\"", "'", " ", "\n", "?x", "#frag", "</a>", "\"}", "\\n"} {
 		tail := base + suffix
 		if !sigv4scope.IsScopeTail(tail) {
 			t.Errorf("IsScopeTail(%q) = false, want true", tail)

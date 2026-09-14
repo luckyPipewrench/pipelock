@@ -229,15 +229,6 @@ func TestServerSystemdNotifications(t *testing.T) {
 	})
 }
 
-// TestStartupReadinessGate covers the gate the reload consumer waits on. It
-// has to answer "not yet" before readiness, hand out a channel that closes when
-// readiness is published, and tolerate a second publish: the shutdown path and
-// the readiness path can both reach it, and a plain close would panic.
-// TestSDNotifyStatusReasonIsBoundedAndClean covers the status text that rides
-// in the completion datagram. It comes from configuration the operator
-// controls, so it is unbounded at the source, and READY travels in the same
-// datagram: an oversized or control-character-laden status would cost the
-// completion systemd is waiting on.
 // TestSDNotifyReloadEventErrorBypassesReload covers the branch where the event
 // already carries a load failure. The configuration never parsed, so there is
 // nothing to apply: the handler must skip Server.Reload entirely, leave the
@@ -263,6 +254,11 @@ func TestSDNotifyReloadEventErrorBypassesReload(t *testing.T) {
 	}
 }
 
+// TestSDNotifyStatusReasonIsBoundedAndClean covers the status text that rides
+// in the completion datagram. It comes from configuration the operator
+// controls, so it is unbounded at the source, and READY travels in the same
+// datagram: an oversized or control-character-laden status would cost the
+// completion systemd is waiting on.
 func TestSDNotifyStatusReasonIsBoundedAndClean(t *testing.T) {
 	long := errors.New("rejected: " + strings.Repeat("configuration detail ", 200))
 	got := sdNotifyStatusReason(long)
@@ -295,6 +291,10 @@ func TestSDNotifyReloadCompleteAlwaysDeliversReady(t *testing.T) {
 	}
 }
 
+// TestStartupReadinessGate covers the gate the reload consumer waits on. It
+// has to answer "not yet" before readiness, hand out a channel that closes when
+// readiness is published, and tolerate a second publish: the shutdown path and
+// the readiness path can both reach it, and a plain close would panic.
 func TestStartupReadinessGate(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	if s.startupNotifiedAlready() {
@@ -413,5 +413,64 @@ func TestSDNotifyReloadCompleteRetriesReadyAlone(t *testing.T) {
 	sdNotifyReloadComplete(&stderr, errors.New("rejected: nothing will reach the socket"))
 	if got := strings.Count(stderr.String(), "systemd notification failed"); got != 2 {
 		t.Fatalf("stderr reported %d failures, want the combined send and the bare READY retry:\n%s", got, stderr.String())
+	}
+}
+
+// TestReloadWithoutSystemdIsUnchangedAndSilent covers every init system that
+// is not systemd -- s6, runit, OpenRC, sysvinit, and a plain foreground
+// process. All of them leave NOTIFY_SOCKET unset.
+//
+// The property is that startup readiness is published unconditionally rather
+// than only when a notify socket exists. The gate that holds a SIGHUP reload
+// waits on exactly that signal, so a readiness publication made conditional on
+// systemd would leave the gate shut forever on these hosts and silently stop
+// honouring SIGHUP everywhere except systemd. That is why this drives Start
+// rather than publishing readiness by hand: the call under test is the one
+// inside Start, and a test that marks readiness itself would pass either way.
+//
+// The notify calls themselves also stay quiet here: with no socket they are
+// no-ops with no error, so the host is never told a protocol it does not speak
+// has failed.
+func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", "")
+	var stderr bytes.Buffer
+	s, _ := newTestServer(t, func(opts *ServerOpts) {
+		opts.Listen = serverTestEphemeralListen
+		opts.ListenChanged = true
+	})
+	s.opts.Stderr = &stderr
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start(context.Background()) }()
+
+	deadline := time.After(10 * time.Second)
+	for !s.startupNotifiedAlready() {
+		select {
+		case <-deadline:
+			t.Fatal("startup readiness was never published on a host with no systemd, so the reload gate would never open")
+		case err := <-errCh:
+			t.Fatalf("Start returned early: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	waitForServerCancel(t, s)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return after shutdown")
+	}
+
+	// Ordinary startup and reload warnings are expected and are not what this
+	// asserts. What must never appear is a complaint about the systemd
+	// protocol, which this host does not speak.
+	if strings.Contains(stderr.String(), "systemd notification failed") {
+		t.Fatalf("a non-systemd init was told the systemd protocol failed: %q", stderr.String())
 	}
 }

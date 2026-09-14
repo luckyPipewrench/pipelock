@@ -82,3 +82,22 @@ func TestSessionKeyForFoldsRequestControlledNames(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionKeyForKeepsBoundAndSelfDeclaredIdentitySeparate(t *testing.T) {
+	const (
+		agent    = "agent-a"
+		clientIP = "192.0.2.10"
+	)
+
+	bound := sessionKeyFor(agent, clientIP, envelope.ActorAuthBound)
+	selfDeclared := sessionKeyFor(agent, clientIP, envelope.ActorAuthSelfDeclared)
+	if bound != agent+"|"+clientIP {
+		t.Fatalf("bound key = %q, want %q", bound, agent+"|"+clientIP)
+	}
+	if selfDeclared != clientIP {
+		t.Fatalf("self-declared key = %q, want client key %q", selfDeclared, clientIP)
+	}
+	if bound == selfDeclared {
+		t.Fatalf("bound and self-declared identities shared key %q", bound)
+	}
+}

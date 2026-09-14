@@ -69,6 +69,17 @@ func ReversibilityFromMethod(method string) Reversibility {
 // This is best-effort based on naming conventions. Returns unclassified
 // for tools that can't be categorized from name alone.
 func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
+	if mcpMethod == "tools/call" {
+		return classifyToolName(toolName)
+	}
+	return ClassifyMCPToolForAuthority(toolName, mcpMethod)
+}
+
+// ClassifyMCPToolForAuthority retains raw-name action matching for authority
+// grants. Presentation aliases and receipt-only vocabulary must not broaden
+// which tool identities an existing grant authorizes. Like the original
+// classifier, this is a naming heuristic, not proof of a tool's actual effects.
+func ClassifyMCPToolForAuthority(toolName, mcpMethod string) ActionType {
 	// tools/list is a read operation - listing available tools
 	if mcpMethod == "tools/list" || mcpMethod == "resources/list" || mcpMethod == "prompts/list" {
 		return ActionRead
@@ -84,7 +95,7 @@ func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
 
 	// tools/call - infer from tool name patterns
 	if mcpMethod == "tools/call" {
-		return classifyToolName(toolName)
+		return classifyToolNamePrefix(toolName)
 	}
 
 	return ActionUnclassified
@@ -114,12 +125,19 @@ func ClassifySessionAction(action session.ActionClass) ActionType {
 // classifyToolName attempts to classify an MCP tool call by name.
 // Uses common prefixes/keywords. Defaults to unclassified for unknown tools.
 func classifyToolName(name string) ActionType {
-	raw := classifyToolNamePrefix(name)
+	raw := classifyReceiptToolNamePrefix(name)
 	alias, ok := normalize.MCPToolNameAlias(name)
 	if !ok || alias == name {
 		return raw
 	}
-	return moreSideEffectingToolAction(raw, classifyToolNamePrefix(alias))
+	return moreSideEffectingToolAction(raw, classifyReceiptToolNamePrefix(alias))
+}
+
+func classifyReceiptToolNamePrefix(name string) ActionType {
+	if hasPrefix(name, "terminal") {
+		return ActionDelegate
+	}
+	return classifyToolNamePrefix(name)
 }
 
 // moreSideEffectingToolAction preserves a raw recognized name while avoiding
@@ -166,7 +184,7 @@ func classifyToolNamePrefix(name string) ActionType {
 	}
 
 	// Check for execution/delegation patterns
-	execPrefixes := []string{"run", "exec", "execute", "terminal", "spawn", "invoke", "call"}
+	execPrefixes := []string{"run", "exec", "execute", "spawn", "invoke", "call"}
 	for _, prefix := range execPrefixes {
 		if hasPrefix(name, prefix) {
 			return ActionDelegate

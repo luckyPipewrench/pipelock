@@ -28,6 +28,8 @@ func TestMCPToolNameAlias(t *testing.T) {
 		{name: "deceptive mcp suffix", input: "mcp__filesystem__write_file__extra", ok: false},
 		{name: "deceptive dot suffix", input: "filesystem.write_file.extra", ok: false},
 		{name: "deceptive colon suffix", input: "filesystem:write_file:extra", ok: false},
+		{name: "empty MCP tool", input: "mcp__filesystem__", ok: false},
+		{name: "mixed separators", input: "filesystem.write_file:extra", ok: false},
 		{name: "empty namespace", input: ".write_file", ok: false},
 		{name: "unicode namespace", input: "fílesystem.write_file", ok: false},
 	}

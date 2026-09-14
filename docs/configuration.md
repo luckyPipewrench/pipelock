@@ -1333,6 +1333,8 @@ Tool policy is a default-allow denylist: a rule describes the dangerous conditio
 
 Built-in rules and current presets include matching aliases for namespaced tool names. Custom `tool_pattern` expressions keep their regex semantics; upgrading the binary does not rewrite patterns already saved in YAML. To refresh an existing configuration, compare its tool-policy rules with the current preset and preserve any intentional local actions and argument constraints. Matching aliases do not change the tool name sent upstream or recorded as its identity.
 
+Receipt action classification also recognizes these aliases. Authority grants retain raw-name action matching: receipt alias inference does not broaden the tool identities an existing grant authorizes. Name-based classification is a heuristic, not proof of a tool's actual effects.
+
 Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
 
 ### Defer Action

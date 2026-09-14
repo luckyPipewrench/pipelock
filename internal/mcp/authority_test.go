@@ -49,11 +49,15 @@ func TestAuthorizeMCPNamespacedActionScope(t *testing.T) {
 		action receipt.ActionType
 	}{
 		{"read_file", receipt.ActionRead},
-		{"mcp__filesystem__read_file", receipt.ActionRead},
-		{"mcp__filesystem__write_file", receipt.ActionWrite},
-		{"filesystem.write_file", receipt.ActionWrite},
-		{"filesystem:write_file", receipt.ActionWrite},
-		{"mcp__console__terminal", receipt.ActionDelegate},
+		{"mcp__filesystem__read_file", receipt.ActionUnclassified},
+		{"mcp__filesystem__write_file", receipt.ActionUnclassified},
+		{"filesystem.write_file", receipt.ActionUnclassified},
+		{"filesystem:write_file", receipt.ActionUnclassified},
+		{"mcp__console__terminal", receipt.ActionUnclassified},
+		{"terminal", receipt.ActionUnclassified},
+		{"run_command", receipt.ActionDelegate},
+		{"mcpevilreadfile", receipt.ActionUnclassified},
+		{"evil.readfile", receipt.ActionUnclassified},
 		{"write_config.read_file", receipt.ActionWrite},
 		{"unknown", receipt.ActionUnclassified},
 	} {

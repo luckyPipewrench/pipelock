@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ceereason"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -313,13 +315,14 @@ type ceeRecordMCPOptions struct {
 // cross-request fragment DLP block. The operator log and audit record keep the
 // full reason, including the tuning knob, which the client must not learn.
 const (
-	ceeFragmentBlockClientReason = "cross-request exfiltration attempt blocked"
-	ceeEntropyBlockClientReason  = "cross-request entropy budget exceeded"
-	ceeCapacityBlockClientReason = "cross-request inspection capacity exhausted"
+	ceeFragmentBlockClientReason = ceereason.ClientFragmentMatch
+	ceeEntropyBlockClientReason  = ceereason.ClientEntropyBudget
+	ceeCapacityBlockClientReason = ceereason.ClientSessionCapacity
+	ceeOwnerMismatchClientReason = ceereason.ClientOwnerMismatch
 
-	ceeBlockKindEntropyBudget   = "entropy_budget"
-	ceeBlockKindSessionCapacity = "session_capacity"
-	ceeBlockKindOwnerMismatch   = "fragment_owner_mismatch"
+	ceeBlockKindEntropyBudget   = ceereason.KindEntropyBudget
+	ceeBlockKindSessionCapacity = ceereason.KindSessionCapacity
+	ceeBlockKindOwnerMismatch   = ceereason.KindOwnerMismatch
 )
 
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
@@ -461,7 +464,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if opts.blockKind != nil {
 					*opts.blockKind = ceeBlockKindOwnerMismatch
 				}
-				return reason
+				return ceeOwnerMismatchClientReason
 			}
 			if appendResult.CapacityExceeded {
 				if m != nil {

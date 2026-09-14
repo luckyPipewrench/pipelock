@@ -784,7 +784,7 @@ func TestCeeRecordMCP_OwnerMismatchFailsClosed(t *testing.T) {
 		t.Fatalf("seeding a foreign-owned stream = %+v, want admission", seeded)
 	}
 	reason := record()
-	if !strings.Contains(reason, "belongs to another identity") {
+	if reason != ceeOwnerMismatchClientReason {
 		t.Fatalf("reason = %q, want a fail-closed ownership block", reason)
 	}
 	if strings.Contains(reason, "max_sessions") {

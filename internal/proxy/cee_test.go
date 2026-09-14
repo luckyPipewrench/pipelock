@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ceereason"
+
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -395,7 +397,7 @@ func TestCEEFragmentOwnerMismatchFailsClosed(t *testing.T) {
 	if !result.Blocked {
 		t.Fatalf("foreign-owned stream = %+v, want fail-closed block", result)
 	}
-	if !strings.Contains(result.Reason, "belongs to another identity") {
+	if result.Reason != ceereason.ClientOwnerMismatch {
 		t.Fatalf("reason = %q, want it to name the ownership conflict", result.Reason)
 	}
 	// The remedy must not point at a tunable: no configuration permits blending

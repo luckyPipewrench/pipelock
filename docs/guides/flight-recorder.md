@@ -186,11 +186,11 @@ Because the recorder is on by default, two footguns are bounded by the defaults 
 
 ### Completeness anchor (transcript root)
 
-On a **clean shutdown** the recorder seals that writer's chain with a `transcript_root` entry: a single record naming the final sequence number and the chain's root hash. This is the per-writer completeness anchor — `verify-receipt --chain` can confirm the selected chain reached the sealed root rather than reporting a chain that was silently truncated at the tail as VALID.
+On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence.
 
 Scope and limits:
 
-- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). A `SIGKILL` (or power loss) terminates the process before the seal runs, so the tail is truncated with no root. Detecting that case requires an external/periodic anchor and is not closed here.
+- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). An unsealed recorder is reported as incomplete by `--whole-recorder`; this can mean the recorder is still running or that its tail was truncated. The root cannot prove that a trailing checkpoint written after the root is present.
 - **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start by the same writer resumes emission into the same hash-linked chain (a continuous per-writer chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
 - **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query, verification, and dashboard paths. Those content-read paths stay bounded so a truncated scan cannot be mistaken for complete evidence. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
@@ -599,22 +599,21 @@ pipelock init
 #    writer's hash-linked chain under flight_recorder.dir.
 pipelock run --config /etc/pipelock/pipelock.yaml
 
-# 3. Stop it cleanly (Ctrl-C / SIGTERM). Graceful shutdown seals that writer's
-#    chain with a transcript_root completeness anchor; a SIGKILL skips the seal
-#    and leaves the tail unsealed (verification then reports no root rather
-#    than VALID).
+# 3. Stop it cleanly (Ctrl-C / SIGTERM). Graceful shutdown writes a
+#    transcript_root receipt commitment; a SIGKILL skips the seal and leaves
+#    the recorder unsealed (--whole-recorder then reports INCOMPLETE).
 
 # 4. Verify the retained writer chain offline with the public-key sidecar. Use
 #    the dir and .pub path that step 1 wrote into your config.
-pipelock verify-receipt --chain /var/lib/pipelock/evidence \
+pipelock verify-receipt --whole-recorder --chain /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
 ```
 
-`--chain` walks the selected session's evidence files in the directory (across
-rotations and restarts), checks `prev_hash` linkage and sequence continuity,
-verifies each signature against the pinned key, and confirms the sealed
-`transcript_root`. If the writer chain rotated its signing key, pass each public
-key with a repeated `--key`. Because JSONL shards are preserved, this remains a
-full local writer-chain check unless an operator has explicitly pruned or moved
+`--whole-recorder --chain` walks the selected session's evidence files in the directory (across
+rotations and restarts), checks every recorder entry's hash linkage and taxonomy,
+verifies each receipt signature against the pinned key, and confirms the sealed
+`transcript_root` receipt commitment. Entries after that root (including the trailing checkpoint) are not covered by the seal. If the writer chain rotated its signing key, pass each public
+key with a repeated `--key`. Because JSONL shards are preserved, this verifies
+every retained writer entry unless an operator has explicitly pruned or moved
 shards. Copy evidence to external storage before manual pruning if you need
 full-history offline verification later.

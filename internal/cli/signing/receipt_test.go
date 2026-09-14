@@ -867,6 +867,240 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 	return "", nil
 }
 
+func buildSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "test-chain-hash", Principal: "test", Actor: "test"})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Record(recorder.Entry{SessionID: "proxy", Type: "decision", Transport: "fetch", Summary: "operational decision"}); err != nil {
+		t.Fatalf("Record operational entry: %v", err)
+	}
+	if err := emitter.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: "allow", Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/data"}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := emitter.EmitTranscriptRoot("proxy"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".jsonl") {
+			return filepath.Join(dir, file.Name()), priv.Public().(ed25519.PublicKey)
+		}
+	}
+	t.Fatal("no JSONL file found")
+	return "", nil
+}
+
+func TestVerifyReceiptCmd_WholeRecorderRejectsOperationalTampering(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONL(t)
+	original, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte) []byte
+	}{
+		{
+			name: "delete operational entry",
+			mutate: func(data []byte) []byte {
+				var kept []string
+				for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+					if strings.Contains(line, `"type":"decision"`) {
+						continue
+					}
+					kept = append(kept, line)
+				}
+				return []byte(strings.Join(kept, "\n") + "\n")
+			},
+		},
+		{
+			name: "edit operational summary",
+			mutate: func(data []byte) []byte {
+				return bytes.Replace(data, []byte("operational decision"), []byte("altered operational data"), 1)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutatedPath := filepath.Join(t.TempDir(), "evidence.jsonl")
+			if err := os.WriteFile(mutatedPath, tc.mutate(original), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			key := hex.EncodeToString(pub)
+			defaultCmd := VerifyReceiptCmd()
+			var defaultOut bytes.Buffer
+			defaultCmd.SetOut(&defaultOut)
+			defaultCmd.SetArgs([]string{mutatedPath, "--key", key})
+			if err := defaultCmd.Execute(); err != nil {
+				t.Fatalf("default receipt-chain verification: %v\n%s", err, defaultOut.String())
+			}
+			if !strings.Contains(defaultOut.String(), "CHAIN VALID") {
+				t.Fatalf("default output missing CHAIN VALID:\n%s", defaultOut.String())
+			}
+			wholeCmd := VerifyReceiptCmd()
+			var wholeOut bytes.Buffer
+			wholeCmd.SetOut(&wholeOut)
+			wholeCmd.SetArgs([]string{mutatedPath, "--whole-recorder", "--key", key})
+			if err := wholeCmd.Execute(); err == nil {
+				t.Fatalf("whole-recorder accepted operational tampering:\n%s", wholeOut.String())
+			}
+		})
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderSealAndIncompleteStates(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONL(t)
+	key := hex.EncodeToString(pub)
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{path, "--whole-recorder", "--key", key})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("whole-recorder sealed verification: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"Mode:      whole-recorder", "hash-chain-verified and in-taxonomy", "Seal:      sealed at seq", "entries after the seal"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("whole-recorder output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	dirCmd := VerifyReceiptCmd()
+	var dirOut bytes.Buffer
+	dirCmd.SetOut(&dirOut)
+	dirCmd.SetArgs([]string{"--whole-recorder", "--chain", filepath.Dir(path), "--key", key})
+	if err := dirCmd.Execute(); err != nil {
+		t.Fatalf("whole-recorder directory verification: %v\n%s", err, dirOut.String())
+	}
+	if !strings.Contains(dirOut.String(), "WHOLE-RECORDER") {
+		t.Fatalf("whole-recorder directory output:\n%s", dirOut.String())
+	}
+
+	unsealedPath, unsealedPub := buildChainJSONL(t, 1)
+	cmd = VerifyReceiptCmd()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{unsealedPath, "--whole-recorder", "--key", hex.EncodeToString(unsealedPub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "INCOMPLETE: no transcript_root seal") {
+		t.Fatalf("unsealed whole-recorder result err=%v output:\n%s", err, out.String())
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	dir, pub := buildSealedRestartRecorderDir(t, 1, 1)
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("whole-recorder restart-chain verification: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("whole-recorder restart-chain output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderRejectsSealMismatchAndRawReceiptJSONL(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONL(t)
+	entries, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	for i := range entries {
+		if entries[i].Type == "transcript_root" {
+			detail, ok := entries[i].Detail.(map[string]any)
+			if !ok {
+				t.Fatalf("transcript root detail type = %T", entries[i].Detail)
+			}
+			detail["root_hash"] = strings.Repeat("0", 64)
+		}
+		if i > 0 {
+			entries[i].PrevHash = entries[i-1].Hash
+		}
+		entries[i].RawDetail = nil
+		entries[i].Hash = recorder.ComputeHash(entries[i])
+	}
+	var rewritten strings.Builder
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("Marshal entry: %v", err)
+		}
+		rewritten.Write(data)
+		rewritten.WriteByte('\n')
+	}
+	mismatchPath := filepath.Join(t.TempDir(), "seal-mismatch.jsonl")
+	if err := os.WriteFile(mismatchPath, []byte(rewritten.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{mismatchPath, "--whole-recorder", "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "SEAL MISMATCH") {
+		t.Fatalf("seal mismatch result err=%v output:\n%s", err, out.String())
+	}
+
+	rawSource, rawPub := buildChainJSONL(t, 1)
+	receipts, err := receipt.ExtractReceipts(rawSource)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+	var raw strings.Builder
+	for _, r := range receipts {
+		data, err := receipt.Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal receipt: %v", err)
+		}
+		raw.Write(data)
+		raw.WriteByte('\n')
+	}
+	rawPath := filepath.Join(t.TempDir(), "receipts.jsonl")
+	if err := os.WriteFile(rawPath, []byte(raw.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile raw receipts: %v", err)
+	}
+	cmd = VerifyReceiptCmd()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{rawPath, "--key", hex.EncodeToString(rawPub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("default raw receipt JSONL verification: %v\n%s", err, out.String())
+	}
+	cmd = VerifyReceiptCmd()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{rawPath, "--whole-recorder", "--key", hex.EncodeToString(rawPub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "not a recorder file") {
+		t.Fatalf("whole-recorder raw JSONL error=%v, want not a recorder file", err)
+	}
+}
+
 func buildDeferredCleanChainJSONL(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
 
@@ -998,6 +1232,38 @@ func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKe
 		}
 	}
 
+	return dir, pub
+}
+
+func buildSealedRestartRecorderDir(t *testing.T, counts ...int) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	for i, count := range counts {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, MaxEntriesPerFile: 1}, nil, priv)
+		if err != nil {
+			t.Fatalf("recorder.New[%d]: %v", i, err)
+		}
+		emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "test-chain-hash", Principal: "test", Actor: "test"})
+		if err := emitter.EmitSessionOpen(); err != nil {
+			t.Fatalf("EmitSessionOpen[%d]: %v", i, err)
+		}
+		for j := range count {
+			if err := emitter.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: "allow", Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/restart/" + string(rune('a'+j))}); err != nil {
+				t.Fatalf("Emit[%d][%d]: %v", i, j, err)
+			}
+		}
+		if err := emitter.EmitTranscriptRoot("proxy"); err != nil {
+			t.Fatalf("EmitTranscriptRoot[%d]: %v", i, err)
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close[%d]: %v", i, err)
+		}
+	}
 	return dir, pub
 }
 

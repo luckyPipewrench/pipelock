@@ -196,6 +196,12 @@ Chain verification checks:
   object may carry advisory forward-compatible metadata, and it never
   contributes to a verified claim.
 
+By default, this verifies the receipt subsequence only. To verify every present
+flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
+entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
+`transcript_root`, and returns non-zero for an unsealed recorder. The seal does not
+cover entries written after it, including the trailing checkpoint.
+
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
 the key is what proves the chain came from a signer you trust.

@@ -1010,28 +1010,54 @@ func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	return extractRawReceiptsJSONLBytes(data)
 }
 
+// WholeRecorderResult describes a verified recorder file or selected recorder
+// session. Its receipts are the action-receipt subsequence; EntryCount counts
+// every recorder entry that was hash-chain-verified and accepted by taxonomy.
+type WholeRecorderResult struct {
+	Receipts   []Receipt
+	EntryCount int
+}
+
+// VerifyWholeRecorderEntries verifies every supplied recorder entry before
+// extracting its action receipts. It proves every entry present is chained and
+// in the known taxonomy; like any append-only hash chain, it does not prove the
+// file is complete.
+func VerifyWholeRecorderEntries(entries []recorder.Entry) (WholeRecorderResult, error) {
+	for _, e := range entries {
+		if !knownRecorderEntryType(e.Type) {
+			return WholeRecorderResult{}, fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
+		}
+	}
+	if err := recorder.VerifyChain(entries); err != nil {
+		return WholeRecorderResult{}, fmt.Errorf("recorder hash chain: %w", err)
+	}
+	receipts, err := extractReceiptsFromEntries(entries)
+	if err != nil {
+		return WholeRecorderResult{}, err
+	}
+	return WholeRecorderResult{Receipts: receipts, EntryCount: len(entries)}, nil
+}
+
 // ExtractAndVerifyWholeRecorderBytes is the WHOLE-RECORDER mode of the two-mode
 // extraction contract. Where ExtractReceiptsBytes (receipt-chain mode) returns
 // only the receipt subsequence, this mode additionally verifies the recorder
 // hash chain over EVERY entry (recorder.VerifyChain) and rejects any entry
 // whose Type is outside the recorder taxonomy. A nil error therefore certifies
-// whole-file integrity, not merely that the extracted receipts form a valid
-// chain. It does not use the raw-receipt-JSONL compatibility fallback: whole
-// recorder verification requires real recorder entries.
+// that every entry present is chained and in the known taxonomy, not merely
+// that the extracted receipts form a valid chain. It does not prove that no
+// entries were removed from the tail. It does not use the raw-receipt-JSONL
+// compatibility fallback: whole recorder verification requires real recorder
+// entries.
 func ExtractAndVerifyWholeRecorderBytes(data []byte) ([]Receipt, error) {
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("reading entries: %w", err)
 	}
-	for _, e := range entries {
-		if !knownRecorderEntryType(e.Type) {
-			return nil, fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
-		}
+	result, err := VerifyWholeRecorderEntries(entries)
+	if err != nil {
+		return nil, err
 	}
-	if err := recorder.VerifyChain(entries); err != nil {
-		return nil, fmt.Errorf("recorder hash chain: %w", err)
-	}
-	return extractReceiptsFromEntries(entries)
+	return result.Receipts, nil
 }
 
 // ExtractReceiptsWithSessionID reads a flight recorder JSONL file and returns

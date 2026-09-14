@@ -128,6 +128,21 @@ func TestDoctorChainStructureReader(t *testing.T) {
 	if res := reader(context.Background()); res.status != statusUnknown {
 		t.Fatalf("unscoped accept structure = (%q, %q), want unknown", res.status, res.detail)
 	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return "", 1, errors.New("nft: command not found")
+	}
+	if res := reader(context.Background()); res.status != statusUnknown || !strings.Contains(res.detail, "could not be read") {
+		t.Fatalf("unreadable chain structure = (%q, %q), want unknown could-not-be-read", res.status, res.detail)
+	}
+}
+
+func TestCheckManagedChainStructure_NilReaderIsUnknown(t *testing.T) {
+	env := newDoctorEnv(t, func([]string) (string, int, error) { return "200", 0, nil })
+	env.chainStructure = nil
+	if res := checkManagedChainStructure(context.Background(), env); res.status != statusUnknown {
+		t.Fatalf("nil reader = (%q, %q), want unknown", res.status, res.detail)
+	}
 }
 
 // argsContain reports whether the joined args contain every needle.

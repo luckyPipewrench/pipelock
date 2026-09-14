@@ -2438,6 +2438,16 @@ func TestChainHasManagedOutputBaseChain(t *testing.T) {
 	}
 }
 
+func TestContainmentBypassError_NamesTheRule(t *testing.T) {
+	err := &containmentBypassError{rule: "meta skuid 987 accept"}
+	if got := err.Error(); !strings.Contains(got, "meta skuid 987 accept") || !strings.Contains(got, "bypasses managed catch-all DROP") {
+		t.Fatalf("Error() = %q, want the rule and the bypass wording", got)
+	}
+	if rule, ok := definiteContainmentBypassRule(fmt.Errorf("wrapped: %w", err)); !ok || rule != "meta skuid 987 accept" {
+		t.Fatalf("definiteContainmentBypassRule(wrapped) = (%q, %v), want the rule through errors.As", rule, ok)
+	}
+}
+
 func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	const agentUID = 987
 	lines := []string{

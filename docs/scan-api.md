@@ -63,7 +63,7 @@ Returns `401` if missing or invalid.
 
 `tool_call` is an explicit on-demand scan request. It does not inherit the inline MCP proxy's `mcp_input_scanning.enabled` gate; that gate controls live MCP proxy traffic, not the Scan API. Disable API access to this kind with `scan_api.kinds.tool_call: false`.
 
-A matched tool-policy `action: warn` returns `decision: "warn"`: the live MCP proxy would forward the call and emit an audit event. `block`, `redirect`, and `defer` return `decision: "deny"` because this evaluation-only endpoint cannot block-and-replace or hold the call; unknown and empty actions also fail closed to `deny`.
+A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and injection scans of the arguments were clean: the live MCP proxy would forward the call and emit an audit event. A decision only escalates, so a DLP or injection finding keeps `deny` even when the policy match is `warn`. `block`, `redirect`, and `defer` return `decision: "deny"` because this evaluation-only endpoint cannot block-and-replace or hold the call; unknown and empty actions also fail closed to `deny`.
 
 **Wire detail:** argument extraction pulls all JSON string values, object keys, and stringified numbers and booleans. An agent can exfiltrate secrets as JSON keys or numeric values, so all leaf types are scanned.
 
@@ -81,7 +81,7 @@ A matched tool-policy `action: warn` returns `decision: "warn"`: the live MCP pr
 
 | Field | Behavior |
 |-------|----------|
-| `request_id` | Echoed in the response only in the post-scan path (allow, deny, timeout, cancel). Not echoed on any pre-scan error, including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) that do populate `kind`. The `request_id` copy happens after `executeScan` returns, not after parsing. |
+| `request_id` | Echoed in the response only in the post-scan path (allow, warn, deny, timeout, cancel). Not echoed on any pre-scan error, including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) that do populate `kind`. The `request_id` copy happens after `executeScan` returns, not after parsing. |
 | `session_id` | Accepted metadata. Not used or echoed by the current handler. Reserved for future session-scoped scanning. |
 | `agent_name` | Accepted metadata. Not used or echoed by the current handler. Reserved for future per-agent policy resolution. |
 
@@ -112,7 +112,7 @@ A matched tool-policy `action: warn` returns `decision: "warn"`: the live MCP pr
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | `completed` or `error`. |
-| `decision` | string | `allow`, `warn`, or `deny`. Present when `status` is `completed`. Absent on errors. `warn` is additive: a matching `mcp_tool_policy` rule with `action: warn` would be forwarded by the live MCP proxy with an audit event, so this API reports `warn` rather than `deny`. Consumers that need to fail on warnings must opt into that policy themselves. |
+| `decision` | string | `allow`, `warn`, or `deny`. Present when `status` is `completed`. Absent on errors. `warn` is additive: a matching `mcp_tool_policy` rule with `action: warn` would be forwarded by the live MCP proxy with an audit event, so this API reports `warn` rather than `deny` unless an earlier DLP or injection finding already decided `deny`. Consumers that need to fail on warnings must opt into that policy themselves. |
 | `kind` | string | Echoes the request kind. Populated at two handler phases: (1) post-parse validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) include `kind` because the body has been decoded. (2) Post-scan responses (allow, warn, deny, timeout, cancel) include `kind`. Empty on pre-parse errors: 401, 405, 429, 503 (kill switch), `read_error`, `body_too_large`, and `invalid_json` — including trailing-data cases where the body contained a valid kind. |
 | `scan_id` | string | Unique per-scan ID. Format: `scan-` + 16 lowercase hex characters (64 bits from crypto/rand). Example: `scan-a1b2c3d4e5f67890`. |
 | `request_id` | string | Echoed from `context.request_id` only in the post-`executeScan` path (allow, warn, deny, timeout, cancel). Absent on all pre-scan errors including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) — those errors have `kind` but not `request_id` because `request_id` is copied after the scan, not after parsing. |

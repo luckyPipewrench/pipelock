@@ -519,7 +519,9 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 	// Sidecars are deleted only after the restored config is committed to
 	// disk. A failure before this point leaves the wrapped config in place
 	// with its sidecars still readable, so the operator can retry.
-	_ = applySidecarOps(sidecarOps)
+	if err := applySidecarOps(sidecarOps); err != nil {
+		return fmt.Errorf("configuration was restored but sidecar cleanup failed: %w", err)
+	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Unwrapped %d server(s) in %s\n", unwrapped, targetPath)
 	if unwrapped > 0 {

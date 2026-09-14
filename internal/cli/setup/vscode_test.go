@@ -1845,6 +1845,50 @@ func TestVscodeRemove_DryRunPreservesSidecar(t *testing.T) {
 	}
 }
 
+func TestVscodeRemove_ReportsSidecarDeleteFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(vsDir, "mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(testHTTPConfigSecretHeader), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	installCmd := VscodeCmd()
+	installCmd.SetArgs([]string{"install", "--project"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	files := listVscodeSidecarFiles(t, home)
+	if len(files) != 1 {
+		t.Fatalf("expected one sidecar after install, got %d (%v)", len(files), files)
+	}
+	sidecarPath := filepath.Join(home, ".config", "pipelock", "wrap-headers", files[0])
+	if err := os.Remove(sidecarPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sidecarPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sidecarPath, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	removeCmd := VscodeCmd()
+	removeCmd.SetArgs([]string{"remove", "--project"})
+	err := removeCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "configuration was restored but sidecar cleanup failed") {
+		t.Fatalf("remove error = %v, want sidecar cleanup failure", err)
+	}
+}
+
 // TestHeaderSidecarPath_DistinguishesSanitizedNameCollisions locks in that
 // attacker-controlled server names cannot collide after path-component
 // sanitization. Without the raw-name hash, "prod/api" and "prod_api" would

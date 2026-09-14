@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1504,7 +1506,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Restrict child process environment to safe variables only.
 	// Prevents leaking secrets from the proxy's environment to the MCP server.
 	// Extra env vars from --env flags are appended (user explicitly opted in).
-	cmd.Env = append(safeEnv(), extraEnv...)
+	cmd.Env = mergeChildEnv(safeEnv(), extraEnv)
 
 	serverIn, err := cmd.StdinPipe()
 	if err != nil {
@@ -2069,12 +2071,12 @@ func IsSafeEnvKey(key string) bool {
 // Proxy-related vars are checked case-insensitively since different runtimes
 // (Go, Node.js, Python, curl) honor different casings.
 func IsDangerousEnvKey(key string) bool {
-	if dangerousEnvKeys[key] {
+	upper := strings.ToUpper(key)
+	if dangerousEnvKeys[upper] {
 		return true
 	}
 	// Case-insensitive catch-all for proxy vars. Covers mixed-case forms
 	// like Http_Proxy that some runtimes (notably Node.js) honor.
-	upper := strings.ToUpper(key)
 	return strings.HasSuffix(upper, "_PROXY")
 }
 
@@ -2088,6 +2090,53 @@ func safeEnv() []string {
 		}
 	}
 	return env
+}
+
+func mergeChildEnv(base, overrides []string) []string {
+	return mergeChildEnvForOS(base, overrides, runtime.GOOS)
+}
+
+const windowsOS = "windows"
+
+func mergeChildEnvForOS(base, overrides []string, goos string) []string {
+	values := make(map[string]string, len(base)+len(overrides))
+	for _, entry := range append(append([]string(nil), base...), overrides...) {
+		key, value, ok := splitChildEnvEntry(entry, goos)
+		identity := key
+		if goos == windowsOS {
+			identity = strings.ToUpper(key)
+		}
+		if !ok {
+			identity = entry
+			if goos == windowsOS {
+				identity = strings.ToUpper(entry)
+			}
+			delete(values, identity)
+			continue
+		}
+		values[identity] = identity + "=" + value
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, values[key])
+	}
+	return result
+}
+
+func splitChildEnvEntry(entry, goos string) (string, string, bool) {
+	if goos == windowsOS && strings.HasPrefix(entry, "=") {
+		if separator := strings.Index(entry[1:], "="); separator >= 0 {
+			separator++
+			return entry[:separator], entry[separator+1:], true
+		}
+		return entry, "", false
+	}
+	return strings.Cut(entry, "=")
 }
 
 // VerifyBinaryIntegrity checks the command binary against a hash manifest

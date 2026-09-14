@@ -339,7 +339,7 @@ func TestCommitHeaderSidecar_ParentFileFailsWithoutReplacement(t *testing.T) {
 		t.Fatal("sidecar write unexpectedly traversed a regular file")
 	}
 	assertFileBytes(t, parent, []byte("operator data"))
-	removeHeaderSidecar("")
+	_ = removeHeaderSidecar("")
 }
 
 func TestManifestNameAndEndpointBoundaries(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2366,6 +2367,26 @@ func TestRunProxy_ExtraEnvPassedToChild(t *testing.T) {
 	}
 }
 
+func TestMergeChildEnvOverridesAndDeletesSafeValues(t *testing.T) {
+	got := mergeChildEnv([]string{"PATH=/safe", "HOME=/home"}, []string{"PATH=/resolved", "HOME", "TOKEN=value"})
+	want := []string{"PATH=/resolved", "TOKEN=value"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mergeChildEnv() = %#v, want %#v", got, want)
+	}
+}
+
+func TestMergeChildEnvWindowsKeysAreCaseInsensitive(t *testing.T) {
+	got := mergeChildEnvForOS(
+		[]string{"Path=C:\\Windows", "HOME=base", "=C:=C:\\cwd", "=D:=D:\\cwd"},
+		[]string{"PATH=C:\\tools", "home", "=C:=C:\\new"},
+		osWindows,
+	)
+	want := []string{"=C:=C:\\new", "=D:=D:\\cwd", "PATH=C:\\tools"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mergeChildEnvForOS() = %#v, want %#v", got, want)
+	}
+}
+
 func TestRunProxy_ExtraEnvDoesNotLeakWithout(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("env subprocess test requires unix")
@@ -2399,6 +2420,7 @@ func TestIsDangerousEnvKey_BlocksCodeInjection(t *testing.T) {
 		"PERL5OPT", "RUBYOPT", "BASH_ENV",
 		"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
 		"GIT_ASKPASS",
+		"node_options", "Ld_PrElOaD", "git_askpass",
 	}
 	for _, key := range dangerous {
 		if !IsDangerousEnvKey(key) {

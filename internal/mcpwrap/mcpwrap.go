@@ -8,9 +8,8 @@
 // The wrap is config-format agnostic: it operates on a single decoded server
 // entry (map[string]interface{}) using the conventional MCP fields
 // (command/args/env for stdio, url/headers for HTTP). The same engine backs
-// pipelock's VS Code, Cursor, Cline, OpenCode, Zed, and Hermes integrations -
-// the only per-integration difference is how each config file is read,
-// serialized, and where its server map lives.
+// the VS Code and Hermes integrations. Other installers remain on their legacy
+// helpers until their host-specific behavior has parity tests.
 //
 // Credential safety: HTTP servers carrying auth `headers` never have those
 // values placed on the wrapped argv (which would expose them via
@@ -24,9 +23,9 @@
 // on dry-run). This keeps the credential carrier's lifecycle consistent with
 // the config that references it even when a later step fails.
 //
-// Migration status: the VS Code / Cline / OpenCode / Zed / JetBrains installers
-// under internal/cli/setup predate this package and still carry their own copy
-// of the wrap logic. Moving them onto this package - one installer family at a
+// Migration status: the Cline / OpenCode / Zed / JetBrains installers under
+// internal/cli/setup predate this package and still carry copies of the wrap
+// logic. Moving them onto this package - one installer family at a
 // time, gated by golden parity tests that compare wrapped JSON, metadata, and
 // sidecar output against the existing implementation - is tracked as a focused
 // follow-up so a feature did not have to depend on a broad installer refactor.
@@ -37,6 +36,7 @@
 package mcpwrap
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -121,6 +121,8 @@ const (
 	FieldURL      = "url"
 	FieldHeaders  = "headers"
 	FieldType     = "type"
+	FieldEnv      = "env"
+	FieldEnvFile  = "envFile"
 	FieldPipelock = "_pipelock"
 )
 
@@ -130,9 +132,13 @@ const (
 const TypeStdio = "stdio"
 
 const (
-	flagHeaderFile = "--header-file"
-	flagUpstream   = "--upstream"
-	flagConfig     = "--config"
+	flagHeaderFile     = "--header-file"
+	flagUpstream       = "--upstream"
+	flagConfig         = "--config"
+	flagEnvCarrier     = "--env-carrier"
+	flagEnvUnset       = "--env-unset"
+	flagEnvFileCarrier = "--env-file-carrier"
+	flagHeaderCarrier  = "--header-carrier"
 )
 
 // typeHTTPInferred is the transport label WrapServer assigns internally when a
@@ -157,14 +163,19 @@ const typeHTTPInferred = "http"
 // omitempty preserves backward compatibility with rosters wrapped before these
 // fields existed.
 type Meta struct {
-	OriginalType      string            `json:"original_type"`
-	TypeOmitted       bool              `json:"type_omitted,omitempty"`
-	OriginalCommand   string            `json:"original_command,omitempty"`
-	OriginalArgs      []string          `json:"original_args,omitempty"`
-	ArgsPresent       bool              `json:"args_present,omitempty"`
-	OriginalURL       string            `json:"original_url,omitempty"`
-	OriginalHeaders   map[string]string `json:"original_headers,omitempty"`
-	HeaderSidecarPath string            `json:"header_sidecar_path,omitempty"`
+	SchemaVersion     int                    `json:"schema_version,omitempty"`
+	OriginalType      string                 `json:"original_type"`
+	TypeOmitted       bool                   `json:"type_omitted,omitempty"`
+	OriginalCommand   string                 `json:"original_command,omitempty"`
+	OriginalArgs      []string               `json:"original_args,omitempty"`
+	ArgsPresent       bool                   `json:"args_present,omitempty"`
+	OriginalURL       string                 `json:"original_url,omitempty"`
+	OriginalHeaders   map[string]string      `json:"original_headers,omitempty"`
+	HeaderSidecarPath string                 `json:"header_sidecar_path,omitempty"`
+	OriginalEnv       map[string]interface{} `json:"original_env,omitempty"`
+	EnvPresent        bool                   `json:"env_present,omitempty"`
+	OriginalEnvFile   string                 `json:"original_env_file,omitempty"`
+	EnvFilePresent    bool                   `json:"env_file_present,omitempty"`
 }
 
 // IsWrapped reports whether a server entry already carries pipelock metadata.
@@ -198,6 +209,18 @@ func IsHTTPType(t string) bool { return t != TypeStdio && t != "" }
 //     these hosts infer from the `command` key - so no field foreign to the
 //     host's schema is introduced.
 func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *Meta, *SidecarOp, error) {
+	return wrapServer(server, exe, configFile, targetConfigPath, serverName, false)
+}
+
+// WrapServerForVSCode preserves VS Code's launch-time substitutions without
+// exposing child environment values to the Pipelock process itself. The host
+// resolves values into neutral carrier variables; the runtime maps them to the
+// child or upstream only after its own startup checks have completed.
+func WrapServerForVSCode(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *Meta, *SidecarOp, error) {
+	return wrapServer(server, exe, configFile, targetConfigPath, serverName, true)
+}
+
+func wrapServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string, runtimeResolve bool) (map[string]interface{}, *Meta, *SidecarOp, error) {
 	server, err := recoverForeignServer(server)
 	if err != nil {
 		return nil, nil, nil, err
@@ -224,6 +247,10 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 		switch k {
 		case FieldCommand, FieldArgs, FieldURL, FieldHeaders, FieldType:
 			// Replaced below.
+		case FieldEnv, FieldEnvFile:
+			if !runtimeResolve {
+				result[k] = v
+			}
 		default:
 			result[k] = v
 		}
@@ -236,6 +263,43 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 	// explicit additions, so without them the child server loses the env vars
 	// the host (IDE/agent) set for it.
 	envFlags := BuildEnvFlags(server)
+	if runtimeResolve {
+		if rawEnv, present := server[FieldEnv]; present {
+			env, ok := rawEnv.(map[string]interface{})
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("env has non-object value of type %T", rawEnv)
+			}
+			meta.EnvPresent = true
+			for key := range env {
+				if key == "" || strings.ContainsAny(key, "=\x00") {
+					return nil, nil, nil, fmt.Errorf("env key %q is not a valid child environment variable name", key)
+				}
+				switch env[key].(type) {
+				case nil, string, float64:
+				default:
+					return nil, nil, nil, fmt.Errorf("env value for %q has unsupported type %T", key, env[key])
+				}
+			}
+		}
+		if raw, present := server[FieldEnvFile]; present {
+			if _, ok := raw.(string); !ok {
+				return nil, nil, nil, fmt.Errorf("envFile has non-string value of type %T", raw)
+			}
+		}
+		meta.SchemaVersion = 2
+		var carrierEnv map[string]interface{}
+		envFlags, carrierEnv = buildVSCodeEnvCarriers(server, serverName, meta)
+		if len(carrierEnv) > 0 {
+			result[FieldEnv] = carrierEnv
+		}
+		if serverType != TypeStdio {
+			// HTTP transports have no child environment. Keep only carriers
+			// introduced below for dynamic headers; resolving env/envFile here
+			// would make an irrelevant missing file block the upstream.
+			envFlags = nil
+			delete(result, FieldEnv)
+		}
+	}
 
 	switch serverType {
 	case TypeStdio:
@@ -308,6 +372,10 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 			sidecarFlags []string
 			plan         *SidecarOp
 		)
+		var headerCarrierFlags []string
+		if runtimeResolve {
+			headerLines, headerCarrierFlags = splitVSCodeHeaders(headerLines, serverName, result)
+		}
 		if len(headerLines) > 0 {
 			path, err := headerSidecarPath(targetConfigPath, serverName)
 			if err != nil {
@@ -326,6 +394,7 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 		}
 		args = append(args, envFlags...)
 		args = append(args, sidecarFlags...)
+		args = append(args, headerCarrierFlags...)
 		args = append(args, flagUpstream, originalURL)
 
 		if !typeOmitted {
@@ -335,6 +404,69 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 		result[FieldArgs] = args
 		return result, meta, plan, nil
 	}
+}
+
+func carrierName(serverName, kind, target string) string {
+	sum := sha256.Sum256([]byte(serverName + "\x00" + kind + "\x00" + target))
+	return fmt.Sprintf("PIPELOCK_VSCODE_%s_%X", strings.ToUpper(kind), sum[:10])
+}
+
+func buildVSCodeEnvCarriers(server map[string]interface{}, serverName string, meta *Meta) ([]string, map[string]interface{}) {
+	var flags []string
+	carriers := make(map[string]interface{})
+	if env, ok := server[FieldEnv].(map[string]interface{}); ok {
+		meta.OriginalEnv = env
+		keys := make([]string, 0, len(env))
+		for key := range env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if env[key] == nil {
+				flags = append(flags, flagEnvUnset, key)
+				continue
+			}
+			carrier := carrierName(serverName, "env", key)
+			carriers[carrier] = env[key]
+			flags = append(flags, flagEnvCarrier, key+"="+carrier)
+		}
+	}
+	if raw, present := server[FieldEnvFile]; present {
+		meta.EnvFilePresent = true
+		path := raw.(string)
+		meta.OriginalEnvFile = path
+		carrier := carrierName(serverName, "envfile", "path")
+		carriers[carrier] = path
+		flags = append(flags, flagEnvFileCarrier, carrier)
+	}
+	if len(carriers) == 0 {
+		return flags, nil
+	}
+	return flags, carriers
+}
+
+func splitVSCodeHeaders(lines []string, serverName string, result map[string]interface{}) ([]string, []string) {
+	literal := make([]string, 0, len(lines))
+	carrierEnv, _ := result[FieldEnv].(map[string]interface{})
+	if carrierEnv == nil {
+		carrierEnv = make(map[string]interface{})
+	}
+	var flags []string
+	for _, line := range lines {
+		key, value, _ := strings.Cut(line, ":")
+		value = strings.TrimLeft(value, " \t")
+		if !strings.Contains(value, "${") {
+			literal = append(literal, line)
+			continue
+		}
+		carrier := carrierName(serverName, "header", key)
+		carrierEnv[carrier] = value
+		flags = append(flags, flagHeaderCarrier, key+"="+carrier)
+	}
+	if len(carrierEnv) > 0 {
+		result[FieldEnv] = carrierEnv
+	}
+	return literal, flags
 }
 
 // UnwrapServer restores a server from its pipelock metadata. The returned
@@ -378,6 +510,10 @@ func UnwrapServer(server map[string]interface{}, targetConfigPath, serverName st
 		switch k {
 		case FieldCommand, FieldArgs, FieldURL, FieldHeaders, FieldType, FieldPipelock:
 			// Replaced/removed below.
+		case FieldEnv, FieldEnvFile:
+			if meta.SchemaVersion < 2 {
+				result[k] = v
+			}
 		default:
 			result[k] = v
 		}
@@ -427,6 +563,16 @@ func UnwrapServer(server map[string]interface{}, targetConfigPath, serverName st
 			}
 			result[FieldHeaders] = headers
 		}
+	}
+	if meta.EnvPresent || meta.OriginalEnv != nil {
+		if meta.OriginalEnv == nil {
+			result[FieldEnv] = map[string]interface{}{}
+		} else {
+			result[FieldEnv] = meta.OriginalEnv
+		}
+	}
+	if meta.EnvFilePresent {
+		result[FieldEnvFile] = meta.OriginalEnvFile
 	}
 
 	return result, plan, nil

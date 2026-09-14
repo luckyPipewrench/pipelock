@@ -1744,7 +1744,7 @@ func TestParseHeaderFlags(t *testing.T) {
 // without this the agent had no way to send Authorization: Bearer ... through
 // pipelock's --upstream stdio bridge).
 func TestMcpProxyCmd_HTTPUpstreamForwardsExtraHeaders(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PIPELOCK_VSCODE_HEADER_TEST", "default,git")
 
 	var (
 		captureOnce      sync.Once
@@ -1803,7 +1803,7 @@ func TestMcpProxyCmd_HTTPUpstreamForwardsExtraHeaders(t *testing.T) {
 		"--config", configPath,
 		"--upstream", srv.URL,
 		"--header", "Authorization: Bearer fake-pat",
-		"--header", "X-MCP-Toolsets: default,git",
+		"--header-carrier", "X-MCP-Toolsets=PIPELOCK_VSCODE_HEADER_TEST",
 	})
 	if err != nil {
 		t.Fatalf("run mcp proxy http upstream with headers: %v\nstderr:\n%s", err, stderr)

@@ -748,7 +748,11 @@ func mcpProxyCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *co
 	var upstreamURL string
 	var listenAddr string
 	var envVars []string
+	var envCarriers []string
+	var envUnset []string
+	var envFileCarrier string
 	var rawHeaders []string
+	var headerCarriers []string
 	var headerFile string
 	var agentName string
 	var serverName string
@@ -837,6 +841,14 @@ Key-free evidence capture:
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
 			hasUpstream := upstreamURL != ""
 			hasListen := listenAddr != ""
+			resolvedHeaders, err := resolveHeaderCarriers(headerCarriers)
+			if err != nil {
+				return err
+			}
+			resolvedEnv, err := resolveChildEnvironment(envFileCarrier, envCarriers, envUnset)
+			if err != nil {
+				return err
+			}
 
 			// Mutual exclusion validation.
 			if hasUpstream && hasSubprocess {
@@ -1377,6 +1389,7 @@ Key-free evidence capture:
 				}
 				mergedHeaders := append([]string{}, fileHeaders...)
 				mergedHeaders = append(mergedHeaders, rawHeaders...)
+				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
 				extraHeaders, headerErr := parseHeaderFlags(mergedHeaders)
 				if headerErr != nil {
 					return headerErr
@@ -1571,7 +1584,7 @@ Key-free evidence capture:
 			// KEY without value: pass through from current environment.
 			// KEY=VALUE: set explicitly.
 			// Empty keys, safe-list keys, and dangerous keys are rejected.
-			var extraEnv []string
+			extraEnv := append([]string(nil), resolvedEnv...)
 			for _, e := range envVars {
 				key, _, hasValue := strings.Cut(e, "=")
 				if key == "" {
@@ -1956,7 +1969,11 @@ Key-free evidence capture:
 	cmd.Flags().StringArrayVar(&listenerAllowedOrigins, "listener-allowed-origin", nil, "browser Origin allowed to call the HTTP listener (repeatable, exact serialized origin)")
 	cmd.Flags().BoolVar(&listenerAllowUnauthenticated, "listener-allow-unauthenticated", false, "explicitly allow a non-loopback listener without authentication (network-policy-isolated deployments only)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
+	cmd.Flags().StringArrayVar(&envCarriers, "env-carrier", nil, "map a host-resolved carrier into the child environment (TARGET=CARRIER, repeatable)")
+	cmd.Flags().StringArrayVar(&envUnset, "env-unset", nil, "remove an environment variable from the child environment (repeatable)")
+	cmd.Flags().StringVar(&envFileCarrier, "env-file-carrier", "", "host-resolved carrier containing a VS Code envFile path")
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
+	cmd.Flags().StringArrayVar(&headerCarriers, "header-carrier", nil, "map a host-resolved carrier into an upstream header (HEADER=CARRIER, repeatable)")
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'")

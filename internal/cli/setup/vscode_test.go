@@ -185,25 +185,28 @@ func TestVscodeInstall_StdioServer(t *testing.T) {
 		t.Errorf("expected original command 'npx' after '--', got %q", args[dashIdx+1])
 	}
 
-	// --env flags should be present before "--" for passthrough.
+	// VS Code resolves the original value into a neutral carrier; Pipelock
+	// maps that carrier into the child only after startup.
 	foundEnvFlag := false
+	var carrier string
 	for i, a := range args {
-		if a == "--env" && i+1 < len(args) && args[i+1] == "MY_VAR" {
+		if a == "--env-carrier" && i+1 < len(args) && strings.HasPrefix(args[i+1], "MY_VAR=") {
 			foundEnvFlag = true
+			carrier = strings.TrimPrefix(args[i+1], "MY_VAR=")
 			break
 		}
 	}
 	if !foundEnvFlag {
-		t.Errorf("expected --env MY_VAR flag in args for env passthrough: %v", args)
+		t.Errorf("expected --env-carrier MY_VAR mapping in args: %v", args)
 	}
 
-	// Env block should be preserved in JSON.
+	// Only the neutral carrier is exposed to the Pipelock wrapper.
 	env, ok := server["env"].(map[string]interface{})
 	if !ok {
-		t.Fatal("env not preserved")
+		t.Fatal("carrier env missing")
 	}
-	if env["MY_VAR"] != "test" {
-		t.Errorf("expected env key preserved, got %v", env["MY_VAR"])
+	if env[carrier] != "test" || env["MY_VAR"] != nil {
+		t.Errorf("unexpected carrier env: %v", env)
 	}
 }
 
@@ -339,6 +342,178 @@ func TestVscodeInstall_Idempotent(t *testing.T) {
 
 	if string(first) != string(second) {
 		t.Error("second install changed the file (not idempotent)")
+	}
+}
+
+func TestVscodeInstallMigratesLegacySelfWrapper(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := map[string]interface{}{"type": "stdio", "command": "node", "env": map[string]interface{}{"SETTING": "${input:value}"}}
+	legacy, meta, _, err := wrapVscodeServer(source, exe, "", filepath.Join(vsDir, "mcp.json"), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy["_pipelock"] = meta
+	data, err := json.Marshal(map[string]interface{}{"servers": map[string]interface{}{"server": legacy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+	cmd := VscodeCmd()
+	cmd.SetArgs([]string{"install", "--project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg vscodeMCPConfig
+	if err := json.Unmarshal(updated, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	parsed, ok := cfg.Servers["server"]["_pipelock"].(map[string]interface{})
+	if !ok || parsed["schema_version"] != float64(2) {
+		t.Fatalf("migrated metadata = %+v", parsed)
+	}
+	if _, exposed := cfg.Servers["server"]["env"].(map[string]interface{})["SETTING"]; exposed {
+		t.Fatal("original child variable remained on Pipelock wrapper")
+	}
+	args := interfaceSliceToStrings(cfg.Servers["server"]["args"].([]interface{}))
+	carrierMapping := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--env-carrier" && strings.HasPrefix(args[i+1], "SETTING=") {
+			carrierMapping = args[i+1]
+			break
+		}
+	}
+	_, carrierName, ok := strings.Cut(carrierMapping, "=")
+	if !ok || carrierName == "" {
+		t.Fatalf("missing exact SETTING carrier mapping in args: %v", args)
+	}
+	if got := cfg.Servers["server"]["env"].(map[string]interface{})[carrierName]; got != "${input:value}" {
+		t.Fatalf("carrier %q = %#v, want original input reference", carrierName, got)
+	}
+}
+
+func TestVscodeInstallMigratesLegacyHTTPSidecarTransactionally(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		seedSidecar bool
+	}{
+		{name: "changed existing sidecar", seedSidecar: true},
+		{name: "missing old sidecar", seedSidecar: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := t.TempDir()
+			vsDir := filepath.Join(dir, ".vscode")
+			if err := os.MkdirAll(vsDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(vsDir, "mcp.json")
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := map[string]interface{}{
+				"type": "http",
+				"url":  testExampleURL,
+				"headers": map[string]interface{}{
+					"Authorization": "${input:value}",
+					"X-Literal":     "fixed",
+				},
+			}
+			legacy, meta, plan, err := wrapVscodeServer(source, exe, "", target, "server")
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy["_pipelock"] = meta
+			data, err := json.Marshal(map[string]interface{}{"servers": map[string]interface{}{"server": legacy}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.seedSidecar {
+				if err := applySidecarOps([]sidecarOp{*plan}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chdirTemp(t, dir)
+			cmd := VscodeCmd()
+			cmd.SetArgs([]string{"install", "--project"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(filepath.Clean(plan.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != "X-Literal: fixed\n" {
+				t.Fatalf("replacement sidecar = %q", body)
+			}
+		})
+	}
+}
+
+func TestVscodeInstallLegacyHTTPSidecarReadFailureLeavesState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(vsDir, "mcp.json")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := map[string]interface{}{"type": "http", "url": testExampleURL, "headers": map[string]interface{}{"X-Literal": "fixed"}}
+	legacy, meta, plan, err := wrapVscodeServer(source, exe, "", target, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy["_pipelock"] = meta
+	data, err := json.Marshal(map[string]interface{}{"servers": map[string]interface{}{"server": legacy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(plan.path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+	cmd := VscodeCmd()
+	cmd.SetArgs([]string{"install", "--project"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "reading existing legacy header sidecar") {
+		t.Fatalf("install error = %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, data) {
+		t.Fatal("failed migration changed the original config")
+	}
+	if info, err := os.Stat(plan.path); err != nil || !info.IsDir() {
+		t.Fatalf("failed migration changed unreadable sidecar: info=%v err=%v", info, err)
 	}
 }
 
@@ -1864,6 +2039,19 @@ func TestApplySidecarOps_DeletesNeverRollBackWrites(t *testing.T) {
 	}
 }
 
+func TestApplySidecarOpsReportsDeleteFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sidecar")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySidecarOps([]sidecarOp{{kind: sidecarOpDelete, path: dir}}); err == nil {
+		t.Fatal("delete failure was not reported")
+	}
+}
+
 // TestRollbackSidecarWrites_DeletesAllWrites locks in that the rollback
 // helper invoked when the canonical config write fails removes every
 // sidecar from the plan, leaving no orphaned credential files behind.
@@ -1899,5 +2087,27 @@ func TestRollbackSidecarWrites_DeletesAllWrites(t *testing.T) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("sidecar %q survived rollback (err=%v)", p, err)
 		}
+	}
+}
+
+func TestRollbackSidecarWritesRestoresReplacedContent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := headerSidecarPath(filepath.Join(home, "mcp.json"), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("Authorization: old\n")
+	op := sidecarOp{kind: sidecarOpWrite, path: path, body: []byte("X-Literal: fixed\n"), rollbackBody: original}
+	if err := applySidecarOps([]sidecarOp{op}); err != nil {
+		t.Fatal(err)
+	}
+	rollbackSidecarWrites([]sidecarOp{op})
+	body, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, original) {
+		t.Fatalf("restored sidecar = %q, want %q", body, original)
 	}
 }

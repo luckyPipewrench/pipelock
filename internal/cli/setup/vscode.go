@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	sharedmcpwrap "github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 // discoverConfigForWrap returns the configFile to pass into the wrapped MCP
@@ -69,6 +70,9 @@ type sidecarOp struct {
 	path string
 	// body is the file content, only populated when kind == "write".
 	body []byte
+	// rollbackBody restores an existing sidecar when a later config commit
+	// fails. A nil value means rollback should remove the newly-created file.
+	rollbackBody []byte
 }
 
 const (
@@ -82,19 +86,20 @@ const (
 // plan. Delete ops are best-effort (absent paths return nil from
 // removeHeaderSidecar) so they cannot trigger the rollback path.
 func applySidecarOps(ops []sidecarOp) error {
-	written := make([]string, 0, len(ops))
+	written := make([]sidecarOp, 0, len(ops))
 	for _, op := range ops {
 		switch op.kind {
 		case sidecarOpWrite:
 			if err := commitHeaderSidecar(op.path, op.body); err != nil {
-				for _, p := range written {
-					removeHeaderSidecar(p)
-				}
+				rollbackSidecarWrites(written)
 				return err
 			}
-			written = append(written, op.path)
+			written = append(written, op)
 		case sidecarOpDelete:
-			removeHeaderSidecar(op.path)
+			if err := removeHeaderSidecar(op.path); err != nil {
+				rollbackSidecarWrites(written)
+				return err
+			}
 		}
 	}
 	return nil
@@ -106,7 +111,11 @@ func applySidecarOps(ops []sidecarOp) error {
 func rollbackSidecarWrites(ops []sidecarOp) {
 	for _, op := range ops {
 		if op.kind == sidecarOpWrite {
-			removeHeaderSidecar(op.path)
+			if op.rollbackBody != nil {
+				_ = commitHeaderSidecar(op.path, op.rollbackBody)
+			} else {
+				_ = removeHeaderSidecar(op.path)
+			}
 		}
 	}
 }
@@ -305,14 +314,26 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 	wrapped := 0
 	skipped := 0
 	var sidecarOps []sidecarOp
+	var legacyCleanupOps []sidecarOp
 	for name, server := range mcpCfg.Servers {
+		var oldPlan *sharedmcpwrap.SidecarOp
 		if isWrappedBySelf(server) {
-			skipped++
-			continue
+			meta, ok, metaErr := sharedmcpwrap.ParseMeta(server)
+			if metaErr != nil {
+				return fmt.Errorf("server %q: %w", name, metaErr)
+			}
+			if ok && meta.SchemaVersion >= 2 {
+				skipped++
+				continue
+			}
+			server, oldPlan, metaErr = sharedmcpwrap.UnwrapServer(server, targetPath, name)
+			if metaErr != nil {
+				return fmt.Errorf("server %q: migrating existing wrapper: %w", name, metaErr)
+			}
 		}
 		warnForeignWrapper(cmd.ErrOrStderr(), name, server)
 
-		newServer, meta, plan, err := wrapVscodeServer(server, exe, configFile, targetPath, name)
+		newServer, meta, sharedPlan, err := sharedmcpwrap.WrapServerForVSCode(server, exe, configFile, targetPath, name)
 		if err != nil {
 			if isNormalizationFailure(err) {
 				return fmt.Errorf("server %q: %w", name, err)
@@ -333,8 +354,32 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 		newServer["_pipelock"] = metaMap
 
 		mcpCfg.Servers[name] = newServer
-		if plan != nil {
-			sidecarOps = append(sidecarOps, *plan)
+		deferLegacyDelete := false
+		sameSidecarPath := oldPlan != nil && sharedPlan != nil && oldPlan.Path() == sharedPlan.Path()
+		if sharedPlan != nil {
+			plan := sidecarOp{path: sharedPlan.Path(), body: sharedPlan.Body()}
+			if sharedPlan.IsWrite() {
+				plan.kind = sidecarOpWrite
+			} else {
+				plan.kind = sidecarOpDelete
+			}
+			if sameSidecarPath && sharedPlan.IsWrite() {
+				existingSidecar, readSidecarErr := os.ReadFile(filepath.Clean(sharedPlan.Path()))
+				if readSidecarErr == nil {
+					plan.rollbackBody = existingSidecar
+				} else if !errors.Is(readSidecarErr, os.ErrNotExist) {
+					return fmt.Errorf("server %q: reading existing legacy header sidecar: %w", name, readSidecarErr)
+				}
+			}
+			if sameSidecarPath && !sharedPlan.IsWrite() {
+				deferLegacyDelete = true
+			}
+			if !deferLegacyDelete {
+				sidecarOps = append(sidecarOps, plan)
+			}
+		}
+		if oldPlan != nil && (!sameSidecarPath || deferLegacyDelete) {
+			legacyCleanupOps = append(legacyCleanupOps, sidecarOp{kind: sidecarOpDelete, path: oldPlan.Path()})
 		}
 		wrapped++
 	}
@@ -381,6 +426,9 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 		rollbackSidecarWrites(sidecarOps)
 		return err
 	}
+	if err := applySidecarOps(legacyCleanupOps); err != nil {
+		return fmt.Errorf("configuration updated, but removing a legacy header sidecar failed; remove it manually and retry: %w", err)
+	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrapped %d server(s) in %s (%d already wrapped)\n", wrapped, targetPath, skipped)
 	if wrapped > 0 {
@@ -423,15 +471,21 @@ func runVscodeRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 			continue
 		}
 
-		restored, plan, err := unwrapVscodeServer(server, targetPath, name)
+		restored, sharedPlan, err := sharedmcpwrap.UnwrapServer(server, targetPath, name)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap %q: %v\n", name, err)
 			continue
 		}
 
 		mcpCfg.Servers[name] = restored
-		if plan != nil {
-			sidecarOps = append(sidecarOps, *plan)
+		if sharedPlan != nil {
+			plan := sidecarOp{path: sharedPlan.Path(), body: sharedPlan.Body()}
+			if sharedPlan.IsWrite() {
+				plan.kind = sidecarOpWrite
+			} else {
+				plan.kind = sidecarOpDelete
+			}
+			sidecarOps = append(sidecarOps, plan)
 		}
 		unwrapped++
 	}
@@ -914,13 +968,17 @@ func commitHeaderSidecar(path string, body []byte) error {
 	return nil
 }
 
-// removeHeaderSidecar deletes the sidecar file. Best-effort; absent paths
-// or already-deleted files are not surfaced as errors.
-func removeHeaderSidecar(path string) {
+// removeHeaderSidecar deletes the sidecar file. Absent paths are already
+// clean; other failures are returned so credential-bearing files do not linger
+// without an operator-visible error.
+func removeHeaderSidecar(path string) error {
 	if path == "" {
-		return
+		return nil
 	}
-	_ = os.Remove(filepath.Clean(path))
+	if err := os.Remove(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing header sidecar: %w", err)
+	}
+	return nil
 }
 
 func validateSetupHeader(key, value string) error {

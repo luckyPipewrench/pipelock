@@ -1166,8 +1166,9 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run containment probes against the containment model",
-		Long: `Run fifteen probes to verify the workstation containment model
-is installed correctly and the boundary is intact.
+		Long: `Run fifteen fixed probes to verify the workstation containment model
+is installed correctly and the boundary is intact. A conditional workspace
+probe runs as a sixteenth result when workspace paths or grants are present.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
 wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY

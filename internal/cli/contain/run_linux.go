@@ -33,14 +33,14 @@ var runContainedAgentCommand = func(cmd *exec.Cmd) error {
 
 var (
 	containedAgentSystemdStatus = func(ctx context.Context, unit string) (string, error) {
-		cmd := exec.CommandContext(ctx, "systemctl")
-		cmd.Args = []string{"systemctl", "show", unit, "--property=ExecMainCode", "--property=ExecMainStatus", "--value"}
+		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl")
+		cmd.Args = []string{"/usr/bin/systemctl", "show", unit, "--property=ExecMainCode", "--property=ExecMainStatus", "--value"}
 		out, err := cmd.Output()
 		return string(out), err
 	}
 	containedAgentSystemdCleanup = func(ctx context.Context, unit string) {
-		cmd := exec.CommandContext(ctx, "systemctl")
-		cmd.Args = []string{"systemctl", "reset-failed", unit}
+		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl")
+		cmd.Args = []string{"/usr/bin/systemctl", "reset-failed", unit}
 		_ = cmd.Run()
 	}
 )

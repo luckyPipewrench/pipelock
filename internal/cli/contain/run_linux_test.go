@@ -12,7 +12,6 @@ import (
 	"io"
 	"os/exec"
 	"os/user"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -157,7 +156,7 @@ func TestLaunchContainedAgent_RunsVerifiedCommandAsAgent(t *testing.T) {
 	if got == nil {
 		t.Fatal("runner was not called")
 	}
-	if filepath.Base(got.Path) != systemdRunPath {
+	if got.Path != systemdRunPath {
 		t.Fatalf("path = %q, want %q executable", got.Path, systemdRunPath)
 	}
 	if !strings.Contains(strings.Join(got.Args, " "), "--property=PrivateTmp=true") {
@@ -380,7 +379,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 		t.Fatal("systemd unit name is empty")
 	}
 
-	if filepath.Base(cmd.Path) != systemdRunPath {
+	if cmd.Path != systemdRunPath {
 		t.Fatalf("path = %q, want %q executable", cmd.Path, systemdRunPath)
 	}
 	args := strings.Join(cmd.Args, " ")

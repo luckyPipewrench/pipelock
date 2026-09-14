@@ -650,6 +650,40 @@ func TestProxy_RunShieldPipeline_NonHTML(t *testing.T) {
 	}
 }
 
+func TestProxy_RunShieldPipeline_LegacyJavaScriptMediaType(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	headers := http.Header{}
+	body := []byte(`const safeValue = 1; fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")`)
+
+	result := runShieldTestPipeline(p, body, "application/ecmascript; charset=utf-8", headers, cfg)
+	if string(result) == string(body) {
+		t.Fatal("legacy JavaScript media type should run the shield rewrite pipeline")
+	}
+	if strings.Contains(string(result), "chrome-extension://") {
+		t.Fatal("legacy JavaScript media type left extension probe intact")
+	}
+	if !strings.Contains(string(result), "const safeValue = 1;") {
+		t.Fatal("legacy JavaScript media type lost harmless script content")
+	}
+}
+
+func TestProxy_RunShieldPipeline_UnknownSpecificTypeUntouched(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	headers := http.Header{}
+	body := []byte(`fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")`)
+
+	result := runShieldTestPipeline(p, body, "application/example", headers, cfg)
+	if string(result) != string(body) {
+		t.Fatal("unknown specific media type should remain outside the shield pipeline")
+	}
+}
+
 func TestProxy_RunShieldPipeline_CSPNonce(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)

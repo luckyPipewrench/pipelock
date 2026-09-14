@@ -96,6 +96,52 @@ func TestDetectPipeline(t *testing.T) {
 	}
 }
 
+func TestRFC9239JavaScriptMediaTypes(t *testing.T) {
+	// This literal table is intentionally independent from mediaTypeToPipeline.
+	// RFC 9239 section 6 defines these registrations as JavaScript aliases.
+	mediaTypes := []string{
+		"text/javascript",
+		"application/javascript",
+		"application/x-javascript",
+		"text/javascript1.0",
+		"text/javascript1.1",
+		"text/javascript1.2",
+		"text/javascript1.3",
+		"text/javascript1.4",
+		"text/javascript1.5",
+		"text/jscript",
+		"text/livescript",
+		"text/ecmascript",
+		"application/ecmascript",
+		"application/x-ecmascript",
+		"text/x-ecmascript",
+		"text/x-javascript",
+	}
+
+	for _, mediaType := range mediaTypes {
+		t.Run(mediaType, func(t *testing.T) {
+			if got := mediaTypeToPipeline(mediaType); got != PipelineJS {
+				t.Errorf("mediaTypeToPipeline(%q) = %d, want PipelineJS", mediaType, got)
+			}
+		})
+	}
+
+	for _, contentType := range []string{
+		"application/ecmascript; charset=utf-8",
+		"APPLICATION/ECMASCRIPT; charset=utf-8",
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			if got := DetectPipeline(contentType, nil); got != PipelineJS {
+				t.Errorf("DetectPipeline(%q, nil) = %d, want PipelineJS", contentType, got)
+			}
+		})
+	}
+
+	if got := DetectPipeline("application/example", []byte("var browserGate = true")); got != PipelineNone {
+		t.Errorf("DetectPipeline unknown specific type = %d, want PipelineNone", got)
+	}
+}
+
 func TestRewrite_NilConfig(t *testing.T) {
 	e := NewEngine(nil)
 	res := e.Rewrite("<html><head></head></html>", PipelineHTML, nil)

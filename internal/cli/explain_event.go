@@ -365,6 +365,13 @@ func explainEventPartialResponse(raw map[string]any, eventName, action string) b
 	if nestedEventBool(raw, "shield", "partial") {
 		return true
 	}
+	if shieldFields, ok := raw["shield"].(map[string]any); ok {
+		body, bodyOK := shieldFields["body_bytes"].(float64)
+		scanned, scannedOK := shieldFields["scanned_bytes"].(float64)
+		if bodyOK && scannedOK && scanned < body {
+			return true
+		}
+	}
 	if strings.Contains(strings.ToLower(eventFieldString(raw, "effect")), "stream unscanned") {
 		return true
 	}

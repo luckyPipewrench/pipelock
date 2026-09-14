@@ -90,6 +90,10 @@ func TestExplainEventCmd_ExplainsRecordedResponseOutcomes(t *testing.T) {
 		`{"action_id":"act-shield","request_id":"req-shield","verdict":"allow","layer":"browser_shield","shield":{"body_bytes":4096,"scanned_bytes":1024,"partial":true}}`,
 		`{"action_id":"act-malformed","request_id":"req-malformed","verdict":"allow","layer":"browser_shield","shield":{"partial":"true"}}`,
 		`{"action_id":"act-blocked-partial","verdict":"block","layer":"browser_shield","shield":{"partial":true}}`,
+		`{"action_id":"act-counts-omitted","verdict":"allow","shield":{"body_bytes":4096,"scanned_bytes":1024}}`,
+		`{"action_id":"act-counts-false","verdict":"allow","shield":{"body_bytes":4096,"scanned_bytes":1024,"partial":false}}`,
+		`{"action_id":"act-counts-complete","verdict":"allow","shield":{"body_bytes":4096,"scanned_bytes":4096}}`,
+		`{"action_id":"act-counts-blocked","verdict":"block","shield":{"body_bytes":4096,"scanned_bytes":1024}}`,
 		`{"action_id":"act-invalid-count","verdict":"allow","layer":"browser_shield","shield":{"partial":true,"body_bytes":"password=placeholder","scanned_bytes":10}}`,
 		`{"event":"response_scan","request_id":"req-unknown","url":"https://api.vendor.example/response","scanner":"response_scan","action":"ask"}`,
 	}
@@ -111,6 +115,10 @@ func TestExplainEventCmd_ExplainsRecordedResponseOutcomes(t *testing.T) {
 		{id: "act-shield", outcome: explainEventOutcomePartial, contains: []string{"1024 of 4096", "not a clean full-response verdict"}},
 		{id: "act-malformed", outcome: "", contains: []string{"recorded outcome is unknown"}},
 		{id: "act-blocked-partial", outcome: explainEventOutcomeBlocked},
+		{id: "act-counts-omitted", outcome: explainEventOutcomePartial, contains: []string{"1024 of 4096"}},
+		{id: "act-counts-false", outcome: explainEventOutcomePartial, contains: []string{"1024 of 4096"}},
+		{id: "act-counts-complete", outcome: explainEventOutcomeAllowed},
+		{id: "act-counts-blocked", outcome: explainEventOutcomeBlocked},
 		{id: "act-invalid-count", outcome: "", contains: []string{"recorded outcome is unknown"}},
 		{id: "req-unknown", outcome: "", contains: []string{"recorded outcome is unknown"}},
 	}

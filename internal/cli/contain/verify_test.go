@@ -2464,15 +2464,61 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 		"meta skuid 12345 accept",
 		"ip daddr 10.0.0.0/8 accept",
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+		"meta skuid 987 log level accept",
+		"meta skuid 987 level info accept",
+		"meta skuid 987 prefix \"x\" accept",
 	} {
 		if _, ok := agentUIDBareAcceptBeforeDrop([]string{line, "meta skuid 987 drop"}, agentUID); ok {
 			t.Fatalf("foreign or constrained rule classified as definite bypass: %q", line)
 		}
 	}
 
+	// nft log options only change what is logged; the rule still admits every
+	// agent packet, so each of these stays a definite bypass.
+	for _, line := range []string{
+		"meta skuid 987 log accept",
+		"meta skuid 987 log level info accept",
+		"meta skuid 987 log prefix \"agent \" level warn flags all accept",
+		"meta skuid 987 log group 2 queue-threshold 10 snaplen 64 accept",
+		"meta skuid 987 counter packets 0 bytes 0 log level debug accept comment \"x\"",
+	} {
+		if _, ok := agentUIDBareAcceptBeforeDrop([]string{line, "meta skuid 987 drop"}, agentUID); !ok {
+			t.Fatalf("logged bare agent accept not classified as definite bypass: %q", line)
+		}
+	}
+
 	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
 		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
+	}
+}
+
+// TestProbeNFTContainment_BypassOutranksMissingCanonicalRules pins the check
+// order: a chain that both lacks a canonical rule and admits every agent
+// packet must report the bypass, not the missing rule, or the doctor would
+// downgrade a definite hole to an inconclusive structural result.
+func TestProbeNFTContainment_BypassOutranksMissingCanonicalRules(t *testing.T) {
+	for _, missing := range []string{
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+		"meta skuid 987 udp dport 53 counter log prefix \"pipelock-contain class=direct_dns_blocked \" drop",
+		"meta skuid 987 tcp dport 53 counter log prefix \"pipelock-contain class=direct_dns_blocked \" drop",
+	} {
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.operatorUser = testOperatorUser
+			e.lookupUser = containTestLookup
+			e.nftRulesPath = ""
+			e.nftPersistUnitPath = ""
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				out := strings.Replace(goodNFTContainmentOutput, "\t\t"+missing+"\n", "", 1)
+				out = strings.Replace(out, "\t\tmeta skuid 987 drop\n",
+					"\t\tmeta skuid 987 accept\n\t\tmeta skuid 987 drop\n", 1)
+				return out, 0, nil
+			}
+		})
+		status, detail := probeNFTContainment(context.Background(), env)
+		if status != statusFail || !strings.Contains(detail, containmentBypassDetailPrefix) {
+			t.Fatalf("missing %q: probe = (%q, %q), want the definite bypass reported first", missing, status, detail)
+		}
 	}
 }
 

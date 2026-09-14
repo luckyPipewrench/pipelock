@@ -1529,6 +1529,12 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
 	}
+	// A definite bypass outranks every missing canonical rule: reporting
+	// "DNS drop rule missing" for a chain that also admits all agent traffic
+	// would let the doctor downgrade the hole to an inconclusive result.
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
+	}
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
@@ -1537,9 +1543,6 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
-	}
-	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
@@ -2006,15 +2009,35 @@ func indexTokenAfter(fields []string, want string, start int) int {
 
 // fieldsAreNFTBookkeeping accepts only counter and log tokens between the
 // managed rule's UID predicate and DROP verdict.
+// nftLogOptionsWithValue lists the `log` statement options nft renders with one
+// following argument (nft(8), "LOG STATEMENT"). They change what gets logged,
+// never whether a packet matches, so a rule that carries them is still a bare
+// agent-UID accept.
+var nftLogOptionsWithValue = map[string]struct{}{
+	"level": {}, "flags": {}, "group": {}, "queue-threshold": {}, "snaplen": {},
+}
+
 func fieldsAreNFTBookkeeping(fields []string) bool {
 	inPrefix := false
 	seenCounter := false
+	seenLog := false
 	expectCount := false
+	expectLogValue := false
 	for _, field := range fields {
 		if inPrefix {
 			if strings.HasSuffix(field, `"`) {
 				inPrefix = false
 			}
+			continue
+		}
+		if expectLogValue {
+			// A log option's single argument: a level name, flag word,
+			// or number. Only its presence matters here.
+			expectLogValue = false
+			continue
+		}
+		if _, isLogOption := nftLogOptionsWithValue[field]; isLogOption && seenLog {
+			expectLogValue = true
 			continue
 		}
 		if expectCount {
@@ -2031,19 +2054,22 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 		case "counter":
 			seenCounter = true
 		case "log":
-			continue
+			seenLog = true
 		case "packets", "bytes":
 			if !seenCounter {
 				return false
 			}
 			expectCount = true
 		case "prefix":
+			if !seenLog {
+				return false
+			}
 			inPrefix = true
 		default:
 			return false
 		}
 	}
-	return !inPrefix && !expectCount
+	return !inPrefix && !expectCount && !expectLogValue
 }
 
 func nftRuleTailIsCommentOnly(fields []string) bool {

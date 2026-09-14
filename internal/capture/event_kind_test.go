@@ -271,6 +271,47 @@ func TestObserveCEEVerdict_StampsEventKind(t *testing.T) {
 	}
 }
 
+func TestObserveCEEVerdict_PersistsInspectionEvidence(t *testing.T) {
+	tests := []struct {
+		name           string
+		inspectionMode string
+		fallbackReason string
+	}{
+		{name: "partitioned request", inspectionMode: "partitioned"},
+		{name: "malformed body fallback", inspectionMode: "raw", fallbackReason: "malformed_json"},
+		{name: "entropy-only block", inspectionMode: "raw"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, dir := newEventKindTestWriter(t)
+			w.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+				Subsurface:      testSubsurface,
+				Transport:       testTransport,
+				SessionID:       testSessionID,
+				RequestID:       ekTestRequestID,
+				ConfigHash:      testConfigHash,
+				TransformKind:   capture.TransformCEEWindow,
+				EffectiveAction: testVerdictAllow,
+				Outcome:         capture.OutcomeClean,
+				InspectionMode:  tt.inspectionMode,
+				FallbackReason:  tt.fallbackReason,
+			})
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			_, summary := readCaptureSummary(t, dir)
+			if summary.InspectionMode != tt.inspectionMode {
+				t.Errorf("InspectionMode = %q, want %q", summary.InspectionMode, tt.inspectionMode)
+			}
+			if summary.FallbackReason != tt.fallbackReason {
+				t.Errorf("FallbackReason = %q, want %q", summary.FallbackReason, tt.fallbackReason)
+			}
+		})
+	}
+}
+
 // TestObserveToolPolicyVerdict_StampsEventKind asserts tool policy
 // observations stamp event_kind="tool_policy".
 func TestObserveToolPolicyVerdict_StampsEventKind(t *testing.T) {

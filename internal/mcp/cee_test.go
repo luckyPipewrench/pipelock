@@ -902,17 +902,26 @@ func TestCeeRecordMCP_EntropyUsesFragmentPayloadAndSkipsEmptyPath(t *testing.T) 
 	}, metrics.New())
 	t.Cleanup(cee.Close)
 
+	inspectionMode, blockKind := "", ""
 	reason := ceeRecordMCP(ceeRecordMCPOptions{
 		sessionKey: testMCPSessionKey,
 		fragmentPayloads: map[string][]byte{
 			"$/empty": nil,
 			"$/value": []byte("entropy"),
 		},
-		cee:  cee,
-		logW: &bytes.Buffer{},
+		cee:            cee,
+		logW:           &bytes.Buffer{},
+		inspectionMode: &inspectionMode,
+		blockKind:      &blockKind,
 	})
-	if !strings.Contains(reason, "entropy budget exceeded") {
-		t.Fatalf("reason = %q, want entropy budget block", reason)
+	if reason != ceeEntropyBlockClientReason {
+		t.Fatalf("reason = %q, want %q", reason, ceeEntropyBlockClientReason)
+	}
+	if inspectionMode != "raw" {
+		t.Fatalf("inspection mode = %q, want raw for entropy-only inspection", inspectionMode)
+	}
+	if blockKind != ceeBlockKindEntropyBudget {
+		t.Fatalf("block kind = %q, want %q", blockKind, ceeBlockKindEntropyBudget)
 	}
 }
 
@@ -1173,11 +1182,8 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 	reason := ceeRecordMCP(ceeRecordMCPOptions{
 		sessionKey: testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
 	})
-	if !strings.Contains(reason, "fragment session capacity exhausted") {
-		t.Fatalf("capacity reason = %q, want visible fail-closed denial", reason)
-	}
-	if !strings.Contains(reason, "cross_request_detection.fragment_reassembly.max_sessions") {
-		t.Fatalf("capacity reason = %q, want the consulted capacity setting", reason)
+	if reason != ceeCapacityBlockClientReason {
+		t.Fatalf("capacity reason = %q, want %q", reason, ceeCapacityBlockClientReason)
 	}
 	logger.Close()
 	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
@@ -1186,6 +1192,9 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 	}
 	if !bytes.Contains(auditRaw, []byte("cross_request_fragment_capacity")) {
 		t.Fatalf("capacity audit = %s, want blocking event", auditRaw)
+	}
+	if !bytes.Contains(auditRaw, []byte("cross_request_detection.fragment_reassembly.max_sessions")) {
+		t.Fatalf("capacity audit lost operator tuning detail: %s", auditRaw)
 	}
 
 	var count float64

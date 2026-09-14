@@ -628,7 +628,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		logger.LogBlocked(actx, "cross_request_path_depth", detail)
 		result.Blocked = true
 		result.FragmentHit = true
-		result.Reason = detail
+		result.Reason = "cross-request inspection depth exceeded"
 		return result
 	}
 
@@ -781,7 +781,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
-			Reason:      detail,
+			Reason:      "cross-request inspection depth exceeded",
 		}
 	}
 	if appendResult.OwnerMismatch {
@@ -806,7 +806,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
-			Reason:      detail,
+			Reason:      "cross-request inspection capacity exhausted",
 		}
 	}
 	if len(matches) == 0 {
@@ -820,7 +820,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
-			Reason:      fmt.Sprintf("cross-request secret detected: %s", matches[0].PatternName),
+			Reason:      "cross-request exfiltration attempt blocked",
 		}
 	}
 	logger.LogAnomaly(actx, "cross_request_fragment", detail, 0)

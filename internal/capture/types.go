@@ -212,6 +212,13 @@ type CaptureSummary struct {
 	Outcome string `json:"outcome"`
 	// SkipReason explains why scanning was skipped (e.g. "allowlisted domain").
 	SkipReason string `json:"skip_reason,omitempty"`
+	// InspectionMode is CEE-surface-only evidence showing whether raw payloads
+	// or keyed JSON leaf streams were inspected. Empty means an older producer
+	// did not record a mode.
+	InspectionMode string `json:"inspection_mode,omitempty"`
+	// FallbackReason is CEE-surface-only evidence describing a bounded reason
+	// that keyed JSON partitioning fell back to raw inspection.
+	FallbackReason string `json:"fallback_reason,omitempty"`
 }
 
 // CaptureRequest describes the originating request. Not all fields are set for

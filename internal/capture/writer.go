@@ -555,6 +555,19 @@ func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
 
 // ObserveCEEVerdict implements CaptureObserver for cross-entry entropy verdicts.
 func (w *Writer) ObserveCEEVerdict(_ context.Context, rec *CEERecord) {
+	summary := w.buildSummary(
+		SurfaceCEE, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+		rec.ActionClass,
+		rec.SessionIDOriginal,
+		rec.ScannerInput, false, rec.TransformKind, "", nil,
+		rec.Request, rec.RawFindings, rec.EffectiveFindings,
+		normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
+	)
+	// CEE inspection evidence is intentionally assigned outside buildSummary:
+	// the summary constructor already has a long positional signature, and these
+	// fields only apply to the CEE surface.
+	summary.InspectionMode = rec.InspectionMode
+	summary.FallbackReason = rec.FallbackReason
 	w.send(captureEntry{
 		entry: recorder.Entry{
 			SessionID: rec.SessionID,
@@ -564,14 +577,7 @@ func (w *Writer) ObserveCEEVerdict(_ context.Context, rec *CEERecord) {
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + normalizeEffectiveAction(rec.EffectiveAction),
 		},
-		summary: w.buildSummary(
-			SurfaceCEE, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
-			rec.ActionClass,
-			rec.SessionIDOriginal,
-			rec.ScannerInput, false, rec.TransformKind, "", nil,
-			rec.Request, rec.RawFindings, rec.EffectiveFindings,
-			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
-		),
+		summary:      summary,
 		scannerInput: rec.ScannerInput,
 		actionClass:  rec.ActionClass,
 	})

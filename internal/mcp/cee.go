@@ -306,12 +306,21 @@ type ceeRecordMCPOptions struct {
 	inspectionMode   *string
 	fallbackReason   *string
 	matchedPattern   *string
+	blockKind        *string
 }
 
 // ceeFragmentBlockClientReason is the neutral client-visible reason for a
 // cross-request fragment DLP block. The operator log and audit record keep the
 // full reason, including the tuning knob, which the client must not learn.
-const ceeFragmentBlockClientReason = "cross-request exfiltration attempt blocked"
+const (
+	ceeFragmentBlockClientReason = "cross-request exfiltration attempt blocked"
+	ceeEntropyBlockClientReason  = "cross-request entropy budget exceeded"
+	ceeCapacityBlockClientReason = "cross-request inspection capacity exhausted"
+
+	ceeBlockKindEntropyBudget   = "entropy_budget"
+	ceeBlockKindSessionCapacity = "session_capacity"
+	ceeBlockKindOwnerMismatch   = "fragment_owner_mismatch"
+)
 
 // ceeRecordMCP runs cross-request exfiltration checks on outbound MCP payload.
 // Returns a non-empty reason string if the request should be blocked.
@@ -326,21 +335,20 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	if tracker == nil && (buffer == nil || !ceeCfg.FragmentReassembly.Enabled) {
 		return ""
 	}
+	if opts.fallbackReason != nil {
+		*opts.fallbackReason = ""
+	}
 
 	fragmentPayloads := opts.fragmentPayloads
+	inspectionMode, partitionFallbackReason := "raw", ""
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled && fragmentPayloads == nil {
 		var fallbackReason string
 		fragmentPayloads, fallbackReason = mcpCEEFragmentPayloads(opts.frame)
-		inspectionMode := "partitioned"
+		inspectionMode = "partitioned"
 		if fallbackReason != "" || !opts.frame.IsToolsCall() {
 			inspectionMode = "raw"
 		}
-		if opts.inspectionMode != nil {
-			*opts.inspectionMode = inspectionMode
-		}
-		if opts.fallbackReason != nil {
-			*opts.fallbackReason = fallbackReason
-		}
+		partitionFallbackReason = fallbackReason
 		// A tools/call frame that could not be partitioned into per-argument
 		// streams falls back to scanning the whole raw frame. Record the same
 		// partition-fallback counter the forward proxy uses so operators see the
@@ -374,10 +382,19 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				tracker.CurrentUsage(identity), tracker.Budget())
 			_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+				if opts.inspectionMode != nil {
+					*opts.inspectionMode = "raw"
+				}
+				if opts.fallbackReason != nil {
+					*opts.fallbackReason = partitionFallbackReason
+				}
+				if opts.blockKind != nil {
+					*opts.blockKind = ceeBlockKindEntropyBudget
+				}
 				if opts.logger != nil {
 					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_entropy", reason)
 				}
-				return reason
+				return ceeEntropyBlockClientReason
 			}
 			// Warn mode: emit structured anomaly event for audit trail.
 			if opts.logger != nil {
@@ -388,6 +405,12 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 
 	// Fragment reassembly DLP check.
 	if buffer != nil && ceeCfg.FragmentReassembly.Enabled {
+		if opts.inspectionMode != nil {
+			*opts.inspectionMode = inspectionMode
+		}
+		if opts.fallbackReason != nil {
+			*opts.fallbackReason = partitionFallbackReason
+		}
 		seenSingletonFindings := make(map[string]struct{})
 		seenArgumentFindings := make(map[string]struct{})
 		var paths []string
@@ -435,6 +458,9 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if opts.logger != nil {
 					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_owner_mismatch", reason)
 				}
+				if opts.blockKind != nil {
+					*opts.blockKind = ceeBlockKindOwnerMismatch
+				}
 				return reason
 			}
 			if appendResult.CapacityExceeded {
@@ -446,7 +472,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if opts.logger != nil {
 					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_capacity", reason)
 				}
-				return reason
+				if opts.blockKind != nil {
+					*opts.blockKind = ceeBlockKindSessionCapacity
+				}
+				return ceeCapacityBlockClientReason
 			}
 			matches := streamMatches[i]
 			if len(matches) > 0 {

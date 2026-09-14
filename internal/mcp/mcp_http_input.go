@@ -708,7 +708,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// caller-controlled name would let a client rotate that name to
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
-		inspectionMode, fallbackReason, matchedPattern := "", "", ""
+		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -720,6 +720,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			inspectionMode: &inspectionMode,
 			fallbackReason: &fallbackReason,
 			matchedPattern: &matchedPattern,
+			blockKind:      &ceeBlockKind,
 		}
 		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict.
@@ -743,9 +744,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			})
 			receiptVerdict = config.ActionBlock
 			receiptLayer = "cross_request"
-			receiptPattern = matchedPattern
-			if receiptPattern == "" {
-				receiptPattern = reason
+			receiptPattern = ceeBlockKind
+			if matchedPattern != "" {
+				receiptPattern = matchedPattern
 			}
 			receiptSeverity = "critical"
 			result.Blocked = &BlockedRequest{
@@ -1188,7 +1189,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// caller-controlled name would let a client rotate that name to
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
-		inspectionMode, fallbackReason, matchedPattern := "", "", ""
+		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -1200,6 +1201,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			inspectionMode: &inspectionMode,
 			fallbackReason: &fallbackReason,
 			matchedPattern: &matchedPattern,
+			blockKind:      &ceeBlockKind,
 		}
 		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict (warn-path).
@@ -1223,9 +1225,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			})
 			receiptVerdict = config.ActionBlock
 			receiptLayer = "cross_request"
-			receiptPattern = matchedPattern
-			if receiptPattern == "" {
-				receiptPattern = reason
+			receiptPattern = ceeBlockKind
+			if matchedPattern != "" {
+				receiptPattern = matchedPattern
 			}
 			receiptSeverity = "critical"
 			result.Blocked = &BlockedRequest{

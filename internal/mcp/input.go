@@ -915,7 +915,7 @@ func ForwardScannedInput(
 				continue
 			}
 			// Cross-request exfiltration check on clean outbound messages.
-			inspectionMode, fallbackReason, matchedPattern := "", "", ""
+			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 			ceeOpts := ceeRecordMCPOptions{
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,
@@ -927,6 +927,7 @@ func ForwardScannedInput(
 				inspectionMode: &inspectionMode,
 				fallbackReason: &fallbackReason,
 				matchedPattern: &matchedPattern,
+				blockKind:      &ceeBlockKind,
 			}
 			if reason := ceeRecordMCP(ceeOpts); reason != "" {
 				// Capture: record CEE verdict.
@@ -956,9 +957,9 @@ func ForwardScannedInput(
 					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 				}
 				receiptLayerOverride = "cross_request"
-				receiptPatternOverride = matchedPattern
-				if receiptPatternOverride == "" {
-					receiptPatternOverride = reason
+				receiptPatternOverride = ceeBlockKind
+				if matchedPattern != "" {
+					receiptPatternOverride = matchedPattern
 				}
 				receiptSeverityOverride = "critical"
 				_ = emitToolReceipt(config.ActionBlock)
@@ -1481,7 +1482,7 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 				lineNum, method, reasonStr)
 			// Cross-request exfiltration check even in warn mode.
-			inspectionMode, fallbackReason, matchedPattern := "", "", ""
+			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 			ceeOpts := ceeRecordMCPOptions{
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,
@@ -1493,6 +1494,7 @@ func ForwardScannedInput(
 				inspectionMode: &inspectionMode,
 				fallbackReason: &fallbackReason,
 				matchedPattern: &matchedPattern,
+				blockKind:      &ceeBlockKind,
 			}
 			if reason := ceeRecordMCP(ceeOpts); reason != "" {
 				// Capture: record CEE verdict (warn-path).
@@ -1522,9 +1524,9 @@ func ForwardScannedInput(
 					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 				}
 				receiptLayerOverride = "cross_request"
-				receiptPatternOverride = matchedPattern
-				if receiptPatternOverride == "" {
-					receiptPatternOverride = reason
+				receiptPatternOverride = ceeBlockKind
+				if matchedPattern != "" {
+					receiptPatternOverride = matchedPattern
 				}
 				receiptSeverityOverride = "critical"
 				_ = emitToolReceipt(config.ActionBlock)

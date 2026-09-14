@@ -8635,3 +8635,48 @@ func TestScanHTTPInput_CEEBlockEmitsAttributedReceiptAndInspectionMode(t *testin
 		t.Fatalf("FallbackReason = %q, want empty for a partitioned frame", records[0].FallbackReason)
 	}
 }
+
+func TestScanHTTPInput_CEEEntropyReceiptUsesStablePattern(t *testing.T) {
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	cee := NewCEEDeps(config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: 1,
+			WindowMinutes: testMCPWindowSecs / 60,
+			Action:        config.ActionBlock,
+		},
+	}, metrics.New())
+	t.Cleanup(cee.Close)
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	obs := &ceeCaptureObserver{}
+	opts := MCPProxyOpts{Scanner: sc, CEE: cee, ReceiptEmitter: emitter, Transport: transportMCPHTTP, CaptureObs: obs}
+
+	blocked := scanHTTPInput(mcpChunkedCEERequest(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"), io.Discard, "mcp-session", "mcp-session", opts)
+	if blocked == nil {
+		t.Fatal("entropy budget request was allowed, want CEE block")
+	}
+	if blocked.ErrorMessage != "pipelock: "+ceeEntropyBlockClientReason {
+		t.Fatalf("client error = %q, want neutral entropy block reason", blocked.ErrorMessage)
+	}
+	records := obs.snapshot()
+	if len(records) != 1 || records[0].InspectionMode != "raw" {
+		t.Fatalf("CEE inspection records = %+v, want one raw entropy record", records)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
+	if len(blockReceipts) != 1 {
+		t.Fatalf("block receipt count = %d, want 1", len(blockReceipts))
+	}
+	pattern := blockReceipts[0].ActionRecord.Pattern
+	if pattern != ceeBlockKindEntropyBudget {
+		t.Fatalf("receipt pattern = %q, want %q", pattern, ceeBlockKindEntropyBudget)
+	}
+	if strings.Contains(pattern, " ") || regexp.MustCompile(`\d/\d`).MatchString(pattern) {
+		t.Fatalf("CEE receipt pattern must not contain prose or live usage: %q", pattern)
+	}
+}

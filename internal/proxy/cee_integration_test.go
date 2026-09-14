@@ -191,8 +191,8 @@ func TestCEEIntegration_FragmentDLPDetection(t *testing.T) {
 	if status2 != http.StatusForbidden {
 		t.Errorf("expected 403 for fragment DLP, got %d", status2)
 	}
-	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
-		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
+	if fr2.BlockReason != "cross-request exfiltration attempt blocked" {
+		t.Errorf("block reason = %q, want neutral fragment denial", fr2.BlockReason)
 	}
 }
 
@@ -233,8 +233,8 @@ func TestCEEIntegration_FragmentDLPKeyValueSplit(t *testing.T) {
 	if status2 != http.StatusForbidden {
 		t.Errorf("expected 403 for fragment DLP, got %d", status2)
 	}
-	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
-		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
+	if fr2.BlockReason != "cross-request exfiltration attempt blocked" {
+		t.Errorf("block reason = %q, want neutral fragment denial", fr2.BlockReason)
 	}
 }
 
@@ -274,8 +274,8 @@ func TestCEEIntegration_FragmentDLPKeySplit(t *testing.T) {
 	if status2 != http.StatusForbidden {
 		t.Errorf("expected 403 for key-split fragment DLP, got %d", status2)
 	}
-	if !strings.Contains(fr2.BlockReason, "cross-request secret detected") {
-		t.Errorf("expected block reason to contain 'cross-request secret detected', got %q", fr2.BlockReason)
+	if fr2.BlockReason != "cross-request exfiltration attempt blocked" {
+		t.Errorf("block reason = %q, want neutral fragment denial", fr2.BlockReason)
 	}
 }
 

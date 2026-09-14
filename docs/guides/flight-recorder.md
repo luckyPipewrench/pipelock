@@ -214,6 +214,13 @@ DLP-redacted before they reach disk unless `flight_recorder.redact` is set to
 `false`. Signed receipts (`signing_key_path`) and key-free capture
 (`--capture-output`) are independent evidence streams and can run together.
 
+CEE capture summaries include optional `inspection_mode` (`raw` or
+`partitioned`) and `fallback_reason` fields. They describe the CEE surface
+only: `partitioned` means keyed JSON leaf streams were inspected; `raw` means
+the raw payload was inspected, with `fallback_reason` populated when JSON
+partitioning could not complete. Their absence identifies evidence written by
+an older producer.
+
 ### Windows file-permission enforcement
 
 The signing-key, license, secrets, CA-key, salt, and `--header-file` loaders

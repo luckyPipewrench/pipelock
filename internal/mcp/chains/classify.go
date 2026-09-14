@@ -19,7 +19,7 @@ import (
 var categoryKeywords = map[string][]string{
 	"read":          {"read", "get", "view", "cat", "head", "tail", "open", "load", "retrieve", "access"},
 	"write":         {"write", "create", "save", "update", "edit", "modify", "put", "append", "insert"},
-	"exec":          {"shell", "bash", "run", "execute", "cmd", "spawn", "eval", "sh", "zsh", "powershell"},
+	"exec":          {"shell", "bash", "run", "execute", "terminal", "cmd", "spawn", "eval", "sh", "zsh", "powershell"},
 	"network":       {"fetch", "curl", "wget", "http", "request", "send", "post", "upload", "download", "api"},
 	"list":          {"list", "ls", "dir", "find", "glob", "search", "scan", "enumerate", "walk"},
 	"env":           {"env", "environ", "getenv", "secret", "credential", "config", "token", "key", "password"},
@@ -38,14 +38,14 @@ const categoryPersist = "persist"
 var categoryPriority = []string{"exec", categoryPersist, "env", "network", "write", "read", "list"}
 
 // toolNameDelimiters defines characters used to split tool names into segments.
-var toolNameDelimiters = "_-."
+var toolNameDelimiters = "_-.:"
 
 // classifyTool determines the category of a tool based on its name.
 // Returns "unknown" if no category matches.
 //
 // Classification logic:
 //  1. Check config overrides first (exact match, then glob with filepath.Match)
-//  2. Split tool name on delimiters (_-.) and double underscore (__)
+//  2. Split tool name on delimiters (_-.:), including repeated separators
 //  3. Match segments against keyword table (first match by priority wins)
 //  4. No match -> "unknown"
 func classifyTool(toolName string, cfg *config.ToolChainDetection) string {
@@ -58,7 +58,8 @@ func classifyTool(toolName string, cfg *config.ToolChainDetection) string {
 		return cat
 	}
 
-	// Split tool name into segments.
+	// Keep permissive segment matching here: unlike bounded policy and receipt
+	// aliases, chain classification also recognizes multi-level tool names.
 	segments := splitToolName(toolName)
 
 	// Match segments against keyword table using priority order.

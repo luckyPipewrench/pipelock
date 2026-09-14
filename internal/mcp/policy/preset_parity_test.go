@@ -14,6 +14,43 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
+func TestPresetToolPoliciesCarryBuiltinAliasGrammar(t *testing.T) {
+	t.Parallel()
+
+	presets := map[string]string{
+		"audit.yaml":         config.ActionWarn,
+		"balanced.yaml":      config.ActionWarn,
+		"claude-code.yaml":   config.ActionWarn,
+		"cursor.yaml":        config.ActionWarn,
+		"generic-agent.yaml": config.ActionWarn,
+		"hostile-model.yaml": config.ActionBlock,
+		"strict.yaml":        config.ActionBlock,
+	}
+	for preset, wantAction := range presets {
+		t.Run(preset, func(t *testing.T) {
+			path, err := filepath.Abs(filepath.Join("..", "..", "..", "configs", preset))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("load preset: %v", err)
+			}
+			if cfg.MCPToolPolicy.Action != wantAction {
+				t.Fatalf("preset action = %q, want %q", cfg.MCPToolPolicy.Action, wantAction)
+			}
+			if len(cfg.MCPToolPolicy.Rules) == 0 {
+				t.Fatal("preset has no tool policy rules")
+			}
+			for index, rule := range cfg.MCPToolPolicy.Rules {
+				if !strings.Contains(rule.ToolPattern, builtinToolNameAliasPrefix) {
+					t.Fatalf("preset rule %d is missing the built-in alias grammar", index)
+				}
+			}
+		})
+	}
+}
+
 func TestPresetToolPoliciesCoverEquivalentProtectedPathOperations(t *testing.T) {
 	presets := []string{
 		"audit.yaml",

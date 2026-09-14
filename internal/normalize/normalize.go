@@ -16,6 +16,56 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// MCPToolNameAlias returns the declared tool component of one bounded MCP
+// presentation alias. The protocol preserves tool names verbatim, so this is
+// deliberately a classifier aid rather than a tool identity rewrite: callers
+// must retain name for logs, receipts, and operator-configured matching.
+//
+// Claude's mcp__<server>__<tool> presentation is accepted when it has a bounded
+// ASCII server segment and one tool component. A single ASCII namespace followed
+// by '.' or ':' is also accepted as a defensive compatibility heuristic. The MCP specification
+// permits '.' in a tool name but does not assign it namespace meaning, and does
+// not recommend ':', so malformed or multi-separator forms are rejected rather
+// than guessed. This prevents a namespace keyword from changing the action of
+// the final tool component.
+func MCPToolNameAlias(name string) (string, bool) {
+	if strings.HasPrefix(strings.ToLower(name), "mcp__") {
+		parts := strings.SplitN(name, "__", 3)
+		if len(parts) != 3 || !strings.EqualFold(parts[0], "mcp") || !mcpToolNameSegment(parts[1]) || strings.Contains(parts[2], "__") || !mcpToolNameSegment(parts[2]) {
+			return "", false
+		}
+		return parts[2], true
+	}
+
+	for _, separator := range []byte{'.', ':'} {
+		if strings.Count(name, string(separator)) == 0 {
+			continue
+		}
+		if strings.Count(name, string(separator)) != 1 {
+			return "", false
+		}
+		index := strings.IndexByte(name, separator)
+		if !mcpToolNameSegment(name[:index]) || !mcpToolNameSegment(name[index+1:]) {
+			return "", false
+		}
+		return name[index+1:], true
+	}
+
+	return name, mcpToolNameSegment(name)
+}
+
+func mcpToolNameSegment(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // InvisibleRanges defines Unicode ranges stripped from all scanning paths.
 // Consolidates zero-width characters, Tags block (Pliny steganography vector),
 // and variation selectors (emoji steganography vector) into a single source of

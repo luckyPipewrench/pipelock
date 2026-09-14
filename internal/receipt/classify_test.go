@@ -156,6 +156,16 @@ func TestClassifyMCPTool(t *testing.T) {
 		{name: "tools_call_spawnProcess", toolName: "spawnProcess", mcpMethod: "tools/call", want: ActionDelegate},
 		{name: "tools_call_invokeAPI", toolName: "invokeAPI", mcpMethod: "tools/call", want: ActionDelegate},
 		{name: "tools_call_callService", toolName: "callService", mcpMethod: "tools/call", want: ActionDelegate},
+		{name: "tools_call_namespaced_write", toolName: "mcp__filesystem__write_file", mcpMethod: "tools/call", want: ActionWrite},
+		{name: "tools_call_plugin_namespaced_write", toolName: "mcp__plugin_filesystem_local__write_file", mcpMethod: "tools/call", want: ActionWrite},
+		{name: "tools_call_dotted_write", toolName: "filesystem.write_file", mcpMethod: "tools/call", want: ActionWrite},
+		{name: "tools_call_colon_exec", toolName: "filesystem:execute", mcpMethod: "tools/call", want: ActionDelegate},
+		{name: "tools_call_terminal", toolName: "terminal", mcpMethod: "tools/call", want: ActionDelegate},
+		{name: "tools_call_deceptive_suffix", toolName: "mcp__filesystem__write_file__extra", mcpMethod: "tools/call", want: ActionUnclassified},
+		{name: "tools_call_invalid_alias_keeps_bare_prefix", toolName: "write_file.extra.more", mcpMethod: "tools/call", want: ActionWrite},
+		{name: "tools_call_raw_write_is_not_downgraded", toolName: "write_config.foo", mcpMethod: "tools/call", want: ActionWrite},
+		{name: "tools_call_raw_read_is_not_downgraded", toolName: "readFile.foo", mcpMethod: "tools/call", want: ActionRead},
+		{name: "tools_call_alias_write_beats_raw_read", toolName: "read_namespace:write_file", mcpMethod: "tools/call", want: ActionWrite},
 
 		// tools/call unclassified
 		{name: "tools_call_unknownTool", toolName: "unknownTool", mcpMethod: "tools/call", want: ActionUnclassified},

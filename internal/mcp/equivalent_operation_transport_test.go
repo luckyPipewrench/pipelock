@@ -54,6 +54,9 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 		wantRule string
 	}{
 		{name: "move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "namespaced move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp__filesystem__move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "dotted move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem.move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
+		{name: "colon move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem:move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
 		{name: "content mutation", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"apply_patch","arguments":{"patch":"--- a/.bashrc\n+++ b/.bashrc\n@@ -1 +1 @@\n-old\n+new\n"}}}`, wantRule: "Shell Profile Modification"},
 		{name: "credential read", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_text_file","arguments":{"path":"/home/user/.ssh/id_rsa"}}}`, wantRule: "Credential File Access"},
 		{name: "delete", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file","arguments":{"path":"/home/user/.bashrc"}}}`, wantRule: "Protected Path Delete"},
@@ -154,45 +157,48 @@ func assertUninspectablePatchLog(t *testing.T, transportName, log string) {
 
 func TestEquivalentOperationWarnPresetsExposeRuleOnBothMCPTransports(t *testing.T) {
 	sc := testInputScanner(t)
-	request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`
+	requestTemplate := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`
 
-	for _, preset := range []string{"audit", "generic-agent"} {
-		t.Run(preset, func(t *testing.T) {
-			cfg, err := config.Load("../../configs/" + preset + ".yaml")
-			if err != nil {
-				t.Fatal(err)
-			}
-			policyCfg := policy.New(cfg.MCPToolPolicy)
-			opts := testOpts(sc)
-			opts.PolicyCfg = policyCfg
+	for _, toolName := range []string{"move_file", "mcp__filesystem__move_file", "filesystem.move_file", "filesystem:move_file"} {
+		request := strings.Replace(requestTemplate, "move_file", toolName, 1)
+		for _, preset := range []string{"audit", "generic-agent"} {
+			t.Run(preset+"/"+toolName, func(t *testing.T) {
+				cfg, err := config.Load("../../configs/" + preset + ".yaml")
+				if err != nil {
+					t.Fatal(err)
+				}
+				policyCfg := policy.New(cfg.MCPToolPolicy)
+				opts := testOpts(sc)
+				opts.PolicyCfg = policyCfg
 
-			var stdioOut, stdioLog bytes.Buffer
-			blocked := make(chan BlockedRequest, 1)
-			ForwardScannedInput(
-				transport.NewStdioReader(strings.NewReader(request+"\n")),
-				transport.NewStdioWriter(&stdioOut),
-				&stdioLog,
-				config.ActionWarn,
-				config.ActionBlock,
-				blocked,
-				nil,
-				nil,
-				opts,
-			)
-			if !strings.Contains(stdioOut.String(), request) || !strings.Contains(stdioLog.String(), "policy:Shell Profile Modification") {
-				t.Fatalf("stdio output=%q log=%q, want forwarded call and named warning", stdioOut.String(), stdioLog.String())
-			}
-			for br := range blocked {
-				t.Fatalf("warn preset unexpectedly blocked stdio request: %+v", br)
-			}
+				var stdioOut, stdioLog bytes.Buffer
+				blocked := make(chan BlockedRequest, 1)
+				ForwardScannedInput(
+					transport.NewStdioReader(strings.NewReader(request+"\n")),
+					transport.NewStdioWriter(&stdioOut),
+					&stdioLog,
+					config.ActionWarn,
+					config.ActionBlock,
+					blocked,
+					nil,
+					nil,
+					opts,
+				)
+				if !strings.Contains(stdioOut.String(), request) || !strings.Contains(stdioLog.String(), "policy:Shell Profile Modification") {
+					t.Fatalf("stdio output=%q log=%q, want forwarded call and named warning", stdioOut.String(), stdioLog.String())
+				}
+				for br := range blocked {
+					t.Fatalf("warn preset unexpectedly blocked stdio request: %+v", br)
+				}
 
-			var httpLog bytes.Buffer
-			if got := scanHTTPInput([]byte(request), &httpLog, "session", "session", opts); got != nil {
-				t.Fatalf("warn preset unexpectedly blocked HTTP request: %+v", got)
-			}
-			if !strings.Contains(httpLog.String(), "policy:Shell Profile Modification") {
-				t.Fatalf("HTTP log=%q, want named warning", httpLog.String())
-			}
-		})
+				var httpLog bytes.Buffer
+				if got := scanHTTPInput([]byte(request), &httpLog, "session", "session", opts); got != nil {
+					t.Fatalf("warn preset unexpectedly blocked HTTP request: %+v", got)
+				}
+				if !strings.Contains(httpLog.String(), "policy:Shell Profile Modification") {
+					t.Fatalf("HTTP log=%q, want named warning", httpLog.String())
+				}
+			})
+		}
 	}
 }

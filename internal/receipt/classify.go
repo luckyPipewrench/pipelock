@@ -6,6 +6,7 @@ package receipt
 import (
 	"net/http"
 
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -68,6 +69,17 @@ func ReversibilityFromMethod(method string) Reversibility {
 // This is best-effort based on naming conventions. Returns unclassified
 // for tools that can't be categorized from name alone.
 func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
+	if mcpMethod == "tools/call" {
+		return classifyToolName(toolName)
+	}
+	return ClassifyMCPToolForAuthority(toolName, mcpMethod)
+}
+
+// ClassifyMCPToolForAuthority retains raw-name action matching for authority
+// grants. Presentation aliases and receipt-only vocabulary must not broaden
+// which tool identities an existing grant authorizes. Like the original
+// classifier, this is a naming heuristic, not proof of a tool's actual effects.
+func ClassifyMCPToolForAuthority(toolName, mcpMethod string) ActionType {
 	// tools/list is a read operation - listing available tools
 	if mcpMethod == "tools/list" || mcpMethod == "resources/list" || mcpMethod == "prompts/list" {
 		return ActionRead
@@ -83,7 +95,7 @@ func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
 
 	// tools/call - infer from tool name patterns
 	if mcpMethod == "tools/call" {
-		return classifyToolName(toolName)
+		return classifyToolNamePrefix(toolName)
 	}
 
 	return ActionUnclassified
@@ -113,6 +125,44 @@ func ClassifySessionAction(action session.ActionClass) ActionType {
 // classifyToolName attempts to classify an MCP tool call by name.
 // Uses common prefixes/keywords. Defaults to unclassified for unknown tools.
 func classifyToolName(name string) ActionType {
+	raw := classifyReceiptToolNamePrefix(name)
+	alias, ok := normalize.MCPToolNameAlias(name)
+	if !ok || alias == name {
+		return raw
+	}
+	return moreSideEffectingToolAction(raw, classifyReceiptToolNamePrefix(alias))
+}
+
+func classifyReceiptToolNamePrefix(name string) ActionType {
+	if hasPrefix(name, "terminal") {
+		return ActionDelegate
+	}
+	return classifyToolNamePrefix(name)
+}
+
+// moreSideEffectingToolAction preserves a raw recognized name while avoiding
+// an alias that understates a write or delegated execution as a read.
+func moreSideEffectingToolAction(first, second ActionType) ActionType {
+	if toolActionRank(second) > toolActionRank(first) {
+		return second
+	}
+	return first
+}
+
+func toolActionRank(action ActionType) int {
+	switch action {
+	case ActionDelegate:
+		return 3
+	case ActionWrite:
+		return 2
+	case ActionRead:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func classifyToolNamePrefix(name string) ActionType {
 	if name == "" {
 		return ActionUnclassified
 	}

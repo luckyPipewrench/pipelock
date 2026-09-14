@@ -45,7 +45,7 @@ func authorizeMCP(ctx context.Context, ref string, carrierErr error, frame MCPFr
 	if opts.AuthorityVerifier == nil {
 		return nil
 	}
-	action := receipt.ClassifyMCPTool(frame.ToolCallName, frame.Method)
+	action := receipt.ClassifyMCPToolForAuthority(frame.ToolCallName, frame.Method)
 	result, err := authority.Evaluate(ctx, opts.AuthorityVerifier, authority.Request{
 		Actor:        opts.authorityActor(),
 		Action:       string(action),

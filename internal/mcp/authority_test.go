@@ -42,6 +42,45 @@ func allowAuthorityVerifier(captured *authority.Request) authority.Verifier {
 	})
 }
 
+func TestAuthorizeMCPNamespacedActionScope(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		action receipt.ActionType
+	}{
+		{"read_file", receipt.ActionRead},
+		{"mcp__filesystem__read_file", receipt.ActionUnclassified},
+		{"mcp__filesystem__write_file", receipt.ActionUnclassified},
+		{"filesystem.write_file", receipt.ActionUnclassified},
+		{"filesystem:write_file", receipt.ActionUnclassified},
+		{"mcp__console__terminal", receipt.ActionUnclassified},
+		{"terminal", receipt.ActionUnclassified},
+		{"run_command", receipt.ActionDelegate},
+		{"mcpevilreadfile", receipt.ActionUnclassified},
+		{"evil.readfile", receipt.ActionUnclassified},
+		{"write_config.read_file", receipt.ActionWrite},
+		{"unknown", receipt.ActionUnclassified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, granted := range []receipt.ActionType{receipt.ActionRead, receipt.ActionWrite, receipt.ActionDelegate, receipt.ActionUnclassified} {
+				opts := MCPProxyOpts{AuthorityActor: "principal:alice", AuthorityDestination: "server-a", AuthorityVerifier: authorityVerifierFunc(func(_ context.Context, request authority.Request) authority.Result {
+					if request.Action != string(tc.action) {
+						t.Fatalf("authority action = %q, want %q", request.Action, tc.action)
+					}
+					if request.Action == string(granted) {
+						return authority.Result{Decision: authority.DecisionAllow, Reason: authority.ReasonMatched, Issuer: "issuer", Reference: "ref-1"}
+					}
+					return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
+				})}
+				err := authorizeMCP(t.Context(), "grant", nil, MCPFrame{Method: "tools/call", ToolCallName: tc.name}, opts)
+				if (err == nil) != (granted == tc.action) {
+					t.Fatalf("grant %q: error = %v", granted, err)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractInboundMCPAuthorityStripsOnlyOwnedMembers(t *testing.T) {
 	t.Parallel()
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"com.pipelock/authority":"grant","com.pipelock/mediation":{"spoof":true},"vendor.example/keep":{"n":9007199254740993}}}}`)

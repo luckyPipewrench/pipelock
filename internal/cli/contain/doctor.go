@@ -56,10 +56,11 @@ type doctorEnv struct {
 	runCmd runCommand
 	// dropCounter reads the same managed catch-all nftables counter used by
 	// contain verify. Nil means attribution is unavailable, never PASS.
-	dropCounter func(ctx context.Context) (uint64, error)
-	dialCtx     dialFunc
-	readFile    func(path string) ([]byte, error)
-	stat        func(path string) (os.FileInfo, error)
+	dropCounter    func(ctx context.Context) (uint64, error)
+	chainStructure func(ctx context.Context) doctorResult
+	dialCtx        dialFunc
+	readFile       func(path string) ([]byte, error)
+	stat           func(path string) (os.FileInfo, error)
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -86,6 +87,7 @@ func defaultDoctorEnv() *doctorEnv {
 		stat:           os.Stat,
 	}
 	env.dropCounter = doctorDropCounterReader(counterEnv, env)
+	env.chainStructure = doctorChainStructureReader(counterEnv, env)
 	return env
 }
 
@@ -108,6 +110,30 @@ func doctorCounterProbeEnv(base *probeEnv, env *doctorEnv) probeEnv {
 	probe.port = env.port
 	probe.agentUserName = env.agentUserName
 	return probe
+}
+
+// doctorChainStructureReader reuses verify's installed-boundary probe but
+// deliberately omits persistence wiring: this doctor check is about the live
+// managed chain, while check 6 remains the packet-level enforcement proof.
+// A terminal rule owned by another UID cannot match the agent's packets, so
+// it stays outside this check exactly as it does for verify.
+func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Context) doctorResult {
+	return func(ctx context.Context) doctorResult {
+		probe := doctorCounterProbeEnv(base, env)
+		probe.nftPersistUnitPath = ""
+		status, detail := probeNFTContainment(ctx, &probe)
+		switch status {
+		case statusPass:
+			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
+		case statusFail:
+			if strings.Contains(detail, containmentBypassDetailPrefix) {
+				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
+			}
+			return unknownInfra("managed chain structure could not establish containment: " + detail)
+		default:
+			return unknownInfra("managed chain structure could not be read: " + detail)
+		}
+	}
 }
 
 // doctorResult is one check outcome. remediation is the operator's next step
@@ -159,6 +185,7 @@ func allDoctorChecks() []doctorCheck {
 		{4, "node_through_proxy", "node (with undici shim) reaches an allowed host through the proxy", checkNodeThroughProxy},
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
+		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
 	}
 }
 
@@ -425,6 +452,16 @@ func formatObservedHTTPCode(code int, ok bool) string {
 // Check 6: raw-egress diagnostics
 // ---------------------------------------------------------------------------
 
+// checkManagedChainStructure independently observes the live managed chain.
+// A structurally clean result is only a qualified pass: packet enforcement is
+// established exclusively by check 6's direct-egress canary.
+func checkManagedChainStructure(ctx context.Context, env *doctorEnv) doctorResult {
+	if env.chainStructure == nil {
+		return unknownInfra("managed chain structure reader is unavailable")
+	}
+	return env.chainStructure(ctx)
+}
+
 // curlDirectArgs builds the bounded DNS-free direct-egress probe.
 func (env *doctorEnv) curlDirectArgs() []string {
 	return curlDirectCanaryArgsFor(env.curlPath)
@@ -447,6 +484,11 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	}
 	if isSudoTargetCommandMissing(out) {
 		return skip("curl not available for the agent", "install curl on the host")
+	}
+	if rule, ok := definiteContainmentBypassRule(beforeErr); ok {
+		return fail(classInfra,
+			fmt.Sprintf(containmentBypassDetailFormat, rule),
+			"remove the offending nftables rule and rerun `pipelock contain install`")
 	}
 	if code == 0 {
 		httpCode, ok := trailingHTTPCode(out)

@@ -37,6 +37,9 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 		counter++
 		return counter, nil
 	}
+	env.chainStructure = func(context.Context) doctorResult {
+		return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
+	}
 	env.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 		return &fakeConn{}, nil
 	}
@@ -78,6 +81,67 @@ func TestDoctorDropCounterReaderUsesLiveDoctorOverrides(t *testing.T) {
 	}
 	if got != 42 {
 		t.Fatalf("counter = %d, want 42", got)
+	}
+}
+
+func TestDoctorChainStructureReader(t *testing.T) {
+	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = "rules.nft"
+		e.readFile = func(string) ([]byte, error) {
+			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+		}
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return goodNFTContainmentOutput, 0, nil
+		}
+	})
+	doctor := &doctorEnv{port: defaultProxyPort, agentUserName: testAgentUser}
+	reader := doctorChainStructureReader(base, doctor)
+	if res := reader(context.Background()); res.status != statusPass || !strings.Contains(res.detail, "enforcement is observed") {
+		t.Fatalf("clean structure = (%q, %q)", res.status, res.detail)
+	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return strings.Replace(goodNFTContainmentOutput,
+			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+			"meta skuid 987 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+	}
+	if res := reader(context.Background()); res.status != statusFail || !strings.Contains(res.detail, "meta skuid 987 accept") {
+		t.Fatalf("bypass structure = (%q, %q)", res.status, res.detail)
+	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return strings.Replace(goodNFTContainmentOutput,
+			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+			"meta skuid 12345 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+	}
+	if res := reader(context.Background()); res.status != statusPass {
+		t.Fatalf("foreign UID accept structure = (%q, %q), want qualified pass: a rule for another UID cannot admit agent packets", res.status, res.detail)
+	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return strings.Replace(goodNFTContainmentOutput,
+			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+			"ip daddr 10.0.0.0/8 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+	}
+	if res := reader(context.Background()); res.status != statusUnknown {
+		t.Fatalf("unscoped accept structure = (%q, %q), want unknown", res.status, res.detail)
+	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return "", 1, errors.New("nft: command not found")
+	}
+	if res := reader(context.Background()); res.status != statusUnknown || !strings.Contains(res.detail, "could not be read") {
+		t.Fatalf("unreadable chain structure = (%q, %q), want unknown could-not-be-read", res.status, res.detail)
+	}
+}
+
+func TestCheckManagedChainStructure_NilReaderIsUnknown(t *testing.T) {
+	env := newDoctorEnv(t, func([]string) (string, int, error) { return "200", 0, nil })
+	env.chainStructure = nil
+	if res := checkManagedChainStructure(context.Background(), env); res.status != statusUnknown {
+		t.Fatalf("nil reader = (%q, %q), want unknown", res.status, res.detail)
 	}
 }
 
@@ -274,6 +338,18 @@ func TestCheckDNSFailure(t *testing.T) {
 }
 
 func TestCheckRawEgressBlocked(t *testing.T) {
+	t.Run("definite structural bypass -> fail naming rule", func(t *testing.T) {
+		env := newDoctorEnv(t, func([]string) (string, int, error) {
+			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil
+		})
+		env.dropCounter = func(context.Context) (uint64, error) {
+			return 0, &containmentBypassError{rule: "meta skuid 987 accept"}
+		}
+		res := checkRawEgressBlocked(context.Background(), env)
+		if res.status != statusFail || !strings.Contains(res.detail, "meta skuid 987 accept") {
+			t.Fatalf("raw egress = (%q, %q), want fail naming offending rule", res.status, res.detail)
+		}
+	})
 	t.Run("blocked -> pass with proxy-compat remediation", func(t *testing.T) {
 		env := newDoctorEnv(t, func(args []string) (string, int, error) {
 			if !argsContain(args, "--noproxy", directEgressCanaryURL,
@@ -299,6 +375,73 @@ func TestCheckRawEgressBlocked(t *testing.T) {
 			t.Fatalf("got status=%q detail=%q", res.status, res.detail)
 		}
 	})
+}
+
+func TestCheckManagedChainStructure(t *testing.T) {
+	t.Run("definite bypass fails while curl missing still skips raw egress", func(t *testing.T) {
+		env := newDoctorEnv(t, func([]string) (string, int, error) {
+			return "sudo: /usr/bin/curl: command not found", 1, nil
+		})
+		env.dropCounter = func(context.Context) (uint64, error) {
+			return 0, &containmentBypassError{rule: "meta skuid 987 accept"}
+		}
+		env.chainStructure = func(context.Context) doctorResult {
+			return fail(classInfra, "CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: meta skuid 987 accept", "remove the offending nftables rule")
+		}
+		if raw := checkRawEgressBlocked(context.Background(), env); raw.status != statusSkip {
+			t.Fatalf("raw egress status = %q, want skip", raw.status)
+		}
+		if structure := checkManagedChainStructure(context.Background(), env); structure.status != statusFail || !strings.Contains(structure.detail, "meta skuid 987 accept") {
+			t.Fatalf("structure = (%q, %q), want fail naming rule", structure.status, structure.detail)
+		}
+	})
+	t.Run("sudo refusal does not suppress structural failure", func(t *testing.T) {
+		env := newDoctorEnv(t, func([]string) (string, int, error) {
+			return "sudo: a password is required", 1, nil
+		})
+		env.chainStructure = func(context.Context) doctorResult {
+			return fail(classInfra, "CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: meta skuid 987 accept", "remove the offending nftables rule")
+		}
+		if raw := checkRawEgressBlocked(context.Background(), env); raw.status != statusSkip {
+			t.Fatalf("raw egress status = %q, want skip", raw.status)
+		}
+		if structure := checkManagedChainStructure(context.Background(), env); structure.status != statusFail {
+			t.Fatalf("structure status = %q, want fail", structure.status)
+		}
+	})
+	t.Run("clean structure is qualified pass", func(t *testing.T) {
+		env := newDoctorEnv(t, func([]string) (string, int, error) { return "200", 0, nil })
+		res := checkManagedChainStructure(context.Background(), env)
+		if res.status != statusPass || !strings.Contains(res.detail, "enforcement is observed by the raw-egress check") {
+			t.Fatalf("structure = (%q, %q), want qualified pass", res.status, res.detail)
+		}
+	})
+}
+
+func TestRunDoctor_StructuralBypassSurvivesUnavailableAgentCurl(t *testing.T) {
+	env := newDoctorEnv(t, func([]string) (string, int, error) {
+		return "sudo: /usr/bin/curl: command not found", 1, nil
+	})
+	env.dropCounter = func(context.Context) (uint64, error) {
+		return 0, &containmentBypassError{rule: "meta skuid 987 accept"}
+	}
+	env.chainStructure = func(context.Context) doctorResult {
+		return fail(classInfra, "CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: meta skuid 987 accept", "remove the offending nftables rule")
+	}
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	cmd.SetContext(context.Background())
+	err := runDoctor(cmd, env, doctorOpts{jsonOutput: true})
+	if code := cliutil.ExitCodeOf(err); code != cliutil.ExitGeneral {
+		t.Fatalf("exit code = %d, want %d (output=%s)", code, cliutil.ExitGeneral, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"check":6,"name":"raw_egress_blocked","status":"skip"`) ||
+		!strings.Contains(out, `"check":7,"name":"managed_chain_structure","status":"fail"`) ||
+		!strings.Contains(out, "meta skuid 987 accept") {
+		t.Fatalf("raw-egress skip and structural fail were not preserved:\n%s", out)
+	}
 }
 
 func TestTrailingHTTPCode(t *testing.T) {
@@ -332,7 +475,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "6 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "7 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -349,6 +492,10 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, `"status":"pass"`) || !strings.Contains(out, `"exit_code":0`) {
 		t.Fatalf("unexpected json:\n%s", out)
+	}
+	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
+		!strings.Contains(out, `"total":7`) {
+		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 }
 
@@ -451,14 +598,14 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 3 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 4 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 3 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 4 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "3 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "4 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -504,8 +651,8 @@ func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
-		{name: "text aggregate", successfulWrites: 8, want: "writing doctor aggregate"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 6, want: "encoding aggregate JSON"},
+		{name: "text aggregate", successfulWrites: 9, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 7, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {

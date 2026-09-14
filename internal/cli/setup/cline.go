@@ -237,8 +237,7 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 	// we just wrote would orphan to a config file that has no reference
 	// to them, so we clean them up before returning the error.
 	if err := vscodeAtomicWrite(targetPath, output, targetDir); err != nil {
-		rollbackSidecarWrites(sidecarOps)
-		return err
+		return errors.Join(err, rollbackSidecarWrites(sidecarOps))
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrapped %d server(s) in %s (%d already wrapped)\n", wrapped, targetPath, skipped)

@@ -398,8 +398,7 @@ func installZedPath(cmd *cobra.Command, targetPath, exe, configFile string, dryR
 	}
 
 	if err := vscodeAtomicWrite(targetPath, output, targetDir); err != nil {
-		rollbackSidecarWrites(sidecarOps)
-		return err
+		return errors.Join(err, rollbackSidecarWrites(sidecarOps))
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),

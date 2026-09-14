@@ -91,14 +91,12 @@ func applySidecarOps(ops []sidecarOp) error {
 		switch op.kind {
 		case sidecarOpWrite:
 			if err := commitHeaderSidecar(op.path, op.body); err != nil {
-				rollbackSidecarWrites(written)
-				return err
+				return errors.Join(err, rollbackSidecarWrites(written))
 			}
 			written = append(written, op)
 		case sidecarOpDelete:
 			if err := removeHeaderSidecar(op.path); err != nil {
-				rollbackSidecarWrites(written)
-				return err
+				return errors.Join(err, rollbackSidecarWrites(written))
 			}
 		}
 	}
@@ -108,16 +106,18 @@ func applySidecarOps(ops []sidecarOp) error {
 // rollbackSidecarWrites deletes every sidecar referenced by a "write" op in
 // ops. Used when a later step (the canonical config atomic write) fails
 // after applySidecarOps has already landed sidecars on disk.
-func rollbackSidecarWrites(ops []sidecarOp) {
+func rollbackSidecarWrites(ops []sidecarOp) error {
+	var rollbackErr error
 	for _, op := range ops {
 		if op.kind == sidecarOpWrite {
 			if op.rollbackBody != nil {
-				_ = commitHeaderSidecar(op.path, op.rollbackBody)
+				rollbackErr = errors.Join(rollbackErr, commitHeaderSidecar(op.path, op.rollbackBody))
 			} else {
-				_ = removeHeaderSidecar(op.path)
+				rollbackErr = errors.Join(rollbackErr, removeHeaderSidecar(op.path))
 			}
 		}
 	}
+	return rollbackErr
 }
 
 // pipelockMeta stores original server config for unwrapping on remove.
@@ -423,8 +423,7 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 	// just wrote would orphan to a config file that has no reference to
 	// them, so we clean them up before returning the error.
 	if err := vscodeAtomicWrite(targetPath, output, targetDir); err != nil {
-		rollbackSidecarWrites(sidecarOps)
-		return err
+		return errors.Join(err, rollbackSidecarWrites(sidecarOps))
 	}
 	if err := applySidecarOps(legacyCleanupOps); err != nil {
 		return fmt.Errorf("configuration updated, but removing a legacy header sidecar failed; remove it manually and retry: %w", err)

@@ -2081,7 +2081,9 @@ func TestRollbackSidecarWrites_DeletesAllWrites(t *testing.T) {
 		}
 	}
 
-	rollbackSidecarWrites(ops)
+	if err := rollbackSidecarWrites(ops); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, p := range []string{one, two} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -2102,12 +2104,38 @@ func TestRollbackSidecarWritesRestoresReplacedContent(t *testing.T) {
 	if err := applySidecarOps([]sidecarOp{op}); err != nil {
 		t.Fatal(err)
 	}
-	rollbackSidecarWrites([]sidecarOp{op})
+	if err := rollbackSidecarWrites([]sidecarOp{op}); err != nil {
+		t.Fatal(err)
+	}
 	body, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(body, original) {
 		t.Fatalf("restored sidecar = %q, want %q", body, original)
+	}
+}
+
+func TestRollbackSidecarWritesReportsRecoveryFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		rollbackBody []byte
+	}{
+		{name: "restore failure", rollbackBody: []byte("old")},
+		{name: "remove failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "blocked")
+			if err := os.MkdirAll(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(path, "child"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			op := sidecarOp{kind: sidecarOpWrite, path: path, rollbackBody: tc.rollbackBody}
+			if err := rollbackSidecarWrites([]sidecarOp{op}); err == nil {
+				t.Fatal("rollback failure was not reported")
+			}
+		})
 	}
 }

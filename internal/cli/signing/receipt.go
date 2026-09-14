@@ -323,9 +323,11 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.Type, unsealed.Sequence)
 	}
 	// The receipt chain already verified every signer, including a successor
-	// authorized by a rotation endorsement, so its signer set is the trusted
-	// set for checkpoint signatures after a rotation.
-	anchor, err := verifyCheckpointAnchors(entries, append(append([]string{}, trustedKeys...), chain.SignerKeys...))
+	// authorized by a rotation endorsement. A checkpoint must be signed by the
+	// key that was active where it sits, so each one is checked against the
+	// signer of the receipt segment it belongs to rather than the union of
+	// every key that ever signed.
+	anchor, err := verifyCheckpointAnchors(entries, whole.Receipts)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "  ANCHOR MISMATCH: %v\n", err)
 		return fmt.Errorf("checkpoint anchor verification failed: %w", err)
@@ -374,26 +376,35 @@ type checkpointAnchor struct {
 }
 
 // verifyCheckpointAnchors checks every checkpoint entry's span and, when it
-// carries a signature, verifies that signature against the trusted keys. A
-// signed checkpoint commits the chain hash of every entry before it, so it is
-// the only authenticated anchor for entries that are not receipts; an unsigned
-// checkpoint proves nothing beyond hash linkage. The span must match the
-// checkpoint's position: it ends at the preceding entry, starts after the
-// previous checkpoint, and counts exactly the entries between. A recorder
-// signs either every checkpoint or none for its whole life, so a session
-// that mixes signed and unsigned checkpoints is a rewrite and is refused;
-// otherwise an attacker could drop the signature from one checkpoint and
-// have the rest vouch for it. A checkpoint whose detail does not parse, whose
-// span disagrees with its position, or whose signature verifies against no
-// trusted key fails closed. What this cannot catch: on a recorder that never
-// signed, a rewritten trailing entry with a self-consistent span; the output
-// reports that state as unauthenticated.
-func verifyCheckpointAnchors(entries []recorder.Entry, trustedKeys []string) (checkpointAnchor, error) {
+// carries a signature, verifies that signature against the key that was
+// active where the checkpoint sits: the signer of the most recent receipt
+// before it (or of the first receipt, for a checkpoint that precedes every
+// receipt). The receipts are the already-verified chain, so every signer in
+// them is trusted or endorsed, and scoping to the segment means a retired
+// key cannot re-sign checkpoints after its rotation and a successor cannot
+// sign before its activation. A signed checkpoint commits the chain hash of
+// every entry before it, so it is the only authenticated anchor for entries
+// that are not receipts; an unsigned checkpoint proves nothing beyond hash
+// linkage. The span must match the checkpoint's position: it ends at the
+// preceding entry, starts after the previous checkpoint, and counts exactly
+// the entries between. A recorder signs either every checkpoint or none for
+// its whole life, so a session that mixes signed and unsigned checkpoints is
+// a rewrite and is refused; otherwise an attacker could drop the signature
+// from one checkpoint and have the rest vouch for it. A checkpoint whose
+// detail does not parse, whose span disagrees with its position, or whose
+// signature does not verify under its segment's key fails closed. What this
+// cannot catch: on a recorder that never signed, a rewritten trailing entry
+// with a self-consistent span; the output reports that state as unanchored.
+func verifyCheckpointAnchors(entries []recorder.Entry, receipts []receipt.Receipt) (checkpointAnchor, error) {
 	anchor := checkpointAnchor{lastSignedIndex: -1}
-	var pubs []ed25519.PublicKey
 	var prevCheckpoint *recorder.Entry
+	seenReceipts := 0
 	for i := range entries {
 		entry := entries[i]
+		if entry.Type == "action_receipt" {
+			seenReceipts++
+			continue
+		}
 		if entry.Type != "checkpoint" {
 			continue
 		}
@@ -428,25 +439,16 @@ func verifyCheckpointAnchors(entries []recorder.Entry, trustedKeys []string) (ch
 		if anchor.unsigned > 0 {
 			return anchor, fmt.Errorf("checkpoint at seq %d is signed while earlier checkpoints in this session are unsigned", entry.Sequence)
 		}
-		if pubs == nil {
-			pubs, err = trustedCheckpointKeys(trustedKeys)
-			if err != nil {
-				return anchor, err
-			}
+		pub, err := segmentSignerKey(receipts, seenReceipts)
+		if err != nil {
+			return anchor, fmt.Errorf("checkpoint at seq %d: %w", entry.Sequence, err)
 		}
 		sig, err := hex.DecodeString(detail.Signature)
 		if err != nil {
 			return anchor, fmt.Errorf("checkpoint at seq %d: decoding signature: %w", entry.Sequence, err)
 		}
-		verified := false
-		for _, pub := range pubs {
-			if ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
-				verified = true
-				break
-			}
-		}
-		if !verified {
-			return anchor, fmt.Errorf("checkpoint at seq %d: signature verifies against no trusted key", entry.Sequence)
+		if !ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
+			return anchor, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", entry.Sequence)
 		}
 		anchor.signed++
 		anchor.lastSignedIndex = i
@@ -461,22 +463,28 @@ func precedingSequence(entries []recorder.Entry, i int) uint64 {
 	return entries[i-1].Sequence
 }
 
-func trustedCheckpointKeys(trustedKeys []string) ([]ed25519.PublicKey, error) {
-	if len(trustedKeys) == 0 {
-		return nil, fmt.Errorf("signed checkpoint present but no trusted key was pinned")
+// segmentSignerKey returns the public key active for a checkpoint that has
+// seenReceipts receipts before it: the signer of the last of those, or of
+// the first receipt when none precede it.
+func segmentSignerKey(receipts []receipt.Receipt, seenReceipts int) (ed25519.PublicKey, error) {
+	if len(receipts) == 0 {
+		return nil, fmt.Errorf("signed checkpoint present but the recorder holds no receipts to name its signer")
 	}
-	pubs := make([]ed25519.PublicKey, 0, len(trustedKeys))
-	for _, key := range trustedKeys {
-		raw, err := hex.DecodeString(key)
-		if err != nil {
-			return nil, fmt.Errorf("decode trusted key: %w", err)
-		}
-		if len(raw) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("trusted key length=%d want %d", len(raw), ed25519.PublicKeySize)
-		}
-		pubs = append(pubs, ed25519.PublicKey(raw))
+	idx := seenReceipts - 1
+	if idx < 0 {
+		idx = 0
 	}
-	return pubs, nil
+	if idx >= len(receipts) {
+		idx = len(receipts) - 1
+	}
+	raw, err := hex.DecodeString(receipts[idx].SignerKey)
+	if err != nil {
+		return nil, fmt.Errorf("decode segment signer key: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("segment signer key length=%d want %d", len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw), nil
 }
 
 func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, int, string, bool, error) {

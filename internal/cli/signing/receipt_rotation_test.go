@@ -51,6 +51,14 @@ func buildEndorsedRotatedChainJSONL(t *testing.T) (dir string, pubA ed25519.Publ
 // the recorder signing its checkpoints, the production default.
 func buildEndorsedRotatedChainJSONLSigned(t *testing.T, signCheckpoints bool) (dir string, pubA ed25519.PublicKey, privB ed25519.PrivateKey, endorsementPath string) {
 	t.Helper()
+	dir, pubA, _, privB, endorsementPath = buildEndorsedRotatedChainJSONLKeys(t, signCheckpoints)
+	return dir, pubA, privB, endorsementPath
+}
+
+// buildEndorsedRotatedChainJSONLKeys also returns the retired key A so a test
+// can sign something with it after the rotation.
+func buildEndorsedRotatedChainJSONLKeys(t *testing.T, signCheckpoints bool) (dir string, pubA ed25519.PublicKey, privA, privB ed25519.PrivateKey, endorsementPath string) {
+	t.Helper()
 	dir = t.TempDir()
 	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -99,7 +107,7 @@ func buildEndorsedRotatedChainJSONLSigned(t *testing.T, signCheckpoints bool) (d
 	if err := os.WriteFile(endorsementPath, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile endorsement: %v", err)
 	}
-	return dir, pubA, privB, endorsementPath
+	return dir, pubA, privA, privB, endorsementPath
 }
 
 func appendTranscriptRoot(t *testing.T, dir string, priv ed25519.PrivateKey) {

@@ -5,6 +5,8 @@ package signing
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -310,7 +313,7 @@ func TestVerifyReceiptCmd_WholeRecorderSignedCheckpointAnchor(t *testing.T) {
 	t.Run("rewritten decision breaks the signed anchor", func(t *testing.T) {
 		mutated := rewriteRecorderEntries(t, path, "rewritten-signed.jsonl", tamperDecision)
 		out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
-		if err == nil || !strings.Contains(err.Error(), "signature verifies against no trusted key") || !strings.Contains(out, "ANCHOR MISMATCH") {
+		if err == nil || !strings.Contains(err.Error(), "does not verify under the signer of its receipt segment") || !strings.Contains(out, "ANCHOR MISMATCH") {
 			t.Fatalf("rewritten signed recorder err=%v output:\n%s", err, out)
 		}
 	})
@@ -628,5 +631,89 @@ func TestVerifyReceiptCmd_WholeRecorderSealMustBeCoveredBySignedCheckpoint(t *te
 	out, err = runVerifyReceipt(t, path, "--whole-recorder", "--key", key)
 	if err != nil || !strings.Contains(out, "every entry through the seal is committed by a trusted key") {
 		t.Fatalf("covered seal err=%v output:\n%s", err, out)
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderCheckpointMustBeSignedByItsSegmentKey(t *testing.T) {
+	t.Parallel()
+
+	dir, pubA, privA, privB, endorsementPath := buildEndorsedRotatedChainJSONLKeys(t, true)
+	appendTranscriptRootSigned(t, dir, privB, true)
+	keyA := hex.EncodeToString(pubA)
+
+	// Find the shard holding the trailing checkpoint (the last file).
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var shards []string
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".jsonl") {
+			shards = append(shards, filepath.Join(dir, f.Name()))
+		}
+	}
+	if len(shards) < 2 {
+		t.Fatalf("expected a rotated multi-shard session, got %d shards", len(shards))
+	}
+	lastShard := shards[len(shards)-1]
+
+	resign := func(priv ed25519.PrivateKey) func(int, map[string]any) bool {
+		return func(i int, line map[string]any) bool {
+			if line["type"] != "checkpoint" {
+				return false
+			}
+			detail := line["detail"].(map[string]any)
+			prevHash, _ := line["prev_hash"].(string)
+			detail["signature"] = hex.EncodeToString(ed25519.Sign(priv, []byte(prevHash)))
+			line["detail"] = detail
+			return true
+		}
+	}
+
+	// Positive control: re-signing the trailing checkpoint with the active
+	// successor key changes nothing.
+	good := relinkRecorderLines(t, lastShard, filepath.Base(lastShard), resign(privB))
+	if err := os.Rename(good, lastShard); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	out, err := runVerifyReceipt(t, "--whole-recorder", "--chain", dir, "--key", keyA, "--rotation-endorsement", endorsementPath)
+	if err != nil || !strings.Contains(out, "every entry through the seal is committed by a trusted key") {
+		t.Fatalf("successor-signed trailing checkpoint err=%v output:\n%s", err, out)
+	}
+
+	// The retired key A is still trusted for its own segment, but it must not
+	// be able to anchor entries written after its rotation.
+	bad := relinkRecorderLines(t, lastShard, filepath.Base(lastShard), resign(privA))
+	if err := os.Rename(bad, lastShard); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	out, err = runVerifyReceipt(t, "--whole-recorder", "--chain", dir, "--key", keyA, "--rotation-endorsement", endorsementPath)
+	if err == nil || !strings.Contains(err.Error(), "does not verify under the signer of its receipt segment") || strings.Contains(out, "Seal:      sealed at seq") {
+		t.Fatalf("retired key must not anchor the post-rotation segment err=%v output:\n%s", err, out)
+	}
+}
+
+func TestSegmentSignerKeyErrors(t *testing.T) {
+	t.Parallel()
+
+	if _, err := segmentSignerKey(nil, 0); err == nil || !strings.Contains(err.Error(), "holds no receipts") {
+		t.Fatalf("no receipts err = %v", err)
+	}
+	if _, err := segmentSignerKey([]receipt.Receipt{{SignerKey: "not-hex"}}, 1); err == nil || !strings.Contains(err.Error(), "decode segment signer key") {
+		t.Fatalf("bad hex err = %v", err)
+	}
+	if _, err := segmentSignerKey([]receipt.Receipt{{SignerKey: "abcd"}}, 1); err == nil || !strings.Contains(err.Error(), "segment signer key length") {
+		t.Fatalf("short key err = %v", err)
+	}
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	receipts := []receipt.Receipt{{SignerKey: hex.EncodeToString(pub)}}
+	for _, seen := range []int{0, 1, 5} {
+		got, err := segmentSignerKey(receipts, seen)
+		if err != nil || !got.Equal(pub) {
+			t.Fatalf("seen=%d key err=%v equal=%v", seen, err, got.Equal(pub))
+		}
 	}
 }

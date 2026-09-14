@@ -201,8 +201,9 @@ flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unkn
 entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
 `transcript_root`, and returns non-zero for an unsealed recorder. After a signing-key
 rotation, the root covers the final signing segment while verification checks every
-trusted segment and its rotation continuity. The seal does not cover entries written
-after it, including the trailing checkpoint.
+trusted segment and its rotation continuity. The seal does not cover the trailing
+checkpoint the recorder writes after it; any other entry after the seal is reported as
+INCOMPLETE, because the seal never committed to it.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning

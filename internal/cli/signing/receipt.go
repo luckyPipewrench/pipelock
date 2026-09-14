@@ -4,7 +4,6 @@
 package signing
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -253,11 +252,14 @@ type verifyReceiptOptions struct {
 }
 
 func verifyWholeRecorderFromFile(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
-	data, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading recorder file: %w", err)
 	}
-	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+	defer func() { _ = file.Close() }()
+	// Stream the handle so the reader's bounded-read limits apply before the
+	// whole file is held in memory.
+	entries, err := recorder.ReadEntriesFromReader(file)
 	if err != nil {
 		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}
@@ -312,16 +314,16 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		_, _ = fmt.Fprintln(out, "  SEAL MISMATCH")
 		return fmt.Errorf("seal verification failed: transcript_root does not match its verified receipt-chain segment")
 	}
-	if receiptEntriesAfter(entries, rootIndex) > 0 {
-		_, _ = fmt.Fprintln(out, "  INCOMPLETE: transcript_root seal precedes later receipts")
-		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later receipts")
+	if unsealed, ok := firstUnsealedEntryAfter(entries, rootIndex); ok {
+		_, _ = fmt.Fprintf(out, "  INCOMPLETE: transcript_root seal precedes later unsealed entries (first: %s at seq %d)\n", unsealed.Type, unsealed.Sequence)
+		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.Type, unsealed.Sequence)
 	}
 	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
-	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; entries after the seal are hash-chain-verified but not sealed")
+	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; only the recorder's trailing checkpoint may follow it, hash-chain-verified but not sealed")
 	return nil
 }
 
@@ -362,14 +364,18 @@ func receiptEntriesBefore(entries []recorder.Entry, index int) int {
 	return count
 }
 
-func receiptEntriesAfter(entries []recorder.Entry, index int) int {
-	count := 0
+// firstUnsealedEntryAfter returns the first entry after the transcript_root
+// seal that the seal does not account for. The recorder writes its final
+// checkpoint after the root on clean shutdown, so checkpoints are the only
+// entries a sealed recorder may carry past the seal; any other type there is
+// evidence the seal never committed to, and the file is incomplete.
+func firstUnsealedEntryAfter(entries []recorder.Entry, index int) (recorder.Entry, bool) {
 	for _, entry := range entries[index+1:] {
-		if entry.Type == "action_receipt" {
-			count++
+		if entry.Type != "checkpoint" {
+			return entry, true
 		}
 	}
-	return count
+	return recorder.Entry{}, false
 }
 
 func transcriptRootMatchesChainSegment(root receipt.TranscriptRoot, sessionID string, chain receipt.ChainResult) bool {

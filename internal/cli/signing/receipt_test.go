@@ -979,7 +979,7 @@ func TestVerifyReceiptCmd_WholeRecorderSealAndIncompleteStates(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("whole-recorder sealed verification: %v\n%s", err, out.String())
 	}
-	for _, want := range []string{"Mode:      whole-recorder", "hash-chain-verified and in-taxonomy", "Seal:      sealed at seq", "entries after the seal"} {
+	for _, want := range []string{"Mode:      whole-recorder", "hash-chain-verified and in-taxonomy", "Seal:      sealed at seq", "trailing checkpoint may follow it"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("whole-recorder output missing %q:\n%s", want, out.String())
 		}
@@ -1035,7 +1035,7 @@ func TestVerifyReceiptCmd_WholeRecorderReportsReceiptTailAfterSealIncomplete(t *
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("whole-recorder accepted receipts after a prior seal:\n%s", out.String())
 	}
-	if got := out.String(); !strings.Contains(got, "INCOMPLETE: transcript_root seal precedes later receipts") || strings.Contains(got, "CHAIN VALID") {
+	if got := out.String(); !strings.Contains(got, "INCOMPLETE: transcript_root seal precedes later unsealed entries (first: action_receipt") || strings.Contains(got, "CHAIN VALID") {
 		t.Fatalf("receipt tail result must be incomplete without a valid conclusion:\n%s", got)
 	}
 }

@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -167,4 +169,63 @@ func TestVerifyReceiptCmd_WholeRecorderInputErrors(t *testing.T) {
 			t.Fatalf("malformed receipt err = %v", err)
 		}
 	})
+}
+
+func TestVerifyReceiptCmd_WholeRecorderOperationalEntryAfterSealIncomplete(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildSealedRecorderJSONL(t)
+	key := hex.EncodeToString(pub)
+
+	// Positive control: the clean sealed fixture, trailing checkpoint included,
+	// verifies before anything is appended.
+	if out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", key); err != nil || !strings.Contains(out, "Seal:      sealed at seq") {
+		t.Fatalf("clean sealed fixture err=%v output:\n%s", err, out)
+	}
+
+	mutated := rewriteRecorderEntries(t, path, "post-seal-decision.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+		last := entries[len(entries)-1]
+		appended := recorder.Entry{
+			Version: last.Version, Timestamp: last.Timestamp, SessionID: last.SessionID,
+			Type: "decision", Transport: "fetch", EventKind: "url", Summary: "appended after the seal",
+		}
+		return append(entries, appended)
+	})
+	out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key)
+	if err == nil || !strings.Contains(err.Error(), "seal precedes later unsealed decision entry") {
+		t.Fatalf("post-seal decision err = %v, want incomplete:\n%s", err, out)
+	}
+	if !strings.Contains(out, "INCOMPLETE: transcript_root seal precedes later unsealed entries (first: decision") || strings.Contains(out, "CHAIN VALID") || strings.Contains(out, "Seal:      sealed at seq") {
+		t.Fatalf("post-seal decision must not report a sealed or valid result:\n%s", out)
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderDirectFileBoundedRead(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "evidence-proxy-0.jsonl")
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	enc := json.NewEncoder(file)
+	for seq := range recorder.MaxEvidenceReadEntries + 1 {
+		entry := recorder.Entry{
+			Version: recorder.EntryVersion, Sequence: uint64(seq), Timestamp: time.Now().UTC(),
+			SessionID: "proxy", Type: "checkpoint", Transport: "fetch", Summary: "checkpoint", PrevHash: recorder.GenesisHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		if err := enc.Encode(entry); err != nil {
+			_ = file.Close()
+			t.Fatalf("Encode: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--allow-unpinned")
+	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || strings.Contains(out, "CHAIN VALID") {
+		t.Fatalf("direct file over the read limit err=%v output:\n%s", err, out)
+	}
 }

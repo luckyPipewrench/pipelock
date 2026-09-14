@@ -612,7 +612,7 @@ pipelock verify-receipt --whole-recorder --chain /var/lib/pipelock/evidence \
 `--whole-recorder --chain` walks the selected session's evidence files in the directory (across
 rotations and restarts), checks every recorder entry's hash linkage and taxonomy,
 verifies each receipt signature against the pinned key, and confirms the sealed
-`transcript_root` receipt commitment. Entries after that root (including the trailing checkpoint) are not covered by the seal. If the writer chain rotated its signing key, pass each public
+`transcript_root` receipt commitment. Only the trailing checkpoint may follow that root; it is hash-chain-verified but not covered by the seal, and any other entry after the root makes the result INCOMPLETE. If the writer chain rotated its signing key, pass each public
 key with a repeated `--key`. Because JSONL shards are preserved, this verifies
 every retained writer entry unless an operator has explicitly pruned or moved
 shards. Copy evidence to external storage before manual pruning if you need

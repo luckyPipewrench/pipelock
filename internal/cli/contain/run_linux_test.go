@@ -271,6 +271,36 @@ func TestLaunchContainedAgent_MapsSystemdMainSignal(t *testing.T) {
 	}
 }
 
+func TestLaunchContainedAgent_FailsWhenSystemdStatusCannotBeRead(t *testing.T) {
+	current := testContainedAgentUser()
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser:    func(string) (*user.User, error) { return current, nil },
+		groupIDs:      func(*user.User) ([]string, error) { return []string{current.Gid}, nil },
+	}
+	oldRun, oldStatus, oldCleanup := runContainedAgentCommand, containedAgentSystemdStatus, containedAgentSystemdCleanup
+	t.Cleanup(func() {
+		runContainedAgentCommand = oldRun
+		containedAgentSystemdStatus = oldStatus
+		containedAgentSystemdCleanup = oldCleanup
+	})
+	exitErr := exec.CommandContext(context.Background(), "sh", "-c", "exit 255").Run()
+	runContainedAgentCommand = func(*exec.Cmd) error { return exitErr }
+	containedAgentSystemdStatus = func(context.Context, string) (string, error) {
+		return "", errors.New("status unavailable")
+	}
+	containedAgentSystemdCleanup = func(context.Context, string) {}
+
+	err := launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitGeneral {
+		t.Fatalf("exit code = %d, want %d (err=%v)", got, cliutil.ExitGeneral, err)
+	}
+	if !strings.Contains(err.Error(), "inspect contained agent status") {
+		t.Fatalf("error = %v, want status inspection context", err)
+	}
+}
+
 func TestLaunchContainedAgent_DoesNotTrustAgentStderrAsSystemdStatus(t *testing.T) {
 	current := testContainedAgentUser()
 	env := &probeEnv{

@@ -1520,20 +1520,22 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, err.Error()
 	}
+	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
+	}
+	// A definite bypass outranks every missing canonical rule: reporting
+	// "proxy accept rule missing" or "DNS drop rule missing" for a chain that
+	// also admits all agent traffic would let the doctor downgrade the hole
+	// to an inconclusive result. Only the catch-all drop is checked first,
+	// because "before the drop" needs the drop to exist.
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
+	}
 	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
 		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID)
 	}
 	if !chainLinesHaveSkuidAcceptForUID(lines, current.proxyUID) {
 		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID)
-	}
-	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
-	}
-	// A definite bypass outranks every missing canonical rule: reporting
-	// "DNS drop rule missing" for a chain that also admits all agent traffic
-	// would let the doctor downgrade the hole to an inconclusive result.
-	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
 	}
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
@@ -2012,9 +2014,10 @@ func indexTokenAfter(fields []string, want string, start int) int {
 // nftLogOptionsWithValue lists the `log` statement options nft renders with one
 // following argument (nft(8), "LOG STATEMENT"). They change what gets logged,
 // never whether a packet matches, so a rule that carries them is still a bare
-// agent-UID accept.
+// agent-UID accept. `flags` is handled separately because its `tcp` and `ip`
+// forms take a second token (`flags tcp sequence,options`, `flags ip options`).
 var nftLogOptionsWithValue = map[string]struct{}{
-	"level": {}, "flags": {}, "group": {}, "queue-threshold": {}, "snaplen": {},
+	"level": {}, "group": {}, "queue-threshold": {}, "snaplen": {},
 }
 
 func fieldsAreNFTBookkeeping(fields []string) bool {
@@ -2023,6 +2026,7 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 	seenLog := false
 	expectCount := false
 	expectLogValue := false
+	expectLogFlags := false
 	for _, field := range fields {
 		if inPrefix {
 			if strings.HasSuffix(field, `"`) {
@@ -2030,10 +2034,24 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 			}
 			continue
 		}
+		if expectLogFlags {
+			// `log flags` takes `tcp <sequence|options|sequence,options>`,
+			// `ip options`, `skuid`, `ether`, or `all`; the tcp and ip
+			// forms carry one more token.
+			expectLogFlags = false
+			if field == "tcp" || field == "ip" {
+				expectLogValue = true
+			}
+			continue
+		}
 		if expectLogValue {
 			// A log option's single argument: a level name, flag word,
 			// or number. Only its presence matters here.
 			expectLogValue = false
+			continue
+		}
+		if seenLog && field == "flags" {
+			expectLogFlags = true
 			continue
 		}
 		if _, isLogOption := nftLogOptionsWithValue[field]; isLogOption && seenLog {
@@ -2069,7 +2087,7 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 			return false
 		}
 	}
-	return !inPrefix && !expectCount && !expectLogValue
+	return !inPrefix && !expectCount && !expectLogValue && !expectLogFlags
 }
 
 func nftRuleTailIsCommentOnly(fields []string) bool {

@@ -2480,6 +2480,10 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 		"meta skuid 987 log level info accept",
 		"meta skuid 987 log prefix \"agent \" level warn flags all accept",
 		"meta skuid 987 log group 2 queue-threshold 10 snaplen 64 accept",
+		"meta skuid 987 log flags tcp sequence,options accept",
+		"meta skuid 987 log flags ip options level info accept",
+		"meta skuid 987 log flags skuid accept",
+		"meta skuid 987 log flags all accept",
 		"meta skuid 987 counter packets 0 bytes 0 log level debug accept comment \"x\"",
 	} {
 		if _, ok := agentUIDBareAcceptBeforeDrop([]string{line, "meta skuid 987 drop"}, agentUID); !ok {
@@ -2499,6 +2503,8 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 // downgrade a definite hole to an inconclusive structural result.
 func TestProbeNFTContainment_BypassOutranksMissingCanonicalRules(t *testing.T) {
 	for _, missing := range []string{
+		"meta skuid 1000 accept",
+		"meta skuid 988 accept",
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
 		"meta skuid 987 udp dport 53 counter log prefix \"pipelock-contain class=direct_dns_blocked \" drop",
 		"meta skuid 987 tcp dport 53 counter log prefix \"pipelock-contain class=direct_dns_blocked \" drop",

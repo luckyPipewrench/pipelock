@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -36,7 +37,7 @@ type embeddedURLScanResults struct {
 
 // executeScan dispatches to the appropriate scanner for the requested kind.
 // Returns both the response body and the HTTP status code.
-// 200 = completed (allow or deny), 503 = retryable failure, 500 = internal error.
+// 200 = completed (allow, warn, or deny), 503 = retryable failure, 500 = internal error.
 func (h *Handler) executeScan(ctx context.Context, req *Request) (Response, int) {
 	cfg := h.currentConfig()
 	sc := h.currentScanner()
@@ -390,7 +391,7 @@ func (h *Handler) scanToolCall(
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
 		if verdict.Matched {
-			resp.Decision = DecisionDeny
+			resp.Decision = policyDecision(verdict.Action)
 			resp.Findings = append(resp.Findings, policyFindings(verdict)...)
 		}
 	}
@@ -482,12 +483,13 @@ func injectionFindings(result scanner.ResponseScanResult, opts *RequestOptions) 
 
 func policyFindings(verdict policy.Verdict) []Finding {
 	findings := make([]Finding, 0, len(verdict.Rules))
+	severity, message := policyFindingDetails(verdict.Action)
 	for _, rule := range verdict.Rules {
 		findings = append(findings, Finding{
 			Scanner:  "tool_policy",
 			RuleID:   "POLICY-" + rule,
-			Severity: "high",
-			Message:  "Tool call denied by policy rule: " + rule,
+			Severity: severity,
+			Message:  message + ": " + rule,
 		})
 	}
 	if len(findings) == 0 {
@@ -495,11 +497,37 @@ func policyFindings(verdict policy.Verdict) []Finding {
 		findings = append(findings, Finding{
 			Scanner:  "tool_policy",
 			RuleID:   "POLICY-DENY",
-			Severity: "high",
-			Message:  "Tool call denied by policy",
+			Severity: severity,
+			Message:  message,
 		})
 	}
 	return findings
+}
+
+// policyDecision maps a matched MCP tool-policy action to the Scan API's
+// evaluation-only decision vocabulary:
+//
+//	policy action | Scan API decision | live MCP proxy effect
+//	warn          | warn              | forwards with audit
+//	block         | deny              | blocks
+//	redirect      | deny              | replaces the call with a local response
+//	defer         | deny              | holds or blocks, depending on transport
+//	unknown/empty | deny              | fails closed
+//
+// The Scan API cannot execute a redirect or hold a deferred action, so it
+// denies the original call rather than reporting it as a clean allow.
+func policyDecision(action string) string {
+	if action == config.ActionWarn {
+		return DecisionWarn
+	}
+	return DecisionDeny
+}
+
+func policyFindingDetails(action string) (severity, message string) {
+	if action == config.ActionWarn {
+		return "medium", "Tool call warned by policy rule"
+	}
+	return "high", "Tool call denied by policy rule"
 }
 
 func urlRuleID(r scanner.Result) string {

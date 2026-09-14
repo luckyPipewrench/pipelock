@@ -38,6 +38,7 @@ const (
 // Decision values returned in the response.
 const (
 	DecisionAllow = "allow"
+	DecisionWarn  = "warn"
 	DecisionDeny  = "deny"
 )
 

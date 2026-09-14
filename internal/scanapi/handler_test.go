@@ -514,8 +514,8 @@ func TestHandler_ResponseInvariants(t *testing.T) {
 	if resp.Status != StatusCompleted {
 		t.Errorf("expected %q, got %q", StatusCompleted, resp.Status)
 	}
-	if resp.Decision != DecisionAllow && resp.Decision != DecisionDeny {
-		t.Errorf("decision must be %q or %q, got %q", DecisionAllow, DecisionDeny, resp.Decision)
+	if resp.Decision != DecisionAllow && resp.Decision != DecisionWarn && resp.Decision != DecisionDeny {
+		t.Errorf("decision must be %q, %q, or %q, got %q", DecisionAllow, DecisionWarn, DecisionDeny, resp.Decision)
 	}
 }
 
@@ -856,6 +856,78 @@ func TestScanToolCall_PolicyDeny(t *testing.T) {
 	}
 	if resp.Findings[0].Scanner != "tool_policy" {
 		t.Errorf("expected scanner=tool_policy, got %q", resp.Findings[0].Scanner)
+	}
+}
+
+func TestScanToolCall_PolicyActions(t *testing.T) {
+	tests := []struct {
+		name         string
+		policyAction string
+		ruleAction   string
+		wantDecision string
+		wantSeverity string
+		wantMessage  string
+	}{
+		{name: "warn override", policyAction: config.ActionBlock, ruleAction: config.ActionWarn, wantDecision: DecisionWarn, wantSeverity: "medium", wantMessage: "Tool call warned by policy rule: matched-rule"},
+		{name: "warn default", policyAction: config.ActionWarn, wantDecision: DecisionWarn, wantSeverity: "medium", wantMessage: "Tool call warned by policy rule: matched-rule"},
+		{name: "block override", policyAction: config.ActionWarn, ruleAction: config.ActionBlock, wantDecision: DecisionDeny, wantSeverity: "high", wantMessage: "Tool call denied by policy rule: matched-rule"},
+		{name: "redirect override", policyAction: config.ActionBlock, ruleAction: config.ActionRedirect, wantDecision: DecisionDeny, wantSeverity: "high", wantMessage: "Tool call denied by policy rule: matched-rule"},
+		{name: "defer override", policyAction: config.ActionBlock, ruleAction: config.ActionDefer, wantDecision: DecisionDeny, wantSeverity: "high", wantMessage: "Tool call denied by policy rule: matched-rule"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.MCPInputScanning.Enabled = false
+			h := NewHandler(cfg, scanner.MustNew(cfg), policy.New(config.MCPToolPolicy{
+				Enabled: true,
+				Action:  tt.policyAction,
+				Rules: []config.ToolPolicyRule{{
+					Name:        "matched-rule",
+					ToolPattern: "dangerous_tool",
+					Action:      tt.ruleAction,
+				}},
+			}), metrics.New(), "test-version")
+
+			resp, status := h.executeScan(t.Context(), &Request{
+				Kind:  KindToolCall,
+				Input: Input{ToolName: "dangerous_tool", Arguments: RawJSON(`{"argument":"safe"}`)},
+			})
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want %d", status, http.StatusOK)
+			}
+			if resp.Decision != tt.wantDecision {
+				t.Errorf("decision = %q, want %q", resp.Decision, tt.wantDecision)
+			}
+			encoded, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(encoded, &wire); err != nil {
+				t.Fatalf("unmarshal response JSON: %v", err)
+			}
+			if got := wire["decision"]; got != tt.wantDecision {
+				t.Errorf("JSON decision = %v, want %q", got, tt.wantDecision)
+			}
+			if len(resp.Findings) != 1 {
+				t.Fatalf("findings = %d, want 1", len(resp.Findings))
+			}
+			if got := resp.Findings[0]; got.Severity != tt.wantSeverity || got.Message != tt.wantMessage {
+				t.Errorf("finding = %+v, want severity %q and message %q", got, tt.wantSeverity, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestPolicyDecisionUnknownOrEmptyFailsClosed(t *testing.T) {
+	for _, action := range []string{"", "unknown"} {
+		t.Run(action, func(t *testing.T) {
+			if got := policyDecision(action); got != DecisionDeny {
+				t.Errorf("policyDecision(%q) = %q, want %q", action, got, DecisionDeny)
+			}
+		})
 	}
 }
 

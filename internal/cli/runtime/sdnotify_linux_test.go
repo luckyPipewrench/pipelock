@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -277,6 +278,19 @@ func TestSDNotifyStatusReasonIsBoundedAndClean(t *testing.T) {
 	if got != "bad value here" {
 		t.Fatalf("status reason = %q, want the first line with controls replaced", got)
 	}
+
+	// Above C0. A byte-range check that keeps everything at or above 0x20 lets
+	// these through even though they are controls: U+009B introduces a C1
+	// escape sequence and U+0085 is NEL, and either can steer a terminal
+	// reading systemd status or an audit log.
+	exotic := errors.New("rejected: bad\u009bvalue\u0085here\u2028and\u00a0more")
+	got = sdNotifyStatusReason(exotic)
+	if strings.ContainsFunc(got, unicode.IsControl) {
+		t.Fatalf("status reason kept a Unicode control character: %q", got)
+	}
+	if got != "bad value here and more" {
+		t.Fatalf("status reason = %q, want every non-printable rune replaced by a space", got)
+	}
 }
 
 // TestSDNotifyReloadCompleteAlwaysDeliversReady pins the property the retry
@@ -452,6 +466,32 @@ func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 			t.Fatalf("Start returned early: %v", err)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+
+	// Readiness alone only proves the gate can open. Drive a signal-triggered
+	// reload through the consumer and require it to finish and take effect, so
+	// a gate that opens but never releases the event still fails here.
+	next := s.proxy.CurrentConfig().Clone()
+	next.Mode = config.ModeAudit
+	if next.Mode == s.proxy.CurrentConfig().Mode {
+		next.Mode = config.ModeStrict
+	}
+	events := make(chan config.ReloadEvent, 1)
+	events <- config.ReloadEvent{Config: next, Trigger: config.ReloadTriggerSignal}
+	close(events)
+
+	reloadDone := make(chan struct{})
+	go func() {
+		defer close(reloadDone)
+		s.consumeReloads(context.Background(), events, make(chan struct{}))
+	}()
+	select {
+	case <-reloadDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a SIGHUP-triggered reload never completed on a host with no systemd")
+	}
+	if got := s.proxy.CurrentConfig().Mode; got != next.Mode {
+		t.Fatalf("mode = %q, want %q: the reload completed without applying its configuration", got, next.Mode)
 	}
 
 	waitForServerCancel(t, s)

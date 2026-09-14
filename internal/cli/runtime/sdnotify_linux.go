@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -81,8 +82,14 @@ func sdNotifyReloadComplete(stderr io.Writer, reloadErr error) {
 func sdNotifyStatusReason(err error) string {
 	reason := strings.SplitN(err.Error(), "\n", 2)[0]
 	reason = strings.TrimPrefix(reason, "rejected: ")
+	// Printability, not a byte range. A range check that keeps everything at or
+	// above 0x20 lets the C1 controls through (U+0080-U+009F, including the
+	// U+009B escape introducer), along with NEL and the Unicode line and
+	// paragraph separators, all of which can still steer a terminal reading
+	// systemd status or an audit log. unicode.IsPrint excludes every control
+	// character in both ranges and keeps ordinary ASCII space.
 	reason = strings.Map(func(r rune) rune {
-		if r == '\t' || (r >= 0x20 && r != 0x7f) {
+		if unicode.IsPrint(r) {
 			return r
 		}
 		return ' '

@@ -1539,7 +1539,7 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: %s", rule)
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
@@ -1838,6 +1838,15 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		return true
 	})
 }
+
+// containmentBypassDetailPrefix is the single wording for a definite agent-UID
+// bypass. doctorChainStructureReader matches on it to distinguish a definite
+// CONTAINMENT HOLE from an inconclusive structural result, so the prefix and
+// the formatted detail must not drift apart into independent literals.
+const (
+	containmentBypassDetailPrefix = "CONTAINMENT HOLE: agent UID accept rule"
+	containmentBypassDetailFormat = containmentBypassDetailPrefix + " bypasses managed catch-all DROP: %s"
+)
 
 // agentUIDBareAcceptBeforeDrop identifies the one pre-drop rule shape whose
 // meaning is unambiguous: it admits every packet from the contained agent.
@@ -2699,7 +2708,7 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", curlPath)
 	}
 	if rule, ok := definiteContainmentBypassRule(beforeErr); ok {
-		return statusFail, fmt.Sprintf("CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: %s", rule)
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
 	}
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from direct canary %s", oneLine(out), directEgressCanaryURL)

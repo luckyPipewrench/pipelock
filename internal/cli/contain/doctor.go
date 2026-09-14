@@ -126,7 +126,7 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 		case statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
 		case statusFail:
-			if strings.Contains(detail, "CONTAINMENT HOLE: agent UID accept rule") {
+			if strings.Contains(detail, containmentBypassDetailPrefix) {
 				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
 			}
 			return unknownInfra("managed chain structure could not establish containment: " + detail)
@@ -185,7 +185,7 @@ func allDoctorChecks() []doctorCheck {
 		{4, "node_through_proxy", "node (with undici shim) reaches an allowed host through the proxy", checkNodeThroughProxy},
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
-		{7, "managed_chain_structure", "managed nftables chain structure is readable", checkManagedChainStructure},
+		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
 	}
 }
 
@@ -487,7 +487,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	}
 	if rule, ok := definiteContainmentBypassRule(beforeErr); ok {
 		return fail(classInfra,
-			fmt.Sprintf("CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP: %s", rule),
+			fmt.Sprintf(containmentBypassDetailFormat, rule),
 			"remove the offending nftables rule and rerun `pipelock contain install`")
 	}
 	if code == 0 {

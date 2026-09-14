@@ -2466,6 +2466,33 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	}
 }
 
+func TestReadContainmentDropCounter_DefiniteBypassIsTypedError(t *testing.T) {
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.lookupUser = containTestLookup
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return `table inet pipelock_containment {
+	chain output_filter {
+			type filter hook output priority 0; policy accept;
+		meta skuid 987 counter packets 3 bytes 180 accept
+		meta skuid 987 counter packets 12 bytes 0 drop
+	}
+}`, 0, nil
+		}
+	})
+
+	got, err := readContainmentDropCounter(context.Background(), env)
+	if got != 0 {
+		t.Fatalf("counter = %d, want 0 on a definite bypass", got)
+	}
+	rule, ok := definiteContainmentBypassRule(err)
+	if !ok {
+		t.Fatalf("error = %v, want a typed containmentBypassError so callers can report FAIL", err)
+	}
+	if rule != "meta skuid 987 counter packets 3 bytes 180 accept" {
+		t.Fatalf("rule = %q, want the offending pre-drop accept", rule)
+	}
+}
+
 func TestProbeCCAgentEgressDenied_DefiniteStructuralBypassFails(t *testing.T) {
 	env := makeProbeEnv(t, func(e *probeEnv) {
 		e.dropCounter = func(context.Context, *probeEnv) (uint64, error) {

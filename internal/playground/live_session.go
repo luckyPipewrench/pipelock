@@ -309,6 +309,7 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		// calls to the .test hosts stay loopback.
 		runOpts.ModelBaseURL = cfg.LLMAgent.ModelBaseURL
 		runOpts.ModelHostOverride = cfg.LLMAgent.ModelHostOverride
+		runOpts.Model = cfg.LLMAgent.Model
 		s.modelHost = hostFromTarget(cfg.LLMAgent.ModelBaseURL)
 	}
 	lr, err := StartLiveRun(ctx, runOpts)
@@ -729,6 +730,14 @@ func (s *LiveSession) Finalize(runDir string) (VerifyReport, error) {
 	// Mark terminal before sealing: any send that was waiting on this lock will
 	// observe done and refuse, so no action lands outside the sealed packet.
 	s.done = true
+
+	// Hand off the provider-reported model identifier (if the model driver ever
+	// observed one) so AssembleAndVerify can attach it to the collector witness
+	// before sealing. Untrusted, informational only; empty for the deterministic
+	// agent (s.runner is nil) or a model run that never got a response.
+	if s.runner != nil {
+		s.lr.SetProviderModel(s.runner.ProviderModel())
+	}
 
 	rep, err := s.lr.AssembleAndVerify(runDir)
 	if err != nil {

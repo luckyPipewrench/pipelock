@@ -32,12 +32,14 @@ type CredentialAudienceMismatch struct {
 type credentialAudienceCandidate struct {
 	patternName string
 	hosts       []string
-	core        bool
 }
 
 // filterCredentialAudience is the one destination-aware filter for compiled
-// credential audience exceptions. Empty lists, core patterns, malformed
-// targets, and a mismatch all retain the DLP match and therefore block. This
+// credential audience exceptions. An empty host list, a malformed target, and a
+// mismatch all retain the DLP match and therefore block. A core-floor pattern is
+// filtered here only when it carries a compiled audience: core-ness alone no
+// longer disqualifies the exception, because the audience is compiled-in and
+// unreachable from YAML, so this cannot widen the floor from configuration. This
 // deliberately fails closed: a host allow is never inferred from a parse error.
 func filterCredentialAudience(candidates []credentialAudienceCandidate, target, surface string) ([]bool, []CredentialAudienceAllow) {
 	keep := make([]bool, len(candidates))
@@ -51,7 +53,7 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
-		if candidate.core || len(candidate.hosts) == 0 || !destination.MatchesDomainList(host, candidate.hosts) {
+		if len(candidate.hosts) == 0 || !destination.MatchesDomainList(host, candidate.hosts) {
 			continue
 		}
 		keep[i] = false
@@ -112,7 +114,6 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 	keep, allows := filterCredentialAudience([]credentialAudienceCandidate{{
 		patternName: pattern.name,
 		hosts:       pattern.credentialAudienceHosts,
-		core:        pattern.core,
 	}}, target, surface)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -147,10 +148,7 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 	candidates := make([]credentialAudienceCandidate, len(matches))
 	for i, match := range matches {
 		candidates[i].patternName = match.PatternName
-		if pattern := s.dlpPatternByName(match.PatternName); pattern != nil {
-			candidates[i].hosts = pattern.credentialAudienceHosts
-			candidates[i].core = pattern.core
-		}
+		candidates[i].hosts = match.credentialAudienceHosts
 	}
 	keep, allows := filterCredentialAudience(candidates, target, surface)
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -160,15 +158,6 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		}
 	}
 	return filtered, allows
-}
-
-func (s *Scanner) dlpPatternByName(name string) *compiledPattern {
-	for _, pattern := range s.dlpPatterns {
-		if pattern.name == name {
-			return pattern
-		}
-	}
-	return nil
 }
 
 func deduplicateCredentialAudienceAllows(allows []CredentialAudienceAllow) []CredentialAudienceAllow {

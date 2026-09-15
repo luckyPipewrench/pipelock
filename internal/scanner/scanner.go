@@ -502,12 +502,13 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			warn:                           p.Action == config.ActionWarn && len(p.CredentialAudienceHosts) == 0,
 			credentialURLWhitespaceGrammar: p.CredentialURLWhitespaceGrammar,
 		}
-		// Audience hosts are populated only from the compiled built-in registry;
-		// YAML excludes the field. A custom pattern reusing a built-in name has
-		// no hosts to copy, and core floors never receive one.
-		if !cp.core {
-			cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
-		}
+		// Audience hosts are populated only from the compiled built-in registry:
+		// the field is yaml:"-", and normalize re-derives it solely from an exact
+		// built-in match, so a custom pattern reusing a built-in name carries
+		// none. A core-floor pattern may carry a compiled audience; it narrows
+		// where that immutable credential is enforced (its own issuing authority
+		// over an encrypted scheme) without letting operator YAML reach it.
+		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {

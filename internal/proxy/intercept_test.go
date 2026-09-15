@@ -856,15 +856,20 @@ func interceptAndRequestWithProxy(
 
 type interceptRequestOptions struct {
 	Upstream *httptest.Server
-	Cache    *certgen.CertCache
-	Pool     *x509.CertPool
-	Config   *config.Config
-	Scanner  *scanner.Scanner
-	Logger   *audit.Logger
-	Metrics  *metrics.Metrics
-	Request  *http.Request
-	Recorder session.Recorder
-	Proxy    *Proxy
+	// TargetHost and UpstreamRT let tests preserve the production authority
+	// while routing the socket to a local TLS server. Empty values retain the
+	// historical httptest-server behavior.
+	TargetHost string
+	UpstreamRT http.RoundTripper
+	Cache      *certgen.CertCache
+	Pool       *x509.CertPool
+	Config     *config.Config
+	Scanner    *scanner.Scanner
+	Logger     *audit.Logger
+	Metrics    *metrics.Metrics
+	Request    *http.Request
+	Recorder   session.Recorder
+	Proxy      *Proxy
 }
 
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
@@ -877,6 +882,13 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 
 	host := opts.Upstream.Listener.Addr().(*net.TCPAddr).IP.String()
 	port := fmt.Sprintf("%d", opts.Upstream.Listener.Addr().(*net.TCPAddr).Port)
+	if opts.TargetHost != "" {
+		host = opts.TargetHost
+	}
+	upstreamRT := opts.UpstreamRT
+	if upstreamRT == nil {
+		upstreamRT = opts.Upstream.Client().Transport
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -891,7 +903,7 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 			Metrics:    opts.Metrics,
 			ClientIP:   "10.0.0.1",
 			RequestID:  "test-req-1",
-			UpstreamRT: opts.Upstream.Client().Transport,
+			UpstreamRT: upstreamRT,
 			Recorder:   opts.Recorder,
 			Proxy:      opts.Proxy,
 		})

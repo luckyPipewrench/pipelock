@@ -42,9 +42,10 @@ func CoreResponseCount() int { return len(coreResponsePatternDefs()) }
 // These patterns represent the safety floor - they CANNOT be disabled by any
 // config field (include_defaults, response_scanning.enabled, etc.).
 type coreDLPPattern struct {
-	name     string
-	regex    string
-	severity string
+	name                    string
+	regex                   string
+	severity                string
+	credentialAudienceHosts []string
 }
 
 // coreResponsePattern defines a single immutable response scanning pattern.
@@ -66,9 +67,10 @@ func coreDLPPatternDefs() []coreDLPPattern {
 	out := make([]coreDLPPattern, 0, len(patterns))
 	for _, pattern := range patterns {
 		out = append(out, coreDLPPattern{
-			name:     pattern.Name,
-			regex:    pattern.Regex,
-			severity: pattern.Severity,
+			name:                    pattern.Name,
+			regex:                   pattern.Regex,
+			severity:                pattern.Severity,
+			credentialAudienceHosts: append([]string(nil), pattern.CredentialAudienceHosts...),
 		})
 	}
 	return out
@@ -201,9 +203,10 @@ func initCoreScanner() *compiledCoreScanner {
 			panic(fmt.Sprintf("BUG: core DLP pattern %q failed to compile: %v", p.name, err))
 		}
 		cs.dlpPatterns = append(cs.dlpPatterns, &compiledPattern{
-			name:     p.name,
-			re:       re,
-			severity: p.severity,
+			name:                    p.name,
+			re:                      re,
+			severity:                p.severity,
+			credentialAudienceHosts: append([]string(nil), p.credentialAudienceHosts...),
 		})
 	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)
@@ -500,9 +503,10 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 		p := s.core.dlpPatterns[idx]
 		if start, end, ok := p.matchSpan(cleaned); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName: p.name,
-				Severity:    p.severity,
-				span:        newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
+				PatternName:             p.name,
+				Severity:                p.severity,
+				credentialAudienceHosts: p.credentialAudienceHosts,
+				span:                    newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
 			})
 		}
 	}
@@ -548,10 +552,11 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 		p := s.core.dlpPatterns[idx]
 		if start, end, ok := p.matchSpan(text); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName: p.name,
-				Severity:    p.severity,
-				Encoded:     encoding,
-				span:        newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
+				PatternName:             p.name,
+				Severity:                p.severity,
+				Encoded:                 encoding,
+				credentialAudienceHosts: p.credentialAudienceHosts,
+				span:                    newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
 			})
 		}
 	}

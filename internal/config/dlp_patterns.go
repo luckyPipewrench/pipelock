@@ -131,8 +131,22 @@ var defaultDLPPatternSet = []DLPPattern{
 	{Name: "Azure SAS Token", Regex: `\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`, Severity: SeverityHigh},
 
 	// Messaging platform tokens
-	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},
-	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical},
+	// The Slack Web API serves every method at https://slack.com/api/..., while
+	// Slack's hosted MCP server accepts user tokens at https://mcp.slack.com/mcp.
+	// Those user tokens share the Slack Token pattern with bot and legacy token
+	// forms, so the compiled audience remains pattern-scoped: every xox* token is
+	// allowed only to these two exact Slack-owned authorities. A Socket Mode
+	// client opens its gateway on
+	// the pre-authenticated wss:// URL returned by apps.connections.open, which
+	// carries its own ticket, so no token is re-presented to that subdomain and
+	// it is deliberately not an audience host.
+	// Sources: https://docs.slack.dev/apis/web-api/
+	// https://docs.slack.dev/ai/slack-mcp-server/
+	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}},
+	// The app-level token authenticates apps.connections.open, also on
+	// https://slack.com/api/..., so it shares the exact-host audience.
+	// Source: https://docs.slack.dev/reference/methods/apps.connections.open/
+	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}},
 	// The first segment is base64 of a snowflake user ID, which is
 	// structurally an UPPERCASE M or N; the bot-token form is three
 	// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.

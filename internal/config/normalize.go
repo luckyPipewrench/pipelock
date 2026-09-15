@@ -1003,6 +1003,15 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	}
 }
 
+// RestoreBuiltInCredentialAudienceHosts re-derives immutable runtime audience
+// metadata after a trusted config transformation, such as an Enterprise agent
+// profile merge. Serialized profile patterns cannot carry this yaml-excluded
+// field, so callers must restore it from exact shipped pattern identity before
+// constructing a scanner.
+func RestoreBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
+	markBuiltInCredentialAudienceHosts(patterns)
+}
+
 func credentialAudienceExemptDomainsSubset(domains, audience []string) bool {
 	if len(domains) == 0 {
 		return true

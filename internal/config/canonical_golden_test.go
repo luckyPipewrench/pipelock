@@ -423,6 +423,15 @@ const (
 	// per-host observe entry withholds a block on the immutable response
 	// floor, so two deployments differing only in their exceptions have
 	// genuinely different enforcement and their receipts must say so.
+	// Re-bumped when the Slack bot/user and app-level tokens gained the compiled
+	// audience slack.com and the immutable core floor learned to honor a compiled
+	// audience at a credential's own issuing authority. Slack Token is a core
+	// pattern, so this narrows where that credential is enforced (allowed at its
+	// exact encrypted Slack authorities, blocked everywhere else); the identity
+	// moves with the binary's built-in set, not with operator YAML.
+	// Re-bumped when Slack's hosted MCP authority was added to the Slack Token
+	// audience. The extra exact host changes where that built-in credential is
+	// enforced, so the binary's reported policy identity must move with it.
 	goldenHashDefaults = "3340180490f6a585b07cc6738745a642ac4c192d875c466bac702b51962ed64f"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
@@ -652,6 +661,10 @@ const (
 	// per-host observe entry withholds a block on the immutable response
 	// floor, so two deployments differing only in their exceptions have
 	// genuinely different enforcement and their receipts must say so.
+	// Re-bumped alongside goldenHashDefaults for the Slack compiled audience and
+	// the core-floor audience change; the rich fixture carries the built-in DLP
+	// patterns, so its policy identity moves the same way.
+	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	goldenHashRichConfig = "2d1f6d8bf5eaf43a94dd728f0518027b3d328deacbce77cc197f294723a750b6"
 )
 

@@ -415,7 +415,7 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	}
 
 	if profile == nil {
-		return merged, nil
+		profile = &config.AgentProfile{}
 	}
 
 	if profile.Mode != "" {
@@ -500,6 +500,12 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 			merged.Sandbox.FS.AllowWrite = append(merged.Sandbox.FS.AllowWrite, profile.Sandbox.FS.AllowWrite...)
 		}
 	}
+
+	// deepCopyConfig uses a YAML round-trip, which necessarily strips the
+	// yaml-excluded audience metadata even when this profile does not override
+	// DLP at all. Restore exact shipped pattern identities after every profile
+	// merge; custom same-name patterns remain ineligible.
+	config.RestoreBuiltInCredentialAudienceHosts(merged.DLP.Patterns)
 
 	return merged, nil
 }

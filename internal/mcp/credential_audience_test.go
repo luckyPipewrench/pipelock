@@ -25,6 +25,7 @@ func TestCredentialAudienceHost_DoesNotRelaxMCPStdioOrHTTPInput(t *testing.T) {
 		{name: "OpenAI", credential: "sk-" + "proj-" + strings.Repeat("a", 24), target: "https://api.openai.com/v1"},
 		{name: "Anthropic", credential: "sk-" + "ant-" + strings.Repeat("a", 24), target: "https://api.anthropic.com/v1/messages"},
 		{name: "Discord", credential: "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), target: "https://discord.com/api/v10"},
+		{name: "Slack hosted MCP", credential: "xoxp-" + strings.Repeat("a", 24), target: "https://mcp.slack.com/mcp"},
 	}
 
 	for _, tt := range tests {

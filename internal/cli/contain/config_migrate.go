@@ -227,6 +227,32 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 	return &policy, nil
 }
 
+// parseContainmentLoopbackServicesFromConfigBytes parses and validates
+// containment.loopback_services out of raw managed-config YAML bytes. It is
+// the single source both contain install (declaredContainmentLoopbackServices,
+// which fails install closed on any error) and the boot/operator nft
+// reconciler (which instead falls back to zero declared services on any
+// error, logging why) call, so both consumers agree on exactly what counts
+// as a usable declared exception.
+func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentLoopbackService, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse managed config: %w", err)
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, errors.New("managed config must be a YAML mapping")
+	}
+	declared, err := containmentLoopbackServicesFromMapping(mapping)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, now); err != nil {
+		return nil, err
+	}
+	return declared, nil
+}
+
 // containmentLoopbackServicesFromMapping is the outbound-exception sibling of
 // containmentMetricsExposureFromMapping: it decodes containment.loopback_services
 // from the same raw YAML mapping, using the same strict-decode-then-validate

@@ -1189,20 +1189,9 @@ func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]conf
 		}
 		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	root, err := parseSingleYAMLDocument(data)
+	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("parse managed config %s: %w", managedPipelockConfigPath(env), err)
-	}
-	mapping := documentMapping(root)
-	if mapping == nil {
-		return nil, fmt.Errorf("managed config %s must be a YAML mapping", managedPipelockConfigPath(env))
-	}
-	declared, err := containmentLoopbackServicesFromMapping(mapping)
-	if err != nil {
-		return nil, err
-	}
-	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, time.Now()); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
 	return declared, nil
 }

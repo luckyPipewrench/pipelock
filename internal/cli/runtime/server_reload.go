@@ -147,6 +147,20 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
 			}
 		}
+		// Config reload only swaps the in-memory Config.Containment.LoopbackServices
+		// value; it never touches the kernel nftables state. The declared set
+		// only reaches the agent's actual egress boundary through
+		// `pipelock contain reload-nft-rules` (the same command the boot-time
+		// containment persistence unit runs on every boot), which re-renders
+		// the managed block from the managed config. Warn once per reload so an
+		// operator who edits loopback_services and reloads Pipelock, but never
+		// runs reconciliation, is told the change has not taken effect yet --
+		// do not reject the reload over it, since the config value itself is
+		// valid and the drift is only between config and kernel state.
+		if s.containmentManaged && !reflect.DeepEqual(oldCfg.Containment.LoopbackServices, newCfg.Containment.LoopbackServices) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
+				"run `pipelock contain reload-nft-rules` as root to apply the change to the live nftables boundary")
+		}
 		// Emit sinks own live workers, queues, network connections and, for the
 		// durable forwarder, exclusive spool/cursor locks. Replacing them after
 		// the proxy publishes a candidate can make Reload return an error after

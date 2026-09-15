@@ -5,9 +5,11 @@ package contain
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"gopkg.in/yaml.v3"
@@ -490,47 +492,85 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("unreadable config", func(t *testing.T) {
 		env := newEnv("", os.ErrNotExist)
-		if declared := declaredContainmentLoopbackServicesForVerify(env, 8888); declared != nil {
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
+		}
+		if problem != "" {
+			t.Fatalf("an absent managed config is not itself a reportable problem, got %q", problem)
 		}
 	})
 
 	t.Run("malformed yaml", func(t *testing.T) {
 		env := newEnv("containment: [", nil)
-		if declared := declaredContainmentLoopbackServicesForVerify(env, 8888); declared != nil {
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
+		}
+		if problem == "" {
+			t.Fatal("malformed YAML must surface a problem string naming the fallback")
 		}
 	})
 
 	t.Run("non-mapping document", func(t *testing.T) {
 		env := newEnv("- just\n- a\n- list\n", nil)
-		if declared := declaredContainmentLoopbackServicesForVerify(env, 8888); declared != nil {
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
+		}
+		if problem == "" {
+			t.Fatal("a non-mapping document must surface a problem string naming the fallback")
 		}
 	})
 
 	t.Run("invalid declared entry", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 10.20.0.20\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		if declared := declaredContainmentLoopbackServicesForVerify(env, 8888); declared != nil {
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
+		}
+		if !strings.Contains(problem, env.configPath) || !strings.Contains(problem, "loopback literal") {
+			t.Fatalf("problem = %q, want it to name the config path and the validation failure", problem)
+		}
+	})
+
+	t.Run("expired declared entry names host, owner, and reconciliation remedy", func(t *testing.T) {
+		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2000-01-01T00:00:00Z\"\n"
+		env := newEnv(body, nil)
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
+			t.Fatalf("got %v, want nil", declared)
+		}
+		if !strings.Contains(problem, "expired at") {
+			t.Fatalf("problem = %q, want it to name the expiry failure", problem)
+		}
+		if !strings.Contains(problem, "remove or re-approve") {
+			t.Fatalf("problem = %q, want it to name the operator remedy", problem)
 		}
 	})
 
 	t.Run("loopback_services not a sequence", func(t *testing.T) {
 		body := "containment:\n  loopback_services: not-a-list\n"
 		env := newEnv(body, nil)
-		if declared := declaredContainmentLoopbackServicesForVerify(env, 8888); declared != nil {
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
+		}
+		if problem == "" {
+			t.Fatal("a non-sequence loopback_services must surface a problem string naming the fallback")
 		}
 	})
 
 	t.Run("valid managed config decodes", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if len(declared) != 1 || declared[0].Port != 9200 {
 			t.Fatalf("got %+v, want one decoded entry on port 9200", declared)
+		}
+		if problem != "" {
+			t.Fatalf("a valid declared set must not report a problem, got %q", problem)
 		}
 	})
 }
@@ -674,5 +714,267 @@ func TestDoctorSurfacesMissingDeclaredLoopbackService(t *testing.T) {
 	}
 	if !strings.Contains(res.detail, "declared loopback service 127.0.0.1:9200") || !strings.Contains(res.detail, "owner=search-team") {
 		t.Fatalf("doctor detail = %q, want it to name the missing declared service and its owner", res.detail)
+	}
+}
+
+// TestProbeNFTContainmentSurfacesLoopbackConfigProblemDetail is the
+// end-to-end LOW-severity proof: when an expired (or otherwise unusable)
+// declared loopback service collapses to an empty set, and the live chain
+// still carries an undeclared loopback accept as a result, the FAIL detail
+// names the config problem (host:port, owner, why) and the remedy, not just
+// the generic "unexpected verdict before agent drop".
+func TestProbeNFTContainmentSurfacesLoopbackConfigProblemDetail(t *testing.T) {
+	t.Parallel()
+	expiredConfigBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2000-01-01T00:00:00Z\"\n"
+	liveWithUndeclaredAccept := strings.Replace(goodNFTContainmentOutput,
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 9200 accept", 1)
+
+	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = "rules.nft"
+		e.readFile = func(path string) ([]byte, error) {
+			if path == e.configPath {
+				return []byte(expiredConfigBody), nil
+			}
+			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+		}
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return liveWithUndeclaredAccept, 0, nil
+		}
+	})
+
+	status, detail := probeNFTContainment(context.Background(), base)
+	if status != statusFail {
+		t.Fatalf("status = %q, want fail", status)
+	}
+	if !strings.Contains(detail, "127.0.0.1:9200") {
+		t.Fatalf("detail = %q, want the declared host:port named", detail)
+	}
+	if !strings.Contains(detail, "owner=search-team") {
+		t.Fatalf("detail = %q, want the declared owner named", detail)
+	}
+	if !strings.Contains(detail, "expired at") {
+		t.Fatalf("detail = %q, want the expiry failure named", detail)
+	}
+	if !strings.Contains(detail, "remove or re-approve") {
+		t.Fatalf("detail = %q, want the operator remedy named", detail)
+	}
+}
+
+// nftReloadTestFixture builds a nftReloadEnv for the HIGH-severity end-to-end
+// reconciliation tests: the persisted rules file and the live chain both
+// start with the OLD declared shape (base or with a since-changed loopback
+// service), and the managed config carries the CURRENT declaration. The
+// returned getters observe what reloadNFTRules actually applied and
+// persisted.
+type nftReloadTestFixture struct {
+	env          *nftReloadEnv
+	warnings     []string
+	appliedBody  func() string // the freshly rendered rules body loaded via -f
+	persisted    func() (string, bool)
+	deleteHandle func(handle int) bool
+}
+
+func newNFTReloadTestFixture(t *testing.T, live, configBody, persistedRules string) *nftReloadTestFixture {
+	t.Helper()
+	const rulesPath = "/managed/50-pipelock-containment.nft"
+	const configPath = "/etc/pipelock/pipelock.yaml"
+
+	fx := &nftReloadTestFixture{}
+	writes := make(map[string]string)
+	var reloadScript string
+
+	fx.env = &nftReloadEnv{
+		nftPath:    "nft",
+		rulesPath:  rulesPath,
+		configPath: configPath,
+		table:      defaultNFTTable,
+		chain:      defaultNFTChain,
+		now:        func() time.Time { return time.Unix(1_800_000_000, 0) },
+		warn: func(msg string) {
+			fx.warnings = append(fx.warnings, msg)
+		},
+		readFile: func(path string) ([]byte, error) {
+			switch path {
+			case rulesPath:
+				return []byte(persistedRules), nil
+			case configPath:
+				return []byte(configBody), nil
+			default:
+				return nil, fmt.Errorf("unexpected read %q", path)
+			}
+		},
+		writeFile: func(path string, data []byte, _ os.FileMode) error {
+			writes[path] = string(data)
+			if path == rulesPath+".reload" {
+				reloadScript = string(data)
+			}
+			return nil
+		},
+		removeFile: func(path string) error {
+			delete(writes, path)
+			return nil
+		},
+		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.HasPrefix(joined, "-n -a list chain"):
+				return live, 0, nil
+			case strings.HasPrefix(joined, "-c -f "), strings.HasPrefix(joined, "-f "):
+				return "", 0, nil
+			default:
+				return "", 1, fmt.Errorf("unexpected nft invocation: %s", joined)
+			}
+		},
+	}
+	fx.appliedBody = func() string { return reloadScript }
+	fx.persisted = func() (string, bool) {
+		body, ok := writes[rulesPath]
+		return body, ok
+	}
+	fx.deleteHandle = func(handle int) bool {
+		return strings.Contains(reloadScript, "delete rule inet "+defaultNFTTable+" "+defaultNFTChain+" handle "+itoa(handle))
+	}
+	return fx
+}
+
+const nftReloadTestLiveWithOneService = `table inet pipelock_containment {
+  chain output_filter { type filter hook output priority filter; policy accept;
+    meta skuid 1000 accept # handle 20
+    meta skuid 967 accept # handle 21
+    meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 22
+    meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept # handle 23
+    meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 24
+    meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 25
+    meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 26
+  }
+}
+`
+
+const nftReloadTestLiveWithNoService = `table inet pipelock_containment {
+  chain output_filter { type filter hook output priority filter; policy accept;
+    meta skuid 1000 accept # handle 20
+    meta skuid 967 accept # handle 21
+    meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 22
+    meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 23
+    meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 24
+    meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 25
+  }
+}
+`
+
+func nftReloadTestConfigWithService(port int, expiresAt string) string {
+	return "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: " + itoa(port) +
+		"\n    owner: search-team\n    reason: local index\n    expires_at: \"" + expiresAt + "\"\n"
+}
+
+// TestReloadNFTRulesReconcilesAddedLoopbackService: a declared entry that
+// was never installed (the live chain and persisted file only carry the
+// base block) is added to the managed config, and the NEXT reload -- not a
+// re-run of `contain install` -- loads it.
+func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
+	t.Parallel()
+	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, nftReloadTestConfigWithService(9200, "2099-01-01T00:00:00Z"), basePersisted)
+	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+		t.Fatalf("reloadNFTRules: %v", err)
+	}
+	for _, handle := range []int{20, 21, 22, 23, 24, 25} {
+		if !fx.deleteHandle(handle) {
+			t.Fatalf("expected delete for old base-block handle %d in:\n%s", handle, fx.appliedBody())
+		}
+	}
+	if !strings.Contains(fx.appliedBody(), "ip daddr 127.0.0.1 tcp dport 9200 accept") {
+		t.Fatalf("newly-declared service was not loaded:\n%s", fx.appliedBody())
+	}
+	persisted, ok := fx.persisted()
+	if !ok || !strings.Contains(persisted, "ip daddr 127.0.0.1 tcp dport 9200 accept") {
+		t.Fatalf("persisted rules file was not updated to carry the newly-declared service: %q", persisted)
+	}
+	if len(fx.warnings) != 0 {
+		t.Fatalf("a valid new declaration must not warn, got %v", fx.warnings)
+	}
+}
+
+// TestReloadNFTRulesReconcilesRevokedLoopbackService is the HIGH-severity
+// proof: an operator REMOVES a declared entry from the managed config
+// (never touching contain install), and the next reload drops the live
+// accept and rewrites the persisted file to match -- it does not persist
+// forever because reload used to trust the stale file verbatim.
+func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
+	t.Parallel()
+	withServicePersisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
+	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", withServicePersisted) // managed config with the entry simply removed
+	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+		t.Fatalf("reloadNFTRules: %v", err)
+	}
+	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26} {
+		if !fx.deleteHandle(handle) {
+			t.Fatalf("expected delete for old handle %d (including the revoked service's accept) in:\n%s", handle, fx.appliedBody())
+		}
+	}
+	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
+		t.Fatalf("revoked service's accept must not be reloaded:\n%s", fx.appliedBody())
+	}
+	persisted, ok := fx.persisted()
+	if !ok {
+		t.Fatal("persisted rules file was not rewritten after revocation")
+	}
+	if strings.Contains(persisted, "dport 9200 accept") {
+		t.Fatalf("persisted rules file still carries the revoked service: %q", persisted)
+	}
+}
+
+// TestReloadNFTRulesReconcilesExpiredLoopbackService: an entry is still
+// present in the managed config but its expires_at has passed. Reload
+// treats the whole declared set as invalid (matching ValidateContainmentLoopbackServices'
+// atomic validation), drops the live accept the same way a revoked entry is
+// dropped, and warns naming the entry and why.
+func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
+	t.Parallel()
+	withServicePersistedExpired := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
+	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, nftReloadTestConfigWithService(9200, "2000-01-01T00:00:00Z"), withServicePersistedExpired)
+	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+		t.Fatalf("reloadNFTRules: %v", err)
+	}
+	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
+		t.Fatalf("expired service's accept must not be reloaded:\n%s", fx.appliedBody())
+	}
+	persisted, ok := fx.persisted()
+	if !ok || strings.Contains(persisted, "dport 9200 accept") {
+		t.Fatalf("persisted rules file still carries the expired service: ok=%v %q", ok, persisted)
+	}
+	if len(fx.warnings) != 1 {
+		t.Fatalf("expected exactly one warning naming the dropped entry, got %v", fx.warnings)
+	}
+	if !strings.Contains(fx.warnings[0], "expired at") || !strings.Contains(fx.warnings[0], "reload-nft-rules") {
+		t.Fatalf("warning = %q, want it to name the expiry and the reconciliation command", fx.warnings[0])
+	}
+}
+
+// TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig proves the
+// unreadable-managed-config branch of reconcileDeclaredContainmentLoopbackServicesForReload:
+// a permission error (not a missing file) still renders zero declared
+// services rather than erroring the whole reload, and warns.
+func TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig(t *testing.T) {
+	t.Parallel()
+	basePersistedUnreadable := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", basePersistedUnreadable)
+	fx.env.readFile = func(path string) ([]byte, error) {
+		if path == fx.env.configPath {
+			return nil, os.ErrPermission
+		}
+		return []byte(renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)), nil
+	}
+	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+		t.Fatalf("reloadNFTRules: %v", err)
+	}
+	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
+		t.Fatalf("an unreadable managed config must render zero declared services, got:\n%s", fx.appliedBody())
+	}
+	if len(fx.warnings) != 1 || !strings.Contains(fx.warnings[0], "unreadable") {
+		t.Fatalf("expected exactly one unreadable-config warning, got %v", fx.warnings)
 	}
 }

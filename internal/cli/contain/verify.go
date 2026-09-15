@@ -1554,7 +1554,7 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	// never declared any loopback_services entry, and it means a config-read
 	// problem can only ever make this probe MORE strict (an undeclared accept
 	// it now cannot explain still fails below), never less.
-	loopbackServices := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	loopbackServices, loopbackProblem := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	for _, svc := range loopbackServices {
 		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
 			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) accept rule is missing or appears after the agent catch-all drop", svc.Host, svc.Port, svc.Owner)
@@ -1567,6 +1567,9 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port, loopbackServices) {
+		if loopbackProblem != "" {
+			return statusFail, "chain contains unexpected verdict before agent drop: " + loopbackProblem
+		}
 		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
@@ -1727,7 +1730,7 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 			return fmt.Errorf("nftables rules file operator uid %d does not match current %s uid %d", current.operatorUID, env.operatorUser, operatorUID)
 		}
 	}
-	loopbackServices := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	loopbackServices, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	want := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         current.proxyUID,
@@ -1946,27 +1949,24 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 // unreadable will see its own declared service reported as an unsafe verdict
 // until the config is readable again -- a false alarm in the safe direction,
 // not a missed one.
-func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) []config.ContainmentLoopbackService {
+// declaredContainmentLoopbackServicesForVerify additionally returns a
+// non-empty problem string whenever it falls back to an empty declared set
+// because the managed config could not be read/parsed or a declared entry
+// is malformed/expired -- not when the managed config is simply absent or
+// genuinely declares nothing. Callers surface this alongside the generic
+// "unexpected verdict" FAIL so an operator sees WHY a real declared service
+// (host:port, owner, expiry) is being treated as undeclared, instead of only
+// the class of the resulting nftables mismatch.
+func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string) {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	root, err := parseSingleYAMLDocument(data)
+	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
 	if err != nil {
-		return nil
+		return nil, fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err)
 	}
-	mapping := documentMapping(root)
-	if mapping == nil {
-		return nil
-	}
-	declared, err := containmentLoopbackServicesFromMapping(mapping)
-	if err != nil {
-		return nil
-	}
-	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, time.Now()); err != nil {
-		return nil
-	}
-	return declared
+	return declared, ""
 }
 
 // containmentBypassDetailPrefix is the single wording for a definite agent-UID
@@ -2725,8 +2725,8 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	loopbackServices := declaredContainmentLoopbackServicesForVerify(env, env.port)
-	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices)
+	loopbackServices, loopbackProblem := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices, loopbackProblem)
 }
 
 // containmentDropCounterFromChainText is the single recognizer behind probe
@@ -2734,7 +2734,7 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 // output; the published conformance fixtures feed it fixture chain text. One
 // function, not two copies, so the artifact that exists to prove the egress
 // test is real can never drift from what `contain verify` actually checks.
-func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int, declaredLoopbackServices []config.ContainmentLoopbackService) (uint64, error) {
+func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int, declaredLoopbackServices []config.ContainmentLoopbackService, loopbackProblem string) (uint64, error) {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return 0, err
@@ -2746,6 +2746,9 @@ func containmentDropCounterFromChainText(out, chainName string, uids containment
 		return 0, &containmentBypassError{rule: rule}
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, port, declaredLoopbackServices) {
+		if loopbackProblem != "" {
+			return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe: %s", chainName, loopbackProblem)
+		}
 		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", chainName)
 	}
 	return managedContainmentDropPacketCountFromLines(lines, chainName, uids.agentUID)

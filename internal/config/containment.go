@@ -189,7 +189,11 @@ func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, 
 		}
 		seen[key] = struct{}{}
 		if err := validateContainmentExceptionLifecycle(field, svc.Owner, svc.Reason, svc.ExpiresAt, now); err != nil {
-			return err
+			// Repeat the host:port and owner in the wrapped error so a caller
+			// that only sees the flattened message (contain verify's FAIL
+			// detail, an operator's terminal) can still tell WHICH declared
+			// service is unusable without cross-referencing the index.
+			return fmt.Errorf("%s:%d (owner=%s): %w", host, svc.Port, svc.Owner, err)
 		}
 	}
 	return nil

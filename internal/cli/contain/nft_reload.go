@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 var nftHandlePattern = regexp.MustCompile(`\s+# handle ([1-9][0-9]*)\s*$`)
@@ -24,12 +27,20 @@ var nftHandlePattern = regexp.MustCompile(`\s+# handle ([1-9][0-9]*)\s*$`)
 type nftReloadEnv struct {
 	nftPath    string
 	rulesPath  string
+	configPath string
 	table      string
 	chain      string
 	runCmd     runCommand
 	readFile   func(string) ([]byte, error)
 	writeFile  func(string, []byte, os.FileMode) error
 	removeFile func(string) error
+	now        func() time.Time
+	// warn reports a non-fatal reconciliation problem (a dropped declared
+	// loopback service) to the operator. Every boot/manual reload runs
+	// unattended via systemd, so this writes to stderr -- captured by the
+	// journal -- rather than returning an error that would abort the reload
+	// and leave the agent's egress boundary un-reconciled at all.
+	warn func(string)
 }
 
 var (
@@ -42,12 +53,17 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 	return &nftReloadEnv{
 		nftPath:    platform.nftPath,
 		rulesPath:  defaultNFTRulesPath,
+		configPath: filepath.Join(defaultConfigDir, "pipelock.yaml"),
 		table:      defaultNFTTable,
 		chain:      defaultNFTChain,
 		runCmd:     realRunCommand,
 		readFile:   os.ReadFile,
 		writeFile:  os.WriteFile,
 		removeFile: os.Remove,
+		now:        time.Now,
+		warn: func(msg string) {
+			_, _ = fmt.Fprintln(os.Stderr, "WARNING: "+msg)
+		},
 	}
 }
 
@@ -72,17 +88,38 @@ func reloadNFTRulesCmd() *cobra.Command {
 }
 
 func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
-	rules, err := env.readFile(env.rulesPath)
+	persisted, err := env.readFile(env.rulesPath)
 	if err != nil {
 		return fmt.Errorf("read nft rules %s: %w", env.rulesPath, err)
 	}
-	header, ok, err := parseNFTRulesHeaderUIDs(rules)
+	header, ok, err := parseNFTRulesHeaderUIDs(persisted)
 	if err != nil {
 		return fmt.Errorf("parse nft rules header %s: %w", env.rulesPath, err)
 	}
 	if !ok {
 		return fmt.Errorf("nft rules %s is missing the managed uid header", env.rulesPath)
 	}
+
+	// The persisted rules file is NOT the source of truth for declared
+	// loopback services: an operator can add, remove, or let an entry expire
+	// in the managed config without ever re-running `contain install`, and
+	// the persisted file would otherwise still carry a now-removed or
+	// now-expired accept forever. Every reload -- boot-time or the operator
+	// re-running `pipelock contain reload-nft-rules` by hand -- re-derives
+	// the managed block from the CURRENT managed config, the same reader
+	// `contain install` uses, so removed and expired entries are dropped
+	// here even if nobody re-runs install.
+	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
+	rules := []byte(renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID:      header.operatorUID,
+		ProxyUID:         header.proxyUID,
+		AgentUID:         header.agentUID,
+		ProxyPort:        header.proxyPort,
+		Table:            env.table,
+		Chain:            env.chain,
+		LoopbackServices: loopbackServices,
+	}))
+
 	out, code, err := env.runCmd(ctx, env.nftPath, "-n", "-a", "list", "chain", "inet", env.table, env.chain)
 	if err != nil {
 		return fmt.Errorf("list nft managed chain: %w", err)
@@ -113,7 +150,51 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return fmt.Errorf("reload nft managed chain exit=%d", code)
 	}
+	// The kernel state and the persisted rules file must agree, or the NEXT
+	// reload (or a reboot that skips this reconciler and loads the file
+	// directly) would reintroduce whatever this reload just dropped. Persist
+	// only after the live reload succeeds, so a failed reload never
+	// overwrites a known-good persisted file with an unapplied change.
+	if !bytesEqual(persisted, rules) {
+		if err := env.writeFile(env.rulesPath, rules, modeConfigSecret); err != nil {
+			return fmt.Errorf("persist reconciled nft rules %s: %w", env.rulesPath, err)
+		}
+	}
 	return nil
+}
+
+// reconcileDeclaredContainmentLoopbackServicesForReload resolves the
+// declared loopback services this reload should render, from the managed
+// config rather than the stale persisted rules file. On any failure to
+// read, parse, or validate the declaration -- unreadable managed config,
+// malformed YAML, or an expired/malformed entry -- it fails closed by
+// returning zero declared services (the agent stays contained and only
+// loses the extra declared service) and reports exactly which entry was
+// dropped and why via env.warn, rather than silently keeping whatever was
+// last rendered.
+func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, proxyPort int) []config.ContainmentLoopbackService {
+	now := time.Now
+	if env.now != nil {
+		now = env.now
+	}
+	data, err := env.readFile(env.configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if env.warn != nil {
+			env.warn(fmt.Sprintf("containment: managed config %s is unreadable (%v); reloading without any declared loopback services until it is readable again — run `pipelock contain reload-nft-rules` after fixing it", env.configPath, err))
+		}
+		return nil
+	}
+	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, now())
+	if err != nil {
+		if env.warn != nil {
+			env.warn(fmt.Sprintf("containment: managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); reloading without any declared loopback services until it is fixed — remove or re-approve the offending entry, then run `pipelock contain reload-nft-rules`", env.configPath, err))
+		}
+		return nil
+	}
+	return declared
 }
 
 // renderNFTManagedChainReloadScript removes complete, unlabelled legacy

@@ -291,15 +291,33 @@ check` and `contain install` both fail closed on it rather than silently
 dropping the exception.
 
 `contain install` renders each declared entry into the same managed nftables
-block as the implicit proxy-port allow, and `contain reload-nft-rules`
-recognizes and replaces that expanded block on every boot, the same way it
-replaces the plain block. `contain verify` checks the declared set against
-the live chain in both directions: an agent-owned loopback accept for a port
-that is neither the proxy port nor a declared entry fails as an unexpected
-verdict before the agent's catch-all drop, and a declared entry with no
-matching live accept fails by name (`host:port`, with its `owner`), so a
-declaration that never made it into the loaded ruleset is visible instead of
-silently assumed.
+block as the implicit proxy-port allow. `contain reload-nft-rules` -- the
+same command the boot-time persistence unit runs on every boot -- re-reads
+the managed config and re-renders that block from the CURRENT declared set
+every time it runs, not from whatever it last loaded: an entry an operator
+removes, or one whose `expires_at` has passed, is dropped from the live
+chain and from the persisted rules file at the next reconciliation, without
+needing a fresh `contain install`. **Every add, remove, or expiry of a
+`containment.loopback_services` entry needs a reconciliation pass to reach
+the kernel.** Run `pipelock contain reload-nft-rules` as root after editing
+the managed config; the boot-time unit reruns it automatically on the next
+boot, and `contain install` reruns it too if that is the change you are
+already making. If the managed config is unreadable, or the declared set as
+a whole is malformed or contains an expired entry, reconciliation fails
+closed: it renders the managed block with ZERO declared loopback services
+(the agent stays contained and only loses the extra service) and logs a
+warning naming which entry was dropped and why.
+
+`contain verify` checks the declared set against the live chain in both
+directions: an agent-owned loopback accept for a port that is neither the
+proxy port nor a declared entry fails as an unexpected verdict before the
+agent's catch-all drop, and a declared entry with no matching live accept
+fails by name (`host:port`, with its `owner`), so a declaration that never
+made it into the loaded ruleset is visible instead of silently assumed. When
+the declared set itself cannot be read or validated, the FAIL detail also
+names the unusable entry (host:port, owner, and the expiry or parse failure)
+and the remedy -- remove or re-approve the entry, then run `pipelock contain
+reload-nft-rules` -- instead of only the generic unexpected-verdict message.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

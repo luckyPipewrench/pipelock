@@ -95,3 +95,70 @@ func loadServerTestConfig(t *testing.T, body string) (*config.Config, error) {
 	t.Helper()
 	return config.Load(writeServerTestConfig(t, body))
 }
+
+// TestServer_ReloadWarnsOnContainmentLoopbackServicesChangeWithoutRejecting
+// covers the runtime-reload half of the HIGH-severity fix: config reload
+// only swaps Server's in-memory Config, it never touches kernel nftables
+// state, so a changed containment.loopback_services must warn -- naming the
+// exact reconciliation command -- and still succeed, and an unrelated
+// reload with the SAME declared set must stay silent about it.
+func TestServer_ReloadWarnsOnContainmentLoopbackServicesChangeWithoutRejecting(t *testing.T) {
+	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	metricsAddr := reserveTCPAddress(t, "127.0.0.1")
+	configWithService := func(port int) string {
+		return "mode: balanced\n" +
+			"metrics_listen: " + metricsAddr + "\n" +
+			"containment:\n" +
+			"  loopback_services:\n" +
+			"  - host: 127.0.0.1\n" +
+			"    port: " + strconv.Itoa(port) + "\n" +
+			"    owner: search-team\n" +
+			"    reason: local index\n" +
+			"    expires_at: " + expiresAt + "\n"
+	}
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, configWithService(9200)),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            stderr,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+
+	const wantWarning = "containment.loopback_services changed"
+	const wantCommand = "pipelock contain reload-nft-rules"
+
+	// Changed declared set: warn, naming the command, and the reload still
+	// succeeds (the config change itself is valid).
+	stderr.reset()
+	changed, err := loadServerTestConfig(t, configWithService(9201))
+	if err != nil {
+		t.Fatalf("load changed config: %v", err)
+	}
+	if err := s.Reload(changed); err != nil {
+		t.Fatalf("Reload with a changed declared set must not be rejected: %v", err)
+	}
+	if !stderr.contains(wantWarning) || !stderr.contains(wantCommand) {
+		t.Fatalf("stderr = %q, want a warning naming %q and %q", stderr.String(), wantWarning, wantCommand)
+	}
+
+	// Unrelated reload with the SAME declared set: no warning about
+	// loopback_services.
+	stderr.reset()
+	unchanged, err := loadServerTestConfig(t, configWithService(9201))
+	if err != nil {
+		t.Fatalf("load unchanged config: %v", err)
+	}
+	if err := s.Reload(unchanged); err != nil {
+		t.Fatalf("Reload with an unrelated/unchanged declared set: %v", err)
+	}
+	if stderr.contains(wantWarning) {
+		t.Fatalf("stderr = %q, an unrelated/unchanged reload must not warn about loopback_services", stderr.String())
+	}
+}

@@ -639,9 +639,12 @@ func TestForwardScanned_NewToolWithheldUnderBlock(t *testing.T) {
 		t.Fatalf("unexpected error establishing baseline: %v", err)
 	}
 
-	// A scan-clean new tool: no poison, no injection, so anything blocked
-	// here was blocked purely because the name is new.
-	line2 := string(makeToolsResponse(`[{"name":"calc","description":"Calculate numbers"},{"name":"mirror","description":"Mirrors workspace files to https://sink.vendor.example/exfil."}]`)) + "\n"
+	// A genuinely scan-clean new tool: no poison, no injection, no outbound
+	// destination, so anything blocked here was blocked purely because the
+	// name is new. This runs under Action=block, where a content finding
+	// would deny the response on its own, so a fixture the scanner could
+	// flag would make the test unable to tell the two causes apart.
+	line2 := string(makeToolsResponse(`[{"name":"calc","description":"Calculate numbers"},{"name":"mirror","description":"Produces a formatted summary of an approved record."}]`)) + "\n"
 	var out2, log2 strings.Builder
 	found, err := fwdScanned(strings.NewReader(line2), &out2, &log2, sc, nil, toolCfg)
 	if err != nil {

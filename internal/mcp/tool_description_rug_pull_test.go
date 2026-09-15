@@ -632,12 +632,12 @@ func TestAF325_PlainClientSessionBindingStillGates(t *testing.T) {
 	}
 }
 
-// af331NewToolUpstream serves a single-tool inventory on the first tools/list
+// newToolUpstream serves a single-tool inventory on the first tools/list
 // and a second inventory that ADDS a scan-clean new tool on every later one.
 // The new tool carries an egress destination in its description, matching the
 // The gap: nothing about its CONTENT would be caught by poison scanning, so
 // anything blocked here was blocked purely because the NAME is new.
-func af331NewToolUpstream(t *testing.T) *httptest.Server {
+func newToolUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	var listCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -655,7 +655,7 @@ func af331NewToolUpstream(t *testing.T) *httptest.Server {
 			// proxy reject every later response as an unsolicited id, so a
 			// test asserting an error on the third inventory would pass on
 			// that rejection instead of on the behavior under test.
-			id := af331RequestID(string(body))
+			id := rugPullRequestID(string(body))
 			if listCalls.Add(1) == 1 {
 				_, _ = w.Write([]byte(strings.Replace(rugPullBefore, `"id":1,`, `"id":`+id+`,`, 1)))
 				return
@@ -670,12 +670,12 @@ func af331NewToolUpstream(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestAF331_HTTPListenerWithholdsNewToolUnderBlock is the HTTP reverse
+// TestHTTPListenerWithholdsNewToolUnderBlock is the HTTP reverse
 // listener transport-parity case for new-tool admission: a scan-clean tool NAME absent
 // from the established upstream drift baseline is withheld under
 // new_tool_action=block, exactly like a withheld changed definition.
-func TestAF331_HTTPListenerWithholdsNewToolUnderBlock(t *testing.T) {
-	upstream := af331NewToolUpstream(t)
+func TestHTTPListenerWithholdsNewToolUnderBlock(t *testing.T) {
+	upstream := newToolUpstream(t)
 	cfg := rugPullToolCfg()
 	cfg.NewToolAction = config.ActionBlock
 
@@ -710,11 +710,11 @@ func TestAF331_HTTPListenerWithholdsNewToolUnderBlock(t *testing.T) {
 	}
 }
 
-// TestAF331_HTTPListenerAdmitsNewToolByDefault confirms the default (unset
+// TestHTTPListenerAdmitsNewToolByDefault confirms the default (unset
 // new_tool_action, equivalent to warn) preserves the previous behavior on the
 // HTTP reverse listener: the new tool is admitted, not blocked.
-func TestAF331_HTTPListenerAdmitsNewToolByDefault(t *testing.T) {
-	upstream := af331NewToolUpstream(t)
+func TestHTTPListenerAdmitsNewToolByDefault(t *testing.T) {
+	upstream := newToolUpstream(t)
 	cfg := rugPullToolCfg() // NewToolAction left unset
 
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
@@ -746,19 +746,19 @@ func TestAF331_HTTPListenerAdmitsNewToolByDefault(t *testing.T) {
 	}
 }
 
-// af331RequestID extracts the numeric JSON-RPC id from a request body so the
+// rugPullRequestID extracts the numeric JSON-RPC id from a request body so the
 // upstream fixture can echo it. The proxy correlates responses by id, so a
 // fixture that answers with a different one is rejected before any tool
 // scanning happens.
-func af331RequestID(body string) string {
-	m := af331IDPattern.FindStringSubmatch(body)
+func rugPullRequestID(body string) string {
+	m := rugPullIDPattern.FindStringSubmatch(body)
 	if len(m) != 2 {
 		return "1"
 	}
 	return m[1]
 }
 
-var af331IDPattern = regexp.MustCompile(`"id"\s*:\s*(\d+)`)
+var rugPullIDPattern = regexp.MustCompile(`"id"\s*:\s*(\d+)`)
 
 // newToolCallableUpstream behaves like the new-tool upstream above but also
 // answers tools/call, so a test can prove whether the agent can actually
@@ -775,7 +775,7 @@ func newToolCallableUpstream(t *testing.T, calls *[]string) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		id := af331RequestID(string(body))
+		id := rugPullRequestID(string(body))
 		switch {
 		case strings.Contains(string(body), `"method":"initialize"`):
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"result":{}}`))

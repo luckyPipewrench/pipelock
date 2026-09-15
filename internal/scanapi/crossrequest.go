@@ -99,23 +99,33 @@ type crossRequestFragments struct {
 	lastConfig *config.Config
 }
 
-// currentFor resolves the live buffer for cfg and drops all accumulated
-// state whenever the config object changed since the previous call.
-func (c *crossRequestFragments) currentFor(cfg *config.Config) *scanner.FragmentBuffer {
-	if c == nil || cfg == nil {
+// currentFor resolves the live buffer for the config a request was admitted
+// under. Generations move forward only: live is the handler's current config
+// at the moment of the append, so a request still holding an earlier config
+// after a reload is stale and gets no buffer (its single-request scan still
+// ran; it simply retains nothing), and it can never roll the buffer back to
+// its own generation. The whole resolution runs under one lock so two
+// requests from different generations cannot interleave a close and a
+// rebuild between them.
+func (c *crossRequestFragments) currentFor(cfg, live *config.Config) *scanner.FragmentBuffer {
+	if c == nil || cfg == nil || cfg != live {
 		return nil
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.lastConfig != cfg {
 		c.lastConfig = cfg
-		if c.buffer != nil {
-			c.buffer.Close()
-			c.buffer = nil
-			c.built = false
-		}
+		c.closeLocked()
 	}
-	c.mu.Unlock()
-	return c.current(cfg.CrossRequestDetection)
+	return c.currentLocked(cfg.CrossRequestDetection)
+}
+
+func (c *crossRequestFragments) closeLocked() {
+	if c.buffer != nil {
+		c.buffer.Close()
+		c.buffer = nil
+		c.built = false
+	}
 }
 
 // current returns the live buffer for cfg, rebuilding it if this is the
@@ -126,20 +136,19 @@ func (c *crossRequestFragments) current(ceeCfg config.CrossRequestDetection) *sc
 	if c == nil {
 		return nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentLocked(ceeCfg)
+}
+
+// currentLocked is current's body. Callers hold c.mu.
+func (c *crossRequestFragments) currentLocked(ceeCfg config.CrossRequestDetection) *scanner.FragmentBuffer {
 	if !ceeCfg.Enabled || !ceeCfg.FragmentReassembly.Enabled {
-		c.mu.Lock()
-		if c.buffer != nil {
-			c.buffer.Close()
-			c.buffer = nil
-			c.built = false
-		}
-		c.mu.Unlock()
+		c.closeLocked()
 		return nil
 	}
 
 	frag := ceeCfg.FragmentReassembly
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.built {
 		c.buffer = scanner.NewFragmentBuffer(frag.MaxBufferBytes, frag.ResolvedMaxSessions(), frag.WindowMinutes*60)
 		c.cfg = frag
@@ -271,7 +280,7 @@ func (h *Handler) runCrossRequest(ctx context.Context, cfg *config.Config, sc *s
 	if cfg == nil || req.Context == nil || req.Context.SessionID == "" || len(payload) == 0 {
 		return crossRequestOutcome{}
 	}
-	buffer := h.crossRequest.currentFor(cfg)
+	buffer := h.crossRequest.currentFor(cfg, h.currentConfig())
 	if buffer == nil {
 		return crossRequestOutcome{}
 	}

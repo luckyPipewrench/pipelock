@@ -667,3 +667,26 @@ func TestCrossRequestFragment_PolicyDeniedToolCallRetainsNothing(t *testing.T) {
 		t.Fatalf("control second half: expected deny from the completed match, got %q findings=%+v", r.Decision, r.Findings)
 	}
 }
+
+// TestCrossRequestFragments_StaleGenerationCannotRollBack pins that a request
+// still holding a pre-reload config neither reaches the buffer nor resets it:
+// generations only move forward, so a late request from the old generation
+// cannot combine its fragments with, or destroy, the new generation's state.
+func TestCrossRequestFragments_StaleGenerationCannotRollBack(t *testing.T) {
+	old := config.Defaults()
+	old.CrossRequestDetection = config.CrossRequestDetection{Enabled: true, Action: config.ActionBlock, FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5}}
+	live := *old
+	livePtr := &live
+	var c crossRequestFragments
+
+	newBuf := c.currentFor(livePtr, livePtr)
+	if newBuf == nil {
+		t.Fatal("live config must resolve a buffer")
+	}
+	if got := c.currentFor(old, livePtr); got != nil {
+		t.Fatal("a stale-generation request must get no buffer")
+	}
+	if again := c.currentFor(livePtr, livePtr); again != newBuf {
+		t.Fatal("a stale request must not have reset the live generation's buffer")
+	}
+}

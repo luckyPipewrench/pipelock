@@ -270,3 +270,84 @@ func TestAssembleFromEvidenceWithScenario_PreservesScenarioFields(t *testing.T) 
 		t.Fatalf("VerifyPacketDir: %v", err)
 	}
 }
+
+// TestLiveRun_ModelProvenance_EndToEnd drives a full uncontained live run with
+// a configured RequestedModel and a provider-reported model attached before
+// sealing, then confirms both survive on disk in the artifacts VerifyRun
+// consumes: RequestedModel in the signed launch manifest, ProviderModel in
+// the signed collector witness. It also covers the sanitization failure
+// direction: an invalid provider-reported value must NOT fail the run.
+func TestLiveRun_ModelProvenance_EndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live run test builds binaries and boots a real proxy")
+	}
+	agentBin, webtoolBin := buildBinaries(t)
+
+	cases := []struct {
+		name          string
+		providerModel string
+		wantWitness   string
+	}{
+		{name: "valid provider model recorded", providerModel: "served-model-2026-09-15", wantWitness: "served-model-2026-09-15"},
+		{name: "invalid provider model dropped, run still succeeds", providerModel: "bad\x00value", wantWitness: ""},
+		{name: "never observed, empty", providerModel: "", wantWitness: ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			rc, err := playground.StartLiveRun(t.Context(), playground.LiveRunOpts{
+				Contained:   false,
+				ScenarioID:  playground.LiveDemoScenarioID,
+				RunNonce:    "MODELPROV-" + tc.name,
+				ToyAgentBin: agentBin,
+				WebToolBin:  webtoolBin,
+				Model:       "requested-model-alias",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rc.Close()
+
+			if err := rc.RunSteps(1, 2); err != nil {
+				t.Fatal(err)
+			}
+			if tc.providerModel != "" {
+				rc.SetProviderModel(tc.providerModel)
+			}
+
+			runDir := t.TempDir()
+			rep, err := rc.AssembleAndVerify(runDir)
+			if err != nil {
+				t.Fatalf("AssembleAndVerify must not fail even on an invalid provider model: %v", err)
+			}
+			if !rep.OK {
+				t.Fatalf("run must verify end-to-end: %+v", rep)
+			}
+
+			lmBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "launch-manifest.json")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lm map[string]any
+			if err := json.Unmarshal(lmBytes, &lm); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := lm["requested_model"].(string); got != "requested-model-alias" {
+				t.Fatalf("launch-manifest.json requested_model = %q, want %q", got, "requested-model-alias")
+			}
+
+			wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var w map[string]any
+			if err := json.Unmarshal(wBytes, &w); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := w["provider_model"].(string)
+			if got != tc.wantWitness {
+				t.Fatalf("witness.json provider_model = %q, want %q", got, tc.wantWitness)
+			}
+		})
+	}
+}

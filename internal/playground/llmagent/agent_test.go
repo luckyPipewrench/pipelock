@@ -785,3 +785,80 @@ func TestRun_HistoryBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestAgent_ProviderModel_EmittedOnceFromRealResponseShape drives the agent
+// against a raw HTTP handler returning the exact provider response shape
+// (top-level "model" field alongside "choices"), across TWO model round
+// trips within one turn (a tool call, then the final reply). It proves the
+// provider-reported model identifier is captured, is only emitted once (not
+// once per round trip), and is untouched by a later round trip that reports a
+// different value -- ProviderModel() sticks to the FIRST one observed.
+func TestAgent_ProviderModel_EmittedOnceFromRealResponseShape(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			// First round trip: the model calls a tool, and the provider reports
+			// the model that served THIS response.
+			_, _ = w.Write([]byte(`{"model":"served-v1","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"1","type":"function","function":{"name":"noop","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+			return
+		}
+		// Second round trip: a DIFFERENT reported model (e.g. the provider
+		// rebalanced to another backend). ProviderModel() must still report the
+		// first-observed value; it is a "what happened at least once" record, not
+		// a live status field a later request can overwrite silently.
+		_, _ = w.Write([]byte(`{"model":"served-v2","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	emit, evs := collectEvents()
+	a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(),
+		[]Tool{{Name: "noop", Description: "no-op", Invoke: func(context.Context, json.RawMessage) (string, Event) {
+			return "ok", Event{Kind: EventToolResult, Status: 200}
+		}}},
+		emit)
+
+	if got := a.ProviderModel(); got != "" {
+		t.Fatalf("ProviderModel() before any call = %q, want empty", got)
+	}
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := a.ProviderModel(); got != "served-v1" {
+		t.Fatalf("ProviderModel() = %q, want %q (first-observed, not the second round trip's served-v2)", got, "served-v1")
+	}
+
+	count := 0
+	for _, e := range *evs {
+		if e.Kind == EventProviderModel {
+			count++
+			if e.Text != "served-v1" {
+				t.Fatalf("EventProviderModel.Text = %q, want %q", e.Text, "served-v1")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("EventProviderModel emitted %d times across 2 round trips, want exactly 1", count)
+	}
+}
+
+// TestAgent_ProviderModel_EmptyWhenProviderOmitsField covers the common case:
+// a provider that never echoes a "model" field leaves ProviderModel() empty
+// and never emits EventProviderModel.
+func TestAgent_ProviderModel_EmptyWhenProviderOmitsField(t *testing.T) {
+	model := &scriptedModel{responses: []chatMessage{textMsg("hi")}}
+	emit, evs := collectEvents()
+	a := newAgent(t, model, nil, emit)
+	if _, err := a.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := a.ProviderModel(); got != "" {
+		t.Fatalf("ProviderModel() = %q, want empty when the provider never echoes one", got)
+	}
+	for _, e := range *evs {
+		if e.Kind == EventProviderModel {
+			t.Fatalf("unexpected EventProviderModel: %+v", e)
+		}
+	}
+}

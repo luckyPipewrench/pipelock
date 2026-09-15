@@ -45,6 +45,12 @@ const (
 	// EventTurnDone is emitted by the subprocess wrapper (not the Agent) after a
 	// turn's narration, so the driver knows the turn is complete.
 	EventTurnDone = "turn_done"
+	// EventProviderModel is emitted once, the first time a chat-completions
+	// response names the concrete model that served it (Text carries the
+	// identifier). It is evidence-precision metadata only: the driver must not
+	// surface it to the visitor UI as narration, and nothing may treat it as a
+	// security decision input. Untrusted provider-controlled data.
+	EventProviderModel = "provider_model"
 )
 
 // Error codes carried on EventError.Code.
@@ -237,6 +243,18 @@ type Agent struct {
 	// message. It is empty when memory is disabled. Guarded by the sequential-use
 	// contract above, not a mutex.
 	convo []chatMessage
+
+	// providerModel is the first non-empty provider-reported model identifier
+	// observed across this agent's completions, set by complete(). Sequential-
+	// use contract, no mutex (same as convo).
+	providerModel string
+}
+
+// ProviderModel returns the provider-reported model identifier observed so
+// far (empty if the provider never echoed one). Untrusted, informational
+// only.
+func (a *Agent) ProviderModel() string {
+	return a.providerModel
 }
 
 // New builds an agent. httpClient is the ONLY egress path the agent uses for

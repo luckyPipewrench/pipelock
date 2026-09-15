@@ -319,11 +319,16 @@ func TestWaitReceiptsSettle_DeadlineWhenMissing(t *testing.T) {
 type scriptedRunner struct {
 	run    func(ctx context.Context, msg string, onEvent func(llmagent.Event)) error
 	closed bool
+	// providerModel, when set, is returned by ProviderModel(). Tests that don't
+	// care about it leave it empty.
+	providerModel string
 }
 
 func (r *scriptedRunner) RunTurn(ctx context.Context, msg string, onEvent func(llmagent.Event)) error {
 	return r.run(ctx, msg, onEvent)
 }
+
+func (r *scriptedRunner) ProviderModel() string { return r.providerModel }
 
 func (r *scriptedRunner) Close() error { r.closed = true; return nil }
 

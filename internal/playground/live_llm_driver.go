@@ -38,8 +38,14 @@ import (
 type modelTurnRunner interface {
 	// RunTurn writes msg to the agent and invokes onEvent for each narration event
 	// the agent emits, returning when the turn is complete (the wrapper's turn_done
-	// marker) or on error. It must not invoke onEvent after returning.
+	// marker) or on error. It must not invoke onEvent after returning. It never
+	// forwards llmagent.EventProviderModel to onEvent -- that event is captured
+	// internally and surfaced only via ProviderModel, never as visitor narration.
 	RunTurn(ctx context.Context, msg string, onEvent func(llmagent.Event)) error
+	// ProviderModel returns the provider-reported model identifier observed so
+	// far (empty if none has arrived yet, or the run is not model-driven).
+	// Untrusted, informational only -- never a security decision input.
+	ProviderModel() string
 	// Close shuts down the underlying agent (closes stdin, reaps the subprocess).
 	Close() error
 }
@@ -243,6 +249,10 @@ type subprocessTurnRunner struct {
 
 	mu     sync.Mutex
 	closed bool
+	// providerModel is the first provider-reported model identifier observed
+	// on the wrapper's event stream, captured in RunTurn under mu (never
+	// forwarded to onEvent as visitor narration).
+	providerModel string
 }
 
 // newSubprocessTurnRunner spawns the agent wrapper subprocess and prepares its
@@ -467,6 +477,14 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 		if ev.Kind == llmagent.EventTurnDone {
 			return turnErr
 		}
+		if ev.Kind == llmagent.EventProviderModel {
+			// Evidence-precision metadata only, not visitor narration: capture and
+			// do not forward to onEvent.
+			if r.providerModel == "" {
+				r.providerModel = ev.Text
+			}
+			continue
+		}
 		if ev.Kind == llmagent.EventError && ev.Code == llmagent.ErrorCodeModelProviderPaused {
 			turnErr = ErrModelProviderPaused
 		}
@@ -484,6 +502,14 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 
 // Close shuts the subprocess down: closing stdin ends its read loop, then it is
 // reaped. Safe to call multiple times.
+// ProviderModel returns the provider-reported model identifier observed on the
+// wrapper's event stream so far (empty if none has arrived yet).
+func (r *subprocessTurnRunner) ProviderModel() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.providerModel
+}
+
 func (r *subprocessTurnRunner) Close() error {
 	if r.cancel != nil {
 		r.cancel()

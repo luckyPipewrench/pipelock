@@ -77,6 +77,13 @@ type completionRequest struct {
 }
 
 type completionResponse struct {
+	// Model, when the provider sets it, is the concrete model identifier that
+	// actually served this response. Many chat-completions APIs echo this even
+	// when the request named an alias (e.g. a routing label rather than a
+	// specific model version); it is untrusted provider-controlled data, used
+	// only as evidence-precision metadata (see Agent.ProviderModel), never as
+	// a security decision input.
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Message      chatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
@@ -176,6 +183,16 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 	msg := parsed.Choices[0].Message
 	// Normalize: the assistant turn we record must carry its role.
 	msg.Role = roleAssistant
+
+	// Record the provider-reported model identifier the first time we see one,
+	// and narrate it once so the parent process (which cannot see this HTTP
+	// response) can attach it to the run's evidence. Untrusted provider data:
+	// stored as-is here, bounded/sanitized downstream before it is signed into
+	// anything.
+	if parsed.Model != "" && a.providerModel == "" {
+		a.providerModel = parsed.Model
+		a.emit(Event{Kind: EventProviderModel, Text: parsed.Model})
+	}
 	return msg, nil
 }
 

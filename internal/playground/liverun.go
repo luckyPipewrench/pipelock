@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -111,6 +112,11 @@ type LiveRunOpts struct {
 	// it. This is the ONLY real-egress destination the lab proxy permits; the
 	// .test lab targets stay loopback. Empty leaves the proxy loopback-only.
 	ModelBaseURL string
+	// Model is the model name CONFIGURED for this run (the string passed to
+	// the provider's chat-completions API), recorded into the launch
+	// manifest's RequestedModel field before the model is ever called.
+	// Informational evidence-precision metadata only.
+	Model string
 	// ModelHostOverride, when non-empty, maps the model host to these IPs in the
 	// lab proxy DNS (tests point it at a loopback fake model). Empty => real DNS
 	// resolution of the model host.
@@ -162,6 +168,12 @@ type LiveRun struct {
 	opts        LiveRunOpts
 	evidenceDir string
 	policyHash  string
+
+	// providerModel is the provider-reported model identifier for this run, set
+	// via SetProviderModel before AssembleAndVerify seals the collector witness.
+	// Untrusted, informational only -- never a security decision input. Empty
+	// for scripted/deterministic runs.
+	providerModel string
 
 	// Binaries
 	agentBin   string
@@ -515,6 +527,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		StartedAt:       time.Now().UTC(),
 		Contained:       opts.Contained,
 		AgentKind:       manifestAgentKind(opts.ModelBaseURL),
+		RequestedModel:  opts.Model,
 	}
 	if opts.Delegation != nil {
 		d := *opts.Delegation
@@ -677,6 +690,15 @@ func decodeProbeResults(stdout []byte, expectedTargets []string) ([]ProbeResult,
 	return results, nil
 }
 
+// SetProviderModel records the provider-reported model identifier observed by
+// the model-backed subprocess, if any, so AssembleAndVerify can attach it to
+// the collector witness before sealing. Untrusted, informational only. A no-op
+// (never called, or called with "") leaves the witness's ProviderModel empty,
+// which verifies exactly like a legacy witness.
+func (lr *LiveRun) SetProviderModel(model string) {
+	lr.providerModel = model
+}
+
 // buildHostContainmentWitness produces the signed host-containment witness for
 // a contained run. It stands up a host-local control listener (reachable absent
 // containment), probes it as the operator (must connect) and as the contained
@@ -819,6 +841,22 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	}
 	if err := lr.collector.AttachRedCase(lr.opts.RunNonce, rcResult); err != nil {
 		return VerifyReport{}, fmt.Errorf("attach red-case: %w", err)
+	}
+
+	// --- Attach provider-reported model (untrusted, informational only) ---
+	if lr.providerModel != "" {
+		dropped, attachErr := lr.collector.AttachProviderModel(lr.opts.RunNonce, lr.providerModel)
+		if attachErr != nil {
+			return VerifyReport{}, fmt.Errorf("attach provider model: %w", attachErr)
+		}
+		if dropped {
+			// Fail-open on the value, not the run: an over-long or non-printable
+			// provider "model" field must never break a live demo. Logged so the
+			// operator can see the provider is misbehaving without the visitor
+			// noticing anything.
+			slog.Warn("playground: provider-reported model failed sanitization, recorded as empty",
+				"run_nonce", lr.opts.RunNonce)
+		}
 	}
 
 	// --- Seal witness ---

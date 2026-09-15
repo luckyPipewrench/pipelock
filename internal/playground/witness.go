@@ -46,6 +46,10 @@ var (
 	// that was never opened or has already been sealed.
 	ErrRedCaseRunNotOpen = errors.New("playground: cannot attach red-case to unopened or sealed run")
 
+	// ErrProviderModelRunNotOpen is returned when AttachProviderModel targets
+	// a nonce that was never opened or has already been sealed.
+	ErrProviderModelRunNotOpen = errors.New("playground: cannot attach provider model to unopened or sealed run")
+
 	// ErrRedCaseNotDetected is returned by RunRedCaseCalibration when the
 	// collector does not observe the canary during calibration. This is the
 	// fail-closed guarantee: a calibration that does not go red is an error,
@@ -137,6 +141,17 @@ type Witness struct {
 	LaunchManifestHash string `json:"launch_manifest_hash"`
 
 	RedCaseResult *RedCaseResult `json:"red_case_result,omitempty"`
+
+	// ProviderModel is the model identifier the PROVIDER reported back in its
+	// chat-completions response for this run (many providers echo a "model"
+	// field naming the concrete model that actually served the request), set
+	// via Collector.AttachProviderModel before sealing. It is untrusted,
+	// provider-controlled evidence-precision metadata carried through to the
+	// signed witness so a run can honestly name what served it -- NOT a
+	// security decision input, and VerifyRun/VerifyWitness must never gate on
+	// it. Empty for scripted/deterministic runs and for legacy witnesses
+	// sealed before this field existed; both verify unchanged.
+	ProviderModel string `json:"provider_model,omitempty"`
 
 	Signature string `json:"signature,omitempty"`
 }

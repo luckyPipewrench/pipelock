@@ -45,7 +45,16 @@ type LaunchManifest struct {
 	// legacy canonical signed bytes stay byte-identical.
 	DelegationID string `json:"delegation_id,omitempty"`
 	ImageDigest  string `json:"image_digest,omitempty"`
-	Signature    string `json:"signature,omitempty"`
+	// RequestedModel is the model name CONFIGURED for this run (the string
+	// passed to the provider's chat-completions API), recorded before the
+	// model is ever called. It is informational evidence-precision metadata,
+	// not a security decision input: a manifest with AgentKind=model but no
+	// RequestedModel is legacy (pre-field) and still verifies. The
+	// provider-reported model identifier (what the provider says it actually
+	// served) cannot live here because the manifest is signed before the
+	// first model call; see Witness.ProviderModel for that half.
+	RequestedModel string `json:"requested_model,omitempty"`
+	Signature      string `json:"signature,omitempty"`
 }
 
 // Agent kinds recorded in LaunchManifest.AgentKind. Empty is treated as

@@ -4966,6 +4966,23 @@ func TestKnownValueWindowBudget_URLShapesFitDerivedCeiling(t *testing.T) {
 	}
 }
 
+func TestKnownValueWindowBudget_RejectsOversizedValueBeforeCollection(t *testing.T) {
+	value := strings.Repeat("Q7vP2mK9xR4nT8wB", maxKnownValuePartialInputBytes/minKnownSecretSubstringLen+1)
+	if len(value) <= maxKnownValuePartialInputBytes {
+		t.Fatalf("fixture length = %d, want greater than %d", len(value), maxKnownValuePartialInputBytes)
+	}
+	set, err := buildKnownValueWindows(newKnownValueWindowBudget(maxKnownValueWindowEntries), []string{value})
+	if !errors.Is(err, errKnownValueWindowBudget) {
+		t.Fatalf("oversized known value error = %v, want window budget error", err)
+	}
+	if set != nil {
+		t.Fatalf("oversized known value returned partial index: %+v", set)
+	}
+	if !strings.Contains(err.Error(), "partial matching accepts at most") {
+		t.Fatalf("oversized known value error = %v, want per-value remedy", err)
+	}
+}
+
 func TestKnownValueWindowBudget_FailsBeforePartialIndex(t *testing.T) {
 	envSecret := strings.Join([]string{"Q7vP2mK9", "xR4nT8wB"}, "")
 	fileSecret := strings.Join([]string{"xL5pR8vN", "2qT7mC4z"}, "")

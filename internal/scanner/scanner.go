@@ -2931,6 +2931,10 @@ func knownValueWindowsBounded(value string, maxEntries int) (map[string][]int, e
 	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
 		return nil, nil
 	}
+	if len(value) > maxKnownValuePartialInputBytes {
+		return nil, fmt.Errorf("%w: known value is %d bytes; partial matching accepts at most %d bytes per value",
+			errKnownValueWindowBudget, len(value), maxKnownValuePartialInputBytes)
+	}
 	if strings.Contains(value, "://") {
 		return urlCredentialWindowsBounded(value, maxEntries)
 	}
@@ -3110,6 +3114,10 @@ const (
 	maxKnownValueWindowEntries = maxSecretsFileEntries * maxSecretsFileLineLen * 2
 	knownValueWindowEntryBytes = 32
 	maxKnownValueWindowBytes   = maxKnownValueWindowEntries * knownValueWindowEntryBytes
+	// The secrets-file loader already enforces this per-value ceiling. Applying
+	// it to every partial-match source also bounds the temporary exact-dedup maps
+	// used during construction; whole-value-only low-entropy inputs bypass it.
+	maxKnownValuePartialInputBytes = maxSecretsFileLineLen
 )
 
 var errKnownValueWindowBudget = errors.New("known-value window index memory budget exceeded")

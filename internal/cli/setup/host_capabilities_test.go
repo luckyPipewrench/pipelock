@@ -6,6 +6,8 @@ package setup
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,20 +46,11 @@ func checkHostCapabilitiesRegistryParity(registry []string, declared map[string]
 		}
 	}
 	for host := range declared {
-		if !containsHost(registry, host) {
+		if !slices.Contains(registry, host) {
 			problems = append(problems, fmt.Sprintf("host %q is declared in hostCapabilities but not in mcpWrappingHostRegistry", host))
 		}
 	}
 	return problems
-}
-
-func containsHost(hosts []string, want string) bool {
-	for _, h := range hosts {
-		if h == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestHostCapabilities_EnumeratedFromRegistry(t *testing.T) {
@@ -68,34 +61,55 @@ func TestHostCapabilities_EnumeratedFromRegistry(t *testing.T) {
 	}
 }
 
+// TestHostCapabilities_NonWrappingListIsPinned closes the bypass in the
+// enumeration above. mcpWrappingHostRegistryFromCommands subtracts
+// nonWrappingHostCommands before checking parity, so that exclusion list is
+// the one place a real MCP-wrapping installer can be hidden: add it there and
+// it needs no capability declaration, gets no behavioral parity test, and
+// every other test in this file still passes.
+//
+// Pinning the set converts that silent bypass into a failing test. Growing the
+// list is then a deliberate act that updates this literal, which is where a
+// reviewer sees the claim "this command does not wrap MCP servers" and can
+// check it. Shrinking it fails too, because a command that starts wrapping
+// must gain a declaration in the same change.
+func TestHostCapabilities_NonWrappingListIsPinned(t *testing.T) {
+	want := []string{"claude", "cursor", "init", "pi"}
+	var got []string
+	for name := range nonWrappingHostCommands {
+		got = append(got, name)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("nonWrappingHostCommands = %v, want %v.\n"+
+			"A command listed here is excluded from the capability contract entirely. "+
+			"If this change adds one, confirm it does not wrap an MCP server config, then update this pin.", got, want)
+	}
+}
+
+// undeclaredTestHost is a command name no installer will ever register. It
+// exists only to drive the parity check's failure direction.
+const undeclaredTestHost = "fakehost-not-a-real-installer"
+
 // TestHostCapabilities_FakeHostFailsClosed is the failure-direction proof
 // required here: enumerating hosts from a registry that has grown a new
 // entry, with no matching declaration, must fail the parity check rather
 // than pass silently.
 func TestHostCapabilities_FakeHostFailsClosed(t *testing.T) {
-	fakeRegistry := append(append([]string{}, mcpWrappingHostRegistry...), "fakehost-af688")
+	fakeRegistry := append(append([]string{}, mcpWrappingHostRegistry...), undeclaredTestHost)
 	problems := checkHostCapabilitiesRegistryParity(fakeRegistry, hostCapabilities)
 	if len(problems) == 0 {
 		t.Fatal("expected the parity check to fail for an undeclared host, got no problems")
 	}
 	found := false
 	for _, p := range problems {
-		if p != "" && containsSubstring(p, "fakehost-af688") {
+		if p != "" && strings.Contains(p, undeclaredTestHost) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected a problem naming fakehost-af688, got: %v", problems)
+		t.Fatalf("expected a problem naming the undeclared host, got: %v", problems)
 	}
-}
-
-func containsSubstring(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 // observedHostBehavior is what TestHostCapabilities_MatchRealWrapFunctions
@@ -104,6 +118,50 @@ func containsSubstring(s, sub string) bool {
 type observedHostBehavior struct {
 	headers headerCapability
 	env     envCapability
+	// selfWrapSkip: re-running the wrap over a server this same binary
+	// already wrapped returned the identical entry, so nothing nested.
+	selfWrapSkip bool
+	// foreignRefusal: a wrapper this binary cannot normalize (a header-file
+	// credential sidecar, an unrecognized proxy argument) was refused with
+	// mcpwrap.ErrCannotNormalize rather than passed through or nested.
+	foreignRefusal bool
+}
+
+// unrecoverableForeignWrapper is a command/args entry that looks like a proxy
+// invocation from some OTHER pipelock binary and cannot be recovered back to
+// its child, because the upstream credential lives in a header sidecar file
+// the command alone does not carry. Every wrapping host must refuse it.
+// It is shape-aware on purpose. OpenCode carries the whole invocation in a
+// single command ARRAY and reads the wrapping binary from element zero, so a
+// command/args-shaped fixture is never classified as foreign there at all. A
+// fixture the host cannot even recognize produces "observed no refusal",
+// which is indistinguishable from a host that genuinely fails to refuse.
+func unrecoverableForeignWrapper(host string) map[string]interface{} {
+	const foreignExe = "/opt/other-pipelock/pipelock"
+	proxyArgs := []string{
+		"mcp", "proxy", "--header-file", "/tmp/does-not-matter",
+		"--upstream", "https://api.vendor.example/mcp",
+	}
+	if host == "opencode" {
+		command := make([]interface{}, 0, len(proxyArgs)+1)
+		command = append(command, foreignExe)
+		for _, a := range proxyArgs {
+			command = append(command, a)
+		}
+		return map[string]interface{}{
+			mcpFieldType:    opencodeTypeRemote,
+			mcpFieldCommand: command,
+		}
+	}
+	args := make([]interface{}, 0, len(proxyArgs))
+	for _, a := range proxyArgs {
+		args = append(args, a)
+	}
+	return map[string]interface{}{
+		mcpFieldType:    mcpHTTPWrapType,
+		mcpFieldCommand: foreignExe,
+		mcpFieldArgs:    args,
+	}
 }
 
 // deriveVscodeFamilyBehavior exercises wrapVscodeServer directly (the real
@@ -162,7 +220,22 @@ func deriveVscodeFamilyBehavior(t *testing.T, host string, wrap func(server map[
 	}
 	envObs := deriveEnvCapabilityFromArgs(t, result2)
 
-	return observedHostBehavior{headers: headerObs, env: envObs}
+	// Self re-wrap: feeding a wrapped entry back through the SAME binary
+	// must be a no-op. A regression here nests one proxy inside another,
+	// which is why the table declares it rather than assuming it.
+	rewrapped, _, _, selfErr := wrap(result2, "/usr/bin/pipelock", "", targetPath, "example2")
+	selfSkip := selfErr == nil && fmt.Sprint(rewrapped) == fmt.Sprint(result2)
+
+	// Foreign wrapper this binary cannot normalize: must be refused.
+	_, _, _, foreignErr := wrap(unrecoverableForeignWrapper(host), "/usr/bin/pipelock", "", targetPath, "example3")
+	foreignRefused := isNormalizationFailure(foreignErr)
+
+	return observedHostBehavior{
+		headers:        headerObs,
+		env:            envObs,
+		selfWrapSkip:   selfSkip,
+		foreignRefusal: foreignRefused,
+	}
 }
 
 // deriveEnvCapabilityFromArgs inspects a wrapped server's args (or, for
@@ -234,6 +307,12 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 			if observed.env != declared.Env {
 				t.Errorf("host %q: declared env capability %q, observed %q", tc.host, declared.Env, observed.env)
 			}
+			if observed.selfWrapSkip != declared.SelfWrapSkip {
+				t.Errorf("host %q: declared SelfWrapSkip %v, observed %v", tc.host, declared.SelfWrapSkip, observed.selfWrapSkip)
+			}
+			if observed.foreignRefusal != declared.ForeignRefusal {
+				t.Errorf("host %q: declared ForeignRefusal %v, observed %v", tc.host, declared.ForeignRefusal, observed.foreignRefusal)
+			}
 		})
 	}
 
@@ -253,6 +332,12 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 		}
 		if observed.env != declared.Env {
 			t.Errorf("host %q: declared env capability %q, observed %q", "zed", declared.Env, observed.env)
+		}
+		if observed.selfWrapSkip != declared.SelfWrapSkip {
+			t.Errorf("host %q: declared SelfWrapSkip %v, observed %v", "zed", declared.SelfWrapSkip, observed.selfWrapSkip)
+		}
+		if observed.foreignRefusal != declared.ForeignRefusal {
+			t.Errorf("host %q: declared ForeignRefusal %v, observed %v", "zed", declared.ForeignRefusal, observed.foreignRefusal)
 		}
 	})
 
@@ -284,6 +369,16 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 		if observedEnv != declared.Env {
 			t.Errorf("host %q: declared env capability %q, observed %q", "jetbrains", declared.Env, observedEnv)
 		}
+
+		rewrapped, _, selfErr := wrapMCPServer(result, "/usr/bin/pipelock", "", false, "")
+		observedSelfSkip := selfErr == nil && fmt.Sprint(rewrapped) == fmt.Sprint(result)
+		if observedSelfSkip != declared.SelfWrapSkip {
+			t.Errorf("host %q: declared SelfWrapSkip %v, observed %v (err=%v)", "jetbrains", declared.SelfWrapSkip, observedSelfSkip, selfErr)
+		}
+		_, _, foreignErr := wrapMCPServer(unrecoverableForeignWrapper("jetbrains"), "/usr/bin/pipelock", "", false, "")
+		if observedForeign := isNormalizationFailure(foreignErr); observedForeign != declared.ForeignRefusal {
+			t.Errorf("host %q: declared ForeignRefusal %v, observed %v (err=%v)", "jetbrains", declared.ForeignRefusal, observedForeign, foreignErr)
+		}
 	})
 
 	t.Run("continue", func(t *testing.T) {
@@ -309,7 +404,7 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 				args = interfaceSliceToStrings(argsRaw)
 			}
 			for _, a := range args {
-				if a == "Authorization" || containsSubstring(a, "test-only-value") {
+				if a == "Authorization" || strings.Contains(a, "test-only-value") {
 					t.Fatalf("continue's generated args unexpectedly consumed the header: %v", args)
 				}
 			}
@@ -330,6 +425,16 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 		observedEnv := deriveEnvCapabilityFromArgs(t, result2)
 		if observedEnv != declared.Env {
 			t.Errorf("host %q: declared env capability %q, observed %q", "continue", declared.Env, observedEnv)
+		}
+
+		rewrapped, selfErr := wrapContinueServer(result2, "/usr/bin/pipelock", "")
+		observedSelfSkip := selfErr == nil && fmt.Sprint(rewrapped) == fmt.Sprint(result2)
+		if observedSelfSkip != declared.SelfWrapSkip {
+			t.Errorf("host %q: declared SelfWrapSkip %v, observed %v (err=%v)", "continue", declared.SelfWrapSkip, observedSelfSkip, selfErr)
+		}
+		_, foreignErr := wrapContinueServer(unrecoverableForeignWrapper("continue"), "/usr/bin/pipelock", "")
+		if observedForeign := isNormalizationFailure(foreignErr); observedForeign != declared.ForeignRefusal {
+			t.Errorf("host %q: declared ForeignRefusal %v, observed %v (err=%v)", "continue", declared.ForeignRefusal, observedForeign, foreignErr)
 		}
 	})
 

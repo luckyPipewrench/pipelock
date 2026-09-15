@@ -69,10 +69,16 @@ type hostCapability struct {
 	// same install already wrapped is a no-op (idempotent skip) rather
 	// than nesting a second proxy invocation.
 	SelfWrapSkip bool
-	// ForeignRefusal is true when install refuses (rather than silently
-	// re-wrapping) a server that was already wrapped by a pipelock binary
-	// this installer cannot prove is itself, per normalizeForeignWrapper /
-	// mcpwrap.ErrCannotNormalize.
+	// ForeignRefusal is true when install refuses a wrapper from another
+	// pipelock binary that it cannot normalize back to the child server -
+	// one carrying a header-file credential sidecar or an unrecognized
+	// proxy argument - with mcpwrap.ErrCannotNormalize, rather than
+	// nesting a second proxy invocation inside the first.
+	//
+	// It does NOT mean every foreign wrapper is rejected. A RECOVERABLE
+	// foreign wrapper is deliberately normalized back to the bare child and
+	// re-wrapped through this binary, which is the safe outcome and is not
+	// a refusal. Only the unrecoverable case errors.
 	ForeignRefusal bool
 }
 
@@ -87,6 +93,13 @@ const (
 // not an MCP server map) are deliberately absent; see
 // TestHostCapabilities_EnumeratedFromRegistry for the enumeration that
 // enforces this list stays in sync with mcpWrappingHostRegistry.
+//
+// Every field here is compared against the real wrap function by
+// TestHostCapabilities_MatchRealWrapFunctions, for every host except codex.
+// Codex is the documented exception: it does not take a server map at all,
+// so its invocation is built and asserted separately in that test's codex
+// subtest, which covers Headers and Env but not SelfWrapSkip or
+// ForeignRefusal.
 var hostCapabilities = map[string]hostCapability{
 	"vscode": {
 		Host: "vscode", Engine: engineWrapRuntime,

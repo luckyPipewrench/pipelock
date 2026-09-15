@@ -129,8 +129,8 @@ func TestAttachProviderModel_Bounding(t *testing.T) {
 	}{
 		{name: "normal value kept", raw: "provider-served-model-v3", wantDropped: false, wantStored: "provider-served-model-v3"},
 		{name: "empty value kept empty, not dropped", raw: "", wantDropped: false, wantStored: ""},
-		{name: "over-long value dropped", raw: strings.Repeat("a", maxProviderModelLen+1), wantDropped: true, wantStored: ""},
-		{name: "exactly at the length ceiling kept", raw: strings.Repeat("b", maxProviderModelLen), wantDropped: false, wantStored: strings.Repeat("b", maxProviderModelLen)},
+		{name: "over-long value dropped", raw: strings.Repeat("a", llmagent.MaxProviderModelLen+1), wantDropped: true, wantStored: ""},
+		{name: "exactly at the length ceiling kept", raw: strings.Repeat("b", llmagent.MaxProviderModelLen), wantDropped: false, wantStored: strings.Repeat("b", llmagent.MaxProviderModelLen)},
 		{name: "non-printable control byte dropped", raw: "model\x00name", wantDropped: true, wantStored: ""},
 		{name: "non-ASCII byte dropped", raw: "model-\xc3\xa9", wantDropped: true, wantStored: ""},
 		{name: "newline dropped", raw: "model\nname", wantDropped: true, wantStored: ""},

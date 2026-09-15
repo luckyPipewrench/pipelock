@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 )
 
 // requestRecord is a per-ingest record that goes into the run's request log.
@@ -328,29 +330,11 @@ func (c *Collector) AttachRedCase(nonce string, r RedCaseResult) error {
 	return nil
 }
 
-// maxProviderModelLen bounds the provider-reported model identifier recorded
-// into the witness. The provider is untrusted: an over-long or malformed value
-// must never break a run (availability direction), so bounding failures are
-// recorded as an empty field with a logged warning, never an error return.
-const maxProviderModelLen = 256
-
-// sanitizeProviderModel bounds and validates an untrusted provider-reported
-// model string before it is signed into the witness: non-empty, at most
-// maxProviderModelLen bytes, and printable ASCII only (no control characters,
-// no multi-byte confusables). A value that fails any check is dropped to
-// empty rather than recorded or rejected -- a provider quirk (an oversized or
-// binary-garbage "model" field) must never fail the run.
+// sanitizeProviderModel is the signing-side boundary for the provider-reported
+// model identifier; the producer applies the same helper before the value
+// crosses the subprocess event stream (llmagent.SanitizeProviderModel).
 func sanitizeProviderModel(raw string) string {
-	if raw == "" || len(raw) > maxProviderModelLen {
-		return ""
-	}
-	for i := 0; i < len(raw); i++ {
-		b := raw[i]
-		if b < 0x20 || b > 0x7e {
-			return ""
-		}
-	}
-	return raw
+	return llmagent.SanitizeProviderModel(raw)
 }
 
 // AttachProviderModel stores the provider-reported model identifier on an open

@@ -195,6 +195,8 @@ result is signed into the live run's witness, and the signed red witness is writ
 `red-witness.json`, so verification can require proof that the collector demonstrably detects
 what it claims to have not observed.
 
+Both fields are part of the signed bytes when present, following the same additive pattern as the delegation and image-digest fields: a manifest or witness without them verifies unchanged, and an artifact carrying them needs a verifier built from this version or later, since an older verifier canonicalizes without the field and reports a signature mismatch.
+
 ## Reset and fallback
 
 ```bash

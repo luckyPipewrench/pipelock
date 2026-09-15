@@ -189,9 +189,13 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 	// response) can attach it to the run's evidence. Untrusted provider data:
 	// stored as-is here, bounded/sanitized downstream before it is signed into
 	// anything.
-	if parsed.Model != "" && a.providerModel == "" {
-		a.providerModel = parsed.Model
-		a.emit(Event{Kind: EventProviderModel, Text: parsed.Model})
+	// The value is bounded HERE, at the producer, before it crosses the
+	// subprocess event stream: an unbounded provider string could expand
+	// under JSON escaping past the parent's line ceiling and fail the turn,
+	// which would turn informational metadata into an availability failure.
+	if model := SanitizeProviderModel(parsed.Model); model != "" && a.providerModel == "" {
+		a.providerModel = model
+		a.emit(Event{Kind: EventProviderModel, Text: model})
 	}
 	return msg, nil
 }
@@ -232,4 +236,29 @@ func (c ModelConfig) redactSecrets(s string) string {
 		s = strings.ReplaceAll(s, key, "[redacted]")
 	}
 	return s
+}
+
+// MaxProviderModelLen bounds the provider-reported model identifier that may
+// be recorded anywhere. The provider is untrusted: an over-long or malformed
+// value must never break a run, so bounding failures yield an empty value.
+const MaxProviderModelLen = 256
+
+// SanitizeProviderModel bounds and validates an untrusted provider-reported
+// model string: non-empty, at most MaxProviderModelLen bytes, printable ASCII
+// only (no control characters, no multi-byte confusables, nothing that JSON
+// escaping expands). A value that fails any check becomes empty rather than
+// recorded or rejected. It runs at the producer before the value crosses the
+// subprocess event stream and again before the value is signed into the
+// witness, so the two boundaries cannot drift.
+func SanitizeProviderModel(raw string) string {
+	if raw == "" || len(raw) > MaxProviderModelLen {
+		return ""
+	}
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if b < 0x20 || b > 0x7e || b == '<' || b == '>' || b == '&' || b == '"' || b == '\\' {
+			return ""
+		}
+	}
+	return raw
 }

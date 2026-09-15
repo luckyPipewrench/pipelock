@@ -862,3 +862,34 @@ func TestAgent_ProviderModel_EmptyWhenProviderOmitsField(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeProviderModel_ProducerBoundary pins the producer-side bound:
+// a provider value that JSON escaping would expand (HTML-escaping bytes) or
+// that exceeds the length ceiling is dropped before it can cross the
+// subprocess event stream, so it can never push an event line past the
+// parent's scanner ceiling and fail the turn.
+func TestSanitizeProviderModel_ProducerBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"plain identifier kept", "served-model-2026-01", "served-model-2026-01"},
+		{"empty stays empty", "", ""},
+		{"at ceiling kept", strings.Repeat("m", MaxProviderModelLen), strings.Repeat("m", MaxProviderModelLen)},
+		{"over ceiling dropped", strings.Repeat("m", MaxProviderModelLen+1), ""},
+		{"json-expanding angle brackets dropped", strings.Repeat("<", 200), ""},
+		{"ampersand dropped", "a&b", ""},
+		{"quote dropped", "a\"b", ""},
+		{"backslash dropped", "a\\b", ""},
+		{"control byte dropped", "a\x00b", ""},
+		{"non-ascii dropped", "modèle", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeProviderModel(tc.raw); got != tc.want {
+				t.Fatalf("SanitizeProviderModel(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

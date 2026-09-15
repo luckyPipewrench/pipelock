@@ -1231,7 +1231,13 @@ response establishes the baseline for every name in it, matching the
 pre-existing `action` semantics for a first sighting. An empty inventory
 counts and establishes an empty baseline. A response that is not a readable
 `tools/list` result at all, because it failed or was malformed, establishes
-nothing and leaves the next valid inventory to do it.
+nothing and leaves the next valid inventory to do it. The baseline counts as
+established when that first inventory has finished being evaluated, not when
+it arrives. On the MCP HTTP listener the drift baseline is shared by every
+client, so two clients whose first `tools/list` responses overlap in time are
+both first inventories: each contributes its names, neither reads the other's
+names as new, and the baseline is established when the last of them finishes.
+A name that first appears after that point is withheld under `block`.
 
 `new_tool_action` governs baseline admission, not the response verdict, and
 the two are spelled with the same words. Read the pair together: whether the

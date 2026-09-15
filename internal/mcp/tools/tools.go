@@ -182,13 +182,54 @@ type ToolBaseline struct {
 	hasBaseline    bool                                // true after first SetKnownTools call
 	hasA2A         bool                                // true after first SetKnownA2AMethods call
 	driftEpoch     uint64                              // increments when operator reset clears drift state
-	// driftEstablished is true once any definition has ever been promoted
-	// into hashes. It is captured ONCE per tools/list response, before that
-	// response's own tools are evaluated, so that a same-response sibling
-	// promoted earlier in the loop never makes a later sibling of the SAME
-	// first-ever response read as "new after baseline". It is
-	// reset by an operator drift reset exactly like the rest of drift state.
+	// driftEstablished is true once a first tools/list inventory has FINISHED
+	// being evaluated against this baseline (EndInventoryResponse), not when
+	// it began. It is captured ONCE per response, before that response's own
+	// tools are evaluated, so a same-response sibling promoted earlier in the
+	// loop never makes a later sibling of the SAME first-ever response read as
+	// "new after baseline". It is reset by an operator drift reset exactly
+	// like the rest of drift state.
 	driftEstablished bool
+	// firstInventoriesInFlight counts responses that began while the baseline
+	// was unestablished and have not ended yet. On a listener-wide shared
+	// baseline, two clients whose first tools/list responses overlap in time
+	// are BOTH first inventories: neither may read the other's not-yet-promoted
+	// names as introduced after the baseline. The baseline becomes established
+	// when the last of them ends. The window is bounded by the evaluation
+	// itself because every Begin is paired with a deferred End.
+	firstInventoriesInFlight int
+}
+
+// InventoryResponse is the token returned by BeginInventoryResponse. Its End
+// method must run exactly once, normally deferred, when the response's
+// evaluation finishes for any reason. A nil token is inert.
+type InventoryResponse struct {
+	tb    *ToolBaseline
+	epoch uint64
+	first bool
+	ended bool
+}
+
+// End records that the tools/list response this token represents has finished
+// evaluating. When it was a first inventory and it is the last in-flight first
+// inventory of its drift epoch, the baseline becomes established. A token from
+// a superseded epoch changes nothing: the reset already cleared the count.
+func (r *InventoryResponse) End() {
+	if r == nil || r.tb == nil || r.ended {
+		return
+	}
+	r.ended = true
+	r.tb.mu.Lock()
+	defer r.tb.mu.Unlock()
+	if r.tb.driftEpoch != r.epoch || !r.first {
+		return
+	}
+	if r.tb.firstInventoriesInFlight > 0 {
+		r.tb.firstInventoriesInFlight--
+	}
+	if r.tb.firstInventoriesInFlight == 0 {
+		r.tb.driftEstablished = true
+	}
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -491,7 +532,6 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 		copy(cp, params)
 		tb.params[name] = cp
 		tb.structural[name] = structural
-		tb.driftEstablished = true
 	}
 
 	if !exists {
@@ -674,42 +714,52 @@ func (tb *ToolBaseline) resetDriftStateLocked() {
 	tb.descs = make(map[string]string)
 	tb.params = make(map[string][]string)
 	tb.driftEstablished = false
+	tb.firstInventoriesInFlight = 0
 }
 
 // BeginInventoryResponse records, atomically, that a valid tools/list
 // inventory is about to be evaluated and reports whether one had already
-// been evaluated before it. The FIRST valid inventory establishes the drift
-// baseline whether or not it carries any tools: an empty first inventory
-// must not leave the baseline unestablished, or an upstream could bootstrap
-// with an empty list and then introduce a new name that reads as another
-// initial inventory. Two competing first responses on a shared baseline
-// resolve here under one lock: exactly one observes false. The returned
-// value is passed as EstablishedBeforeResponse for every tool in that
-// response. A nil baseline reports false and records nothing.
-func (tb *ToolBaseline) BeginInventoryResponse() bool {
-	established, _ := tb.BeginInventoryResponseAtEpoch(nil)
-	return established
+// FINISHED being evaluated before it. The FIRST valid inventory establishes
+// the drift baseline whether or not it carries any tools: an empty first
+// inventory must not leave the baseline unestablished, or an upstream could
+// bootstrap with an empty list and then introduce a new name that reads as
+// another initial inventory. Establishment happens when that first inventory
+// ends, not when it begins: on a shared listener baseline, a second client's
+// first tools/list that arrives while the first is still being evaluated is
+// also a first inventory and must not read the first one's not-yet-promoted
+// names as new. Every first inventory in flight at once contributes to the
+// baseline, and the baseline is established when the last of them ends. The
+// returned established value is passed as EstablishedBeforeResponse for every
+// tool in that response. The caller must End the token, normally by defer,
+// however the evaluation exits. A nil baseline reports false and records
+// nothing.
+func (tb *ToolBaseline) BeginInventoryResponse() (*InventoryResponse, bool) {
+	resp, established, _ := tb.BeginInventoryResponseAtEpoch(nil)
+	return resp, established
 }
 
 // BeginInventoryResponseAtEpoch is BeginInventoryResponse bound to an expected
-// drift epoch. The epoch comparison and the establishment happen under one
-// lock, so an operator reset that lands between a caller's epoch check and
-// this call is never consumed by the stale response: that response reports
-// epochChanged and leaves the baseline unestablished, and the next inventory
-// after the reset is treated as the first one again. A nil expected epoch
-// skips the comparison.
-func (tb *ToolBaseline) BeginInventoryResponseAtEpoch(expected *uint64) (established, epochChanged bool) {
+// drift epoch. The epoch comparison and the begin happen under one lock, so an
+// operator reset that lands between a caller's epoch check and this call is
+// never consumed by the stale response: that response reports epochChanged,
+// receives a nil token, and leaves the baseline unestablished, and the next
+// inventory after the reset is treated as the first one again. A nil expected
+// epoch skips the comparison.
+func (tb *ToolBaseline) BeginInventoryResponseAtEpoch(expected *uint64) (resp *InventoryResponse, established, epochChanged bool) {
 	if tb == nil {
-		return false, false
+		return nil, false, false
 	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if expected != nil && tb.driftEpoch != *expected {
-		return false, true
+		return nil, false, true
 	}
 	established = tb.driftEstablished
-	tb.driftEstablished = true
-	return established, false
+	resp = &InventoryResponse{tb: tb, epoch: tb.driftEpoch, first: !established}
+	if !established {
+		tb.firstInventoriesInFlight++
+	}
+	return resp, established, false
 }
 
 // HasDriftBaseline reports whether the drift baseline has ever been
@@ -2141,9 +2191,12 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 			// reset landing after the listener captured its epoch would bind
 			// only one of the two shapes. The failure direction of dropping
 			// it is forward-instead-of-refuse, so it is handled, not ignored.
-			if _, epochChanged := driftBaseline.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch); epochChanged {
+			resp, _, epochChanged := driftBaseline.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
+			if epochChanged {
 				return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID}
 			}
+			// An empty inventory has nothing to evaluate; it is complete now.
+			resp.End()
 		}
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}
@@ -2359,11 +2412,16 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	// a reset landing after the caller's epoch check is not consumed here.
 	var establishedBeforeResponse bool
 	if cfg.DetectDrift {
-		var epochChanged bool
-		establishedBeforeResponse, epochChanged = driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
+		resp, established, epochChanged := driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
 		if epochChanged {
 			return nil, nil, false, true
 		}
+		establishedBeforeResponse = established
+		// Deferred so every exit, including a mid-loop epoch change or
+		// capacity stop, ends the response; a first inventory that never
+		// ended would hold the baseline unestablished for every later
+		// response, which is the fail-open direction.
+		defer resp.End()
 	}
 
 	for _, tool := range tools {

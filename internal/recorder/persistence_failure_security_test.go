@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -203,9 +204,11 @@ func TestRecorderConcurrentCloseWaitsForFinalResult(t *testing.T) {
 			syncEntered := make(chan struct{})
 			releaseSync := make(chan struct{})
 			var releaseOnce sync.Once
+			var workers sync.WaitGroup
 			release := func() { releaseOnce.Do(func() { close(releaseSync) }) }
 			t.Cleanup(func() {
 				release()
+				workers.Wait()
 				_ = rec.Close()
 			})
 			rec.SetSyncForTest(func(file *os.File) error {
@@ -215,7 +218,9 @@ func TestRecorderConcurrentCloseWaitsForFinalResult(t *testing.T) {
 				return err
 			})
 			recordDone := make(chan error, 1)
+			workers.Add(1)
 			go func() {
+				defer workers.Done()
 				recordDone <- rec.RecordDurable(openSSFCoverageEntry("overlapping-close", "persisted"))
 			}()
 			waitForDone(t, syncEntered, "durability confirmation")
@@ -230,36 +235,30 @@ func TestRecorderConcurrentCloseWaitsForFinalResult(t *testing.T) {
 				}
 			}
 			firstDone := make(chan error, 1)
-			go func() { firstDone <- rec.Close() }()
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				firstDone <- rec.Close()
+			}()
 			testwait.For(t, 5*time.Second, func() bool {
 				rec.mu.Lock()
 				defer rec.mu.Unlock()
 				return rec.closed
 			}, "first Close waiting for durability")
 
-			secondStarted := make(chan struct{})
 			secondDone := make(chan error, 1)
+			workers.Add(1)
 			go func() {
-				close(secondStarted)
-				secondDone <- rec.Close()
+				defer workers.Done()
+				runOverlappingRecorderClose(rec, secondDone)
 			}()
-			waitForDone(t, secondStarted, "overlapping Close start")
-			var secondErr error
-			returnedEarly := false
-			select {
-			case secondErr = <-secondDone:
-				returnedEarly = true
-				t.Errorf("overlapping Close returned before durability completed: %v", secondErr)
-			case <-time.After(testwait.Deadline(25 * time.Millisecond)):
-			}
+			waitForOverlappingRecorderCloseGate(t, secondDone)
 			release()
 			if err := waitForDone(t, recordDone, "durable record completion"); err != nil {
 				t.Fatalf("RecordDurable: %v", err)
 			}
 			firstErr := waitForDone(t, firstDone, "first Close completion")
-			if !returnedEarly {
-				secondErr = waitForDone(t, secondDone, "overlapping Close completion")
-			}
+			secondErr := waitForDone(t, secondDone, "overlapping Close completion")
 			if testCase.closeFile || testCase.closeCeremony {
 				if !errors.Is(firstErr, os.ErrClosed) {
 					t.Fatalf("Close = %v, want closed-handle error", firstErr)
@@ -275,6 +274,46 @@ func TestRecorderConcurrentCloseWaitsForFinalResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runOverlappingRecorderClose gives the second caller a distinct stack frame.
+// The deferred close keeps that frame present while Recorder.Close is blocked.
+func runOverlappingRecorderClose(rec *Recorder, done chan<- error) {
+	defer close(done)
+	done <- rec.Close()
+}
+
+// waitForOverlappingRecorderCloseGate observes the actual Once mutex wait.
+// Signaling before Close or waiting out a timer cannot prove the call entered it.
+// This follows the runtime-stack barrier used by the sink-health tests; a
+// changed runtime stack format fails the deadline rather than passing silently.
+func waitForOverlappingRecorderCloseGate(t *testing.T, done <-chan error) {
+	t.Helper()
+	stack := make([]byte, 64<<10)
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("overlapping Close returned before durability completed: %v", err)
+		default:
+		}
+		var n int
+		for {
+			n = runtime.Stack(stack, true)
+			if n < len(stack) {
+				break
+			}
+			stack = make([]byte, len(stack)*2)
+		}
+		for _, goroutine := range strings.Split(string(stack[:n]), "\n\n") {
+			header, _, _ := strings.Cut(goroutine, "\n")
+			if strings.Contains(header, "[sync.Mutex.Lock") &&
+				strings.Contains(goroutine, "\nsync.(*Once).doSlow(") &&
+				strings.Contains(goroutine, "/recorder.runOverlappingRecorderClose(") {
+				return true
+			}
+		}
+		return false
+	}, "overlapping Close blocked at its completion gate")
 }
 
 func TestRecorderEnsureFileAfterDirectoryDisappearanceReopensVisibleFile(t *testing.T) {

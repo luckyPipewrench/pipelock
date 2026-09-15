@@ -4937,6 +4937,35 @@ func TestKnownValueWindowIndex_CompactRepresentation(t *testing.T) {
 	}
 }
 
+func TestKnownValueWindowBudget_URLShapesFitDerivedCeiling(t *testing.T) {
+	var raw strings.Builder
+	for i := range 280 {
+		_, _ = fmt.Fprintf(&raw, "A%04x+/=", (i*251)%65536)
+	}
+	escaped := url.QueryEscape(raw.String())
+	tests := []string{
+		"https://user:" + escaped + "@vendor.example/path",
+		"https://vendor.example/path?token=" + escaped,
+	}
+	for _, prefix := range tests {
+		value := prefix + strings.Repeat("z", maxSecretsFileLineLen-len(prefix))
+		if len(value) != maxSecretsFileLineLen {
+			t.Fatalf("fixture length = %d, want %d", len(value), maxSecretsFileLineLen)
+		}
+		set, err := buildKnownValueWindows(newKnownValueWindowBudget(maxKnownValueWindowEntries), []string{value})
+		if err != nil {
+			t.Fatalf("max-length URL-shaped value exceeded derived budget: %v", err)
+		}
+		count := set[value].len()
+		if count > maxSecretsFileLineLen*2 {
+			t.Fatalf("URL-shaped value retained %d candidates, want at most %d", count, maxSecretsFileLineLen*2)
+		}
+		if count*maxSecretsFileEntries > maxKnownValueWindowEntries {
+			t.Fatalf("loader-cap projection = %d candidates, budget = %d", count*maxSecretsFileEntries, maxKnownValueWindowEntries)
+		}
+	}
+}
+
 func TestKnownValueWindowBudget_FailsBeforePartialIndex(t *testing.T) {
 	envSecret := strings.Join([]string{"Q7vP2mK9", "xR4nT8wB"}, "")
 	fileSecret := strings.Join([]string{"xL5pR8vN", "2qT7mC4z"}, "")
@@ -5003,6 +5032,12 @@ func TestNew_KnownSecretWindowBudgetFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disable dlp.scan_env") {
 		t.Fatalf("New error = %v, want actionable known-secret budget remedy", err)
+	}
+	if !strings.Contains(err.Error(), "reduce canary_tokens") {
+		t.Fatalf("New error = %v, want shared canary budget remedy", err)
+	}
+	if !strings.Contains(err.Error(), "entries") || !strings.Contains(err.Error(), "bytes") {
+		t.Fatalf("New error = %v, want actionable entry and byte counts", err)
 	}
 }
 

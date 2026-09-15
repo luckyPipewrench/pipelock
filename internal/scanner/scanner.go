@@ -610,7 +610,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	// stem shared by an env secret and a file secret is excluded from both.
 	knownSecretWindows, err := buildKnownValueWindows(windowBudget, s.envSecrets, s.fileSecrets)
 	if err != nil {
-		return nil, fmt.Errorf("build known-secret window index (reduce dlp.secrets_file entries or disable dlp.scan_env and remove oversized environment values): %w", err)
+		return nil, fmt.Errorf("build known-secret window index (reduce canary_tokens or dlp.secrets_file entries, or disable dlp.scan_env and remove oversized environment values): %w", err)
 	}
 	s.knownSecretWindows = knownSecretWindows
 
@@ -3038,7 +3038,10 @@ func collectValueWindowsBounded(value string, base, maxEntries int) (map[string]
 		windows[window] = []int{base + start}
 	}
 	if len(windows) > maxEntries {
-		return nil, errKnownValueWindowBudget
+		return nil, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
+			errKnownValueWindowBudget,
+			len(windows), len(windows)*knownValueWindowEntryBytes,
+			maxEntries, maxEntries*knownValueWindowEntryBytes)
 	}
 	return windows, nil
 }
@@ -3121,6 +3124,8 @@ func newKnownValueWindowBudget(maxEntries int) *knownValueWindowBudget {
 }
 
 func (b *knownValueWindowBudget) reserve(entries int) error {
+	// Per-value counting is the primary allocation guard. This check commits
+	// the bounded total and defends against count/build accounting drift.
 	if entries < 0 || entries > b.maxEntries-b.used {
 		return fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
 			errKnownValueWindowBudget,
@@ -3158,8 +3163,7 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 		remaining := budget.maxEntries - budget.used - candidateCount
 		windows, err := knownValueWindowsBounded(value, remaining)
 		if err != nil {
-			return nil, fmt.Errorf("%w: candidate growth exceeds %d entries (%d bytes)",
-				errKnownValueWindowBudget, budget.maxEntries, budget.maxEntries*knownValueWindowEntryBytes)
+			return nil, fmt.Errorf("count known-value window candidates: %w", err)
 		}
 		for _, offsets := range windows {
 			candidateCount += len(offsets)

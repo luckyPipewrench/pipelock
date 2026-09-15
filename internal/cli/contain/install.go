@@ -1815,6 +1815,16 @@ func ensureNFTRulesDirSafe(env *installEnv) error {
 	if err := ensureSafeDirectory(env, dir); err != nil {
 		return fmt.Errorf("nft rules directory %s: %w", dir, err)
 	}
+	// Create the directory only when it is absent, and set the mode only on
+	// the directory this call created. A no-op reinstall must not widen a
+	// directory an operator or distribution deliberately keeps stricter than
+	// 0755: this helper runs before the rules-unchanged early return, so an
+	// unconditional chmod here would rewrite the mode on every reinstall.
+	if _, err := env.stat(dir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
 	if err := env.mkdirAll(dir, modeDirReadable); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}

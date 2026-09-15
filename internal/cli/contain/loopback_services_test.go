@@ -1574,3 +1574,62 @@ func TestReloaderLockErrorNamesMissingDirectoryAndRecoveryCommand(t *testing.T) 
 		t.Fatalf("error = %v, want it to say the directory is missing and name `pipelock contain install`", err)
 	}
 }
+
+// TestStepInstallNFTRulesPreservesExistingRulesDirMode proves a reinstall
+// never widens a rules directory an operator deliberately keeps stricter
+// than the default: the pre-lock helper creates and sets the mode only on a
+// directory it created itself. A genuinely absent directory is still created
+// with the readable default the boot unit and proxy identity need.
+func TestStepInstallNFTRulesPreservesExistingRulesDirMode(t *testing.T) {
+	t.Run("no-op reinstall keeps an operator's stricter mode", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		dir := filepath.Dir(env.nftRulesPath)
+		env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
+		env.lockFn = withContainmentReconcileLock
+		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+
+		s := stepInstallNFTRules()
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("first install must succeed: %v", err)
+		}
+		// The operator hardens the directory after install.
+		if err := os.Chmod(dir, 0o750); err != nil { // #nosec G302 -- directory hardened by the operator in this fixture.
+			t.Fatalf("harden rules directory: %v", err)
+		}
+
+		// A reinstall with the rules already matching must not touch it.
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("no-op reinstall must succeed: %v", err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat rules directory: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o750 {
+			t.Fatalf("rules directory mode = %#o, want the operator's 0750 preserved by a no-op reinstall", got)
+		}
+	})
+
+	t.Run("absent directory is created readable", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		dir := filepath.Dir(env.nftRulesPath)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("premise failed: rules directory already exists: %v", err)
+		}
+		env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
+		env.lockFn = withContainmentReconcileLock
+		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+
+		s := stepInstallNFTRules()
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("first install must succeed: %v", err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat rules directory: %v", err)
+		}
+		if got := info.Mode().Perm(); got != modeDirReadable {
+			t.Fatalf("created rules directory mode = %#o, want %#o", got, modeDirReadable)
+		}
+	})
+}

@@ -846,6 +846,15 @@ func TestValidateContainmentProbeFixture_ChainTextSchema(t *testing.T) {
 			wantErr: "operator_uid must be distinct",
 		},
 		{
+			name: "chain_text_operator_uid_aliases_proxy",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, 988
+				return fx
+			},
+			wantErr: "operator_uid must be distinct",
+		},
+		{
 			name: "chain_text_negative_operator_uid",
 			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
 				fx.NFTChainText = validChainText()

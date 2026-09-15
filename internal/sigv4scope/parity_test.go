@@ -66,6 +66,12 @@ func TestScopeTailRejectsExtendedTerminator(t *testing.T) {
 		if !sigv4scope.IsScopeTail(tail) {
 			t.Errorf("IsScopeTail(%q) = false, want true", tail)
 		}
+		// The reject loop above checks both consumers; this one checked only
+		// the scanner, so a redactor that stopped recognizing a valid tail
+		// would pass the parity test that exists to catch exactly that.
+		if !redact.IsSigV4CredentialScopeTail(tail) {
+			t.Errorf("redactor rejected the valid tail %q the scanner accepts", tail)
+		}
 	}
 }
 
@@ -97,6 +103,11 @@ func TestIsScopeTailStopsWithoutSecondSeparator(t *testing.T) {
 	} {
 		if sigv4scope.IsScopeTail(tail) {
 			t.Errorf("IsScopeTail(%q) = true, want false (no second separator)", tail)
+		}
+		// Both consumers share this grammar, so both must reject a
+		// truncated scope. Checking one leaves the other free to drift.
+		if redact.IsSigV4CredentialScopeTail(tail) {
+			t.Errorf("redactor accepted the truncated tail %q the scanner rejects", tail)
 		}
 	}
 }

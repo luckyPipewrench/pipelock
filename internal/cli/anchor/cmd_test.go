@@ -22,6 +22,7 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -646,12 +647,107 @@ func TestReceiptsCmdRejectsEmptyRecorderEvidence(t *testing.T) {
 	}
 }
 
-// TestReceiptsCmdAsDirExtractsFromSessionDirectory covers the --dir branch
-// of extractReceipts, which reads a whole session directory rather than a
-// single evidence file.
+// cliRecorderSessionDir writes a REAL recorder evidence directory, the shape
+// ExtractReceiptsFromSessionDir actually reads, and returns it with the hex
+// public key that verifies its receipts. The recorder fixes the evidence
+// session ID to "proxy", which is also the anchor command's --session default.
+func cliRecorderSessionDir(t *testing.T) (dir string, keyHex string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir = t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "policy-test",
+		Principal:  "test-principal",
+		Actor:      "test-actor",
+	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	for range 2 {
+		if err := emitter.Emit(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Target:    "https://example.test/resource",
+			Verdict:   config.ActionAllow,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			SessionID: "proxy",
+			Agent:     "test-actor",
+		}); err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder Close: %v", err)
+	}
+	return dir, hex.EncodeToString(pub)
+}
+
+// TestReceiptsCmdAsDirExtractsFromSessionDirectory covers the --dir branch of
+// extractReceipts, which reads a whole session directory rather than a single
+// evidence file.
+//
+// It drives a REAL recorder session directory and asserts a bundle is actually
+// produced. Asserting only that an unmatched session errors would pass against
+// an implementation that returned no receipts for every --dir invocation, or
+// never read the directory at all, so it would prove the branch was reachable
+// without proving extraction works. The unmatched-session case is its own
+// negative test below.
 func TestReceiptsCmdAsDirExtractsFromSessionDirectory(t *testing.T) {
-	receiptsPath, keyHex := cliReceiptJSONL(t)
-	dir := filepath.Dir(receiptsPath)
+	dir, keyHex := cliRecorderSessionDir(t)
+	bundlePath := filepath.Join(dir, "bundle.json")
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		dir,
+		"--dir",
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", "bundle.json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v, want a bundle built from the session directory", err)
+	}
+	if !strings.Contains(out.String(), "ANCHOR BUNDLE WRITTEN") {
+		t.Fatalf("command output = %q, want the success announcement", out.String())
+	}
+	data, err := os.ReadFile(bundlePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading bundle: %v", err)
+	}
+	var bundle anchorpkg.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("parsing bundle: %v", err)
+	}
+	// The checkpoint has to describe the receipts that were in the directory.
+	// Without this the test would pass on any bundle at all, including one
+	// built from an empty extraction.
+	if bundle.Checkpoint.ReceiptCount == 0 {
+		t.Fatal("bundle checkpoint covers 0 receipts, want the session's receipts")
+	}
+	if bundle.Checkpoint.SessionID != "proxy" {
+		t.Fatalf("bundle checkpoint session = %q, want the recorder's session", bundle.Checkpoint.SessionID)
+	}
+}
+
+// TestReceiptsCmdAsDirRejectsUnmatchedSession is the negative half: a session
+// ID absent from the directory yields no receipts and no error from the
+// extractor, so BuildCheckpoint is what rejects it.
+func TestReceiptsCmdAsDirRejectsUnmatchedSession(t *testing.T) {
+	dir, keyHex := cliRecorderSessionDir(t)
 	cmd := receiptsCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -664,17 +760,8 @@ func TestReceiptsCmdAsDirExtractsFromSessionDirectory(t *testing.T) {
 		"--out", "bundle.json",
 	})
 	err := cmd.Execute()
-	// The fixture directory holds a raw receipt-JSONL file, not a real
-	// session directory keyed by session ID, so ExtractReceiptsFromSessionDir
-	// legitimately finds nothing for the named session. That still proves
-	// the --dir branch ran: it is a distinct error from every non---dir
-	// assertion in this file, which all go through extractReceipts's
-	// non-directory branch instead.
-	// ExtractReceiptsFromSessionDir returns zero receipts and no error for an
-	// unmatched session, so BuildCheckpoint is what rejects it. Asserting that
-	// exact message keeps an unrelated failure from passing as this one.
 	if err == nil || !strings.Contains(err.Error(), "empty receipt chain") {
-		t.Fatalf("Execute err = %v, want an empty-receipt-chain error for --dir extraction", err)
+		t.Fatalf("Execute err = %v, want an empty-receipt-chain error for an unmatched session", err)
 	}
 	if strings.Contains(err.Error(), "reading raw receipts") {
 		t.Fatalf("Execute err = %v, want a --dir-specific error, not the non---dir fallback path", err)
@@ -785,14 +872,20 @@ func TestValidateBundleOutputPathHostilePaths(t *testing.T) {
 		}
 	})
 
-	t.Run("ancestor Lstat permission denied while walking up", func(t *testing.T) {
-		// Same reasoning as the non-directory case above: a permission-
-		// denied ancestor blocks the OS traversal at the first
-		// Lstat(bundlePath) call, so this lands on "inspect --out" rather
-		// than the parent-walk loop's own "inspect --out parent" branch.
+	t.Run("bundle path Lstat permission denied under a blocked ancestor", func(t *testing.T) {
+		// Named for what it actually covers. A permission-denied ancestor
+		// blocks the OS traversal at the FIRST Lstat(bundlePath) call, so
+		// this lands on "inspect --out" and never reaches the parent-walk
+		// loop's own "inspect --out parent" branch. Creating bundlePath
+		// first would not change that, because the later Lstat still
+		// traverses the blocked directory.
+		//
 		// The parent-walk loop's independent Lstat failure paths (a
-		// directory or permission demoted between the two Lstat calls) are
-		// TOCTOU-only and not reachable without a real race.
+		// directory or permission demoted BETWEEN the two Lstat calls) are
+		// TOCTOU-only and unreachable without a real race. Reaching them
+		// would mean injecting an Lstat seam into production solely to be
+		// testable, which buys a test rather than a guarantee, so they stay
+		// uncovered and are named here instead of being implied covered.
 		receiptDir := t.TempDir()
 		blocked := filepath.Join(receiptDir, "blocked")
 		if err := os.Mkdir(blocked, 0o750); err != nil {
@@ -806,6 +899,12 @@ func TestValidateBundleOutputPathHostilePaths(t *testing.T) {
 		err := validateBundleOutputPath(receiptDir, bundlePath)
 		if err == nil || !strings.Contains(err.Error(), "inspect --out") {
 			t.Fatalf("validateBundleOutputPath err = %v, want an inspect-failure rejection", err)
+		}
+		// "inspect --out" is a prefix of "inspect --out parent", so the
+		// check above cannot tell the two branches apart on its own. Pin
+		// the one this test actually reaches.
+		if strings.Contains(err.Error(), "inspect --out parent") {
+			t.Fatalf("validateBundleOutputPath err = %v, want the bundle-path inspect failure, not the parent-walk branch", err)
 		}
 	})
 }

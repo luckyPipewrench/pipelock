@@ -47,7 +47,16 @@ func newCrossRequestTestHandler(t *testing.T, maxBufferBytes, maxSessions int) *
 	}
 	sc := scanner.MustNew(cfg)
 	m := metrics.New()
-	return NewHandler(cfg, sc, nil, m, "test-version")
+	h := NewHandler(cfg, sc, nil, m, "test-version")
+	// Every enabled handler builds a fragment buffer with its own eviction
+	// state. Close it with the test so buffers do not accumulate across the
+	// package run.
+	t.Cleanup(func() {
+		h.crossRequest.mu.Lock()
+		defer h.crossRequest.mu.Unlock()
+		h.crossRequest.closeLocked()
+	})
+	return h
 }
 
 func postScanAPI(t *testing.T, h *Handler, body string) (Response, int) {
@@ -367,24 +376,57 @@ func TestCrossRequestFragment_ConcurrentRequestsSameSession(t *testing.T) {
 	// Enforcement under concurrency: the two halves of a secret race into
 	// one session from two goroutines. Whichever lands second completes the
 	// match, so exactly one of the two responses must deny.
-	results := make(chan string, 2)
-	for _, half := range []string{crossReqAWSPart1, crossReqAWSPart2} {
-		go func(payload string) {
-			resp, status := postScanAPI(t, h, dlpScanBody(t, payload, "racing-session"))
-			if status != http.StatusOK {
-				t.Errorf("racing half: expected 200, got %d", status)
-			}
-			results <- resp.Decision
-		}(half)
+	// Enforcement after concurrent accumulation. Racing the two halves
+	// against each other would not be a deterministic assertion: the halves
+	// are order-dependent, so an interleaving that appends the tail first
+	// reassembles text that is not a key and legitimately matches nothing.
+	// What IS invariant is that concurrent appends neither lose nor corrupt
+	// the retained fragment, so send the first half from several goroutines
+	// at once and then complete the secret sequentially.
+	//
+	// The goroutines must not call a helper that aborts on failure:
+	// t.Fatalf runs runtime.Goexit, so a failing worker would skip its send
+	// and block the parent forever instead of reporting. Each one decodes
+	// its own response and always reports exactly once.
+	type racedResult struct {
+		status int
+		err    error
 	}
-	denies := 0
-	for i := 0; i < 2; i++ {
-		if <-results == DecisionDeny {
-			denies++
+	const racers = 8
+	results := make(chan racedResult, racers)
+	body := dlpScanBody(t, crossReqAWSPart1, "racing-session")
+	for i := 0; i < racers; i++ {
+		go func() {
+			out := racedResult{}
+			defer func() { results <- out }()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			out.status = rec.Code
+			var resp Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				out.err = fmt.Errorf("decode response (%d): %w: %s", rec.Code, err, rec.Body.String())
+			}
+		}()
+	}
+	for i := 0; i < racers; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("racing half: %v", got.err)
+		}
+		if got.status != http.StatusOK {
+			t.Fatalf("racing half: expected 200, got %d", got.status)
 		}
 	}
-	if denies != 1 {
-		t.Fatalf("racing halves in one session must produce exactly one deny (the completing request), got %d", denies)
+
+	completing, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart2, "racing-session"))
+	if status != http.StatusOK {
+		t.Fatalf("completing request: expected 200, got %d", status)
+	}
+	if completing.Decision != DecisionDeny {
+		t.Fatalf("concurrent accumulation lost the retained half: completing request = %q findings=%+v", completing.Decision, completing.Findings)
 	}
 }
 

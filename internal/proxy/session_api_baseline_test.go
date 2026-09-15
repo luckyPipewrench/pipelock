@@ -173,6 +173,47 @@ func TestSessionAPI_BaselineRoundTrip_ListShowRatifyForget(t *testing.T) {
 	}
 }
 
+func TestSessionAPI_BaselineRatifyFoldedKeyThenBlocks(t *testing.T) {
+	sm, _, cleanup := setupBaselineAPITestManager(t)
+	defer cleanup()
+	foldedKey := baselineAgentKeyForSessionKey("127.0.0.1")
+	if !strings.HasPrefix(foldedKey, "ip4-") {
+		t.Fatalf("folded client key = %q, want ip4 namespace", foldedKey)
+	}
+	if err := baseline.ValidateAgentKey(foldedKey); err != nil {
+		t.Fatalf("folded client key validation: %v", err)
+	}
+	mgr := sm.BaselineManager()
+	for range 3 {
+		mgr.RecordSession(foldedKey, baseline.SessionMetrics{
+			ToolCalls: 4, UniqueTools: 2, Domains: 2,
+			BytesTotal: 1000, DurationSec: 60, Requests: 1,
+		})
+	}
+	if state := mgr.GetState(foldedKey); state != baseline.StateRatify {
+		t.Fatalf("folded profile state = %q, want %q", state, baseline.StateRatify)
+	}
+
+	handler := newTestSessionAPIHandler(t, sm)
+	request := baselineAdminRequest(http.MethodPost, "/api/v1/baseline/"+foldedKey+"/ratify")
+	response := httptest.NewRecorder()
+	handler.HandleBaselineProfile(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("ratify folded key status = %d body=%s", response.Code, response.Body.String())
+	}
+	if state := mgr.GetState(foldedKey); state != baseline.StateLocked {
+		t.Fatalf("folded profile state after ratify = %q, want %q", state, baseline.StateLocked)
+	}
+
+	sess := sm.GetOrCreate("127.0.0.1")
+	sess.RecordRequest("steady.example", testSessionConfig())
+	sess.RecordRequest("deviant.example", testSessionConfig())
+	result := sm.CheckBaselineFailClosed(foldedKey, sess)
+	if result == nil || !result.Blocked || result.Action != config.ActionBlock {
+		t.Fatalf("ratified folded profile did not block deviation: %+v", result)
+	}
+}
+
 func TestSessionAPI_BaselineRatifyRejectsUnknownAndWrongState(t *testing.T) {
 	sm, _, cleanup := setupBaselineAPITestManager(t)
 	defer cleanup()

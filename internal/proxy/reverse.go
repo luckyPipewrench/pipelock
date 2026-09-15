@@ -629,7 +629,7 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // blocks return earlier, so without this a run of blocked reverse DLP requests
 // leaves the scoped adaptive score at zero and a caller probing URL- or
 // header-embedded secrets never escalates. It reuses the same helper, session
-// key (sessionKeyFor(agent, clientIP)) and upstream-host scope the end-of-handler
+// key (sessionKeyFor(agent, clientIP, actorAuth)) and upstream-host scope the end-of-handler
 // recording uses, so a blocked request records exactly once: it returns before
 // that later recording, never reaching it. A nil owner has no session manager
 // (matching the guard on the end-of-handler recording), and
@@ -674,7 +674,7 @@ func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, 
 // finding is observed without an enforce-mode block. The ordinary session
 // activity recorded later tracks the request but deliberately defers clean
 // decay, so it cannot stand in for this finding signal.
-func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requestID string, cfg *config.Config) {
+func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) {
 	if rp.owner == nil || !cfg.AdaptiveEnforcement.Enabled || isAdaptiveExempt(rp.upstream.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		return
 	}
@@ -682,7 +682,7 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 	if sm == nil {
 		return
 	}
-	key := sessionKeyFor(agent, clientIP)
+	key := sessionKeyFor(agent, clientIP, actorAuth)
 	recordAdaptiveSignalForScope(sm.GetOrCreate(key), adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    rp.logger,
@@ -987,7 +987,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
-			rp.recordRequestNearMissSignal(agent, clientIP, requestID, cfg)
+			rp.recordRequestNearMissSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 		}
 	}
 
@@ -1052,7 +1052,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
-			rp.recordRequestNearMissSignal(agent, clientIP, requestID, cfg)
+			rp.recordRequestNearMissSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 		}
 	}
 
@@ -1181,7 +1181,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// block_all: deny ALL traffic (including clean) when the session sits at
 		// an escalation level whose adaptive action resolves to block.
 		if sessionResult.Level > 0 && decide.UpgradeAction("", sessionResult.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP)
+			sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
 			recordAdaptiveUpgrade(rp.logger, rp.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionResult.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, adaptiveSessionDeny)

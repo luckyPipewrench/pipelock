@@ -16,6 +16,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -1323,6 +1325,14 @@ type SessionManager struct {
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
 	baselinePtr atomic.Pointer[baselineSnapshot]
+
+	// baselineWarningMu guards baselineUnproducibleWarned. A legacy profile is
+	// actionable on the first startup or reload that observes it, but repeating
+	// the same warning on every otherwise-successful reload trains operators to
+	// ignore it. Removing a key that becomes producible lets a later regression
+	// warn again.
+	baselineWarningMu          sync.Mutex
+	baselineUnproducibleWarned map[string]struct{}
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -1372,6 +1382,55 @@ func (sm *SessionManager) EnableBaseline(cfg *config.BehavioralBaseline) error {
 	}
 	sm.baselinePtr.Store(snap)
 	return nil
+}
+
+// WarnUnproducibleBaselineProfiles emits one migration warning for each
+// persisted pending or locked profile that no HTTP session shape can reach
+// under the current configured identity names.
+func (sm *SessionManager) WarnUnproducibleBaselineProfiles(configuredNames map[string]struct{}) {
+	if sm.logger == nil {
+		return
+	}
+	mgr := sm.BaselineManager()
+	if mgr == nil {
+		return
+	}
+	unproducible := make(map[string]struct{})
+	for _, profile := range mgr.ListProfiles() {
+		if profile.State != baseline.StateRatify && profile.State != baseline.StateLocked {
+			continue
+		}
+		if identitykey.IsFoldedBaselineKey(profile.AgentKey) {
+			continue
+		}
+		if _, ok := configuredNames[profile.AgentKey]; ok {
+			continue
+		}
+		unproducible[profile.AgentKey] = struct{}{}
+	}
+
+	sm.baselineWarningMu.Lock()
+	if sm.baselineUnproducibleWarned == nil {
+		sm.baselineUnproducibleWarned = make(map[string]struct{}, len(unproducible))
+	}
+	for key := range sm.baselineUnproducibleWarned {
+		if _, stillUnproducible := unproducible[key]; !stillUnproducible {
+			delete(sm.baselineUnproducibleWarned, key)
+		}
+	}
+	toWarn := make([]string, 0, len(unproducible))
+	for key := range unproducible {
+		if _, alreadyWarned := sm.baselineUnproducibleWarned[key]; alreadyWarned {
+			continue
+		}
+		sm.baselineUnproducibleWarned[key] = struct{}{}
+		toWarn = append(toWarn, key)
+	}
+	sm.baselineWarningMu.Unlock()
+
+	for _, key := range toWarn {
+		sm.logger.LogAnomaly(audit.NewMethodLogContext("BASELINE"), "", "persisted baseline profile "+key+" no longer matches a producible session shape", 0)
+	}
 }
 
 func newBaselineSnapshot(cfg *config.BehavioralBaseline) (*baselineSnapshot, error) {
@@ -1606,12 +1665,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 		return
 	}
 
-	_, agent, _ := classifySessionKey(key)
-	if agent == "" {
-		// Fall back to full key when no "|" separator exists.
-		agent = key
-	}
-	sm.RecordBaselineForAgent(agent, sess)
+	sm.RecordBaselineForAgent(baselineAgentKeyForSessionKey(key), sess)
 }
 
 // GetOrCreate returns the session for a key, creating if needed.
@@ -2187,7 +2241,9 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 }
 
 func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami {
-	key := sessionKeyFor(agent, clientIP)
+	// The status endpoint has no actor-auth context. Treat its caller-supplied
+	// agent name as unknown so lookup cannot create a trusted name partition.
+	key := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
 	out := AdaptiveWhoami{
 		ClientIP:        clientIP,
 		Agent:           agent,

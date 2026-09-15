@@ -59,7 +59,9 @@ Returns `401` if missing or invalid.
 |----------|-----------|---------------|
 | DLP on argument text | Always for `tool_call` | Extracts all strings (keys and values) from `arguments` JSON, scans concatenated text for credential patterns. |
 | Injection on argument text | Always for `tool_call` | Same extracted text, scanned for prompt injection patterns. |
-| Tool policy | `mcp_tool_policy` is configured with rules | Matches `tool_name` and argument strings against configured warn, block, redirect, or defer rules. |
+| Tool policy | `mcp_tool_policy` is configured with rules | Matches `tool_name` and argument strings against configured warn, block, redirect, or defer rules. Cross-request accumulation for `tool_call` runs after this stage, so a policy-denied call retains nothing in the session. |
+
+**Cross-request fragment reassembly and the `url` kind:** `dlp`, `prompt_injection`, and `tool_call` all feed their scanned text into the cross-request fragment buffer when `session_id` is set (see Context above). `url` does not. The other transports that already do this kind of accumulation (the forward proxy and TLS interception) accumulate the query string and path of a request they are themselves forwarding on the agent's behalf — that is state about an outbound request in flight, not about a content field being classified. The Scan API's `url` kind has no such outbound request to attach that state to: it evaluates a URL string as a piece of content, the same way `dlp` evaluates a text string. A URL split across two `url`-kind requests is therefore not reassembled; each request scans only what it was given. Submitting URL text through `dlp` accumulates it as text under the credential patterns only; it does not apply URL-specific policy or URL matching, so it is not a substitute for `url`-kind scanning of the whole URL.
 
 `tool_call` is an explicit on-demand scan request. It does not inherit the inline MCP proxy's `mcp_input_scanning.enabled` gate; that gate controls live MCP proxy traffic, not the Scan API. Disable API access to this kind with `scan_api.kinds.tool_call: false`.
 
@@ -82,7 +84,7 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | Field | Behavior |
 |-------|----------|
 | `request_id` | Echoed in the response only in the post-scan path (allow, warn, deny, timeout, cancel). Not echoed on any pre-scan error, including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) that do populate `kind`. The `request_id` copy happens after `executeScan` returns, not after parsing. |
-| `session_id` | Accepted metadata. Not used or echoed by the current handler. Reserved for future session-scoped scanning. |
+| `session_id` | Opt-in cross-request fragment reassembly. When `cross_request_detection.enabled` and `cross_request_detection.fragment_reassembly.enabled` are both true, requests sharing the same `session_id` (and the same bearer token — see below) accumulate content in a per-session rolling buffer, so a DLP secret split across two or more `dlp`, `prompt_injection`, or `tool_call` requests is caught on the request that completes it. The `url` kind does not participate (see the note under Scan kinds). Omitting `session_id`, or running with cross-request detection disabled, is exactly today's stateless per-request behavior. Malformed values (over 128 bytes, or any byte outside visible non-whitespace ASCII) are rejected with `400 invalid_session_id`. Echoed back in the response on the same post-scan timing as `request_id`. Session identity is namespaced by a hash of the caller's bearer token, so two different tokens can never share or poison each other's session state even if they submit the same `session_id`. Capacity is counted per caller, not per session: `cross_request_detection.fragment_reassembly.max_sessions` bounds the number of callers with live fragment state, and all of one caller's sessions share one `max_buffer_bytes` budget, so a caller that opens many sessions evicts only its own oldest fragments and can't spend another caller's admission. Once the caller ledger is full, a NEW caller's request is denied outright (fails closed: the request "cannot be safely inspected" rather than being allowed uninspected) until a caller's fragments expire (`fragment_reassembly.window_minutes`), the config is reloaded with a larger `max_sessions`, or the process restarts; the Scan API exposes no per-session reset, and any config reload discards accumulated fragments. Session state is held in the memory of the Scan API instance that received the request: a deployment running more than one instance behind a load balancer must pin a caller's session to one instance, or halves that land on different instances are each treated as a first fragment. A completing match adds a `cross_request_fragment` finding whose `contributors` field lists the `scan_id` of every earlier request that contributed retained bytes. |
 | `agent_name` | Accepted metadata. Not used or echoed by the current handler. Reserved for future per-agent policy resolution. |
 
 ### Options (optional)
@@ -116,6 +118,7 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | `kind` | string | Echoes the request kind. Populated at two handler phases: (1) post-parse validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) include `kind` because the body has been decoded. (2) Post-scan responses (allow, warn, deny, timeout, cancel) include `kind`. Empty on pre-parse errors: 401, 405, 429, 503 (kill switch), `read_error`, `body_too_large`, and `invalid_json` — including trailing-data cases where the body contained a valid kind. |
 | `scan_id` | string | Unique per-scan ID. Format: `scan-` + 16 lowercase hex characters (64 bits from crypto/rand). Example: `scan-a1b2c3d4e5f67890`. |
 | `request_id` | string | Echoed from `context.request_id` only in the post-`executeScan` path (allow, warn, deny, timeout, cancel). Absent on all pre-scan errors including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) — those errors have `kind` but not `request_id` because `request_id` is copied after the scan, not after parsing. |
+| `session_id` | string | Echoed from `context.session_id` on the same post-scan timing as `request_id`. Absent when the request omitted `session_id`, or on any pre-scan error. |
 | `duration_ms` | int | Wall-clock scan time in milliseconds. |
 | `engine_version` | string | Pipelock binary version. |
 | `findings` | array | Present when `decision` is `warn` or `deny`. One entry per scanner match. |
@@ -137,11 +140,12 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `scanner` | string | Which scanner matched: `url`, `dlp`, `prompt_injection`, `tool_policy`. |
+| `scanner` | string | Which scanner matched: `url`, `dlp`, `prompt_injection`, `tool_policy`, `tool_call`, or `cross_request_fragment`. |
 | `rule_id` | string | Machine-readable rule identifier. Prefixed by scanner type (see table below). |
 | `severity` | string | `critical`, `high`, or `medium`. |
 | `message` | string | Human-readable description. Contains pattern name, never raw matched content. |
 | `evidence` | object | Only present when `include_evidence: true`. See Options. |
+| `contributors` | array of string | Only present on a `cross_request_fragment` finding. Lists the `scan_id` of every earlier request in this `session_id` whose content contributed retained bytes to the completed match — exact and bounded, not a full session history. |
 
 ### Rule ID prefixes
 
@@ -151,6 +155,8 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | `dlp` | `DLP-<pattern_name>` | `DLP-Anthropic API Key` |
 | `prompt_injection` | `INJ-<pattern_name>` | `INJ-Prompt Injection` |
 | `tool_policy` | `POLICY-<rule_name>` or `POLICY-DENY` | `POLICY-shell-exec` |
+| `cross_request_fragment` (match) | `CEE-fragment-<pattern_name>` | `CEE-fragment-Anthropic API Key` |
+| `dlp` / `prompt_injection` / `tool_call` (cross-request capacity/ownership failure) | `CEE-capacity-exceeded` or `CEE-owner-mismatch` | `CEE-capacity-exceeded` |
 
 ### Severity assignment
 

@@ -21,7 +21,9 @@ package conformance_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,16 +43,33 @@ var expectedContainmentProbes = map[int]string{
 // fixture: when the joined command line contains every Match substring, the
 // runner returns Stdout + ExitCode.
 type containmentRunRule struct {
+	Comment  string   `json:"comment"`
 	Match    []string `json:"match"`
 	Stdout   string   `json:"stdout"`
 	ExitCode int      `json:"exit_code"`
 }
 
 // containmentProbeFixture is the parsed *.probe.json input.
+//
+// NFTChainText, AgentUID, ProxyUID, OperatorUID, and ProxyPort are an
+// alternative to DropCounterReads: instead of pre-baking
+// probe 8's before/after DROP-counter values, a fixture supplies the literal
+// `nft -n -a list chain ...` output text and lets production's own chain-text
+// recognizer (agentUIDBareAcceptBeforeDrop,
+// chainLinesHaveUnsafeVerdictBeforeAgentDrop) classify it. This is what makes
+// the agent-accept-before-drop structural containment hole fixture possible:
+// that outcome cannot be expressed as a pre-baked counter pair at all. The two
+// input styles are mutually exclusive (see validateContainmentProbeFixture).
 type containmentProbeFixture struct {
+	Description      string               `json:"description"`
 	AgentUser        string               `json:"agent_user"`
 	OperatorUser     string               `json:"operator_user"`
 	DropCounterReads []uint64             `json:"drop_counter_reads"`
+	NFTChainText     string               `json:"nft_chain_text"`
+	AgentUID         int                  `json:"agent_uid"`
+	ProxyUID         int                  `json:"proxy_uid"`
+	OperatorUID      int                  `json:"operator_uid"`
+	ProxyPort        int                  `json:"proxy_port"`
 	Runs             []containmentRunRule `json:"runs"`
 }
 
@@ -66,12 +85,20 @@ type containmentExpectProbe struct {
 	Probe  int    `json:"probe"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// DetailContains is optional. When set, the probe's
+	// detail string must contain it. This is what lets a fixture assert
+	// WHICH production outcome produced a given status, distinguishing e.g.
+	// the agent-accept-before-drop structural hole from a counter-based
+	// leaked-egress failure even though both report status "fail". Absent in
+	// the original two fixtures, whose comparison is unchanged.
+	DetailContains string `json:"detail_contains,omitempty"`
 }
 
 // containmentExpectFixture is the parsed *.expect.json input.
 type containmentExpectFixture struct {
-	ExitCode int                      `json:"exit_code"`
-	Probes   []containmentExpectProbe `json:"probes"`
+	Description string                   `json:"description"`
+	ExitCode    int                      `json:"exit_code"`
+	Probes      []containmentExpectProbe `json:"probes"`
 }
 
 // loadContainmentProbe reads and parses a *.probe.json fixture. Fail-closed:
@@ -84,7 +111,13 @@ func loadContainmentProbe(t *testing.T, path string) containmentProbeFixture {
 		t.Fatalf("read probe fixture %s: %v", path, err)
 	}
 	var fx containmentProbeFixture
-	if err := json.Unmarshal(data, &fx); err != nil {
+	// DisallowUnknownFields makes an unrecognized field
+	// fail loud at load instead of being silently ignored: a schema-widening
+	// mistake in a published fixture should never pass by accident, and
+	// nothing in the current two fixtures nor the new one below sets a field
+	// outside this struct, so this is a pure tightening with no behavior
+	// change for them.
+	if err := decodeFixtureDocument(data, &fx); err != nil {
 		t.Fatalf("parse probe fixture %s: %v", path, err)
 	}
 	if len(fx.Runs) == 0 {
@@ -141,6 +174,33 @@ func validateContainmentProbeFixture(fx containmentProbeFixture) error {
 	if matches := countRulesWithExactAnchors(fx.Runs, operatorRequired); matches != 1 {
 		return fmt.Errorf("has %d exact probe-9 command rule(s), want 1 with match anchors %q", matches, operatorRequired)
 	}
+
+	usesChainText := fx.NFTChainText != ""
+	usesRawCounters := len(fx.DropCounterReads) > 0
+	if usesChainText && usesRawCounters {
+		return errors.New("sets both nft_chain_text and drop_counter_reads; these are mutually exclusive fixture inputs (ambiguous)")
+	}
+	if usesChainText && (fx.AgentUID <= 0 || fx.ProxyUID <= 0) {
+		return errors.New("nft_chain_text requires positive agent_uid and proxy_uid")
+	}
+	if usesChainText && fx.AgentUID == fx.ProxyUID {
+		return errors.New("agent_uid and proxy_uid must be distinct")
+	}
+	if usesChainText && fx.OperatorUID < 0 {
+		return errors.New("operator_uid must be zero (unknown) or positive")
+	}
+	if usesChainText && fx.OperatorUID != 0 && (fx.OperatorUID == fx.AgentUID || fx.OperatorUID == fx.ProxyUID) {
+		return errors.New("operator_uid must be distinct from agent_uid and proxy_uid")
+	}
+	if usesChainText && fx.ProxyPort != 0 && (fx.ProxyPort < 1 || fx.ProxyPort > 65535) {
+		return errors.New("proxy_port must be between 1 and 65535")
+	}
+	// A UID/port field set without nft_chain_text is dead: nothing reads it,
+	// and the fixture would silently claim an input it does not actually
+	// drive. Reject it the same way an unused canned run rule is rejected.
+	if !usesChainText && (fx.AgentUID != 0 || fx.ProxyUID != 0 || fx.OperatorUID != 0 || fx.ProxyPort != 0) {
+		return errors.New("agent_uid, proxy_uid, operator_uid, and proxy_port have no effect without nft_chain_text")
+	}
 	return nil
 }
 
@@ -179,7 +239,7 @@ func loadContainmentExpect(t *testing.T, path string) containmentExpectFixture {
 		t.Fatalf("read expect fixture %s: %v", path, err)
 	}
 	var fx containmentExpectFixture
-	if err := json.Unmarshal(data, &fx); err != nil {
+	if err := decodeFixtureDocument(data, &fx); err != nil {
 		t.Fatalf("parse expect fixture %s: %v", path, err)
 	}
 	if len(fx.Probes) == 0 {
@@ -334,6 +394,11 @@ func runContainmentFixture(t *testing.T, name string) ([]contain.ConformanceProb
 		AgentUser:    probeFx.AgentUser,
 		OperatorUser: probeFx.OperatorUser,
 		DropCounter:  fixtureDropCounter(probeFx.DropCounterReads),
+		NFTChainText: probeFx.NFTChainText,
+		AgentUID:     probeFx.AgentUID,
+		ProxyUID:     probeFx.ProxyUID,
+		OperatorUID:  probeFx.OperatorUID,
+		ProxyPort:    probeFx.ProxyPort,
 	}
 	results, exit, err := contain.RunContainmentConformance(context.Background(), env)
 	if err != nil {
@@ -387,6 +452,9 @@ func assertMatchesExpect(t *testing.T, name string, results []contain.Conformanc
 		}
 		if got.Status != want.Status {
 			t.Errorf("%s: probe %d status = %q, want %q (detail: %s)", name, want.Probe, got.Status, want.Status, got.Detail)
+		}
+		if want.DetailContains != "" && !strings.Contains(got.Detail, want.DetailContains) {
+			t.Errorf("%s: probe %d detail = %q, want it to contain %q", name, want.Probe, got.Detail, want.DetailContains)
 		}
 	}
 }
@@ -707,4 +775,305 @@ func discoverContainmentFixtures(t *testing.T) []string {
 		}
 	}
 	return names
+}
+
+// baseChainTextFixtureRuns are the two mandatory run rules any probe fixture
+// needs to pass validateContainmentProbeFixture's exact-anchor checks,
+// reused by the nft_chain_text schema tests below so each test case only has
+// to vary the field(s) it is actually exercising.
+func baseChainTextFixtureRuns() []containmentRunRule {
+	return []containmentRunRule{
+		{
+			Match:    []string{"sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", directCanaryURL},
+			Stdout:   "curl: (7) Failed to connect\nPLK_TIME_CONNECT=0.000000\n000",
+			ExitCode: 7,
+		},
+		{
+			Match:    []string{"sudo -n -u operator -- " + fixtureCurlPath, "--connect-timeout 3", "--max-time 5", "--noproxy *", operatorCanaryURL},
+			Stdout:   "200",
+			ExitCode: 0,
+		},
+	}
+}
+
+func validChainText() string {
+	return "table inet pipelock_containment {\n  chain output_filter {\n    type filter hook output priority filter; policy accept;\n    meta skuid 1000 accept\n    meta skuid 988 accept\n    meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n    meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix \"pipelock-contain class=direct_dns_blocked \" drop\n    meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix \"pipelock-contain class=direct_dns_blocked \" drop\n    meta skuid 987 counter packets 0 bytes 0 log prefix \"pipelock-contain class=not_routing_through_pipelock \" drop\n  }\n}\n"
+}
+
+// TestValidateContainmentProbeFixture_ChainTextSchema is the LOADER-level
+// (fail-closed-at-load) counterpart to the runtime chain-text-recognizer
+// tests in internal/cli/contain: it proves the *.probe.json schema itself
+// rejects the ambiguous and under-specified shapes before the fixture is
+// ever driven.
+func TestValidateContainmentProbeFixture_ChainTextSchema(t *testing.T) {
+	base := containmentProbeFixture{
+		AgentUser:    "pipelock-agent",
+		OperatorUser: "operator",
+		Runs:         baseChainTextFixtureRuns(),
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(containmentProbeFixture) containmentProbeFixture
+		wantErr string
+	}{
+		{
+			name: "chain_text_and_drop_counter_reads_both_set",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID = 987, 988
+				fx.DropCounterReads = []uint64{1, 2}
+				return fx
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "chain_text_negative_agent_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID = -987, 988
+				return fx
+			},
+			wantErr: "requires positive agent_uid and proxy_uid",
+		},
+		{
+			name: "chain_text_operator_uid_aliases_agent",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, 987
+				return fx
+			},
+			wantErr: "operator_uid must be distinct",
+		},
+		{
+			name: "chain_text_operator_uid_aliases_proxy",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, 988
+				return fx
+			},
+			wantErr: "operator_uid must be distinct",
+		},
+		{
+			name: "chain_text_negative_operator_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, -1
+				return fx
+			},
+			wantErr: "operator_uid must be zero (unknown) or positive",
+		},
+		{
+			name: "chain_text_proxy_port_out_of_range",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.ProxyPort = 987, 988, 70000
+				return fx
+			},
+			wantErr: "proxy_port must be between 1 and 65535",
+		},
+		{
+			name: "chain_text_missing_agent_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.ProxyUID = 988
+				return fx
+			},
+			wantErr: "requires positive agent_uid and proxy_uid",
+		},
+		{
+			name: "chain_text_missing_proxy_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID = 987
+				return fx
+			},
+			wantErr: "requires positive agent_uid and proxy_uid",
+		},
+		{
+			name: "chain_text_equal_uids",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID = 987, 987
+				return fx
+			},
+			wantErr: "must be distinct",
+		},
+		{
+			name: "uid_fields_without_chain_text_are_dead",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.AgentUID = 987
+				return fx
+			},
+			wantErr: "have no effect without nft_chain_text",
+		},
+		{
+			name: "proxy_port_without_chain_text_is_dead",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.ProxyPort = 9999
+				return fx
+			},
+			wantErr: "have no effect without nft_chain_text",
+		},
+		{
+			name: "valid_chain_text_fixture_passes",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID, fx.ProxyPort = 987, 988, 1000, 8888
+				return fx
+			},
+			wantErr: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateContainmentProbeFixture(tc.mutate(base))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected a validation error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validation error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadContainmentProbe_RejectsUnknownField proves the *.probe.json loader
+// fails closed on a field outside the published schema instead of silently
+// ignoring it, guarding against a fixture accidentally widening the contract.
+func TestLoadContainmentProbe_RejectsUnknownField(t *testing.T) {
+	body := `{
+		"agent_user": "pipelock-agent",
+		"operator_user": "operator",
+		"not_a_real_field": true,
+		"runs": []
+	}`
+	var fx containmentProbeFixture
+	err := decodeFixtureDocument([]byte(body), &fx)
+	if err == nil {
+		t.Fatal("decode: expected an error on an unknown field, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("decode error = %q, want it to mention the unknown field", err.Error())
+	}
+}
+
+// TestLoadContainmentProbe_MalformedChainTextIsRejectedAtRuntime documents
+// (and proves) that a fixture whose nft_chain_text the recognizer cannot
+// parse is NOT a load-time schema violation the way an ambiguous or
+// under-specified UID combination is: attributedNFTChainLines' parse error
+// surfaces as probe 8's beforeErr and resolves to UNKNOWN, never to a silent
+// PASS. The runtime, per-recognizer-branch proof lives in
+// internal/cli/contain: TestRunContainmentConformance_MalformedChainTextFailsClosed.
+// This test is the schema-loader-level companion: the LOADER accepts the
+// fixture (chain-text syntax is not a load-time-checkable property without
+// duplicating the unexported recognizer), and the runtime result is the
+// fail-closed backstop.
+func TestLoadContainmentProbe_MalformedChainTextIsRejectedAtRuntime(t *testing.T) {
+	fx := containmentProbeFixture{
+		AgentUser:    "pipelock-agent",
+		OperatorUser: "operator",
+		NFTChainText: "this is not valid nft chain output",
+		AgentUID:     987,
+		ProxyUID:     988,
+		Runs:         baseChainTextFixtureRuns(),
+	}
+	if err := validateContainmentProbeFixture(fx); err != nil {
+		t.Fatalf("unexpected schema-level validation error for malformed-but-well-formed-schema chain text: %v", err)
+	}
+	runner := newAuditedCannedRunner(fx)
+	results, exit, err := contain.RunContainmentConformance(context.Background(), contain.ConformanceEnv{
+		RunCommand:   runner.Run,
+		AgentUser:    fx.AgentUser,
+		OperatorUser: fx.OperatorUser,
+		NFTChainText: fx.NFTChainText,
+		AgentUID:     fx.AgentUID,
+		ProxyUID:     fx.ProxyUID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exit != contain.ConformanceExitSkip {
+		t.Fatalf("malformed chain text must resolve to the inconclusive exit code %d, got %d", contain.ConformanceExitSkip, exit)
+	}
+	var probe8 *contain.ConformanceProbeResult
+	for i := range results {
+		if results[i].Probe == 8 {
+			probe8 = &results[i]
+		}
+	}
+	if probe8 == nil {
+		t.Fatal("probe 8 missing from results")
+	}
+	if probe8.Status != contain.ConformanceStatusUnknown {
+		t.Fatalf("malformed chain text must resolve to UNKNOWN, got status %q detail %q", probe8.Status, probe8.Detail)
+	}
+	if !strings.Contains(probe8.Detail, "read DROP counter before probe") {
+		t.Fatalf("probe 8 detail = %q, want the parser error surfaced as the before-probe counter read", probe8.Detail)
+	}
+}
+
+// decodeFixtureDocument decodes exactly one JSON document into v with
+// unknown fields rejected. DisallowUnknownFields only polices members of the
+// first object; a valid fixture followed by a second JSON value would
+// otherwise load silently, which contradicts the artifact's claim that
+// out-of-schema fixture content fails loudly, so anything other than
+// whitespace after the first document is an error too.
+func decodeFixtureDocument(data []byte, v any) error {
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	err := dec.Decode(&trailing)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("trailing content after the fixture document: %w", err)
+	}
+	return errors.New("a second JSON value follows the fixture document; a fixture is exactly one document")
+}
+
+// TestContainmentFixtureLoadersRejectTrailingJSON proves the loaders accept
+// exactly one JSON document: a valid fixture followed by a second value must
+// fail to decode, for both the probe and the expect shape, while the
+// unmodified fixtures still decode.
+func TestContainmentFixtureLoadersRejectTrailingJSON(t *testing.T) {
+	dir := filepath.Join("testdata", "containment")
+	cases := []struct {
+		name string
+		src  string
+		into func() any
+	}{
+		{"probe", "pass-all.probe.json", func() any { return &containmentProbeFixture{} }},
+		{"expect", "pass-all.expect.json", func() any { return &containmentExpectFixture{} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Clean(filepath.Join(dir, tc.src)))
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.src, err)
+			}
+			if err := decodeFixtureDocument(data, tc.into()); err != nil {
+				t.Fatalf("unmodified %s fixture must decode: %v", tc.name, err)
+			}
+			withSecond := append(append([]byte{}, data...), []byte("\n{\"description\": \"second document\"}\n")...)
+			if err := decodeFixtureDocument(withSecond, tc.into()); err == nil {
+				t.Fatalf("%s loader accepted a fixture followed by a second JSON document", tc.name)
+			}
+			withGarbage := append(append([]byte{}, data...), []byte("\ntrailing garbage\n")...)
+			if err := decodeFixtureDocument(withGarbage, tc.into()); err == nil {
+				t.Fatalf("%s loader accepted a fixture followed by non-JSON text", tc.name)
+			}
+		})
+	}
 }

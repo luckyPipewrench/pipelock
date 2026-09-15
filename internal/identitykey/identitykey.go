@@ -66,6 +66,26 @@ func (stream CEEStream) Key() string { return stream.key }
 // Owner returns the classified identity that created this stream.
 func (stream CEEStream) Owner() CEEIdentity { return stream.owner }
 
+// scanAPIIdentityNamespace prefixes every Scan API CEE identity with a
+// control byte (0x1F, ASCII unit separator) that the Scan API's own
+// session_id validation rejects (only visible ASCII without whitespace is
+// accepted) and that no other transport's caller-supplied identity component
+// intentionally contains. This keeps a Scan API session's fragment/entropy
+// state in a namespace that a proxy agent|client key or an MCP session key
+// can never land in, even by coincidence, without relying on caller-chosen
+// values to avoid collision.
+const scanAPIIdentityNamespace = "scanapi\x1f"
+
+// NewScanAPIIdentity builds the CEE owner for one Scan API session. callerKey
+// is a server-derived identifier for the authenticated caller (for example a
+// hash of the bearer token); it is folded in so two different callers can
+// never share or poison each other's session state even if they choose the
+// same session_id. sessionID is the caller-supplied session_id request field,
+// already validated by the Scan API handler.
+func NewScanAPIIdentity(callerKey, sessionID string) CEEIdentity {
+	return CEEIdentity{key: scanAPIIdentityNamespace + callerKey + "\x1f" + sessionID}
+}
+
 // CEECandidateIdentities returns both classifications that an administrative
 // reset may need when its stored session record carries no authentication grade.
 func CEECandidateIdentities(agent, client string) []CEEIdentity {

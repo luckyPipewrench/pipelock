@@ -372,7 +372,8 @@ func explainEventPartialResponse(raw map[string]any, eventName, action string) b
 			return true
 		}
 	}
-	if strings.Contains(strings.ToLower(eventFieldString(raw, "effect")), "stream unscanned") {
+	if eventName == "response_scan_exempt" &&
+		strings.Contains(strings.ToLower(eventFieldString(raw, "effect")), "stream unscanned") {
 		return true
 	}
 	return eventName == "anomaly" && action == "" &&
@@ -382,7 +383,7 @@ func explainEventPartialResponse(raw map[string]any, eventName, action string) b
 func explainEventOutcomeNotes(raw map[string]any, outcome string) []string {
 	switch outcome {
 	case explainEventOutcomeAllowed:
-		if eventFieldString(raw, "action") == "ask:allow" {
+		if firstEventField(raw, "action", "verdict") == "ask:allow" {
 			return []string{"an operator allowed the response after a finding; this is not a clean scan verdict"}
 		}
 		return nil

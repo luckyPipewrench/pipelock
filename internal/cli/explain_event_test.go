@@ -94,6 +94,9 @@ func TestExplainEventCmd_ExplainsRecordedResponseOutcomes(t *testing.T) {
 		`{"action_id":"act-counts-false","verdict":"allow","shield":{"body_bytes":4096,"scanned_bytes":1024,"partial":false}}`,
 		`{"action_id":"act-counts-complete","verdict":"allow","shield":{"body_bytes":4096,"scanned_bytes":4096}}`,
 		`{"action_id":"act-counts-blocked","verdict":"block","shield":{"body_bytes":4096,"scanned_bytes":1024}}`,
+		`{"event":"allowed","request_id":"req-unrelated-effect","effect":"stream unscanned"}`,
+		`{"request_id":"req-verdict-approval","verdict":"ask:allow"}`,
+		`{"request_id":"req-action-precedence","action":"block","verdict":"ask:allow"}`,
 		`{"action_id":"act-invalid-count","verdict":"allow","layer":"browser_shield","shield":{"partial":true,"body_bytes":"password=placeholder","scanned_bytes":10}}`,
 		`{"event":"response_scan","request_id":"req-unknown","url":"https://api.vendor.example/response","scanner":"response_scan","action":"ask"}`,
 	}
@@ -119,6 +122,9 @@ func TestExplainEventCmd_ExplainsRecordedResponseOutcomes(t *testing.T) {
 		{id: "act-counts-false", outcome: explainEventOutcomePartial, contains: []string{"1024 of 4096"}},
 		{id: "act-counts-complete", outcome: explainEventOutcomeAllowed},
 		{id: "act-counts-blocked", outcome: explainEventOutcomeBlocked},
+		{id: "req-unrelated-effect", outcome: explainEventOutcomeAllowed},
+		{id: "req-verdict-approval", outcome: explainEventOutcomeAllowed, contains: []string{"an operator allowed", "not a clean scan verdict"}},
+		{id: "req-action-precedence", outcome: explainEventOutcomeBlocked},
 		{id: "act-invalid-count", outcome: "", contains: []string{"recorded outcome is unknown"}},
 		{id: "req-unknown", outcome: "", contains: []string{"recorded outcome is unknown"}},
 	}

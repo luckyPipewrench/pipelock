@@ -290,6 +290,18 @@ func liveRunProxyConfig(opts LiveRunOpts) (*config.Config, error) {
 // Pipelock proxy with receipt emission, and prepares everything for running
 // the toy agent through it.
 func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
+	// A non-empty Model with no ModelBaseURL is a caller error, not a
+	// deterministic run's business: manifestAgentKind below records this run
+	// as AgentKindDeterministic precisely because no model-backed subprocess
+	// will ever call anything, so a requested model name here could never
+	// have driven the run. Refuse it here, before any evidence (manifest,
+	// witness, or receipt) is created, so the failure direction is
+	// fail-closed at start rather than a signed manifest later carrying
+	// model provenance for a run no model drove.
+	if opts.ModelBaseURL == "" && opts.Model != "" {
+		return nil, fmt.Errorf("requested model %q set without a model base URL: a deterministic run cannot carry model provenance", opts.Model)
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	lr := &LiveRun{
 		ctx:    ctx,
@@ -695,7 +707,20 @@ func decodeProbeResults(stdout []byte, expectedTargets []string) ([]ProbeResult,
 // the collector witness before sealing. Untrusted, informational only. A no-op
 // (never called, or called with "") leaves the witness's ProviderModel empty,
 // which verifies exactly like a legacy witness.
+//
+// A run with no ModelBaseURL is deterministic (see manifestAgentKind): no
+// model-backed subprocess exists to have produced this value, so a caller
+// passing one here is a caller error, not real evidence. It is dropped with
+// a warning rather than signed into the witness, so the witness never claims
+// model provenance for a run no model drove.
 func (lr *LiveRun) SetProviderModel(model string) {
+	if lr.opts.ModelBaseURL == "" {
+		if model != "" {
+			slog.Warn("playground: ignoring provider model on a deterministic run (no model base URL)",
+				"run_nonce", lr.opts.RunNonce)
+		}
+		return
+	}
 	lr.providerModel = model
 }
 

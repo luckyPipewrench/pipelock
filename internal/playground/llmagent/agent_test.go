@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -891,5 +892,172 @@ func TestSanitizeProviderModel_ProducerBoundary(t *testing.T) {
 				t.Fatalf("SanitizeProviderModel(%q) = %q, want %q", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAgent_ProviderModel_InvalidValueDroppedNotFailed drives the agent
+// through complete/Run against a raw HTTP handler whose response carries a
+// non-empty "model" value that SanitizeProviderModel rejects (overlong, or
+// containing a NUL byte). The completion is provider-controlled and
+// untrusted: a malformed model identifier must be dropped as informational
+// metadata, never turned into a run failure, and never recorded or narrated.
+func TestAgent_ProviderModel_InvalidValueDroppedNotFailed(t *testing.T) {
+	overlong := strings.Repeat("m", MaxProviderModelLen+1)
+	cases := []struct {
+		name  string
+		model string
+	}{
+		{"overlong model value", overlong},
+		{"model value containing NUL byte", "served\x00model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				respBody, err := json.Marshal(map[string]any{
+					"model": tc.model,
+					"choices": []map[string]any{
+						{
+							"message":       map[string]any{"role": roleAssistant, "content": "done"},
+							"finish_reason": "stop",
+						},
+					},
+				})
+				if err != nil {
+					t.Fatalf("marshal fixture response: %v", err)
+				}
+				_, _ = w.Write(respBody)
+			}))
+			t.Cleanup(srv.Close)
+
+			emit, evs := collectEvents()
+			a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
+
+			if _, err := a.Run(context.Background(), "go"); err != nil {
+				t.Fatalf("Run: %v, want success (an invalid provider model must not fail the run)", err)
+			}
+			if got := a.ProviderModel(); got != "" {
+				t.Fatalf("ProviderModel() = %q, want empty: an invalid provider model must never be recorded", got)
+			}
+			for _, e := range *evs {
+				if e.Kind == EventProviderModel {
+					t.Fatalf("unexpected EventProviderModel for an invalid provider model: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// TestAgent_ProviderModel_InvalidValueLoggedToStderr pins the operator-
+// visibility side of the drop above: when the producer discards an invalid,
+// non-empty provider model value, it logs a WARNING line to the child
+// process's stderr (which the parent does not parse as event narration),
+// so an operator running the subprocess directly can see the loss without
+// it ever reaching the visitor-facing UI or the signed evidence.
+func TestAgent_ProviderModel_InvalidValueLoggedToStderr(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"a\u0000b","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	emit, _ := collectEvents()
+	a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = w.Close()
+	os.Stderr = origStderr
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	if !strings.Contains(string(out), "WARNING") || !strings.Contains(string(out), "provider model") {
+		t.Fatalf("captured stderr = %q, want a WARNING line naming the dropped provider model", string(out))
+	}
+}
+
+// TestAgent_ProviderModel_NonStringValueTolerated drives complete/Run against
+// a raw HTTP handler whose "model" field is not a JSON string (an object, a
+// number, or null): the chat-completions spec promises a string, but a
+// provider is untrusted and must never be able to turn malformed metadata
+// into a run-availability failure. Each case must still complete the turn
+// successfully with an empty, unrecorded provider model.
+func TestAgent_ProviderModel_NonStringValueTolerated(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelJSON string // raw JSON literal for the "model" field
+	}{
+		{"model is a JSON object", `{"foo":"bar"}`},
+		{"model is a JSON number", `12345`},
+		{"model is a JSON array", `["a","b"]`},
+		{"model is JSON null", `null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				body := fmt.Sprintf(
+					`{"model":%s,"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`,
+					tc.modelJSON,
+				)
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(srv.Close)
+
+			emit, evs := collectEvents()
+			a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
+
+			if _, err := a.Run(context.Background(), "go"); err != nil {
+				t.Fatalf("Run: %v, want success (a non-string provider model must not fail the run)", err)
+			}
+			if got := a.ProviderModel(); got != "" {
+				t.Fatalf("ProviderModel() = %q, want empty", got)
+			}
+			for _, e := range *evs {
+				if e.Kind == EventProviderModel {
+					t.Fatalf("unexpected EventProviderModel for a non-string model value: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// TestAgent_ProviderModel_ValidStringStillCaptured is the control case for
+// TestAgent_ProviderModel_NonStringValueTolerated: a well-formed JSON string
+// "model" value must still be captured and emitted exactly as before the
+// tolerant-decode change.
+func TestAgent_ProviderModel_ValidStringStillCaptured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"served-model-x","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	emit, evs := collectEvents()
+	a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
+
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := a.ProviderModel(); got != "served-model-x" {
+		t.Fatalf("ProviderModel() = %q, want %q", got, "served-model-x")
+	}
+	found := false
+	for _, e := range *evs {
+		if e.Kind == EventProviderModel && e.Text == "served-model-x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("EventProviderModel with text %q not emitted", "served-model-x")
 	}
 }

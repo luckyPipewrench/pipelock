@@ -296,12 +296,13 @@ func TestLiveRun_ModelProvenance_EndToEnd(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			rc, err := playground.StartLiveRun(t.Context(), playground.LiveRunOpts{
-				Contained:   false,
-				ScenarioID:  playground.LiveDemoScenarioID,
-				RunNonce:    "MODELPROV-" + tc.name,
-				ToyAgentBin: agentBin,
-				WebToolBin:  webtoolBin,
-				Model:       "requested-model-alias",
+				Contained:    false,
+				ScenarioID:   playground.LiveDemoScenarioID,
+				RunNonce:     "MODELPROV-" + tc.name,
+				ToyAgentBin:  agentBin,
+				WebToolBin:   webtoolBin,
+				Model:        "requested-model-alias",
+				ModelBaseURL: "http://model.example",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -348,6 +349,185 @@ func TestLiveRun_ModelProvenance_EndToEnd(t *testing.T) {
 			if got != tc.wantWitness {
 				t.Fatalf("witness.json provider_model = %q, want %q", got, tc.wantWitness)
 			}
+
+			// Both new fields must be signature-covered: tampering either one
+			// on disk, independently, must make VerifyRun reject the run.
+			// This is the proof that requested_model/provider_model are
+			// actually part of the signed bytes rather than incidental
+			// fields VerifyRun happens to never check.
+			orchestratorPubHex := rc.OrchestratorPubHex()
+
+			t.Run("tampered requested_model on disk fails verification", func(t *testing.T) {
+				tamperDir := t.TempDir()
+				copyRunDir(t, runDir, tamperDir)
+				tamperJSONField(t, filepath.Join(tamperDir, "launch-manifest.json"), "requested_model", "attacker-model")
+
+				tamperedRep, err := playground.VerifyRun(tamperDir, orchestratorPubHex)
+				if err != nil {
+					t.Fatalf("VerifyRun: %v", err)
+				}
+				if tamperedRep.OK {
+					t.Fatal("VerifyRun accepted a run with a tampered requested_model, want fail-closed rejection")
+				}
+			})
+
+			t.Run("tampered provider_model on disk fails verification", func(t *testing.T) {
+				tamperDir := t.TempDir()
+				copyRunDir(t, runDir, tamperDir)
+				tamperJSONField(t, filepath.Join(tamperDir, "witness.json"), "provider_model", "attacker-served-model")
+
+				tamperedRep, err := playground.VerifyRun(tamperDir, orchestratorPubHex)
+				if err != nil {
+					t.Fatalf("VerifyRun: %v", err)
+				}
+				if tamperedRep.OK {
+					t.Fatal("VerifyRun accepted a run with a tampered provider_model, want fail-closed rejection")
+				}
+			})
 		})
+	}
+}
+
+// copyRunDir recursively copies an AssembleAndVerify output directory (dst
+// must not yet exist as a populated tree) so a tamper case can mutate one
+// artifact without corrupting the shared valid-path fixture other subtests
+// or later assertions in the same test still read.
+func copyRunDir(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o750)
+		}
+		data, readErr := os.ReadFile(filepath.Clean(path))
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(target, data, 0o600)
+	})
+	if err != nil {
+		t.Fatalf("copyRunDir: %v", err)
+	}
+}
+
+// tamperJSONField rewrites a single top-level string field of an on-disk JSON
+// artifact, the way an attacker with filesystem access to an unsealed run
+// directory could, and re-writes the file. The artifact's signature is left
+// untouched, so a fail-closed verifier must reject the mismatch.
+func tamperJSONField(t *testing.T, path, field, newValue string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+	encoded, err := json.Marshal(newValue)
+	if err != nil {
+		t.Fatalf("marshal replacement value: %v", err)
+	}
+	m[field] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestStartLiveRun_RejectsModelWithoutBaseURL reproduces the case where a
+// caller sets LiveRunOpts.Model without ModelBaseURL. manifestAgentKind
+// classifies such a run as AgentKindDeterministic (no model-backed subprocess
+// exists), so a requested model name here could never have driven the run.
+// StartLiveRun must refuse before creating any evidence, fail-closed at
+// start rather than signing an unearned RequestedModel into the manifest.
+func TestStartLiveRun_RejectsModelWithoutBaseURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live run test builds binaries and boots a real proxy")
+	}
+	agentBin, webtoolBin := buildBinaries(t)
+
+	rc, err := playground.StartLiveRun(t.Context(), playground.LiveRunOpts{
+		Contained:   false,
+		ScenarioID:  playground.LiveDemoScenarioID,
+		RunNonce:    "REJECT-MODEL-NO-BASEURL",
+		ToyAgentBin: agentBin,
+		WebToolBin:  webtoolBin,
+		Model:       "requested-model-alias",
+		// ModelBaseURL intentionally empty.
+	})
+	if err == nil {
+		if rc != nil {
+			rc.Close()
+		}
+		t.Fatal("StartLiveRun succeeded with Model set and no ModelBaseURL, want a fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "requested-model-alias") {
+		t.Fatalf("error = %q, want it to name the rejected model", err.Error())
+	}
+}
+
+// TestLiveRun_SetProviderModel_NoOpOnDeterministicRun starts a deterministic
+// run (no ModelBaseURL: manifestAgentKind reports AgentKindDeterministic, so
+// no model-backed subprocess exists to have produced a provider model value),
+// then calls SetProviderModel directly, the way a caller error or a stale
+// code path might. The witness must never carry a provider model for a run
+// no model drove.
+func TestLiveRun_SetProviderModel_NoOpOnDeterministicRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live run test builds binaries and boots a real proxy")
+	}
+	agentBin, webtoolBin := buildBinaries(t)
+
+	rc, err := playground.StartLiveRun(t.Context(), playground.LiveRunOpts{
+		Contained:   false,
+		ScenarioID:  playground.LiveDemoScenarioID,
+		RunNonce:    "DETERMINISTIC-SETPROVIDERMODEL-NOOP",
+		ToyAgentBin: agentBin,
+		WebToolBin:  webtoolBin,
+		// Model and ModelBaseURL both empty: deterministic run.
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	if err := rc.RunSteps(1, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// A caller (or a stale/misrouted code path) reports a provider model on
+	// a run that has no model-backed subprocess. It must be dropped.
+	rc.SetProviderModel("should-never-be-signed")
+
+	runDir := t.TempDir()
+	rep, err := rc.AssembleAndVerify(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.OK {
+		t.Fatalf("deterministic run must still verify end-to-end: %+v", rep)
+	}
+
+	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(wBytes, &w); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w["provider_model"].(string); got != "" {
+		t.Fatalf("witness.json provider_model = %q, want empty: a deterministic run must never sign a provider model", got)
 	}
 }

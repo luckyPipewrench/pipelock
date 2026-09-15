@@ -80,6 +80,16 @@ func TestCeeRecordMCPReportsOnlyContributingRPCIDs(t *testing.T) {
 	}
 }
 
+func TestCaptureCEEContributorsRejectsPartialList(t *testing.T) {
+	contributors := captureCEEContributors([][]byte{
+		[]byte("1"),
+		[]byte(`"` + strings.Repeat("x", capture.MaxRPCIDLen) + `"`),
+	})
+	if len(contributors) != 0 {
+		t.Fatalf("contributors = %q, want incomplete provenance omitted", contributors)
+	}
+}
+
 func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	strict := config.CrossRequestDetection{
 		Enabled: true,

@@ -524,7 +524,8 @@ func captureCEEContributors(contributors [][]byte) []json.RawMessage {
 	for _, contributor := range contributors {
 		id := captureRPCID(json.RawMessage(contributor))
 		if len(id) == 0 {
-			continue
+			// A partial list would look exhaustive to a capture consumer.
+			return nil
 		}
 		result = append(result, append(json.RawMessage(nil), id...))
 	}

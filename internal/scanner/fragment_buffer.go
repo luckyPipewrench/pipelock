@@ -727,19 +727,11 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 		ranges = append(ranges, fragmentRange{start: start, end: len(buf), fragment: f})
 	}
 
-	// A complete match in one fragment was already handled by body DLP. Mask
-	// only that exact raw occurrence before scanning the joined view: masking by
-	// pattern name would let an early decoy hide a distinct later occurrence
-	// completed across a fragment boundary.
-	masked := append([]byte(nil), buf...)
-	for _, r := range ranges {
-		maskCompleteFragmentMatches(ctx, sc, masked[r.start:r.end])
-	}
-
-	result := sc.ScanTextForDLP(ctx, string(masked))
+	result := sc.ScanTextForDLP(ctx, string(buf))
 	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
 	}
+	complete, unlocatable := completeFragmentOccurrences(ctx, sc, ranges)
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
@@ -747,20 +739,59 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
+	handled := make(map[string]struct{}, len(complete)+len(unlocatable))
+	for patternName := range unlocatable {
+		// Preserve the old availability behavior when the scanner cannot map an
+		// individual match back to raw bytes. Reporting every joined match for
+		// this pattern as cross-request would double-signal ordinary body DLP.
+		handled[patternName] = struct{}{}
+	}
+	for patternName, occurrences := range complete {
+		if _, skip := unlocatable[patternName]; skip {
+			continue
+		}
+		handled[patternName] = struct{}{}
+		masked := append([]byte(nil), buf...)
+		for _, occurrence := range occurrences {
+			maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
+		}
+		// Mask only complete occurrences of this pattern. Masking every rule at
+		// once could erase a longer cross-fragment match from a different rule.
+		// The scanner can report one occurrence per rule, so keep removing
+		// complete occurrences until the next one crosses a request boundary or
+		// the rule disappears.
+		for {
+			maskedResult := sc.ScanTextForDLPQuiet(ctx, string(masked))
+			remasked := false
+			crossed := false
+			rawTargetFound := false
+			for _, match := range maskedResult.Matches {
+				if match.PatternName != patternName {
+					continue
+				}
+				span := match.Span()
+				if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(masked) || span.ByteStart >= span.ByteEnd {
+					continue
+				}
+				rawTargetFound = true
+				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+					maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd)
+					remasked = true
+					continue
+				}
+				matches = appendCrossFragmentMatch(matches, match, ranges, len(buf))
+				crossed = true
+			}
+			if crossed || !rawTargetFound || !remasked {
+				break
+			}
+		}
+	}
 	for _, m := range result.Matches {
-		span := m.Span()
-		if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(buf) || span.ByteStart >= span.ByteEnd {
-			// The scanner found a real DLP match but did not expose a raw-view
-			// coordinate that could prove it was wholly inspected in one request.
-			// Do not turn missing provenance into an allow decision.
-			matches = append(matches, DLPMatch{PatternName: m.PatternName})
+		if _, alreadyHandled := handled[m.PatternName]; alreadyHandled {
 			continue
 		}
-		contributors := contributorsForSpan(ranges, span.ByteStart, span.ByteEnd)
-		if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
-			continue
-		}
-		matches = append(matches, DLPMatch{PatternName: m.PatternName, Contributors: contributors})
+		matches = appendCrossFragmentMatch(matches, m, ranges, len(buf))
 	}
 	if len(matches) == 0 {
 		return nil
@@ -768,25 +799,58 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	return matches
 }
 
-func maskCompleteFragmentMatches(ctx context.Context, sc *Scanner, fragment []byte) {
-	for {
-		masked := false
-		for _, match := range sc.ScanTextForDLPQuiet(ctx, string(fragment)).Matches {
+func maskFragmentOccurrence(buf []byte, start, end int) {
+	for i := start; i < end; i++ {
+		buf[i] = ' '
+	}
+}
+
+type fragmentOccurrence struct {
+	start int
+	end   int
+}
+
+func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) (map[string][]fragmentOccurrence, map[string]struct{}) {
+	complete := make(map[string][]fragmentOccurrence)
+	unlocatable := make(map[string]struct{})
+	for _, r := range ranges {
+		fragmentResult := sc.ScanTextForDLPQuiet(ctx, string(r.fragment.data))
+		for _, match := range fragmentResult.Matches {
 			span := match.Span()
-			if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(fragment) {
+			if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(r.fragment.data) || span.ByteStart >= span.ByteEnd {
+				unlocatable[match.PatternName] = struct{}{}
 				continue
 			}
-			for i := span.ByteStart; i < span.ByteEnd; i++ {
-				if fragment[i] != ' ' {
-					fragment[i] = ' '
-					masked = true
-				}
-			}
-		}
-		if !masked {
-			return
+			complete[match.PatternName] = append(complete[match.PatternName], fragmentOccurrence{
+				start: r.start + span.ByteStart,
+				end:   r.start + span.ByteEnd,
+			})
 		}
 	}
+	for patternName := range complete {
+		// A locatable raw occurrence is sufficient to drive pattern-local
+		// masking. Transformed sibling matches for the same bytes do not make
+		// that occurrence unlocatable.
+		delete(unlocatable, patternName)
+	}
+	return complete, unlocatable
+}
+
+func appendCrossFragmentMatch(matches []DLPMatch, match TextDLPMatch, ranges []fragmentRange, bufferLen int) []DLPMatch {
+	span := match.Span()
+	if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > bufferLen || span.ByteStart >= span.ByteEnd {
+		// The scanner found a real DLP match but did not expose a raw-view
+		// coordinate that could prove it was wholly inspected in one request.
+		// Do not turn missing provenance into an allow decision.
+		return append(matches, DLPMatch{PatternName: match.PatternName})
+	}
+	if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+		return matches
+	}
+	return append(matches, DLPMatch{
+		PatternName:  match.PatternName,
+		Contributors: contributorsForSpan(ranges, span.ByteStart, span.ByteEnd),
+	})
 }
 
 func spanIsWithinOneFragment(ranges []fragmentRange, start, end int) bool {

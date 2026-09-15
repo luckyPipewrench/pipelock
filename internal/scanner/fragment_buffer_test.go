@@ -106,6 +106,28 @@ func TestFragmentBuffer_CompleteDecoyDoesNotSuppressLaterSplitOccurrence(t *test
 	}
 }
 
+func TestFragmentBuffer_CompleteShortPatternDoesNotSuppressLongCrossPattern(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Short token\n      regex: 'SHORT[A-Z]{4}'\n      severity: high\n    - name: Long token\n      regex: 'SHORT[A-Z]{8}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	fb.Append(testCEEIdentity(testSessionA), []byte("SHORTABCD"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("EFGH"))
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	for _, match := range matches {
+		if match.PatternName == "Long token" {
+			return
+		}
+	}
+	t.Fatalf("complete short-pattern occurrence suppressed longer cross-fragment rule: %+v", matches)
+}
+
 func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
 	fb := NewFragmentBuffer(1024, 3, testWindowSecs)
 	t.Cleanup(fb.Close)

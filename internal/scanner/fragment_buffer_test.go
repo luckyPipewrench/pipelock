@@ -186,6 +186,28 @@ func TestFragmentBuffer_MultipassNormalizedCoordinatesRetainExactAttribution(t *
 	t.Fatalf("multipass normalized cross-fragment match reported clean: %+v", matches)
 }
 
+func TestFragmentBuffer_CrossBoundaryNormalizationCompositionRetainsExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Composed-boundary token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("jamo-prefix"), []byte("\u1100"), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("secret-prefix"), []byte("\u1161SECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("secret-suffix"), []byte("AB"), sc)
+	if len(matches) != 1 || matches[0].PatternName != "Composed-boundary token" ||
+		len(matches[0].Contributors) != 2 || string(matches[0].Contributors[0]) != "secret-prefix" || string(matches[0].Contributors[1]) != "secret-suffix" {
+		t.Fatalf("cross-boundary normalization result = %+v, want exact secret-bearing contributors", matches)
+	}
+}
+
 func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	t.Cleanup(fb.Close)

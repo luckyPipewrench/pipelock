@@ -5,8 +5,10 @@ package replaycapture
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -34,6 +36,28 @@ func TestAddVerdict_AllBuckets(t *testing.T) {
 	}
 }
 
+// TestAddVerifyVerdict_AllBuckets covers addVerifyVerdict, the verify-path
+// twin of addVerdict used by crossCheckTotals to recompute totals from a
+// receipt chain independently of the packet's own summary. The two must stay
+// in exact bucket-for-bucket agreement or a tampered summary could pass
+// cross-check silently.
+func TestAddVerifyVerdict_AllBuckets(t *testing.T) {
+	t.Parallel()
+	var totals auditpacket.Totals
+	for _, v := range []string{
+		verdictAllow, verdictBlock, verdictWarn,
+		"ask", "strip", "forward", "redirect", "mystery",
+	} {
+		addVerifyVerdict(&totals, v)
+	}
+	want := auditpacket.Totals{
+		Allow: 1, Block: 1, Warn: 1, Ask: 1, Strip: 1, Forward: 1, Redirect: 1, Other: 1,
+	}
+	if totals != want {
+		t.Errorf("totals=%+v want=%+v", totals, want)
+	}
+}
+
 func TestBoundedInt(t *testing.T) {
 	t.Parallel()
 	if got := boundedInt(7); got != 7 {
@@ -41,6 +65,53 @@ func TestBoundedInt(t *testing.T) {
 	}
 	if got := boundedInt(0); got != 0 {
 		t.Errorf("boundedInt(0)=%d", got)
+	}
+	// A chain sequence value exceeding MaxInt must saturate rather than wrap
+	// or overflow negative on conversion (gosec G115's concern).
+	if got := boundedInt(math.MaxUint64); got != math.MaxInt {
+		t.Errorf("boundedInt(MaxUint64)=%d, want saturated MaxInt", got)
+	}
+}
+
+// TestMarshalIndentNoEscapeRejectsUnencodableValue covers the encode-error
+// branch: a value the JSON encoder cannot represent (a channel) must
+// propagate a wrapped error rather than silently return truncated bytes.
+func TestMarshalIndentNoEscapeRejectsUnencodableValue(t *testing.T) {
+	t.Parallel()
+	_, err := marshalIndentNoEscape(struct{ C chan int }{C: make(chan int)})
+	if err == nil || !strings.Contains(err.Error(), "encode") {
+		t.Fatalf("marshalIndentNoEscape err = %v, want an encode failure", err)
+	}
+}
+
+// TestValidateExpectedDecisionRejectsNilScenario covers the nil-guard at the
+// top of validateExpectedDecision.
+func TestValidateExpectedDecisionRejectsNilScenario(t *testing.T) {
+	t.Parallel()
+	if err := validateExpectedDecision(nil); err == nil || !strings.Contains(err.Error(), "missing captured scenario") {
+		t.Fatalf("validateExpectedDecision(nil) err = %v, want missing-scenario rejection", err)
+	}
+}
+
+// TestValidateExpectedDecisionRejectsLayerMismatch covers the per-step layer
+// mismatch branch, distinct from the verdict mismatch already covered by
+// TestValidateExpectedDecision_ExactSequence's reordered case.
+func TestValidateExpectedDecisionRejectsLayerMismatch(t *testing.T) {
+	t.Parallel()
+	scenario := Scenario{
+		Transport:       TransportForward,
+		ExpectedVerdict: verdictBlock,
+		ExpectedLayer:   "body_dlp",
+		ExpectedSequence: []ExpectedDecision{
+			{Verdict: verdictBlock, Layer: "body_dlp"},
+		},
+	}
+	receipts := []receipt.Receipt{
+		{ActionRecord: receipt.ActionRecord{Verdict: verdictBlock, Layer: "wrong_layer", Transport: TransportForward}},
+	}
+	err := validateExpectedDecision(&CapturedScenario{Scenario: scenario, Receipts: receipts})
+	if err == nil || !strings.Contains(err.Error(), "layer") {
+		t.Fatalf("validateExpectedDecision err = %v, want a layer-mismatch rejection", err)
 	}
 }
 
@@ -60,6 +131,23 @@ func TestNewEngineWithKey(t *testing.T) {
 
 	if _, err := NewEngineWithKey(t.TempDir(), []byte("too-short")); err == nil {
 		t.Errorf("expected error for short key")
+	}
+}
+
+// TestSetOpsecMarkers pins the exported setter's contract: markers installed
+// through it are exactly what the engine holds afterward, so operator-
+// supplied OPSEC substrings from an external file are neither dropped nor
+// merged with a hidden default set.
+func TestSetOpsecMarkers(t *testing.T) {
+	t.Parallel()
+	eng, err := NewEngine(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	markers := []string{"internal-codename", "private-hostname.example"}
+	eng.SetOpsecMarkers(markers)
+	if len(eng.opsecMarkers) != len(markers) || eng.opsecMarkers[0] != markers[0] || eng.opsecMarkers[1] != markers[1] {
+		t.Fatalf("opsecMarkers = %v, want %v", eng.opsecMarkers, markers)
 	}
 }
 
@@ -140,6 +228,55 @@ func TestValidateExpectedDecision_ExactSequence(t *testing.T) {
 	wrongTransport[0].ActionRecord.Transport = TransportWebSocket
 	if err := validateExpectedDecision(&CapturedScenario{Scenario: scenario, Receipts: wrongTransport}); err == nil || !strings.Contains(err.Error(), "transport") {
 		t.Fatalf("sequence transport error = %v", err)
+	}
+}
+
+// TestWritePacketFilesRejectsMissingEvidence covers writePacketFiles' first
+// failure branch: the evidence file named on the captured scenario must
+// actually be readable, or the packet must not be written at all.
+func TestWritePacketFilesRejectsMissingEvidence(t *testing.T) {
+	t.Parallel()
+	eng := newTestEngine(t)
+	scenario := DefaultScenarios()[0]
+	cs, err := eng.Capture(scenario)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	cs.EvidenceFile = filepath.Join(t.TempDir(), "missing.jsonl")
+	pkt := buildPacket(cs, fixedStamp())
+	err = writePacketFiles(t.TempDir(), cs, pkt)
+	if err == nil || !strings.Contains(err.Error(), "reading evidence") {
+		t.Fatalf("writePacketFiles err = %v, want a reading-evidence failure", err)
+	}
+}
+
+// TestWritePacketFilesRejectsUnwritableDirectory covers writePacketFiles'
+// write-failure branches: a packet directory that cannot be written to (for
+// example a read-only mount) must surface that failure rather than silently
+// skip an artifact.
+func TestWritePacketFilesRejectsUnwritableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based write denial does not apply on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses Unix permission checks")
+	}
+	t.Parallel()
+	eng := newTestEngine(t)
+	scenario := DefaultScenarios()[0]
+	cs, err := eng.Capture(scenario)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	pkt := buildPacket(cs, fixedStamp())
+	packetDir := t.TempDir()
+	if err := os.Chmod(packetDir, 0o500); err != nil { // #nosec G302 -- deliberately denies writes to prove the write-failure path
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(packetDir, 0o750) }) // #nosec G302 -- restoring a directory to the repo-standard 0750
+	err = writePacketFiles(packetDir, cs, pkt)
+	if err == nil || !strings.Contains(err.Error(), "writing evidence") {
+		t.Fatalf("writePacketFiles err = %v, want a writing-evidence failure", err)
 	}
 }
 

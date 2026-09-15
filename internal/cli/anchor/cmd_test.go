@@ -618,3 +618,265 @@ func writeRekorKey(t *testing.T, dir string) string {
 	}
 	return path
 }
+
+// TestReceiptsCmdRejectsEmptyRecorderEvidence proves two things in one pass:
+// an empty (zero-entry) recorder JSONL file makes extractReceipts succeed
+// through the primary ExtractReceiptsWithSessionID path with an empty
+// session ID (which the command normalizes to "file"), and runReceipts then
+// surfaces BuildCheckpoint's empty-receipt-chain rejection rather than
+// anchoring nothing.
+func TestReceiptsCmdRejectsEmptyRecorderEvidence(t *testing.T) {
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, keyHex := cliReceiptJSONL(t)
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		emptyPath,
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", "bundle.json",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "empty receipt chain") {
+		t.Fatalf("Execute err = %v, want empty-receipt-chain rejection", err)
+	}
+}
+
+// TestReceiptsCmdAsDirExtractsFromSessionDirectory covers the --dir branch
+// of extractReceipts, which reads a whole session directory rather than a
+// single evidence file.
+func TestReceiptsCmdAsDirExtractsFromSessionDirectory(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	dir := filepath.Dir(receiptsPath)
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		dir,
+		"--dir",
+		"--session", "no-such-session",
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", "bundle.json",
+	})
+	err := cmd.Execute()
+	// The fixture directory holds a raw receipt-JSONL file, not a real
+	// session directory keyed by session ID, so ExtractReceiptsFromSessionDir
+	// legitimately finds nothing for the named session. That still proves
+	// the --dir branch ran: it is a distinct error from every non---dir
+	// assertion in this file, which all go through extractReceipts's
+	// non-directory branch instead.
+	if err == nil {
+		t.Fatal("Execute err = nil, want no-matching-session error for --dir extraction")
+	}
+	if strings.Contains(err.Error(), "reading raw receipts") {
+		t.Fatalf("Execute err = %v, want a --dir-specific error, not the non---dir fallback path", err)
+	}
+}
+
+// TestResolveBackendRejectsUnsupportedName covers resolveBackend's default
+// case.
+func TestResolveBackendRejectsUnsupportedName(t *testing.T) {
+	_, err := resolveBackend(receiptsOptions{backend: "carrier-pigeon"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported anchor backend "carrier-pigeon"`) {
+		t.Fatalf("resolveBackend err = %v, want unsupported-backend rejection", err)
+	}
+}
+
+// TestResolveBackendRejectsUnreadableRekorKey covers resolveBackend's
+// LoadRekorPrivateKey error branch: a rekor-key path that cannot be loaded
+// as a signing key must fail closed rather than fall back to an unsigned or
+// zero-value signer.
+func TestResolveBackendRejectsUnreadableRekorKey(t *testing.T) {
+	badKey := filepath.Join(t.TempDir(), "not-a-key.txt")
+	if err := os.WriteFile(badKey, []byte("not a key"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := resolveBackend(receiptsOptions{
+		backend:  anchorpkg.RekorBackend,
+		rekorURL: "https://rekor.example",
+		rekorKey: badKey,
+		rekorYes: true,
+	})
+	if err == nil {
+		t.Fatal("resolveBackend err = nil, want rekor key load failure")
+	}
+}
+
+// TestValidateBundleOutputPathHostilePaths exercises the permission and
+// structural failure branches of validateBundleOutputPath that
+// TestResolveBundleOutputRejectsHostilePaths does not reach: a Lstat failure
+// on the bundle path itself that is not "does not exist", a parent path
+// component that exists but is not a directory, a parent that resolves (via
+// an ancestor symlink) outside the receipt directory, and a Lstat failure on
+// an ancestor while walking up to find an existing directory.
+func TestValidateBundleOutputPathHostilePaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission denial does not apply on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses Unix permission checks")
+	}
+
+	t.Run("bundle path Lstat permission denied", func(t *testing.T) {
+		receiptDir := t.TempDir()
+		blocked := filepath.Join(receiptDir, "blocked")
+		if err := os.Mkdir(blocked, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		bundlePath := filepath.Join(blocked, "bundle.json")
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o750) }) // #nosec G302 -- restoring a directory to the repo-standard 0750
+		err := validateBundleOutputPath(receiptDir, bundlePath)
+		if err == nil || !strings.Contains(err.Error(), "inspect --out") {
+			t.Fatalf("validateBundleOutputPath err = %v, want inspect --out failure", err)
+		}
+	})
+
+	t.Run("parent path is a regular file", func(t *testing.T) {
+		// A non-directory ancestor makes the OS reject the whole traversal
+		// with ENOTDIR at the first Lstat(bundlePath) call above, before
+		// validateBundleOutputPath's own parent-walk loop ever runs its
+		// "--out parent is not a directory" check: any component that
+		// exists as a non-directory blocks path resolution at the deepest
+		// point, not just at the immediate parent. This still proves the
+		// fail-closed outcome, through the "inspect --out" branch instead.
+		receiptDir := t.TempDir()
+		notADir := filepath.Join(receiptDir, "not-a-dir")
+		if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		bundlePath := filepath.Join(notADir, "bundle.json")
+		err := validateBundleOutputPath(receiptDir, bundlePath)
+		if err == nil || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("validateBundleOutputPath err = %v, want a not-a-directory rejection", err)
+		}
+	})
+
+	t.Run("parent resolves outside receipt directory via ancestor symlink", func(t *testing.T) {
+		receiptDir := t.TempDir()
+		outside := t.TempDir()
+		realParent := filepath.Join(outside, "realparent")
+		if err := os.Mkdir(realParent, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		grandparentLink := filepath.Join(receiptDir, "gplink")
+		if err := os.Symlink(outside, grandparentLink); err != nil {
+			t.Fatal(err)
+		}
+		// The final path component (realparent) is a real directory, so
+		// Lstat on the composite parent path sees a directory, not a
+		// symlink; only EvalSymlinks reveals that it resolves outside
+		// receiptDir through the grandparent link.
+		parent := filepath.Join(grandparentLink, "realparent")
+		bundlePath := filepath.Join(parent, "bundle.json")
+		err := validateBundleOutputPath(receiptDir, bundlePath)
+		if err == nil || !strings.Contains(err.Error(), "--out parent resolves outside the receipt directory") {
+			t.Fatalf("validateBundleOutputPath err = %v, want parent-escape rejection", err)
+		}
+	})
+
+	t.Run("ancestor Lstat permission denied while walking up", func(t *testing.T) {
+		// Same reasoning as the non-directory case above: a permission-
+		// denied ancestor blocks the OS traversal at the first
+		// Lstat(bundlePath) call, so this lands on "inspect --out" rather
+		// than the parent-walk loop's own "inspect --out parent" branch.
+		// The parent-walk loop's independent Lstat failure paths (a
+		// directory or permission demoted between the two Lstat calls) are
+		// TOCTOU-only and not reachable without a real race.
+		receiptDir := t.TempDir()
+		blocked := filepath.Join(receiptDir, "blocked")
+		if err := os.Mkdir(blocked, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		bundlePath := filepath.Join(blocked, "nested", "bundle.json")
+		if err := os.Chmod(blocked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(blocked, 0o750) }) // #nosec G302 -- restoring a directory to the repo-standard 0750
+		err := validateBundleOutputPath(receiptDir, bundlePath)
+		if err == nil || !strings.Contains(err.Error(), "inspect --out") {
+			t.Fatalf("validateBundleOutputPath err = %v, want an inspect-failure rejection", err)
+		}
+	})
+}
+
+// TestResolveBundleOutputPropagatesMissingReceiptDirectory covers
+// resolveBundleOutput's error passthrough from receiptDirectory: a target
+// that does not exist must fail before any bundle path computation.
+func TestResolveBundleOutputPropagatesMissingReceiptDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing", "receipts.jsonl")
+	_, err := resolveBundleOutput(missing, receiptsOptions{output: "bundle.json"})
+	if err == nil || !strings.Contains(err.Error(), "resolve receipt directory") {
+		t.Fatalf("resolveBundleOutput err = %v, want receipt-directory resolution failure", err)
+	}
+}
+
+// TestReceiptDirectoryRejectsFileWithAsDir covers receiptDirectory's
+// not-a-directory rejection on the --dir path: asDir=true trusts the caller
+// to have named a directory, and must still fail closed when it is
+// actually a regular file rather than silently treating its parent as the
+// session directory.
+func TestReceiptDirectoryRejectsFileWithAsDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-dir.jsonl")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := receiptDirectory(path, true)
+	if err == nil || !strings.Contains(err.Error(), "receipt directory is not a directory") {
+		t.Fatalf("receiptDirectory err = %v, want not-a-directory rejection", err)
+	}
+}
+
+// TestResolveTrustedKeysRejectsUnresolvableKey covers resolveTrustedKeys'
+// LoadPublicKey error branch: a non-blank value that is neither valid
+// inline key material nor an existing key file must fail closed rather than
+// silently skip the malformed trust anchor.
+func TestResolveTrustedKeysRejectsUnresolvableKey(t *testing.T) {
+	_, err := resolveTrustedKeys([]string{"not-a-valid-hex-or-file-path"})
+	if err == nil || !strings.Contains(err.Error(), `resolve --key "not-a-valid-hex-or-file-path"`) {
+		t.Fatalf("resolveTrustedKeys err = %v, want key-resolution failure", err)
+	}
+}
+
+// TestReceiptsCmdSurfacesBundleWriteFailure covers runReceipts' propagation
+// of WriteBundleUnderDir's error: if the receipt directory itself cannot be
+// written to (for example because an operator's filesystem mount is
+// read-only), the command must fail with that write error rather than
+// report success or panic after computing a valid checkpoint and proof.
+func TestReceiptsCmdSurfacesBundleWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based write denial does not apply on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses Unix permission checks")
+	}
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	receiptDir := filepath.Dir(receiptsPath)
+	if err := os.Chmod(receiptDir, 0o500); err != nil { // #nosec G302 -- deliberately denies writes to prove the write-failure path
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(receiptDir, 0o750) }) // #nosec G302 -- restoring a directory to the repo-standard 0750
+
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", "bundle.json",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute err = nil, want a write failure under a read-only receipt directory")
+	}
+	if strings.Contains(err.Error(), "ANCHOR BUNDLE WRITTEN") {
+		t.Fatalf("Execute err = %v, want a write failure not success output", err)
+	}
+}

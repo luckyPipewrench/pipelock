@@ -31,6 +31,43 @@ func TestCEESafeKey_OnlyTrustedAgentAuthNamespacesBucket(t *testing.T) {
 	}
 }
 
+func TestBaselineKeyForSessionKey(t *testing.T) {
+	tests := []struct {
+		name, sessionKey, want string
+	}{
+		{"bound identity", "agent-a|203.0.113.1", "agent-a"},
+		{"ipv4 folded", "203.0.113.1", "ip4-cb007101"},
+		{"ipv6 folded", "2001:db8::1", "ip6-20010db8000000000000000000000001"},
+		{"bracketed ipv6 folded", "[2001:db8::1]", "ip6-20010db8000000000000000000000001"},
+		{"ipv4-mapped ipv6 folds to the ipv4 key", "::ffff:203.0.113.1", "ip4-cb007101"},
+		{"non-IP peer identifier", "unix-peer", "ip-756e69782d70656572"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BaselineKeyForSessionKey(tt.sessionKey); got != tt.want {
+				t.Fatalf("BaselineKeyForSessionKey(%q) = %q, want %q", tt.sessionKey, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsFoldedBaselineKey(t *testing.T) {
+	for _, tt := range []struct {
+		key  string
+		want bool
+	}{
+		{key: "ip4-cb007101", want: true},
+		{key: "ip6-20010db8000000000000000000000001", want: true},
+		{key: "ip-756e69782d70656572", want: true},
+		{key: "agent-a", want: false},
+		{key: "ip4-nothex", want: false},
+	} {
+		if got := IsFoldedBaselineKey(tt.key); got != tt.want {
+			t.Errorf("IsFoldedBaselineKey(%q) = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+}
+
 func TestCEEIdentity_AuthGradeControlsOwnerAndStreamDoesNot(t *testing.T) {
 	const agent, client = "agent-a", "203.0.113.10"
 	selfDeclared := NewCEEIdentity(agent, client, envelope.ActorAuthSelfDeclared)
@@ -144,5 +181,25 @@ func TestCEECandidateKeysCoverEveryGrade(t *testing.T) {
 		if !inSet(live) {
 			t.Fatalf("grade %q live key %q not in candidate set %v", auth, live, candidates)
 		}
+	}
+}
+
+func TestBaselineKeyForSessionKeyDelimiterInPeerIdentifier(t *testing.T) {
+	t.Parallel()
+
+	// A non-IP peer identifier containing the delimiter must not be read as a
+	// named agent session: "svc|worker" is one opaque peer, not agent "svc" on
+	// client "worker", and treating it as the former would let it share a
+	// behavioral-baseline profile with a configured agent named "svc".
+	named := BaselineKeyForSessionKey("svc|203.0.113.5")
+	if named != "svc" {
+		t.Fatalf("named session key = %q, want the agent component", named)
+	}
+	opaque := BaselineKeyForSessionKey("svc|worker")
+	if opaque == "svc" {
+		t.Fatalf("opaque peer identifier collided with the agent name %q", opaque)
+	}
+	if !IsFoldedBaselineKey(opaque) {
+		t.Fatalf("opaque peer key = %q, want the reserved folded namespace", opaque)
 	}
 }

@@ -309,6 +309,7 @@ type ceeRecordMCPOptions struct {
 	fallbackReason   *string
 	matchedPattern   *string
 	blockKind        *string
+	contributors     *[]json.RawMessage
 }
 
 // ceeFragmentBlockClientReason is the neutral client-visible reason for a
@@ -442,9 +443,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 			}
 			paths = append(paths, path)
 			appends = append(appends, scanner.FragmentAppend{
-				Group:   identity.Stream(strings.TrimPrefix(budgetGroup, opts.sessionKey)),
-				Stream:  identity.Stream(strings.TrimPrefix(fragmentKey, opts.sessionKey)),
-				Payload: payload,
+				Group:           identity.Stream(strings.TrimPrefix(budgetGroup, opts.sessionKey)),
+				Stream:          identity.Stream(strings.TrimPrefix(fragmentKey, opts.sessionKey)),
+				Payload:         payload,
+				SourceRequestID: captureRPCID(opts.frame.ID),
 			})
 		}
 		appendResult, streamMatches := buffer.AppendAndScanOwnedBatch(context.Background(), identity, appends, opts.sc)
@@ -495,6 +497,9 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					if opts.matchedPattern != nil {
 						*opts.matchedPattern = matches[0].PatternName
 					}
+					if opts.contributors != nil {
+						*opts.contributors = captureCEEContributors(matches[0].Contributors)
+					}
 					if opts.logger != nil {
 						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason)
 					}
@@ -509,6 +514,22 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	}
 
 	return ""
+}
+
+func captureCEEContributors(contributors [][]byte) []json.RawMessage {
+	if len(contributors) == 0 {
+		return nil
+	}
+	result := make([]json.RawMessage, 0, len(contributors))
+	for _, contributor := range contributors {
+		id := captureRPCID(json.RawMessage(contributor))
+		if len(id) == 0 {
+			// A partial list would look exhaustive to a capture consumer.
+			return nil
+		}
+		result = append(result, append(json.RawMessage(nil), id...))
+	}
+	return result
 }
 
 func mcpCEEFragmentPayloadPaths(payloads map[string][]byte) []string {

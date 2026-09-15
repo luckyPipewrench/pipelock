@@ -709,6 +709,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
+		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -721,6 +722,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			fallbackReason: &fallbackReason,
 			matchedPattern: &matchedPattern,
 			blockKind:      &ceeBlockKind,
+			contributors:   &ceeContributors,
 		}
 		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict.
@@ -732,7 +734,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
-				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
+				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID), CEEContributors: ceeContributors},
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -1201,6 +1203,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// partition a secret across buckets and evade accumulation.
 		ceeKey := sessionKey
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
+		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -1213,6 +1216,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			fallbackReason: &fallbackReason,
 			matchedPattern: &matchedPattern,
 			blockKind:      &ceeBlockKind,
+			contributors:   &ceeContributors,
 		}
 		if reason := ceeRecordMCP(ceeOpts); reason != "" {
 			// Capture: record CEE verdict (warn-path).
@@ -1224,7 +1228,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
-				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
+				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID), CEEContributors: ceeContributors},
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,

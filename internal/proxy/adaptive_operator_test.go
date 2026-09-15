@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
-	adaptiveAPIIdentityKey   = "agent-a|203.0.113.9"
+	adaptiveAPIIdentityKey   = "203.0.113.9"
 	adaptiveAPIInvocationKey = "mcp-stdio-adaptive"
 	adaptiveAPIAgent         = "agent-a"
 	adaptiveAPIClientIP      = "203.0.113.9"
@@ -158,6 +159,20 @@ func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 	ipOnly := sm.AdaptiveWhoami(adaptiveAPIClientIP, "")
 	if ipOnly.SessionKey != adaptiveAPIClientIP || ipOnly.Agent != "" {
 		t.Fatalf("ip-only whoami response: %+v", ipOnly)
+	}
+}
+
+func TestSessionManager_AdaptiveWhoamiDoesNotReadBoundAgentSession(t *testing.T) {
+	sm := newAdaptiveOperatorTestManager(t)
+	boundKey := sessionKeyFor(adaptiveAPIAgent, adaptiveAPIClientIP, envelope.ActorAuthBound)
+	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
+
+	got := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent)
+	if got.SessionKey != adaptiveAPIClientIP {
+		t.Fatalf("whoami key = %q, want folded client key %q", got.SessionKey, adaptiveAPIClientIP)
+	}
+	if got.Exists {
+		t.Fatalf("whoami exposed bound session %q through self-declared agent name: %+v", boundKey, got)
 	}
 }
 

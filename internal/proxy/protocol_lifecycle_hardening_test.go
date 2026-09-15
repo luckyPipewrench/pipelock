@@ -422,10 +422,10 @@ func TestProtocolLifecycleSessionResetAndMetrics(t *testing.T) {
 		sm := NewSessionManager(cfg, nil, nil)
 		defer sm.Close()
 		sm.sessions["zeta|10.0.0.2"] = &SessionState{key: "zeta|10.0.0.2"}
-		sm.sessions["alpha|10.0.0.1"] = &SessionState{key: "alpha|10.0.0.1"}
+		sm.sessions["10.0.0.1"] = &SessionState{key: "10.0.0.1"}
 
 		status := sm.AdaptiveStatus()
-		if len(status.Sessions) != 2 || status.Sessions[0].Key != "alpha|10.0.0.1" {
+		if len(status.Sessions) != 2 || status.Sessions[0].Key != "10.0.0.1" {
 			t.Fatalf("status sessions = %+v, want stable key ordering", status.Sessions)
 		}
 		who := sm.AdaptiveWhoami("10.0.0.1", "alpha")

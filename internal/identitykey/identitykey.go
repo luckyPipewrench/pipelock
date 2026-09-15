@@ -5,7 +5,16 @@
 // stateful proxy detectors.
 package identitykey
 
-import "github.com/luckyPipewrench/pipelock/internal/envelope"
+import (
+	"encoding/hex"
+	"net/netip"
+	"regexp"
+	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+)
+
+var foldedBaselineKeyRe = regexp.MustCompile(`^ip(?:4-[0-9a-f]{8}|6-[0-9a-f]{32}|-[0-9a-f]*)$`)
 
 // AnonymousAgent is the unattributed agent name. It lives here because both
 // this package and internal/proxy must agree on it exactly: if the two ever
@@ -92,6 +101,40 @@ func CEESafeAgent(agent string, auth envelope.ActorAuth) string {
 // CEESafeKey builds the partition-resistant state key used by CEE and MCP DoW.
 func CEESafeKey(agent, client string, auth envelope.ActorAuth) string {
 	return ForAgentAndClient(CEESafeAgent(agent, auth), client)
+}
+
+// BaselineKeyForSessionKey derives the behavioral-baseline profile key from a
+// classified HTTP session key. Named sessions retain their agent key. Folded
+// IP sessions use the reserved ip4-/ip6- namespace so IPv6 is safe for
+// baseline persistence and admin URL paths. Non-IP peer identifiers from an
+// embedded listener use the reserved ip- namespace instead of colliding with a
+// configured identity name.
+func BaselineKeyForSessionKey(sessionKey string) string {
+	if idx := strings.LastIndex(sessionKey, "|"); idx > 0 {
+		// A named session key is "<agent>|<client address>". Confirm the tail
+		// is an address before trusting the split: a non-IP peer identifier
+		// containing the delimiter would otherwise be read as a named agent
+		// and could share a profile with a configured agent of that name.
+		if _, err := netip.ParseAddr(strings.Trim(sessionKey[idx+1:], "[]")); err == nil {
+			return sessionKey[:idx]
+		}
+	}
+	client := strings.Trim(strings.TrimSpace(sessionKey), "[]")
+	if ip, err := netip.ParseAddr(client); err == nil {
+		ip = ip.Unmap()
+		if ip.Is4() {
+			return "ip4-" + hex.EncodeToString(ip.AsSlice())
+		}
+		return "ip6-" + hex.EncodeToString(ip.AsSlice())
+	}
+	return "ip-" + hex.EncodeToString([]byte(sessionKey))
+}
+
+// IsFoldedBaselineKey reports whether key is in the namespace reserved for a
+// client-address-derived behavioral baseline. Configured agent names may not
+// use this namespace, so a named identity cannot collide with a folded client.
+func IsFoldedBaselineKey(key string) bool {
+	return foldedBaselineKeyRe.MatchString(key)
 }
 
 // CEECandidateKeys returns every distinct CEE state key that CEESafeKey could

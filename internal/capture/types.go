@@ -247,6 +247,11 @@ type CaptureRequest struct {
 	// is client-controlled. Consumers should join on session + transport +
 	// rpc_id rather than the id alone, since ids get reused within a session.
 	RPCID json.RawMessage `json:"rpc_id,omitempty"`
+	// CEEContributors identifies the bounded set of JSON-RPC requests whose
+	// retained fragments contributed bytes to a cross-request CEE match. Values
+	// use the same raw, capped convention as RPCID; it is omitted when legacy or
+	// unidentified fragments cannot establish a request identity.
+	CEEContributors []json.RawMessage `json:"cee_contributors,omitempty"`
 }
 
 // Finding is a single scanner detection result. Not all fields apply to every

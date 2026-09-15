@@ -31,7 +31,7 @@ func TestAdaptiveBoundIdentityDoesNotEscalateOnHostBurst(t *testing.T) {
 		p.recordSessionActivityWithUserAgent(boundBurstOpts(host, envelope.ActorAuthBound, boundBurstAgent, cfg, logger))
 	}
 
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback, envelope.ActorAuthBound))
 	if rec.EscalationLevel() != 0 {
 		t.Fatalf("bound burst escalated to level %d with score %.2f", rec.EscalationLevel(), rec.ThreatScore())
 	}
@@ -54,7 +54,7 @@ func TestAdaptiveConfigDefaultIdentityDoesNotEscalateOnHostBurst(t *testing.T) {
 		p.recordSessionActivityWithUserAgent(boundBurstOpts(host, envelope.ActorAuthConfigDefault, boundBurstAgent, cfg, logger))
 	}
 
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback, envelope.ActorAuthConfigDefault))
 	if rec.EscalationLevel() != 0 {
 		t.Fatalf("config-default burst escalated to level %d with score %.2f", rec.EscalationLevel(), rec.ThreatScore())
 	}
@@ -84,7 +84,7 @@ func TestAdaptiveMatchedStillTripsIPBurst(t *testing.T) {
 	p.recordSessionActivityWithUserAgent(boundBurstOpts("a.example", envelope.ActorAuthMatched, boundBurstAgent, cfg, logger))
 	p.recordSessionActivityWithUserAgent(boundBurstOpts("b.example", envelope.ActorAuthMatched, boundBurstAgent, cfg, logger))
 
-	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback))
+	rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(boundBurstAgent, adaptiveSessionKeyLoopback, envelope.ActorAuthUnknown))
 	if rec.EscalationLevel() == 0 {
 		t.Fatalf("matched burst did not escalate; score %.2f", rec.ThreatScore())
 	}
@@ -153,7 +153,7 @@ func TestAdaptiveDistinctBoundAgentsOnOneIPDoNotMerge(t *testing.T) {
 
 	sm := p.sessionMgrPtr.Load()
 	for _, agent := range agents {
-		rec := sm.GetOrCreate(sessionKeyFor(agent, adaptiveSessionKeyLoopback))
+		rec := sm.GetOrCreate(sessionKeyFor(agent, adaptiveSessionKeyLoopback, envelope.ActorAuthBound))
 		if rec.EscalationLevel() != 0 {
 			t.Fatalf("bound agent %q escalated to level %d with score %.2f", agent, rec.EscalationLevel(), rec.ThreatScore())
 		}

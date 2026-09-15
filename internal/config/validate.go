@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -4275,6 +4276,9 @@ func (c *Config) validateAgents() error {
 		if reserved := reservedControlActorName(name); reserved != "" {
 			return fmt.Errorf("agents.%s: %q is a reserved control-actor identity and cannot be used as an agent name", name, reserved)
 		}
+		if identitykey.IsFoldedBaselineKey(name) {
+			return fmt.Errorf("agents.%s: agent name is reserved for folded behavioral-baseline client identities", name)
+		}
 		if err := ap.Budget.ValidateDoW(); err != nil {
 			return fmt.Errorf("agents.%s.budget: %w", name, err)
 		}
@@ -5208,6 +5212,9 @@ func (c *Config) validateDefaultAgentIdentity() error {
 	}
 	if reserved := reservedControlActorName(identity); reserved != "" {
 		return fmt.Errorf("default_agent_identity %q is a reserved control-actor identity and cannot be used", reserved)
+	}
+	if identitykey.IsFoldedBaselineKey(identity) {
+		return fmt.Errorf("default_agent_identity %q is reserved for folded behavioral-baseline client identities", identity)
 	}
 	return nil
 }

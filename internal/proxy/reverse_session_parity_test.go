@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -208,7 +209,7 @@ func TestReverseSessionProfilingBlockAllDeniesSharedSession(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	rec := sm.GetOrCreate(sessionKeyFor("", clientHost))
+	rec := sm.GetOrCreate(sessionKeyFor("", clientHost, envelope.ActorAuthUnknown))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
 	for attempts := 0; rec.ScopedEscalationLevel(scope) < 1 && attempts < 10; attempts++ {
 		rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)

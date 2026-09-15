@@ -770,6 +770,32 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	}
 }
 
+func TestSessionAPI_HandleReset_ClearsFoldedSelfDeclaredAdaptiveState(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	const clientIP = "192.0.2.41"
+	key := sessionKeyFor("rotated-agent", clientIP, envelope.ActorAuthSelfDeclared)
+	sess := sm.GetOrCreate(key)
+	_, _, _ = sess.RecordSignal(session.SignalBlock, 1)
+	if got := sess.EscalationLevel(); got == 0 {
+		t.Fatal("precondition: folded self-declared state did not escalate")
+	}
+
+	handler := newTestSessionAPIHandler(t, sm)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/"+url.PathEscape(key)+"/reset", nil)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+	handler.HandleReset(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := sess.EscalationLevel(); got != 0 {
+		t.Fatalf("reset left folded self-declared adaptive level = %d, want 0", got)
+	}
+}
+
 func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

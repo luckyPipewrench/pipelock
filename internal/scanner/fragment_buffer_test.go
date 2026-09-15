@@ -5,12 +5,14 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const (
@@ -84,6 +86,183 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	if !found {
 		t.Error("expected at least one match with a pattern name")
 	}
+}
+
+// A complete credential in one request is handled by ordinary body DLP. It
+// must not suppress a distinct occurrence of that same pattern completed by
+// later requests.
+func TestFragmentBuffer_CompleteDecoyDoesNotSuppressLaterSplitOccurrence(t *testing.T) {
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+	sc := testFragmentScanner()
+	t.Cleanup(sc.Close)
+
+	decoy := "AKIA" + testAWSKeySuffix
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte("benign decoy "+decoy+" then another "+decoy+" "), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("AKI"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("A"+testAWSKeySuffix), sc)
+	for _, match := range matches {
+		if len(match.Contributors) == 2 && string(match.Contributors[0]) == "prefix" && string(match.Contributors[1]) == "suffix" {
+			return
+		}
+	}
+	t.Fatalf("cross-request credential was not attributed to its split requests: %+v", matches)
+}
+
+func TestFragmentBuffer_CompleteShortPatternDoesNotSuppressLongCrossPattern(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Short token\n      regex: 'SHORT[A-Z]{4}'\n      severity: high\n    - name: Long token\n      regex: 'SHORT[A-Z]{8}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+
+	fb.Append(testCEEIdentity(testSessionA), []byte("SHORTABCD"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("EFGH"))
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	for _, match := range matches {
+		if match.PatternName == "Long token" {
+			return
+		}
+	}
+	t.Fatalf("complete short-pattern occurrence suppressed longer cross-fragment rule: %+v", matches)
+}
+
+func TestFragmentBuffer_NormalizedCoordinatesRetainExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Normalized token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("\x01\x01\x01\x01SECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("AB"), sc)
+	for _, match := range matches {
+		if match.PatternName != "Normalized token" {
+			continue
+		}
+		if len(match.Contributors) != 2 || string(match.Contributors[0]) != "prefix" || string(match.Contributors[1]) != "suffix" {
+			t.Fatalf("normalized-view contributors = %q, want exact source requests", match.Contributors)
+		}
+		return
+	}
+	t.Fatalf("normalized cross-fragment match reported clean: %+v", matches)
+}
+
+func TestFragmentBuffer_MultipassNormalizedCoordinatesRetainExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Multipass token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("ёёёёSECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("AB"), sc)
+	for _, match := range matches {
+		if match.PatternName != "Multipass token" {
+			continue
+		}
+		if len(match.Contributors) != 2 || string(match.Contributors[0]) != "prefix" || string(match.Contributors[1]) != "suffix" {
+			t.Fatalf("multipass normalized contributors = %q, want exact source requests", match.Contributors)
+		}
+		return
+	}
+	t.Fatalf("multipass normalized cross-fragment match reported clean: %+v", matches)
+}
+
+func TestFragmentBuffer_CrossBoundaryNormalizationCompositionRetainsExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Composed-boundary token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+	jamoPrefix, prefixStable := normalizeFragmentForDLP([]byte("\u1100"))
+	secretPrefix, secretStable := normalizeFragmentForDLP([]byte("\u1161SECRET"))
+	if !prefixStable || !secretStable {
+		t.Fatal("individual jamo fragments did not reach normalization fixed points")
+	}
+	joined := string(append(jamoPrefix, secretPrefix...))
+	if got := normalize.ForDLP(joined); got != joined {
+		t.Fatalf("joined fragment fixed points changed on scanner normalization: %q -> %q", joined, got)
+	}
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("jamo-prefix"), []byte("\u1100"), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("secret-prefix"), []byte("\u1161SECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("secret-suffix"), []byte("AB"), sc)
+	if len(matches) != 1 || matches[0].PatternName != "Composed-boundary token" ||
+		len(matches[0].Contributors) != 2 || string(matches[0].Contributors[0]) != "secret-prefix" || string(matches[0].Contributors[1]) != "secret-suffix" {
+		t.Fatalf("cross-boundary normalization result = %+v, want exact secret-bearing contributors", matches)
+	}
+}
+
+func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) {
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+	sc := testFragmentScanner()
+	t.Cleanup(sc.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+	secret := "AKIA" + testAWSKeySuffix
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	const split = 13 // not a base64 quantum, so neither fragment decodes alone
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte(secret+" "), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte(encoded[:split]), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte(encoded[split:]), sc)
+	for _, match := range matches {
+		if match.PatternName == "AWS Access ID" {
+			if len(match.Contributors) != 0 {
+				t.Fatalf("encoded-view contributors = %q, want omitted without raw byte coordinates", match.Contributors)
+			}
+			return
+		}
+	}
+	t.Fatalf("same-pattern decoy dropped encoded cross-fragment match: %+v", matches)
+}
+
+func TestFragmentBuffer_MaskingThatCannotProgressFailsClosed(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Space run\n      regex: ' +'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	fb.Append(testCEEIdentity(testSessionA), []byte("   "))
+	fb.Append(testCEEIdentity(testSessionA), []byte("x"))
+
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	for _, match := range matches {
+		if match.PatternName == "Space run" {
+			return
+		}
+	}
+	t.Fatalf("non-progressing mask reported clean: %+v", matches)
 }
 
 func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {

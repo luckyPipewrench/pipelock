@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -254,6 +255,74 @@ func TestForwardHTTP_Adaptive_HeaderDLPSignal(t *testing.T) {
 	scoreAfter := rec.ThreatScore()
 	if scoreAfter <= scoreBefore {
 		t.Errorf("expected threat score to increase from header DLP signal, before=%f after=%f", scoreBefore, scoreAfter)
+	}
+}
+
+func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T) {
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.Enabled = true
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 2
+		cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
+		enforceFalse := false
+		cfg.Enforce = &enforceFalse
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+	})
+	defer cleanup()
+	installForwardTestDialer(p, upstream.Listener.Addr().String())
+
+	client := forwardHTTPClient(t, proxyAddr)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	requests := []struct {
+		agent string
+	}{
+		{agent: "caller-a"},
+		{agent: "caller-b"},
+	}
+	for i, tc := range requests {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example.com/", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("X-Pipelock-Agent", tc.agent)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("forward request for %q: %v", tc.agent, err)
+		}
+		_ = resp.Body.Close()
+		wantStatus := http.StatusOK
+		// The second near-miss is allowed in audit mode, but it is the one
+		// that crosses the shared threshold. With the fold removed, each
+		// request scores only one point in a different bucket and this test's
+		// escalation assertion below fails.
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("forward request %d for %q status = %d, want %d", i+1, tc.agent, resp.StatusCode, wantStatus)
+		}
+	}
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager not initialized")
+	}
+	folded := sm.GetOrCreate(sessionKeyFor("caller-a", adaptiveSessionKeyLoopback, envelope.ActorAuthSelfDeclared))
+	if got := folded.EscalationLevel(); got == 0 {
+		t.Fatalf("rotating self-declared agents did not cross the shared adaptive escalation threshold (score %.2f)", folded.ThreatScore())
+	}
+	if sm.SessionExists("caller-a|"+adaptiveSessionKeyLoopback) || sm.SessionExists("caller-b|"+adaptiveSessionKeyLoopback) {
+		t.Fatal("self-declared agent name created an independent adaptive session")
+	}
+	for _, auth := range []envelope.ActorAuth{envelope.ActorAuthBound, envelope.ActorAuthConfigDefault} {
+		if sessionKeyFor("caller-a", adaptiveSessionKeyLoopback, auth) == sessionKeyFor("caller-b", adaptiveSessionKeyLoopback, auth) {
+			t.Fatalf("%s identities must keep separate adaptive buckets", auth)
+		}
 	}
 }
 

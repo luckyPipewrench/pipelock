@@ -916,6 +916,7 @@ func ForwardScannedInput(
 			}
 			// Cross-request exfiltration check on clean outbound messages.
 			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
+			var ceeContributors []json.RawMessage
 			ceeOpts := ceeRecordMCPOptions{
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,
@@ -928,6 +929,7 @@ func ForwardScannedInput(
 				fallbackReason: &fallbackReason,
 				matchedPattern: &matchedPattern,
 				blockKind:      &ceeBlockKind,
+				contributors:   &ceeContributors,
 			}
 			if reason := ceeRecordMCP(ceeOpts); reason != "" {
 				// Capture: record CEE verdict.
@@ -939,7 +941,7 @@ func ForwardScannedInput(
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureActionClass,
-					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID), CEEContributors: ceeContributors},
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -1494,6 +1496,7 @@ func ForwardScannedInput(
 				lineNum, method, reasonStr)
 			// Cross-request exfiltration check even in warn mode.
 			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
+			var ceeContributors []json.RawMessage
 			ceeOpts := ceeRecordMCPOptions{
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,
@@ -1506,6 +1509,7 @@ func ForwardScannedInput(
 				fallbackReason: &fallbackReason,
 				matchedPattern: &matchedPattern,
 				blockKind:      &ceeBlockKind,
+				contributors:   &ceeContributors,
 			}
 			if reason := ceeRecordMCP(ceeOpts); reason != "" {
 				// Capture: record CEE verdict (warn-path).
@@ -1517,7 +1521,7 @@ func ForwardScannedInput(
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureActionClass,
-					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID), CEEContributors: ceeContributors},
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,

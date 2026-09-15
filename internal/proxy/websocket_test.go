@@ -1787,7 +1787,7 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 				t.Fatalf("read response: %v", err)
 			}
 
-			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1"))
+			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 			risk := sess.RiskSnapshot()
 			if risk.Contaminated != tt.wantTainted {
 				t.Fatalf("contaminated = %v, want %v", risk.Contaminated, tt.wantTainted)
@@ -2460,11 +2460,19 @@ func TestWSProxyHeaderDLPSessionAnomalyBlocksHandshake(t *testing.T) {
 	defer proxyCleanup()
 
 	sm := p.sessionMgrPtr.Load()
-	lockHTTPBaseline(t, sm, "agent-a")
-
-	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
+	first := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
 		"Authorization": []string{"Bearer " + fakeBodyDLPSecret()},
 		AgentHeader:     []string{"agent-a"},
+	})
+	if first.StatusCode != http.StatusSwitchingProtocols {
+		_ = first.Body.Close()
+		t.Fatalf("pre-lock status = %d, want %d", first.StatusCode, http.StatusSwitchingProtocols)
+	}
+	_ = first.Body.Close()
+	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthSelfDeclared))
+
+	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
+		AgentHeader: []string{"agent-a"},
 	})
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {

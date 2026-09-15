@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // DLPMatch describes a single DLP pattern match found in reassembled fragments.
@@ -19,12 +21,27 @@ type DLPMatch struct {
 	PatternName string
 	Matched     string
 	Warn        bool // true for warn-mode patterns (informational only)
+	// Contributors identifies only the retained source requests whose bytes
+	// overlap this occurrence. Values are opaque, caller-sanitized identifiers.
+	Contributors [][]byte
 }
+
+// MaxFragmentSourceRequestIDBytes bounds provenance metadata independently of
+// caller behavior. It matches the MCP capture RPC-ID ceiling; keeping the
+// guard here prevents another FragmentAppend caller from turning a small
+// retained payload into arbitrarily large ledger metadata.
+const MaxFragmentSourceRequestIDBytes = 128
+
+const (
+	maxFragmentDLPNormalizationPasses = 3
+	fragmentDLPNormalizationFailure   = "DLP normalization did not converge"
+)
 
 // fragment holds a single outbound payload chunk with its arrival time.
 type fragment struct {
-	data []byte
-	at   time.Time
+	data            []byte
+	at              time.Time
+	sourceRequestID []byte
 }
 
 // sessionBuffer accumulates outbound fragments for a single session.
@@ -210,7 +227,7 @@ func (fb *FragmentBuffer) AppendAndScanOwnedInGroup(ctx context.Context, owner i
 	var snapshot []fragment
 	fb.mu.Lock()
 	fb.maybeCleanupLocked(time.Now())
-	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), payload, &snapshot)
+	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), payload, nil, &snapshot)
 	fb.mu.Unlock()
 	return result, scanFragmentsForSecrets(ctx, sc, snapshot)
 }
@@ -221,6 +238,12 @@ type FragmentAppend struct {
 	Group   identitykey.CEEStream
 	Stream  identitykey.CEEStream
 	Payload []byte
+	// SourceRequestID is an optional opaque request identity. The ledger retains
+	// it only when it is non-empty and no larger than
+	// MaxFragmentSourceRequestIDBytes. Legacy or oversized identities do not
+	// weaken detection, but a later match cannot claim complete request-level
+	// provenance when one of its contributing fragments is unidentified.
+	SourceRequestID []byte
 }
 
 // AppendAndScanOwnedBatch snapshots every request stream before applying any
@@ -251,7 +274,7 @@ func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner ide
 	var result FragmentAppendResult
 	appended := 0
 	for i, item := range appends {
-		result = fb.appendSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), item.Payload, &snapshots[i])
+		result = fb.appendSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), item.Payload, item.SourceRequestID, &snapshots[i])
 		if result != (FragmentAppendResult{}) {
 			break
 		}
@@ -275,18 +298,18 @@ func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner ide
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
 func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload []byte) FragmentAppendResult {
-	return fb.appendWithSnapshotLocked(owner, group, streamKey, payload, nil)
+	return fb.appendWithSnapshotLocked(owner, group, streamKey, payload, nil, nil)
 }
 
-func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, payload []byte, snapshot *[]fragment) FragmentAppendResult {
-	result := fb.appendSnapshotLocked(owner, group, streamKey, payload, snapshot)
+func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, payload, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
+	result := fb.appendSnapshotLocked(owner, group, streamKey, payload, sourceRequestID, snapshot)
 	if result == (FragmentAppendResult{}) {
 		fb.retainStreamLocked(owner, streamKey)
 	}
 	return result
 }
 
-func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, payload []byte, snapshot *[]fragment) FragmentAppendResult {
+func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, payload, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
 	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
 	// Normalized once here so everything below can assume a non-empty owner:
 	// a caller that keeps one stream per client passes no owner, and that
@@ -312,11 +335,16 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 	// Copy payload to prevent caller mutation of buffered data.
 	copied := make([]byte, len(payload))
 	copy(copied, payload)
+	var requestID []byte
+	if len(copied) > 0 && len(sourceRequestID) > 0 && len(sourceRequestID) <= MaxFragmentSourceRequestIDBytes {
+		requestID = append([]byte(nil), sourceRequestID...)
+	}
 
 	now := time.Now()
 	sb.fragments = append(sb.fragments, fragment{
-		data: copied,
-		at:   now,
+		data:            copied,
+		at:              now,
+		sourceRequestID: requestID,
 	})
 	sb.totalBytes += len(copied)
 	if snapshot != nil {
@@ -699,35 +727,23 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	}
 
 	buf := make([]byte, 0)
+	ranges := make([]fragmentRange, 0, len(fragments))
 	for _, f := range fragments {
-		buf = append(buf, f.data...)
+		normalized, stable := normalizeFragmentForDLP(f.data)
+		if !stable {
+			// Scanner spans index another normalization pass. If the bounded
+			// pipeline does not reach a fixed point, no fragment boundary can be
+			// trusted; block without claiming contributor provenance.
+			return []DLPMatch{{PatternName: fragmentDLPNormalizationFailure}}
+		}
+		start := len(buf)
+		buf = append(buf, normalized...)
+		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: normalized, fragment: f})
 	}
 
-	var individualFragments [][]byte
-	for _, f := range fragments {
-		individualFragments = append(individualFragments, f.data)
-	}
-
-	// Scan the concatenated buffer.
 	result := sc.ScanTextForDLP(ctx, string(buf))
 	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
-	}
-
-	// Scan each individual fragment to identify single-request matches.
-	// A pattern that matches entirely within ANY single fragment is handled
-	// by body DLP and should not generate a cross-request signal.
-	singleFragment := make(map[string]bool)
-	for _, frag := range individualFragments {
-		if len(frag) > 0 {
-			fragResult := sc.ScanTextForDLP(ctx, string(frag))
-			for _, m := range fragResult.Matches {
-				singleFragment[m.PatternName] = true
-			}
-			for _, m := range fragResult.InformationalMatches {
-				singleFragment[m.PatternName] = true
-			}
-		}
 	}
 
 	// Only report matches NOT found in any individual fragment.
@@ -736,17 +752,183 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
-	for _, m := range result.Matches {
-		if !singleFragment[m.PatternName] {
-			matches = append(matches, DLPMatch{
-				PatternName: m.PatternName,
-			})
+	complete := completeFragmentOccurrences(ctx, sc, ranges)
+	patternSet := make(map[string]struct{}, len(result.Matches))
+	patternNames := make([]string, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		if _, duplicate := patternSet[match.PatternName]; duplicate {
+			continue
+		}
+		patternSet[match.PatternName] = struct{}{}
+		patternNames = append(patternNames, match.PatternName)
+	}
+	sort.Strings(patternNames)
+	for _, patternName := range patternNames {
+		masked := append([]byte(nil), buf...)
+		for _, occurrence := range complete[patternName] {
+			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
+		}
+		// Mask only complete occurrences of this pattern. Masking every rule at
+		// once could erase a longer cross-fragment match from a different rule.
+		// The scanner can report one occurrence per rule, so keep removing
+		// complete occurrences until the next one crosses a request boundary or
+		// the rule disappears.
+		for {
+			maskedResult := sc.ScanTextForDLPQuiet(ctx, string(masked))
+			remasked := false
+			crossed := false
+			var rawTargets []TextDLPMatch
+			invalidTargetFound := false
+			for _, match := range maskedResult.Matches {
+				if match.PatternName != patternName {
+					continue
+				}
+				span := match.Span()
+				if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(masked) || span.ByteStart >= span.ByteEnd {
+					invalidTargetFound = true
+					continue
+				}
+				rawTargets = append(rawTargets, match)
+			}
+			for _, match := range rawTargets {
+				span := match.Span()
+				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+					if maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd) {
+						remasked = true
+					} else {
+						// A rule that matches the replacement bytes cannot make
+						// progress. Report rather than loop forever or drop it.
+						matches = append(matches, DLPMatch{PatternName: match.PatternName})
+						crossed = true
+					}
+					continue
+				}
+				matches = appendCrossFragmentMatch(matches, match, ranges, len(buf))
+				crossed = true
+			}
+			if len(rawTargets) == 0 && invalidTargetFound {
+				matches = append(matches, DLPMatch{PatternName: patternName})
+				crossed = true
+			}
+			if crossed || len(rawTargets) == 0 || !remasked {
+				break
+			}
 		}
 	}
 	if len(matches) == 0 {
 		return nil
 	}
 	return matches
+}
+
+func normalizeFragmentForDLP(payload []byte) ([]byte, bool) {
+	current := string(payload)
+	// ForDLP has two stages that can expose input to a later stage: NFKC and
+	// the trailing NFD used to remove combining marks. Two changing passes plus
+	// one equality check therefore cover the current pipeline. A future change
+	// that needs more passes fails closed instead of reviving coordinate drift.
+	for range maxFragmentDLPNormalizationPasses {
+		next := normalize.ForDLP(current)
+		if next == current {
+			return []byte(next), true
+		}
+		current = next
+	}
+	return nil, false
+}
+
+func maskFragmentOccurrence(buf []byte, start, end int) bool {
+	changed := false
+	for i := start; i < end; i++ {
+		if buf[i] != ' ' {
+			buf[i] = ' '
+			changed = true
+		}
+	}
+	return changed
+}
+
+type fragmentOccurrence struct {
+	start int
+	end   int
+}
+
+func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) map[string][]fragmentOccurrence {
+	complete := make(map[string][]fragmentOccurrence)
+	for _, r := range ranges {
+		fragmentResult := sc.ScanTextForDLPQuiet(ctx, string(r.normalized))
+		for _, match := range fragmentResult.Matches {
+			span := match.Span()
+			if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(r.normalized) || span.ByteStart >= span.ByteEnd {
+				continue
+			}
+			complete[match.PatternName] = append(complete[match.PatternName], fragmentOccurrence{
+				start: r.start + span.ByteStart,
+				end:   r.start + span.ByteEnd,
+			})
+		}
+	}
+	return complete
+}
+
+func appendCrossFragmentMatch(matches []DLPMatch, match TextDLPMatch, ranges []fragmentRange, bufferLen int) []DLPMatch {
+	span := match.Span()
+	if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > bufferLen || span.ByteStart >= span.ByteEnd {
+		// The scanner found a real DLP match but did not expose a raw-view
+		// coordinate that could prove it was wholly inspected in one request.
+		// Do not turn missing provenance into an allow decision.
+		return append(matches, DLPMatch{PatternName: match.PatternName})
+	}
+	if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+		return matches
+	}
+	return append(matches, DLPMatch{
+		PatternName:  match.PatternName,
+		Contributors: contributorsForSpan(ranges, span.ByteStart, span.ByteEnd),
+	})
+}
+
+func spanIsWithinOneFragment(ranges []fragmentRange, start, end int) bool {
+	for _, r := range ranges {
+		if start >= r.start && end <= r.end {
+			return true
+		}
+	}
+	return false
+}
+
+type fragmentRange struct {
+	start      int
+	end        int
+	normalized []byte
+	fragment   fragment
+}
+
+func contributorsForSpan(ranges []fragmentRange, start, end int) [][]byte {
+	contributors := make([][]byte, 0, len(ranges))
+	seen := make(map[string]struct{})
+	for _, r := range ranges {
+		if r.start >= r.end {
+			// This fragment normalized to no bytes, so it cannot contribute to
+			// a match or make real contributors look unidentified.
+			continue
+		}
+		if start >= r.end || end <= r.start {
+			continue
+		}
+		if len(r.fragment.sourceRequestID) == 0 {
+			// A partial list would look complete to a consumer. Omit the field
+			// unless every byte-contributing fragment has a retained identity.
+			return nil
+		}
+		id := string(r.fragment.sourceRequestID)
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		contributors = append(contributors, append([]byte(nil), r.fragment.sourceRequestID...))
+	}
+	return contributors
 }
 
 // TotalBufferBytes returns the total bytes across all sessions, for Prometheus gauges.

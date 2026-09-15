@@ -79,6 +79,10 @@ If the profile directory is wiped but the trusted integrity state remains, start
 
 Recover by restoring the matching integrity manifest/key/high-water set, or by performing a deliberate full wipe of the profile directory plus the key-side integrity state and letting the agent relearn. Do not copy or hand-edit a pending profile into place without signing it through the normal manager path.
 
+## Upgrade note: folded client profiles
+
+Name-keyed profiles apply only to bound or config-default identities. Self-declared, matched, and unknown identities are profiled under their client address as `ip4-<hex>` or `ip6-<hex>`; list and ratify that displayed key. An embedded non-TCP listener encodes its non-IP peer identifier as `ip-<hex>`, which is also a folded key. Ratifying a self-declared name addresses no live profile after this upgrade.
+
 ## Exit Codes
 
 The baseline commands use the standard Pipelock admin CLI exit codes:

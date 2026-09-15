@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,11 +17,78 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestCeeRecordMCPReportsOnlyContributingRPCIDs(t *testing.T) {
+	if capture.MaxRPCIDLen != scanner.MaxFragmentSourceRequestIDBytes {
+		t.Fatalf("capture RPC ID cap %d != fragment provenance cap %d", capture.MaxRPCIDLen, scanner.MaxFragmentSourceRequestIDBytes)
+	}
+	tests := []struct {
+		name    string
+		firstID json.RawMessage
+		wantIDs []string
+	}{
+		{name: "current and prior", firstID: json.RawMessage("1"), wantIDs: []string{"1", `"current"`}},
+		{name: "overlength prior makes provenance incomplete", firstID: json.RawMessage(`"` + strings.Repeat("x", capture.MaxRPCIDLen) + `"`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cee := testMCPCEEFragmentBlock(t)
+			sc := testMCPScanner()
+			t.Cleanup(sc.Close)
+			var logBuf bytes.Buffer
+			var contributors []json.RawMessage
+
+			if reason := ceeRecordMCP(ceeRecordMCPOptions{
+				sessionKey: testMCPSessionKey,
+				frame:      MCPFrame{ID: tt.firstID},
+				fragmentPayloads: map[string][]byte{
+					"": []byte("AKI" + "A"),
+				},
+				cee: cee, sc: sc, logW: &logBuf, contributors: &contributors,
+			}); reason != "" {
+				t.Fatalf("first fragment reason = %q", reason)
+			}
+			if len(contributors) != 0 {
+				t.Fatalf("first fragment contributors = %q, want none", contributors)
+			}
+
+			if reason := ceeRecordMCP(ceeRecordMCPOptions{
+				sessionKey: testMCPSessionKey,
+				frame:      MCPFrame{ID: json.RawMessage(`"current"`)},
+				fragmentPayloads: map[string][]byte{
+					"": []byte(testMCPAWSKeySuffix),
+				},
+				cee: cee, sc: sc, logW: &logBuf, contributors: &contributors,
+			}); reason != ceeFragmentBlockClientReason {
+				t.Fatalf("second fragment reason = %q, want fragment block", reason)
+			}
+			if len(contributors) != len(tt.wantIDs) {
+				t.Fatalf("contributors = %q, want %q", contributors, tt.wantIDs)
+			}
+			for i, want := range tt.wantIDs {
+				if got := string(contributors[i]); got != want {
+					t.Fatalf("contributor[%d] = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCaptureCEEContributorsRejectsPartialList(t *testing.T) {
+	contributors := captureCEEContributors([][]byte{
+		[]byte("1"),
+		[]byte(`"` + strings.Repeat("x", capture.MaxRPCIDLen) + `"`),
+	})
+	if len(contributors) != 0 {
+		t.Fatalf("contributors = %q, want incomplete provenance omitted", contributors)
+	}
+}
 
 func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	strict := config.CrossRequestDetection{

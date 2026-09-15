@@ -505,12 +505,15 @@ The probes run against a canned command-runner built from external JSON fixtures
 - `<name>.probe.json` — the canned `(command → stdout, exit_code)` inputs.
 - `<name>.expect.json` — the expected per-probe status and aggregate exit code.
 
-| Fixture | Probe 8 | Overall exit | Role |
-|---|---|---|---|
-| `pass-all` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
-| `leaky-egress` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT |
+Probe 8's DROP-counter evidence can come from either of two mutually exclusive fixture inputs. `drop_counter_reads` pre-bakes the raw before/after counter values probe 8 reads; it can express a corroborating counter delta (or its absence) but cannot express a *structural* problem in the chain itself. `nft_chain_text` (with `agent_uid` and `proxy_uid`, and optionally `operator_uid`/`proxy_port`) instead supplies the literal `nft -n -a list chain ...` output text and routes it through the SAME chain-text recognizer `pipelock contain verify` (probe 3) uses in production — `agentUIDBareAcceptBeforeDrop` and `chainLinesHaveUnsafeVerdictBeforeAgentDrop` — so a fixture can prove a structural containment hole that no counter-value pair could represent.
 
-The fixture schema is documented in `sdk/conformance/testdata/containment/README.md`. Run the artifact two ways:
+| Fixture | Input | Probe 8 | Overall exit | Role |
+|---|---|---|---|---|
+| `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
+| `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT a leaked canary |
+| `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail** — gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP, a distinct production outcome from a leaked canary (same status, different detail and root cause) |
+
+The fixture schema, including the mutual-exclusion rule between `drop_counter_reads` and `nft_chain_text` and the compatibility guarantee for existing fixtures, is documented in `sdk/conformance/testdata/containment/README.md`. Run the artifact two ways:
 
 ```bash
 # Go conformance test over every fixture pair.

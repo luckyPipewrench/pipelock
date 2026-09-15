@@ -68,6 +68,36 @@ type ConformanceEnv struct {
 	// internet. When empty, probe 9 invokes curl directly (the production
 	// behaviour when $SUDO_USER is unset).
 	OperatorUser string
+
+	// NFTChainText, when non-empty, is the literal `nft -n -a list chain inet
+	// <table> <chain>` output text that probe 8's DROP-counter attribution
+	// parses through the SAME chain-text recognizer `contain verify` (probe 3,
+	// probeNFTContainment) uses: attributedNFTChainLines,
+	// agentUIDBareAcceptBeforeDrop, chainLinesHaveUnsafeVerdictBeforeAgentDrop,
+	// and managedContainmentDropPacketCountFromLines. This is the input a
+	// fixture uses to exercise the structural agent-UID-accept-before-drop
+	// containment hole, which DropCounter's pre-baked uint64 sequence cannot
+	// reach at all. Setting NFTChainText together with DropCounter is
+	// rejected as ambiguous.
+	NFTChainText string
+
+	// AgentUID and ProxyUID are the contained-agent and pipelock-proxy UIDs
+	// the chain-text recognizer matches against. Both are REQUIRED and must
+	// be distinct when NFTChainText is set; there is no safe default UID to
+	// assume for a security recognizer, so a zero value fails closed at load.
+	AgentUID int
+	ProxyUID int
+
+	// OperatorUID is the managed operator UID the recognizer treats as a safe
+	// pre-drop accept. Optional; zero means "no managed operator UID
+	// recorded" (matching a missing header in production), which is a normal,
+	// not degraded, input and must not be confused with UID 0 (root).
+	OperatorUID int
+
+	// ProxyPort is the loopback port the recognizer's agent-proxy-loopback-
+	// allow check uses. Defaults to the production proxy port (8888) when
+	// zero.
+	ProxyPort int
 }
 
 // ConformanceProbeResult is one exported per-probe outcome. Status is one of
@@ -126,6 +156,17 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 	if env.RunCommand == nil {
 		return nil, conformanceExitInvalid, fmt.Errorf("conformance: RunCommand runner is required")
 	}
+	if env.NFTChainText != "" {
+		if env.DropCounter != nil {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: NFTChainText and DropCounter are mutually exclusive fixture inputs (ambiguous)")
+		}
+		if env.AgentUID == 0 || env.ProxyUID == 0 {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: NFTChainText requires non-zero AgentUID and ProxyUID")
+		}
+		if env.AgentUID == env.ProxyUID {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: AgentUID and ProxyUID must be distinct")
+		}
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -138,7 +179,27 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 		operatorUser:  env.OperatorUser,
 		runCmd:        runCommand(env.RunCommand),
 	}
-	if env.DropCounter != nil {
+	switch {
+	case env.NFTChainText != "":
+		// Feed the chain-text recognizer used by probe 3
+		// (probeNFTContainment) and production's readContainmentDropCounter,
+		// rather than reimplementing it, so this artifact can never drift
+		// from what `contain verify` actually checks.
+		proxyPort := env.ProxyPort
+		if proxyPort == 0 {
+			proxyPort = defaultProxyPort
+		}
+		uids := containmentUIDs{
+			proxyUID:      env.ProxyUID,
+			agentUID:      env.AgentUID,
+			operatorUID:   env.OperatorUID,
+			operatorKnown: env.OperatorUID != 0,
+		}
+		chainText := env.NFTChainText
+		internalEnv.dropCounter = func(context.Context, *probeEnv) (uint64, error) {
+			return conformanceChainDropCounter(chainText, uids, proxyPort)
+		}
+	case env.DropCounter != nil:
 		internalEnv.dropCounter = func(ctx context.Context, _ *probeEnv) (uint64, error) {
 			return env.DropCounter(ctx)
 		}
@@ -189,4 +250,11 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 		exitCode = ConformanceExitSkip
 	}
 	return results, exitCode, nil
+}
+
+// conformanceChainDropCounter feeds fixture-supplied chain text and UIDs to
+// containmentDropCounterFromChainText, the same recognizer production's
+// readContainmentDropCounter uses after its live `nft list chain` round trip.
+func conformanceChainDropCounter(chainText string, uids containmentUIDs, proxyPort int) (uint64, error) {
+	return containmentDropCounterFromChainText(chainText, defaultNFTChain, uids, proxyPort)
 }

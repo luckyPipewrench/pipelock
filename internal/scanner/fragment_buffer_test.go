@@ -132,6 +132,33 @@ func TestFragmentBuffer_CompleteShortPatternDoesNotSuppressLongCrossPattern(t *t
 	t.Fatalf("complete short-pattern occurrence suppressed longer cross-fragment rule: %+v", matches)
 }
 
+func TestFragmentBuffer_NormalizedCoordinatesRetainExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Normalized token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("\x01\x01\x01\x01SECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("AB"), sc)
+	for _, match := range matches {
+		if match.PatternName != "Normalized token" {
+			continue
+		}
+		if len(match.Contributors) != 2 || string(match.Contributors[0]) != "prefix" || string(match.Contributors[1]) != "suffix" {
+			t.Fatalf("normalized-view contributors = %q, want exact source requests", match.Contributors)
+		}
+		return
+	}
+	t.Fatalf("normalized cross-fragment match reported clean: %+v", matches)
+}
+
 func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	t.Cleanup(fb.Close)
@@ -143,7 +170,7 @@ func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) 
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	const split = 13 // not a base64 quantum, so neither fragment decodes alone
 
-	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte(secret), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte(secret+" "), sc)
 	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte(encoded[:split]), sc)
 	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte(encoded[split:]), sc)
 	for _, match := range matches {

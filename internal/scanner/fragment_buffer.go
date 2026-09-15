@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // DLPMatch describes a single DLP pattern match found in reassembled fragments.
@@ -723,8 +724,9 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	buf := make([]byte, 0)
 	ranges := make([]fragmentRange, 0, len(fragments))
 	for _, f := range fragments {
+		normalized := []byte(normalize.ForDLP(string(f.data)))
 		start := len(buf)
-		buf = append(buf, f.data...)
+		buf = append(buf, normalized...)
 		ranges = append(ranges, fragmentRange{start: start, end: len(buf), fragment: f})
 	}
 
@@ -732,7 +734,6 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
 	}
-	complete := completeFragmentOccurrences(ctx, sc, ranges)
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
@@ -740,17 +741,20 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
-	handled := make(map[string]struct{}, len(complete))
-	patternNames := make([]string, 0, len(complete))
-	for patternName := range complete {
-		patternNames = append(patternNames, patternName)
+	complete := completeFragmentOccurrences(ctx, sc, ranges)
+	patternSet := make(map[string]struct{}, len(result.Matches))
+	patternNames := make([]string, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		if _, duplicate := patternSet[match.PatternName]; duplicate {
+			continue
+		}
+		patternSet[match.PatternName] = struct{}{}
+		patternNames = append(patternNames, match.PatternName)
 	}
 	sort.Strings(patternNames)
 	for _, patternName := range patternNames {
-		occurrences := complete[patternName]
-		handled[patternName] = struct{}{}
 		masked := append([]byte(nil), buf...)
-		for _, occurrence := range occurrences {
+		for _, occurrence := range complete[patternName] {
 			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
 		}
 		// Mask only complete occurrences of this pattern. Masking every rule at
@@ -769,7 +773,7 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 					continue
 				}
 				span := match.Span()
-				if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(masked) || span.ByteStart >= span.ByteEnd {
+				if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(masked) || span.ByteStart >= span.ByteEnd {
 					invalidTargetFound = true
 					continue
 				}
@@ -800,12 +804,6 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 			}
 		}
 	}
-	for _, m := range result.Matches {
-		if _, alreadyHandled := handled[m.PatternName]; alreadyHandled {
-			continue
-		}
-		matches = appendCrossFragmentMatch(matches, m, ranges, len(buf))
-	}
 	if len(matches) == 0 {
 		return nil
 	}
@@ -831,10 +829,11 @@ type fragmentOccurrence struct {
 func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) map[string][]fragmentOccurrence {
 	complete := make(map[string][]fragmentOccurrence)
 	for _, r := range ranges {
-		fragmentResult := sc.ScanTextForDLPQuiet(ctx, string(r.fragment.data))
+		normalized := normalize.ForDLP(string(r.fragment.data))
+		fragmentResult := sc.ScanTextForDLPQuiet(ctx, normalized)
 		for _, match := range fragmentResult.Matches {
 			span := match.Span()
-			if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(r.fragment.data) || span.ByteStart >= span.ByteEnd {
+			if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(normalized) || span.ByteStart >= span.ByteEnd {
 				continue
 			}
 			complete[match.PatternName] = append(complete[match.PatternName], fragmentOccurrence{

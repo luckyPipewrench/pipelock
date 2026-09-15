@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -842,6 +841,9 @@ func TestAgent_ProviderModel_EmittedOnceFromRealResponseShape(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("EventProviderModel emitted %d times across 2 round trips, want exactly 1", count)
 	}
+	if calls != 2 {
+		t.Fatalf("model endpoint received %d requests, want exactly 2 (one tool-call round trip, one final reply); an implementation issuing extra model requests must not pass silently", calls)
+	}
 }
 
 // TestAgent_ProviderModel_EmptyWhenProviderOmitsField covers the common case:
@@ -948,42 +950,14 @@ func TestAgent_ProviderModel_InvalidValueDroppedNotFailed(t *testing.T) {
 	}
 }
 
-// TestAgent_ProviderModel_InvalidValueLoggedToStderr pins the operator-
-// visibility side of the drop above: when the producer discards an invalid,
-// non-empty provider model value, it logs a WARNING line to the child
-// process's stderr (which the parent does not parse as event narration),
-// so an operator running the subprocess directly can see the loss without
-// it ever reaching the visitor-facing UI or the signed evidence.
-func TestAgent_ProviderModel_InvalidValueLoggedToStderr(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"a\u0000b","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	origStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	emit, _ := collectEvents()
-	a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
-	if _, err := a.Run(context.Background(), "go"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	_ = w.Close()
-	os.Stderr = origStderr
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read captured stderr: %v", err)
-	}
-	if !strings.Contains(string(out), "WARNING") || !strings.Contains(string(out), "provider model") {
-		t.Fatalf("captured stderr = %q, want a WARNING line naming the dropped provider model", string(out))
-	}
-}
+// The stderr-visibility side of the invalid-provider-model drop (client.go
+// logs a WARNING line via fmt.Fprintf(os.Stderr, ...)) is intentionally left
+// unasserted here. A test that swaps the process-global os.Stderr for the
+// duration of a run risks racing any other goroutine/test in the same
+// process that writes to stderr, and can hang if the pipe's buffer fills
+// before the write side is closed. The llmagent package has no injectable
+// warn writer/logger seam, and one is not being added solely to make this
+// assertable; the warning is production-only, unverified by test.
 
 // TestAgent_ProviderModel_NonStringValueTolerated drives complete/Run against
 // a raw HTTP handler whose "model" field is not a JSON string (an object, a

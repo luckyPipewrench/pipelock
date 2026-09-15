@@ -1,0 +1,24 @@
+{
+  "description": "Containment structurally BROKEN, distinct from a leaked-egress canary: the managed chain carries a bare agent-UID accept rule BEFORE the agent catch-all DROP. Probe 8's DROP-counter attribution reads this via nft_chain_text/agent_uid/proxy_uid instead of drop_counter_reads, driving it through production's own chain-text recognizer (agentUIDBareAcceptBeforeDrop) so the fixture cannot be satisfied by a fake counter pair. curl's own canary output is the same connection-refused shape as pass-all: the point is that the STRUCTURAL bypass is caught before the counter delta is ever consulted.",
+  "agent_user": "pipelock-agent",
+  "operator_user": "operator",
+  "nft_chain_text": "table inet pipelock_containment {\n  chain output_filter {\n    type filter hook output priority filter; policy accept;\n    meta skuid 1000 accept\n    meta skuid 988 accept\n    meta skuid 987 accept comment \"BYPASS: agent-uid bare accept before catch-all drop\"\n    meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n    meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix \"pipelock-contain class=direct_dns_blocked \" drop\n    meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix \"pipelock-contain class=direct_dns_blocked \" drop\n    meta skuid 987 counter packets 9 bytes 900 log prefix \"pipelock-contain class=not_routing_through_pipelock \" drop\n  }\n}\n",
+  "agent_uid": 987,
+  "proxy_uid": 988,
+  "operator_uid": 1000,
+  "proxy_port": 8888,
+  "runs": [
+    {
+      "comment": "probe 8: DNS-free agent egress canary. curl output is irrelevant to the outcome here: the structural bypass is caught from the chain text before curl's exit code or timing is ever consulted.",
+      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", "http://192.0.2.1:9/"],
+      "stdout": "curl: (7) Failed to connect to 192.0.2.1 port 9: Connection refused\nPLK_TIME_CONNECT=0.000000\n000",
+      "exit_code": 7
+    },
+    {
+      "comment": "probe 9: operator egress canary. curl succeeds, prints HTTP 200.",
+      "match": ["sudo -n -u operator -- /usr/bin/curl", "--connect-timeout 3", "--max-time 5", "--noproxy *", "https://example.com/"],
+      "stdout": "200",
+      "exit_code": 0
+    }
+  ]
+}

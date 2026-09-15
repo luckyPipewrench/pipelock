@@ -1,0 +1,8 @@
+{
+  "description": "Expected outcome when the direct canary's dial completed before curl failed. Probe 8 fails with the post-connect containment-hole detail; overall exit is non-zero (1).",
+  "exit_code": 1,
+  "probes": [
+    { "probe": 8, "name": "cc_agent_egress_denied", "status": "fail", "detail_contains": "CONTAINMENT HOLE: direct egress reached the network before curl failed" },
+    { "probe": 9, "name": "operator_egress_reachable", "status": "pass" }
+  ]
+}

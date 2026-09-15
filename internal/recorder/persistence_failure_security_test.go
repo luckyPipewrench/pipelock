@@ -4,12 +4,18 @@
 package recorder
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func newPersistenceTestRecorder(t *testing.T, dir string) *Recorder {
@@ -45,8 +51,30 @@ func TestRecorderFinalCheckpointOpenFailureDoesNotAdvanceChain(t *testing.T) {
 	if err := os.Mkdir(blockedPath, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := rec.Close(); err == nil || !strings.Contains(err.Error(), "final checkpoint") || !strings.Contains(err.Error(), "opening evidence file") {
-		t.Fatalf("Close = %v, want final checkpoint opening error", err)
+	closeErr := rec.Close()
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "final checkpoint") || !strings.Contains(closeErr.Error(), "opening evidence file") {
+		t.Fatalf("Close = %v, want final checkpoint opening error", closeErr)
+	}
+	if err := os.Rename(blockedPath, blockedPath+".blocked"); err != nil {
+		t.Fatal(err)
+	}
+	var callers sync.WaitGroup
+	for range 4 {
+		callers.Go(func() {
+			if err := rec.Close(); !errors.Is(err, closeErr) {
+				t.Errorf("repeated Close = %v, want original failure %v", err, closeErr)
+			}
+		})
+	}
+	callers.Wait()
+	if err := rec.Record(openSSFCoverageEntry("checkpoint-open-failure", "after close")); err == nil || !strings.Contains(err.Error(), "recorder is closed") {
+		t.Fatalf("Record after failed Close = %v, want closed recorder error", err)
+	}
+	if rec.ceremonyLock != nil || rec.file != nil {
+		t.Fatal("failed Close retained a writer handle")
+	}
+	if _, err := os.Stat(blockedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed recorder created a new shard: %v", err)
 	}
 	if rec.seq != sequenceBefore || rec.prevHash != hashBefore || rec.sinceCheckpoint != countBefore {
 		t.Fatal("failed checkpoint advanced chain state")
@@ -67,6 +95,185 @@ func openSSFCoverageEntry(sessionID, summary string) Entry {
 		Transport: "fetch",
 		Summary:   summary,
 		Detail:    map[string]string{"result": "clean"},
+	}
+}
+
+func TestRecorderCloseRetainsCleanupErrors(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		closeFile     bool
+		closeCeremony bool
+	}{
+		{name: "healthy_control"},
+		{name: "evidence_file", closeFile: true},
+		{name: "ceremony_lock", closeCeremony: true},
+		{name: "both", closeFile: true, closeCeremony: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := newPersistenceTestRecorder(t, t.TempDir())
+			t.Cleanup(func() { _ = rec.Close() })
+			if err := rec.Record(openSSFCoverageEntry("close-result", "persisted")); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.closeFile {
+				if err := rec.file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.closeCeremony {
+				if err := rec.ceremonyLock.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstErr := rec.Close()
+			if testCase.closeFile || testCase.closeCeremony {
+				if !errors.Is(firstErr, os.ErrClosed) {
+					t.Fatalf("Close = %v, want closed-handle error", firstErr)
+				}
+			} else if firstErr != nil {
+				t.Fatalf("healthy Close = %v", firstErr)
+			}
+			if secondErr := rec.Close(); !errors.Is(secondErr, firstErr) {
+				t.Fatalf("repeated Close = %v, want original result %v", secondErr, firstErr)
+			}
+			if rec.file != nil || rec.ceremonyLock != nil || !rec.closed {
+				t.Fatal("Close did not release and seal the writer")
+			}
+		})
+	}
+}
+
+func TestRecorderClosePreservesCheckpointAndFlushErrors(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		cleanupWriter io.Writer
+		cleanupErr    error
+	}{
+		{name: "cleanup_succeeds", cleanupWriter: io.Discard},
+		{name: "cleanup_fails", cleanupWriter: shortWriteSink{}, cleanupErr: io.ErrShortWrite},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := newPersistenceTestRecorder(t, t.TempDir())
+			t.Cleanup(func() { _ = rec.Close() })
+			if err := rec.Record(openSSFCoverageEntry("close-errors", "persisted")); err != nil {
+				t.Fatal(err)
+			}
+			sequenceBefore, hashBefore := rec.seq, rec.prevHash
+			// A closed file makes the checkpoint stat fail. The buffered writer
+			// independently succeeds or fails when shutdown flushes it afterward.
+			if err := rec.file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			rec.writer = bufio.NewWriter(testCase.cleanupWriter)
+			if _, err := rec.writer.WriteString("pending cleanup bytes"); err != nil {
+				t.Fatal(err)
+			}
+			firstErr := rec.Close()
+			if !errors.Is(firstErr, os.ErrClosed) || !strings.Contains(firstErr.Error(), "final checkpoint") {
+				t.Fatalf("Close = %v, want final checkpoint error", firstErr)
+			}
+			if testCase.cleanupErr != nil && !errors.Is(firstErr, testCase.cleanupErr) {
+				t.Errorf("Close = %v, lost independent cleanup error %v", firstErr, testCase.cleanupErr)
+			}
+			if secondErr := rec.Close(); !errors.Is(secondErr, firstErr) {
+				t.Fatalf("repeated Close = %v, want original result %v", secondErr, firstErr)
+			}
+			if rec.file != nil || rec.writer != nil || rec.ceremonyLock != nil {
+				t.Fatal("Close retained a writer handle")
+			}
+			if rec.seq != sequenceBefore || rec.prevHash != hashBefore {
+				t.Fatal("failed checkpoint advanced chain state")
+			}
+		})
+	}
+}
+
+func TestRecorderConcurrentCloseWaitsForFinalResult(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		closeFile     bool
+		closeCeremony bool
+	}{
+		{name: "healthy_control"},
+		{name: "checkpoint_error", closeFile: true},
+		{name: "cleanup_error", closeCeremony: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := newPersistenceTestRecorder(t, t.TempDir())
+			syncEntered := make(chan struct{})
+			releaseSync := make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(releaseSync) }) }
+			t.Cleanup(func() {
+				release()
+				_ = rec.Close()
+			})
+			rec.SetSyncForTest(func(file *os.File) error {
+				err := file.Sync()
+				close(syncEntered)
+				<-releaseSync
+				return err
+			})
+			recordDone := make(chan error, 1)
+			go func() {
+				recordDone <- rec.RecordDurable(openSSFCoverageEntry("overlapping-close", "persisted"))
+			}()
+			waitForDone(t, syncEntered, "durability confirmation")
+			if testCase.closeFile {
+				if err := rec.file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.closeCeremony {
+				if err := rec.ceremonyLock.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			firstDone := make(chan error, 1)
+			go func() { firstDone <- rec.Close() }()
+			testwait.For(t, 5*time.Second, func() bool {
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+				return rec.closed
+			}, "first Close waiting for durability")
+
+			secondStarted := make(chan struct{})
+			secondDone := make(chan error, 1)
+			go func() {
+				close(secondStarted)
+				secondDone <- rec.Close()
+			}()
+			waitForDone(t, secondStarted, "overlapping Close start")
+			var secondErr error
+			returnedEarly := false
+			select {
+			case secondErr = <-secondDone:
+				returnedEarly = true
+				t.Errorf("overlapping Close returned before durability completed: %v", secondErr)
+			case <-time.After(testwait.Deadline(25 * time.Millisecond)):
+			}
+			release()
+			if err := waitForDone(t, recordDone, "durable record completion"); err != nil {
+				t.Fatalf("RecordDurable: %v", err)
+			}
+			firstErr := waitForDone(t, firstDone, "first Close completion")
+			if !returnedEarly {
+				secondErr = waitForDone(t, secondDone, "overlapping Close completion")
+			}
+			if testCase.closeFile || testCase.closeCeremony {
+				if !errors.Is(firstErr, os.ErrClosed) {
+					t.Fatalf("Close = %v, want closed-handle error", firstErr)
+				}
+			} else if firstErr != nil {
+				t.Fatalf("healthy Close = %v", firstErr)
+			}
+			if !errors.Is(secondErr, firstErr) {
+				t.Fatalf("overlapping Close = %v, want completed result %v", secondErr, firstErr)
+			}
+			if rec.file != nil || rec.ceremonyLock != nil {
+				t.Fatal("Close returned before releasing writer handles")
+			}
+		})
 	}
 }
 

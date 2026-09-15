@@ -1025,26 +1025,63 @@ func TestVerifyReceiptCmd_WholeRecorderSealAndIncompleteStates(t *testing.T) {
 func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
 	t.Parallel()
 
-	// Every entry here filled its own shard, so the writer never persisted a
-	// checkpoint: the session is sealed but nothing anchors its non-receipt
-	// entries. Default verification refuses that; the explicit flag accepts
-	// it and names the state.
+	// Each run closes at a shard boundary. The recorder must still persist a
+	// signed checkpoint covering that run's seal, including after restart.
 	dir, pub := buildSealedRestartRecorderDir(t, 1, 1)
 	cmd := VerifyReceiptCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
-	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "UNANCHORED: no signed checkpoint") {
-		t.Fatalf("checkpoint-less sealed session must be refused by default err=%v\n%s", err, out.String())
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("whole-recorder restart-chain verification: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "2 signed checkpoints verified"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("whole-recorder restart-chain output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	// Explicitly remove only the final checkpoint from this temporary corpus.
+	// The earlier run remains authenticated, but it cannot cover the later seal.
+	shards, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lastPath string
+	var lastEntry recorder.Entry
+	for _, shard := range shards {
+		entries, readErr := recorder.ReadEntries(shard)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("shard %s has %d entries, want one", filepath.Base(shard), len(entries))
+		}
+		if lastPath == "" || entries[0].Sequence > lastEntry.Sequence {
+			lastPath, lastEntry = shard, entries[0]
+		}
+	}
+	if lastPath == "" || lastEntry.Type != "checkpoint" {
+		t.Fatal("restart fixture must end with a checkpoint shard")
+	}
+	if err := os.Remove(lastPath); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	cmd = VerifyReceiptCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "UNANCHORED: no signed checkpoint") || strings.Contains(out.String(), "Seal:      sealed at seq") {
+		t.Fatalf("seal without its checkpoint must be refused err=%v\n%s", err, out.String())
 	}
 	out.Reset()
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pub), "--allow-unanchored-seal"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("whole-recorder restart-chain verification: %v\n%s", err, out.String())
+		t.Fatalf("explicitly accepted unanchored restart-chain: %v\n%s", err, out.String())
 	}
-	for _, want := range []string{"WHOLE-RECORDER", "Entries:", "Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "no signed checkpoint (accepted by --allow-unanchored-seal)"} {
+	for _, want := range []string{"Receipts:  4 receipts verified", "Seal:      sealed at seq 3", "none after the seal (accepted by --allow-unanchored-seal)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("whole-recorder restart-chain output missing %q:\n%s", want, out.String())
 		}

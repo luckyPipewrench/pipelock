@@ -88,6 +88,9 @@ func TestEmitter_SealedSessionCheckpointAcrossShards(t *testing.T) {
 				t.Fatalf("recorder chain verification: %v", err)
 			}
 			receipts := readAllReceiptsFromDir(t, dir, publicKey)
+			if len(receipts) != 3 {
+				t.Fatalf("persisted receipts = %d, want session open, action, and session close", len(receipts))
+			}
 			if result := VerifyChain(receipts, hex.EncodeToString(publicKey)); !result.Valid {
 				t.Fatalf("receipt chain verification: %s", result.Error)
 			}

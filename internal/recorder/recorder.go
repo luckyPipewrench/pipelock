@@ -173,6 +173,8 @@ type Recorder struct {
 	sinceCheckpoint     uint64
 	firstSeqInSpan      uint64
 	closed              bool
+	closeOnce           sync.Once
+	closeErr            error
 	nop                 bool
 
 	fileSync       func(*os.File) error
@@ -674,17 +676,25 @@ func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) e
 }
 
 // Close flushes and closes the recorder, writing a final checkpoint.
-func (r *Recorder) Close() (retErr error) {
+// Concurrent and subsequent calls wait for and return the original close result.
+func (r *Recorder) Close() error {
 	if r.nop {
 		return nil
 	}
 
+	// A durability wait releases r.mu, so closed alone cannot tell another
+	// caller that shutdown has finished. Once covers the whole operation,
+	// including cleanup, without preventing durable writes from completing.
+	r.closeOnce.Do(func() {
+		r.closeErr = r.close()
+	})
+	return r.closeErr
+}
+
+func (r *Recorder) close() (retErr error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.closed {
-		return nil
-	}
 	r.closed = true
 	defer func() {
 		retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())
@@ -693,10 +703,9 @@ func (r *Recorder) Close() (retErr error) {
 	if r.sinceCheckpoint > 0 {
 		r.waitDurableForCurrentFileLocked()
 		if err := r.checkpointLocked(); err != nil {
-			// Close the file even if checkpoint failed, but return
-			// the checkpoint error since it means chain state is incomplete.
-			_ = r.closeFile()
-			return fmt.Errorf("final checkpoint: %w", err)
+			// Release the file even if checkpointing failed, preserving both
+			// the incomplete-chain error and any independent cleanup failure.
+			return errors.Join(fmt.Errorf("final checkpoint: %w", err), r.closeFile())
 		}
 	}
 

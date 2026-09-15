@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -22,6 +23,81 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+func TestEmitter_SealedSessionCheckpointAcrossShards(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		shardSize int
+		interval  int
+	}{
+		{name: "each_entry_rotates", shardSize: 1, interval: 100},
+		{name: "seal_fills_shard", shardSize: 4, interval: 100},
+		{name: "partly_filled_control", shardSize: 10, interval: 100},
+		{name: "threshold_and_rotation", shardSize: 2, interval: 2},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			publicKey, privateKey := generateTestKey(t)
+			rec, err := recorder.New(recorder.Config{
+				Enabled:            true,
+				Dir:                dir,
+				CheckpointInterval: testCase.interval,
+				MaxEntriesPerFile:  testCase.shardSize,
+				SignCheckpoints:    true,
+			}, nil, privateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			emitter := NewEmitter(EmitterConfig{
+				Recorder: rec, PrivKey: privateKey, ConfigHash: testConfigHash,
+				Principal: testPrincipal, Actor: testActor,
+			})
+			if err := emitter.EmitSessionOpen(); err != nil {
+				t.Fatal(err)
+			}
+			if err := emitter.Emit(EmitOpts{
+				ActionID: NewActionID(), Verdict: config.ActionAllow,
+				Transport: testTransport, Method: http.MethodGet,
+				Target: "https://api.vendor.example/close",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+				t.Fatal(err)
+			}
+			if err := emitter.EmitTranscriptRoot("session"); err != nil {
+				t.Fatal(err)
+			}
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			entries := readAllEntriesFromDir(t, dir)
+			sort.Slice(entries, func(left, right int) bool {
+				return entries[left].Sequence < entries[right].Sequence
+			})
+			if len(entries) < 2 {
+				t.Fatalf("persisted entries = %d, want a seal and checkpoint", len(entries))
+			}
+			seal := entries[len(entries)-2]
+			checkpoint := entries[len(entries)-1]
+			if seal.Type != transcriptRootEntryType || checkpoint.Type != "checkpoint" || checkpoint.PrevHash != seal.Hash {
+				t.Fatalf("persisted tail = %s, %s; want a transcript root covered by a checkpoint", seal.Type, checkpoint.Type)
+			}
+			if err := recorder.VerifyChain(entries, publicKey); err != nil {
+				t.Fatalf("recorder chain verification: %v", err)
+			}
+			receipts := readAllReceiptsFromDir(t, dir, publicKey)
+			if result := VerifyChain(receipts, hex.EncodeToString(publicKey)); !result.Valid {
+				t.Fatalf("receipt chain verification: %s", result.Error)
+			}
+			otherKey, _ := generateTestKey(t)
+			if err := recorder.VerifyChain(entries, otherKey); err == nil {
+				t.Fatal("checkpoint verified with an unrelated key")
+			}
+		})
+	}
+}
 
 func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	t.Parallel()

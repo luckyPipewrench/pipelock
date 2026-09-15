@@ -27,6 +27,39 @@ func newPersistenceTestRecorder(t *testing.T, dir string) *Recorder {
 	return rec
 }
 
+func TestRecorderFinalCheckpointOpenFailureDoesNotAdvanceChain(t *testing.T) {
+	dir := t.TempDir()
+	rec := newPersistenceTestRecorder(t, dir)
+	t.Cleanup(func() { _ = rec.Close() })
+	rec.cfg.MaxEntriesPerFile = 1
+	if err := rec.Record(openSSFCoverageEntry("checkpoint-open-failure", "persisted")); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if rec.file != nil {
+		t.Fatal("record did not close the full shard")
+	}
+	sequenceBefore := rec.seq
+	hashBefore := rec.prevHash
+	countBefore := rec.sinceCheckpoint
+	blockedPath := filepath.Join(dir, "evidence-checkpoint-open-failure-1.jsonl")
+	if err := os.Mkdir(blockedPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err == nil || !strings.Contains(err.Error(), "final checkpoint") || !strings.Contains(err.Error(), "opening evidence file") {
+		t.Fatalf("Close = %v, want final checkpoint opening error", err)
+	}
+	if rec.seq != sequenceBefore || rec.prevHash != hashBefore || rec.sinceCheckpoint != countBefore {
+		t.Fatal("failed checkpoint advanced chain state")
+	}
+	entries, err := ReadEntries(filepath.Join(dir, "evidence-checkpoint-open-failure-0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Hash != hashBefore {
+		t.Fatal("failed checkpoint changed the persisted entry")
+	}
+}
+
 func openSSFCoverageEntry(sessionID, summary string) Entry {
 	return Entry{
 		SessionID: sessionID,

@@ -734,12 +734,10 @@ func (r *Recorder) checkpointLocked() error {
 		cpDetail.EntryCount, cpDetail.FirstSeq, cpDetail.LastSeq)
 	e.Hash = ComputeHash(e)
 
-	if r.file != nil {
-		if err := r.writeEntryBounded(e, true); err != nil {
-			return err
-		}
-		r.fileEntryCount++
+	if err := r.writeEntryBounded(e, true); err != nil {
+		return err
 	}
+	r.fileEntryCount++
 
 	// Advance chain state AFTER successful write. If writeEntry fails,
 	// prevHash/seq must remain unchanged so the next attempt links correctly.

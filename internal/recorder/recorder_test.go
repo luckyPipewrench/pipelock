@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -510,6 +511,88 @@ func TestRecorder_SignedCheckpoint(t *testing.T) {
 	}
 	if !foundCheckpoint {
 		t.Error("no checkpoint entry found")
+	}
+}
+
+func TestRecorder_CheckpointSurvivesShardRotation(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		shardSize  int
+		interval   int
+		entryCount int
+	}{
+		{name: "one_entry_shards", shardSize: 1, interval: 100, entryCount: 1},
+		{name: "full_shard", shardSize: 2, interval: 100, entryCount: 2},
+		{name: "partial_shard_control", shardSize: 3, interval: 100, entryCount: 2},
+		{name: "checkpoint_before_rotation", shardSize: 2, interval: 1, entryCount: 2},
+		{name: "threshold_and_rotation", shardSize: 1, interval: 2, entryCount: 3},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for cycle := range 2 {
+				rec, err := recorder.New(recorder.Config{
+					Enabled:            true,
+					Dir:                dir,
+					CheckpointInterval: testCase.interval,
+					MaxEntriesPerFile:  testCase.shardSize,
+					SignCheckpoints:    true,
+				}, nil, privateKey)
+				if err != nil {
+					t.Fatalf("New, cycle %d: %v", cycle, err)
+				}
+				t.Cleanup(func() { _ = rec.Close() })
+				for range testCase.entryCount {
+					if err := rec.Record(recorder.Entry{
+						SessionID: testSessionID,
+						Type:      testType,
+						Transport: testTransport,
+						Summary:   "checkpoint rotation proof",
+					}); err != nil {
+						t.Fatalf("Record, cycle %d: %v", cycle, err)
+					}
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatalf("Close, cycle %d: %v", cycle, err)
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatalf("second Close, cycle %d: %v", cycle, err)
+				}
+				files, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var entries []recorder.Entry
+				for _, path := range files {
+					shard, err := recorder.ReadEntries(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					entries = append(entries, shard...)
+				}
+				sort.Slice(entries, func(left, right int) bool {
+					return entries[left].Sequence < entries[right].Sequence
+				})
+				if len(entries) == 0 || entries[len(entries)-1].Type != testCheckpoint {
+					t.Fatalf("cycle %d: persisted chain does not end in a checkpoint", cycle)
+				}
+				if err := recorder.VerifyChain(entries, publicKey); err != nil {
+					t.Fatalf("cycle %d: persisted chain verification: %v", cycle, err)
+				}
+				entryCount := 0
+				for _, entry := range entries {
+					if entry.Type == testType {
+						entryCount++
+					}
+				}
+				if want := (cycle + 1) * testCase.entryCount; entryCount != want {
+					t.Fatalf("persisted records = %d, want %d", entryCount, want)
+				}
+			}
+		})
 	}
 }
 

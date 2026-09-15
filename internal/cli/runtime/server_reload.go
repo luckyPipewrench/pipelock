@@ -20,7 +20,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Reload applies a single hot-reload cycle against newCfg. Mirrors the
@@ -539,7 +538,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	if oldCfg == nil {
 		applyDegradedRuleBundleState(newCfg, reloadBundleResult.DegradedBundleNames())
 	}
-	newSc, err := scanner.New(newCfg)
+	newSc, err := s.constructScanner(newCfg)
 	if err != nil {
 		rejectErr := fmt.Errorf("rejected: scanner construction failed: %w", err)
 		_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)

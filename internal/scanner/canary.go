@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -19,9 +20,9 @@ type compiledCanaryToken struct {
 	canonicalPartialWindows knownValueWindowIndex
 }
 
-func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
+func compileCanaryTokens(cfg config.CanaryTokens, budget *knownValueWindowBudget) ([]compiledCanaryToken, error) {
 	if !cfg.Enabled || len(cfg.Tokens) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]compiledCanaryToken, 0, len(cfg.Tokens))
 	normalizedValues := make([]string, 0, len(cfg.Tokens))
@@ -39,7 +40,10 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 	}
 	// Windows shared between two canaries are a common stem, not a disclosure
 	// of either; they are excluded the same way as for environment secrets.
-	windows := buildKnownValueWindows(normalizedValues)
+	windows, err := buildKnownValueWindows(budget, normalizedValues)
+	if err != nil {
+		return nil, fmt.Errorf("normalized canary windows: %w", err)
+	}
 	canonicalCount := make(map[string]int, len(out))
 	for i := range out {
 		out[i].partialWindows = windows[out[i].normalizedLower]
@@ -57,7 +61,10 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 			canonicalValues = append(canonicalValues, value)
 		}
 	}
-	canonicalWindows := buildKnownValueWindows(canonicalValues)
+	canonicalWindows, err := buildKnownValueWindows(budget, canonicalValues)
+	if err != nil {
+		return nil, fmt.Errorf("canonical canary windows: %w", err)
+	}
 	for i := range out {
 		if strings.Contains(out[i].normalizedLower, "://") || out[i].canonicalLower == "" {
 			continue
@@ -67,7 +74,7 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 		}
 		out[i].canonicalPartialWindows = canonicalWindows[out[i].canonicalLower]
 	}
-	return out
+	return out, nil
 }
 
 // scanCanaryText scans text for configured canary tokens. It owns DLP

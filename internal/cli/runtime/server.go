@@ -130,6 +130,7 @@ type Server struct {
 	emitter                *emit.Emitter
 	emitSinks              []emit.Sink
 	scanner                *scanner.Scanner
+	scannerConstructor     func(*config.Config) (*scanner.Scanner, error)
 	metrics                *metrics.Metrics
 	killswitch             *killswitch.Controller
 	ksAPI                  *killswitch.APIHandler
@@ -229,6 +230,13 @@ type Server struct {
 	mcpCEE             *mcp.CEEDeps
 	mcpToolExtraPoison []*tools.ExtraPoisonPattern
 	mcpDoW             *mcpDoWRuntime
+}
+
+func (s *Server) constructScanner(cfg *config.Config) (*scanner.Scanner, error) {
+	if s.scannerConstructor != nil {
+		return s.scannerConstructor(cfg)
+	}
+	return scanner.New(cfg)
 }
 
 // stderrSyncWriter wraps the operator-facing stderr writer with a mutex so
@@ -343,6 +351,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		hasMCPListen:              hasMCPListen,
 		containmentManaged:        containmentManagedRuntime(),
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
+		scannerConstructor:        scanner.New,
 	}
 	s.mcpListenerBearerToken = mcpAuthToken
 	if cfg.EvidenceProvenance.CommitmentKeyringPath != "" {
@@ -428,7 +437,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 	}
 
-	sc, err := scanner.New(cfg)
+	sc, err := s.constructScanner(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create scanner: %w", err)
 	}

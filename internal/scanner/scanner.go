@@ -13,6 +13,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -419,6 +420,10 @@ func New(cfg *config.Config) (*Scanner, error) {
 // overlays never mutate Config, so a Guard invocation cannot widen another
 // runtime built from the same configuration.
 func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
+	return newWithOptionsAndWindowBudget(cfg, opts, maxKnownValueWindowEntries)
+}
+
+func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudgetEntries int) (*Scanner, error) {
 	// Construction is an ingest boundary: this signature accepts any *Config
 	// and nothing here can tell whether it passed through config.Validate.
 	// Every production caller today does arrive validated, by loading a config
@@ -530,7 +535,12 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
-	s.canaryTokens = compileCanaryTokens(cfg.CanaryTokens)
+	windowBudget := newKnownValueWindowBudget(windowBudgetEntries)
+	canaryTokens, err := compileCanaryTokens(cfg.CanaryTokens, windowBudget)
+	if err != nil {
+		return nil, fmt.Errorf("compile canary tokens: %w", err)
+	}
+	s.canaryTokens = canaryTokens
 
 	// Seed phrase detection config - stateless, reads from config.
 	s.seedEnabled = cfg.SeedPhraseDetection.Enabled == nil || *cfg.SeedPhraseDetection.Enabled
@@ -598,7 +608,11 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 
 	// Build partial-match windows across both known-value lists together, so a
 	// stem shared by an env secret and a file secret is excluded from both.
-	s.knownSecretWindows = buildKnownValueWindows(s.envSecrets, s.fileSecrets)
+	knownSecretWindows, err := buildKnownValueWindows(windowBudget, s.envSecrets, s.fileSecrets)
+	if err != nil {
+		return nil, fmt.Errorf("build known-secret window index: %w", err)
+	}
+	s.knownSecretWindows = knownSecretWindows
 
 	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {
@@ -2914,22 +2928,27 @@ type knownSecretMatch struct {
 // and path stems; only credential-bearing parts (password, query, fragment,
 // and a high-entropy final path segment) are windowed.
 func knownValueWindows(value string) map[string][]int {
-	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
-		return nil
-	}
-	if strings.Contains(value, "://") {
-		return urlCredentialWindows(value)
-	}
-	return collectValueWindows(value, 0)
+	windows, _ := knownValueWindowsBounded(value, int(^uint(0)>>1))
+	return windows
 }
 
-func urlCredentialWindows(value string) map[string][]int {
+func knownValueWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
+	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
+		return nil, nil
+	}
+	if strings.Contains(value, "://") {
+		return urlCredentialWindowsBounded(value, maxEntries)
+	}
+	return collectValueWindowsBounded(value, 0, maxEntries)
+}
+
+func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
 	u, err := url.Parse(value)
 	if err != nil {
 		// Unparseable URL-shaped secrets still have to partial-match as a
 		// blob. Skipping them would hide a leaked token that happens to
 		// sit next to "://".
-		return collectValueWindows(value, 0)
+		return collectValueWindowsBounded(value, 0, maxEntries)
 	}
 	var parts []string
 	if u.User != nil {
@@ -2951,6 +2970,7 @@ func urlCredentialWindows(value string) map[string][]int {
 		}
 	}
 	out := make(map[string][]int)
+	entryCount := 0
 	for _, part := range parts {
 		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
 			continue
@@ -2959,16 +2979,26 @@ func urlCredentialWindows(value string) map[string][]int {
 		if idx < 0 {
 			continue
 		}
-		for window, offsets := range collectValueWindows(part, idx) {
+		partWindows, windowErr := collectValueWindowsBounded(part, idx, maxEntries-entryCount)
+		if windowErr != nil {
+			return nil, windowErr
+		}
+		for window, offsets := range partWindows {
 			out[window] = append(out[window], offsets...)
+			entryCount += len(offsets)
 		}
 		if raw != part {
-			for window, offsets := range collectValueWindows(raw, idx) {
+			rawWindows, rawErr := collectValueWindowsBounded(raw, idx, maxEntries-entryCount)
+			if rawErr != nil {
+				return nil, rawErr
+			}
+			for window, offsets := range rawWindows {
 				out[window] = append(out[window], offsets...)
+				entryCount += len(offsets)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func locateURLPart(value, part string) (int, string) {
@@ -2986,8 +3016,15 @@ func locateURLPart(value, part string) (int, string) {
 	return -1, ""
 }
 
-func collectValueWindows(value string, base int) map[string][]int {
-	windows := make(map[string][]int, len(value)-minKnownSecretSubstringLen+1)
+func collectValueWindowsBounded(value string, base, maxEntries int) (map[string][]int, error) {
+	if maxEntries <= 0 {
+		return nil, errKnownValueWindowBudget
+	}
+	capacity := len(value) - minKnownSecretSubstringLen + 1
+	if capacity > maxEntries {
+		capacity = maxEntries
+	}
+	windows := make(map[string][]int, capacity)
 	repeated := make(map[string]struct{})
 	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
 		window := value[start : start+minKnownSecretSubstringLen]
@@ -3000,12 +3037,15 @@ func collectValueWindows(value string, base int) map[string][]int {
 			repeated[window] = struct{}{}
 			continue
 		}
+		if len(windows) >= maxEntries {
+			return nil, errKnownValueWindowBudget
+		}
 		windows[window] = []int{base + start}
 	}
 	for window := range repeated {
 		delete(windows, window)
 	}
-	return windows
+	return windows, nil
 }
 
 // knownValueWindow is one exact partial-match candidate. Keeping its bytes and
@@ -3024,27 +3064,29 @@ type knownValueWindow struct {
 // knownValueWindowIndex is sorted by window bytes. A scanner owns it for its
 // lifetime, so lookups are read-only and need no synchronization.
 type knownValueWindowIndex struct {
-	windows []knownValueWindow
+	windows    []knownValueWindowCandidate
+	valueIndex int
+	count      int
 }
 
 func (i knownValueWindowIndex) len() int {
-	return len(i.windows)
+	return i.count
 }
 
-func (i knownValueWindowIndex) offsets(window string) []knownValueWindow {
+func (i knownValueWindowIndex) offsets(window string) []knownValueWindowCandidate {
 	if len(window) != minKnownSecretSubstringLen || len(i.windows) == 0 {
 		return nil
 	}
 	var key [minKnownSecretSubstringLen]byte
 	copy(key[:], window)
 	first := sort.Search(len(i.windows), func(n int) bool {
-		return bytes.Compare(i.windows[n].value[:], key[:]) >= 0
+		return bytes.Compare(i.windows[n].window.value[:], key[:]) >= 0
 	})
-	if first == len(i.windows) || i.windows[first].value != key {
+	if first == len(i.windows) || i.windows[first].window.value != key || i.windows[first].valueIndex != i.valueIndex {
 		return nil
 	}
 	last := first + 1
-	for last < len(i.windows) && i.windows[last].value == key {
+	for last < len(i.windows) && i.windows[last].window.value == key {
 		last++
 	}
 	return i.windows[first:last]
@@ -3060,13 +3102,44 @@ type knownValueWindowCandidate struct {
 	window     knownValueWindow
 }
 
+const (
+	// URL-shaped values can retain both decoded credential-component windows
+	// and their exact escaped spellings. Two windows per accepted source byte
+	// is a conservative upper bound for that representation at the loader cap.
+	maxKnownValueWindowEntries = maxSecretsFileEntries * maxSecretsFileLineLen * 2
+	knownValueWindowEntryBytes = 32
+	maxKnownValueWindowBytes   = maxKnownValueWindowEntries * knownValueWindowEntryBytes
+)
+
+var errKnownValueWindowBudget = errors.New("known-value window index memory budget exceeded")
+
+type knownValueWindowBudget struct {
+	maxEntries int
+	used       int
+}
+
+func newKnownValueWindowBudget(maxEntries int) *knownValueWindowBudget {
+	return &knownValueWindowBudget{maxEntries: maxEntries}
+}
+
+func (b *knownValueWindowBudget) reserve(entries int) error {
+	if entries < 0 || entries > b.maxEntries-b.used {
+		return fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
+			errKnownValueWindowBudget,
+			entries, entries*knownValueWindowEntryBytes,
+			b.maxEntries-b.used, (b.maxEntries-b.used)*knownValueWindowEntryBytes)
+	}
+	b.used += entries
+	return nil
+}
+
 // buildKnownValueWindows computes partial-match windows for every value across
 // the given lists and drops any window that appears in more than one distinct
 // value. Two secrets that share a sixteen-byte run share a structural stem (a
 // vendor prefix, an account path, a common template), and a stem is not a
 // disclosure of either secret; matching it would attribute one secret's text
 // to the other and would block text that only contains the shared part.
-func buildKnownValueWindows(lists ...[]string) knownValueWindowSet {
+func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (knownValueWindowSet, error) {
 	values := make([]string, 0)
 	valueIndexes := make(map[string]int)
 	for _, list := range lists {
@@ -3079,11 +3152,33 @@ func buildKnownValueWindows(lists ...[]string) knownValueWindowSet {
 		}
 	}
 
+	// Count before allocating the global candidate array. This makes the
+	// repository-owned budget an allocation bound, not a post-construction
+	// observation, and leaves no partial index to return on failure.
+	candidateCount := 0
+	for _, value := range values {
+		remaining := budget.maxEntries - budget.used - candidateCount
+		windows, err := knownValueWindowsBounded(value, remaining)
+		if err != nil {
+			return nil, fmt.Errorf("%w: candidate growth exceeds %d entries (%d bytes)",
+				errKnownValueWindowBudget, budget.maxEntries, budget.maxEntries*knownValueWindowEntryBytes)
+		}
+		for _, offsets := range windows {
+			candidateCount += len(offsets)
+		}
+	}
+	if err := budget.reserve(candidateCount); err != nil {
+		return nil, err
+	}
+
 	// Collect then sort once. The sort makes shared-window exclusion exact
 	// without per-window maps retained for the scanner lifetime.
-	candidates := make([]knownValueWindowCandidate, 0)
+	candidates := make([]knownValueWindowCandidate, 0, candidateCount)
 	for valueIndex, value := range values {
 		appendKnownValueWindowCandidates(value, valueIndex, &candidates)
+	}
+	if len(candidates) != candidateCount {
+		return nil, fmt.Errorf("build known-value window index: counted %d candidates, built %d", candidateCount, len(candidates))
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if cmp := bytes.Compare(candidates[i].window.value[:], candidates[j].window.value[:]); cmp != 0 {
@@ -3095,25 +3190,27 @@ func buildKnownValueWindows(lists ...[]string) knownValueWindowSet {
 		return candidates[i].window.offset < candidates[j].window.offset
 	})
 
-	indexes := make([]knownValueWindowIndex, len(values))
+	counts := make([]int, len(values))
+	write := 0
 	for start := 0; start < len(candidates); {
 		end := start + 1
 		for end < len(candidates) && candidates[end].window.value == candidates[start].window.value {
 			end++
 		}
 		if candidates[start].valueIndex == candidates[end-1].valueIndex {
-			for _, candidate := range candidates[start:end] {
-				indexes[candidate.valueIndex].windows = append(indexes[candidate.valueIndex].windows, candidate.window)
-			}
+			copy(candidates[write:], candidates[start:end])
+			counts[candidates[start].valueIndex] += end - start
+			write += end - start
 		}
 		start = end
 	}
+	candidates = candidates[:write]
 
 	set := make(knownValueWindowSet, len(values))
 	for valueIndex, value := range values {
-		set[value] = indexes[valueIndex]
+		set[value] = knownValueWindowIndex{windows: candidates, valueIndex: valueIndex, count: counts[valueIndex]}
 	}
-	return set
+	return set, nil
 }
 
 func appendKnownValueWindowCandidates(value string, valueIndex int, candidates *[]knownValueWindowCandidate) {
@@ -3205,7 +3302,7 @@ func indexKnownValueSubstring(value string, windows knownValueWindowIndex, views
 	for _, view := range views {
 		for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
 			for _, candidate := range windows.offsets(view.text[textStart : textStart+minKnownSecretSubstringLen]) {
-				valueStart := candidate.offset
+				valueStart := candidate.window.offset
 				leftText, leftValue := textStart, valueStart
 				for leftText > 0 && leftValue > 0 && view.text[leftText-1] == value[leftValue-1] {
 					leftText--

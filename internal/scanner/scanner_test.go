@@ -9,6 +9,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -4919,16 +4920,72 @@ func TestLoadSecretsFile_MaxEntriesEnforced(t *testing.T) {
 }
 
 func TestKnownValueWindowIndex_CompactRepresentation(t *testing.T) {
-	const maxEntryBytes = 24
-	if got := unsafe.Sizeof(knownValueWindow{}); got > maxEntryBytes {
-		t.Fatalf("knownValueWindow size = %d bytes, want at most %d", got, maxEntryBytes)
+	if got := unsafe.Sizeof(knownValueWindowCandidate{}); got > knownValueWindowEntryBytes {
+		t.Fatalf("knownValueWindowCandidate size = %d bytes, budget charges %d", got, knownValueWindowEntryBytes)
 	}
 
-	maxWindows := uint64(maxSecretsFileEntries) * uint64(maxSecretsFileLineLen-minKnownSecretSubstringLen+1)
-	maxIndexBytes := maxWindows * uint64(unsafe.Sizeof(knownValueWindow{}))
-	const maxIndexMiB = 96
-	if maxIndexBytes > maxIndexMiB*1024*1024 {
-		t.Fatalf("maximum compact secrets-file index = %d bytes, want at most %d MiB", maxIndexBytes, maxIndexMiB)
+	plainFileCapWindows := maxSecretsFileEntries * (maxSecretsFileLineLen - minKnownSecretSubstringLen + 1)
+	budget := newKnownValueWindowBudget(maxKnownValueWindowEntries)
+	if err := budget.reserve(plainFileCapWindows); err != nil {
+		t.Fatalf("whole-value loader cap must fit the compact construction budget: %v", err)
+	}
+	if err := budget.reserve(maxKnownValueWindowEntries); !errors.Is(err, errKnownValueWindowBudget) {
+		t.Fatalf("reserve beyond the remaining construction budget = %v, want budget error", err)
+	}
+	if maxKnownValueWindowBytes != maxKnownValueWindowEntries*knownValueWindowEntryBytes {
+		t.Fatalf("byte budget = %d, want entry budget %d * entry bytes %d", maxKnownValueWindowBytes, maxKnownValueWindowEntries, knownValueWindowEntryBytes)
+	}
+}
+
+func TestKnownValueWindowBudget_FailsBeforePartialIndex(t *testing.T) {
+	envSecret := strings.Join([]string{"Q7vP2mK9", "xR4nT8wB"}, "")
+	fileSecret := strings.Join([]string{"xL5pR8vN", "2qT7mC4z"}, "")
+	set, err := buildKnownValueWindows(newKnownValueWindowBudget(1), []string{envSecret}, []string{fileSecret})
+	if !errors.Is(err, errKnownValueWindowBudget) {
+		t.Fatalf("combined env/file build error = %v, want window budget error", err)
+	}
+	if set != nil {
+		t.Fatalf("over-budget build returned a partial index: %+v", set)
+	}
+}
+
+func TestNew_CanaryWindowBudgetFailsClosed(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.CanaryTokens.Enabled = true
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "budget", Value: "Q7vP2mK9xR4nT8wB6cD3"}}
+
+	s, err := newWithOptionsAndWindowBudget(cfg, Options{}, 5)
+	if !errors.Is(err, errKnownValueWindowBudget) {
+		t.Fatalf("New error = %v, want canary window budget error", err)
+	}
+	if s != nil {
+		t.Fatal("New returned a partial scanner after canary budget failure")
+	}
+	if !strings.Contains(err.Error(), "canonical canary windows") {
+		t.Fatalf("New error = %v, want canonical canary propagation context", err)
+	}
+}
+
+func TestNew_KnownSecretWindowBudgetFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.txt")
+	value := strings.Join([]string{"Q7vP2mK9xR4n", "T8wB6cD3"}, "")
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.SecretsFile = path
+
+	s, err := newWithOptionsAndWindowBudget(cfg, Options{}, 1)
+	if !errors.Is(err, errKnownValueWindowBudget) {
+		t.Fatalf("New error = %v, want known-secret window budget error", err)
+	}
+	if s != nil {
+		t.Fatal("New returned a partial scanner after known-secret budget failure")
+	}
+	if !strings.Contains(err.Error(), "build known-secret window index") {
+		t.Fatalf("New error = %v, want known-secret propagation context", err)
 	}
 }
 

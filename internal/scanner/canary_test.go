@@ -355,7 +355,11 @@ func TestScanTextForDLP_CanonicalCanaryCollisionDropsPartialWindows(t *testing.T
 			t.Fatalf("whole canary %q must still match", canary)
 		}
 	}
-	for _, tok := range compileCanaryTokens(cfg.CanaryTokens) {
+	tokens, err := compileCanaryTokens(cfg.CanaryTokens, newKnownValueWindowBudget(maxKnownValueWindowEntries))
+	if err != nil {
+		t.Fatalf("compile canary tokens: %v", err)
+	}
+	for _, tok := range tokens {
 		if tok.canonicalPartialWindows.len() != 0 {
 			t.Fatalf("colliding canonical canary %q kept partial windows", tok.name)
 		}
@@ -372,7 +376,11 @@ func TestCompileCanaryTokens_URLTokenDoesNotInheritTwinWindows(t *testing.T) {
 			{Name: "url_canonical_twin", Value: canonicalizeCanaryText(urlCanary)},
 		},
 	}
-	for _, tok := range compileCanaryTokens(cfg) {
+	tokens, err := compileCanaryTokens(cfg, newKnownValueWindowBudget(maxKnownValueWindowEntries))
+	if err != nil {
+		t.Fatalf("compile canary tokens: %v", err)
+	}
+	for _, tok := range tokens {
 		if strings.Contains(tok.normalizedLower, "://") && tok.canonicalPartialWindows.len() != 0 {
 			t.Fatalf("URL-shaped canary %q inherited canonical partial windows", tok.name)
 		}

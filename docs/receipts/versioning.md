@@ -80,8 +80,9 @@ fail-closed on an entry whose `type` is outside the recorder taxonomy
   skipping the known operational entry types. A success certifies the *receipt subsequence*,
   not whole-file integrity.
 - **Whole-recorder mode** (`receipt.ExtractAndVerifyWholeRecorderBytes`) additionally
-  verifies the recorder hash chain over every entry, so a success certifies whole-file
-  integrity.
+  verifies the recorder hash chain over every entry present. A success certifies that
+  those entries are chained and in taxonomy; it cannot prove a retained file has no
+  missing tail.
 
 An unknown record type is rejected in both modes rather than silently skipped, so a file
 that mixes a valid receipt chain with an unexpected record cannot be reported as valid.

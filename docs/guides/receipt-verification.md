@@ -196,6 +196,25 @@ Chain verification checks:
   object may carry advisory forward-compatible metadata, and it never
   contributes to a verified claim.
 
+By default, this verifies the receipt subsequence only. To verify every present
+flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
+entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
+`transcript_root`, and returns non-zero for an unsealed recorder. After a signing-key
+rotation, the root covers the final signing segment while verification checks every
+trusted segment and its rotation continuity. The seal does not cover the trailing
+checkpoint the recorder writes after it; any other entry after the seal is reported as
+INCOMPLETE, because the seal never committed to it. Entries that are not receipts
+(decisions, captures) are authenticated only through signed checkpoints: each one signs
+the chain hash of everything before it, and `--whole-recorder` verifies those signatures
+against the pinned keys and reports the anchor state. The seal itself must be covered
+by a signed checkpoint, which is the trailing checkpoint the recorder writes after the
+root; a recorder where no signed checkpoint follows the seal (checkpoints absent,
+unsigned, or the trailing one missing) is refused, because a rewrite could have
+stripped or removed it while an older checkpoint still verifies. If the recorder really
+runs with `flight_recorder.sign_checkpoints: false`, or its last entry filled a shard so
+no trailing checkpoint was written, pass `--allow-unanchored-seal` to accept it, and the
+output then states which entries are hash-linked but not authenticated.
+
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
 the key is what proves the chain came from a signer you trust.

@@ -60,12 +60,17 @@ func (s *Server) currentMCPCEE() *mcp.CEEDeps {
 }
 
 func (s *Server) currentMCPToolExtraPoison() []*tools.ExtraPoisonPattern {
+	_, extraPoison := s.currentMCPToolSnapshot()
+	return extraPoison
+}
+
+// currentMCPToolSnapshot reads the configuration and bundled tool patterns from
+// one completed server-state publication. A proxy config can become visible
+// before these patterns, so it must not key a cache of this state.
+func (s *Server) currentMCPToolSnapshot() (*config.Config, []*tools.ExtraPoisonPattern) {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
-	if len(s.mcpToolExtraPoison) == 0 {
-		return nil
-	}
-	return append([]*tools.ExtraPoisonPattern(nil), s.mcpToolExtraPoison...)
+	return s.cfg, append([]*tools.ExtraPoisonPattern(nil), s.mcpToolExtraPoison...)
 }
 
 func (s *Server) refreshRuntimeState(

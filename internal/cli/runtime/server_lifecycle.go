@@ -884,11 +884,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		var cachedMCPToolSource *config.Config
 		var cachedMCPToolCfg *tools.ToolScanConfig
 		mcpToolCfgFn := func() *tools.ToolScanConfig {
-			current := s.proxy.CurrentConfig()
 			mcpToolCfgMu.Lock()
 			defer mcpToolCfgMu.Unlock()
+			current, extraPoison := s.currentMCPToolSnapshot()
 			if current != cachedMCPToolSource {
-				cachedMCPToolCfg = buildMCPToolCfg(current, s.currentMCPToolExtraPoison(), mcpToolBaseline)
+				cachedMCPToolCfg = buildMCPToolCfg(current, extraPoison, mcpToolBaseline)
 				cachedMCPToolSource = current
 			}
 			return cachedMCPToolCfg

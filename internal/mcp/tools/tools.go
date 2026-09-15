@@ -375,6 +375,11 @@ type DriftEvaluation struct {
 	EpochChanged bool
 	// Drifted reports that a stored definition changed.
 	Drifted bool
+	// Promoted reports that this definition actually became the baseline.
+	// An observation that says so must consult this rather than assume it:
+	// a definition the wider scan rejected is not promoted even when drift
+	// itself found nothing to say.
+	Promoted bool
 	// NewTool reports that this name was absent from an already-established
 	// baseline. It is a first sighting of a NAME the baseline had not seen,
 	// as distinct from Drifted alone, which also covers a changed definition
@@ -477,7 +482,9 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 		return DriftEvaluation{CapacityExceeded: true}
 	}
 
+	promoted := false
 	promote := func() {
+		promoted = true
 		tb.hashes[name] = hash
 		tb.descs[name] = desc
 		cp := make([]string, len(params))
@@ -507,17 +514,22 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 			// Reported for operator visibility, but never a blocking cue:
 			// this mirrors the shared-baseline false-positive profile, where
 			// a name becoming newly VISIBLE to one caller must not drift.
+			detail := fmt.Sprintf("tool %q added; baseline extended", name)
+			if !promoted {
+				detail = fmt.Sprintf("tool %q added; NOT admitted to the baseline because the scan rejected it", name)
+			}
 			return DriftEvaluation{
-				Drifted: true,
-				NewTool: true,
-				Detail:  fmt.Sprintf("tool %q added; baseline extended", name),
+				Drifted:  true,
+				NewTool:  true,
+				Promoted: promoted,
+				Detail:   detail,
 			}
 		}
-		return DriftEvaluation{}
+		return DriftEvaluation{Promoted: promoted}
 	}
 	if prevHash == hash {
 		promote()
-		return DriftEvaluation{}
+		return DriftEvaluation{Promoted: promoted}
 	}
 
 	prevDesc := tb.descs[name]
@@ -536,6 +548,7 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 	if (len(result.Cues) == 0 && in.PromoteAccepted) || promoteChanged {
 		promote()
 	}
+	result.Promoted = promoted
 	return result
 }
 
@@ -674,14 +687,29 @@ func (tb *ToolBaseline) resetDriftStateLocked() {
 // value is passed as EstablishedBeforeResponse for every tool in that
 // response. A nil baseline reports false and records nothing.
 func (tb *ToolBaseline) BeginInventoryResponse() bool {
+	established, _ := tb.BeginInventoryResponseAtEpoch(nil)
+	return established
+}
+
+// BeginInventoryResponseAtEpoch is BeginInventoryResponse bound to an expected
+// drift epoch. The epoch comparison and the establishment happen under one
+// lock, so an operator reset that lands between a caller's epoch check and
+// this call is never consumed by the stale response: that response reports
+// epochChanged and leaves the baseline unestablished, and the next inventory
+// after the reset is treated as the first one again. A nil expected epoch
+// skips the comparison.
+func (tb *ToolBaseline) BeginInventoryResponseAtEpoch(expected *uint64) (established, epochChanged bool) {
 	if tb == nil {
-		return false
+		return false, false
 	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	established := tb.driftEstablished
+	if expected != nil && tb.driftEpoch != *expected {
+		return false, true
+	}
+	established = tb.driftEstablished
 	tb.driftEstablished = true
-	return established
+	return established, false
 }
 
 // HasDriftBaseline reports whether the drift baseline has ever been
@@ -2106,9 +2134,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 			if driftBaseline == nil {
 				driftBaseline = cfg.Baseline
 			}
-			if cfg.ExpectedDriftEpoch == nil || driftBaseline.matchesDriftEpoch(*cfg.ExpectedDriftEpoch) {
-				driftBaseline.BeginInventoryResponse()
-			}
+			driftBaseline.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
 		}
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}
@@ -2317,7 +2343,19 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	if driftBaselineForResponse == nil {
 		driftBaselineForResponse = cfg.Baseline
 	}
-	establishedBeforeResponse := driftBaselineForResponse.BeginInventoryResponse()
+	// Establishment belongs to drift detection alone. A scan-only listener
+	// (DetectDrift off) must not mark the baseline established, or turning
+	// detection on later would read every existing tool as a name introduced
+	// after the baseline. The expected epoch is compared in the same lock, so
+	// a reset landing after the caller's epoch check is not consumed here.
+	var establishedBeforeResponse bool
+	if cfg.DetectDrift {
+		var epochChanged bool
+		establishedBeforeResponse, epochChanged = driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
+		if epochChanged {
+			return nil, nil, false, true
+		}
+	}
 
 	for _, tool := range tools {
 		var match ToolScanMatch
@@ -2479,7 +2517,12 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					match.DriftDetected = true
 					match.DriftCues = eval.Cues
 					hasFinding = true
-				} else {
+				} else if eval.Promoted {
+					// Only a definition that actually became the baseline is
+					// an accepted-drift observation. One the wider scan
+					// rejected is reported as a finding above; filing it here
+					// too would tell the operator it was admitted when it was
+					// not.
 					obs := ToolScanMatch{
 						ToolName:      tool.Name,
 						DriftAccepted: true,
@@ -2555,14 +2598,14 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 // tools/list, including a clean one.
 func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, o := range result.Observations {
-		if !o.DriftAccepted {
+		switch {
+		case !o.DriftAccepted:
 			continue
-		}
-		if len(o.DriftCues) > 0 {
+		case len(o.DriftCues) > 0:
 			_, _ = fmt.Fprintf(logW,
 				"pipelock: line %d: tool %q: %s admitted under new_tool_action warn; new definition is now the baseline\n",
 				lineNum, o.ToolName, strings.Join(o.DriftCues, ","))
-		} else {
+		default:
 			_, _ = fmt.Fprintf(logW,
 				"pipelock: line %d: tool %q: definition-drift accepted, no risk cue introduced; new definition is now the baseline\n",
 				lineNum, o.ToolName)

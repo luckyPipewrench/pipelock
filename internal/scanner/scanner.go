@@ -3163,33 +3163,46 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 		}
 	}
 
-	// Count before allocating the global candidate array. This makes the
-	// repository-owned budget an allocation bound, not a post-construction
-	// observation, and leaves no partial index to return on failure.
+	// Enumerate each value once into a per-value bounded map, then append its
+	// compact records only after that value fits the remaining global budget.
+	// The temporary map is bounded by maxKnownValuePartialInputBytes, while the
+	// retained candidate slice never grows beyond the repository-owned budget.
 	candidateCount := 0
-	for _, value := range values {
+	candidates := make([]knownValueWindowCandidate, 0)
+	for valueIndex, value := range values {
 		remaining := budget.maxEntries - budget.used - candidateCount
 		windows, err := knownValueWindowsBounded(value, remaining)
 		if err != nil {
 			return nil, fmt.Errorf("count known-value window candidates: %w", err)
 		}
+		valueCount := 0
 		for _, offsets := range windows {
-			candidateCount += len(offsets)
+			valueCount += len(offsets)
+		}
+		if valueCount > remaining {
+			return nil, fmt.Errorf("count known-value window candidates: %w", errKnownValueWindowBudget)
+		}
+		candidateCount += valueCount
+		for window, offsets := range windows {
+			var key [minKnownSecretSubstringLen]byte
+			copy(key[:], window)
+			for _, offset := range offsets {
+				candidates = append(candidates, knownValueWindowCandidate{
+					valueIndex: valueIndex,
+					window:     knownValueWindow{value: key, offset: offset},
+				})
+			}
+		}
+		if len(candidates) != candidateCount {
+			return nil, fmt.Errorf("build known-value window index: counted %d candidates, built %d", candidateCount, len(candidates))
 		}
 	}
 	if err := budget.reserve(candidateCount); err != nil {
 		return nil, err
 	}
 
-	// Collect then sort once. The sort makes shared-window exclusion exact
-	// without per-window maps retained for the scanner lifetime.
-	candidates := make([]knownValueWindowCandidate, 0, candidateCount)
-	for valueIndex, value := range values {
-		appendKnownValueWindowCandidates(value, valueIndex, &candidates)
-	}
-	if len(candidates) != candidateCount {
-		return nil, fmt.Errorf("build known-value window index: counted %d candidates, built %d", candidateCount, len(candidates))
-	}
+	// Sort once. The sort makes shared-window exclusion exact without retaining
+	// per-window maps for the scanner lifetime.
 	sort.Slice(candidates, func(i, j int) bool {
 		if cmp := bytes.Compare(candidates[i].window.value[:], candidates[j].window.value[:]); cmp != 0 {
 			return cmp < 0
@@ -3221,82 +3234,6 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 		set[value] = knownValueWindowIndex{windows: candidates, valueIndex: valueIndex, count: counts[valueIndex]}
 	}
 	return set, nil
-}
-
-func appendKnownValueWindowCandidates(value string, valueIndex int, candidates *[]knownValueWindowCandidate) {
-	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
-		return
-	}
-	if strings.Contains(value, "://") {
-		appendURLCredentialWindowCandidates(value, valueIndex, candidates)
-		return
-	}
-	appendValueWindowCandidates(value, 0, valueIndex, candidates)
-}
-
-func appendURLCredentialWindowCandidates(value string, valueIndex int, candidates *[]knownValueWindowCandidate) {
-	u, err := url.Parse(value)
-	if err != nil {
-		// Unparseable URL-shaped values keep their whole-blob partial matching.
-		appendValueWindowCandidates(value, 0, valueIndex, candidates)
-		return
-	}
-	var parts []string
-	if u.User != nil {
-		if password, ok := u.User.Password(); ok && password != "" {
-			parts = append(parts, password)
-		}
-	}
-	for _, vs := range u.Query() {
-		parts = append(parts, vs...)
-	}
-	if u.Fragment != "" {
-		parts = append(parts, u.Fragment)
-	}
-	if path := strings.Trim(u.Path, "/"); path != "" {
-		parts = append(parts, strings.Split(path, "/")...)
-	}
-	for _, part := range parts {
-		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
-			continue
-		}
-		idx, raw := locateURLPart(value, part)
-		if idx < 0 {
-			continue
-		}
-		appendValueWindowCandidates(part, idx, valueIndex, candidates)
-		if raw != part {
-			appendValueWindowCandidates(raw, idx, valueIndex, candidates)
-		}
-	}
-}
-
-func appendValueWindowCandidates(value string, base int, valueIndex int, candidates *[]knownValueWindowCandidate) {
-	seen := make(map[[minKnownSecretSubstringLen]byte]struct{})
-	repeated := make(map[[minKnownSecretSubstringLen]byte]struct{})
-	local := make([]knownValueWindowCandidate, 0, len(value)-minKnownSecretSubstringLen+1)
-	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
-		window := value[start : start+minKnownSecretSubstringLen]
-		if ShannonEntropy(window) <= envLeakMinEntropy {
-			continue
-		}
-		var key [minKnownSecretSubstringLen]byte
-		copy(key[:], window)
-		if _, exists := seen[key]; exists {
-			repeated[key] = struct{}{}
-			continue
-		}
-		seen[key] = struct{}{}
-		local = append(local, knownValueWindowCandidate{
-			valueIndex: valueIndex,
-			window:     knownValueWindow{value: key, offset: base + start},
-		})
-	}
-	for _, candidate := range local {
-		if _, duplicate := repeated[candidate.window.value]; !duplicate {
-			*candidates = append(*candidates, candidate)
-		}
-	}
 }
 
 // indexKnownValueSubstring scans each candidate view once with fixed-size

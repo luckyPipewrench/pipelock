@@ -647,6 +647,11 @@ func TestReceiptsCmdRejectsEmptyRecorderEvidence(t *testing.T) {
 	}
 }
 
+// cliSessionActionEmits is how many Emit calls cliRecorderSessionDir makes.
+// The extracted chain also carries the session-open receipt, so the bundle's
+// checkpoint covers cliSessionActionEmits+1 receipts.
+const cliSessionActionEmits = 2
+
 // cliRecorderSessionDir writes a REAL recorder evidence directory, the shape
 // ExtractReceiptsFromSessionDir actually reads, and returns it with the hex
 // public key that verifies its receipts. The recorder fixes the evidence
@@ -676,7 +681,7 @@ func cliRecorderSessionDir(t *testing.T) (dir string, keyHex string) {
 	if err := emitter.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen: %v", err)
 	}
-	for range 2 {
+	for range cliSessionActionEmits {
 		if err := emitter.Emit(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Target:    "https://example.test/resource",
@@ -733,10 +738,11 @@ func TestReceiptsCmdAsDirExtractsFromSessionDirectory(t *testing.T) {
 		t.Fatalf("parsing bundle: %v", err)
 	}
 	// The checkpoint has to describe the receipts that were in the directory.
-	// Without this the test would pass on any bundle at all, including one
-	// built from an empty extraction.
-	if bundle.Checkpoint.ReceiptCount == 0 {
-		t.Fatal("bundle checkpoint covers 0 receipts, want the session's receipts")
+	// A non-zero check would pass on any bundle at all, including one that
+	// silently dropped an action during extraction, so pin the exact count:
+	// every Emit plus the session-open receipt the chain starts with.
+	if want := uint64(cliSessionActionEmits + 1); bundle.Checkpoint.ReceiptCount != want {
+		t.Fatalf("bundle checkpoint receipt count = %d, want %d", bundle.Checkpoint.ReceiptCount, want)
 	}
 	if bundle.Checkpoint.SessionID != "proxy" {
 		t.Fatalf("bundle checkpoint session = %q, want the recorder's session", bundle.Checkpoint.SessionID)

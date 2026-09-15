@@ -6730,19 +6730,32 @@ func TestScan_DLPStackedDecodeFixpointQueryAndPath(t *testing.T) {
 	}
 }
 
-func TestScanTextForDLP_DecodeFixpointBoundedOnLongBenignText(t *testing.T) {
+func TestScanTextForDLP_LongBenignTextStaysCleanAndTerminates(t *testing.T) {
 	s := MustNew(testConfig())
 	defer s.Close()
 
+	// This replaces a three-second wall-clock assertion. That assertion was
+	// named for the decode fixpoint but measured neither its candidate count
+	// nor its byte total: on this input the fixpoint yields no candidates at
+	// all, so the time was ordinary pattern matching. On a loaded CI runner
+	// under coverage instrumentation it measured 3.05s and failed unrelated
+	// pull requests. The fixpoint's own ceilings (maxDecodeCandidates,
+	// maxDecodeTotalBytes) bound it by construction, so a black-box test
+	// cannot drive it past them and any such assertion would be one that can
+	// never fail. What is left, and what this test guards, is the real
+	// regression risk: long benign text must scan clean, and the scan must
+	// return at all. Non-termination is caught by the package test timeout
+	// rather than by a per-call budget that drifts with machine load.
 	text := strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789!", 2048)
-	start := time.Now()
-	result := s.ScanTextForDLP(context.Background(), text)
-	elapsed := time.Since(start)
-	if !result.Clean {
+	if result := s.ScanTextForDLP(context.Background(), text); !result.Clean {
 		t.Fatalf("expected benign long text to stay clean, got matches=%v", result.Matches)
 	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("long benign text scan took %s; decode fixpoint should stay bounded", elapsed)
+
+	// Stacked-encoded benign text does drive the fixpoint, and must also stay
+	// clean: a false positive here would fire on every base64 payload.
+	stacked := base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("the quick brown fox jumps over the lazy dog. ", 40)))))
+	if result := s.ScanTextForDLP(context.Background(), stacked); !result.Clean {
+		t.Fatalf("expected stacked-encoded benign text to stay clean, got matches=%v", result.Matches)
 	}
 }
 

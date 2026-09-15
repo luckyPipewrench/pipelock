@@ -77,6 +77,19 @@ type completionRequest struct {
 }
 
 type completionResponse struct {
+	// Model, when the provider sets it, is the concrete model identifier that
+	// actually served this response. Many chat-completions APIs echo this even
+	// when the request named an alias (e.g. a routing label rather than a
+	// specific model version); it is untrusted provider-controlled data, used
+	// only as evidence-precision metadata (see Agent.ProviderModel), never as
+	// a security decision input.
+	// Model is decoded tolerantly: the chat-completions spec promises a
+	// string, but a provider is untrusted and a non-string value here (an
+	// object, number, array, or null) must never fail the completion --
+	// this field is informational evidence-precision metadata, not a
+	// decision input. rawModel holds the raw bytes; providerModelString()
+	// extracts a string only when the JSON value actually is one.
+	Model   json.RawMessage `json:"model,omitempty"`
 	Choices []struct {
 		Message      chatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
@@ -176,6 +189,33 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 	msg := parsed.Choices[0].Message
 	// Normalize: the assistant turn we record must carry its role.
 	msg.Role = roleAssistant
+
+	// Record the provider-reported model identifier the first time we see one,
+	// and narrate it once so the parent process (which cannot see this HTTP
+	// response) can attach it to the run's evidence. Untrusted provider data:
+	// stored as-is here, bounded/sanitized downstream before it is signed into
+	// anything.
+	// The value is bounded HERE, at the producer, before it crosses the
+	// subprocess event stream: an unbounded provider string could expand
+	// under JSON escaping past the parent's line ceiling and fail the turn,
+	// which would turn informational metadata into an availability failure.
+	if rawModel := providerModelString(parsed.Model); rawModel != "" {
+		if model := SanitizeProviderModel(rawModel); model != "" {
+			if a.providerModel == "" {
+				a.providerModel = model
+				a.emit(Event{Kind: EventProviderModel, Text: model})
+			}
+		} else {
+			// The provider sent a non-empty model identifier that failed
+			// sanitization (overlong, or containing a byte outside the
+			// printable-ASCII allowlist). This is informational metadata
+			// loss, not a run failure: log it to the child's stderr, which
+			// the parent process does not parse, so an operator can see it
+			// without it becoming visitor-facing narration or a decision
+			// input.
+			a.warnf("WARNING: provider model identifier dropped (invalid): %d bytes", len(rawModel))
+		}
+	}
 	return msg, nil
 }
 
@@ -215,4 +255,46 @@ func (c ModelConfig) redactSecrets(s string) string {
 		s = strings.ReplaceAll(s, key, "[redacted]")
 	}
 	return s
+}
+
+// providerModelString extracts a string from a raw JSON value only when
+// that value actually is a JSON string. A provider is untrusted and the
+// chat-completions "model" field is not guaranteed to be a string on every
+// implementation; an object, number, array, or null becomes an absent value
+// rather than a decode failure, so malformed metadata never turns into a
+// run-availability failure.
+func providerModelString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// MaxProviderModelLen bounds the provider-reported model identifier that may
+// be recorded anywhere. The provider is untrusted: an over-long or malformed
+// value must never break a run, so bounding failures yield an empty value.
+const MaxProviderModelLen = 256
+
+// SanitizeProviderModel bounds and validates an untrusted provider-reported
+// model string: non-empty, at most MaxProviderModelLen bytes, printable ASCII
+// only (no control characters, no multi-byte confusables, nothing that JSON
+// escaping expands). A value that fails any check becomes empty rather than
+// recorded or rejected. It runs at the producer before the value crosses the
+// subprocess event stream and again before the value is signed into the
+// witness, so the two boundaries cannot drift.
+func SanitizeProviderModel(raw string) string {
+	if raw == "" || len(raw) > MaxProviderModelLen {
+		return ""
+	}
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if b < 0x20 || b > 0x7e || b == '<' || b == '>' || b == '&' || b == '"' || b == '\\' {
+			return ""
+		}
+	}
+	return raw
 }

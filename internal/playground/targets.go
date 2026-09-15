@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 )
 
 // requestRecord is a per-ingest record that goes into the run's request log.
@@ -52,6 +54,10 @@ type runStats struct {
 	// redCase, when non-nil, is the red-case calibration result attached via
 	// AttachRedCase. SealAndSign includes it in the witness so it is signed.
 	redCase *RedCaseResult
+
+	// providerModel, when non-empty, is the provider-reported model identifier
+	// attached via AttachProviderModel. SealAndSign includes it in the witness.
+	providerModel string
 }
 
 // Collector is a lab HTTP target that detects whether a planted synthetic
@@ -324,6 +330,32 @@ func (c *Collector) AttachRedCase(nonce string, r RedCaseResult) error {
 	return nil
 }
 
+// sanitizeProviderModel is the signing-side boundary for the provider-reported
+// model identifier; the producer applies the same helper before the value
+// crosses the subprocess event stream (llmagent.SanitizeProviderModel).
+func sanitizeProviderModel(raw string) string {
+	return llmagent.SanitizeProviderModel(raw)
+}
+
+// AttachProviderModel stores the provider-reported model identifier on an open
+// (not yet sealed) run. SealAndSign includes it in the witness so it is covered
+// by the collector's ed25519 signature. raw is untrusted provider output and is
+// bounded/validated by sanitizeProviderModel; an invalid value is silently
+// dropped to empty (never fails the run -- a provider quirk must not break a
+// run). dropped reports true when a non-empty raw failed sanitization, so the
+// caller can log a warning without the run failing.
+func (c *Collector) AttachProviderModel(nonce, raw string) (dropped bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s, ok := c.runs[nonce]
+	if !ok || !s.opened || s.sealed {
+		return false, ErrProviderModelRunNotOpen
+	}
+	sanitized := sanitizeProviderModel(raw)
+	s.providerModel = sanitized
+	return raw != "" && sanitized == "", nil
+}
+
 // requestLogDigest returns the sha256 hex digest over the canonical JSON of the
 // run's metadata-only request log. The input is a record (method/path/observed),
 // NEVER the raw canary value, so the digest cannot leak the secret. Caller must
@@ -402,6 +434,7 @@ func (c *Collector) SealAndSign(nonce string, colPriv ed25519.PrivateKey, drain 
 		DrainDeadline:      closeStart.Add(drain),
 		LaunchManifestHash: s.launchManifestHash,
 		RedCaseResult:      s.redCase, // nil when no calibration attached; included in SignedBytes when present
+		ProviderModel:      s.providerModel,
 	}
 	c.mu.Unlock()
 

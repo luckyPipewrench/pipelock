@@ -173,6 +173,19 @@ The receipt chain alone is also verifiable with the shipped `pipelock-verifier a
 against `./demo-run/packet` — but note that verifier checks the packet and chain only, not the
 collector witness; the witness checks are part of `pipelock-playground-demo verify`.
 
+### Model identity is recorded, not enforced
+
+For a model-backed live-chat run, the signed launch manifest carries `requested_model`: the
+model name configured for the run, recorded before the model is ever called (so it is covered
+by the manifest signature). The signed collector witness separately carries `provider_model`:
+the model identifier the provider echoed back in its own response, when it did. These two fields
+answer a narrower question than they might look like -- "what was configured, and what did the
+provider claim it served" -- not "which model produced this run." The provider is untrusted
+infrastructure from the run's point of view: `provider_model` is bounded, sanitized, and
+carried through as informational evidence-precision metadata, and no verify check ever gates on
+either field. Both are `omitempty`; a run from before this field existed, or a scripted
+deterministic run with no model in the loop, verifies identically with them absent.
+
 ### Red-case calibration
 
 The collector witness is only trusted when the *same* collector build has been shown to detect
@@ -181,6 +194,8 @@ the canary reaches the collector and the witness goes red (`observed > 0`). The 
 result is signed into the live run's witness, and the signed red witness is written as
 `red-witness.json`, so verification can require proof that the collector demonstrably detects
 what it claims to have not observed.
+
+Both fields are part of the signed bytes when present, following the same additive pattern as the delegation and image-digest fields: a manifest or witness without them verifies unchanged, and an artifact carrying them needs a verifier built from this version or later, since an older verifier canonicalizes without the field and reports a signature mismatch.
 
 ## Reset and fallback
 

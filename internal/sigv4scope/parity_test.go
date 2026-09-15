@@ -66,5 +66,48 @@ func TestScopeTailRejectsExtendedTerminator(t *testing.T) {
 		if !sigv4scope.IsScopeTail(tail) {
 			t.Errorf("IsScopeTail(%q) = false, want true", tail)
 		}
+		// The reject loop above checks both consumers; this one checked only
+		// the scanner, so a redactor that stopped recognizing a valid tail
+		// would pass the parity test that exists to catch exactly that.
+		if !redact.IsSigV4CredentialScopeTail(tail) {
+			t.Errorf("redactor rejected the valid tail %q the scanner accepts", tail)
+		}
+	}
+}
+
+// TestIsScopeRejectsNonDigitDate covers the digit-validation branch in
+// IsScope: a date segment containing a non-digit byte must be rejected even
+// though it has the right length and slash structure.
+func TestIsScopeRejectsNonDigitDate(t *testing.T) {
+	for _, scope := range []string{
+		"2026091a/us-east-1/s3/aws4_request",
+		"a026091a/us-east-1/s3/aws4_request",
+		"2026-091/us-east-1/s3/aws4_request",
+	} {
+		if sigv4scope.IsScope(scope) {
+			t.Errorf("IsScope(%q) = true, want false (non-digit date)", scope)
+		}
+	}
+}
+
+// TestIsScopeTailStopsWithoutSecondSeparator covers the loop's !ok exit in
+// IsScopeTail (and, on the way there, nextComponent's no-delimiter-found
+// return and consumeSeparator's rejection of a value with no leading slash
+// or percent-encoded slash): a tail carrying only one component and nothing
+// after it has no second separator to consume, so it must fail closed rather
+// than panic or accept a truncated scope.
+func TestIsScopeTailStopsWithoutSecondSeparator(t *testing.T) {
+	for _, tail := range []string{
+		"/20260528",
+		"%2F20260528",
+	} {
+		if sigv4scope.IsScopeTail(tail) {
+			t.Errorf("IsScopeTail(%q) = true, want false (no second separator)", tail)
+		}
+		// Both consumers share this grammar, so both must reject a
+		// truncated scope. Checking one leaves the other free to drift.
+		if redact.IsSigV4CredentialScopeTail(tail) {
+			t.Errorf("redactor accepted the truncated tail %q the scanner rejects", tail)
+		}
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -45,6 +46,12 @@ const (
 	// EventTurnDone is emitted by the subprocess wrapper (not the Agent) after a
 	// turn's narration, so the driver knows the turn is complete.
 	EventTurnDone = "turn_done"
+	// EventProviderModel is emitted once, the first time a chat-completions
+	// response names the concrete model that served it (Text carries the
+	// identifier). It is evidence-precision metadata only: the driver must not
+	// surface it to the visitor UI as narration, and nothing may treat it as a
+	// security decision input. Untrusted provider-controlled data.
+	EventProviderModel = "provider_model"
 )
 
 // Error codes carried on EventError.Code.
@@ -237,6 +244,39 @@ type Agent struct {
 	// message. It is empty when memory is disabled. Guarded by the sequential-use
 	// contract above, not a mutex.
 	convo []chatMessage
+
+	// providerModel is the first non-empty provider-reported model identifier
+	// observed across this agent's completions, set by complete(). Sequential-
+	// use contract, no mutex (same as convo).
+	providerModel string
+
+	// warn receives operator-facing warnings that are not run failures, one
+	// call per warning. It is nil in production, which means os.Stderr. A
+	// test sets it so the warning is an assertable behavior rather than a
+	// side effect on a process-global stream: writing straight to os.Stderr
+	// leaves "the operator was told" untestable, so deleting the warning
+	// would pass every assertion around it.
+	warn func(string)
+}
+
+// warnf reports an operator-facing warning through the injected sink, or to
+// stderr when none is set. Stderr is deliberate for the production path: the
+// parent process does not parse the child's stderr, so an operator can see
+// this without it becoming visitor-facing narration or a decision input.
+func (a *Agent) warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if a.warn != nil {
+		a.warn(msg)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, msg)
+}
+
+// ProviderModel returns the provider-reported model identifier observed so
+// far (empty if the provider never echoed one). Untrusted, informational
+// only.
+func (a *Agent) ProviderModel() string {
+	return a.providerModel
 }
 
 // New builds an agent. httpClient is the ONLY egress path the agent uses for

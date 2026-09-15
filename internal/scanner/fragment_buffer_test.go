@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"testing"
@@ -129,6 +130,53 @@ func TestFragmentBuffer_CompleteShortPatternDoesNotSuppressLongCrossPattern(t *t
 		}
 	}
 	t.Fatalf("complete short-pattern occurrence suppressed longer cross-fragment rule: %+v", matches)
+}
+
+func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) {
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+	sc := testFragmentScanner()
+	t.Cleanup(sc.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+	secret := "AKIA" + testAWSKeySuffix
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	const split = 13 // not a base64 quantum, so neither fragment decodes alone
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte(secret), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte(encoded[:split]), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte(encoded[split:]), sc)
+	for _, match := range matches {
+		if match.PatternName == "AWS Access ID" {
+			if len(match.Contributors) != 0 {
+				t.Fatalf("encoded-view contributors = %q, want omitted without raw byte coordinates", match.Contributors)
+			}
+			return
+		}
+	}
+	t.Fatalf("same-pattern decoy dropped encoded cross-fragment match: %+v", matches)
+}
+
+func TestFragmentBuffer_MaskingThatCannotProgressFailsClosed(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Space run\n      regex: ' +'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	fb.Append(testCEEIdentity(testSessionA), []byte("   "))
+	fb.Append(testCEEIdentity(testSessionA), []byte("x"))
+
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	for _, match := range matches {
+		if match.PatternName == "Space run" {
+			return
+		}
+	}
+	t.Fatalf("non-progressing mask reported clean: %+v", matches)
 }
 
 func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {

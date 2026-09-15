@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -731,7 +732,7 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
 	}
-	complete, unlocatable := completeFragmentOccurrences(ctx, sc, ranges)
+	complete := completeFragmentOccurrences(ctx, sc, ranges)
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
@@ -739,21 +740,18 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
-	handled := make(map[string]struct{}, len(complete)+len(unlocatable))
-	for patternName := range unlocatable {
-		// Preserve the old availability behavior when the scanner cannot map an
-		// individual match back to raw bytes. Reporting every joined match for
-		// this pattern as cross-request would double-signal ordinary body DLP.
-		handled[patternName] = struct{}{}
+	handled := make(map[string]struct{}, len(complete))
+	patternNames := make([]string, 0, len(complete))
+	for patternName := range complete {
+		patternNames = append(patternNames, patternName)
 	}
-	for patternName, occurrences := range complete {
-		if _, skip := unlocatable[patternName]; skip {
-			continue
-		}
+	sort.Strings(patternNames)
+	for _, patternName := range patternNames {
+		occurrences := complete[patternName]
 		handled[patternName] = struct{}{}
 		masked := append([]byte(nil), buf...)
 		for _, occurrence := range occurrences {
-			maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
+			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
 		}
 		// Mask only complete occurrences of this pattern. Masking every rule at
 		// once could erase a longer cross-fragment match from a different rule.
@@ -764,25 +762,40 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 			maskedResult := sc.ScanTextForDLPQuiet(ctx, string(masked))
 			remasked := false
 			crossed := false
-			rawTargetFound := false
+			var rawTargets []TextDLPMatch
+			invalidTargetFound := false
 			for _, match := range maskedResult.Matches {
 				if match.PatternName != patternName {
 					continue
 				}
 				span := match.Span()
 				if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(masked) || span.ByteStart >= span.ByteEnd {
+					invalidTargetFound = true
 					continue
 				}
-				rawTargetFound = true
+				rawTargets = append(rawTargets, match)
+			}
+			for _, match := range rawTargets {
+				span := match.Span()
 				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
-					maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd)
-					remasked = true
+					if maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd) {
+						remasked = true
+					} else {
+						// A rule that matches the replacement bytes cannot make
+						// progress. Report rather than loop forever or drop it.
+						matches = append(matches, DLPMatch{PatternName: match.PatternName})
+						crossed = true
+					}
 					continue
 				}
 				matches = appendCrossFragmentMatch(matches, match, ranges, len(buf))
 				crossed = true
 			}
-			if crossed || !rawTargetFound || !remasked {
+			if len(rawTargets) == 0 && invalidTargetFound {
+				matches = append(matches, DLPMatch{PatternName: patternName})
+				crossed = true
+			}
+			if crossed || len(rawTargets) == 0 || !remasked {
 				break
 			}
 		}
@@ -799,10 +812,15 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	return matches
 }
 
-func maskFragmentOccurrence(buf []byte, start, end int) {
+func maskFragmentOccurrence(buf []byte, start, end int) bool {
+	changed := false
 	for i := start; i < end; i++ {
-		buf[i] = ' '
+		if buf[i] != ' ' {
+			buf[i] = ' '
+			changed = true
+		}
 	}
+	return changed
 }
 
 type fragmentOccurrence struct {
@@ -810,15 +828,13 @@ type fragmentOccurrence struct {
 	end   int
 }
 
-func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) (map[string][]fragmentOccurrence, map[string]struct{}) {
+func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) map[string][]fragmentOccurrence {
 	complete := make(map[string][]fragmentOccurrence)
-	unlocatable := make(map[string]struct{})
 	for _, r := range ranges {
 		fragmentResult := sc.ScanTextForDLPQuiet(ctx, string(r.fragment.data))
 		for _, match := range fragmentResult.Matches {
 			span := match.Span()
 			if span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(r.fragment.data) || span.ByteStart >= span.ByteEnd {
-				unlocatable[match.PatternName] = struct{}{}
 				continue
 			}
 			complete[match.PatternName] = append(complete[match.PatternName], fragmentOccurrence{
@@ -827,13 +843,7 @@ func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []frag
 			})
 		}
 	}
-	for patternName := range complete {
-		// A locatable raw occurrence is sufficient to drive pattern-local
-		// masking. Transformed sibling matches for the same bytes do not make
-		// that occurrence unlocatable.
-		delete(unlocatable, patternName)
-	}
-	return complete, unlocatable
+	return complete
 }
 
 func appendCrossFragmentMatch(matches []DLPMatch, match TextDLPMatch, ranges []fragmentRange, bufferLen int) []DLPMatch {

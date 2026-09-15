@@ -109,6 +109,13 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	} else if err := config.ValidateContainmentMetricsExposure(metricsListen, proxyPort, metricsExposure, time.Now()); err != nil {
 		return nil, nil, err
 	}
+	loopbackServices, err := containmentLoopbackServicesFromMapping(mapping)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := config.ValidateContainmentLoopbackServices(loopbackServices, proxyPort, time.Now()); err != nil {
+		return nil, nil, err
+	}
 
 	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {
 		return nil, nil, err
@@ -218,6 +225,39 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 		return nil, fmt.Errorf("parse containment.metrics_exposure: %w", err)
 	}
 	return &policy, nil
+}
+
+// containmentLoopbackServicesFromMapping is the outbound-exception sibling of
+// containmentMetricsExposureFromMapping: it decodes containment.loopback_services
+// from the same raw YAML mapping, using the same strict-decode-then-validate
+// shape, so a malformed or unreviewable declared exception is rejected at
+// config load / contain install time rather than silently ignored.
+func containmentLoopbackServicesFromMapping(root *yaml.Node) ([]config.ContainmentLoopbackService, error) {
+	containment := mappingValue(root, "containment")
+	if containment == nil {
+		return nil, nil
+	}
+	if containment.Kind != yaml.MappingNode {
+		return nil, errors.New("containment must be a mapping")
+	}
+	services := mappingValue(containment, "loopback_services")
+	if services == nil {
+		return nil, nil
+	}
+	if services.Kind != yaml.SequenceNode {
+		return nil, errors.New("containment.loopback_services must be a list")
+	}
+	data, err := yaml.Marshal(services)
+	if err != nil {
+		return nil, fmt.Errorf("encode containment.loopback_services: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	var declared []config.ContainmentLoopbackService
+	if err := decoder.Decode(&declared); err != nil {
+		return nil, fmt.Errorf("parse containment.loopback_services: %w", err)
+	}
+	return declared, nil
 }
 
 // effectiveProxyPort returns the port the contained agent can actually reach.

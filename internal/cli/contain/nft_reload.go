@@ -140,18 +140,55 @@ type nftRuleWithHandle struct {
 func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentUID int) []int {
 	rules := nftRulesWithHandles(live)
 	var handles []int
-	for i := 0; i+5 < len(rules); {
-		block := rules[i : i+6]
-		if !isLegacyManagedNFTBlock(block, operatorUID, proxyUID, agentUID) {
+	for i := 0; i < len(rules); {
+		blockLen := managedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID)
+		if blockLen == 0 {
 			i++
 			continue
 		}
-		for _, rule := range block {
+		for _, rule := range rules[i : i+blockLen] {
 			handles = append(handles, rule.handle)
 		}
-		i += len(block)
+		i += blockLen
 	}
 	return handles
+}
+
+// managedNFTBlockLength returns the length of the managed rule block starting
+// at rules[i], or 0 if no managed block starts there. The block is:
+// operator accept, proxy accept, one-or-more agent loopback allows (the
+// implicit proxy-port allow plus any declared containment.loopback_services
+// exceptions, in any number), DNS udp/53 drop, DNS tcp/53 drop, catch-all
+// drop. Recognizing a variable number of loopback allows (rather than the
+// fixed six-rule legacy shape) is what lets reload replace a block that
+// carries declared loopback services instead of leaving them untouched as an
+// unrecognized carve-out and appending a second managed block behind the old
+// catch-all drop.
+func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, agentUID int) int {
+	if i+2 >= len(rules) {
+		return 0
+	}
+	if !lineHasTerminalSkuidVerdict(rules[i].line, operatorUID, "accept") ||
+		!lineHasTerminalSkuidVerdict(rules[i+1].line, proxyUID, "accept") {
+		return 0
+	}
+	loopbackCount := 0
+	for j := i + 2; j < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[j].line, agentUID); j++ {
+		loopbackCount++
+	}
+	if loopbackCount == 0 {
+		return 0
+	}
+	tailStart := i + 2 + loopbackCount
+	if tailStart+2 >= len(rules) {
+		return 0
+	}
+	if !lineHasManagedDNSDrop(rules[tailStart].line, agentUID, "udp") ||
+		!lineHasManagedDNSDrop(rules[tailStart+1].line, agentUID, "tcp") ||
+		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
+		return 0
+	}
+	return 2 + loopbackCount + 3
 }
 
 func nftRulesWithHandles(live string) []nftRuleWithHandle {
@@ -171,16 +208,6 @@ func nftRulesWithHandles(live string) []nftRuleWithHandle {
 		}
 	}
 	return rules
-}
-
-func isLegacyManagedNFTBlock(block []nftRuleWithHandle, operatorUID, proxyUID, agentUID int) bool {
-	return len(block) == 6 &&
-		lineHasTerminalSkuidVerdict(block[0].line, operatorUID, "accept") &&
-		lineHasTerminalSkuidVerdict(block[1].line, proxyUID, "accept") &&
-		lineHasAgentProxyLoopbackAllowAnyPort(block[2].line, agentUID) &&
-		lineHasManagedDNSDrop(block[3].line, agentUID, "udp") &&
-		lineHasManagedDNSDrop(block[4].line, agentUID, "tcp") &&
-		lineHasManagedCatchAllDrop(block[5].line, agentUID)
 }
 
 func lineHasManagedDNSDrop(line string, agentUID int, protocol string) bool {

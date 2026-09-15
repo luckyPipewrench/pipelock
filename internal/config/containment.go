@@ -32,7 +32,23 @@ func ValidateContainmentMetricsListen(listen string, proxyPort int) error {
 // lifecycle. It is kept separate from ordinary proxy configuration because
 // the containment runtime owns the kernel boundary around the agent.
 type ContainmentConfig struct {
-	MetricsExposure *ContainmentMetricsExposure `yaml:"metrics_exposure"`
+	MetricsExposure  *ContainmentMetricsExposure  `yaml:"metrics_exposure"`
+	LoopbackServices []ContainmentLoopbackService `yaml:"loopback_services"`
+}
+
+// ContainmentLoopbackService declares a second loopback destination the
+// contained agent may reach beyond the mediated proxy port. This is the
+// outbound sibling of ContainmentMetricsExposure: it is the sole declared
+// exception format for an extra agent-reachable loopback service, carrying
+// the same owner/reason/expiry lifecycle so an operator carve-out is visible
+// to config validation, contain install, and contain verify instead of being
+// a hand-edited nft rule that reload tolerates and verify condemns.
+type ContainmentLoopbackService struct {
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Owner     string `yaml:"owner"`
+	Reason    string `yaml:"reason"`
+	ExpiresAt string `yaml:"expires_at"`
 }
 
 // ContainmentMetricsExposure records the deliberate exception required to
@@ -81,6 +97,27 @@ func ValidateContainmentMetricsExposure(listen string, proxyPort int, policy *Co
 	return nil
 }
 
+// validateContainmentExceptionLifecycle enforces the shared owner/reason/expiry
+// contract every declared containment exception carries: ContainmentMetricsExposure
+// and ContainmentLoopbackService both call this instead of duplicating the
+// RFC3339 parse and expiry comparison.
+func validateContainmentExceptionLifecycle(field, owner, reason, expiresAt string, now time.Time) error {
+	if strings.TrimSpace(owner) == "" {
+		return fmt.Errorf("%s.owner is required", field)
+	}
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("%s.reason is required", field)
+	}
+	expiresAtParsed, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresAt))
+	if err != nil {
+		return fmt.Errorf("%s.expires_at must use RFC3339: %w", field, err)
+	}
+	if !expiresAtParsed.After(now) {
+		return fmt.Errorf("%s expired at %s", field, expiresAtParsed.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 func validateContainmentMetricsExposurePolicy(policy *ContainmentMetricsExposure, now time.Time) error {
 	if policy == nil {
 		return fmt.Errorf("non-loopback metrics_listen requires containment.metrics_exposure")
@@ -88,18 +125,8 @@ func validateContainmentMetricsExposurePolicy(policy *ContainmentMetricsExposure
 	if !policy.AllowFullMetrics {
 		return fmt.Errorf("containment.metrics_exposure.allow_full_metrics must be true")
 	}
-	if strings.TrimSpace(policy.Owner) == "" {
-		return fmt.Errorf("containment.metrics_exposure.owner is required")
-	}
-	if strings.TrimSpace(policy.Reason) == "" {
-		return fmt.Errorf("containment.metrics_exposure.reason is required")
-	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(policy.ExpiresAt))
-	if err != nil {
-		return fmt.Errorf("containment.metrics_exposure.expires_at must use RFC3339: %w", err)
-	}
-	if !expiresAt.After(now) {
-		return fmt.Errorf("containment.metrics_exposure expired at %s", expiresAt.UTC().Format(time.RFC3339))
+	if err := validateContainmentExceptionLifecycle("containment.metrics_exposure", policy.Owner, policy.Reason, policy.ExpiresAt, now); err != nil {
+		return err
 	}
 	if len(policy.AllowedSourceCIDRs) == 0 {
 		return fmt.Errorf("containment.metrics_exposure.allowed_source_cidrs must name at least one source")
@@ -134,4 +161,36 @@ func ContainmentMetricsExposureAllowsSource(policy *ContainmentMetricsExposure, 
 		}
 	}
 	return false
+}
+
+// ValidateContainmentLoopbackServices enforces the declared-exception
+// lifecycle for every containment.loopback_services entry: a loopback-literal
+// host, a TCP port distinct from the proxy port and from every other
+// declared entry, and the same required owner/reason/expires_at contract as
+// containment.metrics_exposure. An empty or nil list is valid: the contained
+// agent's only implicit loopback destination remains the proxy port.
+func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+	seen := make(map[string]struct{}, len(services))
+	for i, svc := range services {
+		field := fmt.Sprintf("containment.loopback_services[%d]", i)
+		host := strings.TrimSpace(svc.Host)
+		if host != "127.0.0.1" && host != "::1" {
+			return fmt.Errorf("%s.host %q must be a loopback literal (127.0.0.1 or ::1), not a hostname, wildcard, or CIDR", field, svc.Host)
+		}
+		if svc.Port < 1 || svc.Port > 65535 {
+			return fmt.Errorf("%s.port %d must be between 1 and 65535", field, svc.Port)
+		}
+		if svc.Port == proxyPort {
+			return fmt.Errorf("%s.port %d collides with the agent-accessible proxy port; the proxy allow is implicit and does not need a declared exception", field, svc.Port)
+		}
+		key := host + ":" + strconv.Itoa(svc.Port)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s duplicates an already-declared loopback service at %s", field, key)
+		}
+		seen[key] = struct{}{}
+		if err := validateContainmentExceptionLifecycle(field, svc.Owner, svc.Reason, svc.ExpiresAt, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -584,6 +584,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMetricsListen(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateContainmentLoopbackServices(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err
 	}
@@ -3864,6 +3867,21 @@ func (c *Config) validateKillSwitch() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateContainmentLoopbackServices() error {
+	if len(c.Containment.LoopbackServices) == 0 {
+		return nil
+	}
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	port, err := strconv.Atoi(proxyPort)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+	}
+	return ValidateContainmentLoopbackServices(c.Containment.LoopbackServices, port, time.Now())
 }
 
 func (c *Config) validateMetricsListen() error {

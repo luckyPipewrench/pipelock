@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -1170,6 +1171,42 @@ func managedPipelockConfigPath(env *installEnv) string {
 	return filepath.Join(env.configDir, "pipelock.yaml")
 }
 
+// declaredContainmentLoopbackServices reads the already-promoted managed
+// config's containment.loopback_services, the outbound-exception sibling of
+// containment.metrics_exposure, so contain install can render the declared
+// exceptions into the SAME managed nft block as the implicit proxy-port
+// allow. A missing managed config (a first install ordering issue this
+// function is never reached at, or a test env with no staged config) is
+// treated as no declared exceptions rather than a hard error, matching the
+// pre-existing behavior of installs that never declared any loopback
+// service. Any other read/parse/validation failure fails install closed:
+// contain install must never load an nft ruleset it cannot account for.
+func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, error) {
+	data, err := env.readFile(managedPipelockConfigPath(env))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+	}
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse managed config %s: %w", managedPipelockConfigPath(env), err)
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, fmt.Errorf("managed config %s must be a YAML mapping", managedPipelockConfigPath(env))
+	}
+	declared, err := containmentLoopbackServicesFromMapping(mapping)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, time.Now()); err != nil {
+		return nil, err
+	}
+	return declared, nil
+}
+
 // bytesEqual compares two byte slices without dragging in the bytes
 // import for one call site. Equivalent to bytes.Equal.
 func bytesEqual(a, b []byte) bool {
@@ -1743,7 +1780,19 @@ func stepInstallNFTRules() step {
 			if err != nil {
 				return false, err
 			}
-			body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, env.nftTableOrDefault(), env.nftChainOrDefault())
+			loopbackServices, err := declaredContainmentLoopbackServices(env, env.proxyPort)
+			if err != nil {
+				return false, err
+			}
+			body := renderNFTRulesWithServices(nftRuleOptions{
+				OperatorUID:      operatorUID,
+				ProxyUID:         proxyUID,
+				AgentUID:         agentUID,
+				ProxyPort:        env.proxyPort,
+				Table:            env.nftTableOrDefault(),
+				Chain:            env.nftChainOrDefault(),
+				LoopbackServices: loopbackServices,
+			})
 
 			rulesMatch := false
 			if existing, err := env.readFile(env.nftRulesPath); err == nil {
@@ -1761,7 +1810,7 @@ func stepInstallNFTRules() step {
 				if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
 					liveChainAttributed = true
 				}
-				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort, loopbackServices)
 				liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 			}
 			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
@@ -1923,24 +1972,31 @@ func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
 	return false
 }
 
-func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService) bool {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return false
 	}
-	return nftChainLinesHaveManagedOutputBaseChain(lines) &&
-		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
-		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
-		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
-		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") &&
-		!chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
-			operatorUID:   operatorUID,
-			operatorKnown: true,
-			proxyUID:      proxyUID,
-			agentUID:      agentUID,
-		}, proxyPort)
+	if !nftChainLinesHaveManagedOutputBaseChain(lines) ||
+		!chainLinesHaveSkuidAcceptForUID(lines, operatorUID) ||
+		!chainLinesHaveSkuidAcceptForUID(lines, proxyUID) ||
+		!chainLinesHaveAgentCatchAllDrop(lines, agentUID) ||
+		!chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) ||
+		!chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") ||
+		!chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") {
+		return false
+	}
+	for _, svc := range loopbackServices {
+		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, agentUID, svc.Host, svc.Port) {
+			return false
+		}
+	}
+	return !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
+		operatorUID:   operatorUID,
+		operatorKnown: true,
+		proxyUID:      proxyUID,
+		agentUID:      agentUID,
+	}, proxyPort, loopbackServices)
 }
 
 func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
@@ -2202,9 +2258,59 @@ func operatorUIDFromEnv(env *installEnv) (int, error) {
 	return uid, nil
 }
 
+// nftLoopbackAcceptLine renders one extra agent-reachable loopback accept.
+// A ::1 declared service uses "ip6 daddr" and is recognized by
+// lineHasAgentLoopbackAllowAnyPortAnyHost (reload) and
+// lineHasAgentLoopbackAllowForHost (verify), the dual-stack siblings of the
+// IPv4-only lineAgentProxyLoopbackAllowUID that only the specific-proxy-port
+// drift check still uses.
+func nftLoopbackAcceptLine(agentUID int, host string, port int) string {
+	daddrKeyword := "ip daddr"
+	if host == "::1" {
+		daddrKeyword = "ip6 daddr"
+	}
+	return fmt.Sprintf("\t        meta skuid %d %s %s tcp dport %d accept\n", agentUID, daddrKeyword, host, port)
+}
+
+// nftRuleOptions carries renderNFTRules' inputs once the addition of declared
+// loopback services would otherwise push the parameter count past six.
+type nftRuleOptions struct {
+	OperatorUID      int
+	ProxyUID         int
+	AgentUID         int
+	ProxyPort        int
+	Table            string
+	Chain            string
+	LoopbackServices []config.ContainmentLoopbackService
+}
+
 // renderNFTRules emits the table definition. Matches the runbook one-to-one
-// with concrete UIDs interpolated.
+// with concrete UIDs interpolated. Declared loopback services (the outbound
+// sibling of containment.metrics_exposure) render as additional agent-owned
+// loopback accepts inside the SAME managed block, immediately after the
+// implicit proxy-port allow and before the DNS drops, so a reload that
+// recognizes and replaces the managed block replaces these too instead of
+// leaving them as a hand-inserted carve-out.
 func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain string) string {
+	return renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: operatorUID,
+		ProxyUID:    proxyUID,
+		AgentUID:    agentUID,
+		ProxyPort:   proxyPort,
+		Table:       table,
+		Chain:       chain,
+	})
+}
+
+// renderNFTRulesWithServices is renderNFTRules plus declared
+// containment.loopback_services exceptions rendered into the same managed
+// block, immediately after the implicit proxy-port allow and before the DNS
+// drops.
+func renderNFTRulesWithServices(opts nftRuleOptions) string {
+	var loopback strings.Builder
+	for _, svc := range opts.LoopbackServices {
+		loopback.WriteString(nftLoopbackAcceptLine(opts.AgentUID, svc.Host, svc.Port))
+	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d
 	table inet %s {
@@ -2215,27 +2321,44 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 	        meta skuid %d accept
 
 	        meta skuid %d ip daddr 127.0.0.1 tcp dport %d accept
-	        meta skuid %d udp dport 53 counter log prefix "%s " drop
+%s	        meta skuid %d udp dport 53 counter log prefix "%s " drop
 	        meta skuid %d tcp dport 53 counter log prefix "%s " drop
 	        meta skuid %d counter log prefix "%s " drop
 	    }
 	}
-	`, operatorUID, proxyUID, agentUID, proxyPort, table, chain,
-		operatorUID, proxyUID, agentUID, proxyPort,
-		agentUID, nftLogPrefix(EgressClassDirectDNS),
-		agentUID, nftLogPrefix(EgressClassDirectDNS),
-		agentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
+	`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain,
+		opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort,
+		loopback.String(),
+		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
+		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
+		opts.AgentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
 }
 
 // RenderNFTRules returns the canonical Pipelock containment nftables ruleset for
-// the given uids and proxy port, using the default table/chain names. It is the
-// single source of truth for the owner-match egress rule, exported so a
-// deployment that establishes containment WITHOUT `pipelock contain install`
-// (for example a per-visitor microVM boot entrypoint that has no systemd) loads
-// the IDENTICAL proven rule instead of a drift-prone hand-copied one. The
-// returned text is suitable for `nft -f -`.
+// the given uids and proxy port, using the default table/chain names, and no
+// declared loopback services. It is the single source of truth for the
+// owner-match egress rule, exported so a deployment that establishes
+// containment WITHOUT `pipelock contain install` (for example a per-visitor
+// microVM boot entrypoint that has no systemd) loads the IDENTICAL proven rule
+// instead of a drift-prone hand-copied one. The returned text is suitable for
+// `nft -f -`.
 func RenderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int) string {
 	return renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+}
+
+// RenderNFTRulesWithLoopbackServices is RenderNFTRules plus declared
+// containment.loopback_services exceptions, for a caller (contain install,
+// contain verify) that has resolved the managed config's declared set.
+func RenderNFTRulesWithLoopbackServices(operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService) string {
+	return renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID:      operatorUID,
+		ProxyUID:         proxyUID,
+		AgentUID:         agentUID,
+		ProxyPort:        proxyPort,
+		Table:            defaultNFTTable,
+		Chain:            defaultNFTChain,
+		LoopbackServices: loopbackServices,
+	})
 }
 
 // ---------------------------------------------------------------------------

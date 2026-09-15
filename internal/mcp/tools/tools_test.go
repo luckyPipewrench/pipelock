@@ -2228,6 +2228,60 @@ func TestScanTools_BaselineCapacityIsUninspectable(t *testing.T) {
 	}
 }
 
+// TestScanTools_StaleDriftEpochFailsClosedOnEmptyInventory is the empty-list
+// half of the stale-epoch contract. An empty tools/list is still a valid
+// inventory and takes its own early-return path, which previously called
+// BeginInventoryResponseAtEpoch and discarded the epoch-change result. The
+// populated path refuses the identical situation, so dropping it meant an
+// operator reset bound one response shape and not the other, and the empty
+// one was forwarded as clean.
+func TestScanTools_StaleDriftEpochFailsClosedOnEmptyInventory(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+	baseline.ResetDriftState()
+
+	result := ScanTools(
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`),
+		sc,
+		&ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true, ExpectedDriftEpoch: &epoch},
+	)
+	if !result.IsToolsList {
+		t.Fatalf("empty stale inventory result = %+v, want it recognized as a tools/list", result)
+	}
+	if result.Clean || result.ResourceLimit != "tool_definition_baseline_reset" {
+		t.Fatalf("empty stale inventory result = %+v, want the same non-clean baseline-reset outcome the populated path returns", result)
+	}
+	// A refused response must not mark the new baseline established, or the
+	// reset it was bound against is consumed by a response that never landed.
+	if baseline.HasDriftBaseline() {
+		t.Fatal("stale empty inventory established the drift baseline")
+	}
+}
+
+// TestScanTools_EmptyInventoryAtCurrentEpochStillEstablishes keeps the fix
+// above from becoming a refuse-everything guard: an empty inventory carrying
+// the CURRENT epoch is a valid first inventory and must still establish the
+// baseline, which is what stops an upstream bootstrapping empty and
+// introducing names afterwards that read as another first sighting.
+func TestScanTools_EmptyInventoryAtCurrentEpochStillEstablishes(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	epoch := baseline.DriftEpoch()
+
+	result := ScanTools(
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`),
+		sc,
+		&ToolScanConfig{Action: "warn", Baseline: baseline, DetectDrift: true, ExpectedDriftEpoch: &epoch},
+	)
+	if !result.Clean || result.ResourceLimit != "" {
+		t.Fatalf("current-epoch empty inventory result = %+v, want it clean", result)
+	}
+	if !baseline.HasDriftBaseline() {
+		t.Fatal("a valid empty inventory did not establish the drift baseline")
+	}
+}
+
 func TestScanTools_StaleDriftEpochFailsClosedWithoutCommitting(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()

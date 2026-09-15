@@ -2134,7 +2134,16 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 			if driftBaseline == nil {
 				driftBaseline = cfg.Baseline
 			}
-			driftBaseline.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
+			// An empty inventory gets the SAME stale-reset handling as a
+			// populated one. Discarding epochChanged here would forward a
+			// response bound to a superseded epoch as clean, while the
+			// populated path refuses the identical situation: an operator
+			// reset landing after the listener captured its epoch would bind
+			// only one of the two shapes. The failure direction of dropping
+			// it is forward-instead-of-refuse, so it is handled, not ignored.
+			if _, epochChanged := driftBaseline.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch); epochChanged {
+				return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID}
+			}
 		}
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}

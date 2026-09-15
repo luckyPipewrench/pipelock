@@ -453,4 +453,21 @@ func TestScanTools_RejectedNewToolIsNotReportedAsAdmitted(t *testing.T) {
 	if strings.Contains(log.String(), `tool "evil"`) && strings.Contains(log.String(), "now the baseline") {
 		t.Fatalf("observation log claimed a rejected tool became the baseline; got:\n%s", log.String())
 	}
+
+	// Reporting honestly and storing honestly are separate behaviors. The
+	// assertions above only read what was reported, so an implementation that
+	// promoted the rejected name into the baseline while reporting it
+	// correctly would pass them and quietly weaken every later drift
+	// comparison. Check the stored state itself.
+	baseline.mu.Lock()
+	defer baseline.mu.Unlock()
+	if _, promoted := baseline.hashes["evil"]; promoted {
+		t.Fatalf("a rejected new tool was promoted into the drift baseline: %#v", baseline.hashes)
+	}
+	// Positive control for the check above: the clean sibling from the same
+	// response IS in the baseline, so "evil is absent" is a real result and
+	// not an empty map passing by default.
+	if _, promoted := baseline.hashes["alpha"]; !promoted {
+		t.Fatalf("the accepted tool is missing from the drift baseline, so the rejection check proves nothing: %#v", baseline.hashes)
+	}
 }

@@ -1040,6 +1040,7 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	appendActionDowngradeWarning(warnings, "mcp_input_scanning.on_parse_error", old.MCPInputScanning.OnParseError, updated.MCPInputScanning.OnParseError)
 	if old.MCPToolScanning.Enabled && updated.MCPToolScanning.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_tool_scanning.action", old.MCPToolScanning.Action, updated.MCPToolScanning.Action)
+		appendActionDowngradeWarning(warnings, "mcp_tool_scanning.new_tool_action", old.MCPToolScanning.NewToolAction, updated.MCPToolScanning.NewToolAction)
 	}
 	if old.MCPToolPolicy.Enabled && updated.MCPToolPolicy.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_tool_policy.action", old.MCPToolPolicy.Action, updated.MCPToolPolicy.Action)

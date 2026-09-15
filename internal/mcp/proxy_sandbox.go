@@ -216,6 +216,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			Baseline:                tools.NewToolBaseline(),
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
+			NewToolAction:           toolCfg.NewToolAction,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

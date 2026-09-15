@@ -4194,6 +4194,8 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	updated.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionBlock
 	updated.MCPToolScanning.Action = ActionWarn
+	old.MCPToolScanning.NewToolAction = ActionBlock
+	updated.MCPToolScanning.NewToolAction = ActionWarn
 	old.MCPToolPolicy.Enabled = true
 	updated.MCPToolPolicy.Enabled = true
 	old.MCPToolPolicy.Action = ActionBlock
@@ -4247,6 +4249,7 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 		"mcp_input_scanning.action",
 		"mcp_input_scanning.on_parse_error",
 		"mcp_tool_scanning.action",
+		"mcp_tool_scanning.new_tool_action",
 		"mcp_tool_policy.action",
 		"mcp_tool_policy.rules.deny-shell.action",
 		"mcp_binary_integrity.action",
@@ -5108,6 +5111,93 @@ func TestValidate_MCPToolScanningInvalidAction(t *testing.T) {
 	cfg.MCPToolScanning.Action = ActionStrip
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strip action on tool scanning")
+	}
+}
+
+// --- MCPToolScanning.NewToolAction Tests ---
+
+func TestApplyDefaults_MCPToolScanningNewToolActionDefaultsToWarn(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.NewToolAction = "" // omitted; YAML null/blank decode to the same zero value
+	cfg.ApplyDefaults()
+
+	if cfg.MCPToolScanning.NewToolAction != ActionWarn {
+		t.Errorf("expected NewToolAction=warn when enabled with no new_tool_action, got %q", cfg.MCPToolScanning.NewToolAction)
+	}
+}
+
+func TestValidate_MCPToolScanningNewToolActionExplicitWarn(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.NewToolAction = ActionWarn
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("explicit new_tool_action=warn should validate, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolScanningNewToolActionExplicitBlock(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.NewToolAction = ActionBlock
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("explicit new_tool_action=block should validate, got: %v", err)
+	}
+}
+
+func TestValidate_MCPToolScanningNewToolActionInvalid(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.NewToolAction = testInvalid
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid new_tool_action")
+	}
+}
+
+func TestValidate_MCPToolScanningNewToolActionDisabledSkipsValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = false
+	cfg.MCPToolScanning.NewToolAction = testInvalid
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled tool scanning should skip new_tool_action validation, got: %v", err)
+	}
+}
+
+func TestReload_MCPToolScanningNewToolActionDowngradeWarning(t *testing.T) {
+	old := Defaults()
+	old.MCPToolScanning.Enabled = true
+	old.MCPToolScanning.Action = ActionWarn
+	old.MCPToolScanning.NewToolAction = ActionBlock
+
+	updated := Defaults()
+	updated.MCPToolScanning.Enabled = true
+	updated.MCPToolScanning.Action = ActionWarn
+	updated.MCPToolScanning.NewToolAction = ActionWarn
+
+	warnings := ValidateReload(old, updated)
+	if !hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_action") {
+		t.Errorf("expected a new_tool_action downgrade warning, got: %+v", warnings)
+	}
+}
+
+func TestReload_MCPToolScanningNewToolActionNoChangeNoWarning(t *testing.T) {
+	old := Defaults()
+	old.MCPToolScanning.Enabled = true
+	old.MCPToolScanning.Action = ActionWarn
+	old.MCPToolScanning.NewToolAction = ActionBlock
+
+	updated := Defaults()
+	updated.MCPToolScanning.Enabled = true
+	updated.MCPToolScanning.Action = ActionWarn
+	updated.MCPToolScanning.NewToolAction = ActionBlock
+
+	warnings := ValidateReload(old, updated)
+	if hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_action") {
+		t.Errorf("expected no new_tool_action warning when unchanged, got: %+v", warnings)
 	}
 }
 

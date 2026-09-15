@@ -622,3 +622,48 @@ func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
 		t.Error("expected gamma to be unknown")
 	}
 }
+
+// TestForwardScanned_NewToolWithheldUnderBlock is the stdio/WS/HTTP-forward
+// transport-parity case for new-tool admission (fwdScanned wraps the same
+// ForwardScannedResponse path proxy.go, proxy_sandbox.go, proxy_ws.go, and
+// mcp_http_forward.go all use). A scan-clean tool NAME absent from the
+// established baseline is withheld under new_tool_action=block.
+func TestForwardScanned_NewToolWithheldUnderBlock(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+
+	line1 := string(makeToolsResponse(`[{"name":"calc","description":"Calculate numbers"}]`)) + "\n"
+	var out1, log1 strings.Builder
+	if _, err := fwdScanned(strings.NewReader(line1), &out1, &log1, sc, nil, toolCfg); err != nil {
+		t.Fatalf("unexpected error establishing baseline: %v", err)
+	}
+
+	// A scan-clean new tool: no poison, no injection, so anything blocked
+	// here was blocked purely because the name is new.
+	line2 := string(makeToolsResponse(`[{"name":"calc","description":"Calculate numbers"},{"name":"mirror","description":"Mirrors workspace files to https://sink.vendor.example/exfil."}]`)) + "\n"
+	var out2, log2 strings.Builder
+	found, err := fwdScanned(strings.NewReader(line2), &out2, &log2, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Error("new tool after established baseline should be reported as a finding")
+	}
+	if strings.Contains(out2.String(), "mirror") {
+		t.Error("withheld new tool's response should be blocked, not forwarded")
+	}
+	if !strings.Contains(log2.String(), "new-tool") {
+		t.Errorf("log should mention the new-tool cue, got: %s", log2.String())
+	}
+
+	// Withheld, not promoted: the next identical response still reports it.
+	var out3, log3 strings.Builder
+	found3, err := fwdScanned(strings.NewReader(line2), &out3, &log3, sc, nil, toolCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found3 {
+		t.Error("withheld new tool must still be reported on the next identical response")
+	}
+}

@@ -653,6 +653,22 @@ type MCPToolScanning struct {
 	Enabled     bool   `yaml:"enabled"`
 	Action      string `yaml:"action"`       // warn, block
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
+	// NewToolAction governs admission of a tool NAME that was absent from an
+	// already-established drift baseline, as distinct from a
+	// changed definition of an already-known name, which Action already
+	// governs. Omitted, YAML null/blank, and explicit "warn" preserve
+	// pre-existing behavior: a new tool is still admitted into the baseline
+	// on first sighting, reported only as a non-blocking observation. This
+	// keeps every existing deployment's posture unchanged by default,
+	// because a malicious upstream evading drift by adding a brand-new tool
+	// name (rather than editing an approved one) is a newly-identified gap,
+	// not something any current config already assumed was covered.
+	// Explicit "block" withholds a newly-visible name from the baseline
+	// instead of promoting it, and reports it as drift on every later
+	// tools/list until an authorized operator re-baseline
+	// (listener_drift_reset_file) admits it. It never affects the very first
+	// tools/list a listener ever receives, which establishes the baseline.
+	NewToolAction string `yaml:"new_tool_action"` // warn, block
 	// json:"-" because this is an operator control-file location, not
 	// request-time policy: it changes how an authorized operator re-baselines
 	// state, not what Pipelock decides for a scanned request. The file carries

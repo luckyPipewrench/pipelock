@@ -2192,6 +2192,12 @@ func (c *Config) validateMCPToolScanning() error {
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
+		switch c.MCPToolScanning.NewToolAction {
+		case "", ActionWarn, ActionBlock:
+			// valid; "" is filled to warn by normalize
+		default:
+			return fmt.Errorf("invalid mcp_tool_scanning new_tool_action %q: must be warn or block", c.MCPToolScanning.NewToolAction)
+		}
 	}
 	resetFile := c.MCPToolScanning.ListenerDriftResetFile
 	resetKey := c.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile

@@ -388,6 +388,7 @@ mcp_tool_scanning:
   enabled: true
   action: block
   detect_drift: true
+  new_tool_action: block
 
 mcp_data_class_labels:
   enabled: false

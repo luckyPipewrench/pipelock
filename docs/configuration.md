@@ -1132,6 +1132,7 @@ mcp_tool_scanning:
   enabled: true
   action: warn
   detect_drift: true
+  new_tool_action: warn
 ```
 
 | Field | Default | Description |
@@ -1139,6 +1140,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
+| `new_tool_action` | `"warn"` | warn or block. Governs a tool NAME absent from an already-established drift baseline, as distinct from a changed definition of an already-known name (`action` governs that). Never affects the very first `tools/list`, which establishes the baseline for every name in it. See "New tool admission" below. |
 | `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
 | `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
 | `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
@@ -1193,6 +1195,48 @@ same-named tool's description per user no longer blocks later clients: the
 personalized text introduces no cue. Pipelock still does not partition the
 drift baseline per client, which would restore the fresh-session rug-pull
 bypass.
+
+### New tool admission
+
+Drift comparison above governs a *known* tool name that changed. It says
+nothing about a name the baseline has never seen: by default, a brand-new
+tool is admitted into the baseline on first sighting the same way the very
+first `tools/list` establishes it, because a scan-clean new tool carries no
+content cue to block on. This is exactly the gap an attacker can walk
+through: rather than edit an approved tool's description and trip the drift
+checks above, add a wholly NEW tool whose description carries the same
+outbound-destination or agent-directive behavior, and it becomes the
+approved baseline the moment it is scanned clean.
+
+`new_tool_action` closes this independently of `action`. Set it to `block`
+to withhold a newly-visible name from the baseline instead of promoting it:
+
+```yaml
+mcp_tool_scanning:
+  enabled: true
+  action: block
+  detect_drift: true
+  new_tool_action: block
+```
+
+With `new_tool_action: block`, a tool name absent from the established
+baseline is reported as drift (cue `new-tool`) and withheld — not promoted
+— exactly the way a changed definition is withheld under `action: block`.
+It is reported again on every later `tools/list` until an authorized
+operator re-baseline admits it, using the same signed listener drift reset
+mechanism described below (`listener_drift_reset_file`). This never affects
+the very first `tools/list` a baseline ever receives: that response
+establishes the baseline for every name in it, matching the pre-existing
+`action` semantics for a first sighting.
+
+The default (`warn`, including the omitted/unset value) preserves the
+behavior every existing deployment already had: a new tool is still
+admitted, and its arrival is recorded only as a non-blocking observation
+(never a `DriftDetected` match), so an upstream vendor that legitimately
+adds tools between releases does not need an operator response. Choosing
+`block` is a deliberate posture change for deployments that want every new
+tool name to require the same operator sign-off a changed definition
+already requires.
 
 With `action: block`, a confirmed upstream update that Pipelock blocked needs
 an operator re-baseline. Configure a signed one-shot control-file path, the

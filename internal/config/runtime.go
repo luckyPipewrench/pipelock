@@ -234,6 +234,7 @@ func applyToolScanningAutoEnable(c *Config, info *ResolveRuntimeInfo) {
 		c.MCPToolScanning.Enabled = true
 		c.MCPToolScanning.Action = ActionWarn
 		c.MCPToolScanning.DetectDrift = true
+		c.MCPToolScanning.NewToolAction = ActionWarn
 		info.MCPToolScanningAutoEnabled = true
 	}
 }

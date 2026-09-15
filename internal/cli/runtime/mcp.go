@@ -705,10 +705,11 @@ Examples:
 			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
 				toolCfg = &tools.ToolScanConfig{
-					Baseline:    tools.NewToolBaseline(),
-					Action:      cfg.MCPToolScanning.Action,
-					DetectDrift: cfg.MCPToolScanning.DetectDrift,
-					ExtraPoison: rules.ConvertToolPoison(bundleResult.ToolPoison),
+					Baseline:      tools.NewToolBaseline(),
+					Action:        cfg.MCPToolScanning.Action,
+					DetectDrift:   cfg.MCPToolScanning.DetectDrift,
+					NewToolAction: cfg.MCPToolScanning.NewToolAction,
+					ExtraPoison:   rules.ConvertToolPoison(bundleResult.ToolPoison),
 				}
 			}
 
@@ -1044,6 +1045,7 @@ Key-free evidence capture:
 				toolCfg = &tools.ToolScanConfig{
 					Action:                 cfg.MCPToolScanning.Action,
 					DetectDrift:            cfg.MCPToolScanning.DetectDrift,
+					NewToolAction:          cfg.MCPToolScanning.NewToolAction,
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
 				}

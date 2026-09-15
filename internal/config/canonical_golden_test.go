@@ -410,7 +410,7 @@ const (
 	// on upgrade, and a conductor strict-mode reload will see it. That
 	// visibility is the intended behavior, not a side effect - an operator's
 	// detection posture changed and the hash is what says so.
-	goldenHashDefaults = "c6264fe6ff02adfcab114ed9575298e46d72608cbeb0e6f74c6f8d6ea801afe7"
+	goldenHashDefaults = "39dd3b732d536f828bd52e7cb3de708f968cd9b302401dbe653a9cd0494cc720"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -629,7 +629,7 @@ const (
 	// now materializes them. Before that fix the defaults hash moved and this
 	// one did not, which is exactly the shape of a default that reaches the
 	// no-config CLI path and no real deployment.
-	goldenHashRichConfig = "e5c4d6a5b87d66803c06ac88b976f414b9c793d270e3ad50a314e9d7a1d7c16c"
+	goldenHashRichConfig = "d9b0a68777fdcd716d4d0e23caa6ca149f04de6e0614a59428422c59817f2455"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -148,6 +148,15 @@ type ToolScanConfig struct {
 	ListenerDriftResetTarget string
 	Action                   string // warn, block
 	DetectDrift              bool
+	// NewToolAction governs admission of a tool NAME absent from an
+	// already-established drift baseline (as opposed to a changed definition
+	// of an already-known name, which Action/DetectDrift already govern).
+	// "" and "warn" admit it as today, with at most a non-blocking
+	// observation. "block" withholds it from the baseline and reports it as
+	// drift on every later tools/list until an authorized operator
+	// re-baseline (ListenerDriftResetFile) admits it. It never affects the
+	// very first tools/list, which establishes the baseline.
+	NewToolAction string // warn, block
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.
@@ -173,6 +182,13 @@ type ToolBaseline struct {
 	hasBaseline    bool                                // true after first SetKnownTools call
 	hasA2A         bool                                // true after first SetKnownA2AMethods call
 	driftEpoch     uint64                              // increments when operator reset clears drift state
+	// driftEstablished is true once any definition has ever been promoted
+	// into hashes. It is captured ONCE per tools/list response, before that
+	// response's own tools are evaluated, so that a same-response sibling
+	// promoted earlier in the loop never makes a later sibling of the SAME
+	// first-ever response read as "new after baseline". It is
+	// reset by an operator drift reset exactly like the rest of drift state.
+	driftEstablished bool
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -359,6 +375,13 @@ type DriftEvaluation struct {
 	EpochChanged bool
 	// Drifted reports that a stored definition changed.
 	Drifted bool
+	// NewTool reports that this name was absent from an already-established
+	// baseline. It is a first sighting of a NAME the baseline had not seen,
+	// as distinct from Drifted alone, which also covers a changed definition
+	// of an already-known name. A name seen before any baseline exists never
+	// sets this: the first tools/list establishes the baseline and every name
+	// in it is admitted silently, matching the previous behavior.
+	NewTool bool
 	// Cues lists what the change introduced. Empty means the change was
 	// accepted and the new definition is now the baseline.
 	Cues []string
@@ -406,6 +429,26 @@ type DefinitionEvaluation struct {
 	// PromoteChanged stores a CHANGED definition that was blocked BY DRIFT.
 	// Block mode withholds it so the approved definition stays in place.
 	PromoteChanged bool
+	// BlockNewTools withholds a name absent from an already-established
+	// baseline instead of admitting it on first sighting. It governs ONLY a
+	// name introduced after a baseline exists; it never affects the very
+	// first tools/list, which establishes the baseline for every name in it.
+	// A withheld name is reported with DriftCueNewTool on every later
+	// tools/list until an authorized operator re-baseline (the signed
+	// listener drift reset) admits it. This is independent of PromoteNew,
+	// which governs promotion based on a per-tool CONTENT finding, not on
+	// whether the name itself is new.
+	BlockNewTools bool
+	// EstablishedBeforeResponse reports whether the baseline already existed
+	// BEFORE the tools/list response currently being evaluated. The caller
+	// must capture this ONCE, before iterating that response's tools, and
+	// pass the same value for every tool in it. Reading baseline state
+	// per-tool instead would let an earlier sibling's promotion, within the
+	// SAME first-ever response, make a later sibling of that same response
+	// misread as "new after an established baseline" - a first-ever response
+	// establishes the baseline for every name in it, not just the first one
+	// evaluated.
+	EstablishedBeforeResponse bool
 	// PromoteAccepted allows a change carrying no drift cue to become the new
 	// baseline. It must carry the FULL per-tool verdict, not just the drift
 	// one: a definition the scanner blocked for injection or poisoning has to
@@ -441,11 +484,34 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 		copy(cp, params)
 		tb.params[name] = cp
 		tb.structural[name] = structural
+		tb.driftEstablished = true
 	}
 
 	if !exists {
+		established := in.EstablishedBeforeResponse
+		if established && in.BlockNewTools {
+			// Withheld: never promoted, so the next tools/list re-evaluates
+			// the same name against the same still-missing baseline entry and
+			// reports it again, exactly like a withheld changed definition.
+			return DriftEvaluation{
+				Drifted: true,
+				NewTool: true,
+				Cues:    []string{DriftCueNewTool},
+				Detail:  fmt.Sprintf("tool %q was not part of the established baseline", name),
+			}
+		}
 		if promoteNew {
 			promote()
+		}
+		if established {
+			// Reported for operator visibility, but never a blocking cue:
+			// this mirrors the shared-baseline false-positive profile, where
+			// a name becoming newly VISIBLE to one caller must not drift.
+			return DriftEvaluation{
+				Drifted: true,
+				NewTool: true,
+				Detail:  fmt.Sprintf("tool %q added; baseline extended", name),
+			}
 		}
 		return DriftEvaluation{}
 	}
@@ -594,6 +660,21 @@ func (tb *ToolBaseline) resetDriftStateLocked() {
 	tb.structural = make(map[string]string)
 	tb.descs = make(map[string]string)
 	tb.params = make(map[string][]string)
+	tb.driftEstablished = false
+}
+
+// HasDriftBaseline reports whether the drift baseline has ever been
+// established (any definition promoted since creation or the last operator
+// reset). Callers evaluating a whole tools/list response must capture this
+// ONCE before iterating that response's tools and pass the same value to
+// every DefinitionEvaluation in it; see EstablishedBeforeResponse.
+func (tb *ToolBaseline) HasDriftBaseline() bool {
+	if tb == nil {
+		return false
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.driftEstablished
 }
 
 // DriftEpoch returns the generation of the drift baseline. A listener captures
@@ -2194,6 +2275,17 @@ func toolScanCapacityLimit(defs []ToolDef, names []string, cfg *ToolScanConfig) 
 func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
 	confusableNames := confusableToolNameCollisions(tools)
 
+	// Captured ONCE, before this response's tools are evaluated, so an
+	// earlier sibling promoted earlier in THIS SAME loop (e.g. the very
+	// first tools/list a baseline ever receives) never makes a later
+	// sibling of that same response misread as "new after an established
+	// baseline". See DefinitionEvaluation.EstablishedBeforeResponse.
+	driftBaselineForResponse := cfg.DriftBaseline
+	if driftBaselineForResponse == nil {
+		driftBaselineForResponse = cfg.Baseline
+	}
+	establishedBeforeResponse := driftBaselineForResponse.HasDriftBaseline()
+
 	for _, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
@@ -2305,19 +2397,31 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			hash := hashTool(tool)
 			promoteNew := cfg.Action != "block" || !hasFinding
 			promoteChanged := cfg.Action != "block"
+			// blockNewTools governs admission of a NAME absent from an
+			// already-established baseline. It is independent of the
+			// content-based promotion above: a scan-clean new tool would
+			// otherwise be promoted on trust alone, letting a
+			// malicious upstream evade every content cue by introducing new
+			// egress behavior under a new name instead of editing an
+			// approved one. Unset (default "") preserves the previous behavior:
+			// a new tool is still admitted, with at most a non-blocking
+			// observation.
+			blockNewTools := cfg.NewToolAction == "block"
 			// Compare and promote atomically. A change is a lowered evidence
 			// bar, not a verdict: block on what it introduced, and accept a
 			// change that only adds descriptive text so a legitimate vendor
 			// update does not re-report forever.
 			eval := driftBaseline.EvaluateDefinition(DefinitionEvaluation{
-				Name:               tool.Name,
-				Hash:               hash,
-				Desc:               tool.Description,
-				Params:             paramNames,
-				Structural:         structuralDigest(tool),
-				ExpectedDriftEpoch: cfg.ExpectedDriftEpoch,
-				PromoteNew:         promoteNew,
-				PromoteChanged:     promoteChanged,
+				Name:                      tool.Name,
+				Hash:                      hash,
+				Desc:                      tool.Description,
+				Params:                    paramNames,
+				Structural:                structuralDigest(tool),
+				ExpectedDriftEpoch:        cfg.ExpectedDriftEpoch,
+				PromoteNew:                promoteNew,
+				PromoteChanged:            promoteChanged,
+				BlockNewTools:             blockNewTools,
+				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
 				PromoteAccepted: cfg.Action != "block" || !hasFinding,
@@ -2343,13 +2447,22 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					match.DriftCues = eval.Cues
 					hasFinding = true
 				} else {
-					observations = append(observations, ToolScanMatch{
+					obs := ToolScanMatch{
 						ToolName:      tool.Name,
 						DriftAccepted: true,
 						PreviousHash:  eval.PreviousHash,
 						CurrentHash:   hash,
 						DriftDetail:   eval.Detail,
-					})
+					}
+					if eval.NewTool {
+						// Reported for operator visibility, never a blocking
+						// cue in this branch: this is the default (warn)
+						// admission path, and the shared-baseline
+						// false-positive profile requires a name newly
+						// VISIBLE to one caller to stay silent in Matches.
+						obs.DriftCues = []string{DriftCueNewTool}
+					}
+					observations = append(observations, obs)
 				}
 			}
 		}

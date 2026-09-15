@@ -60,6 +60,21 @@ func TestProbe_SharedBaselineFalsePositiveProfile(t *testing.T) {
 		}
 	})
 
+	t.Run("extra tool visible to second client withholds under new_tool_action block", func(t *testing.T) {
+		// with the explicit block knob, the shared-baseline visibility
+		// case above is a deliberate posture change, not the false positive
+		// this probe otherwise documents. A newly VISIBLE name is withheld
+		// and reported as drift instead of silently joining the baseline.
+		b := NewToolBaseline()
+		cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: b, NewToolAction: "block"}
+		ScanTools(makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`), sc, cfg)
+		r := ScanTools(makeToolsResponse(
+			`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`), sc, cfg)
+		if got := driftedNames(r); len(got) != 1 || got[0] != "beta" {
+			t.Fatalf("expected beta withheld as new-tool drift, got %v", got)
+		}
+	})
+
 	t.Run("per-user description text no longer drifts", func(t *testing.T) {
 		// The documented false positive of a shared upstream baseline: an
 		// upstream that personalizes a same-named tool's description per user

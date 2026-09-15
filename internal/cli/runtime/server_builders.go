@@ -51,6 +51,7 @@ func buildMCPToolCfg(
 		Baseline:               baseline,
 		Action:                 cfg.MCPToolScanning.Action,
 		DetectDrift:            cfg.MCPToolScanning.DetectDrift,
+		NewToolAction:          cfg.MCPToolScanning.NewToolAction,
 		ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 		ExtraPoison:            extraPoison,
 	}

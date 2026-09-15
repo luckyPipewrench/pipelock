@@ -329,6 +329,9 @@ func (c *Config) ApplyDefaults() {
 	if c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
 		c.MCPToolScanning.Action = ActionWarn
 	}
+	if c.MCPToolScanning.Enabled && c.MCPToolScanning.NewToolAction == "" {
+		c.MCPToolScanning.NewToolAction = ActionWarn
+	}
 	if c.MCPDataClassLabels.UnknownClass == "" {
 		c.MCPDataClassLabels.UnknownClass = Defaults().MCPDataClassLabels.UnknownClass
 	}

@@ -115,6 +115,13 @@ const (
 	// necessary: the description is untouched, and the tool just claimed to be
 	// safer than the operator approved it as.
 	DriftCueStructural = "structural-change"
+	// DriftCueNewTool: the name was absent from the established baseline. A
+	// malicious upstream can evade every other cue by introducing the same
+	// egress behavior under a NEW tool name instead of editing an approved
+	// one, since a first sighting is normally admitted on trust. This cue
+	// marks that admission decision itself as the thing that changed, not the
+	// tool's content.
+	DriftCueNewTool = "new-tool"
 )
 
 // driftCuePattern pairs a cue class with the shape that detects it.

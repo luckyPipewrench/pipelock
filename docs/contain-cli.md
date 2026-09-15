@@ -512,6 +512,7 @@ Probe 8's DROP-counter evidence can come from either of two mutually exclusive f
 | `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
 | `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT a leaked canary |
 | `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail** — gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP, a distinct production outcome from a leaked canary (same status, different detail and root cause) |
+| `dial-completed-then-failed` | `drop_counter_reads` | `fail` (dial completed before curl failed) | 1 | **must-fail** — gate must DETECT a canary whose TCP connect completed even though curl then failed; the dial-completion timer, not the counter, is the load-bearing signal |
 
 The fixture schema, including the mutual-exclusion rule between `drop_counter_reads` and `nft_chain_text` and the compatibility guarantee for existing fixtures, is documented in `sdk/conformance/testdata/containment/README.md`. Run the artifact two ways:
 

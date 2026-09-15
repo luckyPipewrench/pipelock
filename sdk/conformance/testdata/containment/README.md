@@ -39,6 +39,7 @@ Each fixture is a pair:
 | `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
 | `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT a leaked canary |
 | `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail** — gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP |
+| `dial-completed-then-failed` | `drop_counter_reads` | `fail` (dial completed before curl failed) | 1 | **must-fail** — gate must DETECT a canary whose TCP connect completed even though curl then failed; the dial-completion timer, not the counter, is the load-bearing signal |
 
 ## Compatibility (`nft_chain_text` / `agent_uid` / `proxy_uid` / `operator_uid` / `proxy_port`)
 

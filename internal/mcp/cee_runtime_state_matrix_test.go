@@ -153,31 +153,37 @@ func TestMCPCEERuntimeStateMatrix_ConcurrentRequestsRemainInspectable(t *testing
 
 	start := make(chan struct{})
 	results := make(chan httpInputDecision, 2)
+	for _, session := range []string{"concurrent-session-a", "concurrent-session-b"} {
+		seeded := scanHTTPInputDecision(mcpChunkedCEERequest(1, ceeMatrixAWSFirst), io.Discard, session, "audit", opts)
+		if seeded.Blocked != nil {
+			t.Fatalf("seed for %s blocked: %+v", session, seeded.Blocked)
+		}
+	}
+
 	var wg sync.WaitGroup
-	for _, msg := range [][]byte{mcpChunkedCEERequest(1, ceeMatrixAWSFirst), mcpChunkedCEERequest(2, ceeMatrixAWSSecond)} {
+	for _, session := range []string{"concurrent-session-a", "concurrent-session-b"} {
 		wg.Add(1)
-		go func(msg []byte) {
+		go func(session string) {
 			defer wg.Done()
 			<-start
-			results <- scanHTTPInputDecision(msg, io.Discard, "concurrent-session", "audit", opts)
-		}(msg)
+			results <- scanHTTPInputDecision(mcpChunkedCEERequest(2, ceeMatrixAWSSecond), io.Discard, session, "audit", opts)
+		}(session)
 	}
 	close(start)
 	wg.Wait()
 	close(results)
 
-	forwarded, blocked := 0, 0
+	blocked := 0
 	for result := range results {
 		if result.Blocked == nil {
-			forwarded++
-			continue
+			t.Fatal("concurrent completion forwarded, want CEE block")
 		}
 		if result.Blocked.ErrorCode != mcpCEEBlockErrorCode {
 			t.Fatalf("concurrent block = %+v, want CEE error code %d", result.Blocked, mcpCEEBlockErrorCode)
 		}
 		blocked++
 	}
-	if forwarded != 1 || blocked != 1 {
-		t.Fatalf("concurrent CEE outcomes = forwarded:%d blocked:%d, want exactly one of each", forwarded, blocked)
+	if blocked != 2 {
+		t.Fatalf("concurrent CEE blocks = %d, want 2", blocked)
 	}
 }

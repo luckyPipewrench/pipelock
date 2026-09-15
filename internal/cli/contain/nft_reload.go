@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,22 +26,37 @@ var nftHandlePattern = regexp.MustCompile(`\s+# handle ([1-9][0-9]*)\s*$`)
 // nftReloadEnv isolates the boot-time reconciler from the installer so tests
 // can exercise its emitted nft transaction without changing a host ruleset.
 type nftReloadEnv struct {
-	nftPath    string
-	rulesPath  string
-	configPath string
-	table      string
-	chain      string
-	runCmd     runCommand
-	readFile   func(string) ([]byte, error)
-	writeFile  func(string, []byte, os.FileMode) error
-	removeFile func(string) error
-	now        func() time.Time
+	nftPath           string
+	rulesPath         string
+	configPath        string
+	reconcileLockPath string
+	table             string
+	chain             string
+	runCmd            runCommand
+	readFile          func(string) ([]byte, error)
+	writeFile         func(string, []byte, os.FileMode) error
+	removeFile        func(string) error
+	now               func() time.Time
 	// warn reports a non-fatal reconciliation problem (a dropped declared
 	// loopback service) to the operator. Every boot/manual reload runs
 	// unattended via systemd, so this writes to stderr -- captured by the
 	// journal -- rather than returning an error that would abort the reload
 	// and leave the agent's egress boundary un-reconciled at all.
 	warn func(string)
+	// lockFn wraps the config-snapshot -> kernel-apply -> persist critical
+	// section in an exclusive lock, shared with `contain install`'s own nft
+	// step, so the two can never interleave on the same managed config and
+	// nft state. Defaults to the real flock-based withContainmentReconcileLock;
+	// tests substitute a fake to deterministically force an interleaving
+	// window without depending on OS scheduling.
+	lockFn func(lockPath string, fn func() error) error
+	// pauseAfterSnapshot, if set, runs after the declared loopback services
+	// have been read from the managed config and BEFORE the kernel
+	// transaction is built -- while lockFn's critical section is still
+	// held. Test-only: lets a race test deterministically widen the window
+	// between snapshot and apply to prove a concurrent `contain install`
+	// blocks on the shared lock instead of interleaving.
+	pauseAfterSnapshot func()
 }
 
 var (
@@ -51,19 +67,27 @@ var (
 func defaultNFTReloadEnv() *nftReloadEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &nftReloadEnv{
-		nftPath:    platform.nftPath,
-		rulesPath:  defaultNFTRulesPath,
-		configPath: filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		table:      defaultNFTTable,
-		chain:      defaultNFTChain,
-		runCmd:     realRunCommand,
-		readFile:   os.ReadFile,
-		writeFile:  os.WriteFile,
+		nftPath:           platform.nftPath,
+		rulesPath:         defaultNFTRulesPath,
+		configPath:        filepath.Join(defaultConfigDir, "pipelock.yaml"),
+		reconcileLockPath: defaultContainmentReconcileLockPath,
+		table:             defaultNFTTable,
+		chain:             defaultNFTChain,
+		runCmd:            realRunCommand,
+		readFile:          os.ReadFile,
+		// writeFileAtomic (temp file + fsync + rename + directory fsync in
+		// the same directory) is the same primitive `contain install`
+		// already uses for every managed file write. A crash mid-write can
+		// therefore never leave the persisted rules file empty or partial:
+		// either the previous content survives untouched, or the new
+		// content is fully present.
+		writeFile:  writeFileAtomic,
 		removeFile: os.Remove,
 		now:        time.Now,
 		warn: func(msg string) {
 			_, _ = fmt.Fprintln(os.Stderr, "WARNING: "+msg)
 		},
+		lockFn: withContainmentReconcileLock,
 	}
 }
 
@@ -88,16 +112,45 @@ func reloadNFTRulesCmd() *cobra.Command {
 }
 
 func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
+	if env.reconcileLockPath == "" {
+		// A test env that never set a lock path is not exercising locking;
+		// production always sets defaultContainmentReconcileLockPath.
+		return reloadNFTRulesLocked(ctx, env)
+	}
+	lockFn := env.lockFn
+	if lockFn == nil {
+		lockFn = withContainmentReconcileLock
+	}
+	// The whole critical section -- reading the current persisted rules,
+	// snapshotting the managed config's declared loopback services,
+	// applying the kernel transaction, and persisting the result -- runs
+	// under one exclusive lock shared with `contain install`'s own nft
+	// step (see withContainmentReconcileLock). Without it, an install that
+	// promotes a new managed config while a reload is mid-flight on the
+	// OLD config can have the reload's later write silently restore an
+	// entry the install just revoked.
+	return lockFn(env.reconcileLockPath, func() error {
+		return reloadNFTRulesLocked(ctx, env)
+	})
+}
+
+func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	persisted, err := env.readFile(env.rulesPath)
 	if err != nil {
 		return fmt.Errorf("read nft rules %s: %w", env.rulesPath, err)
 	}
 	header, ok, err := parseNFTRulesHeaderUIDs(persisted)
 	if err != nil {
-		return fmt.Errorf("parse nft rules header %s: %w", env.rulesPath, err)
+		return fmt.Errorf("parse nft rules header %s: %w; rerun `pipelock contain install` to restore it", env.rulesPath, err)
 	}
 	if !ok {
-		return fmt.Errorf("nft rules %s is missing the managed uid header", env.rulesPath)
+		// An empty or partial persisted file (e.g. a crash mid-write before
+		// this reload started writing atomically) parses no header. Fail
+		// closed here rather than loading a chain built from zero UIDs: no
+		// containment rule is safer to be missing loudly than to be
+		// silently wrong. `contain install` is the only path that can
+		// regenerate this file from scratch.
+		return fmt.Errorf("nft rules %s is missing the managed uid header (empty or corrupt persisted rules file); rerun `pipelock contain install` to restore it", env.rulesPath)
 	}
 
 	// The persisted rules file is NOT the source of truth for declared
@@ -110,6 +163,9 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 	// `contain install` uses, so removed and expired entries are dropped
 	// here even if nobody re-runs install.
 	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
+	if env.pauseAfterSnapshot != nil {
+		env.pauseAfterSnapshot()
+	}
 	rules := []byte(renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      header.operatorUID,
 		ProxyUID:         header.proxyUID,
@@ -120,9 +176,34 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 		LoopbackServices: loopbackServices,
 	}))
 
+	// Persist the reconciled file FIRST, atomically, before touching the
+	// kernel. writeFileAtomic's temp-file-then-rename means a crash here
+	// either leaves the previous content fully intact or lands the new
+	// content fully intact -- never empty or partial. If the kernel
+	// transaction below then fails, restoreOnFailure below writes the
+	// PREVIOUS content back (also atomically), so the file and the
+	// (unloaded) kernel never disagree in the fail-open direction: an
+	// operator or the next reload reading the file sees what the kernel
+	// actually enforces, not a change that was never applied.
+	fileChanged := !bytesEqual(persisted, rules)
+	if fileChanged {
+		if err := env.writeFile(env.rulesPath, rules, modeConfigSecret); err != nil {
+			return fmt.Errorf("persist reconciled nft rules %s: %w", env.rulesPath, err)
+		}
+	}
+	restoreOnFailure := func(cause error) error {
+		if !fileChanged {
+			return cause
+		}
+		if restoreErr := env.writeFile(env.rulesPath, persisted, modeConfigSecret); restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore previous nft rules %s after failed reload: %w", env.rulesPath, restoreErr))
+		}
+		return cause
+	}
+
 	out, code, err := env.runCmd(ctx, env.nftPath, "-n", "-a", "list", "chain", "inet", env.table, env.chain)
 	if err != nil {
-		return fmt.Errorf("list nft managed chain: %w", err)
+		return restoreOnFailure(fmt.Errorf("list nft managed chain: %w", err))
 	}
 	if code != 0 && strings.Contains(out, "No such file or directory") {
 		// A missing chain is the normal first-boot state. Loading the canonical
@@ -130,35 +211,25 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 		// other missing-table situation.
 		out = ""
 	} else if code != 0 {
-		return fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out))
+		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
 	}
 	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
-		return fmt.Errorf("write nft managed chain reload file %s: %w", path, err)
+		return restoreOnFailure(fmt.Errorf("write nft managed chain reload file %s: %w", path, err))
 	}
 	defer func() { _ = env.removeFile(path) }()
 	if _, code, err := env.runCmd(ctx, env.nftPath, "-c", "-f", path); err != nil || code != 0 {
 		if err != nil {
-			return fmt.Errorf("validate nft managed chain reload: %w", err)
+			return restoreOnFailure(fmt.Errorf("validate nft managed chain reload: %w", err))
 		}
-		return fmt.Errorf("validate nft managed chain reload exit=%d", code)
+		return restoreOnFailure(fmt.Errorf("validate nft managed chain reload exit=%d", code))
 	}
 	if _, code, err := env.runCmd(ctx, env.nftPath, "-f", path); err != nil || code != 0 {
 		if err != nil {
-			return fmt.Errorf("reload nft managed chain: %w", err)
+			return restoreOnFailure(fmt.Errorf("reload nft managed chain: %w", err))
 		}
-		return fmt.Errorf("reload nft managed chain exit=%d", code)
-	}
-	// The kernel state and the persisted rules file must agree, or the NEXT
-	// reload (or a reboot that skips this reconciler and loads the file
-	// directly) would reintroduce whatever this reload just dropped. Persist
-	// only after the live reload succeeds, so a failed reload never
-	// overwrites a known-good persisted file with an unapplied change.
-	if !bytesEqual(persisted, rules) {
-		if err := env.writeFile(env.rulesPath, rules, modeConfigSecret); err != nil {
-			return fmt.Errorf("persist reconciled nft rules %s: %w", env.rulesPath, err)
-		}
+		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
 	return nil
 }
@@ -180,6 +251,15 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 	data, err := env.readFile(env.configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// A genuinely absent managed config is not itself an error --
+			// Pipelock may be reloading before contain install has ever
+			// staged one -- but it is not silent either: an operator who
+			// expects a declared service reachable needs to know reload
+			// found no config to read it from, not only that the config was
+			// malformed once it existed.
+			if env.warn != nil {
+				env.warn(fmt.Sprintf("containment: managed config %s not found; reloading without any declared loopback services; run `pipelock contain install` to restore it", env.configPath))
+			}
 			return nil
 		}
 		if env.warn != nil {

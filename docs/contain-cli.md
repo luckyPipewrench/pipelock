@@ -265,9 +265,18 @@ The proxy also refuses to dial its configured metrics address and port. An `ssrf
 The contained agent can reach exactly one loopback destination by default: the
 proxy port. An operator who needs the agent to reach a second local TCP
 service (for example a local search index) declares it in the managed config
-instead of hand-editing the nftables rules -- a hand-inserted carve-out is
-tolerated by `contain reload-nft-rules` but rejected by `contain verify`,
-which is exactly the trap `containment.loopback_services` exists to close.
+instead of hand-editing the nftables rules. Declaring it is the ONLY
+supported path: a hand-inserted loopback accept adjacent to the managed
+block is not tolerated forever. Reload's block matcher recognizes an
+agent-owned loopback accept immediately following the managed proxy-port
+allow as PART of the managed block (this is what lets it grow the block to
+hold declared entries across reloads without leaving a stale one-off allow
+behind), so a hand-inserted rule in that position gets silently absorbed
+into -- and then removed by -- the next `contain reload-nft-rules`, the same
+way a genuinely removed declared entry is removed. `contain verify` flags
+it as an unexpected verdict in the meantime, because it does not match any
+declared entry. Declare the service instead of hand-editing the rules; that
+is the trap `containment.loopback_services` exists to close.
 
 ```yaml
 containment:
@@ -302,11 +311,14 @@ needing a fresh `contain install`. **Every add, remove, or expiry of a
 the kernel.** Run `pipelock contain reload-nft-rules` as root after editing
 the managed config; the boot-time unit reruns it automatically on the next
 boot, and `contain install` reruns it too if that is the change you are
-already making. If the managed config is unreadable, or the declared set as
-a whole is malformed or contains an expired entry, reconciliation fails
-closed: it renders the managed block with ZERO declared loopback services
-(the agent stays contained and only loses the extra service) and logs a
-warning naming which entry was dropped and why.
+already making. If the managed config is missing, unreadable, or the
+declared set as a whole is malformed or contains an expired entry,
+reconciliation fails closed: it renders the managed block with ZERO
+declared loopback services (the agent stays contained and only loses the
+extra service) and logs a warning naming the config path and why (a missing
+managed config names `pipelock contain install` as the recovery command; an
+unreadable or malformed one names re-running reconciliation once it is
+fixed).
 
 `contain verify` checks the declared set against the live chain in both
 directions: an agent-owned loopback accept for a port that is neither the

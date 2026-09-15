@@ -1960,7 +1960,15 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string) {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
-		return nil, ""
+		if errors.Is(err, os.ErrNotExist) {
+			// A genuinely absent managed config is a known, explainable
+			// state -- distinct from an unreadable one -- so name it rather
+			// than reporting no problem at all: an operator who expects a
+			// declared service reachable needs to know verify found no
+			// managed config to read it from.
+			return nil, fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath)
+		}
+		return nil, fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err)
 	}
 	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
 	if err != nil {

@@ -153,7 +153,10 @@ logging:
 					return false
 				}, "reload to publish proxy config")
 				if testCase.requestDuringReload {
-					_ = postReloadSnapshotToolsList(t, mcpAddr, 2)
+					// Until server state is published, both reload directions
+					// must keep enforcing the previous tool-rule snapshot.
+					during := postReloadSnapshotToolsList(t, mcpAddr, 2)
+					assertReloadSnapshotToolResponse(t, during, testCase.removeBundle)
 				}
 				unpause()
 				select {
@@ -189,14 +192,20 @@ logging:
 func assertReloadSnapshotToolResponse(t *testing.T, result string, wantBlocked bool) {
 	t.Helper()
 	var response struct {
-		Error json.RawMessage `json:"error"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(result), &response); err != nil {
 		t.Fatalf("decode response: %v: %s", err, result)
 	}
-	blocked := len(response.Error) > 0 && string(response.Error) != "null"
+	blocked := response.Error != nil
 	if blocked != wantBlocked {
 		t.Fatalf("tool response blocked = %v, want %v: %s", blocked, wantBlocked, result)
+	}
+	if wantBlocked && (response.Error.Code != -32000 || response.Error.Message != "pipelock: tool poisoning detected in tools/list") {
+		t.Fatalf("tool response did not report a tool-poisoning block: %s", result)
 	}
 	if !wantBlocked && !strings.Contains(result, `"description":"test-tool-poison"`) {
 		t.Fatalf("allowed response omitted the upstream tool: %s", result)

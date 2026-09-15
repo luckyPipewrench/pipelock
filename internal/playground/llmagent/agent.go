@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -248,6 +249,27 @@ type Agent struct {
 	// observed across this agent's completions, set by complete(). Sequential-
 	// use contract, no mutex (same as convo).
 	providerModel string
+
+	// warn receives operator-facing warnings that are not run failures, one
+	// call per warning. It is nil in production, which means os.Stderr. A
+	// test sets it so the warning is an assertable behavior rather than a
+	// side effect on a process-global stream: writing straight to os.Stderr
+	// leaves "the operator was told" untestable, so deleting the warning
+	// would pass every assertion around it.
+	warn func(string)
+}
+
+// warnf reports an operator-facing warning through the injected sink, or to
+// stderr when none is set. Stderr is deliberate for the production path: the
+// parent process does not parse the child's stderr, so an operator can see
+// this without it becoming visitor-facing narration or a decision input.
+func (a *Agent) warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if a.warn != nil {
+		a.warn(msg)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, msg)
 }
 
 // ProviderModel returns the provider-reported model identifier observed so

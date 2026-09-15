@@ -934,6 +934,8 @@ func TestAgent_ProviderModel_InvalidValueDroppedNotFailed(t *testing.T) {
 
 			emit, evs := collectEvents()
 			a := New(ModelConfig{BaseURL: srv.URL, Model: "requested-alias"}, srv.Client(), nil, emit)
+			var warnings []string
+			a.warn = func(msg string) { warnings = append(warnings, msg) }
 
 			if _, err := a.Run(context.Background(), "go"); err != nil {
 				t.Fatalf("Run: %v, want success (an invalid provider model must not fail the run)", err)
@@ -946,18 +948,25 @@ func TestAgent_ProviderModel_InvalidValueDroppedNotFailed(t *testing.T) {
 					t.Fatalf("unexpected EventProviderModel for an invalid provider model: %+v", e)
 				}
 			}
+			// Dropping the value silently and dropping it with an operator
+			// warning are different behaviors, and only the warning tells
+			// someone the provider is sending garbage. Assert it, or
+			// deleting the warning is a change no test would notice.
+			if len(warnings) != 1 {
+				t.Fatalf("warnings = %v, want exactly one for a dropped provider model", warnings)
+			}
+			if !strings.Contains(warnings[0], "provider model identifier dropped") {
+				t.Fatalf("warning = %q, want it to name the dropped provider model", warnings[0])
+			}
 		})
 	}
 }
 
-// The stderr-visibility side of the invalid-provider-model drop (client.go
-// logs a WARNING line via fmt.Fprintf(os.Stderr, ...)) is intentionally left
-// unasserted here. A test that swaps the process-global os.Stderr for the
-// duration of a run risks racing any other goroutine/test in the same
-// process that writes to stderr, and can hang if the pipe's buffer fills
-// before the write side is closed. The llmagent package has no injectable
-// warn writer/logger seam, and one is not being added solely to make this
-// assertable; the warning is production-only, unverified by test.
+// The operator-visibility side of that drop is asserted above through the
+// agent's warn sink. It deliberately does NOT swap the process-global
+// os.Stderr: doing that races any other goroutine or test in the same process
+// that writes to stderr, and can hang if the pipe buffer fills before the
+// write side closes. Production still writes to stderr when no sink is set.
 
 // TestAgent_ProviderModel_NonStringValueTolerated drives complete/Run against
 // a raw HTTP handler whose "model" field is not a JSON string (an object, a

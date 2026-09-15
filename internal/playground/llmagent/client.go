@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -214,7 +213,7 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 			// the parent process does not parse, so an operator can see it
 			// without it becoming visitor-facing narration or a decision
 			// input.
-			fmt.Fprintf(os.Stderr, "WARNING: provider model identifier dropped (invalid): %d bytes\n", len(rawModel))
+			a.warnf("WARNING: provider model identifier dropped (invalid): %d bytes", len(rawModel))
 		}
 	}
 	return msg, nil

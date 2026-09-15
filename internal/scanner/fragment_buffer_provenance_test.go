@@ -86,6 +86,34 @@ func TestFragmentBufferMatchContributorsFollowRetainedFragments(t *testing.T) {
 			t.Fatalf("legacy match = %+v, want detected match with no contributors", matches)
 		}
 	})
+
+	t.Run("mixed unidentified source omits partial list", func(t *testing.T) {
+		fb := NewFragmentBuffer(64, 2, testWindowSecs)
+		t.Cleanup(fb.Close)
+		sc := testFragmentScanner()
+		t.Cleanup(sc.Close)
+		appendFragmentWithSource(t, fb, owner, stream, nil, prefix, sc)
+		matches := appendFragmentWithSource(t, fb, owner, stream, []byte("identified"), suffix, sc)
+		if len(matches) != 1 || len(matches[0].Contributors) != 0 {
+			t.Fatalf("mixed-source match = %+v, want detection with no misleading partial contributor list", matches)
+		}
+	})
+
+	t.Run("oversized source omitted", func(t *testing.T) {
+		fb := NewFragmentBuffer(64, 2, testWindowSecs)
+		t.Cleanup(fb.Close)
+		sc := testFragmentScanner()
+		t.Cleanup(sc.Close)
+		oversized := make([]byte, MaxFragmentSourceRequestIDBytes+1)
+		for i := range oversized {
+			oversized[i] = 'x'
+		}
+		appendFragmentWithSource(t, fb, owner, stream, oversized, prefix, sc)
+		matches := appendFragmentWithSource(t, fb, owner, stream, []byte("identified"), suffix, sc)
+		if len(matches) != 1 || len(matches[0].Contributors) != 0 {
+			t.Fatalf("oversized-source match = %+v, want detection with bounded provenance omitted", matches)
+		}
+	})
 }
 
 func TestFragmentBufferCapacityRefusalPreservesSourceProvenance(t *testing.T) {

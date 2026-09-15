@@ -24,6 +24,12 @@ type DLPMatch struct {
 	Contributors [][]byte
 }
 
+// MaxFragmentSourceRequestIDBytes bounds provenance metadata independently of
+// caller behavior. It matches the MCP capture RPC-ID ceiling; keeping the
+// guard here prevents another FragmentAppend caller from turning a small
+// retained payload into arbitrarily large ledger metadata.
+const MaxFragmentSourceRequestIDBytes = 128
+
 // fragment holds a single outbound payload chunk with its arrival time.
 type fragment struct {
 	data            []byte
@@ -225,9 +231,11 @@ type FragmentAppend struct {
 	Group   identitykey.CEEStream
 	Stream  identitykey.CEEStream
 	Payload []byte
-	// SourceRequestID is an optional, already-bounded opaque request identity.
-	// Legacy callers leave it empty; the ledger then detects normally but cannot
-	// claim request-level provenance for a later match.
+	// SourceRequestID is an optional opaque request identity. The ledger retains
+	// it only when it is non-empty and no larger than
+	// MaxFragmentSourceRequestIDBytes. Legacy or oversized identities do not
+	// weaken detection, but a later match cannot claim complete request-level
+	// provenance when one of its contributing fragments is unidentified.
 	SourceRequestID []byte
 }
 
@@ -320,8 +328,10 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 	// Copy payload to prevent caller mutation of buffered data.
 	copied := make([]byte, len(payload))
 	copy(copied, payload)
-	requestID := make([]byte, len(sourceRequestID))
-	copy(requestID, sourceRequestID)
+	var requestID []byte
+	if len(copied) > 0 && len(sourceRequestID) > 0 && len(sourceRequestID) <= MaxFragmentSourceRequestIDBytes {
+		requestID = append([]byte(nil), sourceRequestID...)
+	}
 
 	now := time.Now()
 	sb.fragments = append(sb.fragments, fragment{
@@ -798,8 +808,13 @@ func contributorsForSpan(ranges []fragmentRange, start, end int) [][]byte {
 	contributors := make([][]byte, 0, len(ranges))
 	seen := make(map[string]struct{})
 	for _, r := range ranges {
-		if start >= r.end || end <= r.start || len(r.fragment.sourceRequestID) == 0 {
+		if start >= r.end || end <= r.start {
 			continue
+		}
+		if len(r.fragment.sourceRequestID) == 0 {
+			// A partial list would look complete to a consumer. Omit the field
+			// unless every byte-contributing fragment has a retained identity.
+			return nil
 		}
 		id := string(r.fragment.sourceRequestID)
 		if _, duplicate := seen[id]; duplicate {

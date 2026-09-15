@@ -25,13 +25,16 @@ import (
 )
 
 func TestCeeRecordMCPReportsOnlyContributingRPCIDs(t *testing.T) {
+	if capture.MaxRPCIDLen != scanner.MaxFragmentSourceRequestIDBytes {
+		t.Fatalf("capture RPC ID cap %d != fragment provenance cap %d", capture.MaxRPCIDLen, scanner.MaxFragmentSourceRequestIDBytes)
+	}
 	tests := []struct {
 		name    string
 		firstID json.RawMessage
 		wantIDs []string
 	}{
 		{name: "current and prior", firstID: json.RawMessage("1"), wantIDs: []string{"1", `"current"`}},
-		{name: "overlength prior omitted", firstID: json.RawMessage(`"` + strings.Repeat("x", capture.MaxRPCIDLen) + `"`), wantIDs: []string{`"current"`}},
+		{name: "overlength prior makes provenance incomplete", firstID: json.RawMessage(`"` + strings.Repeat("x", capture.MaxRPCIDLen) + `"`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

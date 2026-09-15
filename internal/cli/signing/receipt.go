@@ -378,19 +378,24 @@ type checkpointAnchor struct {
 // verifyCheckpointAnchors checks every checkpoint entry's span and, when it
 // carries a signature, verifies that signature against the key that was
 // active where the checkpoint sits: the signer of the most recent receipt
-// before it (or of the first receipt, for a checkpoint that precedes every
-// receipt). The receipts are the already-verified chain, so every signer in
-// them is trusted or endorsed, and scoping to the segment means a retired
-// key cannot re-sign checkpoints after its rotation and a successor cannot
-// sign before its activation. A signed checkpoint commits the chain hash of
-// every entry before it, so it is the only authenticated anchor for entries
-// that are not receipts; an unsigned checkpoint proves nothing beyond hash
-// linkage. The span must match the checkpoint's position: it ends at the
-// preceding entry, starts after the previous checkpoint, and counts exactly
-// the entries between. A recorder signs either every checkpoint or none for
-// its whole life, so a session that mixes signed and unsigned checkpoints is
-// a rewrite and is refused; otherwise an attacker could drop the signature
-// from one checkpoint and have the rest vouch for it. A checkpoint whose
+// before it, or, for a checkpoint written in the gap between two signing
+// segments, either that key or the signer of the next receipt, since a new
+// writer instance can checkpoint before its first receipt. The receipts are
+// the already-verified chain, so every signer in them is trusted or endorsed,
+// and scoping to the segment means a retired key cannot re-sign checkpoints
+// after its rotation and a successor cannot sign before its activation. A
+// signed checkpoint commits the chain hash of every entry before it, so it
+// is the only authenticated anchor for entries that are not receipts; an
+// unsigned checkpoint proves nothing beyond hash linkage and is not an
+// anchor. A session may legitimately mix the two when sign_checkpoints
+// changed between restarts; that costs nothing, because a stripped earlier
+// signature changes that entry's hash and breaks every later checkpoint's
+// signature, and a stripped trailing signature leaves the seal uncovered.
+// The span must match the checkpoint's position: it ends at the preceding
+// entry, starts after the previous checkpoint, and counts exactly the
+// entries between; it need not start right after the previous checkpoint,
+// because a crash resume starts a new span at the first resumed entry, and
+// the span is metadata the signature does not depend on. A checkpoint whose
 // detail does not parse, whose span disagrees with its position, or whose
 // signature does not verify under its segment's key fails closed. What this
 // cannot catch: on a recorder that never signed, a rewritten trailing entry
@@ -430,16 +435,10 @@ func verifyCheckpointAnchors(entries []recorder.Entry, receipts []receipt.Receip
 		}
 		prevCheckpoint = &entries[i]
 		if detail.Signature == "" {
-			if anchor.signed > 0 {
-				return anchor, fmt.Errorf("checkpoint at seq %d is unsigned while earlier checkpoints in this session are signed", entry.Sequence)
-			}
 			anchor.unsigned++
 			continue
 		}
-		if anchor.unsigned > 0 {
-			return anchor, fmt.Errorf("checkpoint at seq %d is signed while earlier checkpoints in this session are unsigned", entry.Sequence)
-		}
-		pub, err := segmentSignerKey(receipts, seenReceipts)
+		pubs, err := segmentSignerKeys(receipts, seenReceipts)
 		if err != nil {
 			return anchor, fmt.Errorf("checkpoint at seq %d: %w", entry.Sequence, err)
 		}
@@ -447,7 +446,14 @@ func verifyCheckpointAnchors(entries []recorder.Entry, receipts []receipt.Receip
 		if err != nil {
 			return anchor, fmt.Errorf("checkpoint at seq %d: decoding signature: %w", entry.Sequence, err)
 		}
-		if !ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
+		verified := false
+		for _, pub := range pubs {
+			if ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
+				verified = true
+				break
+			}
+		}
+		if !verified {
 			return anchor, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", entry.Sequence)
 		}
 		anchor.signed++
@@ -463,28 +469,38 @@ func precedingSequence(entries []recorder.Entry, i int) uint64 {
 	return entries[i-1].Sequence
 }
 
-// segmentSignerKey returns the public key active for a checkpoint that has
-// seenReceipts receipts before it: the signer of the last of those, or of
-// the first receipt when none precede it.
-func segmentSignerKey(receipts []receipt.Receipt, seenReceipts int) (ed25519.PublicKey, error) {
+// segmentSignerKeys returns the public keys that may sign a checkpoint with
+// seenReceipts receipts before it: the signer of the last of those (or of
+// the first receipt when none precede it), plus the signer of the next
+// receipt when it differs, because a checkpoint in the gap between two
+// signing segments can legitimately come from either writer instance.
+func segmentSignerKeys(receipts []receipt.Receipt, seenReceipts int) ([]ed25519.PublicKey, error) {
 	if len(receipts) == 0 {
 		return nil, fmt.Errorf("signed checkpoint present but the recorder holds no receipts to name its signer")
 	}
-	idx := seenReceipts - 1
-	if idx < 0 {
-		idx = 0
+	prev := seenReceipts - 1
+	if prev < 0 {
+		prev = 0
 	}
-	if idx >= len(receipts) {
-		idx = len(receipts) - 1
+	if prev >= len(receipts) {
+		prev = len(receipts) - 1
 	}
-	raw, err := hex.DecodeString(receipts[idx].SignerKey)
-	if err != nil {
-		return nil, fmt.Errorf("decode segment signer key: %w", err)
+	hexKeys := []string{receipts[prev].SignerKey}
+	if next := seenReceipts; next < len(receipts) && next != prev && receipts[next].SignerKey != receipts[prev].SignerKey {
+		hexKeys = append(hexKeys, receipts[next].SignerKey)
 	}
-	if len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("segment signer key length=%d want %d", len(raw), ed25519.PublicKeySize)
+	pubs := make([]ed25519.PublicKey, 0, len(hexKeys))
+	for _, key := range hexKeys {
+		raw, err := hex.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("decode segment signer key: %w", err)
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("segment signer key length=%d want %d", len(raw), ed25519.PublicKeySize)
+		}
+		pubs = append(pubs, ed25519.PublicKey(raw))
 	}
-	return ed25519.PublicKey(raw), nil
+	return pubs, nil
 }
 
 func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, int, string, bool, error) {

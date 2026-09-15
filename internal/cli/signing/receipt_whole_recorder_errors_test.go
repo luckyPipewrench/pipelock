@@ -459,7 +459,7 @@ func TestVerifyReceiptCmd_WholeRecorderCheckpointShapeErrors(t *testing.T) {
 	})
 }
 
-func TestVerifyReceiptCmd_WholeRecorderMixedCheckpointSignaturesRefused(t *testing.T) {
+func TestVerifyReceiptCmd_WholeRecorderStrippedCheckpointSignaturesRefused(t *testing.T) {
 	t.Parallel()
 
 	path, pub := buildSealedRecorderJSONLWith(t, true, 1)
@@ -508,8 +508,11 @@ func TestVerifyReceiptCmd_WholeRecorderMixedCheckpointSignaturesRefused(t *testi
 		target int
 		want   string
 	}{
-		{"last checkpoint stripped", checkpoints[len(checkpoints)-1], "is unsigned while earlier checkpoints in this session are signed"},
-		{"first checkpoint stripped", checkpoints[0], "is signed while earlier checkpoints in this session are unsigned"},
+		// The trailing signature gone: nothing signed covers the seal.
+		{"last checkpoint stripped", checkpoints[len(checkpoints)-1], "no signed checkpoint covers the transcript_root seal"},
+		// An earlier signature gone: that entry's hash changes, so every later
+		// checkpoint's signature over the chain no longer verifies.
+		{"first checkpoint stripped", checkpoints[0], "does not verify under the signer of its receipt segment"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mutated := relinkRecorderLines(t, path, "mixed.jsonl", strip(tc.target))
@@ -693,27 +696,45 @@ func TestVerifyReceiptCmd_WholeRecorderCheckpointMustBeSignedByItsSegmentKey(t *
 	}
 }
 
-func TestSegmentSignerKeyErrors(t *testing.T) {
+func TestSegmentSignerKeys(t *testing.T) {
 	t.Parallel()
 
-	if _, err := segmentSignerKey(nil, 0); err == nil || !strings.Contains(err.Error(), "holds no receipts") {
+	if _, err := segmentSignerKeys(nil, 0); err == nil || !strings.Contains(err.Error(), "holds no receipts") {
 		t.Fatalf("no receipts err = %v", err)
 	}
-	if _, err := segmentSignerKey([]receipt.Receipt{{SignerKey: "not-hex"}}, 1); err == nil || !strings.Contains(err.Error(), "decode segment signer key") {
+	if _, err := segmentSignerKeys([]receipt.Receipt{{SignerKey: "not-hex"}}, 1); err == nil || !strings.Contains(err.Error(), "decode segment signer key") {
 		t.Fatalf("bad hex err = %v", err)
 	}
-	if _, err := segmentSignerKey([]receipt.Receipt{{SignerKey: "abcd"}}, 1); err == nil || !strings.Contains(err.Error(), "segment signer key length") {
+	if _, err := segmentSignerKeys([]receipt.Receipt{{SignerKey: "abcd"}}, 1); err == nil || !strings.Contains(err.Error(), "segment signer key length") {
 		t.Fatalf("short key err = %v", err)
 	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	receipts := []receipt.Receipt{{SignerKey: hex.EncodeToString(pub)}}
-	for _, seen := range []int{0, 1, 5} {
-		got, err := segmentSignerKey(receipts, seen)
-		if err != nil || !got.Equal(pub) {
-			t.Fatalf("seen=%d key err=%v equal=%v", seen, err, got.Equal(pub))
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	receipts := []receipt.Receipt{{SignerKey: hex.EncodeToString(pubA)}, {SignerKey: hex.EncodeToString(pubA)}, {SignerKey: hex.EncodeToString(pubB)}}
+	for _, tc := range []struct {
+		seen int
+		want []ed25519.PublicKey
+	}{
+		{0, []ed25519.PublicKey{pubA}},       // before any receipt: first signer
+		{1, []ed25519.PublicKey{pubA}},       // inside A
+		{2, []ed25519.PublicKey{pubA, pubB}}, // the gap between A and B: either
+		{3, []ed25519.PublicKey{pubB}},       // after the last receipt
+		{9, []ed25519.PublicKey{pubB}},       // count past the end clamps
+	} {
+		got, err := segmentSignerKeys(receipts, tc.seen)
+		if err != nil || len(got) != len(tc.want) {
+			t.Fatalf("seen=%d err=%v got %d keys want %d", tc.seen, err, len(got), len(tc.want))
+		}
+		for i := range got {
+			if !got[i].Equal(tc.want[i]) {
+				t.Fatalf("seen=%d key %d mismatch", tc.seen, i)
+			}
 		}
 	}
 }

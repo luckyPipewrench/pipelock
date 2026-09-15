@@ -5,6 +5,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -283,4 +284,90 @@ func TestToolBaseline_EvaluateDefinition_NewToolMatrix(t *testing.T) {
 			t.Fatal("expected beta to be promoted after reset re-baselines")
 		}
 	})
+}
+
+// TestScanTools_EmptyFirstInventoryEstablishesBaseline pins that the FIRST
+// valid tools/list establishes the drift baseline even when it carries no
+// tools. Without this, an upstream could bootstrap with an empty inventory
+// and then introduce a new name that read as another initial inventory,
+// bypassing new_tool_action: block without the operator re-baseline.
+func TestScanTools_EmptyFirstInventoryEstablishesBaseline(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	cfg := &ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+
+	empty := makeToolsResponse(`[]`)
+	if r := ScanTools(empty, sc, cfg); !r.Clean {
+		t.Fatalf("empty first tools/list should be clean, got %+v", r)
+	}
+	if !baseline.HasDriftBaseline() {
+		t.Fatal("an empty first inventory must establish the drift baseline")
+	}
+
+	later := makeToolsResponse(`[{"name":"later","description":"Safe capability."}]`)
+	r2 := ScanTools(later, sc, cfg)
+	if r2.Clean {
+		t.Fatalf("a name introduced after an empty first inventory must be withheld under block, got %+v", r2)
+	}
+	withheld := false
+	for _, m := range r2.Matches {
+		if m.ToolName == "later" && m.DriftDetected {
+			for _, c := range m.DriftCues {
+				if c == DriftCueNewTool {
+					withheld = true
+				}
+			}
+		}
+	}
+	if !withheld {
+		t.Fatalf("expected a new-tool drift match for later, got %+v", r2.Matches)
+	}
+}
+
+// TestToolBaseline_BeginInventoryResponse_CompetingFirstResponses pins that
+// establishment is atomic: of N concurrent first responses on one shared
+// baseline, exactly one observes an unestablished baseline.
+func TestToolBaseline_BeginInventoryResponse_CompetingFirstResponses(t *testing.T) {
+	baseline := NewToolBaseline()
+	const n = 32
+	results := make(chan bool, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			results <- baseline.BeginInventoryResponse()
+		}()
+	}
+	close(start)
+	unestablished := 0
+	for i := 0; i < n; i++ {
+		if !<-results {
+			unestablished++
+		}
+	}
+	if unestablished != 1 {
+		t.Fatalf("exactly one competing first response must observe an unestablished baseline, got %d of %d", unestablished, n)
+	}
+	var nilBaseline *ToolBaseline
+	if nilBaseline.BeginInventoryResponse() {
+		t.Fatal("a nil baseline must report unestablished and record nothing")
+	}
+}
+
+// TestLogToolObservations_RendersNewToolCue pins that the warn-mode
+// observation names the new-tool cue, so the operator signal is not the
+// generic accepted-drift line.
+func TestLogToolObservations_RendersNewToolCue(t *testing.T) {
+	var buf strings.Builder
+	LogToolObservations(&buf, 7, ToolScanResult{Observations: []ToolScanMatch{
+		{ToolName: "later", DriftAccepted: true, DriftCues: []string{DriftCueNewTool}, DriftDetail: "tool \"later\" added; baseline extended"},
+		{ToolName: "old", DriftAccepted: true, DriftDetail: "description changed (12 chars)"},
+	}})
+	out := buf.String()
+	if !strings.Contains(out, `tool "later": new-tool admitted under new_tool_action warn`) {
+		t.Fatalf("observation log must render the new-tool cue, got:\n%s", out)
+	}
+	if !strings.Contains(out, `tool "old": definition-drift accepted, no risk cue introduced`) {
+		t.Fatalf("cue-less observation must keep the accepted-drift line, got:\n%s", out)
+	}
 }

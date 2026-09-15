@@ -663,6 +663,27 @@ func (tb *ToolBaseline) resetDriftStateLocked() {
 	tb.driftEstablished = false
 }
 
+// BeginInventoryResponse records, atomically, that a valid tools/list
+// inventory is about to be evaluated and reports whether one had already
+// been evaluated before it. The FIRST valid inventory establishes the drift
+// baseline whether or not it carries any tools: an empty first inventory
+// must not leave the baseline unestablished, or an upstream could bootstrap
+// with an empty list and then introduce a new name that reads as another
+// initial inventory. Two competing first responses on a shared baseline
+// resolve here under one lock: exactly one observes false. The returned
+// value is passed as EstablishedBeforeResponse for every tool in that
+// response. A nil baseline reports false and records nothing.
+func (tb *ToolBaseline) BeginInventoryResponse() bool {
+	if tb == nil {
+		return false
+	}
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	established := tb.driftEstablished
+	tb.driftEstablished = true
+	return established
+}
+
 // HasDriftBaseline reports whether the drift baseline has ever been
 // established (any definition promoted since creation or the last operator
 // reset). Callers evaluating a whole tools/list response must capture this
@@ -2076,7 +2097,19 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 	}
 	if tools == nil {
 		// tools/list response with empty or all-unnamed tools - still a tools/list,
-		// just nothing to scan for poisoning.
+		// just nothing to scan for poisoning. It is still a valid inventory, so
+		// it establishes the drift baseline: otherwise an upstream could
+		// bootstrap with an empty list and introduce a new name afterwards that
+		// read as another initial inventory, bypassing new_tool_action: block.
+		if cfg != nil && cfg.DetectDrift {
+			driftBaseline := cfg.DriftBaseline
+			if driftBaseline == nil {
+				driftBaseline = cfg.Baseline
+			}
+			if cfg.ExpectedDriftEpoch == nil || driftBaseline.matchesDriftEpoch(*cfg.ExpectedDriftEpoch) {
+				driftBaseline.BeginInventoryResponse()
+			}
+		}
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}
 
@@ -2284,7 +2317,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	if driftBaselineForResponse == nil {
 		driftBaselineForResponse = cfg.Baseline
 	}
-	establishedBeforeResponse := driftBaselineForResponse.HasDriftBaseline()
+	establishedBeforeResponse := driftBaselineForResponse.BeginInventoryResponse()
 
 	for _, tool := range tools {
 		var match ToolScanMatch
@@ -2525,9 +2558,15 @@ func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 		if !o.DriftAccepted {
 			continue
 		}
-		_, _ = fmt.Fprintf(logW,
-			"pipelock: line %d: tool %q: definition-drift accepted, no risk cue introduced; new definition is now the baseline\n",
-			lineNum, o.ToolName)
+		if len(o.DriftCues) > 0 {
+			_, _ = fmt.Fprintf(logW,
+				"pipelock: line %d: tool %q: %s admitted under new_tool_action warn; new definition is now the baseline\n",
+				lineNum, o.ToolName, strings.Join(o.DriftCues, ","))
+		} else {
+			_, _ = fmt.Fprintf(logW,
+				"pipelock: line %d: tool %q: definition-drift accepted, no risk cue introduced; new definition is now the baseline\n",
+				lineNum, o.ToolName)
+		}
 		if o.DriftDetail != "" {
 			_, _ = fmt.Fprintf(logW, "  %s\n", o.DriftDetail)
 		}

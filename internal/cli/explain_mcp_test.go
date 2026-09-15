@@ -20,7 +20,7 @@ const (
 
 func TestBuildMCPExplainReport_BlockNamesSuppressEntry(t *testing.T) {
 	cfg := config.Defaults()
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpJailbreak))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(mcpJailbreak))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestBuildMCPExplainReport_BlockNamesSuppressEntry(t *testing.T) {
 
 func TestBuildMCPExplainReport_CoreResponseOmitsSuppressEntry(t *testing.T) {
 	cfg := config.Defaults()
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(mcpSolicitation))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestBuildMCPExplainReport_CoreResponseOmitsSuppressEntry(t *testing.T) {
 
 func TestBuildMCPExplainReport_CoreOnlyWithoutServerNameOmitsServerNameNote(t *testing.T) {
 	cfg := config.Defaults()
-	report, err := buildMCPExplainReport(cfg, "(test)", "", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "", []byte(mcpSolicitation))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestBuildMCPExplainReport_ReasoningTrustWarnsWithoutSuppressRemediation(t *
 	cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{
 		{Server: "code-assistant", Trust: config.ResponseTrustReasoning},
 	}
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(mcpSolicitation))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildMCPExplainReport_ReasoningTrustWarnsWithoutSuppressRemediation(t *
 
 func TestBuildMCPExplainReport_NoServerNamePlaceholderAndNote(t *testing.T) {
 	cfg := config.Defaults()
-	report, err := buildMCPExplainReport(cfg, "(test)", "", []byte(mcpJailbreak))
+	report, err := buildMCPExplainReport(cfg, "", []byte(mcpJailbreak))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestBuildMCPExplainReport_NoServerNamePlaceholderAndNote(t *testing.T) {
 func TestBuildMCPExplainReport_CleanIsAllowed(t *testing.T) {
 	cfg := config.Defaults()
 	clean := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"benign gardening text"}]}}`
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(clean))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(clean))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestBuildMCPExplainReport_IncludesResponseInjectionScope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()
-			report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(tt.input))
+			report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(tt.input))
 			if err != nil {
 				t.Fatalf("buildMCPExplainReport: %v", err)
 			}
@@ -190,7 +190,7 @@ func TestBuildMCPExplainReport_InboundDLPNamesFindingWithoutSuppressRemediation(
 	cfg := config.Defaults()
 	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + accessKey + `"}]}}`
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(response))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(response))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestBuildMCPExplainReport_InboundDLPStripBlocks(t *testing.T) {
 	accessKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + accessKey + `"}]}}`
 
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(response))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(response))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestBuildMCPExplainReport_InboundDLPStripBlocks(t *testing.T) {
 
 func TestBuildMCPExplainReport_InvalidJSONIsParseError(t *testing.T) {
 	cfg := config.Defaults()
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte("not json at all"))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte("not json at all"))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}

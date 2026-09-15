@@ -21,7 +21,7 @@ func TestBuildMCPExplainReport_ReasoningTrustDoesNotRelaxBlockSection(t *testing
 		{Server: "code-assistant", Trust: config.ResponseTrustReasoning},
 	}
 
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpSolicitation))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(mcpSolicitation))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestBuildMCPExplainReport_AgreesWithProxyScanPath(t *testing.T) {
 				return c
 			}
 
-			report, err := buildMCPExplainReport(newCfg(), "(test)", "code-assistant", []byte(mcpSolicitation))
+			report, err := buildMCPExplainReport(newCfg(), "code-assistant", []byte(mcpSolicitation))
 			if err != nil {
 				t.Fatalf("buildMCPExplainReport: %v", err)
 			}

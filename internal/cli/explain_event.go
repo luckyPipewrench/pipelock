@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -31,10 +32,13 @@ const (
 	explainEventIDEvent   = "event_id"
 	explainEventIDGeneric = "id"
 
-	explainEventOutcomeAllowed = "allowed"
-	explainEventOutcomeBlocked = "blocked"
-	explainEventRedacted       = "[redacted]"
-	explainEventRedactedValue  = "[redacted-value]"
+	explainEventOutcomeAllowed  = "allowed"
+	explainEventOutcomeBlocked  = "blocked"
+	explainEventOutcomeWarned   = "warned"
+	explainEventOutcomeModified = "modified"
+	explainEventOutcomePartial  = "partial"
+	explainEventRedacted        = "[redacted]"
+	explainEventRedactedValue   = "[redacted-value]"
 )
 
 var (
@@ -272,21 +276,21 @@ func matchedExplainEventFallbackID(raw map[string]any, id string) string {
 
 func buildExplainEventReport(raw map[string]any, id, matchedField string, sanitizer explainEventSanitizer) explainEventReport {
 	eventName := eventFieldString(raw, "event")
-	reason := eventFieldString(raw, "reason")
-	scannerName := eventFieldString(raw, "scanner")
+	reason := firstEventField(raw, "reason", "pattern")
+	scannerName := firstEventField(raw, "scanner", "layer")
 	target := firstEventField(raw, "url", "target", "resource", "endpoint", "tool", "session")
 	report := explainEventReport{
 		ID:              id,
 		MatchedField:    matchedField,
 		Time:            sanitizer.field(eventFieldString(raw, "time")),
 		Event:           sanitizer.field(eventName),
-		Outcome:         explainEventOutcome(eventName, eventFieldString(raw, "action")),
+		Outcome:         explainEventOutcome(eventName, firstEventField(raw, "action", "verdict"), raw),
 		Method:          sanitizer.field(eventFieldString(raw, "method")),
 		Target:          sanitizer.target(target),
 		TargetView:      explainEventTargetView(scannerName, reason, target, raw),
 		Scanner:         sanitizer.field(scannerName),
 		Layer:           sanitizer.field(scannerName),
-		PatternName:     sanitizer.field(firstEventField(raw, "pattern_name", "pattern", "display_label")),
+		PatternName:     sanitizer.field(explainEventPatternName(raw)),
 		Reason:          sanitizer.field(reason),
 		StatusCode:      sanitizer.field(eventFieldString(raw, "status_code")),
 		RemediationHint: sanitizer.field(eventFieldString(raw, "remediation_hint")),
@@ -294,20 +298,113 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string, saniti
 	if report.RemediationHint == "" && scannerName != "" {
 		report.RemediationHint = sanitizer.field(scanner.OperatorHintForResult(scannerName, reason))
 	}
-	if report.Outcome == "" {
-		report.Notes = append(report.Notes, "event type is not a standard allowed/blocked decision; fields shown are the available audit evidence")
+	for _, note := range explainEventOutcomeNotes(raw, report.Outcome) {
+		report.Notes = append(report.Notes, sanitizer.field(note))
 	}
 	return report
 }
 
-func explainEventOutcome(eventName, action string) string {
-	switch {
-	case eventName == explainEventOutcomeAllowed || action == config.ActionAllow || action == config.ActionForward:
-		return explainEventOutcomeAllowed
-	case eventName == explainEventOutcomeBlocked || action == config.ActionBlock:
+func explainEventOutcome(eventName, action string, raw map[string]any) string {
+	if eventName == explainEventOutcomeBlocked || action == config.ActionBlock {
 		return explainEventOutcomeBlocked
+	}
+	if explainEventMalformedPartialEvidence(raw, eventName) {
+		return ""
+	}
+	if explainEventPartialResponse(raw, eventName, action) {
+		return explainEventOutcomePartial
+	}
+	switch {
+	case action == config.ActionStrip || action == "ask:strip" || eventName == "shield_rewrite":
+		return explainEventOutcomeModified
+	case action == config.ActionWarn:
+		return explainEventOutcomeWarned
+	case eventName == explainEventOutcomeAllowed || action == config.ActionAllow || action == config.ActionForward || action == "ask:allow":
+		return explainEventOutcomeAllowed
 	default:
 		return ""
+	}
+}
+
+func explainEventMalformedPartialEvidence(raw map[string]any, eventName string) bool {
+	if shieldValue, ok := raw["shield"]; ok {
+		shieldFields, ok := shieldValue.(map[string]any)
+		if !ok {
+			return true
+		}
+		if partial, ok := shieldFields["partial"]; ok {
+			if _, ok := partial.(bool); !ok {
+				return true
+			}
+		}
+		for _, field := range []string{"body_bytes", "scanned_bytes"} {
+			if value, present := shieldFields[field]; present {
+				n, ok := value.(float64)
+				if !ok || n < 0 || n > 1<<53-1 || n != math.Trunc(n) {
+					return true
+				}
+			}
+		}
+		body, bodyOK := shieldFields["body_bytes"].(float64)
+		scanned, scannedOK := shieldFields["scanned_bytes"].(float64)
+		if bodyOK != scannedOK && !nestedEventBool(raw, "shield", "partial") {
+			return true
+		}
+		if bodyOK && scannedOK && scanned > body {
+			return true
+		}
+	}
+	if eventName != "response_scan_exempt" {
+		return false
+	}
+	if effect, ok := raw["effect"]; ok {
+		_, ok := effect.(string)
+		return !ok
+	}
+	return false
+}
+
+func explainEventPartialResponse(raw map[string]any, eventName, action string) bool {
+	if nestedEventBool(raw, "shield", "partial") {
+		return true
+	}
+	if shieldFields, ok := raw["shield"].(map[string]any); ok {
+		body, bodyOK := shieldFields["body_bytes"].(float64)
+		scanned, scannedOK := shieldFields["scanned_bytes"].(float64)
+		if bodyOK && scannedOK && scanned < body {
+			return true
+		}
+	}
+	if eventName == "response_scan_exempt" &&
+		strings.Contains(strings.ToLower(eventFieldString(raw, "effect")), "stream unscanned") {
+		return true
+	}
+	return eventName == "anomaly" && action == "" &&
+		strings.EqualFold(eventFieldString(raw, "scanner"), "shield_oversize_scan_head")
+}
+
+func explainEventOutcomeNotes(raw map[string]any, outcome string) []string {
+	switch outcome {
+	case explainEventOutcomeAllowed:
+		if firstEventField(raw, "action", "verdict") == "ask:allow" {
+			return []string{"an operator allowed the response after a finding; this is not a clean scan verdict"}
+		}
+		return nil
+	case explainEventOutcomePartial:
+		bodyBytes := nestedEventFieldString(raw, "shield", "body_bytes")
+		scannedBytes := nestedEventFieldString(raw, "shield", "scanned_bytes")
+		if bodyBytes != "" && scannedBytes != "" {
+			return []string{fmt.Sprintf("response handling was partial: %s of %s recorded bytes were scanned; this is not a clean full-response verdict", scannedBytes, bodyBytes)}
+		}
+		return []string{"response handling was partial; this record does not establish that the full response was scanned"}
+	case explainEventOutcomeWarned:
+		return []string{"a finding was recorded with action warn; this event does not show a block"}
+	case explainEventOutcomeModified:
+		return []string{"response content was modified before forwarding; this is not a clean full-response verdict"}
+	case "":
+		return []string{"recorded outcome is unknown; fields shown are the available audit evidence"}
+	default:
+		return nil
 	}
 }
 
@@ -340,6 +437,25 @@ func firstEventField(raw map[string]any, fields ...string) string {
 	return ""
 }
 
+func explainEventPatternName(raw map[string]any) string {
+	if value := firstEventField(raw, "pattern_name", "pattern", "display_label"); value != "" {
+		return value
+	}
+	values, ok := raw["patterns"].([]any)
+	if !ok {
+		return ""
+	}
+	patterns := make([]string, 0, len(values))
+	for _, value := range values {
+		pattern, ok := value.(string)
+		if !ok || strings.TrimSpace(pattern) == "" {
+			continue
+		}
+		patterns = append(patterns, strings.TrimSpace(pattern))
+	}
+	return strings.Join(patterns, ", ")
+}
+
 func eventFieldString(raw map[string]any, field string) string {
 	v, ok := raw[field]
 	if !ok || v == nil {
@@ -358,6 +474,23 @@ func eventFieldString(raw map[string]any, field string) string {
 	default:
 		return ""
 	}
+}
+
+func nestedEventFieldString(raw map[string]any, parent, field string) string {
+	v, ok := raw[parent].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return eventFieldString(v, field)
+}
+
+func nestedEventBool(raw map[string]any, parent, field string) bool {
+	v, ok := raw[parent].(map[string]any)
+	if !ok {
+		return false
+	}
+	b, ok := v[field].(bool)
+	return ok && b
 }
 
 type explainEventSanitizer struct {

@@ -104,7 +104,7 @@ func TestBuildMCPExplainReport_CarriesUnverifiableBundleWarning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules.RulesDir = installUnversionedWarningBundle(t)
 
-	report, err := buildMCPExplainReport(cfg, "(test)", "code-assistant", []byte(mcpJailbreak))
+	report, err := buildMCPExplainReport(cfg, "code-assistant", []byte(mcpJailbreak))
 	if err != nil {
 		t.Fatalf("buildMCPExplainReport: %v", err)
 	}

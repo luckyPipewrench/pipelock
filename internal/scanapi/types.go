@@ -19,6 +19,15 @@ type Request struct {
 	Input   Input           `json:"input"`
 	Context *RequestContext `json:"context,omitempty"`
 	Options *RequestOptions `json:"options,omitempty"`
+
+	// callerToken is the authenticated bearer token for this request. It is
+	// unexported (JSON decoding never populates or emits it) and is set by
+	// ServeHTTP after authentication succeeds, so executeScan and its kind
+	// handlers can derive the cross-request fragment session's caller
+	// component (see crossrequest.go callerKeyForToken) without changing
+	// their signatures or the many existing call sites/tests that construct
+	// a Request literal directly.
+	callerToken string
 }
 
 // Input holds kind-specific scan payload fields.
@@ -62,11 +71,17 @@ type RequestOptions struct {
 
 // Response is the JSON envelope for all scan results and errors.
 type Response struct {
-	Status        string     `json:"status"`
-	Decision      string     `json:"decision,omitempty"`
-	Kind          string     `json:"kind"`
-	ScanID        string     `json:"scan_id"`
-	RequestID     string     `json:"request_id,omitempty"`
+	Status    string `json:"status"`
+	Decision  string `json:"decision,omitempty"`
+	Kind      string `json:"kind"`
+	ScanID    string `json:"scan_id"`
+	RequestID string `json:"request_id,omitempty"`
+	// SessionID echoes context.session_id, following the same post-scan-only
+	// copy timing as RequestID: present on completed responses (allow, warn,
+	// deny, timeout, cancel), absent on pre-scan errors (401, 405, 429, 503,
+	// invalid_json, invalid_kind, kind_disabled, invalid_input), and absent
+	// when the request omitted session_id.
+	SessionID     string     `json:"session_id,omitempty"`
 	DurationMS    int64      `json:"duration_ms,omitempty"`
 	EngineVersion string     `json:"engine_version"`
 	Findings      []Finding  `json:"findings,omitempty"`
@@ -80,6 +95,13 @@ type Finding struct {
 	Severity string    `json:"severity"`
 	Message  string    `json:"message"`
 	Evidence *Evidence `json:"evidence,omitempty"`
+	// Contributors lists the scan_id of every earlier request in this
+	// session whose content contributed retained bytes to this cross-request
+	// fragment match. Present only on a "cross_request_fragment" finding.
+	// Bounded and exact: it names only the fragments the buffer actually
+	// retained, matching the MCP proxy's contributing-request provenance
+	// shape (internal/mcp/cee.go captureCEEContributors).
+	Contributors []string `json:"contributors,omitempty"`
 }
 
 // Evidence holds match location details. Only present when include_evidence is true.

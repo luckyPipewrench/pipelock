@@ -1,0 +1,20 @@
+{
+  "description": "Containment BROKEN in the quieter shape: probe 8's DNS-free direct canary FAILS (curl exit 28, timeout) but its connect timer shows the dial COMPLETED first, so the packet reached the network before the failure. A counter-only reading would call this contained because curl did not succeed; the dial-completion signal is what must catch it. This is the must-fail fixture for the post-connect branch: probe 8 must report 'fail' with the post-connect detail and the overall exit must be non-zero.",
+  "agent_user": "pipelock-agent",
+  "operator_user": "operator",
+  "drop_counter_reads": [12, 12],
+  "runs": [
+    {
+      "comment": "probe 8: curl fails AFTER the TCP connect completed (time_connect > 0). Exit 28 is an operation timeout, not a connect refusal.",
+      "match": ["sudo -n -u pipelock-agent -- /usr/bin/curl", "--connect-timeout 1", "--max-time 2", "--noproxy *", "PLK_TIME_CONNECT=%{time_connect}", "http://192.0.2.1:9/"],
+      "stdout": "curl: (28) Operation timed out after 2000 milliseconds with 0 bytes received\nPLK_TIME_CONNECT=0.021447\n000",
+      "exit_code": 28
+    },
+    {
+      "comment": "probe 9: operator egress canary still reaches example.com (unchanged).",
+      "match": ["sudo -n -u operator -- /usr/bin/curl", "--connect-timeout 3", "--max-time 5", "--noproxy *", "https://example.com/"],
+      "stdout": "200",
+      "exit_code": 0
+    }
+  ]
+}

@@ -538,7 +538,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	windowBudget := newKnownValueWindowBudget(windowBudgetEntries)
 	canaryTokens, err := compileCanaryTokens(cfg.CanaryTokens, windowBudget)
 	if err != nil {
-		return nil, fmt.Errorf("compile canary tokens: %w", err)
+		return nil, fmt.Errorf("compile canary tokens (reduce canary_tokens entries): %w", err)
 	}
 	s.canaryTokens = canaryTokens
 
@@ -610,7 +610,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	// stem shared by an env secret and a file secret is excluded from both.
 	knownSecretWindows, err := buildKnownValueWindows(windowBudget, s.envSecrets, s.fileSecrets)
 	if err != nil {
-		return nil, fmt.Errorf("build known-secret window index: %w", err)
+		return nil, fmt.Errorf("build known-secret window index (reduce dlp.secrets_file entries or disable dlp.scan_env and remove oversized environment values): %w", err)
 	}
 	s.knownSecretWindows = knownSecretWindows
 
@@ -2927,11 +2927,6 @@ type knownSecretMatch struct {
 // entropy is below the leak floor. URL-shaped values skip public scheme, host,
 // and path stems; only credential-bearing parts (password, query, fragment,
 // and a high-entropy final path segment) are windowed.
-func knownValueWindows(value string) map[string][]int {
-	windows, _ := knownValueWindowsBounded(value, int(^uint(0)>>1))
-	return windows
-}
-
 func knownValueWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
 	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
 		return nil, nil
@@ -3017,11 +3012,10 @@ func locateURLPart(value, part string) (int, string) {
 }
 
 func collectValueWindowsBounded(value string, base, maxEntries int) (map[string][]int, error) {
-	if maxEntries <= 0 {
-		return nil, errKnownValueWindowBudget
-	}
 	capacity := len(value) - minKnownSecretSubstringLen + 1
-	if capacity > maxEntries {
+	if maxEntries <= 0 {
+		capacity = 0
+	} else if capacity > maxEntries {
 		capacity = maxEntries
 	}
 	windows := make(map[string][]int, capacity)
@@ -3033,17 +3027,18 @@ func collectValueWindowsBounded(value string, base, maxEntries int) (map[string]
 		if ShannonEntropy(window) <= envLeakMinEntropy {
 			continue
 		}
+		if _, duplicate := repeated[window]; duplicate {
+			continue
+		}
 		if _, seen := windows[window]; seen {
+			delete(windows, window)
 			repeated[window] = struct{}{}
 			continue
 		}
-		if len(windows) >= maxEntries {
-			return nil, errKnownValueWindowBudget
-		}
 		windows[window] = []int{base + start}
 	}
-	for window := range repeated {
-		delete(windows, window)
+	if len(windows) > maxEntries {
+		return nil, errKnownValueWindowBudget
 	}
 	return windows, nil
 }
@@ -3106,6 +3101,9 @@ const (
 	// URL-shaped values can retain both decoded credential-component windows
 	// and their exact escaped spellings. Two windows per accepted source byte
 	// is a conservative upper bound for that representation at the loader cap.
+	// Canaries and environment values share this ceiling: combined state beyond
+	// the file-only maximum is rejected rather than silently dropped or allowed
+	// to recreate the unbounded retained index this budget replaces.
 	maxKnownValueWindowEntries = maxSecretsFileEntries * maxSecretsFileLineLen * 2
 	knownValueWindowEntryBytes = 32
 	maxKnownValueWindowBytes   = maxKnownValueWindowEntries * knownValueWindowEntryBytes

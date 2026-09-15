@@ -4949,6 +4949,17 @@ func TestKnownValueWindowBudget_FailsBeforePartialIndex(t *testing.T) {
 	}
 }
 
+func TestCollectValueWindowsBounded_DeduplicatesBeforeBudgetDecision(t *testing.T) {
+	value := strings.Repeat("A1b2C3d4E5f6G7h8", 3)
+	windows, err := collectValueWindowsBounded(value, 0, 0)
+	if err != nil {
+		t.Fatalf("fully repeated windows consumed budget: %v", err)
+	}
+	if len(windows) != 0 {
+		t.Fatalf("repeated windows = %d, want none", len(windows))
+	}
+}
+
 func TestNew_CanaryWindowBudgetFailsClosed(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = false
@@ -4964,6 +4975,9 @@ func TestNew_CanaryWindowBudgetFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "canonical canary windows") {
 		t.Fatalf("New error = %v, want canonical canary propagation context", err)
+	}
+	if !strings.Contains(err.Error(), "reduce canary_tokens entries") {
+		t.Fatalf("New error = %v, want actionable canary budget remedy", err)
 	}
 }
 
@@ -4986,6 +5000,9 @@ func TestNew_KnownSecretWindowBudgetFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build known-secret window index") {
 		t.Fatalf("New error = %v, want known-secret propagation context", err)
+	}
+	if !strings.Contains(err.Error(), "disable dlp.scan_env") {
+		t.Fatalf("New error = %v, want actionable known-secret budget remedy", err)
 	}
 }
 

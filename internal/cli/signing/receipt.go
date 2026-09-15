@@ -354,6 +354,10 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
 	switch {
+	case anchor.lastSignedIndex > rootIndex && len(trustedKeys) == 0:
+		// Unpinned: the signer came from the receipts in this same file, so it
+		// says nothing about provenance. Do not call it trusted.
+		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified against the file's own signer, which was NOT checked against a trusted key\n", anchor.signed)
 	case anchor.lastSignedIndex > rootIndex:
 		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified; every entry through the seal is committed by a trusted key\n", anchor.signed)
 	case anchor.signed > 0:

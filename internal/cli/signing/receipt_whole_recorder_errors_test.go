@@ -793,13 +793,67 @@ func TestVerifyReceiptCmd_WholeRecorderNoReceiptsFailsBeforeAnchorCheck(t *testi
 	}
 
 	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", hex.EncodeToString(pub))
-	if err == nil {
-		t.Fatalf("receipt-less recorder must not verify:\n%s", out)
+	// Assert the exact pre-anchor stop, not merely "some error": a hash,
+	// parsing, or configuration failure would otherwise satisfy this test
+	// without proving verification stopped where it is claimed to stop.
+	if err == nil || !strings.Contains(err.Error(), "incomplete: no transcript_root seal") {
+		t.Fatalf("receipt-less recorder err = %v, want the pre-anchor seal stop:\n%s", err, out)
 	}
 	if strings.Contains(err.Error(), "holds no receipts to name its signer") {
 		t.Fatalf("anchor verification was reached on a receipt-less recorder: %v", err)
 	}
 	if strings.Contains(out, "Seal:      sealed at seq") || strings.Contains(out, "Anchor:") {
 		t.Fatalf("receipt-less recorder must not report a sealed or anchored result:\n%s", out)
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderRejectsMixedSessions(t *testing.T) {
+	t.Parallel()
+
+	// A legacy (pre-namespace) recorder file can carry entries from two
+	// sessions and still hash-link, because the chain verifier pins the
+	// session only inside the v3 namespace. Whole-recorder mode certifies one
+	// recorder session, so it must refuse the spliced file rather than seal it.
+	// Unsigned checkpoints, so no signature can catch the splice: the session
+	// check is the only thing standing between a spliced legacy file and a
+	// sealed result. Accepted explicitly with --allow-unanchored-seal so the
+	// unsigned state is not what fails the run.
+	path, pub := buildSealedRecorderJSONLSigned(t, false)
+	key := hex.EncodeToString(pub)
+	if out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", key, "--allow-unanchored-seal"); err != nil {
+		t.Fatalf("control fixture must verify err=%v:\n%s", err, out)
+	}
+
+	mutated := rewriteRecorderEntries(t, path, "mixed-sessions.jsonl", func(entries []recorder.Entry) []recorder.Entry {
+		for i := range entries {
+			entries[i].Version = 1
+		}
+		entries[len(entries)-1].SessionID = "other-session"
+		return entries
+	})
+	out, err := runVerifyReceipt(t, mutated, "--whole-recorder", "--key", key, "--allow-unanchored-seal")
+	if err == nil || !strings.Contains(err.Error(), "belongs to session") {
+		t.Fatalf("mixed-session recorder err = %v, want a session mismatch:\n%s", err, out)
+	}
+	if strings.Contains(out, "Seal:      sealed at seq") {
+		t.Fatalf("mixed-session recorder must not report a sealed result:\n%s", out)
+	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderUnpinnedDoesNotClaimTrustedAnchor(t *testing.T) {
+	t.Parallel()
+
+	// With no pinned key the checkpoint signer is read from the receipts in
+	// the same file, so the output must not describe it as trusted.
+	path, _ := buildSealedRecorderJSONLSigned(t, true)
+	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--allow-unpinned")
+	if err != nil {
+		t.Fatalf("unpinned run err=%v:\n%s", err, out)
+	}
+	if strings.Contains(out, "committed by a trusted key") {
+		t.Fatalf("unpinned run must not claim a trusted anchor:\n%s", out)
+	}
+	if !strings.Contains(out, "NOT checked against a trusted key") {
+		t.Fatalf("unpinned run must name its limit:\n%s", out)
 	}
 }

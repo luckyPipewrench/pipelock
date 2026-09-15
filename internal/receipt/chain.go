@@ -1025,9 +1025,19 @@ type WholeRecorderResult struct {
 // are not receipts. That authentication comes from signed checkpoints, which
 // the verify-receipt command checks against the pinned keys.
 func VerifyWholeRecorderEntries(entries []recorder.Entry) (WholeRecorderResult, error) {
-	for _, e := range entries {
+	var sessionID string
+	for i, e := range entries {
 		if !knownRecorderEntryType(e.Type) {
 			return WholeRecorderResult{}, fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
+		}
+		// recorder.VerifyChain pins the session only inside the v3 namespace,
+		// so a hash-valid legacy file can splice entries from two sessions and
+		// still link. Whole-recorder mode certifies a single recorder session,
+		// so it enforces that for every entry version.
+		if i == 0 {
+			sessionID = e.SessionID
+		} else if e.SessionID != sessionID {
+			return WholeRecorderResult{}, fmt.Errorf("%w: entry at seq %d belongs to session %q, not %q", ErrUnexpectedRecorderEntryType, e.Sequence, e.SessionID, sessionID)
 		}
 	}
 	if err := recorder.VerifyChain(entries); err != nil {

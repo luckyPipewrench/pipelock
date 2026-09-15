@@ -96,14 +96,17 @@ func TestFragmentBuffer_CompleteDecoyDoesNotSuppressLaterSplitOccurrence(t *test
 	t.Cleanup(sc.Close)
 
 	decoy := "AKIA" + testAWSKeySuffix
-	fb.Append(testCEEIdentity(testSessionA), []byte("benign decoy "+decoy+" then another "+decoy+" "))
-	fb.Append(testCEEIdentity(testSessionA), []byte("AKI"))
-	fb.Append(testCEEIdentity(testSessionA), []byte("A"+testAWSKeySuffix))
-
-	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
-	if len(matches) == 0 {
-		t.Fatal("cross-request credential was suppressed by a complete same-pattern decoy")
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("decoy"), []byte("benign decoy "+decoy+" then another "+decoy+" "), sc)
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("AKI"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("A"+testAWSKeySuffix), sc)
+	for _, match := range matches {
+		if len(match.Contributors) == 2 && string(match.Contributors[0]) == "prefix" && string(match.Contributors[1]) == "suffix" {
+			return
+		}
 	}
+	t.Fatalf("cross-request credential was not attributed to its split requests: %+v", matches)
 }
 
 func TestFragmentBuffer_CompleteShortPatternDoesNotSuppressLongCrossPattern(t *testing.T) {

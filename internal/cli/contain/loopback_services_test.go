@@ -1482,3 +1482,95 @@ func TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors(t *testing
 		t.Fatalf("recovered state should carry the declared service:\n%s", persisted)
 	}
 }
+
+// TestStepInstallNFTRulesFirstInstallAbsentRulesDirWithRealLock is the
+// MEDIUM-severity reproduction: on a clean host (or an older install
+// without /etc/nftables.d), stepInstallNFTRulesApplyLocked acquires the
+// reconcile lock -- derived from the rules path, so it lives in the SAME
+// not-yet-existing directory -- BEFORE the callback that creates that
+// directory ever runs. With the REAL lock implementation (not a test
+// double that tolerates a missing parent), the lock's O_CREAT open fails
+// ENOENT and install never applies a single rule. The prescribed recovery
+// ("rerun install") would repeat the exact same failure, because install is
+// the thing that just failed. This test fails before the pre-lock
+// directory-creation fix, and must pass after it.
+func TestStepInstallNFTRulesFirstInstallAbsentRulesDirWithRealLock(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	// Confirm the premise: the rules directory genuinely does not exist yet.
+	if _, err := os.Stat(filepath.Dir(env.nftRulesPath)); !os.IsNotExist(err) {
+		t.Fatalf("premise failed: rules directory already exists or stat errored unexpectedly: %v", err)
+	}
+	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
+	env.lockFn = withContainmentReconcileLock
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("first install on a clean host must succeed (rules directory must exist before the lock is acquired): %v", err)
+	}
+	if !applied {
+		t.Fatal("expected apply=true on a fresh install")
+	}
+	if _, err := os.Stat(env.nftRulesPath); err != nil {
+		t.Fatalf("rules file not written: %v", err)
+	}
+}
+
+// TestStepInstallNFTRulesRefusesSymlinkedRulesDirAncestor proves the
+// directory-safety half of the fix: if a component of the rules directory
+// path is a symlink (an attacker or a broken prior install redirecting
+// /etc/nftables.d elsewhere), install refuses to create/use it rather than
+// silently following the symlink as root.
+func TestStepInstallNFTRulesRefusesSymlinkedRulesDirAncestor(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
+	env.lockFn = withContainmentReconcileLock
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+
+	rulesParent := filepath.Dir(env.nftRulesPath) // .../etc/nftables.d
+	grandparent := filepath.Dir(rulesParent)      // .../etc
+	elsewhere := filepath.Join(filepath.Dir(grandparent), "elsewhere-nftables.d")
+	if err := os.MkdirAll(grandparent, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir grandparent: %v", err)
+	}
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("mkdir elsewhere: %v", err)
+	}
+	if err := os.Symlink(elsewhere, rulesParent); err != nil {
+		t.Fatalf("symlink rules parent: %v", err)
+	}
+
+	s := stepInstallNFTRules()
+	if _, err := s.apply(context.Background(), env); err == nil {
+		t.Fatal("expected install to refuse a symlinked rules-directory ancestor")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v, want it to name the symlink refusal", err)
+	}
+	if _, err := os.Lstat(filepath.Join(elsewhere, filepath.Base(env.nftRulesPath))); !os.IsNotExist(err) {
+		t.Fatalf("must not have written through the symlink into %s", elsewhere)
+	}
+}
+
+// TestReloaderLockErrorNamesMissingDirectoryAndRecoveryCommand covers the
+// reloader-side half of the MEDIUM fix: `contain reload-nft-rules` does NOT
+// create the nft rules directory itself (only `contain install` does, via
+// ensureNFTRulesDirSafe, before it ever acquires the lock), so on a host
+// that never completed an install, the lock's ENOENT is a real, terminal
+// condition -- the error text says the directory is missing and names
+// `pipelock contain install` as the fix, rather than a generic open error.
+func TestReloaderLockErrorNamesMissingDirectoryAndRecoveryCommand(t *testing.T) {
+	t.Parallel()
+	rulesDir := filepath.Join(t.TempDir(), "does-not-exist")
+	lockPath := containmentReconcileLockPathFor(filepath.Join(rulesDir, "50-pipelock-containment.nft"))
+	err := withContainmentReconcileLock(lockPath, func() error {
+		t.Fatal("fn must not run when the lock directory does not exist")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an error when the lock's directory does not exist")
+	}
+	if !strings.Contains(err.Error(), "is missing") || !strings.Contains(err.Error(), "pipelock contain install") {
+		t.Fatalf("error = %v, want it to say the directory is missing and name `pipelock contain install`", err)
+	}
+}

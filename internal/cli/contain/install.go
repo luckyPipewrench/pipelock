@@ -1763,6 +1763,19 @@ func stepInstallNFTRules() step {
 // transaction, and persists the rules file, and a concurrent boot-time or
 // operator reload must not interleave with any of that.
 func stepInstallNFTRulesApplyLocked(ctx context.Context, env *installEnv) (bool, error) {
+	// The reconcile lock lives beside the nft rules file (see
+	// containmentReconcileLockPathFor), so on a clean host -- or an older
+	// install predating /etc/nftables.d -- that directory does not exist
+	// yet the FIRST time this step ever runs. withContainmentReconcileLock's
+	// O_CREAT open cannot create the lock file's PARENT directory, only the
+	// file itself, so acquiring the lock before the directory exists fails
+	// ENOENT and install stops before applying a single rule -- and the
+	// prescribed recovery ("rerun install") would hit the identical
+	// failure, since install is what just failed. Ensure the directory
+	// exists and is safe to use BEFORE ever touching the lock.
+	if err := ensureNFTRulesDirSafe(env); err != nil {
+		return false, err
+	}
 	if env.reconcileLockPath == "" {
 		// A test env that never set a lock path is not exercising locking;
 		// production always sets defaultContainmentReconcileLockPath.
@@ -1779,6 +1792,36 @@ func stepInstallNFTRulesApplyLocked(ctx context.Context, env *installEnv) (bool,
 		return applyErr
 	})
 	return changed, err
+}
+
+// ensureNFTRulesDirSafe securely creates the nft rules directory (and, by
+// extension, the directory the reconcile lock lives in -- they are the
+// same directory) BEFORE the reconcile lock is ever acquired there.
+// ensureSafeDirectory (osops.go, shared with every other privileged-write
+// path in this package) walks and lstats each path component and refuses a
+// symlink anywhere in the ancestry or at the target itself, so this cannot
+// be redirected into an attacker- or accident-controlled location. The
+// directory is created 0o755, root-owned (mkdirAll/chmod run as this
+// process, which for `contain install` is always root) -- the identical
+// mode the later rules-write step already uses, and deliberately NOT
+// chowned to pipelock-proxy: only root and the proxy account's own
+// membership needs read access to the rules file, and the lock file this
+// directory now also holds must stay outside the proxy-writable data
+// directory (see withContainmentReconcileLock's doc comment for why).
+// stepInstallNFTRulesApply's own mkdir/chmod of the same directory becomes
+// an idempotent no-op once this has already run.
+func ensureNFTRulesDirSafe(env *installEnv) error {
+	dir := filepath.Dir(env.nftRulesPath)
+	if err := ensureSafeDirectory(env, dir); err != nil {
+		return fmt.Errorf("nft rules directory %s: %w", dir, err)
+	}
+	if err := env.mkdirAll(dir, modeDirReadable); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := env.chmod(dir, modeDirReadable); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	return nil
 }
 
 func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error) {

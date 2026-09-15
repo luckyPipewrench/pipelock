@@ -6,8 +6,10 @@
 package contain
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -76,6 +78,14 @@ func withContainmentReconcileLock(lockPath string, fn func() error) error {
 func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
 	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600) //nolint:gosec // G304: lockPath is a fixed operator/install-time constant, not attacker input; O_NOFOLLOW below refuses a symlink at that path.
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// The lock's parent directory (the nft rules directory) does
+			// not exist. `contain install` creates it BEFORE ever
+			// acquiring this lock (ensureNFTRulesDirSafe), so this
+			// should only be reached by `contain reload-nft-rules` on a
+			// host that has never completed an install.
+			return nil, fmt.Errorf("containment reconcile lock: directory %s is missing; %s", filepath.Dir(lockPath), containmentReconcileLockRecovery)
+		}
 		return nil, fmt.Errorf("containment reconcile lock: open %s refused: %w; %s", lockPath, err, containmentReconcileLockRecovery)
 	}
 	info, err := f.Stat()

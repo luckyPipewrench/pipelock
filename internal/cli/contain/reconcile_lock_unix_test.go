@@ -137,8 +137,8 @@ func TestWithContainmentReconcileLockRefusesUnwritableParentWithRecoveryError(t 
 	if err == nil {
 		t.Fatal("expected an error for a lock path whose parent directory does not exist")
 	}
-	if !strings.Contains(err.Error(), lockPath) || !strings.Contains(err.Error(), "pipelock contain install") {
-		t.Fatalf("error = %v, want it to name the lock path and the recovery command", err)
+	if !strings.Contains(err.Error(), "is missing") || !strings.Contains(err.Error(), "pipelock contain install") {
+		t.Fatalf("error = %v, want it to say the directory is missing and name the recovery command", err)
 	}
 }
 

@@ -16,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/aarp"
 	"github.com/luckyPipewrench/pipelock/internal/jcs"
+	"golang.org/x/text/unicode/norm"
 )
 
 type conformanceFixture struct {
@@ -257,7 +259,7 @@ func TestLocalVerifierAcceptsJCSStringEscaping(t *testing.T) {
 		Reference:     "grant-query",
 		Actor:         "workload:test-agent",
 		Action:        "records.read",
-		Destination:   "https://api.service.example/v1/records?active=true&limit=10",
+		Destination:   "https://api.service.example/v1/records?active=true&filter=<active>&limit=10",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	request := Request{
@@ -279,8 +281,183 @@ func TestLocalVerifierAcceptsJCSStringEscaping(t *testing.T) {
 		t.Fatalf("Verify()=%s/%s, want allow/%s", got.Decision, got.Reason, ReasonMatched)
 	}
 	payload := mustPayloadBytes(t, strings.Split(request.AuthorityRef, ".")[1])
-	if !bytes.Contains(payload, []byte("&limit=10")) {
+	if !bytes.Contains(payload, []byte("&filter=<active>&limit=10")) {
 		t.Fatalf("JCS payload escaped ampersand: %s", payload)
+	}
+}
+
+func TestLocalVerifierNamedCanonNFCAndExactIdentityMatching(t *testing.T) {
+	t.Parallel()
+	// Fixed UTF-8 bytes keep the positive case independent of the verifier's
+	// canonicalizer. All member names are ASCII and the sole number is integral.
+	const payload = `{"action":"records.read","actor":"workload:médiator","canon":"jcs-rfc8785-nfc","destination":"https://api.service.example/v1/records?active=true&filter=<active>&limit=10","expires_at":"2030-01-01T00:05:00Z","issuer":"issuer.test","reference":"grant-nfc","schema_version":1}`
+	fixture := loadConformanceFixture(t)
+	publicKey := mustDecodePublicKey(t, fixture.PublicKey)
+	grant := localGrant{
+		SchemaVersion: localSchemaVersion,
+		Canon:         localCanonJCSRFC8785NFC,
+		Issuer:        fixture.Issuer,
+		Reference:     "grant-nfc",
+		Actor:         "workload:médiator",
+		Action:        "records.read",
+		Destination:   "https://api.service.example/v1/records?active=true&filter=<active>&limit=10",
+		ExpiresAt:     "2030-01-01T00:05:00Z",
+	}
+	request := Request{
+		Actor:        grant.Actor,
+		Action:       grant.Action,
+		Destination:  grant.Destination,
+		AuthorityRef: signTestPayload(t, []byte(payload)),
+	}
+	verifier, err := NewLocalVerifier(LocalConfig{
+		TrustedIssuers: map[string]ed25519.PublicKey{fixture.Issuer: publicKey},
+		Clock:          func() time.Time { return mustParseTime(t, fixture.Now) },
+	})
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+
+	if got := verifier.Verify(context.Background(), request); got.Decision != DecisionAllow || got.Reason != ReasonMatched {
+		t.Fatalf("Verify()=%s/%s, want allow/%s", got.Decision, got.Reason, ReasonMatched)
+	}
+	parts := strings.Split(request.AuthorityRef, ".")
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	signature[0] ^= 0x01
+	parts[2] = base64.RawURLEncoding.EncodeToString(signature)
+	tampered := request
+	tampered.AuthorityRef = strings.Join(parts, ".")
+	if got := verifier.Verify(context.Background(), tampered); got.Decision != DecisionDeny || got.Reason != ReasonInvalidSignature {
+		t.Fatalf("tampered named Verify()=%s/%s, want deny/%s", got.Decision, got.Reason, ReasonInvalidSignature)
+	}
+	request.Actor = "workload:médiator"
+	if got := verifier.Verify(context.Background(), request); got.Decision != DecisionDeny || got.Reason != ReasonActorMismatch {
+		t.Fatalf("NFD actor Verify()=%s/%s, want deny/%s", got.Decision, got.Reason, ReasonActorMismatch)
+	}
+}
+
+func TestLocalVerifierRejectsUnknownAndNonCanonicalNamedCanon(t *testing.T) {
+	t.Parallel()
+	if localCanonJCSRFC8785NFC != aarp.CanonID {
+		t.Fatalf("authority canon %q differs from AARP profile %q", localCanonJCSRFC8785NFC, aarp.CanonID)
+	}
+	grant := localGrant{
+		SchemaVersion: localSchemaVersion,
+		Canon:         localCanonJCSRFC8785NFC,
+		Issuer:        "issuer.test",
+		Reference:     "grant-nfc",
+		Actor:         "workload:médiator",
+		Action:        "records.read",
+		Destination:   "https://api.service.example/v1/records",
+		ExpiresAt:     "2030-01-01T00:05:00Z",
+	}
+	raw, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatalf("marshal grant: %v", err)
+	}
+	raw, err = jcs.Canonicalize(raw)
+	if err != nil {
+		t.Fatalf("canonicalize raw grant: %v", err)
+	}
+	unknown := grant
+	unknown.Canon = "unknown-canon"
+	unknown.Actor = "workload:médiator"
+	namedPayload := mustPayloadBytes(t, strings.Split(signTestNamedCanonGrant(t, grant), ".")[1])
+	for _, spelling := range []string{"Canon", "CANON", "cAnon"} {
+		t.Run("case variant "+spelling, func(t *testing.T) {
+			payload, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"canon":"jcs-rfc8785-nfc"`), []byte(`"`+spelling+`":"unknown-canon"`), 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseLocalReference(signTestPayload(t, payload)); err == nil {
+				t.Fatal("case-variant canon was accepted as a legacy reference")
+			}
+		})
+	}
+	for _, field := range []string{"issuer", "reference", "actor", "action", "destination", "expires_at"} {
+		t.Run("named field alias "+field, func(t *testing.T) {
+			payload, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"`+field+`":`), []byte(`"`+strings.ToUpper(field)+`":`), 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseLocalReference(signTestPayload(t, payload)); err == nil {
+				t.Fatal("named profile accepted a field outside its exact schema")
+			}
+		})
+	}
+	for _, malformed := range []string{"[]", "null", "42"} {
+		t.Run("non-object "+malformed, func(t *testing.T) {
+			if _, err := parseLocalReference(signTestPayload(t, []byte(malformed))); err == nil {
+				t.Fatal("non-object grant accepted")
+			}
+		})
+	}
+	t.Run("missing required identity", func(t *testing.T) {
+		var object map[string]any
+		if err := json.Unmarshal(namedPayload, &object); err != nil {
+			t.Fatal(err)
+		}
+		delete(object, "actor")
+		payload, err := jcs.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := parseLocalReference(signTestPayload(t, payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateGrant(parsed.payload); err == nil {
+			t.Fatal("grant without an actor accepted")
+		}
+	})
+	emptyCanon, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"canon":"jcs-rfc8785-nfc"`), []byte(`"canon":""`), 1))
+	if err != nil {
+		t.Fatalf("canonicalize empty canon grant: %v", err)
+	}
+	nullCanon, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"canon":"jcs-rfc8785-nfc"`), []byte(`"canon":null`), 1))
+	if err != nil {
+		t.Fatalf("canonicalize null canon grant: %v", err)
+	}
+	numberCanon, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"canon":"jcs-rfc8785-nfc"`), []byte(`"canon":1`), 1))
+	if err != nil {
+		t.Fatalf("canonicalize number canon grant: %v", err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		reference string
+	}{
+		{name: "unknown canon", reference: signTestGrant(t, unknown)},
+		{name: "empty canon", reference: signTestPayload(t, emptyCanon)},
+		{name: "null canon", reference: signTestPayload(t, nullCanon)},
+		{name: "number canon", reference: signTestPayload(t, numberCanon)},
+		{name: "nfd signed under named canon", reference: signTestPayload(t, raw)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseLocalReference(test.reference); err == nil {
+				t.Fatal("parseLocalReference() error=nil")
+			}
+		})
+	}
+}
+
+func TestResultJSONOmitsZeroExpiry(t *testing.T) {
+	t.Parallel()
+	denied, err := json.Marshal(Result{Decision: DecisionDeny, Reason: ReasonMalformedReference})
+	if err != nil {
+		t.Fatalf("marshal denied result: %v", err)
+	}
+	if bytes.Contains(denied, []byte(`"expires_at"`)) {
+		t.Fatalf("zero expiry serialized: %s", denied)
+	}
+	allowed, err := json.Marshal(Result{Decision: DecisionAllow, ExpiresAt: mustParseTime(t, "2030-01-01T00:05:00Z"), Reason: ReasonMatched})
+	if err != nil {
+		t.Fatalf("marshal allowed result: %v", err)
+	}
+	if !bytes.Contains(allowed, []byte(`"expires_at":"2030-01-01T00:05:00Z"`)) {
+		t.Fatalf("nonzero expiry missing: %s", allowed)
 	}
 }
 
@@ -385,6 +562,26 @@ func mustDecodePublicKey(t *testing.T, value string) ed25519.PublicKey {
 
 func signTestGrant(t *testing.T, grant localGrant) string {
 	t.Helper()
+	payload, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatalf("marshal grant: %v", err)
+	}
+	payload, err = jcs.Canonicalize(payload)
+	if err != nil {
+		t.Fatalf("canonicalize grant: %v", err)
+	}
+	return signTestPayload(t, payload)
+}
+
+func signTestNamedCanonGrant(t *testing.T, grant localGrant) string {
+	t.Helper()
+	grant.Canon = norm.NFC.String(grant.Canon)
+	grant.Issuer = norm.NFC.String(grant.Issuer)
+	grant.Reference = norm.NFC.String(grant.Reference)
+	grant.Actor = norm.NFC.String(grant.Actor)
+	grant.Action = norm.NFC.String(grant.Action)
+	grant.Destination = norm.NFC.String(grant.Destination)
+	grant.ExpiresAt = norm.NFC.String(grant.ExpiresAt)
 	payload, err := json.Marshal(grant)
 	if err != nil {
 		t.Fatalf("marshal grant: %v", err)

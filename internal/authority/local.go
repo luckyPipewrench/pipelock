@@ -15,11 +15,16 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/jcs"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
 	localReferencePrefix = "plauth1"
 	localSchemaVersion   = 1
+	// localCanonJCSRFC8785NFC is the existing AARP canonicalization profile.
+	// It is explicit in newly issued references so verifiers do not infer a
+	// signing scheme from an implementation detail.
+	localCanonJCSRFC8785NFC = "jcs-rfc8785-nfc"
 	// MaxReferenceBytes bounds authority references accepted from every
 	// transport and by the local verifier.
 	MaxReferenceBytes = 16 << 10
@@ -36,8 +41,11 @@ type LocalConfig struct {
 	Clock             func() time.Time
 }
 
-// LocalVerifier verifies compact Ed25519 references with RFC 8785 canonical
-// payloads against an in-memory key set. It performs no I/O.
+// LocalVerifier verifies compact Ed25519 references against an in-memory key
+// set. Legacy schema-1 references that omit canon use byte-exact RFC 8785 JCS.
+// References with canon "jcs-rfc8785-nfc" use the AARP NFC profile. Both forms
+// compare verified authority strings byte-for-byte; verification never changes
+// an actor, action, or destination before matching. It performs no I/O.
 type LocalVerifier struct {
 	trustedIssuers    map[string]ed25519.PublicKey
 	revokedReferences map[string]struct{}
@@ -143,6 +151,7 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 
 type localGrant struct {
 	SchemaVersion int    `json:"schema_version"`
+	Canon         string `json:"canon,omitempty"`
 	Issuer        string `json:"issuer"`
 	Reference     string `json:"reference"`
 	Actor         string `json:"actor"`
@@ -173,7 +182,29 @@ func parseLocalReference(reference string) (parsedReference, error) {
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return parsedReference{}, errMalformedReference
 	}
-	canonical, err := jcs.Canonicalize(payloadBytes)
+	tree, err := jcs.Parse(payloadBytes)
+	if err != nil {
+		return parsedReference{}, errMalformedReference
+	}
+	object, ok := tree.(map[string]any)
+	if !ok {
+		return parsedReference{}, errMalformedReference
+	}
+	for field := range object {
+		if field != "canon" && strings.EqualFold(field, "canon") {
+			return parsedReference{}, errMalformedReference
+		}
+	}
+	canon, present := object["canon"]
+	if present {
+		if profile, ok := canon.(string); !ok || profile != localCanonJCSRFC8785NFC {
+			return parsedReference{}, errMalformedReference
+		}
+		if err := validateNFCGrantStrings(object); err != nil {
+			return parsedReference{}, errMalformedReference
+		}
+	}
+	canonical, err := jcs.Marshal(object)
 	if err != nil || !bytes.Equal(canonical, payloadBytes) {
 		return parsedReference{}, errMalformedReference
 	}
@@ -190,6 +221,31 @@ func parseLocalReference(reference string) (parsedReference, error) {
 		signingInput: []byte(localReferencePrefix + "." + parts[1]),
 		signature:    signature,
 	}, nil
+}
+
+// validateNFCGrantStrings rejects non-NFC signed identity and scope strings.
+// It never rewrites them: matching remains byte-exact after verification.
+func validateNFCGrantStrings(grant map[string]any) error {
+	// JSON struct decoding accepts case-insensitive field aliases. The named
+	// profile uses exact field names so an alias cannot escape validation.
+	for field := range grant {
+		switch field {
+		case "schema_version", "canon", "issuer", "reference", "actor", "action", "destination", "expires_at":
+		default:
+			return errMalformedReference
+		}
+	}
+	for _, field := range []string{"canon", "issuer", "reference", "actor", "action", "destination", "expires_at"} {
+		value, present := grant[field]
+		if !present {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok || !norm.NFC.IsNormalString(text) {
+			return errMalformedReference
+		}
+	}
+	return nil
 }
 
 func validateGrant(grant localGrant) (time.Time, error) {

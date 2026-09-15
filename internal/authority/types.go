@@ -104,7 +104,7 @@ type Result struct {
 	Decision  Decision  `json:"decision"`
 	Issuer    string    `json:"issuer,omitempty"`
 	Reference string    `json:"reference,omitempty"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 	Reason    Reason    `json:"reason"`
 }
 

@@ -312,6 +312,30 @@ func TestObserveCEEVerdict_PersistsInspectionEvidence(t *testing.T) {
 	}
 }
 
+func TestObserveCEEVerdict_PersistsContributingRequests(t *testing.T) {
+	w, dir := newEventKindTestWriter(t)
+	w.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
+		Subsurface:      testSubsurface,
+		Transport:       testTransportMCP,
+		SessionID:       testSessionID,
+		RequestID:       ekTestRequestID,
+		ConfigHash:      testConfigHash,
+		EffectiveAction: testVerdictAllow,
+		Outcome:         capture.OutcomeClean,
+		Request: capture.CaptureRequest{
+			RPCID:           json.RawMessage("3"),
+			CEEContributors: []json.RawMessage{json.RawMessage("1"), json.RawMessage(`"two"`)},
+		},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, summary := readCaptureSummary(t, dir)
+	if got := summary.Request.CEEContributors; len(got) != 2 || string(got[0]) != "1" || string(got[1]) != `"two"` {
+		t.Fatalf("CEE contributors = %q, want raw contributor IDs", got)
+	}
+}
+
 // TestObserveToolPolicyVerdict_StampsEventKind asserts tool policy
 // observations stamp event_kind="tool_policy".
 func TestObserveToolPolicyVerdict_StampsEventKind(t *testing.T) {

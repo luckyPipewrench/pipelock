@@ -228,6 +228,21 @@ func TestCaptureRequest_RPCIDOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestCaptureRequest_CEEContributorsPreserveBoundedRPCIDWireForm(t *testing.T) {
+	req := capture.CaptureRequest{CEEContributors: []json.RawMessage{json.RawMessage("1"), json.RawMessage(`"two"`)}}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got capture.CaptureRequest
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.CEEContributors) != 2 || string(got.CEEContributors[0]) != "1" || string(got.CEEContributors[1]) != `"two"` {
+		t.Fatalf("CEE contributors = %q, want raw numeric and string IDs", got.CEEContributors)
+	}
+}
+
 // TestNopObserver_ImplementsInterface verifies at compile time that NopObserver
 // satisfies the CaptureObserver interface, and verifies that all methods
 // return without panicking.

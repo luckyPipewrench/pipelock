@@ -86,6 +86,26 @@ func TestFragmentBuffer_AppendAndScan_SplitCredential(t *testing.T) {
 	}
 }
 
+// A complete credential in one request is handled by ordinary body DLP. It
+// must not suppress a distinct occurrence of that same pattern completed by
+// later requests.
+func TestFragmentBuffer_CompleteDecoyDoesNotSuppressLaterSplitOccurrence(t *testing.T) {
+	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+	t.Cleanup(fb.Close)
+	sc := testFragmentScanner()
+	t.Cleanup(sc.Close)
+
+	decoy := "AKIA" + testAWSKeySuffix
+	fb.Append(testCEEIdentity(testSessionA), []byte("benign decoy "+decoy+" then another "+decoy+" "))
+	fb.Append(testCEEIdentity(testSessionA), []byte("AKI"))
+	fb.Append(testCEEIdentity(testSessionA), []byte("A"+testAWSKeySuffix))
+
+	matches := fb.ScanForSecrets(context.Background(), testCEEStream(testSessionA), sc)
+	if len(matches) == 0 {
+		t.Fatal("cross-request credential was suppressed by a complete same-pattern decoy")
+	}
+}
+
 func TestFragmentBuffer_GlobalCapacityDeniesAdditionalStreams(t *testing.T) {
 	fb := NewFragmentBuffer(1024, 3, testWindowSecs)
 	t.Cleanup(fb.Close)

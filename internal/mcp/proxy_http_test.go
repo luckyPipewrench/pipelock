@@ -8634,6 +8634,9 @@ func TestScanHTTPInput_CEEBlockEmitsAttributedReceiptAndInspectionMode(t *testin
 	if records[0].FallbackReason != "" {
 		t.Fatalf("FallbackReason = %q, want empty for a partitioned frame", records[0].FallbackReason)
 	}
+	if got := records[0].Request.CEEContributors; len(got) != 2 || string(got[0]) != "1" || string(got[1]) != "2" {
+		t.Fatalf("CEE contributors = %q, want the two contributing request IDs", got)
+	}
 }
 
 // TestScanHTTPInput_CEEBlockOnGenericMethodEmitsReceipt is the HTTP twin of the

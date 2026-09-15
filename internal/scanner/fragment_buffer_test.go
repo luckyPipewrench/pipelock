@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const (
@@ -198,6 +199,15 @@ func TestFragmentBuffer_CrossBoundaryNormalizationCompositionRetainsExactAttribu
 	t.Cleanup(fb.Close)
 	owner := testCEEIdentity(testSessionA)
 	stream := testCEEStream(testSessionA)
+	jamoPrefix, prefixStable := normalizeFragmentForDLP([]byte("\u1100"))
+	secretPrefix, secretStable := normalizeFragmentForDLP([]byte("\u1161SECRET"))
+	if !prefixStable || !secretStable {
+		t.Fatal("individual jamo fragments did not reach normalization fixed points")
+	}
+	joined := string(append(jamoPrefix, secretPrefix...))
+	if got := normalize.ForDLP(joined); got != joined {
+		t.Fatalf("joined fragment fixed points changed on scanner normalization: %q -> %q", joined, got)
+	}
 
 	appendFragmentWithSource(t, fb, owner, stream, []byte("jamo-prefix"), []byte("\u1100"), sc)
 	appendFragmentWithSource(t, fb, owner, stream, []byte("secret-prefix"), []byte("\u1161SECRET"), sc)

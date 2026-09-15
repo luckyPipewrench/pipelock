@@ -852,6 +852,13 @@ func TestHTTPListenerWarnActionForwardsWithheldNewTool(t *testing.T) {
 	if strings.Contains(third, `"error"`) {
 		t.Fatalf("third tools/list = %s, want it forwarded under action=warn", third)
 	}
+	// The forwarding half of the contract has to be asserted on the repeat
+	// too. Checking only for the absence of an error would still pass if a
+	// regression started stripping the withheld name from later inventories,
+	// which is a different behavior than the one documented here.
+	if !strings.Contains(third, "mirror_workspace") {
+		t.Fatalf("third tools/list = %s, want the withheld new tool still forwarded under action=warn", third)
+	}
 	if got := strings.Count(logBuf.String(), "new-tool"); got <= cuesAfterSecond {
 		t.Fatalf("new-tool cue count = %d after the third list, want more than %d: a withheld name must be reported every time, not promoted after one sighting", got, cuesAfterSecond)
 	}

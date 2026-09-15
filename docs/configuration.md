@@ -1140,7 +1140,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
-| `new_tool_action` | `"warn"` | warn or block. Governs a tool NAME absent from an already-established drift baseline, as distinct from a changed definition of an already-known name (`action` governs that). Never affects the very first `tools/list`, which establishes the baseline for every name in it. See "New tool admission" below. |
+| `new_tool_action` | `"warn"` | warn or block. Governs a tool NAME absent from an already-established drift baseline, as distinct from a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. |
 | `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
 | `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
 | `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
@@ -1226,9 +1226,12 @@ baseline is reported as drift (cue `new-tool`) and withheld — not promoted
 It is reported again on every later `tools/list` until an authorized
 operator re-baseline admits it, using the same signed listener drift reset
 mechanism described below (`listener_drift_reset_file`). This never affects
-the very first `tools/list` a baseline ever receives: that response
-establishes the baseline for every name in it, matching the pre-existing
-`action` semantics for a first sighting.
+the first valid `tools/list` inventory a baseline ever receives: that
+response establishes the baseline for every name in it, matching the
+pre-existing `action` semantics for a first sighting. An empty inventory
+counts and establishes an empty baseline. A response that is not a readable
+`tools/list` result at all, because it failed or was malformed, establishes
+nothing and leaves the next valid inventory to do it.
 
 `new_tool_action` governs baseline admission, not the response verdict, and
 the two are spelled with the same words. Read the pair together: whether the

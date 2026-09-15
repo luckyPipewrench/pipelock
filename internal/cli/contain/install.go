@@ -2104,6 +2104,24 @@ func ensureNFTPersistUnit(env *installEnv) (bool, error) {
 	return true, nil
 }
 
+// renderNFTPersistUnit renders the boot-time reconciliation unit. Its
+// ExecStart is `contain reload-nft-rules`, which now takes an exclusive
+// lock (withContainmentReconcileLock) before touching the managed config,
+// the kernel, or the persisted rules file. If that lock cannot be acquired
+// safely -- lock path refused as a symlink/FIFO/foreign-owned file, or its
+// parent directory is unwritable -- reload-nft-rules exits non-zero WITHOUT
+// loading anything: this unit fails, systemd marks it failed (Type=oneshot
+// means a non-zero exit is a failure, not a "ran once and forgot"), and
+// because the containment nftables table is not persistent across reboots
+// on its own (only this unit loads it), the previous boot's containment is
+// NOT re-loaded this boot -- the host comes up with no containment rule for
+// the agent at all. The recovery is the same in every such refusal: rerun
+// `pipelock contain install` as root, which re-derives the rules file, the
+// lock file, and this unit from scratch. Every lock-refusal error text
+// (see withContainmentReconcileLock, containmentReconcileLockRecovery)
+// already names that command; this comment is the operator-facing summary
+// for someone reading `systemctl status pipelock-containment-nft.service`
+// or this unit file directly.
 func renderNFTPersistUnit(env *installEnv) string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -2117,6 +2135,11 @@ func renderNFTPersistUnit(env *installEnv) string {
 		"",
 		"[Service]",
 		"Type=oneshot",
+		"# If this fails (including a refused reconcile lock -- see",
+		"# `pipelock contain reload-nft-rules` and its lock error text),",
+		"# containment from the previous boot is NOT re-loaded and the agent",
+		"# has no containment rule at all until an operator reruns",
+		"# `pipelock contain install` as root.",
 		"ExecStart=" + env.pipelockTarget + " contain reload-nft-rules",
 		"RemainAfterExit=yes",
 		"",

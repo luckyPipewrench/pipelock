@@ -70,7 +70,7 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 		nftPath:           platform.nftPath,
 		rulesPath:         defaultNFTRulesPath,
 		configPath:        filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		reconcileLockPath: defaultContainmentReconcileLockPath,
+		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
 		table:             defaultNFTTable,
 		chain:             defaultNFTChain,
 		runCmd:            realRunCommand,

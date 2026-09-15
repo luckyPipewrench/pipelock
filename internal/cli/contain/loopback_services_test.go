@@ -1243,7 +1243,7 @@ func TestReloadNFTRulesFailsClosedOnEmptyPersistedFile(t *testing.T) {
 func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 	const rulesPath = "/managed/50-pipelock-containment.nft"
 	const configPath = "/etc/pipelock/pipelock.yaml"
-	lockPath := filepath.Join(t.TempDir(), "reconcile.lock")
+	lockPath := containmentReconcileLockPathFor(filepath.Join(t.TempDir(), "50-pipelock-containment.nft")) // mirrors the derived production path
 
 	baseRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
 	configA := nftReloadTestConfigWithService("2099-01-01T00:00:00Z")
@@ -1385,5 +1385,100 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 	kernelMu.Unlock()
 	if strings.Contains(finalKernel, "dport 9200 accept") {
 		t.Fatalf("live kernel chain regressed to config A's revoked service after install/reload interleaving:\n%s", finalKernel)
+	}
+}
+
+// TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors regression-tests
+// nft_reload.go's restoreOnFailure: when the kernel transaction fails AND
+// the attempt to restore the previous content ALSO fails (e.g. the
+// filesystem went read-only between the two writes), the returned error
+// surfaces BOTH causes -- an operator must not see only "restore failed"
+// and lose the original kernel failure, or only the kernel failure while a
+// corrupted-in-a-new-way file silently persists. It also proves recovery:
+// the NEXT reload, once writes succeed again, converges the persisted file
+// and the live kernel chain to the same (fully reconciled) content.
+func TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors(t *testing.T) {
+	t.Parallel()
+	const rulesPath = "/managed/50-pipelock-containment.nft"
+	const configPath = "/etc/pipelock/pipelock.yaml"
+	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	fs := newStatefulFakeFS(map[string][]byte{
+		rulesPath:  []byte(oldRules),
+		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")),
+	})
+
+	writeCount := 0
+	env := &nftReloadEnv{
+		nftPath:           "nft",
+		rulesPath:         rulesPath,
+		configPath:        configPath,
+		reconcileLockPath: filepath.Join(t.TempDir(), "reconcile.lock"),
+		table:             defaultNFTTable,
+		chain:             defaultNFTChain,
+		now:               func() time.Time { return time.Unix(1_800_000_000, 0) },
+		readFile:          fs.readFile,
+		removeFile:        fs.removeFile,
+		lockFn:            withContainmentReconcileLock,
+		writeFile: func(path string, data []byte, mode os.FileMode) error {
+			writeCount++
+			if writeCount == 2 {
+				// The SECOND write in this reload attempt is the
+				// restore-to-previous-content write (the first persisted
+				// the new reconciled body). Fail exactly that one to
+				// exercise restoreOnFailure's own write failure.
+				return fmt.Errorf("simulated read-only filesystem")
+			}
+			return fs.writeFile(path, data, mode)
+		},
+		runCmd: func(context.Context, string, ...string) (string, int, error) {
+			return "", 1, fmt.Errorf("simulated nft kernel failure")
+		},
+	}
+
+	err := reloadNFTRules(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected an error when both the kernel transaction and the restore write fail")
+	}
+	if !strings.Contains(err.Error(), "simulated nft kernel failure") {
+		t.Fatalf("error = %v, want it to include the original kernel failure", err)
+	}
+	if !strings.Contains(err.Error(), "simulated read-only filesystem") {
+		t.Fatalf("error = %v, want it to include the restore-write failure", err)
+	}
+
+	// Recovery: once writes succeed again, the next reload converges the
+	// persisted file and the live kernel to the same reconciled content.
+	env.writeFile = fs.writeFile
+	var kernelBody string
+	env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "-n -a list chain"):
+			return kernelBody, 0, nil
+		case strings.HasPrefix(joined, "-c -f "):
+			return "", 0, nil
+		case strings.HasPrefix(joined, "-f "):
+			data, readErr := fs.readFile(rulesPath + ".reload")
+			if readErr != nil {
+				return "", 1, readErr
+			}
+			kernelBody = string(data)
+			return "", 0, nil
+		default:
+			return "", 1, fmt.Errorf("unexpected nft invocation: %s", joined)
+		}
+	}
+	if err := reloadNFTRules(context.Background(), env); err != nil {
+		t.Fatalf("recovery reload: %v", err)
+	}
+	persisted, err := fs.readFile(rulesPath)
+	if err != nil {
+		t.Fatalf("read persisted rules: %v", err)
+	}
+	if string(persisted) != kernelBody {
+		t.Fatalf("persisted file and live kernel did not converge after recovery:\npersisted:\n%s\nkernel:\n%s", persisted, kernelBody)
+	}
+	if !strings.Contains(string(persisted), "dport 9200 accept") {
+		t.Fatalf("recovered state should carry the declared service:\n%s", persisted)
 	}
 }

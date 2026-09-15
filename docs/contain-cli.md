@@ -320,6 +320,21 @@ managed config names `pipelock contain install` as the recovery command; an
 unreadable or malformed one names re-running reconciliation once it is
 fixed).
 
+Reconciliation itself is guarded by an exclusive lock, so `contain install`
+and `contain reload-nft-rules` never interleave on the same managed config
+and nft state. That lock file lives beside the persisted rules file under
+`/etc/nftables.d/`, a root-owned directory -- never under the
+pipelock-proxy-owned data directory -- and reconciliation refuses to trust
+anything at the lock path that is not a plain file owned by root or itself
+(a symlink or a named pipe placed there is rejected outright, not followed
+or blocked on). If the lock cannot be safely acquired, reconciliation fails
+with a hard error naming the lock path and `pipelock contain install` as
+the recovery. On the boot-time unit specifically, that means the containment
+rule from the previous boot is NOT re-loaded and the agent has no
+containment rule at all until an operator reruns `pipelock contain
+install` as root -- `systemctl status pipelock-containment-nft.service`
+shows the failure.
+
 `contain verify` checks the declared set against the live chain in both
 directions: an agent-owned loopback accept for a port that is neither the
 proxy port nor a declared entry fails as an unexpected verdict before the

@@ -172,8 +172,14 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		systemUnitPath:     defaultSystemUnitPath,
 		nftRulesPath:       defaultNFTRulesPath,
 		nftPersistUnitPath: defaultNFTPersistUnitPath,
-		reconcileLockPath:  defaultContainmentReconcileLockPath,
-		lockFn:             withContainmentReconcileLock,
+		// The reconcile lock lives beside the nft rules file under
+		// /etc/nftables.d/, a directory only root writes, NOT under
+		// dataDir: dataDir is recursively chowned to pipelock-proxy by
+		// stepChownToProxy, and a lock an unprivileged (relative to root)
+		// identity can unlink/replace defeats the whole point of locking.
+		// See withContainmentReconcileLock's doc comment.
+		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
+		lockFn:            withContainmentReconcileLock,
 		// Populated so rollback can clean up a legacy `include` line a
 		// pre-portability build appended here. New installs never write it.
 		nftMainPath:        defaultNFTMainConfigPath,
@@ -211,18 +217,6 @@ const (
 	defaultSystemUnitPath     = "/etc/systemd/system/pipelock.service"
 	defaultNFTRulesPath       = "/etc/nftables.d/50-pipelock-containment.nft"
 	defaultNFTPersistUnitPath = "/etc/systemd/system/pipelock-containment-nft.service"
-	// defaultContainmentReconcileLockPath serializes the critical section
-	// that snapshots the managed config, computes the declared loopback
-	// services, and applies+persists the managed nft block. `contain
-	// install` and `contain reload-nft-rules` both take this exclusive
-	// flock, so an install promoting a new managed config and a
-	// concurrent (e.g. boot-time) reload can never interleave: one runs to
-	// completion (config snapshot through kernel load through persisted
-	// file) before the other starts, and the second one reads the config
-	// that is current AFTER the first finishes rather than a snapshot
-	// taken before it. Lives under dataDir, which only root and
-	// pipelock-proxy can write.
-	defaultContainmentReconcileLockPath = "/var/lib/pipelock/containment-reconcile.lock"
 	// defaultNFTMainConfigPath is the distro nft service config that
 	// pre-portability installs appended a managed `include` line to. New
 	// installs persist via defaultNFTPersistUnitPath and never touch this

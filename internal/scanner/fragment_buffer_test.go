@@ -159,6 +159,33 @@ func TestFragmentBuffer_NormalizedCoordinatesRetainExactAttribution(t *testing.T
 	t.Fatalf("normalized cross-fragment match reported clean: %+v", matches)
 }
 
+func TestFragmentBuffer_MultipassNormalizedCoordinatesRetainExactAttribution(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("dlp:\n  patterns:\n    - name: Multipass token\n      regex: 'SECRET[A-Z]{2}'\n      severity: high\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	fb := NewFragmentBuffer(64, 2, testWindowSecs)
+	t.Cleanup(fb.Close)
+	owner := testCEEIdentity(testSessionA)
+	stream := testCEEStream(testSessionA)
+
+	appendFragmentWithSource(t, fb, owner, stream, []byte("prefix"), []byte("ёёёёSECRET"), sc)
+	matches := appendFragmentWithSource(t, fb, owner, stream, []byte("suffix"), []byte("AB"), sc)
+	for _, match := range matches {
+		if match.PatternName != "Multipass token" {
+			continue
+		}
+		if len(match.Contributors) != 2 || string(match.Contributors[0]) != "prefix" || string(match.Contributors[1]) != "suffix" {
+			t.Fatalf("multipass normalized contributors = %q, want exact source requests", match.Contributors)
+		}
+		return
+	}
+	t.Fatalf("multipass normalized cross-fragment match reported clean: %+v", matches)
+}
+
 func TestFragmentBuffer_CompleteDecoyDoesNotDropEncodedCrossMatch(t *testing.T) {
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	t.Cleanup(fb.Close)

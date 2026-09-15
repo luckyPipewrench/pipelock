@@ -32,6 +32,11 @@ type DLPMatch struct {
 // retained payload into arbitrarily large ledger metadata.
 const MaxFragmentSourceRequestIDBytes = 128
 
+const (
+	maxFragmentDLPNormalizationPasses = 3
+	fragmentDLPNormalizationFailure   = "DLP normalization did not converge"
+)
+
 // fragment holds a single outbound payload chunk with its arrival time.
 type fragment struct {
 	data            []byte
@@ -724,10 +729,16 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	buf := make([]byte, 0)
 	ranges := make([]fragmentRange, 0, len(fragments))
 	for _, f := range fragments {
-		normalized := []byte(normalize.ForDLP(string(f.data)))
+		normalized, stable := normalizeFragmentForDLP(f.data)
+		if !stable {
+			// Scanner spans index another normalization pass. If the bounded
+			// pipeline does not reach a fixed point, no fragment boundary can be
+			// trusted; block without claiming contributor provenance.
+			return []DLPMatch{{PatternName: fragmentDLPNormalizationFailure}}
+		}
 		start := len(buf)
 		buf = append(buf, normalized...)
-		ranges = append(ranges, fragmentRange{start: start, end: len(buf), fragment: f})
+		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: normalized, fragment: f})
 	}
 
 	result := sc.ScanTextForDLP(ctx, string(buf))
@@ -810,6 +821,22 @@ func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragm
 	return matches
 }
 
+func normalizeFragmentForDLP(payload []byte) ([]byte, bool) {
+	current := string(payload)
+	// ForDLP has two stages that can expose input to a later stage: NFKC and
+	// the trailing NFD used to remove combining marks. Two changing passes plus
+	// one equality check therefore cover the current pipeline. A future change
+	// that needs more passes fails closed instead of reviving coordinate drift.
+	for range maxFragmentDLPNormalizationPasses {
+		next := normalize.ForDLP(current)
+		if next == current {
+			return []byte(next), true
+		}
+		current = next
+	}
+	return nil, false
+}
+
 func maskFragmentOccurrence(buf []byte, start, end int) bool {
 	changed := false
 	for i := start; i < end; i++ {
@@ -829,11 +856,10 @@ type fragmentOccurrence struct {
 func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) map[string][]fragmentOccurrence {
 	complete := make(map[string][]fragmentOccurrence)
 	for _, r := range ranges {
-		normalized := normalize.ForDLP(string(r.fragment.data))
-		fragmentResult := sc.ScanTextForDLPQuiet(ctx, normalized)
+		fragmentResult := sc.ScanTextForDLPQuiet(ctx, string(r.normalized))
 		for _, match := range fragmentResult.Matches {
 			span := match.Span()
-			if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(normalized) || span.ByteStart >= span.ByteEnd {
+			if match.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteEnd > len(r.normalized) || span.ByteStart >= span.ByteEnd {
 				continue
 			}
 			complete[match.PatternName] = append(complete[match.PatternName], fragmentOccurrence{
@@ -872,9 +898,10 @@ func spanIsWithinOneFragment(ranges []fragmentRange, start, end int) bool {
 }
 
 type fragmentRange struct {
-	start    int
-	end      int
-	fragment fragment
+	start      int
+	end        int
+	normalized []byte
+	fragment   fragment
 }
 
 func contributorsForSpan(ranges []fragmentRange, start, end int) [][]byte {

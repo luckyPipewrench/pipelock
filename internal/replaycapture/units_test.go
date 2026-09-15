@@ -244,9 +244,16 @@ func TestWritePacketFilesRejectsMissingEvidence(t *testing.T) {
 	}
 	cs.EvidenceFile = filepath.Join(t.TempDir(), "missing.jsonl")
 	pkt := buildPacket(cs, fixedStamp())
-	err = writePacketFiles(t.TempDir(), cs, pkt)
+	packetDir := t.TempDir()
+	err = writePacketFiles(packetDir, cs, pkt)
 	if err == nil || !strings.Contains(err.Error(), "reading evidence") {
 		t.Fatalf("writePacketFiles err = %v, want a reading-evidence failure", err)
+	}
+	// Evidence is read before the first write, so a failure here must leave
+	// no packet behind. Asserting the error alone would still pass if a
+	// regression wrote packet.json ahead of reading the evidence.
+	if _, statErr := os.Stat(filepath.Join(packetDir, artifactPacketName)); !os.IsNotExist(statErr) {
+		t.Fatalf("packet artifact stat = %v, want it absent after an evidence-read failure", statErr)
 	}
 }
 

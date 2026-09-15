@@ -670,8 +670,11 @@ func TestReceiptsCmdAsDirExtractsFromSessionDirectory(t *testing.T) {
 	// the --dir branch ran: it is a distinct error from every non---dir
 	// assertion in this file, which all go through extractReceipts's
 	// non-directory branch instead.
-	if err == nil {
-		t.Fatal("Execute err = nil, want no-matching-session error for --dir extraction")
+	// ExtractReceiptsFromSessionDir returns zero receipts and no error for an
+	// unmatched session, so BuildCheckpoint is what rejects it. Asserting that
+	// exact message keeps an unrelated failure from passing as this one.
+	if err == nil || !strings.Contains(err.Error(), "empty receipt chain") {
+		t.Fatalf("Execute err = %v, want an empty-receipt-chain error for --dir extraction", err)
 	}
 	if strings.Contains(err.Error(), "reading raw receipts") {
 		t.Fatalf("Execute err = %v, want a --dir-specific error, not the non---dir fallback path", err)
@@ -865,7 +868,8 @@ func TestReceiptsCmdSurfacesBundleWriteFailure(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(receiptDir, 0o750) }) // #nosec G302 -- restoring a directory to the repo-standard 0750
 
 	cmd := receiptsCmd()
-	cmd.SetOut(&bytes.Buffer{})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
 	cmd.SetArgs([]string{
 		receiptsPath,
 		"--key", keyHex,
@@ -876,7 +880,10 @@ func TestReceiptsCmdSurfacesBundleWriteFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute err = nil, want a write failure under a read-only receipt directory")
 	}
-	if strings.Contains(err.Error(), "ANCHOR BUNDLE WRITTEN") {
-		t.Fatalf("Execute err = %v, want a write failure not success output", err)
+	// The success marker is written to the command's output writer, never
+	// folded into the error, so the command output is the only place a
+	// premature success announcement would show up.
+	if strings.Contains(out.String(), "ANCHOR BUNDLE WRITTEN") {
+		t.Fatalf("command output = %q, want no success announcement alongside a write failure", out.String())
 	}
 }

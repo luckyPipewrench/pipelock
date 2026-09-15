@@ -2265,6 +2265,47 @@ func TestServer_ReloadScannerConstructionErrorPreservesLiveScanner(t *testing.T)
 	}
 }
 
+func TestServer_ReloadRebuildsChangedSecretsFile(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	secretsPath := filepath.Join(t.TempDir(), "secrets.txt")
+	first := "Q7vP2mK9xR4nT8wB" + "6cD3fG1hJ5sL0zA"
+	second := "xL5pR8vN2qT7mC4z" + "9dF1hK6sW3eB0yU"
+	if err := os.WriteFile(secretsPath, []byte(first+"\n"), 0o600); err != nil {
+		t.Fatalf("write first secrets file: %v", err)
+	}
+
+	firstCfg := s.proxy.CurrentConfig().Clone()
+	firstCfg.DLP.SecretsFile = secretsPath
+	if err := s.Reload(firstCfg); err != nil {
+		t.Fatalf("reload first secrets file: %v", err)
+	}
+	firstScanner := s.proxy.ScannerPtr().Load()
+	if result := firstScanner.ScanTextForDLP(context.Background(), "checksum: "+first[:20]); result.Clean {
+		t.Fatalf("first scanner must match its loaded secret: %+v", result.Matches)
+	}
+
+	if err := os.WriteFile(secretsPath, []byte(second+"\n"), 0o600); err != nil {
+		t.Fatalf("write changed secrets file: %v", err)
+	}
+	// This models a later config reload after the file changed rather than the
+	// fsnotify/SIGHUP duplicate event that the short dedup window suppresses.
+	s.lastReloadAt = time.Time{}
+	secondCfg := firstCfg.Clone()
+	if err := s.Reload(secondCfg); err != nil {
+		t.Fatalf("reload changed secrets file: %v", err)
+	}
+	secondScanner := s.proxy.ScannerPtr().Load()
+	if secondScanner == firstScanner {
+		t.Fatal("changed secrets file reload kept the previous scanner")
+	}
+	if result := secondScanner.ScanTextForDLP(context.Background(), "checksum: "+second[:20]); result.Clean {
+		t.Fatalf("reloaded scanner must match changed secret: %+v", result.Matches)
+	}
+	if result := secondScanner.ScanTextForDLP(context.Background(), "checksum: "+first[:20]); !result.Clean {
+		t.Fatalf("reloaded scanner retained replaced secret: %+v", result.Matches)
+	}
+}
+
 func TestServer_Reload_BundleResolutionErrorRejectsBalancedCoverageDrop(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)

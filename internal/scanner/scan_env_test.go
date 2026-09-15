@@ -6,7 +6,10 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -61,6 +64,73 @@ func TestScanTextForDLP_EnvLeakPartialValue(t *testing.T) {
 	}
 	if result.Matches[0].PartialLen != 20 || result.Matches[0].PatternName != "Environment Variable Leak" || result.Matches[0].Encoded != "env" {
 		t.Fatalf("match=%+v, want partial environment leak attribution", result.Matches[0])
+	}
+}
+
+func TestScanTextForDLP_EnvAndFileSharedWindowParity(t *testing.T) {
+	stem := "Q7vP2mK9xR4nT8wB6cD3"
+	envSecret := stem + "fG1hJ5sL0zAqW2eR"
+	fileSecret := stem + "9uY6tR3eW1qZ8xC7"
+	t.Setenv("PIPELOCK_SHARED_WINDOW_ENV", envSecret)
+
+	path := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(path, []byte(fileSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+	cfg.DLP.SecretsFile = path
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if result := s.ScanTextForDLP(context.Background(), "checksum: "+stem); !result.Clean {
+		t.Fatalf("shared env/file stem must stay clean, got %+v", result.Matches)
+	}
+	for _, tc := range []struct {
+		name        string
+		fragment    string
+		patternName string
+	}{
+		{"environment", envSecret[len(envSecret)-18:], "Environment Variable Leak"},
+		{"file", fileSecret[len(fileSecret)-18:], "Known Secret Leak"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), "checksum: "+tc.fragment)
+			if result.Clean || len(result.Matches) != 1 || result.Matches[0].PatternName != tc.patternName || result.Matches[0].PartialLen != 18 {
+				t.Fatalf("partial %s leak = %+v, want one %s match of length 18", tc.name, result.Matches, tc.patternName)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_KnownSecretWindowsConcurrent(t *testing.T) {
+	secret := strings.Join([]string{"Q7vP2mK9xR4nT8wB", "6cD3fG1hJ5sL0zA"}, "")
+	t.Setenv("PIPELOCK_CONCURRENT_WINDOW_SECRET", secret)
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+	s := MustNew(cfg)
+	defer s.Close()
+
+	const scans = 32
+	start := make(chan struct{})
+	errs := make(chan string, scans)
+	var wg sync.WaitGroup
+	for range scans {
+		wg.Go(func() {
+			<-start
+			result := s.ScanTextForDLP(context.Background(), "checksum: "+secret[:20])
+			if result.Clean || len(result.Matches) != 1 || result.Matches[0].PartialLen != 20 {
+				errs <- "known-secret partial scan did not match"
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 

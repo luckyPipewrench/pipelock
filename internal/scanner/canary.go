@@ -15,8 +15,8 @@ type compiledCanaryToken struct {
 	name                    string
 	normalizedLower         string
 	canonicalLower          string
-	partialWindows          map[string][]int
-	canonicalPartialWindows map[string][]int
+	partialWindows          knownValueWindowIndex
+	canonicalPartialWindows knownValueWindowIndex
 }
 
 func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {

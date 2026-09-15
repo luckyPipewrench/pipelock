@@ -8,6 +8,7 @@ package scanner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base32"
 	"encoding/base64"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3006,8 +3008,57 @@ func collectValueWindows(value string, base int) map[string][]int {
 	return windows
 }
 
-// knownValueWindowSet holds, per known value, the windows unique to that value.
-type knownValueWindowSet map[string]map[string][]int
+// knownValueWindow is one exact partial-match candidate. Keeping its bytes and
+// source offset inline avoids retaining a string header and a separate slice
+// allocation for every sixteen-byte window.
+//
+// A secrets file accepts at most 1,000 values of at most 4,096 bytes, so the
+// file-backed worst case is 4,081,000 entries. This fixed-width layout is
+// therefore bounded by the accepted input contract rather than an operator
+// budget. Environment values use the same exact representation.
+type knownValueWindow struct {
+	value  [minKnownSecretSubstringLen]byte
+	offset int
+}
+
+// knownValueWindowIndex is sorted by window bytes. A scanner owns it for its
+// lifetime, so lookups are read-only and need no synchronization.
+type knownValueWindowIndex struct {
+	windows []knownValueWindow
+}
+
+func (i knownValueWindowIndex) len() int {
+	return len(i.windows)
+}
+
+func (i knownValueWindowIndex) offsets(window string) []knownValueWindow {
+	if len(window) != minKnownSecretSubstringLen || len(i.windows) == 0 {
+		return nil
+	}
+	var key [minKnownSecretSubstringLen]byte
+	copy(key[:], window)
+	first := sort.Search(len(i.windows), func(n int) bool {
+		return bytes.Compare(i.windows[n].value[:], key[:]) >= 0
+	})
+	if first == len(i.windows) || i.windows[first].value != key {
+		return nil
+	}
+	last := first + 1
+	for last < len(i.windows) && i.windows[last].value == key {
+		last++
+	}
+	return i.windows[first:last]
+}
+
+// knownValueWindowSet holds, per known value, the windows unique to that
+// value. The outer map is cardinality-bounded by configured values; the large
+// candidate collection is stored in compact exact records above.
+type knownValueWindowSet map[string]knownValueWindowIndex
+
+type knownValueWindowCandidate struct {
+	valueIndex int
+	window     knownValueWindow
+}
 
 // buildKnownValueWindows computes partial-match windows for every value across
 // the given lists and drops any window that appears in more than one distinct
@@ -3016,38 +3067,136 @@ type knownValueWindowSet map[string]map[string][]int
 // disclosure of either secret; matching it would attribute one secret's text
 // to the other and would block text that only contains the shared part.
 func buildKnownValueWindows(lists ...[]string) knownValueWindowSet {
-	set := make(knownValueWindowSet)
-	owners := make(map[string]string) // window -> first value seen with it
-	shared := make(map[string]struct{})
+	values := make([]string, 0)
+	valueIndexes := make(map[string]int)
 	for _, list := range lists {
 		for _, value := range list {
-			if _, done := set[value]; done {
+			if _, seen := valueIndexes[value]; seen {
 				continue
 			}
-			windows := knownValueWindows(value)
-			set[value] = windows
-			for window := range windows {
-				if owner, seen := owners[window]; seen && owner != value {
-					shared[window] = struct{}{}
-					continue
-				}
-				owners[window] = value
+			valueIndexes[value] = len(values)
+			values = append(values, value)
+		}
+	}
+
+	// Collect then sort once. The sort makes shared-window exclusion exact
+	// without per-window maps retained for the scanner lifetime.
+	candidates := make([]knownValueWindowCandidate, 0)
+	for valueIndex, value := range values {
+		appendKnownValueWindowCandidates(value, valueIndex, &candidates)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if cmp := bytes.Compare(candidates[i].window.value[:], candidates[j].window.value[:]); cmp != 0 {
+			return cmp < 0
+		}
+		if candidates[i].valueIndex != candidates[j].valueIndex {
+			return candidates[i].valueIndex < candidates[j].valueIndex
+		}
+		return candidates[i].window.offset < candidates[j].window.offset
+	})
+
+	indexes := make([]knownValueWindowIndex, len(values))
+	for start := 0; start < len(candidates); {
+		end := start + 1
+		for end < len(candidates) && candidates[end].window.value == candidates[start].window.value {
+			end++
+		}
+		if candidates[start].valueIndex == candidates[end-1].valueIndex {
+			for _, candidate := range candidates[start:end] {
+				indexes[candidate.valueIndex].windows = append(indexes[candidate.valueIndex].windows, candidate.window)
 			}
 		}
+		start = end
 	}
-	for _, windows := range set {
-		for window := range shared {
-			delete(windows, window)
-		}
+
+	set := make(knownValueWindowSet, len(values))
+	for valueIndex, value := range values {
+		set[value] = indexes[valueIndex]
 	}
 	return set
+}
+
+func appendKnownValueWindowCandidates(value string, valueIndex int, candidates *[]knownValueWindowCandidate) {
+	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
+		return
+	}
+	if strings.Contains(value, "://") {
+		appendURLCredentialWindowCandidates(value, valueIndex, candidates)
+		return
+	}
+	appendValueWindowCandidates(value, 0, valueIndex, candidates)
+}
+
+func appendURLCredentialWindowCandidates(value string, valueIndex int, candidates *[]knownValueWindowCandidate) {
+	u, err := url.Parse(value)
+	if err != nil {
+		// Unparseable URL-shaped values keep their whole-blob partial matching.
+		appendValueWindowCandidates(value, 0, valueIndex, candidates)
+		return
+	}
+	var parts []string
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			parts = append(parts, password)
+		}
+	}
+	for _, vs := range u.Query() {
+		parts = append(parts, vs...)
+	}
+	if u.Fragment != "" {
+		parts = append(parts, u.Fragment)
+	}
+	if path := strings.Trim(u.Path, "/"); path != "" {
+		parts = append(parts, strings.Split(path, "/")...)
+	}
+	for _, part := range parts {
+		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
+			continue
+		}
+		idx, raw := locateURLPart(value, part)
+		if idx < 0 {
+			continue
+		}
+		appendValueWindowCandidates(part, idx, valueIndex, candidates)
+		if raw != part {
+			appendValueWindowCandidates(raw, idx, valueIndex, candidates)
+		}
+	}
+}
+
+func appendValueWindowCandidates(value string, base int, valueIndex int, candidates *[]knownValueWindowCandidate) {
+	seen := make(map[[minKnownSecretSubstringLen]byte]struct{})
+	repeated := make(map[[minKnownSecretSubstringLen]byte]struct{})
+	local := make([]knownValueWindowCandidate, 0, len(value)-minKnownSecretSubstringLen+1)
+	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
+		window := value[start : start+minKnownSecretSubstringLen]
+		if ShannonEntropy(window) <= envLeakMinEntropy {
+			continue
+		}
+		var key [minKnownSecretSubstringLen]byte
+		copy(key[:], window)
+		if _, exists := seen[key]; exists {
+			repeated[key] = struct{}{}
+			continue
+		}
+		seen[key] = struct{}{}
+		local = append(local, knownValueWindowCandidate{
+			valueIndex: valueIndex,
+			window:     knownValueWindow{value: key, offset: base + start},
+		})
+	}
+	for _, candidate := range local {
+		if _, duplicate := repeated[candidate.window.value]; !duplicate {
+			*candidates = append(*candidates, candidate)
+		}
+	}
 }
 
 // indexKnownValueSubstring scans each candidate view once with fixed-size
 // windows, then extends only matching windows. It avoids constructing every
 // possible substring needle while retaining the longest contiguous disclosure.
-func indexKnownValueSubstring(value string, windows map[string][]int, views []spanTextView) (int, int, int, string, bool) {
-	if len(windows) == 0 {
+func indexKnownValueSubstring(value string, windows knownValueWindowIndex, views []spanTextView) (int, int, int, string, bool) {
+	if windows.len() == 0 {
 		return 0, 0, 0, "", false
 	}
 	bestLen := 0
@@ -3055,7 +3204,8 @@ func indexKnownValueSubstring(value string, windows map[string][]int, views []sp
 	bestView := ""
 	for _, view := range views {
 		for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
-			for _, valueStart := range windows[view.text[textStart:textStart+minKnownSecretSubstringLen]] {
+			for _, candidate := range windows.offsets(view.text[textStart : textStart+minKnownSecretSubstringLen]) {
+				valueStart := candidate.offset
 				leftText, leftValue := textStart, valueStart
 				for leftText > 0 && leftValue > 0 && view.text[leftText-1] == value[leftValue-1] {
 					leftText--
@@ -3186,8 +3336,8 @@ func indexHexTokenView(needle string, views []spanTextView) (int, int, string, b
 
 // matchSecretEncodingSpan finds a known secret in the candidate views as a
 // whole value, as a contiguous partial disclosure using the caller-provided
-// windows (nil disables partial matching), or under a supported encoding.
-func matchSecretEncodingSpan(secret string, windows map[string][]int, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
+// windows (an empty index disables partial matching), or under a supported encoding.
+func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
 		return knownSecretMatch{}, start, end, viewLabel, true
@@ -3502,21 +3652,22 @@ func dedupSecrets(fileSecrets, envSecrets []string) []string {
 	return result
 }
 
+const (
+	maxSecretsFileLineLen = 4096
+	maxSecretsFileEntries = 1000
+)
+
 // LoadSecretsFile reads explicit secret values from a file, one per line.
 // Lines starting with # (after optional whitespace) are comments.
 // Blank lines, null-byte lines, and lines below minLen are skipped.
-// Max 4096 bytes per line, max 1000 entries.
+// The accepted-input bounds are maxSecretsFileLineLen bytes per line and
+// maxSecretsFileEntries entries.
 func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening secrets file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-
-	const (
-		maxLineLen = 4096
-		maxEntries = 1000
-	)
 
 	var (
 		secrets []string
@@ -3525,9 +3676,9 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	)
 
 	sc := bufio.NewScanner(f)
-	// Buffer must exceed maxLineLen so bufio.ErrTooLong cannot fire for any
-	// line the explicit len(line) > maxLineLen guard would skip.
-	const scanBufMax = maxLineLen*2 + 4096
+	// Buffer must exceed maxSecretsFileLineLen so bufio.ErrTooLong cannot fire
+	// for any line the explicit length guard would skip.
+	const scanBufMax = maxSecretsFileLineLen*2 + 4096
 	sc.Buffer(make([]byte, 0, scanBufMax), scanBufMax)
 
 	for sc.Scan() {
@@ -3560,8 +3711,8 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 		}
 
 		// Reject lines exceeding max length.
-		if len(line) > maxLineLen {
-			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d exceeds %d bytes, skipping\n", lineNum, maxLineLen)
+		if len(line) > maxSecretsFileLineLen {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file line %d exceeds %d bytes, skipping\n", lineNum, maxSecretsFileLineLen)
 			continue
 		}
 
@@ -3572,8 +3723,8 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 		}
 
 		// Enforce max entries.
-		if len(secrets) >= maxEntries {
-			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file exceeds %d entries, ignoring remainder\n", maxEntries)
+		if len(secrets) >= maxSecretsFileEntries {
+			fmt.Fprintf(os.Stderr, "pipelock: warning: secrets_file exceeds %d entries, ignoring remainder\n", maxSecretsFileEntries)
 			break
 		}
 

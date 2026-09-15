@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -4914,6 +4915,20 @@ func TestLoadSecretsFile_MaxEntriesEnforced(t *testing.T) {
 	}
 	if len(secrets) != 1000 {
 		t.Fatalf("expected 1000 secrets (max enforced), got %d", len(secrets))
+	}
+}
+
+func TestKnownValueWindowIndex_CompactRepresentation(t *testing.T) {
+	const maxEntryBytes = 24
+	if got := unsafe.Sizeof(knownValueWindow{}); got > maxEntryBytes {
+		t.Fatalf("knownValueWindow size = %d bytes, want at most %d", got, maxEntryBytes)
+	}
+
+	maxWindows := uint64(maxSecretsFileEntries) * uint64(maxSecretsFileLineLen-minKnownSecretSubstringLen+1)
+	maxIndexBytes := maxWindows * uint64(unsafe.Sizeof(knownValueWindow{}))
+	const maxIndexMiB = 96
+	if maxIndexBytes > maxIndexMiB*1024*1024 {
+		t.Fatalf("maximum compact secrets-file index = %d bytes, want at most %d MiB", maxIndexBytes, maxIndexMiB)
 	}
 }
 

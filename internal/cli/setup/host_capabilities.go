@@ -3,6 +3,8 @@
 
 package setup
 
+import "github.com/spf13/cobra"
+
 // headerCapability names how a host's installer treats an HTTP `headers`
 // block on a remote MCP server entry.
 type headerCapability string
@@ -135,4 +137,38 @@ var hostCapabilities = map[string]hostCapability{
 		Headers: headerCapabilityRejected, Env: envCapabilityKeyValue,
 		SelfWrapSkip: true, ForeignRefusal: true,
 	},
+}
+
+// nonWrappingHostCommands names the setup commands that deliberately carry no
+// MCP wrapping contract: claude and cursor patch a hook command, pi sets an
+// HTTP proxy setting, and init is the umbrella command. They appear here so
+// that every command HostCommands returns is accounted for by exactly one of
+// the two lists, and a newly added setup command belongs to neither until
+// someone classifies it.
+var nonWrappingHostCommands = map[string]struct{}{
+	"init":   {},
+	"claude": {},
+	"cursor": {},
+	"pi":     {},
+}
+
+// HostCommands returns every setup subcommand, and is the registration list
+// the root command uses. The capability test enumerates this same function, so
+// the declared contract is bound to what the binary actually registers rather
+// than to a second list maintained by hand beside it: a new setup command
+// reaches the binary and the test together.
+func HostCommands() []*cobra.Command {
+	return []*cobra.Command{
+		InitCmd(),
+		ClaudeCmd(),
+		ClineCmd(),
+		ContinueCmd(),
+		CursorCmd(),
+		VscodeCmd(),
+		JetbrainsCmd(),
+		CodexCmd(),
+		OpenCodeCmd(),
+		PiCmd(),
+		ZedCmd(),
+	}
 }

@@ -9,27 +9,26 @@ import (
 	"testing"
 )
 
-// mcpWrappingHostRegistry enumerates every host command in this package
-// that wraps an MCP server config, independent of hostCapabilities. This is
-// the "source of truth for which hosts exist" that
-// TestHostCapabilities_EnumeratedFromRegistry checks hostCapabilities
-// against, so a host added here without a matching declaration in
-// host_capabilities.go fails the build's test suite instead of silently
-// shipping an undeclared installer.
-//
-// claude, cursor, pi, and init are deliberately excluded: they do not wrap
-// an MCP server map (claude/cursor patch a hook command; pi sets an HTTP
-// proxy setting; init is the umbrella command), so they carry no header/env
-// wrapping contract for this table to declare.
-var mcpWrappingHostRegistry = []string{
-	"vscode",
-	"cline",
-	"zed",
-	"jetbrains",
-	"opencode",
-	"continue",
-	"codex",
+// mcpWrappingHostRegistry is derived from HostCommands, the list the root
+// command actually registers, minus the commands that deliberately carry no
+// MCP wrapping contract. Deriving it rather than restating it is the point:
+// a new setup command reaches the binary and this table together, and one
+// that is neither declared in hostCapabilities nor listed as non-wrapping
+// fails TestHostCapabilities_EnumeratedFromRegistry instead of shipping an
+// undeclared installer.
+func mcpWrappingHostRegistryFromCommands() []string {
+	var hosts []string
+	for _, c := range HostCommands() {
+		name := c.Name()
+		if _, skip := nonWrappingHostCommands[name]; skip {
+			continue
+		}
+		hosts = append(hosts, name)
+	}
+	return hosts
 }
+
+var mcpWrappingHostRegistry = mcpWrappingHostRegistryFromCommands()
 
 // TestHostCapabilities_EnumeratedFromRegistry proves the failure direction
 // required here: a host present in the registry but missing from the

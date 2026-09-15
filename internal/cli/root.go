@@ -158,17 +158,9 @@ Quick start:
 		session.BaselineCmd(),
 		session.Cmd(),
 		// Setup (IDE integrations)
-		setup.InitCmd(),
-		setup.ClaudeCmd(),
-		setup.ClineCmd(),
-		setup.ContinueCmd(),
-		setup.CursorCmd(),
-		setup.VscodeCmd(),
-		setup.JetbrainsCmd(),
-		setup.CodexCmd(),
-		setup.OpenCodeCmd(),
-		setup.PiCmd(),
-		setup.ZedCmd(),
+		// One registration list, shared with the MCP wrapping-capability
+		// declaration, so a new setup command cannot reach the binary
+		// without being classified.
 		// Signing & integrity
 		clisigning.IntegrityCmd(),
 		clisigning.SignCmd(),
@@ -189,6 +181,7 @@ Quick start:
 		// Version
 		versionCmd(),
 	)
+	cmd.AddCommand(setup.HostCommands()...)
 
 	// Enterprise packages register extra commands via RegisterCommand().
 	for _, extra := range extraCommands {

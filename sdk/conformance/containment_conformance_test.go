@@ -180,11 +180,17 @@ func validateContainmentProbeFixture(fx containmentProbeFixture) error {
 	if usesChainText && usesRawCounters {
 		return errors.New("sets both nft_chain_text and drop_counter_reads; these are mutually exclusive fixture inputs (ambiguous)")
 	}
-	if usesChainText && (fx.AgentUID == 0 || fx.ProxyUID == 0) {
-		return errors.New("nft_chain_text requires non-zero agent_uid and proxy_uid")
+	if usesChainText && (fx.AgentUID <= 0 || fx.ProxyUID <= 0) {
+		return errors.New("nft_chain_text requires positive agent_uid and proxy_uid")
 	}
 	if usesChainText && fx.AgentUID == fx.ProxyUID {
 		return errors.New("agent_uid and proxy_uid must be distinct")
+	}
+	if usesChainText && fx.OperatorUID < 0 {
+		return errors.New("operator_uid must be zero (unknown) or positive")
+	}
+	if usesChainText && fx.ProxyPort != 0 && (fx.ProxyPort < 1 || fx.ProxyPort > 65535) {
+		return errors.New("proxy_port must be between 1 and 65535")
 	}
 	// A UID/port field set without nft_chain_text is dead: nothing reads it,
 	// and the fixture would silently claim an input it does not actually
@@ -819,13 +825,40 @@ func TestValidateContainmentProbeFixture_ChainTextSchema(t *testing.T) {
 			wantErr: "mutually exclusive",
 		},
 		{
+			name: "chain_text_negative_agent_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID = -987, 988
+				return fx
+			},
+			wantErr: "requires positive agent_uid and proxy_uid",
+		},
+		{
+			name: "chain_text_negative_operator_uid",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, -1
+				return fx
+			},
+			wantErr: "operator_uid must be zero (unknown) or positive",
+		},
+		{
+			name: "chain_text_proxy_port_out_of_range",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.ProxyPort = 987, 988, 70000
+				return fx
+			},
+			wantErr: "proxy_port must be between 1 and 65535",
+		},
+		{
 			name: "chain_text_missing_agent_uid",
 			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
 				fx.NFTChainText = validChainText()
 				fx.ProxyUID = 988
 				return fx
 			},
-			wantErr: "requires non-zero agent_uid and proxy_uid",
+			wantErr: "requires positive agent_uid and proxy_uid",
 		},
 		{
 			name: "chain_text_missing_proxy_uid",
@@ -834,7 +867,7 @@ func TestValidateContainmentProbeFixture_ChainTextSchema(t *testing.T) {
 				fx.AgentUID = 987
 				return fx
 			},
-			wantErr: "requires non-zero agent_uid and proxy_uid",
+			wantErr: "requires positive agent_uid and proxy_uid",
 		},
 		{
 			name: "chain_text_equal_uids",
@@ -902,9 +935,7 @@ func TestLoadContainmentProbe_RejectsUnknownField(t *testing.T) {
 		"runs": []
 	}`
 	var fx containmentProbeFixture
-	dec := json.NewDecoder(strings.NewReader(body))
-	dec.DisallowUnknownFields()
-	err := dec.Decode(&fx)
+	err := decodeFixtureDocument([]byte(body), &fx)
 	if err == nil {
 		t.Fatal("decode: expected an error on an unknown field, got nil")
 	}
@@ -937,7 +968,7 @@ func TestLoadContainmentProbe_MalformedChainTextIsRejectedAtRuntime(t *testing.T
 		t.Fatalf("unexpected schema-level validation error for malformed-but-well-formed-schema chain text: %v", err)
 	}
 	runner := newAuditedCannedRunner(fx)
-	results, _, err := contain.RunContainmentConformance(context.Background(), contain.ConformanceEnv{
+	results, exit, err := contain.RunContainmentConformance(context.Background(), contain.ConformanceEnv{
 		RunCommand:   runner.Run,
 		AgentUser:    fx.AgentUser,
 		OperatorUser: fx.OperatorUser,
@@ -948,10 +979,23 @@ func TestLoadContainmentProbe_MalformedChainTextIsRejectedAtRuntime(t *testing.T
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, r := range results {
-		if r.Probe == 8 && r.Status == contain.ConformanceStatusPass {
-			t.Fatalf("malformed chain text must never resolve to PASS; got status %q detail %q", r.Status, r.Detail)
+	if exit != contain.ConformanceExitSkip {
+		t.Fatalf("malformed chain text must resolve to the inconclusive exit code %d, got %d", contain.ConformanceExitSkip, exit)
+	}
+	var probe8 *contain.ConformanceProbeResult
+	for i := range results {
+		if results[i].Probe == 8 {
+			probe8 = &results[i]
 		}
+	}
+	if probe8 == nil {
+		t.Fatal("probe 8 missing from results")
+	}
+	if probe8.Status != contain.ConformanceStatusUnknown {
+		t.Fatalf("malformed chain text must resolve to UNKNOWN, got status %q detail %q", probe8.Status, probe8.Detail)
+	}
+	if !strings.Contains(probe8.Detail, "read DROP counter before probe") {
+		t.Fatalf("probe 8 detail = %q, want the parser error surfaced as the before-probe counter read", probe8.Detail)
 	}
 }
 

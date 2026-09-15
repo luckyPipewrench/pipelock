@@ -160,11 +160,23 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 		if env.DropCounter != nil {
 			return nil, conformanceExitInvalid, fmt.Errorf("conformance: NFTChainText and DropCounter are mutually exclusive fixture inputs (ambiguous)")
 		}
-		if env.AgentUID == 0 || env.ProxyUID == 0 {
-			return nil, conformanceExitInvalid, fmt.Errorf("conformance: NFTChainText requires non-zero AgentUID and ProxyUID")
+		if env.AgentUID <= 0 || env.ProxyUID <= 0 {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: NFTChainText requires positive AgentUID and ProxyUID")
 		}
 		if env.AgentUID == env.ProxyUID {
 			return nil, conformanceExitInvalid, fmt.Errorf("conformance: AgentUID and ProxyUID must be distinct")
+		}
+		// Zero keeps its documented meaning (unknown operator, default port);
+		// any other value must be a real UID or a real port, or the
+		// recognizer would report a conformance result for an input that
+		// cannot describe a host.
+		if env.OperatorUID < 0 {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: OperatorUID must be zero (unknown) or positive")
+		}
+		if env.ProxyPort != 0 {
+			if err := validatePort(env.ProxyPort); err != nil {
+				return nil, conformanceExitInvalid, fmt.Errorf("conformance: ProxyPort: %w", err)
+			}
 		}
 	}
 	if ctx == nil {

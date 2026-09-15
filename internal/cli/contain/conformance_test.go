@@ -340,20 +340,35 @@ func TestRunContainmentConformance_ChainTextWithoutOutputHookIsUnknown(t *testin
 		AgentUID:     987,
 		ProxyUID:     988,
 	}
-	results, _, err := RunContainmentConformance(context.Background(), env)
+	results, exit, err := RunContainmentConformance(context.Background(), env)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	probe8 := requireProbe8(t, results, exit)
+	if !strings.Contains(probe8.Detail, "not the managed output base chain") {
+		t.Fatalf("probe 8 detail = %q, want it to mention the missing output base chain", probe8.Detail)
+	}
+}
+
+// requireProbe8 asserts the inconclusive shape every fail-closed chain-text
+// case must take: probe 8 present, UNKNOWN, and the aggregate exit code the
+// skip/inconclusive path uses. A missing or miswired probe fails here rather
+// than passing vacuously.
+func requireProbe8(t *testing.T, results []ConformanceProbeResult, exit int) ConformanceProbeResult {
+	t.Helper()
+	if exit != ConformanceExitSkip {
+		t.Fatalf("inconclusive chain text must resolve to exit %d, got %d", ConformanceExitSkip, exit)
+	}
 	for _, r := range results {
 		if r.Probe == 8 {
-			if r.Status == ConformanceStatusPass {
-				t.Fatalf("chain text without the output hook must never resolve to PASS; got status %q detail %q", r.Status, r.Detail)
+			if r.Status != ConformanceStatusUnknown {
+				t.Fatalf("probe 8 must resolve to UNKNOWN, got status %q detail %q", r.Status, r.Detail)
 			}
-			if !strings.Contains(r.Detail, "not the managed output base chain") {
-				t.Fatalf("probe 8 detail = %q, want it to mention the missing output base chain", r.Detail)
-			}
+			return r
 		}
 	}
+	t.Fatal("probe 8 missing from results")
+	return ConformanceProbeResult{}
 }
 
 // TestRunContainmentConformance_MalformedChainTextFailsClosed proves that
@@ -367,13 +382,41 @@ func TestRunContainmentConformance_MalformedChainTextFailsClosed(t *testing.T) {
 		AgentUID:     987,
 		ProxyUID:     988,
 	}
-	results, _, err := RunContainmentConformance(context.Background(), env)
+	results, exit, err := RunContainmentConformance(context.Background(), env)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, r := range results {
-		if r.Probe == 8 && r.Status == ConformanceStatusPass {
-			t.Fatalf("malformed chain text must never resolve to PASS; got status %q detail %q", r.Status, r.Detail)
-		}
+	probe8 := requireProbe8(t, results, exit)
+	if !strings.Contains(probe8.Detail, "read DROP counter before probe") {
+		t.Fatalf("probe 8 detail = %q, want the parser error surfaced as the before-probe counter read", probe8.Detail)
+	}
+}
+
+// TestRunContainmentConformance_RejectsInvalidNumericChainTextInputs pins the
+// runtime boundary: a negative UID or an out-of-range port with chain text is
+// an invalid fixture, not a conformance result.
+func TestRunContainmentConformance_RejectsInvalidNumericChainTextInputs(t *testing.T) {
+	runner := conformanceRunner(cannedResp{out: "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", code: 7}, cannedResp{out: "200", code: 0})
+	cases := []struct {
+		name string
+		env  ConformanceEnv
+		want string
+	}{
+		{"negative agent uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: -987, ProxyUID: 988}, "positive AgentUID and ProxyUID"},
+		{"negative proxy uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: -988}, "positive AgentUID and ProxyUID"},
+		{"negative operator uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, OperatorUID: -1}, "OperatorUID must be zero (unknown) or positive"},
+		{"port out of range", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, ProxyPort: 70000}, "ProxyPort"},
+		{"port negative", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, ProxyPort: -1}, "ProxyPort"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			results, exit, err := RunContainmentConformance(context.Background(), tc.env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected an invalid-input error containing %q, got err=%v results=%+v", tc.want, err, results)
+			}
+			if exit != conformanceExitInvalid {
+				t.Fatalf("expected exit %d for an invalid fixture, got %d", conformanceExitInvalid, exit)
+			}
+		})
 	}
 }

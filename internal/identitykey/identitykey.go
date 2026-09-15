@@ -111,7 +111,13 @@ func CEESafeKey(agent, client string, auth envelope.ActorAuth) string {
 // configured identity name.
 func BaselineKeyForSessionKey(sessionKey string) string {
 	if idx := strings.LastIndex(sessionKey, "|"); idx > 0 {
-		return sessionKey[:idx]
+		// A named session key is "<agent>|<client address>". Confirm the tail
+		// is an address before trusting the split: a non-IP peer identifier
+		// containing the delimiter would otherwise be read as a named agent
+		// and could share a profile with a configured agent of that name.
+		if _, err := netip.ParseAddr(strings.Trim(sessionKey[idx+1:], "[]")); err == nil {
+			return sessionKey[:idx]
+		}
 	}
 	client := strings.Trim(strings.TrimSpace(sessionKey), "[]")
 	if ip, err := netip.ParseAddr(client); err == nil {

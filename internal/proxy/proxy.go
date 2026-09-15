@@ -5000,10 +5000,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				headerSignal = session.SignalBlock
 			}
 			recordAdaptiveSignalForScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
-				Threshold:     cfg.AdaptiveEnforcement.EscalationThreshold,
-				Logger:        log,
-				Metrics:       p.metrics,
-				Session:       CeeSessionKey(agent, clientIP),
+				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:    log,
+				Metrics:   p.metrics,
+				// The adaptive session this signal escalates is the folded key,
+				// so log that one: an operator who copies this into
+				// `pipelock session reset` must reach the session that was
+				// escalated, not a name-keyed one that may not exist.
+				Session:       sessionKeyFor(agent, clientIP, id.Auth),
 				ClientIP:      clientIP,
 				RequestID:     requestID,
 				DenialScanner: scanner.ScannerDLP,
@@ -5050,7 +5054,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
 		decide.UpgradeAction("", fetchLevel, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		headerSessionKey := CeeSessionKey(agent, clientIP)
+		headerSessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: headerSessionKey, Level: session.EscalationLabel(fetchLevel), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),

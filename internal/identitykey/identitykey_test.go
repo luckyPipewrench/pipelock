@@ -183,3 +183,23 @@ func TestCEECandidateKeysCoverEveryGrade(t *testing.T) {
 		}
 	}
 }
+
+func TestBaselineKeyForSessionKeyDelimiterInPeerIdentifier(t *testing.T) {
+	t.Parallel()
+
+	// A non-IP peer identifier containing the delimiter must not be read as a
+	// named agent session: "svc|worker" is one opaque peer, not agent "svc" on
+	// client "worker", and treating it as the former would let it share a
+	// behavioral-baseline profile with a configured agent named "svc".
+	named := BaselineKeyForSessionKey("svc|203.0.113.5")
+	if named != "svc" {
+		t.Fatalf("named session key = %q, want the agent component", named)
+	}
+	opaque := BaselineKeyForSessionKey("svc|worker")
+	if opaque == "svc" {
+		t.Fatalf("opaque peer identifier collided with the agent name %q", opaque)
+	}
+	if !IsFoldedBaselineKey(opaque) {
+		t.Fatalf("opaque peer key = %q, want the reserved folded namespace", opaque)
+	}
+}

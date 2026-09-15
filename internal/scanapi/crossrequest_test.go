@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -156,8 +157,6 @@ func TestCrossRequestFragment_DifferentSessionIDsDoNotLeak(t *testing.T) {
 func TestCrossRequestFragment_NoSessionIDIsStatelessAndUnchanged(t *testing.T) {
 	h := newCrossRequestTestHandler(t, 65536, 100)
 
-	const wantJSONShape = `{"status":"completed","decision":"allow","kind":"dlp","scan_id":`
-
 	first, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart1, ""))
 	if status != http.StatusOK || first.Decision != DecisionAllow {
 		t.Fatalf("first request: expected 200/allow, got %d %q", status, first.Decision)
@@ -173,15 +172,36 @@ func TestCrossRequestFragment_NoSessionIDIsStatelessAndUnchanged(t *testing.T) {
 		t.Errorf("expected zero findings on the stateless path, got %+v", second.Findings)
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(dlpScanBody(t, "safe", "")))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if !strings.HasPrefix(w.Body.String(), wantJSONShape) {
-		t.Errorf("golden shape check: expected prefix %q, got %q", wantJSONShape, w.Body.String())
+	// Golden equivalence: a request without a session_id must produce the
+	// byte-identical response body whether cross-request detection is
+	// enabled or disabled, once the per-request scan_id is normalized.
+	rawBody := func(h *Handler, body string) string {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		normalized := scanIDPattern.ReplaceAllString(w.Body.String(), `"scan_id":"<normalized>"`)
+		return durationPattern.ReplaceAllString(normalized, ``)
+	}
+	disabled := newCrossRequestTestHandler(t, 65536, 100)
+	disabled.cfg.CrossRequestDetection.Enabled = false
+	for _, body := range []string{dlpScanBody(t, "safe", ""), dlpScanBody(t, crossReqAWSPart1, ""), dlpScanBody(t, crossReqAWSPart1+crossReqAWSPart2, "")} {
+		withDetection := rawBody(h, body)
+		withoutDetection := rawBody(disabled, body)
+		if withDetection != withoutDetection {
+			t.Errorf("sessionless response differs with cross-request detection enabled:\n enabled: %s\ndisabled: %s", withDetection, withoutDetection)
+		}
+		if !strings.HasPrefix(withDetection, `{"status":"completed","decision":`) {
+			t.Errorf("unexpected response shape: %s", withDetection)
+		}
 	}
 }
+
+var (
+	scanIDPattern   = regexp.MustCompile(`"scan_id":"[^"]*"`)
+	durationPattern = regexp.MustCompile(`,"duration_ms":\d+`)
+)
 
 func TestValidateSessionID(t *testing.T) {
 	longID := strings.Repeat("a", maxScanAPISessionIDBytes+1)
@@ -343,6 +363,29 @@ func TestCrossRequestFragment_ConcurrentRequestsSameSession(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	// Enforcement under concurrency: the two halves of a secret race into
+	// one session from two goroutines. Whichever lands second completes the
+	// match, so exactly one of the two responses must deny.
+	results := make(chan string, 2)
+	for _, half := range []string{crossReqAWSPart1, crossReqAWSPart2} {
+		go func(payload string) {
+			resp, status := postScanAPI(t, h, dlpScanBody(t, payload, "racing-session"))
+			if status != http.StatusOK {
+				t.Errorf("racing half: expected 200, got %d", status)
+			}
+			results <- resp.Decision
+		}(half)
+	}
+	denies := 0
+	for i := 0; i < 2; i++ {
+		if <-results == DecisionDeny {
+			denies++
+		}
+	}
+	if denies != 1 {
+		t.Fatalf("racing halves in one session must produce exactly one deny (the completing request), got %d", denies)
+	}
 }
 
 func TestCrossRequestFragment_PromptInjectionAndToolCallKindsParticipate(t *testing.T) {
@@ -679,14 +722,25 @@ func TestCrossRequestFragments_StaleGenerationCannotRollBack(t *testing.T) {
 	livePtr := &live
 	var c crossRequestFragments
 
-	newBuf := c.currentFor(livePtr, livePtr)
+	liveFn := func() *config.Config { return livePtr }
+	newBuf := c.currentFor(livePtr, liveFn)
 	if newBuf == nil {
 		t.Fatal("live config must resolve a buffer")
 	}
-	if got := c.currentFor(old, livePtr); got != nil {
+	if got := c.currentFor(old, liveFn); got != nil {
 		t.Fatal("a stale-generation request must get no buffer")
 	}
-	if again := c.currentFor(livePtr, livePtr); again != newBuf {
+	if again := c.currentFor(livePtr, liveFn); again != newBuf {
 		t.Fatal("a stale request must not have reset the live generation's buffer")
+	}
+	// The reviewer's interleaving: a request that sampled (cfg=old,
+	// live=old) BEFORE the reload must still be refused, because live is
+	// re-sampled under the lock.
+	staleLive := func() *config.Config { return livePtr }
+	if got := c.currentFor(old, staleLive); got != nil {
+		t.Fatal("a request holding a pre-reload config must be refused even if it sampled live before the reload")
+	}
+	if again := c.currentFor(livePtr, liveFn); again != newBuf {
+		t.Fatal("the pre-reload request must not have reset the live buffer")
 	}
 }

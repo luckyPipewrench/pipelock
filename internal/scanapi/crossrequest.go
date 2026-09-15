@@ -107,15 +107,24 @@ type crossRequestFragments struct {
 // its own generation. The whole resolution runs under one lock so two
 // requests from different generations cannot interleave a close and a
 // rebuild between them.
-func (c *crossRequestFragments) currentFor(cfg, live *config.Config) *scanner.FragmentBuffer {
-	if c == nil || cfg == nil || cfg != live {
+func (c *crossRequestFragments) currentFor(cfg *config.Config, liveFn func() *config.Config) *scanner.FragmentBuffer {
+	if c == nil || cfg == nil || liveFn == nil {
 		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.lastConfig != cfg {
-		c.lastConfig = cfg
+	// The live config is sampled UNDER the lock: a request that sampled it
+	// before a reload and paused cannot present a stale (cfg, live) pair
+	// that still compares equal and roll the buffer back to its own
+	// generation. A request holding the old config keeps that object alive,
+	// so the pointer can never be reused for a newer generation.
+	live := liveFn()
+	if c.lastConfig != live {
+		c.lastConfig = live
 		c.closeLocked()
+	}
+	if cfg != live {
+		return nil
 	}
 	return c.currentLocked(cfg.CrossRequestDetection)
 }
@@ -228,6 +237,16 @@ func checkCrossRequestFragment(
 		Payload:         payload,
 		SourceRequestID: []byte(scanID),
 	}}, sc)
+	if err := ctx.Err(); err != nil {
+		// The reassembled scan did not complete. An uninspected request is
+		// never a clean allow, the same direction the per-request scans
+		// take when their context ends.
+		return crossRequestOutcome{
+			Blocked:     true,
+			BlockRuleID: "CEE-scan-cancelled",
+			BlockReason: "cross-request fragment scan did not complete: " + err.Error(),
+		}
+	}
 	var matches []scanner.DLPMatch
 	if len(batchMatches) > 0 {
 		matches = batchMatches[0]
@@ -261,8 +280,14 @@ func checkCrossRequestFragment(
 	}
 	out := crossRequestOutcome{Matched: true, Action: ceeCfg.Action, Matches: make([]crossRequestMatch, 0, len(matches))}
 	for _, match := range matches {
+		// The documented contract is the EARLIER requests whose retained
+		// bytes contributed; the completing request is the one carrying
+		// this finding and is not listed among its own contributors.
 		contributors := make([]string, 0, len(match.Contributors))
 		for _, c := range match.Contributors {
+			if string(c) == scanID {
+				continue
+			}
 			contributors = append(contributors, string(c))
 		}
 		out.Matches = append(out.Matches, crossRequestMatch{PatternName: match.PatternName, Contributors: contributors})
@@ -277,11 +302,14 @@ func checkCrossRequestFragment(
 // context.session_id — the caller's signal that today's stateless behavior
 // applies unchanged.
 func (h *Handler) runCrossRequest(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, req *Request, payload []byte, scanID string) crossRequestOutcome {
-	if cfg == nil || req.Context == nil || req.Context.SessionID == "" || len(payload) == 0 {
+	if cfg == nil {
 		return crossRequestOutcome{}
 	}
-	buffer := h.crossRequest.currentFor(cfg, h.currentConfig())
-	if buffer == nil {
+	// Resolve the buffer before the session check so a reload is observed,
+	// and stale state dropped, by the next request of any kind rather than
+	// only the next session-bearing one.
+	buffer := h.crossRequest.currentFor(cfg, h.currentConfig)
+	if buffer == nil || req.Context == nil || req.Context.SessionID == "" || len(payload) == 0 {
 		return crossRequestOutcome{}
 	}
 	callerKey := callerKeyForToken(req.callerToken)

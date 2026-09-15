@@ -5148,6 +5148,53 @@ func TestValidate_MCPToolScanningNewToolActionExplicitBlock(t *testing.T) {
 	}
 }
 
+// TestValidate_MCPToolScanningNewToolActionBlockWithoutDriftWarns pins the
+// operability half of the setting: new-tool admission is only evaluated inside
+// the drift-detection path, so block without detect_drift is inert. Accepting
+// it silently tells the operator a control is on when nothing changed, which is
+// the failure that gets a security setting trusted and then disbelieved.
+func TestValidate_MCPToolScanningNewToolActionBlockWithoutDriftWarns(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.DetectDrift = false
+	cfg.MCPToolScanning.NewToolAction = ActionBlock
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings err = %v, want the pair accepted with a warning, not rejected", err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_scanning.new_tool_action" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want one naming mcp_tool_scanning.new_tool_action", warnings)
+	}
+}
+
+// TestValidate_MCPToolScanningNewToolActionBlockWithDriftIsSilent is the
+// negative control: the same pair WITH drift detection is a working
+// configuration and must not warn, or the warning becomes noise operators
+// learn to ignore.
+func TestValidate_MCPToolScanningNewToolActionBlockWithDriftIsSilent(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.DetectDrift = true
+	cfg.MCPToolScanning.NewToolAction = ActionBlock
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings err = %v, want success", err)
+	}
+	for _, w := range warnings {
+		if w.Field == "mcp_tool_scanning.new_tool_action" {
+			t.Fatalf("a working configuration warned: %+v", w)
+		}
+	}
+}
+
 func TestValidate_MCPToolScanningNewToolActionInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true

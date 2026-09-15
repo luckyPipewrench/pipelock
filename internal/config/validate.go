@@ -498,7 +498,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPInputScanning(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateMCPToolScanning(); err != nil {
+	if err := c.validateMCPToolScanning(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateMCPDataClassLabels(); err != nil {
@@ -2182,7 +2182,7 @@ func (c *Config) validateMCPInputScanning() error {
 	return nil
 }
 
-func (c *Config) validateMCPToolScanning() error {
+func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
 	// Validate MCP tool scanning config
 	if c.MCPToolScanning.Enabled {
@@ -2197,6 +2197,18 @@ func (c *Config) validateMCPToolScanning() error {
 			// valid; "" is filled to warn by normalize
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning new_tool_action %q: must be warn or block", c.MCPToolScanning.NewToolAction)
+		}
+		// New-tool admission is evaluated only inside the drift-detection
+		// path, so this pair leaves the control inert. Warn rather than
+		// reject: refusing would turn an existing running configuration into
+		// a startup failure on upgrade, and an operator who set block has
+		// asked for more checking, not for the process to stop. Silence is
+		// the one option that is wrong, because it reads as policy applied.
+		if c.MCPToolScanning.NewToolAction == ActionBlock && !c.MCPToolScanning.DetectDrift && warnings != nil {
+			*warnings = append(*warnings, Warning{
+				Field:   "mcp_tool_scanning.new_tool_action",
+				Message: "new_tool_action: block has no effect while mcp_tool_scanning.detect_drift is false, because new-tool admission is only evaluated during drift detection; set detect_drift: true for it to apply",
+			})
 		}
 	}
 	resetFile := c.MCPToolScanning.ListenerDriftResetFile

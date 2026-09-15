@@ -82,8 +82,8 @@ const scanAPIIdentityNamespace = "scanapi\x1f"
 // never share or poison each other's session state even if they choose the
 // same session_id. sessionID is the caller-supplied session_id request field,
 // already validated by the Scan API handler.
-func NewScanAPIIdentity(callerKey, sessionID string) CEEIdentity {
-	return CEEIdentity{key: scanAPIIdentityNamespace + callerKey + "\x1f" + sessionID}
+func NewScanAPIIdentity(callerKey string) CEEIdentity {
+	return CEEIdentity{key: scanAPIIdentityNamespace + callerKey}
 }
 
 // CEECandidateIdentities returns both classifications that an administrative

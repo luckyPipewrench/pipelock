@@ -90,6 +90,32 @@ type crossRequestFragments struct {
 	buffer *scanner.FragmentBuffer
 	cfg    config.CrossRequestFragments
 	built  bool
+	// lastConfig is the config object the buffer was last resolved against.
+	// A reload swaps the live config pointer, so a different pointer means
+	// at least one reload happened since the last session-bearing request.
+	// The buffer is dropped on every reload, matching the forward proxy and
+	// MCP paths, so a disable-then-enable interval with no request in
+	// between cannot carry fragments across it.
+	lastConfig *config.Config
+}
+
+// currentFor resolves the live buffer for cfg and drops all accumulated
+// state whenever the config object changed since the previous call.
+func (c *crossRequestFragments) currentFor(cfg *config.Config) *scanner.FragmentBuffer {
+	if c == nil || cfg == nil {
+		return nil
+	}
+	c.mu.Lock()
+	if c.lastConfig != cfg {
+		c.lastConfig = cfg
+		if c.buffer != nil {
+			c.buffer.Close()
+			c.buffer = nil
+			c.built = false
+		}
+	}
+	c.mu.Unlock()
+	return c.current(cfg.CrossRequestDetection)
 }
 
 // current returns the live buffer for cfg, rebuilding it if this is the
@@ -140,11 +166,17 @@ type crossRequestOutcome struct {
 	Blocked     bool
 	BlockReason string
 	BlockRuleID string
-	// Matched means accumulated fragments completed a DLP pattern match.
-	Matched      bool
+	// Matched means accumulated fragments completed at least one DLP pattern
+	// match; Matches carries every completed pattern with its contributors.
+	Matched bool
+	Matches []crossRequestMatch
+	Action  string // config.ActionBlock or config.ActionWarn
+}
+
+// crossRequestMatch is one completed cross-request DLP pattern match.
+type crossRequestMatch struct {
 	PatternName  string
 	Contributors []string
-	Action       string // config.ActionBlock or config.ActionWarn
 }
 
 // checkCrossRequestFragment appends payload to the caller's Scan API
@@ -170,10 +202,19 @@ func checkCrossRequestFragment(
 	if buffer == nil || len(payload) == 0 {
 		return crossRequestOutcome{}
 	}
-	identity := identitykey.NewScanAPIIdentity(callerKey, sessionID)
-	stream := identity.Stream("")
+	// The CALLER is the owner the buffer's capacity ledger admits, and each
+	// session is a stream inside that caller's one budget group. That is what
+	// keeps one caller from denying every other caller service: max_sessions
+	// bounds distinct callers with live state, not freely chosen session IDs,
+	// and a caller that opens many sessions evicts only its own oldest
+	// fragments once its shared max_buffer_bytes budget is spent. The empty
+	// group name cannot collide with a session because session IDs are
+	// validated non-empty.
+	identity := identitykey.NewScanAPIIdentity(callerKey)
+	group := identity.Stream("")
+	stream := identity.Stream(sessionID)
 	result, batchMatches := buffer.AppendAndScanOwnedBatch(ctx, identity, []scanner.FragmentAppend{{
-		Group:           stream,
+		Group:           group,
 		Stream:          stream,
 		Payload:         payload,
 		SourceRequestID: []byte(scanID),
@@ -200,7 +241,7 @@ func checkCrossRequestFragment(
 		return crossRequestOutcome{
 			Blocked:     true,
 			BlockRuleID: "CEE-capacity-exceeded",
-			BlockReason: "cross-request fragment session capacity exhausted; request cannot be safely inspected; capacity recovers when existing sessions expire (cross_request_detection.fragment_reassembly.window_minutes), when the config is reloaded with a larger fragment_reassembly.max_sessions, or on restart",
+			BlockReason: "cross-request fragment capacity exhausted: the number of callers with live fragment state reached cross_request_detection.fragment_reassembly.max_sessions; request cannot be safely inspected; capacity recovers when a caller's fragments expire (fragment_reassembly.window_minutes), when the config is reloaded with a larger max_sessions, or on restart",
 		}
 	}
 	if len(matches) == 0 {
@@ -209,17 +250,15 @@ func checkCrossRequestFragment(
 	if m != nil {
 		m.RecordCrossRequestDLPMatch()
 	}
-	match := matches[0]
-	contributors := make([]string, 0, len(match.Contributors))
-	for _, c := range match.Contributors {
-		contributors = append(contributors, string(c))
+	out := crossRequestOutcome{Matched: true, Action: ceeCfg.Action, Matches: make([]crossRequestMatch, 0, len(matches))}
+	for _, match := range matches {
+		contributors := make([]string, 0, len(match.Contributors))
+		for _, c := range match.Contributors {
+			contributors = append(contributors, string(c))
+		}
+		out.Matches = append(out.Matches, crossRequestMatch{PatternName: match.PatternName, Contributors: contributors})
 	}
-	return crossRequestOutcome{
-		Matched:      true,
-		PatternName:  match.PatternName,
-		Contributors: contributors,
-		Action:       ceeCfg.Action,
-	}
+	return out
 }
 
 // runCrossRequest is the entry point scan.go's kind handlers call after their
@@ -232,7 +271,7 @@ func (h *Handler) runCrossRequest(ctx context.Context, cfg *config.Config, sc *s
 	if cfg == nil || req.Context == nil || req.Context.SessionID == "" || len(payload) == 0 {
 		return crossRequestOutcome{}
 	}
-	buffer := h.crossRequest.current(cfg.CrossRequestDetection)
+	buffer := h.crossRequest.currentFor(cfg)
 	if buffer == nil {
 		return crossRequestOutcome{}
 	}
@@ -261,22 +300,25 @@ func applyCrossRequestOutcome(resp *Response, outcome crossRequestOutcome, scann
 			Message:  outcome.BlockReason,
 		})
 	case outcome.Matched:
-		finding := Finding{
-			Scanner:      "cross_request_fragment",
-			RuleID:       "CEE-fragment-" + outcome.PatternName,
-			Severity:     "critical",
-			Message:      "Cross-request fragment DLP match: secret reassembled across multiple requests in this session (" + outcome.PatternName + ")",
-			Contributors: outcome.Contributors,
+		for _, m := range outcome.Matches {
+			finding := Finding{
+				Scanner:      "cross_request_fragment",
+				RuleID:       "CEE-fragment-" + m.PatternName,
+				Severity:     "critical",
+				Message:      "Cross-request fragment DLP match: secret reassembled across multiple requests in this session (" + m.PatternName + ")",
+				Contributors: m.Contributors,
+			}
+			if outcome.Action == config.ActionWarn {
+				finding.Severity = "medium"
+			}
+			resp.Findings = append(resp.Findings, finding)
 		}
 		if outcome.Action == config.ActionWarn {
-			finding.Severity = "medium"
-			resp.Findings = append(resp.Findings, finding)
 			if resp.Decision == "" || resp.Decision == DecisionAllow {
 				resp.Decision = DecisionWarn
 			}
 			return
 		}
 		resp.Decision = DecisionDeny
-		resp.Findings = append(resp.Findings, finding)
 	}
 }

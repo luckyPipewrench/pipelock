@@ -38,7 +38,7 @@ func TestCEESafeKey_OnlyTrustedAgentAuthNamespacesBucket(t *testing.T) {
 // and NewMCPCEEIdentity wraps a server-issued session string verbatim, so
 // neither ever contains the 0x1f separator this constructor uses.
 func TestNewScanAPIIdentity_NamespaceCannotCollideWithOtherTransports(t *testing.T) {
-	scanAPIKey := NewScanAPIIdentity("caller-1", "session-1").Key()
+	scanAPIKey := NewScanAPIIdentity("caller-1").Key()
 
 	proxyKeys := []string{
 		NewCEEIdentity("agent-a", "203.0.113.10", envelope.ActorAuthBound).Key(),
@@ -74,9 +74,9 @@ func TestNewScanAPIIdentity_NamespaceCannotCollideWithOtherTransports(t *testing
 // TestNewScanAPIIdentity_DifferentCallersOrSessionsDoNotCollide is a
 // straightforward uniqueness check on the constructor's own key shape.
 func TestNewScanAPIIdentity_DifferentCallersOrSessionsDoNotCollide(t *testing.T) {
-	a := NewScanAPIIdentity("caller-a", "session-1").Key()
-	b := NewScanAPIIdentity("caller-b", "session-1").Key()
-	c := NewScanAPIIdentity("caller-a", "session-2").Key()
+	a := NewScanAPIIdentity("caller-a").Stream("session-1").Key()
+	b := NewScanAPIIdentity("caller-b").Stream("session-1").Key()
+	c := NewScanAPIIdentity("caller-a").Stream("session-2").Key()
 	if a == b {
 		t.Errorf("different callers with the same session_id produced the same key: %q", a)
 	}

@@ -401,11 +401,6 @@ func (h *Handler) scanToolCall(
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
 		}
-
-		if resp.Decision != DecisionDeny {
-			outcome := h.runCrossRequest(ctx, cfg, sc, req, []byte(scanText), resp.ScanID)
-			applyCrossRequestOutcome(&resp, outcome, "tool_call")
-		}
 	}
 
 	// Stage 3: Policy check.
@@ -430,6 +425,15 @@ func (h *Handler) scanToolCall(
 			}
 			resp.Findings = append(resp.Findings, policyFindings(verdict)...)
 		}
+	}
+
+	// Cross-request accumulation runs only after every denial-producing
+	// stage: a tool call the policy denies never retains bytes in the
+	// session, so it cannot poison later matches or spend the caller's
+	// budget.
+	if resp.Decision != DecisionDeny && scanText != "" {
+		outcome := h.runCrossRequest(ctx, cfg, sc, req, []byte(scanText), resp.ScanID)
+		applyCrossRequestOutcome(&resp, outcome, "tool_call")
 	}
 
 	return resp, http.StatusOK

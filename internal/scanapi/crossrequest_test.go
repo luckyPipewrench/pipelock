@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -236,16 +237,25 @@ func TestHandler_MalformedSessionIDWhitespaceRejected(t *testing.T) {
 // NEW session cannot be admitted, and that request must be denied (fail
 // closed) rather than silently allowed with no cross-request inspection.
 func TestCrossRequestFragment_CapacityExhaustionFailsClosed(t *testing.T) {
-	h := newCrossRequestTestHandler(t, 65536, 1) // exactly one session slot
+	// Capacity is counted in CALLERS with live fragment state, not in freely
+	// chosen session IDs, so exhausting it takes a second bearer token.
+	const tokenA, tokenB = "capacity-token-a", "capacity-token-b"
+	h := newCrossRequestTestHandlerWithTokens(t, 65536, 1, tokenA, tokenB) // exactly one caller slot
 
-	// Occupy the single slot.
-	first, status := postScanAPI(t, h, dlpScanBody(t, "occupying content", "sess-full-a"))
+	// Caller A occupies the single slot.
+	first, status := postScanAPIAs(t, h, tokenA, dlpScanBody(t, "occupying content", "sess-full-a"))
 	if status != http.StatusOK || first.Decision != DecisionAllow {
 		t.Fatalf("first request: expected 200/allow, got %d %q", status, first.Decision)
 	}
+	// The same caller opening another session is still admitted: the ledger
+	// admits the caller, and sessions are streams inside it.
+	same, status := postScanAPIAs(t, h, tokenA, dlpScanBody(t, "more content", "sess-full-a2"))
+	if status != http.StatusOK || same.Decision != DecisionAllow {
+		t.Fatalf("same-caller second session: expected 200/allow, got %d %q findings=%+v", status, same.Decision, same.Findings)
+	}
 
-	// A second, distinct session cannot be admitted: capacity is exhausted.
-	second, status := postScanAPI(t, h, dlpScanBody(t, "other content", "sess-full-b"))
+	// A second, distinct caller cannot be admitted: capacity is exhausted.
+	second, status := postScanAPIAs(t, h, tokenB, dlpScanBody(t, "other content", "sess-full-b"))
 	if status != http.StatusOK {
 		t.Fatalf("second request: expected 200 (evaluation-only endpoint denies via decision, not transport error), got %d", status)
 	}
@@ -495,5 +505,165 @@ func TestCrossRequestFragment_DisabledConfigWithSessionIDIsANoOp(t *testing.T) {
 	}
 	if len(resp.Findings) != 0 {
 		t.Errorf("expected zero findings, got %+v", resp.Findings)
+	}
+}
+
+func newCrossRequestTestHandlerWithTokens(t *testing.T, maxBufferBytes, maxSessions int, tokens ...string) *Handler {
+	t.Helper()
+	h := newCrossRequestTestHandler(t, maxBufferBytes, maxSessions)
+	h.cfg.ScanAPI.Auth.BearerTokens = tokens
+	return h
+}
+
+func postScanAPIAs(t *testing.T, h *Handler, token, body string) (Response, int) {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response (%d): %v: %s", rec.Code, err, rec.Body.String())
+	}
+	return resp, rec.Code
+}
+
+// TestCrossRequestFragment_OneCallerCannotStarveAnother pins the per-caller
+// capacity model: a caller that opens many sessions spends only its own
+// budget, and an unrelated caller is still admitted and still detects its
+// own split secret afterwards.
+func TestCrossRequestFragment_OneCallerCannotStarveAnother(t *testing.T) {
+	const tokenA, tokenB = "flood-token-a", "flood-token-b"
+	h := newCrossRequestTestHandlerWithTokens(t, 4096, 2, tokenA, tokenB)
+	h.cfg.ScanAPI.RateLimit.Burst = 1000
+	h.cfg.ScanAPI.RateLimit.RequestsPerMinute = 100000
+
+	for i := 0; i < 200; i++ {
+		body := dlpScanBody(t, strings.Repeat("x", 200), fmt.Sprintf("flood-%d", i))
+		resp, status := postScanAPIAs(t, h, tokenA, body)
+		if status != http.StatusOK {
+			t.Fatalf("flood request %d: status %d", i, status)
+		}
+		for _, f := range resp.Findings {
+			if f.RuleID == "CEE-capacity-exceeded" {
+				t.Fatalf("flooding caller was denied on its own budget at request %d: %+v", i, resp.Findings)
+			}
+		}
+	}
+
+	first, status := postScanAPIAs(t, h, tokenB, dlpScanBody(t, crossReqAWSPart1, "victim-session"))
+	if status != http.StatusOK || first.Decision != DecisionAllow {
+		t.Fatalf("other caller first half: expected 200/allow, got %d %q findings=%+v", status, first.Decision, first.Findings)
+	}
+	second, status := postScanAPIAs(t, h, tokenB, dlpScanBody(t, crossReqAWSPart2, "victim-session"))
+	if status != http.StatusOK || second.Decision != DecisionDeny {
+		t.Fatalf("other caller split secret: expected 200/deny, got %d %q findings=%+v", status, second.Decision, second.Findings)
+	}
+}
+
+// TestCrossRequestFragment_ReloadDropsAccumulatedState pins that a config
+// reload (a new config object) discards fragment state, so a disable-then-
+// enable interval with no request in between cannot carry fragments across
+// it.
+func TestCrossRequestFragment_ReloadDropsAccumulatedState(t *testing.T) {
+	h := newCrossRequestTestHandler(t, 65536, 100)
+	first, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart1, "reload-session"))
+	if status != http.StatusOK || first.Decision != DecisionAllow {
+		t.Fatalf("first half: expected 200/allow, got %d %q", status, first.Decision)
+	}
+
+	// Simulate a reload: the live config becomes a different object with the
+	// same fragment settings.
+	reloaded := *h.cfg
+	h.cfg = &reloaded
+
+	second, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart2, "reload-session"))
+	if status != http.StatusOK {
+		t.Fatalf("second half: status %d", status)
+	}
+	if second.Decision != DecisionAllow {
+		t.Fatalf("fragments must not survive a config reload, got %q findings=%+v", second.Decision, second.Findings)
+	}
+	// And the rebuilt buffer works again from a clean slate.
+	third, _ := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart1, "reload-session-2"))
+	fourth, _ := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart2, "reload-session-2"))
+	if third.Decision != DecisionAllow || fourth.Decision != DecisionDeny {
+		t.Fatalf("post-reload accumulation: got %q then %q", third.Decision, fourth.Decision)
+	}
+}
+
+// TestCheckCrossRequestFragment_OwnerMismatchFailsClosed covers the
+// ownership-conflict mapping with a synthetic collision that valid Scan API
+// input cannot produce: caller identities are hex digests and session IDs
+// reject the namespace separator, so the stream is seeded under one owner
+// and appended under another by constructing the raw keys directly.
+func TestCheckCrossRequestFragment_OwnerMismatchFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	m := metrics.New()
+	buffer := scanner.NewFragmentBuffer(65536, 10, 300)
+	defer buffer.Close()
+	ceeCfg := config.CrossRequestDetection{Enabled: true, Action: config.ActionBlock}
+
+	// Seed a stream owned by caller "seed" for session "other-x", then
+	// append from caller "seedother" for session "-x": the two spell the
+	// same stream key, which a fixed-length hex caller digest rules out in
+	// production, so the buffer must refuse the second owner.
+	seeded := checkCrossRequestFragment(t.Context(), buffer, sc, m, ceeCfg, "seed", "other-x", "scan-1", []byte("first"))
+	if seeded.Blocked {
+		t.Fatalf("seeding append must not be blocked: %+v", seeded)
+	}
+	got := checkCrossRequestFragment(t.Context(), buffer, sc, m, ceeCfg, "seedother", "-x", "scan-2", []byte("second"))
+	if !got.Blocked || got.BlockRuleID != "CEE-owner-mismatch" {
+		t.Fatalf("expected an owner-mismatch block, got %+v", got)
+	}
+	var resp Response
+	applyCrossRequestOutcome(&resp, got, "dlp")
+	if resp.Decision != DecisionDeny || len(resp.Findings) != 1 || resp.Findings[0].RuleID != "CEE-owner-mismatch" {
+		t.Fatalf("owner mismatch must deny with one finding, got %+v", resp)
+	}
+}
+
+// TestCrossRequestFragment_PolicyDeniedToolCallRetainsNothing pins the stage
+// order: a tool call the policy denies never reaches cross-request
+// accumulation, so its argument text cannot complete a later match in the
+// same session or spend the caller's budget.
+func TestCrossRequestFragment_PolicyDeniedToolCallRetainsNothing(t *testing.T) {
+	h := newCrossRequestTestHandler(t, 65536, 100)
+	h.policyCfg = policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules:   []config.ToolPolicyRule{{Name: "no-exec-shell", ToolPattern: "exec_shell"}},
+	})
+
+	denied := `{"kind":"tool_call","input":{"tool_name":"exec_shell","arguments":{"cmd":"` + crossReqAWSPart1 + `"}},"context":{"session_id":"policy-session"}}`
+	first, status := postScanAPI(t, h, denied)
+	if status != http.StatusOK || first.Decision != DecisionDeny {
+		t.Fatalf("policy-denied tool call: expected 200/deny, got %d %q", status, first.Decision)
+	}
+
+	// The second half arrives on an allowed tool. Had the denied call's text
+	// been retained, the two halves would complete the AWS key pattern.
+	allowed := `{"kind":"tool_call","input":{"tool_name":"http_get","arguments":{"q":"` + crossReqAWSPart2 + `"}},"context":{"session_id":"policy-session"}}`
+	second, status := postScanAPI(t, h, allowed)
+	if status != http.StatusOK {
+		t.Fatalf("allowed tool call: status %d", status)
+	}
+	for _, f := range second.Findings {
+		if f.Scanner == "cross_request_fragment" {
+			t.Fatalf("a policy-denied call's text was retained and completed a match: %+v", second.Findings)
+		}
+	}
+
+	// Positive control: two allowed halves in one session do complete.
+	firstOK := `{"kind":"tool_call","input":{"tool_name":"http_get","arguments":{"q":"` + crossReqAWSPart1 + `"}},"context":{"session_id":"policy-session-2"}}`
+	if r, _ := postScanAPI(t, h, firstOK); r.Decision != DecisionAllow {
+		t.Fatalf("control first half: expected allow, got %q", r.Decision)
+	}
+	secondOK := `{"kind":"tool_call","input":{"tool_name":"http_get","arguments":{"q":"` + crossReqAWSPart2 + `"}},"context":{"session_id":"policy-session-2"}}`
+	if r, _ := postScanAPI(t, h, secondOK); r.Decision != DecisionDeny {
+		t.Fatalf("control second half: expected deny from the completed match, got %q findings=%+v", r.Decision, r.Findings)
 	}
 }

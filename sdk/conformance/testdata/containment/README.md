@@ -34,10 +34,37 @@ Each fixture is a pair:
 - `<name>.expect.json` — the expected per-probe status and the aggregate exit
   code.
 
-| Fixture | Probe 8 | Overall exit | Role |
-|---|---|---|---|
-| `pass-all` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
-| `leaky-egress` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT |
+| Fixture | Input | Probe 8 | Overall exit | Role |
+|---|---|---|---|---|
+| `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
+| `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT a leaked canary |
+| `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail** — gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP |
+| `dial-completed-then-failed` | `drop_counter_reads` | `fail` (dial completed before curl failed) | 1 | **must-fail** — gate must DETECT a canary whose TCP connect completed even though curl then failed; the dial-completion timer, not the counter, is the load-bearing signal |
+
+## Compatibility (`nft_chain_text` / `agent_uid` / `proxy_uid` / `operator_uid` / `proxy_port`)
+
+The schema addition below is **additive and backward compatible**:
+
+- `pass-all` and `leaky-egress` are unchanged and still validate and pass
+  exactly as before; neither sets any of the new fields.
+- The new fields are all optional. A fixture (or a consumer) that never sets
+  `nft_chain_text` behaves identically to before this change.
+- `nft_chain_text` and `drop_counter_reads` are **mutually exclusive**: a
+  fixture setting both is rejected at load as ambiguous. This is the only new
+  rejection that can affect a fixture nobody has written yet; no existing
+  fixture sets both.
+- `agent_uid`, `proxy_uid`, `operator_uid`, and `proxy_port` are meaningful
+  only together with `nft_chain_text`. Setting any of them without
+  `nft_chain_text` is rejected at load (a dead field that looks like an input
+  but drives nothing), the same way an unused canned `runs` rule is rejected.
+- The loader now rejects any field outside this schema
+  (`json.Decoder.DisallowUnknownFields`). This is a tightening, not a
+  widening: it cannot break a fixture that only uses documented fields, which
+  both original fixtures and the new one do.
+- A consumer (a language binding, a CI script) that only reads
+  `drop_counter_reads`-style fixtures and ignores unknown top-level JSON keys
+  is unaffected: `pass-all` and `leaky-egress` carry none of the new fields,
+  so nothing about them changes.
 
 ## `*.probe.json` schema
 
@@ -47,6 +74,14 @@ Each fixture is a pair:
   "agent_user": "pipelock-agent",   // optional; defaults to pipelock-agent
   "operator_user": "operator",      // optional; empty => probe 9 runs curl directly
   "drop_counter_reads": [12, 13],   // probe 8 before/after reads
+
+  // --- OR (mutually exclusive with drop_counter_reads) ---
+  // "nft_chain_text": "table inet pipelock_containment {\n  chain output_filter {\n    ...\n  }\n}\n",
+  // "agent_uid": 987,               // required with nft_chain_text
+  // "proxy_uid": 988,               // required with nft_chain_text; must differ from agent_uid
+  // "operator_uid": 1000,           // optional; 0 means "no managed operator uid recorded"
+  // "proxy_port": 8888,             // optional; defaults to the production proxy port (8888)
+
   "runs": [
     {
       "comment": "free text (ignored by the loader)",
@@ -64,6 +99,25 @@ Each fixture is a pair:
   ]
 }
 ```
+
+`nft_chain_text` is the literal `nft -n -a list chain inet <table> <chain>`
+output text. When set, probe 8's DROP-counter evidence is produced by
+routing this text through the SAME chain-text recognizer `contain verify`
+(probe 3, `probeNFTContainment`) uses in production —
+`agentUIDBareAcceptBeforeDrop` and `chainLinesHaveUnsafeVerdictBeforeAgentDrop`
+— rather than a pre-baked counter value pair. This is what lets a fixture
+express a *structural* containment hole (an agent-UID accept rule that admits
+every packet ahead of the managed catch-all DROP), which no
+`drop_counter_reads` pair can represent: `drop_counter_reads` only ever
+supplies a raw before/after counter value, with no way to encode "the chain's
+own structure bypasses containment." Because the same text is read for both
+the before and after sample, a *clean* chain (no bypass, no unsafe verdict)
+never shows a counter delta and resolves to `unknown`, not `pass` — a PASS
+baseline stays on `drop_counter_reads` (see `pass-all`). Malformed chain text
+that the recognizer cannot parse is not rejected at load (fixture syntax is
+not a load-time-checkable property without duplicating the unexported
+recognizer); it resolves to `unknown` at run time, the same fail-closed
+direction production takes on a parse error.
 
 `runs` is a list of command-match rules. When a probe invokes the runner with
 `(name, args...)`, the harness joins `name` + all `args` into one string and
@@ -87,6 +141,7 @@ probe.
 - `drop_counter_reads`: the managed catch-all DROP-counter values returned to
   probe 8. The UID-wide counter only corroborates this canary's time_connect
   result; a missing reader, read error, or non-increasing pair is inconclusive.
+  Mutually exclusive with `nft_chain_text`.
 
 ## `*.expect.json` schema
 
@@ -105,6 +160,13 @@ Status is one of `pass` / `fail` / `skip` / `unknown`. The aggregate
 `exit_code` follows the `fail > incomplete > pass` precedence the real
 `contain verify` uses: a single `fail` yields exit 1 regardless of how many
 probes passed; `skip` or `unknown` without a failure yields exit 2.
+
+Each probe entry also accepts an optional `detail_contains` string: when set, the probe's detail text must contain it. This is what
+distinguishes two production outcomes that share the same `status` — the
+`agent-accept-before-drop` structural hole and `leaky-egress`'s counter-based
+leak both report probe 8 as `fail`, and `detail_contains` is how each
+fixture asserts WHICH one it is. It is optional and absent from both original
+fixtures, so their comparison is unchanged.
 
 ## How they run
 

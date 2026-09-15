@@ -1,0 +1,8 @@
+{
+  "description": "Expected outcome for a structural containment hole (agent-UID accept rule before the catch-all DROP). Probe 8 fails with the CONTAINMENT HOLE detail, distinct from leaky-egress's counter-based fail; overall exit is non-zero (1).",
+  "exit_code": 1,
+  "probes": [
+    { "probe": 8, "name": "cc_agent_egress_denied", "status": "fail", "detail_contains": "CONTAINMENT HOLE: agent UID accept rule bypasses managed catch-all DROP" },
+    { "probe": 9, "name": "operator_egress_reachable", "status": "pass" }
+  ]
+}

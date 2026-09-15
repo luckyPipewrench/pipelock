@@ -31,6 +31,60 @@ func TestCEESafeKey_OnlyTrustedAgentAuthNamespacesBucket(t *testing.T) {
 	}
 }
 
+// TestNewScanAPIIdentity_NamespaceCannotCollideWithOtherTransports proves the
+// Scan API identity namespace is disjoint from every key shape the other CEE
+// constructors in this package can produce: NewCEEIdentity (proxy) folds
+// caller-supplied agent identities to the client address or "agent|client",
+// and NewMCPCEEIdentity wraps a server-issued session string verbatim, so
+// neither ever contains the 0x1f separator this constructor uses.
+func TestNewScanAPIIdentity_NamespaceCannotCollideWithOtherTransports(t *testing.T) {
+	scanAPIKey := NewScanAPIIdentity("caller-1").Key()
+
+	proxyKeys := []string{
+		NewCEEIdentity("agent-a", "203.0.113.10", envelope.ActorAuthBound).Key(),
+		NewCEEIdentity("agent-a", "203.0.113.10", envelope.ActorAuthSelfDeclared).Key(),
+		NewCEEIdentity("", "203.0.113.10", envelope.ActorAuthBound).Key(),
+	}
+	for _, k := range proxyKeys {
+		if k == scanAPIKey {
+			t.Errorf("proxy CEE key %q collided with Scan API key %q", k, scanAPIKey)
+		}
+	}
+
+	mcpKeys := []string{
+		NewMCPCEEIdentity("sess-123").Key(),
+		NewMCPCEEIdentity("scanapi").Key(),
+		NewMCPCEEIdentity("caller-1session-1").Key(), // no separator byte: cannot forge our prefix
+	}
+	for _, k := range mcpKeys {
+		if k == scanAPIKey {
+			t.Errorf("MCP CEE key %q collided with Scan API key %q", k, scanAPIKey)
+		}
+	}
+
+	// An MCP session identifier is minted by the proxy protocol, not
+	// attacker-chosen, so it cannot be made to equal our literal namespaced
+	// string in practice. If it somehow did, the two transports still keep
+	// physically separate FragmentBuffer instances (see
+	// internal/scanapi/crossrequest.go and internal/mcp/cee.go), so an equal
+	// key string alone would not let one transport's state leak into the
+	// other's buffer.
+}
+
+// TestNewScanAPIIdentity_DifferentCallersOrSessionsDoNotCollide is a
+// straightforward uniqueness check on the constructor's own key shape.
+func TestNewScanAPIIdentity_DifferentCallersOrSessionsDoNotCollide(t *testing.T) {
+	a := NewScanAPIIdentity("caller-a").Stream("session-1").Key()
+	b := NewScanAPIIdentity("caller-b").Stream("session-1").Key()
+	c := NewScanAPIIdentity("caller-a").Stream("session-2").Key()
+	if a == b {
+		t.Errorf("different callers with the same session_id produced the same key: %q", a)
+	}
+	if a == c {
+		t.Errorf("different session_ids for the same caller produced the same key: %q", a)
+	}
+}
+
 func TestBaselineKeyForSessionKey(t *testing.T) {
 	tests := []struct {
 		name, sessionKey, want string

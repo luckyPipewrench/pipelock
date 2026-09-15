@@ -93,6 +93,11 @@ type Handler struct {
 	// authFailures bounds presented-but-invalid bearer tokens per client
 	// address; the per-token limiters above only ever see valid tokens.
 	authFailures *authlimit.Limiter
+
+	// crossRequest holds this Handler's cross-request DLP fragment
+	// reassembly buffer (see crossrequest.go). One Handler serves the whole
+	// listener, so this state is shared and namespaced per (caller, session_id).
+	crossRequest crossRequestFragments
 }
 
 // retryAfterSeconds formats a Retry-After value in whole seconds, rounded up.
@@ -238,6 +243,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate context.session_id before anything downstream treats it as a
+	// state-partition key. Malformed input never reaches the cross-request
+	// fragment buffer's namespacing (identitykey.NewScanAPIIdentity).
+	if req.Context != nil {
+		if err := validateSessionID(req.Context.SessionID); err != nil {
+			h.writeError(w, http.StatusBadRequest, req.Kind, "invalid_session_id", err.Error(), false)
+			return
+		}
+	}
+
 	// Validate kind (post-parse: kind is available for error responses).
 	if !validKinds[req.Kind] {
 		h.writeError(w, http.StatusBadRequest, req.Kind, "invalid_kind",
@@ -270,6 +285,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), scanTimeout)
 	defer cancel()
 
+	req.callerToken = token
 	resp, status := h.executeScan(ctx, &req)
 
 	elapsed := time.Since(start)
@@ -277,6 +293,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.EngineVersion = h.version
 	if req.Context != nil && req.Context.RequestID != "" {
 		resp.RequestID = req.Context.RequestID
+	}
+	if req.Context != nil && req.Context.SessionID != "" {
+		resp.SessionID = req.Context.SessionID
 	}
 
 	// Record Prometheus metrics.
@@ -330,14 +349,18 @@ func (h *Handler) allowRequestFor(token string, cfg *config.Config) bool {
 		burst = defaultBurst
 	}
 
-	lim, ok := h.limiters[token]
+	// Key the limiter ledger by the token's digest, not the raw credential:
+	// this map lives for the process lifetime and must not retain bearer
+	// tokens, the same rule the cross-request session identity follows.
+	limiterKey := callerKeyForToken(token)
+	lim, ok := h.limiters[limiterKey]
 	if !ok || lim.rpm != rpm || lim.burst != burst {
 		lim = scanAPITokenLimiter{
 			limiter: rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), burst),
 			rpm:     rpm,
 			burst:   burst,
 		}
-		h.limiters[token] = lim
+		h.limiters[limiterKey] = lim
 	}
 	return lim.limiter.Allow()
 }

@@ -5003,10 +5003,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,
-				// The adaptive session this signal escalates is the folded key,
-				// so log that one: an operator who copies this into
-				// `pipelock session reset` must reach the session that was
-				// escalated, not a name-keyed one that may not exist.
+				// Log the key of the adaptive session this signal escalates.
+				// That derivation is actor-aware rather than always folded: a
+				// request-controlled identity folds to the client key, while a
+				// bound or config-default one keeps its agent namespace. Either
+				// way an operator who copies this into `pipelock session reset`
+				// reaches the session that was escalated.
 				Session:       sessionKeyFor(agent, clientIP, id.Auth),
 				ClientIP:      clientIP,
 				RequestID:     requestID,

@@ -2604,20 +2604,29 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	lines, err := attributedNFTChainLines(out, env.nftChain)
+	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port)
+}
+
+// containmentDropCounterFromChainText is the single recognizer behind probe
+// 8's DROP-counter attribution. Production feeds it live `nft list chain`
+// output; the published conformance fixtures feed it fixture chain text. One
+// function, not two copies, so the artifact that exists to prove the egress
+// test is real can never drift from what `contain verify` actually checks.
+func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int) (uint64, error) {
+	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return 0, err
 	}
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
-		return 0, fmt.Errorf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
+		return 0, fmt.Errorf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", chainName)
 	}
-	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, uids.agentUID); ok {
 		return 0, &containmentBypassError{rule: rule}
 	}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
-		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", env.nftChain)
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, port) {
+		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", chainName)
 	}
-	return managedContainmentDropPacketCountFromLines(lines, env.nftChain, current.agentUID)
+	return managedContainmentDropPacketCountFromLines(lines, chainName, uids.agentUID)
 }
 
 // chainHasManagedOutputBaseChain confirms the requested chain is attached to

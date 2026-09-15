@@ -74,12 +74,17 @@ func callerKeyForToken(token string) string {
 // against the OTHER transports' key shapes, not against a shared buffer's
 // unrelated capacity accounting.
 //
-// The buffer is lazily built and rebuilt on this Handler from the live
-// config.CrossRequestDetection.FragmentReassembly, mirroring how mcp.CEEDeps
-// and internal/proxy/proxy.go rebuild their own instances on reload: a
-// request that observes a config change gets a freshly sized buffer, and
-// state accumulated under the previous size is dropped (never silently kept
-// past a shrink).
+// The buffer is lazily built on this Handler from the live
+// config.CrossRequestDetection.FragmentReassembly. A request that observes
+// a changed size, session cap, or window applies it in place through
+// UpdateConfig on the same instance (the buffer enforces the new bounds on
+// its next append); disabling fragment reassembly closes and drops the
+// buffer, and re-enabling starts empty.
+//
+// The state is process-local. A deployment that runs more than one Scan API
+// instance behind a load balancer must route a caller's session to one
+// instance; two halves of a secret that land on different instances are
+// each a first fragment. The public docs state this precondition.
 type crossRequestFragments struct {
 	mu     sync.Mutex
 	buffer *scanner.FragmentBuffer
@@ -195,7 +200,7 @@ func checkCrossRequestFragment(
 		return crossRequestOutcome{
 			Blocked:     true,
 			BlockRuleID: "CEE-capacity-exceeded",
-			BlockReason: "cross-request fragment session capacity exhausted; request cannot be safely inspected; increase cross_request_detection.fragment_reassembly.max_sessions or reduce active sessions",
+			BlockReason: "cross-request fragment session capacity exhausted; request cannot be safely inspected; capacity recovers when existing sessions expire (cross_request_detection.fragment_reassembly.window_minutes), when the config is reloaded with a larger fragment_reassembly.max_sessions, or on restart",
 		}
 	}
 	if len(matches) == 0 {

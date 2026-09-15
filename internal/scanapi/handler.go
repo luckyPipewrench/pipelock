@@ -349,14 +349,18 @@ func (h *Handler) allowRequestFor(token string, cfg *config.Config) bool {
 		burst = defaultBurst
 	}
 
-	lim, ok := h.limiters[token]
+	// Key the limiter ledger by the token's digest, not the raw credential:
+	// this map lives for the process lifetime and must not retain bearer
+	// tokens, the same rule the cross-request session identity follows.
+	limiterKey := callerKeyForToken(token)
+	lim, ok := h.limiters[limiterKey]
 	if !ok || lim.rpm != rpm || lim.burst != burst {
 		lim = scanAPITokenLimiter{
 			limiter: rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), burst),
 			rpm:     rpm,
 			burst:   burst,
 		}
-		h.limiters[token] = lim
+		h.limiters[limiterKey] = lim
 	}
 	return lim.limiter.Allow()
 }

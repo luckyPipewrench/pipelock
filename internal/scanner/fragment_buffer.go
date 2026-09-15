@@ -881,6 +881,11 @@ func contributorsForSpan(ranges []fragmentRange, start, end int) [][]byte {
 	contributors := make([][]byte, 0, len(ranges))
 	seen := make(map[string]struct{})
 	for _, r := range ranges {
+		if r.start >= r.end {
+			// This fragment normalized to no bytes, so it cannot contribute to
+			// a match or make real contributors look unidentified.
+			continue
+		}
 		if start >= r.end || end <= r.start {
 			continue
 		}

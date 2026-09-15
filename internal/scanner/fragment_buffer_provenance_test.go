@@ -47,6 +47,27 @@ func TestFragmentBufferMatchContributorsFollowRetainedFragments(t *testing.T) {
 		}
 	})
 
+	for _, tc := range []struct {
+		name         string
+		middleSource []byte
+	}{
+		{name: "identified zero-byte range", middleSource: []byte("2")},
+		{name: "unidentified zero-byte range"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := NewFragmentBuffer(64, 2, testWindowSecs)
+			t.Cleanup(fb.Close)
+			sc := testFragmentScanner()
+			t.Cleanup(sc.Close)
+			appendFragmentWithSource(t, fb, owner, stream, []byte("1"), prefix, sc)
+			appendFragmentWithSource(t, fb, owner, stream, tc.middleSource, []byte("\x01\x02"), sc)
+			matches := appendFragmentWithSource(t, fb, owner, stream, []byte("3"), suffix, sc)
+			if len(matches) != 1 || !reflect.DeepEqual(matches[0].Contributors, [][]byte{[]byte("1"), []byte("3")}) {
+				t.Fatalf("matches with empty normalized middle fragment = %+v, want contributors 1 and 3", matches)
+			}
+		})
+	}
+
 	t.Run("byte eviction", func(t *testing.T) {
 		fb := NewFragmentBuffer(len(prefix)+len(suffix), 2, testWindowSecs)
 		t.Cleanup(fb.Close)

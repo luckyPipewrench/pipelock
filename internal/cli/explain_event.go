@@ -315,12 +315,12 @@ func explainEventOutcome(eventName, action string, raw map[string]any) string {
 		return explainEventOutcomePartial
 	}
 	switch {
-	case eventName == explainEventOutcomeAllowed || action == config.ActionAllow || action == config.ActionForward || action == "ask:allow":
-		return explainEventOutcomeAllowed
-	case action == config.ActionWarn:
-		return explainEventOutcomeWarned
 	case action == config.ActionStrip || action == "ask:strip" || eventName == "shield_rewrite":
 		return explainEventOutcomeModified
+	case action == config.ActionWarn:
+		return explainEventOutcomeWarned
+	case eventName == explainEventOutcomeAllowed || action == config.ActionAllow || action == config.ActionForward || action == "ask:allow":
+		return explainEventOutcomeAllowed
 	default:
 		return ""
 	}
@@ -347,6 +347,9 @@ func explainEventMalformedPartialEvidence(raw map[string]any, eventName string) 
 		}
 		body, bodyOK := shieldFields["body_bytes"].(float64)
 		scanned, scannedOK := shieldFields["scanned_bytes"].(float64)
+		if bodyOK != scannedOK && !nestedEventBool(raw, "shield", "partial") {
+			return true
+		}
 		if bodyOK && scannedOK && scanned > body {
 			return true
 		}

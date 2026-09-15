@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,9 +117,7 @@ func loadContainmentProbe(t *testing.T, path string) containmentProbeFixture {
 	// nothing in the current two fixtures nor the new one below sets a field
 	// outside this struct, so this is a pure tightening with no behavior
 	// change for them.
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&fx); err != nil {
+	if err := decodeFixtureDocument(data, &fx); err != nil {
 		t.Fatalf("parse probe fixture %s: %v", path, err)
 	}
 	if len(fx.Runs) == 0 {
@@ -231,9 +230,7 @@ func loadContainmentExpect(t *testing.T, path string) containmentExpectFixture {
 		t.Fatalf("read expect fixture %s: %v", path, err)
 	}
 	var fx containmentExpectFixture
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&fx); err != nil {
+	if err := decodeFixtureDocument(data, &fx); err != nil {
 		t.Fatalf("parse expect fixture %s: %v", path, err)
 	}
 	if len(fx.Probes) == 0 {
@@ -955,5 +952,63 @@ func TestLoadContainmentProbe_MalformedChainTextIsRejectedAtRuntime(t *testing.T
 		if r.Probe == 8 && r.Status == contain.ConformanceStatusPass {
 			t.Fatalf("malformed chain text must never resolve to PASS; got status %q detail %q", r.Status, r.Detail)
 		}
+	}
+}
+
+// decodeFixtureDocument decodes exactly one JSON document into v with
+// unknown fields rejected. DisallowUnknownFields only polices members of the
+// first object; a valid fixture followed by a second JSON value would
+// otherwise load silently, which contradicts the artifact's claim that
+// out-of-schema fixture content fails loudly, so anything other than
+// whitespace after the first document is an error too.
+func decodeFixtureDocument(data []byte, v any) error {
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	err := dec.Decode(&trailing)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("trailing content after the fixture document: %w", err)
+	}
+	return errors.New("a second JSON value follows the fixture document; a fixture is exactly one document")
+}
+
+// TestContainmentFixtureLoadersRejectTrailingJSON proves the loaders accept
+// exactly one JSON document: a valid fixture followed by a second value must
+// fail to decode, for both the probe and the expect shape, while the
+// unmodified fixtures still decode.
+func TestContainmentFixtureLoadersRejectTrailingJSON(t *testing.T) {
+	dir := filepath.Join("testdata", "containment")
+	cases := []struct {
+		name string
+		src  string
+		into func() any
+	}{
+		{"probe", "pass-all.probe.json", func() any { return &containmentProbeFixture{} }},
+		{"expect", "pass-all.expect.json", func() any { return &containmentExpectFixture{} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Clean(filepath.Join(dir, tc.src)))
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.src, err)
+			}
+			if err := decodeFixtureDocument(data, tc.into()); err != nil {
+				t.Fatalf("unmodified %s fixture must decode: %v", tc.name, err)
+			}
+			withSecond := append(append([]byte{}, data...), []byte("\n{\"description\": \"second document\"}\n")...)
+			if err := decodeFixtureDocument(withSecond, tc.into()); err == nil {
+				t.Fatalf("%s loader accepted a fixture followed by a second JSON document", tc.name)
+			}
+			withGarbage := append(append([]byte{}, data...), []byte("\ntrailing garbage\n")...)
+			if err := decodeFixtureDocument(withGarbage, tc.into()); err == nil {
+				t.Fatalf("%s loader accepted a fixture followed by non-JSON text", tc.name)
+			}
+		})
 	}
 }

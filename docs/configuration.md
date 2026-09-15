@@ -1208,8 +1208,9 @@ checks above, add a wholly NEW tool whose description carries the same
 outbound-destination or agent-directive behavior, and it becomes the
 approved baseline the moment it is scanned clean.
 
-`new_tool_action` closes this independently of `action`. Set it to `block`
-to withhold a newly-visible name from the baseline instead of promoting it:
+`new_tool_action` closes that promotion path independently of `action`. Set it
+to `block` to withhold a newly-visible name from the baseline instead of
+promoting it:
 
 ```yaml
 mcp_tool_scanning:
@@ -1228,6 +1229,18 @@ mechanism described below (`listener_drift_reset_file`). This never affects
 the very first `tools/list` a baseline ever receives: that response
 establishes the baseline for every name in it, matching the pre-existing
 `action` semantics for a first sighting.
+
+`new_tool_action` governs baseline admission, not the response verdict, and
+the two are spelled with the same words. Read the pair together: whether the
+`tools/list` response carrying a new tool is delivered to the agent is decided
+by `action` alone. Under `action: block` the response is refused, so the agent
+never sees the new tool. Under `action: warn` the response is still forwarded
+and the agent can call the new tool; what `new_tool_action: block` buys there
+is that the name never becomes approved, so it is reported on every later
+`tools/list` instead of being trusted after one sighting. Session binding is
+not a second line of defense for this, because a forwarded response commits
+its tool names into the binding inventory. Set `action: block` if a new tool
+must not reach the agent at all.
 
 The default (`warn`, including the omitted/unset value) preserves the
 behavior every existing deployment already had: a new tool is still

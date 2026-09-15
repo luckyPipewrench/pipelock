@@ -738,3 +738,68 @@ func TestSegmentSignerKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyReceiptCmd_WholeRecorderNoReceiptsFailsBeforeAnchorCheck(t *testing.T) {
+	t.Parallel()
+
+	// A recorder that emitted a signed checkpoint but never a receipt cannot
+	// reach checkpoint-anchor verification: the seal has no receipt prefix to
+	// commit to, so the run already failed. This pins that ordering, because
+	// the anchor code names the receipts as the source of its signing keys and
+	// would have nothing to read here.
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	if err := rec.Record(recorder.Entry{SessionID: "proxy", Type: "decision", Transport: "fetch", Summary: "no receipts in this session"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var path string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			path = filepath.Join(dir, e.Name())
+		}
+	}
+	if path == "" {
+		t.Fatal("no JSONL file written")
+	}
+	read, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	var checkpoints, receipts int
+	for _, e := range read {
+		switch e.Type {
+		case "checkpoint":
+			checkpoints++
+		case "action_receipt":
+			receipts++
+		}
+	}
+	if checkpoints == 0 || receipts != 0 {
+		t.Fatalf("fixture has %d checkpoints and %d receipts, want checkpoints and no receipts", checkpoints, receipts)
+	}
+
+	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", hex.EncodeToString(pub))
+	if err == nil {
+		t.Fatalf("receipt-less recorder must not verify:\n%s", out)
+	}
+	if strings.Contains(err.Error(), "holds no receipts to name its signer") {
+		t.Fatalf("anchor verification was reached on a receipt-less recorder: %v", err)
+	}
+	if strings.Contains(out, "Seal:      sealed at seq") || strings.Contains(out, "Anchor:") {
+		t.Fatalf("receipt-less recorder must not report a sealed or anchored result:\n%s", out)
+	}
+}

@@ -405,6 +405,8 @@ func TestRunContainmentConformance_RejectsInvalidNumericChainTextInputs(t *testi
 		{"negative agent uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: -987, ProxyUID: 988}, "positive AgentUID and ProxyUID"},
 		{"negative proxy uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: -988}, "positive AgentUID and ProxyUID"},
 		{"negative operator uid", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, OperatorUID: -1}, "OperatorUID must be zero (unknown) or positive"},
+		{"operator aliased to agent", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, OperatorUID: 987}, "OperatorUID must be distinct"},
+		{"operator aliased to proxy", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, OperatorUID: 988}, "OperatorUID must be distinct"},
 		{"port out of range", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, ProxyPort: 70000}, "ProxyPort"},
 		{"port negative", ConformanceEnv{RunCommand: runner, NFTChainText: "x", AgentUID: 987, ProxyUID: 988, ProxyPort: -1}, "ProxyPort"},
 	}

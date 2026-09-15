@@ -189,6 +189,9 @@ func validateContainmentProbeFixture(fx containmentProbeFixture) error {
 	if usesChainText && fx.OperatorUID < 0 {
 		return errors.New("operator_uid must be zero (unknown) or positive")
 	}
+	if usesChainText && fx.OperatorUID != 0 && (fx.OperatorUID == fx.AgentUID || fx.OperatorUID == fx.ProxyUID) {
+		return errors.New("operator_uid must be distinct from agent_uid and proxy_uid")
+	}
 	if usesChainText && fx.ProxyPort != 0 && (fx.ProxyPort < 1 || fx.ProxyPort > 65535) {
 		return errors.New("proxy_port must be between 1 and 65535")
 	}
@@ -832,6 +835,15 @@ func TestValidateContainmentProbeFixture_ChainTextSchema(t *testing.T) {
 				return fx
 			},
 			wantErr: "requires positive agent_uid and proxy_uid",
+		},
+		{
+			name: "chain_text_operator_uid_aliases_agent",
+			mutate: func(fx containmentProbeFixture) containmentProbeFixture {
+				fx.NFTChainText = validChainText()
+				fx.AgentUID, fx.ProxyUID, fx.OperatorUID = 987, 988, 987
+				return fx
+			},
+			wantErr: "operator_uid must be distinct",
 		},
 		{
 			name: "chain_text_negative_operator_uid",

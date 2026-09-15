@@ -173,6 +173,15 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 		if env.OperatorUID < 0 {
 			return nil, conformanceExitInvalid, fmt.Errorf("conformance: OperatorUID must be zero (unknown) or positive")
 		}
+		// The operator, proxy and agent are distinct system identities in any
+		// real installation. Aliasing the operator to either of the others
+		// describes a host that cannot exist, and the recognizer then reads
+		// the operator's own accept as an agent bypass, so the fixture fails
+		// with a containment-hole message that misdescribes the cause.
+		// Reject the alias here instead, where the reason is visible.
+		if env.OperatorUID != 0 && (env.OperatorUID == env.AgentUID || env.OperatorUID == env.ProxyUID) {
+			return nil, conformanceExitInvalid, fmt.Errorf("conformance: OperatorUID must be distinct from AgentUID and ProxyUID")
+		}
 		if env.ProxyPort != 0 {
 			if err := validatePort(env.ProxyPort); err != nil {
 				return nil, conformanceExitInvalid, fmt.Errorf("conformance: ProxyPort: %w", err)

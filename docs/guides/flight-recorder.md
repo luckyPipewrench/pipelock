@@ -29,8 +29,11 @@ Pass `--no-auditor` to `pipelock init` to skip installing it, or `--dry-run` to
 see what would be installed without installing anything. If the host has no
 usable `systemd --user` session (no `systemctl` binary, no `XDG_RUNTIME_DIR`,
 or the session bus is unreachable), init skips the auditor with a printed
-notice instead of failing. Remove an installed timer with
-`systemctl --user disable --now pipelock-evidence-corpus-auditor.timer`. The
+notice instead of failing. Stop and disable an installed timer with
+`systemctl --user disable --now pipelock-evidence-corpus-auditor.timer`; that
+leaves the generated unit, alert and metric files in place but inert, so delete
+them under `$XDG_CONFIG_HOME/systemd/user/` and
+`$XDG_CONFIG_HOME/pipelock/prometheus/` if you want them gone. The
 init summary names the auditor's outcome either way (installed, skipped by
 flag, skipped because no user systemd session exists, skipped because an
 existing config configures no `flight_recorder.dir` to audit, or skipped for a

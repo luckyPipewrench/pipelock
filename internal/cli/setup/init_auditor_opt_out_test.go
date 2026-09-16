@@ -424,6 +424,11 @@ func TestInitCancelledProbeFailsRatherThanSkipping(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a cancelled init reported success\noutput:\n%s", out.String())
 	}
+	// Any non-nil error would pass a bare nil check, including an unrelated
+	// setup failure, which would not prove cancellation propagated at all.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled\noutput:\n%s", err, out.String())
+	}
 	if strings.Contains(out.String(), "Evidence corpus auditor: skipped") {
 		t.Fatalf("cancellation was reported as a clean skip\noutput:\n%s", out.String())
 	}

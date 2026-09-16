@@ -561,14 +561,106 @@ func TestScanTools_RejectedNewToolIsNotReportedAsAdmitted(t *testing.T) {
 	}
 }
 
-// TestScanTools_ConcurrentFirstInventoriesDoNotDenyEachOther pins the
-// shared-baseline case a listener actually occupies: two clients whose first
-// tools/list responses overlap arrive together on one drift baseline. Neither
-// may read the other's still-unpromoted names as "introduced after the
-// baseline". Before the fix, establishment was recorded when the first
-// response BEGAN rather than when it finished, so the second response saw an
-// established baseline with nothing in it and, under new_tool_action: block,
-// withheld every tool in its own first inventory.
+// TestToolBaseline_OverlappingFirstInventoriesUnion pins the overlap
+// interleaving deterministically, without relying on the scheduler: two
+// responses both begin before either ends, each evaluates a different first
+// inventory under block admission, and neither withholds anything. Their
+// names form one union baseline, established when the second ends, and only
+// a name introduced after that is withheld. This is the exact sequence the
+// shared-listener race produces; the ScanTools test below exercises the same
+// property through the production path but can only make the overlap likely.
+func TestToolBaseline_OverlappingFirstInventoriesUnion(t *testing.T) {
+	classify := func(prevDesc string, structuralChanged bool) []string { return nil }
+	tb := NewToolBaseline()
+
+	respA, establishedA := tb.BeginInventoryResponse()
+	respB, establishedB := tb.BeginInventoryResponse()
+	if establishedA || establishedB {
+		t.Fatalf("both overlapping responses must be first inventories, got A=%v B=%v", establishedA, establishedB)
+	}
+	evalFirst := func(name string, established bool) DriftEvaluation {
+		return tb.EvaluateDefinition(DefinitionEvaluation{
+			Name: name, Hash: "h-" + name, PromoteNew: true, BlockNewTools: true,
+			EstablishedBeforeResponse: established, Classify: classify,
+		})
+	}
+	// A evaluates and ends while B is still in flight; B then evaluates a
+	// name A never saw. Before the fix B's names read as post-baseline.
+	for _, name := range []string{"alpha", "beta"} {
+		if ev := evalFirst(name, establishedA); ev.NewTool || len(ev.Cues) != 0 {
+			t.Fatalf("response A must admit %s silently, got %+v", name, ev)
+		}
+	}
+	respA.End()
+	if tb.HasDriftBaseline() {
+		t.Fatal("A ending must not establish the baseline while B is still in flight")
+	}
+	for _, name := range []string{"beta", "gamma"} {
+		if ev := evalFirst(name, establishedB); ev.NewTool || len(ev.Cues) != 0 {
+			t.Fatalf("response B must admit %s silently, got %+v", name, ev)
+		}
+	}
+	respB.End()
+	if !tb.HasDriftBaseline() {
+		t.Fatal("the last overlapping first inventory ending must establish the baseline")
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if _, ok := tb.hashes[name]; !ok {
+			t.Fatalf("union baseline must carry %s", name)
+		}
+	}
+
+	respC, establishedC := tb.BeginInventoryResponse()
+	if !establishedC {
+		t.Fatal("a response beginning after establishment must read established")
+	}
+	ev := evalFirst("delta", establishedC)
+	respC.End()
+	if !ev.NewTool || len(ev.Cues) != 1 || ev.Cues[0] != DriftCueNewTool {
+		t.Fatalf("delta introduced after the union baseline must be withheld, got %+v", ev)
+	}
+}
+
+// TestInventoryResponse_EndTwiceFromTwoGoroutines pins that the token's
+// once-guard is taken under the baseline lock: two End calls racing on one
+// token decrement the in-flight count once, so a second in-flight first
+// inventory is not established out from under it.
+func TestInventoryResponse_EndTwiceFromTwoGoroutines(t *testing.T) {
+	for attempt := 0; attempt < 200; attempt++ {
+		tb := NewToolBaseline()
+		respA, _ := tb.BeginInventoryResponse()
+		respB, _ := tb.BeginInventoryResponse()
+		start := make(chan struct{})
+		done := make(chan struct{}, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				<-start
+				respA.End()
+				done <- struct{}{}
+			}()
+		}
+		close(start)
+		<-done
+		<-done
+		if tb.HasDriftBaseline() {
+			t.Fatalf("attempt %d: two Ends on one token established the baseline while B was still in flight", attempt)
+		}
+		respB.End()
+		if !tb.HasDriftBaseline() {
+			t.Fatalf("attempt %d: B ending must establish the baseline", attempt)
+		}
+	}
+}
+
+// TestScanTools_ConcurrentFirstInventoriesDoNotDenyEachOther exercises the
+// same property through the production ScanTools path with a shared
+// DriftBaseline. It synchronizes only the goroutine start, so it makes the
+// overlap likely rather than certain; the deterministic interleaving lives in
+// TestToolBaseline_OverlappingFirstInventoriesUnion. Identical inventories
+// are deliberate: a serial schedule must also pass, since a second identical
+// first inventory after establishment introduces no new name. Before the fix
+// this failed on attempt 0 of 200, because establishment was recorded when
+// the first response BEGAN rather than when it finished.
 func TestScanTools_ConcurrentFirstInventoriesDoNotDenyEachOther(t *testing.T) {
 	sc := testScanner(t)
 	line := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`)

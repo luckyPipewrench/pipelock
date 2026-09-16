@@ -215,12 +215,18 @@ type InventoryResponse struct {
 // inventory of its drift epoch, the baseline becomes established. A token from
 // a superseded epoch changes nothing: the reset already cleared the count.
 func (r *InventoryResponse) End() {
-	if r == nil || r.tb == nil || r.ended {
+	if r == nil || r.tb == nil {
+		return
+	}
+	r.tb.mu.Lock()
+	defer r.tb.mu.Unlock()
+	// The once-guard is read and set under the baseline lock, so two End
+	// calls on one token, from any goroutines, decrement the in-flight count
+	// exactly once.
+	if r.ended {
 		return
 	}
 	r.ended = true
-	r.tb.mu.Lock()
-	defer r.tb.mu.Unlock()
 	if r.tb.driftEpoch != r.epoch || !r.first {
 		return
 	}

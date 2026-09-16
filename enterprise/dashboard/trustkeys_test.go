@@ -873,8 +873,8 @@ func TestTrustKeysRouteUsesDedicatedPermission(t *testing.T) {
 
 	var got []Permission
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(), HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(), HasFeature: allowAgentsFeature,
 		Authorize: func(*http.Request) error { return nil },
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			got = append(got, permission)
@@ -893,8 +893,8 @@ func TestTrustKeysPermissionCannotReachOtherRoutes(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(), HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(), HasFeature: allowAgentsFeature,
 		Authorize: func(*http.Request) error { return nil },
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			if permission == PermissionTrustKeysRead {
@@ -917,8 +917,8 @@ func TestTrustKeysTemplateEscapesHostileMetadata(t *testing.T) {
 
 	pub, _ := generateDashboardKey(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(), HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(), HasFeature: allowAgentsFeature,
 		TrustedKeys: map[string]TrustedKey{hex.EncodeToString(pub): {
 			Source: `<script>alert("source")</script>`, ProvenanceKind: `<img src=x onerror=alert(1)>`, Location: `"><svg/onload=alert(2)>`,
 		}},
@@ -945,9 +945,9 @@ func TestTrustKeysEmptyStatesExplainSources(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/trust-keys", nil))
@@ -981,10 +981,10 @@ func TestTrustKeysAnchorUnconfiguredRendersAmberNotFailure(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
-		TrustedKeys:      trusted,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		HasFeature:  allowAgentsFeature,
+		TrustedKeys: trusted,
 		AnchorResolver: func(string) (*anchor.Bundle, anchor.Backend, bool, error) {
 			return nil, nil, true, errors.New(localAnchorLogPathRequired)
 		},
@@ -1013,10 +1013,10 @@ func TestTrustKeysAnchorResolverMismatchRendersRedFailure(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
-		TrustedKeys:      trusted,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		HasFeature:  allowAgentsFeature,
+		TrustedKeys: trusted,
 		AnchorResolver: func(string) (*anchor.Bundle, anchor.Backend, bool, error) {
 			return nil, nil, true, errors.New("anchor bundle hash does not match anchor-state marker")
 		},
@@ -1061,7 +1061,7 @@ func TestTrustKeysHandlerFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := New(Options{
-				TrustedOuterAuth: true, ReceiptDir: tc.dir, HasFeature: allowAgentsFeature,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: tc.dir, HasFeature: allowAgentsFeature,
 			})
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), tc.method, "/trust-keys", nil))

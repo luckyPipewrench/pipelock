@@ -202,11 +202,11 @@ func TestBudgetsHandlerSnapshotUnavailableRendersMessage(t *testing.T) {
 	}
 	source := &snapshotBudgetSource{path: path, maxAge: 10 * time.Second, now: func() time.Time { return now }}
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-		BudgetSource:     source,
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+		BudgetSource: source,
+		AuthorizeRaw: allowRawAccess,
 	})
 
 	rec := httptest.NewRecorder()

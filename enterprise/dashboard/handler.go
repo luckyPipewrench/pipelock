@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,6 +48,11 @@ var dashboardFaviconSVG = mustDecodeDashboardFavicon()
 
 //go:embed nav.tmpl.html overview.tmpl.html evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html
 var templateFS embed.FS
+
+// errTrustedOuterAuthBoundaryRequired is returned (wrapped, via panic) when an
+// embedder sets TrustedOuterAuth without declaring the external boundary that
+// justifies disabling this handler's own authentication.
+var errTrustedOuterAuthBoundaryRequired = errors.New("TrustedOuterAuthBoundary must be set when TrustedOuterAuth is true")
 
 var (
 	overviewTemplate      = parseDashboardTemplate("overview.tmpl.html")
@@ -325,8 +331,19 @@ func AllPermissions() []Permission {
 // port. Set Options.Authorize to enforce an authenticated principal per
 // request; it fails closed when it returns an error. When both Authorize and
 // AuthorizePermission are nil, set Options.TrustedOuterAuth only if the
-// surrounding router provides the authentication boundary.
+// surrounding router provides the authentication boundary, and set
+// Options.TrustedOuterAuthBoundary to name that boundary — New panics if
+// TrustedOuterAuth is set without it, and otherwise logs one startup line
+// naming the declared boundary so an operator reading logs can see that this
+// handler's own auth is disabled.
 func New(opts Options) http.Handler {
+	if opts.TrustedOuterAuth && strings.TrimSpace(opts.TrustedOuterAuthBoundary) == "" {
+		panic(fmt.Errorf("dashboard.New: %w", errTrustedOuterAuthBoundaryRequired))
+	}
+	if opts.TrustedOuterAuth {
+		slog.Warn("dashboard: own authentication is disabled; relying on an external boundary",
+			"boundary", opts.TrustedOuterAuthBoundary)
+	}
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()
 	d := &dashboardHandler{

@@ -59,9 +59,9 @@ func TestExemptionsEmptyStatesExplainSources(t *testing.T) {
 	t.Run("no config loaded", func(t *testing.T) {
 		t.Parallel()
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			HasFeature:       allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: t.TempDir(),
+			HasFeature: allowAgentsFeature,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -84,10 +84,10 @@ func TestExemptionsEmptyStatesExplainSources(t *testing.T) {
 	t.Run("config loaded with no entries", func(t *testing.T) {
 		t.Parallel()
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			Config:           &config.Config{},
-			HasFeature:       allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: t.TempDir(),
+			Config:     &config.Config{},
+			HasFeature: allowAgentsFeature,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -371,12 +371,12 @@ func TestExemptions_DefaultBaselinesDoNotBecomeAttentionWhenFeatureDisabled(t *t
 	}
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		Config:           cfg,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return nil },
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		Config:       cfg,
+		HasFeature:   allowAgentsFeature,
+		Authorize:    func(*http.Request) error { return nil },
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -509,11 +509,11 @@ func TestHandler_ExemptionsHostileConfigEscapes(t *testing.T) {
 		}},
 	}
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		Config:           cfg,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return nil },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		Config:     cfg,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return nil },
 		// Raw access so the hostile config values are actually rendered (and
 		// therefore html/template-escaped); the metadata-only path redacts them
 		// instead and is covered by TestHandler_ExemptionsMetadataViewRedactsRawValues.

@@ -46,16 +46,16 @@ func TestOverviewReadModelAggregatesExistingSources(t *testing.T) {
 	}}}
 
 	model := NewReadModel(Options{
-		ReceiptDir:          dir,
-		TrustedKeys:         trusted,
-		Config:              cfg,
-		HasFeature:          allowAllDashboardFeatures,
-		ExemptionStore:      store,
-		FleetSource:         fleetSource,
-		DefaultFleetScope:   DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
-		BudgetSource:        budgetSource,
-		Now:                 func() time.Time { return now },
-		TrustedOuterAuth:    true,
+		ReceiptDir:        dir,
+		TrustedKeys:       trusted,
+		Config:            cfg,
+		HasFeature:        allowAllDashboardFeatures,
+		ExemptionStore:    store,
+		FleetSource:       fleetSource,
+		DefaultFleetScope: DecisionScope{OrgID: fleetTestOrgID, FleetID: fleetTestFleetID},
+		BudgetSource:      budgetSource,
+		Now:               func() time.Time { return now },
+		TrustedOuterAuth:  true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		AuthorizeFleetScope: allowFleetScope,
 	})
 	page, err := model.Overview(context.Background(), true)
@@ -87,10 +87,10 @@ func TestOverviewHandlerRendersAttentionLedgerAndHonestEmptyStates(t *testing.T)
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
@@ -124,7 +124,7 @@ func TestOverviewAllCleanFixtureSaysNoRedFactsNotHealthy(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		HasFeature:          allowAllDashboardFeatures,
@@ -152,9 +152,9 @@ func TestOverviewRouteGatedEvidenceReadAndGETOnly(t *testing.T) {
 	t.Parallel()
 
 	noFeature := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(string) bool { return false },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: func(string) bool { return false },
 	})
 	rec := httptest.NewRecorder()
 	noFeature.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil))
@@ -184,10 +184,10 @@ func TestOverviewRouteGatedEvidenceReadAndGETOnly(t *testing.T) {
 
 	source := &fakeBudgetSource{agents: []AgentBudgetView{{Agent: "agent", RequestCount: 1, MaxRequests: 10}}}
 	postOnly := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAgentsFeature,
-		BudgetSource:     source,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   allowAgentsFeature,
+		BudgetSource: source,
 	})
 	rec = httptest.NewRecorder()
 	postOnly.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/overview", nil))
@@ -269,7 +269,7 @@ func TestOverviewAgentsOnlyWithFleetSourceDoesNotQueryFleetPosture(t *testing.T)
 	source := &fakeFleetSource{followers: overviewFleetFollowers(now)}
 	var fleetScopeAuthCalls int
 	handler := New(Options{
-		TrustedOuterAuth:  true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:        t.TempDir(),
 		HasFeature:        allowAgentsFeature,
 		FleetSource:       source,
@@ -316,7 +316,7 @@ func TestOverviewFleetLicensedRendersFleetPosture(t *testing.T) {
 
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowAllDashboardFeatures,
 		FleetSource:         &fakeFleetSource{followers: overviewFleetFollowers(now)},

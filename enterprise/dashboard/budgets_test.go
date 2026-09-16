@@ -83,11 +83,11 @@ func TestBudgets_Gating(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			handler := New(Options{
-				TrustedOuterAuth: true,
-				ReceiptDir:       t.TempDir(),
-				HasFeature:       tt.hasFeature,
-				BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
-				AuthorizeRaw:     allowRawAccess,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				ReceiptDir:   t.TempDir(),
+				HasFeature:   tt.hasFeature,
+				BudgetSource: &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
+				AuthorizeRaw: allowRawAccess,
 			})
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -106,10 +106,10 @@ func TestBudgets_Gating(t *testing.T) {
 func TestBudgets_NilSourceDegrades(t *testing.T) {
 	t.Parallel()
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -136,11 +136,11 @@ func TestBudgets_NilSourceDegrades(t *testing.T) {
 func TestBudgets_ConnectedEmptySourceExplainsSnapshotRows(t *testing.T) {
 	t.Parallel()
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-		BudgetSource:     &fakeBudgetSource{},
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+		BudgetSource: &fakeBudgetSource{},
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -168,11 +168,11 @@ func TestBudgets_RendersOnlyPopulatedForwardBudgetFields(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-		BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+		BudgetSource: &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}},
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -207,11 +207,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}}
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource:     source,
-			AuthorizeRaw:     allowRawAccess,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir:   t.TempDir(),
+			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource: source,
+			AuthorizeRaw: allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets/", nil))
@@ -227,11 +227,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgent()}}
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource:     source,
-			AuthorizeRaw:     allowRawAccess,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir:   t.TempDir(),
+			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource: source,
+			AuthorizeRaw: allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/budgets", nil))
@@ -250,11 +250,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{err: fmt.Errorf("backend details should not leak")}
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       t.TempDir(),
-			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource:     source,
-			AuthorizeRaw:     allowRawAccess,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir:   t.TempDir(),
+			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource: source,
+			AuthorizeRaw: allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))

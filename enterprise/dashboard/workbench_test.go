@@ -104,7 +104,7 @@ func TestWorkbench_Gating(t *testing.T) {
 			t.Parallel()
 
 			handler := New(Options{
-				TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: tt.hasFeature,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: tt.hasFeature,
 			})
 			for _, path := range []string{"/workbench", "/incident"} {
 				rec := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestWorkbench_NoStateMutatingRoute(t *testing.T) {
 
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -173,7 +173,7 @@ func TestWorkbench_FailClosedScopeAuthorization(t *testing.T) {
 
 			source := &fakeConductorSource{view: testReplayView(), found: true}
 			handler := New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          allowFleetFeature,
 				ConductorSource:     source,
@@ -197,7 +197,7 @@ func TestWorkbench_ScopeAuditRedactsIdentifiers(t *testing.T) {
 	var audit strings.Builder
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -241,9 +241,9 @@ func TestWorkbench_FailClosedLicense(t *testing.T) {
 	t.Parallel()
 
 	noFleet := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: func(f string) bool { return f == license.FeatureAgents },
 	})
 	for _, path := range []string{"/workbench", "/incident"} {
 		rec := httptest.NewRecorder()
@@ -260,7 +260,7 @@ func TestWorkbench_FailClosedLicense(t *testing.T) {
 	}
 
 	withFleet := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
 	})
 	for _, path := range []string{"/workbench", "/incident"} {
 		rec := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestWorkbench_PrepareGuidanceAndNeverAuthority(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workbench", nil))
@@ -317,7 +317,7 @@ func TestWorkbench_ReplayRawView(t *testing.T) {
 
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -348,10 +348,10 @@ func TestWorkbench_ReplayMetadataViewRedacts(t *testing.T) {
 	view.Conflict = "source error for " + wbSensitiveHash
 	source := &fakeConductorSource{view: view, found: true}
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
-		ConductorSource:  source,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:      t.TempDir(),
+		HasFeature:      allowFleetFeature,
+		ConductorSource: source,
 		// No AuthorizeRaw: metadata view must fail closed.
 		AuthorizeFleetScope: allowFleetScope,
 	})
@@ -383,7 +383,7 @@ func TestWorkbench_ReplayRawEscapesHostileStrings(t *testing.T) {
 	view.DivergenceReason = hostileScript
 	source := &fakeConductorSource{view: view, found: true}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -411,7 +411,7 @@ func TestWorkbench_ReplayNotFound(t *testing.T) {
 
 	source := &fakeConductorSource{found: false}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -428,7 +428,7 @@ func TestWorkbench_ReplayNotFoundMetadataRedactsScope(t *testing.T) {
 
 	source := &fakeConductorSource{found: false}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -452,7 +452,7 @@ func TestWorkbench_SourceErrorRendersUnavailablePanel(t *testing.T) {
 	var audit strings.Builder
 	source := &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope, AuditWriter: &audit,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope, AuditWriter: &audit,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -515,7 +515,7 @@ func TestWorkbench_RejectsInvalidScope(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: &fakeConductorSource{}, AuthorizeFleetScope: allowFleetScope,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: &fakeConductorSource{}, AuthorizeFleetScope: allowFleetScope,
 	})
 	for _, target := range []string{
 		"/workbench?artifact_hash=" + wbTestArtifactHash,                            // hash without org/fleet
@@ -540,7 +540,7 @@ func TestWorkbench_RejectsNonExactPath(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
 	})
 	for _, path := range []string{"/workbench/extra", "/incident/extra"} {
 		rec := httptest.NewRecorder()

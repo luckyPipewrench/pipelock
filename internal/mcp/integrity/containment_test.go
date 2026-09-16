@@ -9,11 +9,9 @@ import (
 	"testing"
 )
 
-// isInsideDir answers one containment question: is this resolved binary inside
-// the agent's own working directory? Callers set VerifyResult.Suspicious from
-// the answer, and false means "not suspicious", so every false is a warning
-// the operator does not see. The direction matters more than usual here.
-func TestIsInsideDir(t *testing.T) {
+// binaryLocation distinguishes a resolved binary outside the agent's working
+// directory from one whose location cannot be resolved.
+func TestBinaryLocation(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -45,20 +43,24 @@ func TestIsInsideDir(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
-		want bool
+		want BinaryLocation
 	}{
-		{"binary directly in the work dir", write(t, filepath.Join(workDir, "server")), true},
-		{"binary nested in the work dir", write(t, filepath.Join(workDir, "bin", "server")), true},
-		{"binary in a child whose name starts with two dots", write(t, filepath.Join(dotDot, "server")), true},
-		{"the work dir itself", workDir, true},
-		{"binary in a prefix-sharing sibling", write(t, filepath.Join(sibling, "server")), false},
-		{"binary outside the root", write(t, filepath.Join(root, "server")), false},
+		{"binary directly in the work dir", write(t, filepath.Join(workDir, "server")), BinaryLocationInside},
+		{"binary nested in the work dir", write(t, filepath.Join(workDir, "bin", "server")), BinaryLocationInside},
+		{"binary in a child whose name starts with two dots", write(t, filepath.Join(dotDot, "server")), BinaryLocationInside},
+		{"the work dir itself", workDir, BinaryLocationInside},
+		{"binary in a prefix-sharing sibling", write(t, filepath.Join(sibling, "server")), BinaryLocationOutside},
+		{"binary outside the root", write(t, filepath.Join(root, "server")), BinaryLocationOutside},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isInsideDir(tt.path, workDir); got != tt.want {
-				t.Fatalf("isInsideDir(%q, %q) = %v, want %v", tt.path, workDir, got, tt.want)
+			got, err := binaryLocation(tt.path, workDir)
+			if err != nil {
+				t.Fatalf("binaryLocation(%q, %q): %v", tt.path, workDir, err)
+			}
+			if got != tt.want {
+				t.Fatalf("binaryLocation(%q, %q) = %q, want %q", tt.path, workDir, got, tt.want)
 			}
 		})
 	}
@@ -68,7 +70,7 @@ func TestIsInsideDir(t *testing.T) {
 // not decide the answer; where it POINTS does. Both directions matter: a link
 // inside the work dir pointing out is not the agent's own binary, and a link
 // outside pointing in is.
-func TestIsInsideDirResolvesSymlinksBeforeComparing(t *testing.T) {
+func TestBinaryLocationResolvesSymlinksBeforeComparing(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -97,20 +99,15 @@ func TestIsInsideDirResolvesSymlinksBeforeComparing(t *testing.T) {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
 
-	if isInsideDir(linkInsidePointingOut, workDir) {
-		t.Error("a link inside the work dir pointing outside was reported inside; the target decides, not the link")
+	if got, err := binaryLocation(linkInsidePointingOut, workDir); err != nil || got != BinaryLocationOutside {
+		t.Errorf("link inside pointing out = %q, %v; want outside, nil", got, err)
 	}
-	if !isInsideDir(linkOutsidePointingIn, workDir) {
-		t.Error("a link outside the work dir pointing inside was reported outside; the target decides, not the link")
+	if got, err := binaryLocation(linkOutsidePointingIn, workDir); err != nil || got != BinaryLocationInside {
+		t.Errorf("link outside pointing in = %q, %v; want inside, nil", got, err)
 	}
 }
 
-// Every error path returns false, which means "not suspicious". That is a
-// deliberate direction on an advisory signal, and it is worth pinning so a
-// later change does not start reporting unresolvable paths as suspicious (a
-// warning an operator cannot act on) or, worse, as an error that breaks
-// verification.
-func TestIsInsideDirUnresolvablePathsReportNotInside(t *testing.T) {
+func TestBinaryLocationUnresolvablePathsReportUnknown(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -125,22 +122,22 @@ func TestIsInsideDirUnresolvablePathsReportNotInside(t *testing.T) {
 	if err := os.WriteFile(insideBin, []byte("#!/bin/sh\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if !isInsideDir(insideBin, workDir) {
-		t.Fatal("control failed: a real binary inside the work dir was reported outside")
+	if got, err := binaryLocation(insideBin, workDir); err != nil || got != BinaryLocationInside {
+		t.Fatalf("control binary = %q, %v; want inside, nil", got, err)
 	}
 
-	if isInsideDir(filepath.Join(workDir, "does-not-exist"), workDir) {
-		t.Error("a nonexistent path was reported inside")
+	if got, err := binaryLocation(filepath.Join(workDir, "does-not-exist"), workDir); err == nil || got != BinaryLocationUnknown {
+		t.Errorf("nonexistent binary = %q, %v; want unknown with reason", got, err)
 	}
-	if isInsideDir(insideBin, filepath.Join(root, "no-such-workdir")) {
-		t.Error("a nonexistent work dir was reported as containing the binary")
+	if got, err := binaryLocation(insideBin, filepath.Join(root, "no-such-workdir")); err == nil || got != BinaryLocationUnknown {
+		t.Errorf("nonexistent work dir = %q, %v; want unknown with reason", got, err)
 	}
 
 	dangling := filepath.Join(workDir, "dangling")
 	if err := os.Symlink(filepath.Join(root, "missing-target"), dangling); err != nil {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
-	if isInsideDir(dangling, workDir) {
-		t.Error("a dangling symlink was reported inside")
+	if got, err := binaryLocation(dangling, workDir); err == nil || got != BinaryLocationUnknown {
+		t.Errorf("dangling binary = %q, %v; want unknown with reason", got, err)
 	}
 }

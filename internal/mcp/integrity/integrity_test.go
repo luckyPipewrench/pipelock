@@ -396,45 +396,178 @@ func TestDetectShebang_OverlongLine(t *testing.T) {
 	}
 }
 
-// --- isInsideDir Tests ---
+// --- Binary location tests ---
 
-func TestIsInsideDir_Inside(t *testing.T) {
-	dir := t.TempDir()
-	child := filepath.Join(dir, "subdir", "binary")
-	if err := os.MkdirAll(filepath.Dir(child), 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
+func TestResolveAndPrepareBinaryLocation(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	if err := os.MkdirAll(workDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll work dir: %v", err)
 	}
-	if err := os.WriteFile(child, []byte("bin"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
+	if err := os.MkdirAll(outsideDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll outside dir: %v", err)
 	}
 
-	if !isInsideDir(child, dir) {
-		t.Error("expected child to be inside dir")
+	writeBinary := func(path string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(testPlainBinary), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+	insideBin := filepath.Join(workDir, "inside")
+	outsideBin := filepath.Join(outsideDir, "outside")
+	writeBinary(insideBin)
+	writeBinary(outsideBin)
+
+	linkInsidePointingOut := filepath.Join(workDir, "link-out")
+	if err := os.Symlink(outsideBin, linkInsidePointingOut); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	linkOutsidePointingIn := filepath.Join(outsideDir, "link-in")
+	if err := os.Symlink(insideBin, linkOutsidePointingIn); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	loopDir := filepath.Join(root, "workdir-loop")
+	if err := os.Symlink(loopDir, loopDir); err != nil {
+		t.Skipf("symlink loop unsupported here: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		command  string
+		workDir  string
+		location BinaryLocation
+	}{
+		{"inside", insideBin, workDir, BinaryLocationInside},
+		{"outside", outsideBin, workDir, BinaryLocationOutside},
+		{"symlink inside pointing out", linkInsidePointingOut, workDir, BinaryLocationOutside},
+		{"symlink outside pointing in", linkOutsidePointingIn, workDir, BinaryLocationInside},
+		{"nonexistent working directory", insideBin, filepath.Join(root, "missing"), BinaryLocationUnknown},
+		{"unresolvable working directory", insideBin, loopDir, BinaryLocationUnknown},
+		{"empty working directory", insideBin, "", BinaryLocationNotChecked},
+	}
+	operations := []struct {
+		name string
+		run  func([]string, string) (*VerifyResult, func(), error)
+	}{
+		{
+			name: "resolve",
+			run: func(command []string, dir string) (*VerifyResult, func(), error) {
+				result, err := Resolve(command, dir)
+				return result, func() {}, err
+			},
+		},
+		{
+			name: "prepare",
+			run: func(command []string, dir string) (*VerifyResult, func(), error) {
+				prepared, err := Prepare(command, dir)
+				if err != nil {
+					return nil, func() {}, err
+				}
+				return prepared.Result, func() { _ = prepared.Close() }, nil
+			},
+		},
+	}
+
+	for _, operation := range operations {
+		for _, tt := range tests {
+			t.Run(operation.name+"/"+tt.name, func(t *testing.T) {
+				result, closePrepared, err := operation.run([]string{tt.command}, tt.workDir)
+				if err != nil {
+					t.Fatalf("%s: %v", operation.name, err)
+				}
+				t.Cleanup(closePrepared)
+				if result.Location != tt.location {
+					t.Fatalf("Location = %q, want %q", result.Location, tt.location)
+				}
+				if result.Suspicious != (tt.location == BinaryLocationInside) {
+					t.Fatalf("Suspicious = %t, want %t", result.Suspicious, tt.location == BinaryLocationInside)
+				}
+				if (result.LocationError != nil) != (tt.location == BinaryLocationUnknown) {
+					t.Fatalf("LocationError = %v for location %q", result.LocationError, tt.location)
+				}
+			})
+		}
 	}
 }
 
-func TestIsInsideDir_Outside(t *testing.T) {
-	dir1 := t.TempDir()
-	dir2 := t.TempDir()
-	child := filepath.Join(dir2, "binary")
-	if err := os.WriteFile(child, []byte("bin"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
+func TestResolve_ClassifiesFinalExecutableLocation(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("test uses /usr/bin/env-style wrapper and shebang paths")
 	}
 
-	if isInsideDir(child, dir1) {
-		t.Error("expected child to be outside dir")
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{workDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("MkdirAll %q: %v", dir, err)
+		}
 	}
-}
-
-func TestIsInsideDir_SameDir(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "file")
-	if err := os.WriteFile(file, []byte("data"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile %q: %v", path, err)
+		}
 	}
 
-	if !isInsideDir(file, dir) {
-		t.Error("file in same dir should be inside")
+	envPath, err := exec.LookPath("env")
+	if err != nil {
+		t.Skipf("env unavailable: %v", err)
+	}
+	insideBinary := filepath.Join(workDir, "inside-server")
+	outsideBinary := filepath.Join(outsideDir, "outside-server")
+	insideInterpreter := filepath.Join(workDir, "interpreter")
+	outsideScript := filepath.Join(outsideDir, "server-script")
+	writeFile(insideBinary, testPlainBinary)
+	writeFile(outsideBinary, testPlainBinary)
+	writeFile(insideInterpreter, testPlainBinary)
+	writeFile(outsideScript, "#!"+insideInterpreter+"\necho server\n")
+
+	for _, tt := range []struct {
+		name       string
+		command    []string
+		wantPath   string
+		location   BinaryLocation
+		suspicious bool
+	}{
+		{
+			name:       "env wrapped binary inside working directory",
+			command:    []string{envPath, insideBinary},
+			wantPath:   insideBinary,
+			location:   BinaryLocationInside,
+			suspicious: true,
+		},
+		{
+			name:     "env wrapped binary outside working directory",
+			command:  []string{envPath, outsideBinary},
+			wantPath: outsideBinary,
+			location: BinaryLocationOutside,
+		},
+		{
+			name:       "shebang interpreter inside working directory and script outside",
+			command:    []string{outsideScript},
+			wantPath:   insideInterpreter,
+			location:   BinaryLocationInside,
+			suspicious: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Resolve(tt.command, workDir)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if result.ResolvedPath != tt.wantPath {
+				t.Fatalf("ResolvedPath = %q, want %q", result.ResolvedPath, tt.wantPath)
+			}
+			if result.Location != tt.location {
+				t.Fatalf("Location = %q, want %q", result.Location, tt.location)
+			}
+			if result.Suspicious != tt.suspicious {
+				t.Fatalf("Suspicious = %t, want %t", result.Suspicious, tt.suspicious)
+			}
+		})
 	}
 }
 
@@ -1099,17 +1232,22 @@ func TestVerify_InterpreterNoScript(t *testing.T) {
 	}
 }
 
-func TestIsInsideDir_NonexistentDir(t *testing.T) {
-	// When the dir doesn't exist, isInsideDir should return false.
-	if isInsideDir("/some/file", "/nonexistent/dir/abc123") {
-		t.Error("should return false for nonexistent dir")
-	}
-}
-
-func TestIsInsideDir_NonexistentFile(t *testing.T) {
+func TestBinaryLocation_UnresolvablePaths(t *testing.T) {
 	dir := t.TempDir()
-	if isInsideDir("/nonexistent/file/abc123", dir) {
-		t.Error("should return false for nonexistent file")
+	for _, tt := range []struct {
+		name string
+		path string
+		dir  string
+	}{
+		{"nonexistent directory", "/some/file", "/nonexistent/dir/abc123"},
+		{"nonexistent file", "/nonexistent/file/abc123", dir},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			location, err := binaryLocation(tt.path, tt.dir)
+			if location != BinaryLocationUnknown || err == nil {
+				t.Fatalf("binaryLocation(%q, %q) = %q, %v; want unknown with reason", tt.path, tt.dir, location, err)
+			}
+		})
 	}
 }
 

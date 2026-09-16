@@ -101,19 +101,32 @@ type Manifest struct {
 	Entries map[string]string `json:"entries"` // resolved_path -> SHA-256 hex
 }
 
+// BinaryLocation describes where a resolved binary is relative to an agent
+// working directory. Unknown means that comparison could not be completed.
+type BinaryLocation string
+
+const (
+	BinaryLocationNotChecked BinaryLocation = "not_checked"
+	BinaryLocationInside     BinaryLocation = "inside"
+	BinaryLocationOutside    BinaryLocation = "outside"
+	BinaryLocationUnknown    BinaryLocation = "unknown"
+)
+
 // VerifyResult is the outcome of a pre-spawn integrity check.
 type VerifyResult struct {
-	Verified           bool     // true when all hashes match the manifest
-	ResolvedPath       string   // binary path after EvalSymlinks + LookPath
-	InterpreterPath    string   // interpreter binary path when env/shebang rewrites ResolvedPath
-	ExpectedHash       string   // from manifest (empty if binary is unknown)
-	ActualHash         string   // computed from file contents
-	IsInterpreter      bool     // true if command[0] is a known interpreter
-	IsPackageRunner    bool     // true if command[0] is a package runner (npx, bunx, etc.)
-	ScriptPath         string   // script path when IsInterpreter is true
-	ScriptHash         string   // hash of the script when IsInterpreter is true
-	ExpectedScriptHash string   // from manifest (empty if script is unknown)
-	Suspicious         bool     // true if binary is inside agent working directory
+	Verified           bool   // true when all hashes match the manifest; callers enforcing containment must also check Location
+	ResolvedPath       string // binary path after EvalSymlinks + LookPath
+	InterpreterPath    string // interpreter binary path when env/shebang rewrites ResolvedPath
+	ExpectedHash       string // from manifest (empty if binary is unknown)
+	ActualHash         string // computed from file contents
+	IsInterpreter      bool   // true if command[0] is a known interpreter
+	IsPackageRunner    bool   // true if command[0] is a package runner (npx, bunx, etc.)
+	ScriptPath         string // script path when IsInterpreter is true
+	ScriptHash         string // hash of the script when IsInterpreter is true
+	ExpectedScriptHash string // from manifest (empty if script is unknown)
+	Suspicious         bool   // true if binary is inside agent working directory
+	Location           BinaryLocation
+	LocationError      error    // non-nil only when Location is BinaryLocationUnknown
 	Reason             string   // last/primary reason when Verified is false (backward compat)
 	Reasons            []string // all accumulated failure reasons for audit evidence
 }
@@ -235,7 +248,7 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 		return nil, fmt.Errorf("empty command")
 	}
 
-	result := &VerifyResult{}
+	result := &VerifyResult{Location: BinaryLocationNotChecked}
 
 	// Resolve binary path through PATH lookup and symlink resolution.
 	resolved, err := resolveBinary(command[0])
@@ -243,11 +256,6 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 		return nil, fmt.Errorf("resolving binary %q: %w", command[0], err)
 	}
 	result.ResolvedPath = resolved
-
-	// Check if binary is inside the agent working directory.
-	if workDir != "" {
-		result.Suspicious = isInsideDir(resolved, workDir)
-	}
 
 	// Hash the binary via fd (mitigates read-after-open races but not
 	// in-place replacement after close; see package doc for limitations).
@@ -333,6 +341,14 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 		}
 	}
 
+	// Classify the final executable. Env wrappers and shebangs can replace the
+	// initially resolved command path, so classifying before those rewrites
+	// would report containment for an executable that is not the one hashed.
+	// An unresolved location remains distinct from outside so callers cannot
+	// present an unchecked containment warning as healthy.
+	result.Location, result.LocationError = binaryLocation(result.ResolvedPath, workDir)
+	result.Suspicious = result.Location == BinaryLocationInside
+
 	return result, nil
 }
 
@@ -362,11 +378,14 @@ func Prepare(command []string, workDir string) (*PreparedCommand, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hashing binary %q: %w", resolved, err)
 	}
-	result := &VerifyResult{ResolvedPath: resolved, ActualHash: actualHash}
-	prepared.Result = result
-	if workDir != "" {
-		result.Suspicious = isInsideDir(resolved, workDir)
+	result := &VerifyResult{
+		ResolvedPath: resolved,
+		ActualHash:   actualHash,
+		Location:     BinaryLocationNotChecked,
 	}
+	prepared.Result = result
+	result.Location, result.LocationError = binaryLocation(resolved, workDir)
+	result.Suspicious = result.Location == BinaryLocationInside
 
 	baseName := filepath.Base(resolved)
 	cmdBase := filepath.Base(command[0])
@@ -726,40 +745,46 @@ func skipEnvFlags(args []string) []string {
 	return nil
 }
 
-// isInsideDir checks if path is inside or equal to dir, after resolving
-// both to absolute real paths.
-func isInsideDir(path, dir string) bool {
+// binaryLocation checks whether path is inside or equal to dir after resolving
+// both to absolute real paths. An empty dir deliberately means not checked;
+// resolution failures are unknown rather than outside.
+func binaryLocation(path, dir string) (BinaryLocation, error) {
+	if dir == "" {
+		return BinaryLocationNotChecked, nil
+	}
+
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return false
+		return BinaryLocationUnknown, fmt.Errorf("resolving working directory %q to an absolute path: %w", dir, err)
 	}
 
 	realDir, err := filepath.EvalSymlinks(absDir)
 	if err != nil {
-		return false
+		return BinaryLocationUnknown, fmt.Errorf("resolving working directory %q symlinks: %w", dir, err)
 	}
 
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return false
+		return BinaryLocationUnknown, fmt.Errorf("resolving binary path %q to an absolute path: %w", path, err)
 	}
 
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return false
+		return BinaryLocationUnknown, fmt.Errorf("resolving binary path %q symlinks: %w", path, err)
 	}
 
 	rel, err := filepath.Rel(realDir, realPath)
 	if err != nil {
-		return false
+		return BinaryLocationUnknown, fmt.Errorf("comparing binary path %q with working directory %q: %w", realPath, realDir, err)
 	}
 
 	// Compare against ".." as a whole path component, not as a string prefix.
 	// A bare prefix test also matches an ordinary name that merely starts with
 	// two dots, so a binary at <dir>/..name would be reported as OUTSIDE dir.
-	// Callers set Suspicious from this result, and false means not suspicious,
-	// so the loose form drops the warning for a binary an agent can write
-	// inside its own working directory. internal/securefile already uses this
-	// component-wise form for the same containment question.
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	// Callers set Suspicious only for BinaryLocationInside. internal/securefile
+	// already uses this component-wise form for the same containment question.
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return BinaryLocationInside, nil
+	}
+	return BinaryLocationOutside, nil
 }

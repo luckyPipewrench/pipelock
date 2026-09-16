@@ -23,17 +23,19 @@ import (
 var errMCPIntegrityViolation = errors.New("MCP binary integrity violation")
 
 type mcpIntegrityReport struct {
-	OK         bool     `json:"ok"`
-	Command    []string `json:"command"`
-	Manifest   string   `json:"manifest,omitempty"`
-	Signature  string   `json:"signature,omitempty"`
-	Signer     string   `json:"signer,omitempty"`
-	WorkDir    string   `json:"workdir,omitempty"`
-	Entries    []string `json:"entries,omitempty"`
-	Reasons    []string `json:"reasons,omitempty"`
-	Binary     string   `json:"binary,omitempty"`
-	Script     string   `json:"script,omitempty"`
-	Suspicious bool     `json:"suspicious,omitempty"`
+	OK             bool                        `json:"ok"`
+	Command        []string                    `json:"command"`
+	Manifest       string                      `json:"manifest,omitempty"`
+	Signature      string                      `json:"signature,omitempty"`
+	Signer         string                      `json:"signer,omitempty"`
+	WorkDir        string                      `json:"workdir,omitempty"`
+	Entries        []string                    `json:"entries,omitempty"`
+	Reasons        []string                    `json:"reasons,omitempty"`
+	Binary         string                      `json:"binary,omitempty"`
+	Script         string                      `json:"script,omitempty"`
+	Suspicious     bool                        `json:"suspicious,omitempty"`
+	Location       mcpintegrity.BinaryLocation `json:"location,omitempty"`
+	LocationReason string                      `json:"location_reason,omitempty"`
 }
 
 func mcpIntegrityCmd() *cobra.Command {
@@ -93,6 +95,9 @@ or add entries in an existing manifest.`,
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Manifest written: %s (%d %s)\n",
 				outputPath, len(report.Entries), pluralEntry(len(report.Entries)))
+			if report.Location == mcpintegrity.BinaryLocationUnknown {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "MCP binary location unknown: %s\n", report.LocationReason)
+			}
 			for _, entry := range report.Entries {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", entry)
 			}
@@ -385,6 +390,9 @@ func manifestEntriesForCommand(command []string, workDir string) (map[string]str
 	// the expected case. Surfacing it would train operators to ignore
 	// the flag, weakening the runtime signal. Zero it out here.
 	result.Suspicious = false
+	if result.Location == mcpintegrity.BinaryLocationInside {
+		result.Location = mcpintegrity.BinaryLocationNotChecked
+	}
 	entries := map[string]string{
 		result.ResolvedPath: result.ActualHash,
 	}
@@ -405,6 +413,14 @@ func reportForResult(ok bool, command []string, manifestPath string, workDir str
 		Binary:     result.ResolvedPath,
 		Script:     result.ScriptPath,
 		Suspicious: result.Suspicious,
+		Location:   result.Location,
+	}
+	if result.LocationError != nil {
+		report.LocationReason = result.LocationError.Error()
+	}
+	if result.Location == mcpintegrity.BinaryLocationUnknown {
+		report.OK = false
+		report.Reasons = append(report.Reasons, "binary location unknown: "+report.LocationReason)
 	}
 	if report.Reasons == nil {
 		report.Reasons = []string{}

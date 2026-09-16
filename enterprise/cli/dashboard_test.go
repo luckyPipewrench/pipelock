@@ -586,7 +586,10 @@ func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runDashboardServe returned an error on context-cancel shutdown: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not shut down after context cancel")
 	}

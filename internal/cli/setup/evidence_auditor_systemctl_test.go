@@ -32,6 +32,11 @@ func TestSystemctlCommandBuildsOnlyPermittedOperations(t *testing.T) {
 			op:       systemctlEnableAuditorTimer,
 			wantArgs: []string{"systemctl", "--user", "enable", "--now", evidenceCorpusAuditorTimer},
 		},
+		{
+			name:     "user running probe",
+			op:       systemctlUserRunning,
+			wantArgs: []string{"systemctl", "--user", "is-system-running"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -124,5 +129,117 @@ func TestEvidenceAuditorSystemctlRefusesUnknownOperation(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("unknown operation reached the process seam")
+	}
+}
+
+// The is-system-running probe always reports a *systemctlUserStateError
+// carrying the printed state word, including on its "success" exit (state
+// "running"): the caller, not this function, decides which states are
+// usable, so a nil error here would throw that information away.
+func TestEvidenceAuditorSystemctlUserRunningAlwaysReportsState(t *testing.T) {
+	originalRun := evidenceAuditorRunCommand
+	t.Cleanup(func() { evidenceAuditorRunCommand = originalRun })
+
+	tests := []struct {
+		name      string
+		output    string
+		runErr    error
+		wantState string
+	}{
+		{
+			name:      "healthy exit reports running",
+			output:    "running\n",
+			runErr:    nil,
+			wantState: "running",
+		},
+		{
+			name:      "degraded exit is still a reported state",
+			output:    "degraded\n",
+			runErr:    &exec.ExitError{},
+			wantState: "degraded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidenceAuditorRunCommand = func(*exec.Cmd) ([]byte, error) {
+				return []byte(tt.output), tt.runErr
+			}
+
+			err := runSystemctlOp(context.Background(), systemctlUserRunning)
+			var stateErr *systemctlUserStateError
+			if !errors.As(err, &stateErr) {
+				t.Fatalf("error = %v, want a *systemctlUserStateError", err)
+			}
+			if stateErr.state != tt.wantState {
+				t.Fatalf("state = %q, want %q", stateErr.state, tt.wantState)
+			}
+			if !strings.Contains(stateErr.Error(), tt.wantState) {
+				t.Fatalf("Error() = %q, want it to include the state %q", stateErr.Error(), tt.wantState)
+			}
+		})
+	}
+}
+
+// A launch failure that never produced output -- the binary missing, the
+// session bus unreachable before systemctl could even print a state word --
+// is not a reported state and must not be wrapped as one, or the caller's
+// state-word switch would silently treat it as an unrecognized-but-real state
+// instead of the launch failure it is.
+func TestEvidenceAuditorSystemctlUserRunningReportsLaunchFailureDistinctly(t *testing.T) {
+	originalRun := evidenceAuditorRunCommand
+	t.Cleanup(func() { evidenceAuditorRunCommand = originalRun })
+
+	sentinel := errors.New("exec: \"systemctl\": executable file not found in $PATH")
+	evidenceAuditorRunCommand = func(*exec.Cmd) ([]byte, error) {
+		return nil, sentinel
+	}
+
+	err := runSystemctlOp(context.Background(), systemctlUserRunning)
+	var stateErr *systemctlUserStateError
+	if errors.As(err, &stateErr) {
+		t.Fatalf("launch failure was wrapped as a state error: %v", stateErr)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want it to wrap the launch failure", err)
+	}
+	if !strings.Contains(err.Error(), "systemctl --user is-system-running") {
+		t.Fatalf("error = %v, want it to name the probe", err)
+	}
+}
+
+// No systemctl binary at all (a minimal container image, for example) must be
+// reported by name rather than surfacing as a generic probe failure, since it
+// is the cheapest and most common reason the auditor is unavailable.
+func TestEvidenceAuditorUserSystemdUnavailableWhenSystemctlMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if !unavailable {
+		t.Fatal("expected unavailable with no systemctl in PATH")
+	}
+	if !strings.Contains(reason, "systemctl not found in PATH") {
+		t.Fatalf("reason = %q, want it to name the missing binary", reason)
+	}
+}
+
+// is-system-running can exit non-zero with genuinely empty output (a stub
+// init system, or systemctl killed before it could print), which is distinct
+// from every named state word and must be reported as such rather than
+// falling through to the generic default case's message.
+func TestEvidenceAuditorUserSystemdUnavailableWhenProbeReturnsEmptyState(t *testing.T) {
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op == systemctlUserRunning {
+			return &systemctlUserStateError{state: ""}
+		}
+		return nil
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if !unavailable {
+		t.Fatal("expected unavailable for an empty probe state")
+	}
+	if !strings.Contains(reason, "returned no result") {
+		t.Fatalf("reason = %q, want the no-result message", reason)
 	}
 }

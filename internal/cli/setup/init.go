@@ -63,11 +63,21 @@ type initSetupResult struct {
 }
 
 type initAuditorResult struct {
-	ServicePath string `json:"service_path"`
-	TimerPath   string `json:"timer_path"`
-	AlertPath   string `json:"alert_path"`
-	MetricPath  string `json:"metric_path"`
+	Status      string `json:"status"`
+	Detail      string `json:"detail,omitempty"`
+	ServicePath string `json:"service_path,omitempty"`
+	TimerPath   string `json:"timer_path,omitempty"`
+	AlertPath   string `json:"alert_path,omitempty"`
+	MetricPath  string `json:"metric_path,omitempty"`
 }
+
+// Auditor phase status values reported in the init summary and JSON output.
+const (
+	auditorStatusInstalled        = "installed"
+	auditorStatusSkippedFlag      = "skipped_flag"
+	auditorStatusSkippedDryRun    = "skipped_dry_run"
+	auditorStatusSkippedNoSystemd = "skipped_no_systemd"
+)
 
 type initVerifyResult struct {
 	Passed  int    `json:"passed"`
@@ -93,6 +103,7 @@ func InitCmd() *cobra.Command {
 		output       string
 		jsonOutput   bool
 		scanHome     string
+		noAuditor    bool
 	)
 
 	cmd := &cobra.Command{
@@ -113,7 +124,8 @@ Examples:
   pipelock init --preset strict
   pipelock init --dry-run
   pipelock init --output ./pipelock.yaml
-  pipelock init --skip-canary --skip-validate`,
+  pipelock init --skip-canary --skip-validate
+  pipelock init --no-auditor`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runInit(cmd, initOptions{
@@ -125,6 +137,7 @@ Examples:
 				output:       output,
 				jsonOutput:   jsonOutput,
 				scanHome:     scanHome,
+				noAuditor:    noAuditor,
 			})
 		},
 	}
@@ -137,6 +150,7 @@ Examples:
 	cmd.Flags().StringVarP(&output, "output", "o", "", "config output path (default: OS config dir)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "machine-readable JSON output")
 	cmd.Flags().StringVar(&scanHome, "scan-home", "", "override home directory for discovery (default: $HOME)")
+	cmd.Flags().BoolVar(&noAuditor, "no-auditor", false, "skip installing the evidence corpus auditor timer")
 
 	cmd.AddCommand(SidecarCmd())
 
@@ -152,6 +166,7 @@ type initOptions struct {
 	output       string
 	jsonOutput   bool
 	scanHome     string
+	noAuditor    bool
 }
 
 func runInit(cmd *cobra.Command, opts initOptions) error {
@@ -262,33 +277,12 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 			}
 		}
 	}
-	if !opts.dryRun && runtime.GOOS == "linux" {
-		auditorRecorderDir := cfg.FlightRecorder.Dir
-		installAuditor := result.Setup.Written
-		if result.Setup.SkippedExsting {
-			// Preserve init's historic no-op behavior for an arbitrary existing
-			// config. A previously generated, valid config is enough to repair a
-			// missing managed auditor on rerun without rewriting the config.
-			if existing, loadErr := config.Load(configPath); loadErr == nil && existing.FlightRecorder.Dir != "" {
-				auditorRecorderDir = existing.FlightRecorder.Dir
-				installAuditor = true
-			}
+	if runtime.GOOS == "linux" {
+		auditorResult, auditorErr := runEvidenceAuditorPhase(cmd, opts, cfg, result, configPath, w)
+		if auditorErr != nil {
+			return cliutil.ExitCodeError(initExitError, fmt.Errorf("installing evidence corpus auditor: %w", auditorErr))
 		}
-		if installAuditor {
-			installed, installErr := installEvidenceCorpusAuditor(cmd.Context(), auditorRecorderDir)
-			if installErr != nil {
-				return cliutil.ExitCodeError(initExitError, fmt.Errorf("installing evidence corpus auditor: %w", installErr))
-			}
-			result.Auditor = &initAuditorResult{
-				ServicePath: installed.ServicePath,
-				TimerPath:   installed.TimerPath,
-				AlertPath:   installed.AlertPath,
-				MetricPath:  installed.MetricPath,
-			}
-			if !opts.jsonOutput {
-				_, _ = fmt.Fprintf(w, "  Evidence corpus auditor timer installed: %s\n\n", installed.TimerPath)
-			}
-		}
+		result.Auditor = auditorResult
 	}
 
 	// Phase 3: Validate config
@@ -356,6 +350,72 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 	}
 
 	return nil
+}
+
+// runEvidenceAuditorPhase decides and, unless skipped, performs the evidence
+// corpus auditor install for `pipelock init`. It is on Linux by default:
+// --no-auditor opts out, --dry-run installs nothing, and a host with no
+// usable systemd --user session is skipped with a printed notice rather than
+// failing init outright. The disclosure is printed before any install call so
+// nothing lands on the system unannounced.
+func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.Config, result *initResult, configPath string, w io.Writer) (*initAuditorResult, error) {
+	if opts.noAuditor {
+		if !opts.jsonOutput {
+			_, _ = fmt.Fprintln(w, "  Evidence corpus auditor: skipped (--no-auditor)")
+			_, _ = fmt.Fprintln(w)
+		}
+		return &initAuditorResult{Status: auditorStatusSkippedFlag}, nil
+	}
+
+	if opts.dryRun {
+		if !opts.jsonOutput {
+			_, _ = fmt.Fprintf(w, "  Would install evidence corpus auditor: %s\n\n", evidenceAuditorDisclosure)
+		}
+		return &initAuditorResult{Status: auditorStatusSkippedDryRun, Detail: evidenceAuditorDisclosure}, nil
+	}
+
+	if unavailable, reason := evidenceAuditorUserSystemdUnavailable(cmd.Context()); unavailable {
+		if !opts.jsonOutput {
+			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", reason)
+		}
+		return &initAuditorResult{Status: auditorStatusSkippedNoSystemd, Detail: reason}, nil
+	}
+
+	auditorRecorderDir := cfg.FlightRecorder.Dir
+	installAuditor := result.Setup.Written
+	if result.Setup.SkippedExsting {
+		// Preserve init's historic no-op behavior for an arbitrary existing
+		// config. A previously generated, valid config is enough to repair a
+		// missing managed auditor on rerun without rewriting the config.
+		if existing, loadErr := config.Load(configPath); loadErr == nil && existing.FlightRecorder.Dir != "" {
+			auditorRecorderDir = existing.FlightRecorder.Dir
+			installAuditor = true
+		}
+	}
+	if !installAuditor {
+		return nil, nil
+	}
+
+	// Disclose BEFORE installing: name the unit, what it does, and how to
+	// remove it, so an operator sees this before anything is enabled.
+	if !opts.jsonOutput {
+		_, _ = fmt.Fprintf(w, "  %s\n", evidenceAuditorDisclosure)
+	}
+
+	installed, err := installEvidenceCorpusAuditor(cmd.Context(), auditorRecorderDir)
+	if err != nil {
+		return nil, err
+	}
+	if !opts.jsonOutput {
+		_, _ = fmt.Fprintf(w, "  Evidence corpus auditor timer installed: %s\n\n", installed.TimerPath)
+	}
+	return &initAuditorResult{
+		Status:      auditorStatusInstalled,
+		ServicePath: installed.ServicePath,
+		TimerPath:   installed.TimerPath,
+		AlertPath:   installed.AlertPath,
+		MetricPath:  installed.MetricPath,
+	}, nil
 }
 
 func printDiscoverPhase(w io.Writer, report *discover.Report) {
@@ -614,6 +674,20 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 		} else {
 			_, _ = fmt.Fprintf(w, "  Validate:           %d passed, %d failed\n",
 				result.Verify.Passed, result.Verify.Failed)
+		}
+	}
+
+	// Auditor
+	if result.Auditor != nil {
+		switch result.Auditor.Status {
+		case auditorStatusInstalled:
+			_, _ = fmt.Fprintf(w, "  Evidence auditor:   installed (%s)\n", result.Auditor.TimerPath)
+		case auditorStatusSkippedFlag:
+			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (--no-auditor)")
+		case auditorStatusSkippedDryRun:
+			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (dry run)")
+		case auditorStatusSkippedNoSystemd:
+			_, _ = fmt.Fprintf(w, "  Evidence auditor:   skipped (%s)\n", result.Auditor.Detail)
 		}
 	}
 

@@ -5,6 +5,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,11 @@ const (
 	evidenceCorpusAuditorAlert   = "pipelock-evidence-corpus-alerts.yaml"
 	managedEvidenceAuditorHeader = "# Managed by pipelock init; local edits will be replaced on rerun.\n"
 )
+
+// evidenceAuditorDisclosure is printed before pipelock init installs the
+// auditor, so nothing lands on a user's system without being named first.
+const evidenceAuditorDisclosure = "Installing " + evidenceCorpusAuditorTimer +
+	": runs 'pipelock evidence doctor' every 15 minutes against your flight recorder directory and exports a Prometheus metric; remove it with 'systemctl --user disable --now " + evidenceCorpusAuditorTimer + "'."
 
 var (
 	evidenceAuditorUserConfigDir = os.UserConfigDir
@@ -37,10 +43,40 @@ func runSystemctlOp(ctx context.Context, op systemctlOp) error {
 	if err != nil {
 		return err
 	}
-	if output, err := evidenceAuditorRunCommand(cmd); err != nil {
-		return fmt.Errorf("systemctl --user %s: %w: %s", op, err, strings.TrimSpace(string(output)))
+	output, runErr := evidenceAuditorRunCommand(cmd)
+	if op == systemctlUserRunning {
+		// is-system-running prints a single state word and exits non-zero for
+		// every state except "running" (including the common, harmless
+		// "degraded" caused by an unrelated failed unit elsewhere on the
+		// system), so its exit code alone carries no usable signal here.
+		// Report the state word itself and let the caller decide which
+		// states count as a usable session; only a launch failure that never
+		// produced output (missing binary, unreachable bus, etc.) is a bare
+		// error.
+		if runErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				return fmt.Errorf("systemctl --user %s: %w", op, runErr)
+			}
+		}
+		return &systemctlUserStateError{state: strings.TrimSpace(string(output))}
+	}
+	if runErr != nil {
+		return fmt.Errorf("systemctl --user %s: %w: %s", op, runErr, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// systemctlUserStateError carries the state word printed by
+// `systemctl --user is-system-running`. It is always returned for that probe
+// (never nil), even for the healthy "running" state, so evidenceAuditorSystemctl's
+// plain `error` return still gives evidenceAuditorUserSystemdUnavailable enough
+// information to distinguish "running"/"degraded" (usable) from every other
+// state (not usable) without a second seam.
+type systemctlUserStateError struct{ state string }
+
+func (e *systemctlUserStateError) Error() string {
+	return fmt.Sprintf("systemctl --user is-system-running: %q", e.state)
 }
 
 // systemctlCommand builds the argument vector for one permitted operation.
@@ -54,6 +90,8 @@ func systemctlCommand(ctx context.Context, op systemctlOp) (*exec.Cmd, error) {
 		return exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload"), nil
 	case systemctlEnableAuditorTimer:
 		return exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", evidenceCorpusAuditorTimer), nil
+	case systemctlUserRunning:
+		return exec.CommandContext(ctx, "systemctl", "--user", "is-system-running"), nil
 	default:
 		return nil, fmt.Errorf("unsupported systemctl operation %q", op)
 	}
@@ -67,7 +105,48 @@ type systemctlOp string
 const (
 	systemctlDaemonReload       systemctlOp = "daemon-reload"
 	systemctlEnableAuditorTimer systemctlOp = "enable --now " + evidenceCorpusAuditorTimer
+	// systemctlUserRunning is a read-only probe used only to decide whether a
+	// user systemd session exists at all before attempting an install.
+	systemctlUserRunning systemctlOp = "is-system-running"
 )
+
+// evidenceAuditorUserSystemdUnavailable reports whether this host has no
+// usable systemd --user session, and why, so init can skip the auditor with a
+// printed notice instead of failing outright. Checked in order from cheapest
+// to most expensive: missing binary, missing runtime dir (the standard signal
+// that no user session/session bus exists), then a live probe.
+//
+// "running" and "degraded" both count as usable: `is-system-running` exits
+// non-zero for "degraded" whenever ANY unrelated user unit has failed, which
+// is common on ordinary desktops and has nothing to do with whether this
+// timer can be installed and run. Every other state - "offline", "unknown",
+// an empty result, "initializing"/"starting", or a non-zero exit with no
+// recognized state word at all - is treated as not usable, same as a launch
+// failure (missing binary, unreachable session bus).
+func evidenceAuditorUserSystemdUnavailable(ctx context.Context) (bool, string) {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return true, "systemctl not found in PATH"
+	}
+	if strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")) == "" {
+		return true, "no user systemd session (XDG_RUNTIME_DIR is not set)"
+	}
+	err := evidenceAuditorSystemctl(ctx, systemctlUserRunning)
+	if err == nil {
+		return false, "" // fake/success path (e.g. TestMain's global stub): treat as "running".
+	}
+	var stateErr *systemctlUserStateError
+	if errors.As(err, &stateErr) {
+		switch stateErr.state {
+		case "running", "degraded":
+			return false, ""
+		case "":
+			return true, "systemctl --user is-system-running returned no result"
+		default:
+			return true, fmt.Sprintf("systemctl --user reports %q", stateErr.state)
+		}
+	}
+	return true, fmt.Sprintf("systemctl --user is unusable: %v", err)
+}
 
 type evidenceCorpusAuditorInstall struct {
 	ServicePath string

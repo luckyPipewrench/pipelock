@@ -143,6 +143,26 @@ if missing_jobs:
 	)
 	sys.exit(2)
 
+# EXPECTED_CI_JOBS is a fixed list, so a new producer job that follows the
+# established test-{oss,enterprise,replay}-go<minor> naming but is never
+# added to that list would silently sit outside every check above -- its Go
+# minor would never enter `ci_minors`, so this guard would keep reporting
+# full coverage while release.yaml proved nothing about that job's version.
+# Reproduced: adding a 7th producer job (test-oss-go127) with no other change
+# left this guard's output and exit code identical to a run without it.
+PRODUCER_NAME_RE = re.compile(r"^test-(oss|enterprise|replay)-go\d+$")
+untracked_producers = sorted(
+	name for name in ci_jobs if PRODUCER_NAME_RE.match(name) and name not in EXPECTED_CI_JOBS
+)
+if untracked_producers:
+	print(
+		f"check-go-matrix: {ci_path} defines producer job(s) this guard does not "
+		f"track: {', '.join(untracked_producers)}; add them to EXPECTED_CI_JOBS "
+		"above so their Go minor is actually checked against release.yaml",
+		file=sys.stderr,
+	)
+	sys.exit(2)
+
 ci_minors = set()
 for name in EXPECTED_CI_JOBS:
 	job_minors = minors(go_versions_for_job(ci_jobs[name]))

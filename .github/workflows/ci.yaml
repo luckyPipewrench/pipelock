@@ -140,7 +140,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
             .github/workflows/ go.mod go.sum scripts/check-go-matrix.sh)"
           if [ -n "$changed" ]; then
             echo "PR touches CI-policy files:"
@@ -215,7 +215,7 @@ jobs:
     # release.yaml before a tag). Three days of PR history showed this lane
     # catching only timing flakes, never a version-specific failure, so
     # duplicating it on every ordinary PR was pure runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
     name: test-oss (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -336,7 +336,7 @@ jobs:
     # release.yaml before a tag). Three days of PR history showed this lane
     # catching only timing flakes, never a version-specific failure, so
     # duplicating it on every ordinary PR was pure runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
     name: test-enterprise (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -504,15 +504,32 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -u
+          # A bare `test ... || { ... }` compound does NOT reliably exit under
+          # bash's real -e semantics: a failing command on the left of `||`
+          # never triggers errexit, and neither does the right-hand block when
+          # its own last command fails as part of a further `&&`
+          # short-circuit. That combination let this gate print its own
+          # per-producer diagnostics and still exit 0 -- reproduced with an
+          # actual `bash -eo pipefail` run (GitHub Actions' real default
+          # shell) for a failed, an unknown, and an unexpectedly-skipped
+          # producer result. Every non-success path below exits explicitly
+          # instead of relying on the compound's own exit status.
           test "${{ needs.security-scan.result }}" = "success"
+
           echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
-          test "${{ needs.test-oss-go126.result }}" = "success" || {
-            [ "$EVENT_NAME" = "pull_request" ] && [ "${{ needs.test-oss-go126.result }}" = "skipped" ]
-          }
+          if ! test "${{ needs.test-oss-go126.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-oss-go126.result }}" != "skipped" ]; then
+              exit 1
+            fi
+          fi
+
           echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
-          test "${{ needs.test-enterprise-go126.result }}" = "success" || {
-            [ "$EVENT_NAME" = "pull_request" ] && [ "${{ needs.test-enterprise-go126.result }}" = "skipped" ]
-          }
+          if ! test "${{ needs.test-enterprise-go126.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go126.result }}" != "skipped" ]; then
+              exit 1
+            fi
+          fi
+
           echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
           test "${{ needs.test-replay-go126.result }}" = "success"
 

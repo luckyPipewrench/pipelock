@@ -434,6 +434,38 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 	}
 }
 
+func TestPolarClient_LastProviderSuccess(t *testing.T) {
+	success := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"sub_test123"}`))
+	}))
+	t.Cleanup(success.Close)
+
+	client := NewPolarClient(testPolarAPIToken, success.URL, defaultPolarAPIVersion)
+	if got := client.LastProviderSuccess(); !got.IsZero() {
+		t.Fatalf("LastProviderSuccess() before a request = %s, want zero time", got)
+	}
+	if _, err := client.GetSubscription(t.Context(), testSubscriptionID); err != nil {
+		t.Fatalf("GetSubscription() error = %v", err)
+	}
+	lastSuccess := client.LastProviderSuccess()
+	if lastSuccess.IsZero() {
+		t.Fatal("LastProviderSuccess() after a successful request is zero")
+	}
+
+	failure := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(failure.Close)
+	client.baseURL = failure.URL
+	if _, err := client.GetSubscription(t.Context(), testSubscriptionID); err == nil {
+		t.Fatal("GetSubscription() succeeded against failed provider")
+	}
+	if got := client.LastProviderSuccess(); !got.Equal(lastSuccess) {
+		t.Errorf("LastProviderSuccess() after a failed request = %s, want %s", got, lastSuccess)
+	}
+}
+
 func TestPolarClient_GetOrder(t *testing.T) {
 	tests := []struct {
 		name         string

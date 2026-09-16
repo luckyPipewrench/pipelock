@@ -42,6 +42,7 @@ type Server struct {
 	log     zerolog.Logger
 	mux     *http.ServeMux
 	srv     *http.Server
+	now     func() time.Time
 
 	crlMu         sync.Mutex
 	crlCache      []byte
@@ -64,12 +65,14 @@ func NewServer(
 		ledger:  ledger,
 		log:     log,
 		mux:     http.NewServeMux(),
+		now:     time.Now,
 	}
 
 	s.mux.HandleFunc("POST /webhook/polar", s.handleWebhook)
 	s.mux.HandleFunc(http.MethodGet+" /crl.json", s.handleCRL)
 	s.mux.HandleFunc(http.MethodGet+" /intermediate.json", s.handleIntermediate)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /ready", s.handleReady)
 
 	s.srv = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -288,6 +291,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, `{"status":"healthy"}`)
+}
+
+type readinessResponse struct {
+	Ready               bool    `json:"ready"`
+	LastProviderSuccess *string `json:"last_provider_success"`
+	Reason              string  `json:"reason,omitempty"`
+}
+
+// handleReady reports whether the most recent successful Polar API read is
+// within the configured tolerance. New services are ready until their first
+// provider call so a pod is not removed before receiving traffic.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	lastSuccess := s.handler.polar.LastProviderSuccess()
+	response := readinessResponse{Ready: true}
+	status := http.StatusOK
+
+	if lastSuccess.IsZero() {
+		response.Reason = "no provider call yet"
+	} else {
+		formatted := lastSuccess.UTC().Format(time.RFC3339)
+		response.LastProviderSuccess = &formatted
+		if s.now().Sub(lastSuccess) > s.cfg.ProviderSuccessWindow {
+			response.Ready = false
+			response.Reason = "last provider success exceeds the readiness tolerance"
+			status = http.StatusServiceUnavailable
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.log.Error().Err(err).Msg("write readiness response")
+	}
 }
 
 // isSubscriptionEvent returns true for Polar event types that affect

@@ -80,21 +80,22 @@ func newTestServer(t *testing.T) *Server {
 	secret := base64.StdEncoding.EncodeToString([]byte(testServerSecret))
 	cert, rootPub := testServiceIntermediateCert(t, pub)
 	cfg := &Config{
-		PolarWebhookSecret:  "whsec_" + secret,
-		PolarAPIToken:       testPolarAPIToken,
-		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		CRLPrivateKey:       crlPriv,
-		ResendAPIKey:        "re_" + "test_server_key",
-		DBPath:              ":memory:",
-		LedgerPath:          filepath.Join(t.TempDir(), "server-test.jsonl"),
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
-		ListenAddr:          ":0",
-		FromEmail:           "test@pipelock.dev",
-		PolarAPIBase:        polarSrv.URL,
-		PolarAPIVersion:     defaultPolarAPIVersion,
+		PolarWebhookSecret:    "whsec_" + secret,
+		PolarAPIToken:         testPolarAPIToken,
+		PrivateKeyPath:        filepath.Join(t.TempDir(), "test.key"),
+		IntermediateCert:      cert,
+		RootPublicKey:         rootPub,
+		CRLPrivateKey:         crlPriv,
+		ResendAPIKey:          "re_" + "test_server_key",
+		DBPath:                ":memory:",
+		LedgerPath:            filepath.Join(t.TempDir(), "server-test.jsonl"),
+		FoundingProCap:        50,
+		FoundingProDeadline:   time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		ListenAddr:            ":0",
+		FromEmail:             "test@pipelock.dev",
+		PolarAPIBase:          polarSrv.URL,
+		PolarAPIVersion:       defaultPolarAPIVersion,
+		ProviderSuccessWindow: defaultProviderSuccessWindow,
 	}
 
 	polar := NewPolarClient(cfg.PolarAPIToken, cfg.PolarAPIBase, cfg.PolarAPIVersion)
@@ -149,6 +150,133 @@ func TestServer_HealthEndpoint(t *testing.T) {
 	if ct != testContentTypeJSON {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
+}
+
+func TestServer_ReadinessEndpoint(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		lastSuccess *time.Time
+		failAfter   bool
+		wantStatus  int
+		wantReady   bool
+		wantLast    *string
+		wantReason  string
+	}{
+		{
+			name:       "no provider call yet is ready",
+			wantStatus: http.StatusOK,
+			wantReady:  true,
+			wantReason: "no provider call yet",
+		},
+		{
+			name:        "success one minute ago is ready",
+			lastSuccess: timePtr(now.Add(-time.Minute)),
+			wantStatus:  http.StatusOK,
+			wantReady:   true,
+			wantLast:    stringPtr(now.Add(-time.Minute).Format(time.RFC3339)),
+		},
+		{
+			name:        "success beyond window is unavailable",
+			lastSuccess: timePtr(now.Add(-defaultProviderSuccessWindow - time.Second)),
+			wantStatus:  http.StatusServiceUnavailable,
+			wantReady:   false,
+			wantLast:    stringPtr(now.Add(-defaultProviderSuccessWindow - time.Second).Format(time.RFC3339)),
+			wantReason:  "last provider success exceeds the readiness tolerance",
+		},
+		{
+			name:        "failed call after recent success remains ready",
+			lastSuccess: timePtr(now.Add(-time.Minute)),
+			failAfter:   true,
+			wantStatus:  http.StatusOK,
+			wantReady:   true,
+			wantLast:    stringPtr(now.Add(-time.Minute).Format(time.RFC3339)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			srv.now = func() time.Time { return now }
+			if tt.lastSuccess != nil {
+				srv.handler.polar.lastProviderSuccessMu.Lock()
+				srv.handler.polar.lastProviderSuccess = *tt.lastSuccess
+				srv.handler.polar.lastProviderSuccessMu.Unlock()
+			}
+			if tt.failAfter {
+				failure := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
+				t.Cleanup(failure.Close)
+				srv.handler.polar.baseURL = failure.URL
+				if _, err := srv.handler.polar.GetSubscription(t.Context(), testSubscriptionID); err == nil {
+					t.Fatal("GetSubscription() succeeded against failed provider")
+				}
+			}
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ready", nil)
+			w := httptest.NewRecorder()
+			srv.mux.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			var response readinessResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode readiness response: %v", err)
+			}
+			if response.Ready != tt.wantReady {
+				t.Errorf("ready = %t, want %t", response.Ready, tt.wantReady)
+			}
+			if !equalStringPtr(response.LastProviderSuccess, tt.wantLast) {
+				t.Errorf("last_provider_success = %v, want %v", response.LastProviderSuccess, tt.wantLast)
+			}
+			if response.Reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", response.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestServer_HealthRemainsLiveWhenReadinessFails(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return now }
+	srv.handler.polar.lastProviderSuccessMu.Lock()
+	srv.handler.polar.lastProviderSuccess = now.Add(-defaultProviderSuccessWindow - time.Second)
+	srv.handler.polar.lastProviderSuccessMu.Unlock()
+
+	for _, tt := range []struct {
+		path       string
+		wantStatus int
+	}{
+		{path: "/health", wantStatus: http.StatusOK},
+		{path: "/ready", wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			srv.mux.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil))
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func equalStringPtr(got, want *string) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
 }
 
 func TestServer_IntermediateEndpoint(t *testing.T) {

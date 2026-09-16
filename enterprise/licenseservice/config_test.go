@@ -8,6 +8,7 @@ package licenseservice
 
 import (
 	"testing"
+	"time"
 )
 
 // setRequiredConfigEnv sets all required env vars for LoadConfig tests.
@@ -41,6 +42,40 @@ func TestLoadConfig_AllRequired(t *testing.T) {
 	}
 	if cfg.DBPath != defaultDBPath {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, defaultDBPath)
+	}
+	if cfg.ProviderSuccessWindow != defaultProviderSuccessWindow {
+		t.Errorf("ProviderSuccessWindow = %s, want %s", cfg.ProviderSuccessWindow, defaultProviderSuccessWindow)
+	}
+}
+
+func TestLoadConfig_ProviderSuccessWindow(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default", want: defaultProviderSuccessWindow},
+		{name: "custom", value: "5m", want: 5 * time.Minute},
+		{name: "zero rejected", value: "0", wantErr: true},
+		{name: "negative rejected", value: "-1m", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			if tt.value != "" {
+				t.Setenv("PROVIDER_SUCCESS_WINDOW", tt.value)
+			}
+
+			cfg, err := LoadConfig()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("LoadConfig() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if err == nil && cfg.ProviderSuccessWindow != tt.want {
+				t.Errorf("ProviderSuccessWindow = %s, want %s", cfg.ProviderSuccessWindow, tt.want)
+			}
+		})
 	}
 }
 

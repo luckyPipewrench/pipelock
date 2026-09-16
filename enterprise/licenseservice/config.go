@@ -96,6 +96,10 @@ type Config struct {
 	// subscription and order read failing.
 	PolarAPIVersion string
 
+	// ProviderSuccessWindow is the maximum age of a successful Polar API read
+	// before the readiness endpoint reports the service unavailable.
+	ProviderSuccessWindow time.Duration
+
 	// EvalProductIDs is the allowlist of Polar product IDs that fulfill the
 	// Enterprise Eval. An order only mints an eval token if its product ID is in
 	// this list AND its tier metadata is enterprise_eval (defense in depth against
@@ -153,8 +157,9 @@ const (
 	// release, at which point every request pinned to it returns 404. Nothing
 	// in this process can detect that in advance, so this constant must be
 	// re-pinned to a supported version before the pinned one is retired.
-	defaultPolarAPIVersion = "2026-04"
-	defaultEvalCurrency    = "usd"
+	defaultPolarAPIVersion       = "2026-04"
+	defaultEvalCurrency          = "usd"
+	defaultProviderSuccessWindow = 15 * time.Minute
 )
 
 // LoadConfig reads configuration from environment variables with sensible
@@ -178,6 +183,15 @@ func LoadConfig() (*Config, error) {
 		PolarAPIBase:      envOrDefault("POLAR_API_BASE", defaultPolarAPIBase),
 		PolarAPIVersion:   envOrDefault("POLAR_API_VERSION", defaultPolarAPIVersion),
 	}
+
+	providerSuccessWindow, err := time.ParseDuration(envOrDefault("PROVIDER_SUCCESS_WINDOW", defaultProviderSuccessWindow.String()))
+	if err != nil {
+		return nil, fmt.Errorf("parse PROVIDER_SUCCESS_WINDOW: %w", err)
+	}
+	if providerSuccessWindow <= 0 {
+		return nil, fmt.Errorf("PROVIDER_SUCCESS_WINDOW must be positive, got %s", providerSuccessWindow)
+	}
+	cfg.ProviderSuccessWindow = providerSuccessWindow
 
 	// Parse founding pro cap.
 	capStr := envOrDefault("FOUNDING_PRO_CAP", strconv.Itoa(defaultFoundingProCap))

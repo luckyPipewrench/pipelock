@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -80,6 +81,9 @@ type PolarClient struct {
 	baseURL    string
 	apiVersion string
 	client     *http.Client
+
+	lastProviderSuccessMu sync.RWMutex
+	lastProviderSuccess   time.Time
 }
 
 // NewPolarClient creates a Polar API client with the given token, base URL, and
@@ -144,7 +148,18 @@ func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) 
 	if err := decodeVendorJSON(body, out); err != nil {
 		return fmt.Errorf("parse %s response: %w", label, err)
 	}
+	p.lastProviderSuccessMu.Lock()
+	p.lastProviderSuccess = time.Now().UTC()
+	p.lastProviderSuccessMu.Unlock()
 	return nil
+}
+
+// LastProviderSuccess returns the time of the most recent successfully decoded
+// Polar API read. A zero time means no provider call has succeeded yet.
+func (p *PolarClient) LastProviderSuccess() time.Time {
+	p.lastProviderSuccessMu.RLock()
+	defer p.lastProviderSuccessMu.RUnlock()
+	return p.lastProviderSuccess
 }
 
 // GetSubscription fetches the current state of a subscription from Polar's API.

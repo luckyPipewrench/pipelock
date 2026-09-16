@@ -437,14 +437,15 @@ jobs:
         run: make test-replay-harness
 
   test-replay-go126:
-    needs: [security-scan, changed-files]
-    # Pull requests run only the Go 1.25 floor unless the PR itself touches
-    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
-    # otherwise runs on push to main (and is proven again, pinned, in
-    # release.yaml before a tag). Three days of PR history showed this lane
-    # catching only timing flakes, never a version-specific failure, so
-    # duplicating it on every ordinary PR was pure runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
+    needs: [security-scan]
+    # NOT gated behind the changed-files check the two heavy shard matrices
+    # below use: the CI topology contract (scripts/test_ci_workflow_topology.py)
+    # requires this job's needs to be exactly {security-scan}, because the
+    # test-go126 aggregate's fail-closed gate must be able to demand this
+    # single cheap job's real success unconditionally. It is also five minutes
+    # of "make test-replay-harness" with no shard fan-out, so skipping it on
+    # ordinary PRs was never where the runner-queue contention came from --
+    # that was the twelve 20-minute race-test shard jobs below.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -479,47 +480,41 @@ jobs:
           test "${{ needs.test-replay-go125.result }}" = "success"
 
   test-go126:
-    needs: [security-scan, changed-files, test-oss-go126, test-enterprise-go126, test-replay-go126]
+    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # "test (1.26)" is a required check name on every PR (see the branch
     # ruleset), so it must exist and complete on pull_request events even
-    # though the producer jobs above are skipped there on purpose. Accept
-    # "skipped" only when the event is pull_request AND the changed-files job
-    # said no CI-policy file changed -- the exact logical counterpart of the
-    # producers' own `if:` condition. A push to main (or any other event), or
-    # a pull_request that DID touch CI policy, still demands a real "success"
-    # from every producer.
+    # though test-oss-go126/test-enterprise-go126 are skipped there on
+    # ordinary PRs. This job's `needs` is exactly {security-scan, the three
+    # go126 producers} per the CI topology contract
+    # (scripts/test_ci_workflow_topology.py) -- it does NOT also depend on
+    # changed-files, so it cannot read that job's output directly. It does
+    # not need to: a producer's own `if:` only ever lets it report "skipped"
+    # when the event is pull_request AND changed-files said no CI-policy file
+    # changed, so seeing "skipped" here on a pull_request already proves that
+    # was a safe, intentional skip -- there is no other way to reach it. A
+    # push to main, or a pull_request that DID touch CI policy (so the
+    # producer actually ran), still demands a real "success".
     name: test (1.26)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
         env:
           EVENT_NAME: ${{ github.event_name }}
-          CI_POLICY_CHANGED: ${{ needs.changed-files.outputs.ci_policy }}
         run: |
           set -u
-          expect_result() {
-            local job_name="$1" result="$2"
-            echo "${job_name} result: ${result}"
-            if [ "$result" = "success" ]; then
-              return 0
-            fi
-            if [ "$EVENT_NAME" = "pull_request" ] && [ "$CI_POLICY_CHANGED" != "true" ] && [ "$result" = "skipped" ]; then
-              echo "${job_name} skipped on pull_request: no CI-policy files changed, and the Go 1.26 lane otherwise runs on push to main and release.yaml, not on every PR"
-              return 0
-            fi
-            echo "${job_name} result was '${result}', expected success (or skipped on an ordinary pull_request)" >&2
-            return 1
-          }
           test "${{ needs.security-scan.result }}" = "success"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "changed-files result: ${{ needs.changed-files.result }}"
-            test "${{ needs.changed-files.result }}" = "success"
-          fi
-          expect_result "test-oss-go126" "${{ needs.test-oss-go126.result }}"
-          expect_result "test-enterprise-go126" "${{ needs.test-enterprise-go126.result }}"
-          expect_result "test-replay-go126" "${{ needs.test-replay-go126.result }}"
+          echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
+          test "${{ needs.test-oss-go126.result }}" = "success" || {
+            [ "$EVENT_NAME" = "pull_request" ] && [ "${{ needs.test-oss-go126.result }}" = "skipped" ]
+          }
+          echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
+          test "${{ needs.test-enterprise-go126.result }}" = "success" || {
+            [ "$EVENT_NAME" = "pull_request" ] && [ "${{ needs.test-enterprise-go126.result }}" = "skipped" ]
+          }
+          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
+          test "${{ needs.test-replay-go126.result }}" = "success"
 
   test-macos:
     needs: [security-scan]

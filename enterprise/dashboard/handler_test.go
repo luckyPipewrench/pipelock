@@ -478,6 +478,9 @@ func TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization(t *testin
 		if strings.Contains(out, "authorization remains active") {
 			t.Fatalf("log output should not claim active authorization with no callbacks: %s", out)
 		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
+		}
 	})
 
 	t.Run("Authorize configured logs boundary-declared line, not disabled", func(t *testing.T) {
@@ -496,6 +499,9 @@ func TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization(t *testin
 		if !strings.Contains(out, "authorization remains active") {
 			t.Fatalf("log output missing active-authorization line: %s", out)
 		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
+		}
 	})
 
 	t.Run("AuthorizePermission configured logs boundary-declared line, not disabled", func(t *testing.T) {
@@ -513,6 +519,9 @@ func TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization(t *testin
 		}
 		if !strings.Contains(out, "authorization remains active") {
 			t.Fatalf("log output missing active-authorization line: %s", out)
+		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
 		}
 	})
 }

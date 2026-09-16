@@ -548,6 +548,7 @@ func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
 	}, "serve never printed the listening banner; stderr: %s", errOut.String())
 
 	addr := dashboardListeningAddr(t, out.String())
+	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Plain net/http client, no Authorization header at all: this is what an
 	// unauthenticated caller on the real listener actually sends.
@@ -555,7 +556,7 @@ func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequestWithContext: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(unauthReq)
+	resp, err := client.Do(unauthReq)
 	if err != nil {
 		t.Fatalf("GET %s/overview: %v", addr, err)
 	}
@@ -573,7 +574,7 @@ func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
 		t.Fatalf("NewRequestWithContext: %v", err)
 	}
 	req.SetBasicAuth("", dashTestToken)
-	authedResp, err := http.DefaultClient.Do(req)
+	authedResp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("authenticated GET %s/overview: %v", addr, err)
 	}

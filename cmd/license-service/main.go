@@ -127,7 +127,13 @@ func run(log zerolog.Logger) error {
 	// Name any slot whose expiry disagrees with its entitlement's claim-time
 	// period end, so a row left behind by the retired sync writer is visible
 	// instead of silently governing eligibility. Never auto-repaired.
-	db.ReportDriftedTrialSlots(context.Background(), log)
+	unverifiableTrialSlots := db.ReportDriftedTrialSlots(context.Background(), log)
+	if len(unverifiableTrialSlots) != 0 {
+		log.Warn().
+			Int("unverifiable_count", len(unverifiableTrialSlots)).
+			Strs("subscription_ids", unverifiableTrialSlots).
+			Msg("trial slot expiry drift report has unverifiable legacy rows; not auto-repaired, reconcile manually")
+	}
 
 	// Open the append-only audit ledger.
 	ledger, err := licenseservice.OpenAuditLedger(cfg.LedgerPath)

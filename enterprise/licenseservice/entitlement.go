@@ -561,6 +561,14 @@ type DriftedTrialSlotSubscription struct {
 	EntitlementClaimEndsAt time.Time
 }
 
+// TrialSlotExpiryDriftReport separates trial slots with an expiry disagreement
+// from legacy rows whose claim-time expiry was never recorded. The latter
+// cannot be verified, so they must not make a clean drift report look certain.
+type TrialSlotExpiryDriftReport struct {
+	Drifted                     []DriftedTrialSlotSubscription
+	UnverifiableSubscriptionIDs []string
+}
+
 // DriftedTrialSlots finds active_trial_slots rows whose expires_at no longer
 // matches the owning entitlement's claim-time expiry.
 //
@@ -572,54 +580,73 @@ type DriftedTrialSlotSubscription struct {
 // diagnostic names those pre-existing disagreements without repairing a live
 // row, because an operator must decide which value to preserve.
 func (e *EntitlementDB) DriftedTrialSlots(ctx context.Context) ([]DriftedTrialSlotSubscription, error) {
+	report, err := e.TrialSlotExpiryDriftReport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return report.Drifted, nil
+}
+
+// TrialSlotExpiryDriftReport finds drifted trial slots and legacy slots whose
+// entitlement lacks a claim-time expiry. It never repairs either kind of row.
+func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSlotExpiryDriftReport, error) {
 	const query = `
 	SELECT s.subscription_id, s.expires_at, e.last_license_period_end
 	FROM active_trial_slots s
 	JOIN entitlements e ON e.subscription_id = s.subscription_id
 	WHERE e.tier IN (?, ?)
 	  AND e.billing_interval = ?
-	  AND e.last_license_period_end IS NOT NULL
-	  AND s.expires_at <> e.last_license_period_end
+	  AND (e.last_license_period_end IS NULL OR s.expires_at <> e.last_license_period_end)
 	ORDER BY s.subscription_id ASC
 	`
 	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, billingIntervalOneTime)
 	if err != nil {
-		return nil, fmt.Errorf("read drifted trial slots: %w", err)
+		return TrialSlotExpiryDriftReport{}, fmt.Errorf("read trial slot expiry drift report: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var drifted []DriftedTrialSlotSubscription
+	var report TrialSlotExpiryDriftReport
 	for rows.Next() {
-		var d DriftedTrialSlotSubscription
-		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &d.EntitlementClaimEndsAt); err != nil {
-			return nil, fmt.Errorf("scan drifted trial slot: %w", err)
+		var (
+			d        DriftedTrialSlotSubscription
+			claimEnd sql.NullTime
+		)
+		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &claimEnd); err != nil {
+			return TrialSlotExpiryDriftReport{}, fmt.Errorf("scan trial slot expiry drift report: %w", err)
+		}
+		if !claimEnd.Valid {
+			report.UnverifiableSubscriptionIDs = append(report.UnverifiableSubscriptionIDs, d.SubscriptionID)
+			continue
 		}
 		d.SlotExpiresAt = d.SlotExpiresAt.UTC()
-		d.EntitlementClaimEndsAt = d.EntitlementClaimEndsAt.UTC()
-		drifted = append(drifted, d)
+		d.EntitlementClaimEndsAt = claimEnd.Time.UTC()
+		report.Drifted = append(report.Drifted, d)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate drifted trial slots: %w", err)
+		return TrialSlotExpiryDriftReport{}, fmt.Errorf("iterate trial slot expiry drift report: %w", err)
 	}
-	return drifted, nil
+	return report, nil
 }
 
 // ReportDriftedTrialSlots logs every trial slot whose expiry disagrees with
 // its owning entitlement's claim-time expiry, alongside the duplicate-trial
-// report. It never repairs a row; see DriftedTrialSlots.
-func (e *EntitlementDB) ReportDriftedTrialSlots(ctx context.Context, log zerolog.Logger) {
-	drifted, err := e.DriftedTrialSlots(ctx)
+// report. It returns the legacy subscription IDs whose slots were
+// unverifiable so the startup diagnostic can state that separately. It never
+// repairs a row; see TrialSlotExpiryDriftReport.
+func (e *EntitlementDB) ReportDriftedTrialSlots(ctx context.Context, log zerolog.Logger) []string {
+	report, err := e.TrialSlotExpiryDriftReport(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("could not check for drifted trial slot expiries")
-		return
+		return nil
 	}
-	for _, d := range drifted {
+	for _, d := range report.Drifted {
 		log.Warn().
 			Str("subscription_id", d.SubscriptionID).
 			Time("slot_expires_at", d.SlotExpiresAt).
 			Time("entitlement_claim_expires_at", d.EntitlementClaimEndsAt).
 			Msg("trial slot expiry disagrees with its entitlement's claim-time expiry; not auto-repaired, reconcile manually")
 	}
+	return report.UnverifiableSubscriptionIDs
 }
 
 // ReportJournalMode records the journal mode the database is running in, and

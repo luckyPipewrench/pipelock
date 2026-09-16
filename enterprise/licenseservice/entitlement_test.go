@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1408,66 +1409,84 @@ func TestOpenEntitlementDB_RefusesAConfiguredInMemoryDatabase(t *testing.T) {
 	}
 }
 
-// TestReportDriftedTrialSlots_NamesDisagreementWithoutRepairing pins the
-// diagnostic for slot rows a repaired write-once claim can no longer produce
-// going forward, but that a pre-existing row (claimed while the retired sync
-// writer could still move expires_at) may still carry. It must be named, not
-// silently repaired.
-func TestReportDriftedTrialSlots_NamesDisagreementWithoutRepairing(t *testing.T) {
-	db := openTestDB(t)
-	ctx := t.Context()
-	original := time.Now().UTC().Add(30 * 24 * time.Hour)
-
-	ent := trialEntitlement("order_drift_a", "drift@example.com", original)
-	ent.LastLicensePeriodEnd = &original
-	if err := db.Upsert(ctx, ent); err != nil {
-		t.Fatalf("seed trial: %v", err)
+func TestTrialSlotExpiryDriftReport(t *testing.T) {
+	tests := []struct {
+		name             string
+		drifted          []string
+		unverifiable     []string
+		wantDrifted      []string
+		wantUnverifiable []string
+	}{
+		{name: "no slots"},
+		{
+			name:        "one drifted",
+			drifted:     []string{"order_drifted"},
+			wantDrifted: []string{"order_drifted"},
+		},
+		{
+			name:             "one legacy null row",
+			unverifiable:     []string{"order_legacy"},
+			wantUnverifiable: []string{"order_legacy"},
+		},
+		{
+			name:             "mixed rows",
+			drifted:          []string{"order_drifted"},
+			unverifiable:     []string{"order_legacy"},
+			wantDrifted:      []string{"order_drifted"},
+			wantUnverifiable: []string{"order_legacy"},
+		},
 	}
 
-	// A clean database reports nothing.
-	clean, err := db.DriftedTrialSlots(ctx)
-	if err != nil {
-		t.Fatalf("DriftedTrialSlots clean: %v", err)
-	}
-	if len(clean) != 0 {
-		t.Fatalf("clean database reported drift: %+v", clean)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t)
+			ctx := t.Context()
+			original := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
-	// Simulate a row left behind by the retired sync writer: the slot's
-	// expires_at disagrees with the entitlement's immutable claim-time period
-	// end, while current_period_end may later change during a state mirror.
-	drifted := original.Add(-48 * time.Hour)
-	if _, err := db.db.ExecContext(ctx,
-		`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`, drifted, "drift@example.com",
-	); err != nil {
-		t.Fatalf("simulate drifted slot: %v", err)
-	}
-	if _, err := db.db.ExecContext(ctx,
-		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`, drifted, ent.SubscriptionID,
-	); err != nil {
-		t.Fatalf("simulate later entitlement state mirror: %v", err)
-	}
+			for _, subscriptionID := range append(tt.drifted, tt.unverifiable...) {
+				ent := trialEntitlement(subscriptionID, subscriptionID+"@example.com", original)
+				if !slices.Contains(tt.unverifiable, subscriptionID) {
+					ent.LastLicensePeriodEnd = &original
+				}
+				if err := db.Upsert(ctx, ent); err != nil {
+					t.Fatalf("seed trial %s: %v", subscriptionID, err)
+				}
+			}
+			for _, subscriptionID := range tt.drifted {
+				if _, err := db.db.ExecContext(ctx,
+					`UPDATE active_trial_slots SET expires_at = ? WHERE subscription_id = ?`, original.Add(-time.Hour), subscriptionID,
+				); err != nil {
+					t.Fatalf("simulate drifted slot %s: %v", subscriptionID, err)
+				}
+			}
 
-	rows, err := db.DriftedTrialSlots(ctx)
-	if err != nil {
-		t.Fatalf("DriftedTrialSlots: %v", err)
-	}
-	if len(rows) != 1 || rows[0].SubscriptionID != "order_drift_a" {
-		t.Fatalf("DriftedTrialSlots = %+v, want one row for order_drift_a", rows)
-	}
-	if !rows[0].SlotExpiresAt.Equal(drifted) || !rows[0].EntitlementClaimEndsAt.Equal(original) {
-		t.Fatalf("DriftedTrialSlots row = %+v, want slot=%s entitlement=%s", rows[0], drifted, original)
-	}
+			report, err := db.TrialSlotExpiryDriftReport(ctx)
+			if err != nil {
+				t.Fatalf("TrialSlotExpiryDriftReport: %v", err)
+			}
+			gotDrifted := make([]string, 0, len(report.Drifted))
+			for _, drifted := range report.Drifted {
+				gotDrifted = append(gotDrifted, drifted.SubscriptionID)
+			}
+			if !slices.Equal(gotDrifted, tt.wantDrifted) {
+				t.Fatalf("drifted subscription IDs = %v, want %v", gotDrifted, tt.wantDrifted)
+			}
+			if !slices.Equal(report.UnverifiableSubscriptionIDs, tt.wantUnverifiable) {
+				t.Fatalf("unverifiable subscription IDs = %v, want %v", report.UnverifiableSubscriptionIDs, tt.wantUnverifiable)
+			}
+			for _, subscriptionID := range tt.drifted {
+				if got := readSlotExpiry(t, db, subscriptionID+"@example.com"); !got.Equal(original.Add(-time.Hour)) {
+					t.Fatalf("drift report repaired %s: got %s, want %s", subscriptionID, got, original.Add(-time.Hour))
+				}
+			}
 
-	var buf bytes.Buffer
-	db.ReportDriftedTrialSlots(ctx, zerolog.New(&buf))
-	out := buf.String()
-	if !strings.Contains(out, "order_drift_a") {
-		t.Fatalf("report missing subscription id: %s", out)
-	}
-
-	// Never auto-repaired: the slot still carries the drifted value.
-	if got := readSlotExpiry(t, db, "drift@example.com"); !got.Equal(drifted) {
-		t.Fatalf("ReportDriftedTrialSlots repaired the row: got %s, want still %s", got, drifted)
+			var buf bytes.Buffer
+			if got := db.ReportDriftedTrialSlots(ctx, zerolog.New(&buf)); !slices.Equal(got, tt.wantUnverifiable) {
+				t.Fatalf("reported unverifiable subscription IDs = %v, want %v", got, tt.wantUnverifiable)
+			}
+			if strings.Contains(buf.String(), "order_legacy") {
+				t.Fatalf("drift report logged unverifiable row: %s", buf.String())
+			}
+		})
 	}
 }

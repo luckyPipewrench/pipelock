@@ -186,6 +186,78 @@ func TestMCPIntegrityManifestVerifyReportsMismatch(t *testing.T) {
 	}
 }
 
+func TestMCPIntegrityManifestVerifyReportsUnknownWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "server")
+	if err := os.WriteFile(binary, []byte("binary"), 0o600); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	resolved, err := mcpintegrity.Resolve([]string{binary}, "")
+	if err != nil {
+		t.Fatalf("resolve binary: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{resolved.ResolvedPath: resolved.ActualHash},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	missingWorkDir := filepath.Join(dir, "missing-workdir")
+
+	jsonCmd := testMCPRoot()
+	var jsonOut bytes.Buffer
+	jsonCmd.SetOut(&jsonOut)
+	jsonCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "verify",
+		"--manifest", manifestPath,
+		"--workdir", missingWorkDir,
+		"--json",
+		"--", binary,
+	})
+	if err := jsonCmd.Execute(); err == nil {
+		t.Fatal("expected unknown working directory to fail verify")
+	}
+	var report mcpIntegrityReport
+	if err := json.Unmarshal(jsonOut.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal JSON report: %v\n%s", err, jsonOut.String())
+	}
+	if report.OK {
+		t.Fatalf("JSON report OK = true for unknown location: %+v", report)
+	}
+	if report.Location != mcpintegrity.BinaryLocationUnknown {
+		t.Fatalf("JSON report location = %q, want unknown", report.Location)
+	}
+	if !strings.Contains(report.LocationReason, "resolving working directory") {
+		t.Fatalf("JSON report location reason = %q", report.LocationReason)
+	}
+	if !strings.Contains(strings.Join(report.Reasons, "\n"), "binary location unknown") {
+		t.Fatalf("JSON report reasons = %q", report.Reasons)
+	}
+
+	textCmd := testMCPRoot()
+	var textOut bytes.Buffer
+	textCmd.SetOut(&textOut)
+	textCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "verify",
+		"--manifest", manifestPath,
+		"--workdir", missingWorkDir,
+		"--", binary,
+	})
+	if err := textCmd.Execute(); err == nil {
+		t.Fatal("expected text verify to fail for unknown working directory")
+	}
+	if !strings.Contains(textOut.String(), "MCP binary integrity check failed:") {
+		t.Fatalf("text output missing failure summary:\n%s", textOut.String())
+	}
+	if !strings.Contains(textOut.String(), "binary location unknown:") {
+		t.Fatalf("text output missing unknown location reason:\n%s", textOut.String())
+	}
+	if strings.Contains(textOut.String(), "MCP binary integrity verified:") {
+		t.Fatalf("text output reported healthy summary:\n%s", textOut.String())
+	}
+}
+
 func TestMCPIntegrityManifestRequiresPaths(t *testing.T) {
 	genCmd := testMCPRoot()
 	genCmd.SetOut(&bytes.Buffer{})

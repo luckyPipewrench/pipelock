@@ -1791,7 +1791,7 @@ func passthroughWildcardBaseBreadthError(base string) error {
 		if !icann {
 			section = "a PRIVATE-section public suffix"
 		}
-		return fmt.Errorf("wildcard must target a registrable domain like *.example.%s, not %s %q: tls_interception.passthrough_domains splices the connection without decrypting it, so this would turn off body and response scanning for every unrelated tenant under that boundary, which is a stricter bar than an ordinary exemption list", base, section, base)
+		return fmt.Errorf("wildcard must not target %s %q: tls_interception.passthrough_domains splices the connection without decrypting it, so this would turn off body and response scanning for every unrelated tenant under that boundary, which is a stricter bar than an ordinary exemption list; list exact hosts such as mybucket.s3.amazonaws.com in tls_interception.passthrough_domains instead; if the host set is unbounded, no passthrough equivalent exists, so intercept the traffic with tls_interception and a trusted local CA or constrain it to a fixed host set", section, base)
 	}
 	return nil
 }

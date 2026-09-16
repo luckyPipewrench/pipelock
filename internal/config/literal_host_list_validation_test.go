@@ -4,6 +4,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -145,13 +147,29 @@ func TestLiteralHostMatchLists_BreadthPerList(t *testing.T) {
 			message := err.Error()
 			for _, want := range []string{
 				"tls_interception.passthrough_domains[0]", entry, "PRIVATE-section public suffix",
-				"splices the connection without decrypting it",
+				"splices the connection without decrypting it", "mybucket.s3.amazonaws.com",
+				"no passthrough equivalent exists", "trusted local CA", "fixed host set",
 			} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("entry %q: error %q does not contain %q", entry, message, want)
 				}
 			}
 		}
+
+		t.Run("private-suffix refusal suggests an exact host that loads", func(t *testing.T) {
+			const exactHost = "mybucket.s3.amazonaws.com"
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, []byte("tls_interception:\n  passthrough_domains:\n    - "+exactHost+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(path)
+			if err != nil {
+				t.Fatalf("exact private-suffix host from the refusal did not load: %v", err)
+			}
+			if got := loaded.TLSInterception.PassthroughDomains; len(got) != 1 || got[0] != exactHost {
+				t.Fatalf("loaded passthrough domains = %v, want [%q]", got, exactHost)
+			}
+		})
 
 		// One label BELOW a private suffix is a registrable name under that
 		// boundary, not the boundary itself, and stays accepted.

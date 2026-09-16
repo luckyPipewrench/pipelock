@@ -6,6 +6,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -16,6 +17,7 @@ import (
 	"go/parser"
 	"go/token"
 	"html"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -378,6 +380,141 @@ func TestHandler_TrustedOuterAuthRequiresBoundary(t *testing.T) {
 			_ = New(test.opts)
 		})
 	}
+}
+
+// TestHandler_TrustedOuterAuthIsNotAuthentication is the integration test
+// CodeRabbit asked for: TrustedOuterAuth only satisfies New's construction
+// validation, and it must never itself grant access. A handler built with
+// TrustedOuterAuth false and no Authorize/AuthorizePermission must refuse
+// every registered route — enumerated from dashboardRouteSpecs() rather than
+// hand-listed, so a new route is covered automatically — and a handler whose
+// Authorize callback errors must refuse too, proving the callback (not the
+// boundary flag) is what the real authentication wrapper enforces.
+func TestHandler_TrustedOuterAuthIsNotAuthentication(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no callbacks and TrustedOuterAuth false denies every route", func(t *testing.T) {
+		t.Parallel()
+
+		handler := New(Options{
+			ReceiptDir: t.TempDir(),
+			HasFeature: allowAllDashboardFeatures,
+			// TrustedOuterAuth intentionally omitted (false): this is the
+			// unauthenticated case the wrapper must reject.
+		})
+		specs := dashboardRouteSpecs()
+		if len(specs) == 0 {
+			t.Fatal("dashboardRouteSpecs() returned no routes; guard inspected nothing")
+		}
+		for _, spec := range specs {
+			spec := spec
+			t.Run(spec.pattern, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, spec.pattern, nil)
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("GET %s status = %d, want %d (unauthenticated request must be refused); body=%s",
+						spec.pattern, rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("Authorize error denies despite TrustedOuterAuth", func(t *testing.T) {
+		t.Parallel()
+
+		errAuth := errors.New("fake outer auth wrapper: unauthenticated")
+		handler := New(Options{
+			ReceiptDir:               t.TempDir(),
+			HasFeature:               allowAllDashboardFeatures,
+			TrustedOuterAuth:         true,
+			TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			Authorize: func(*http.Request) error {
+				return errAuth
+			},
+		})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (Authorize error must deny even though TrustedOuterAuth is set); body=%s",
+				rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization verifies
+// the startup log line names the true security posture: a "disabled" warning
+// only when neither Authorize nor AuthorizePermission is configured, and an
+// informational "boundary declared, authorization active" line when either
+// callback is also set. Uses slog's default handler output captured via
+// slog.SetDefault, restored via defer, because New has no logger injection
+// seam and adding one would be a test seam in production code.
+func TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization(t *testing.T) {
+	captureLog := func(t *testing.T, fn func()) string {
+		t.Helper()
+		prev := slog.Default()
+		defer slog.SetDefault(prev)
+		var buf bytes.Buffer
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		fn()
+		return buf.String()
+	}
+
+	t.Run("no auth callbacks logs disabled warning", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			})
+		})
+		if !strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output missing disabled warning: %s", out)
+		}
+		if strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output should not claim active authorization with no callbacks: %s", out)
+		}
+	})
+
+	t.Run("Authorize configured logs boundary-declared line, not disabled", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				Authorize:                func(*http.Request) error { return nil },
+			})
+		})
+		if strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output should not claim auth is disabled when Authorize is set: %s", out)
+		}
+		if !strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output missing active-authorization line: %s", out)
+		}
+	})
+
+	t.Run("AuthorizePermission configured logs boundary-declared line, not disabled", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				AuthorizePermission:      func(*http.Request, Permission) error { return nil },
+			})
+		})
+		if strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output should not claim auth is disabled when AuthorizePermission is set: %s", out)
+		}
+		if !strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output missing active-authorization line: %s", out)
+		}
+	})
 }
 
 // TestShippedDashboardServeNeverSetsTrustedOuterAuth guards the shipped

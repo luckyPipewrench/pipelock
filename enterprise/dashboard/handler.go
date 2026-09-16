@@ -333,16 +333,24 @@ func AllPermissions() []Permission {
 // AuthorizePermission are nil, set Options.TrustedOuterAuth only if the
 // surrounding router provides the authentication boundary, and set
 // Options.TrustedOuterAuthBoundary to name that boundary — New panics if
-// TrustedOuterAuth is set without it, and otherwise logs one startup line
-// naming the declared boundary so an operator reading logs can see that this
-// handler's own auth is disabled.
+// TrustedOuterAuth is set without it. New then logs one startup line naming
+// the declared boundary: a warning that this handler's own auth is disabled
+// when Authorize and AuthorizePermission are both nil, or an informational
+// line noting per-request authorization remains active when either callback
+// is also configured. TrustedOuterAuth is not itself authentication — it
+// only asserts that something outside this handler provides it.
 func New(opts Options) http.Handler {
 	if opts.TrustedOuterAuth && strings.TrimSpace(opts.TrustedOuterAuthBoundary) == "" {
 		panic(fmt.Errorf("dashboard.New: %w", errTrustedOuterAuthBoundaryRequired))
 	}
 	if opts.TrustedOuterAuth {
-		slog.Warn("dashboard: own authentication is disabled; relying on an external boundary",
-			"boundary", opts.TrustedOuterAuthBoundary)
+		if opts.Authorize == nil && opts.AuthorizePermission == nil {
+			slog.Warn("dashboard: own authentication is disabled; relying on an external boundary",
+				"boundary", opts.TrustedOuterAuthBoundary)
+		} else {
+			slog.Info("dashboard: outer authentication boundary declared; per-request authorization remains active",
+				"boundary", opts.TrustedOuterAuthBoundary)
+		}
 	}
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()

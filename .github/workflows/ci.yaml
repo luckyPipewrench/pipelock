@@ -169,6 +169,12 @@ jobs:
 
   test-oss-go126:
     needs: [security-scan]
+    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
+    # push to main (and is proven again, pinned, in release.yaml before a tag).
+    # Three days of PR history showed this lane catching only timing flakes,
+    # never a version-specific failure, so duplicating it on every PR was pure
+    # runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     name: test-oss (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -283,6 +289,12 @@ jobs:
 
   test-enterprise-go126:
     needs: [security-scan]
+    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
+    # push to main (and is proven again, pinned, in release.yaml before a tag).
+    # Three days of PR history showed this lane catching only timing flakes,
+    # never a version-specific failure, so duplicating it on every PR was pure
+    # runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     name: test-enterprise (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -384,6 +396,12 @@ jobs:
 
   test-replay-go126:
     needs: [security-scan]
+    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
+    # push to main (and is proven again, pinned, in release.yaml before a tag).
+    # Three days of PR history showed this lane catching only timing flakes,
+    # never a version-specific failure, so duplicating it on every PR was pure
+    # runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -421,19 +439,36 @@ jobs:
     needs: [security-scan, test-oss-go126, test-enterprise-go126, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    # "test (1.26)" is a required check name on every PR (see the branch
+    # ruleset), so it must exist and complete on pull_request events even
+    # though the producer jobs above are skipped there on purpose. Accept
+    # "skipped" only when the event is pull_request; a push to main (or any
+    # other event) still demands a real "success" from every producer.
     name: test (1.26)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "security-scan result: ${{ needs.security-scan.result }}"
-          echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
-          echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
-          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
+          set -u
+          expect_result() {
+            local job_name="$1" result="$2"
+            echo "${job_name} result: ${result}"
+            if [ "$result" = "success" ]; then
+              return 0
+            fi
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "$result" = "skipped" ]; then
+              echo "${job_name} skipped on pull_request: the Go 1.26 lane runs on push to main and release.yaml, not on every PR"
+              return 0
+            fi
+            echo "${job_name} result was '${result}', expected success (or skipped on pull_request)" >&2
+            return 1
+          }
           test "${{ needs.security-scan.result }}" = "success"
-          test "${{ needs.test-oss-go126.result }}" = "success"
-          test "${{ needs.test-enterprise-go126.result }}" = "success"
-          test "${{ needs.test-replay-go126.result }}" = "success"
+          expect_result "test-oss-go126" "${{ needs.test-oss-go126.result }}"
+          expect_result "test-enterprise-go126" "${{ needs.test-enterprise-go126.result }}"
+          expect_result "test-replay-go126" "${{ needs.test-replay-go126.result }}"
 
   test-macos:
     needs: [security-scan]
@@ -794,6 +829,9 @@ jobs:
 
       - name: Codecov upload count matches the shard matrix
         run: bash scripts/check-codecov-upload-count.sh
+
+      - name: Release workflow proves every Go minor main proves
+        run: bash scripts/check-go-matrix.sh
 
       - name: Config example startability policy
         run: bash scripts/check-config-examples.sh

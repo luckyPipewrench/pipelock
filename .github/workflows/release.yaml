@@ -55,7 +55,11 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: read
-    name: release-tests (${{ matrix.suite.name }}, ${{ matrix.shard }})
+    # Both Go versions pipelock supports (see AGENTS.md: "CI tests Go 1.25 and
+    # 1.26") are proven here before a tag, even though pull-request CI now
+    # runs only the 1.25 floor. A tagged release must not ship having been
+    # verified on just one of the two versions we claim to support.
+    name: release-tests (${{ matrix.suite.name }}, go${{ matrix.go.version }}, ${{ matrix.shard }})
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +69,19 @@ jobs:
           - name: enterprise
             tags: enterprise
         shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        # 1.26.8 mirrors the pin already verified in ci.yaml's govulncheck job,
+        # which documents its own provenance: it is the newest published 1.26
+        # patch that job has confirmed, chosen there for stdlib CVE fixes this
+        # tree reaches through the proxy and MCP transport paths (GO-2026-6091,
+        # GO-2026-6218, and predecessors). Keep this pin in lockstep with that
+        # comment rather than re-deriving it; scripts/check-go-matrix.sh checks
+        # only that this list is a superset of ci.yaml's push-event versions,
+        # not the exact patch, so a govulncheck bump does not auto-fail here.
+        go:
+          - version: '1.25.14'
+            expected: go1.25.14
+          - version: '1.26.8'
+            expected: go1.26.8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -72,14 +89,14 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25.14'
+          go-version: ${{ matrix.go.version }}
           check-latest: true
 
       - name: Verify Go version
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.25.14"
+          test "$got" = "${{ matrix.go.expected }}"
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify

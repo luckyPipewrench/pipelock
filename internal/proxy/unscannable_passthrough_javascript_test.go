@@ -12,6 +12,50 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
+// rfc9239JavaScriptMediaTypes is intentionally written independently from
+// media.JavaScriptMediaTypes. RFC 9239 section 6 defines these registrations
+// as JavaScript aliases.
+var rfc9239JavaScriptMediaTypes = []string{
+	"text/javascript",
+	"application/javascript",
+	"application/x-javascript",
+	"text/javascript1.0",
+	"text/javascript1.1",
+	"text/javascript1.2",
+	"text/javascript1.3",
+	"text/javascript1.4",
+	"text/javascript1.5",
+	"text/jscript",
+	"text/livescript",
+	"text/ecmascript",
+	"application/ecmascript",
+	"application/x-ecmascript",
+	"text/x-ecmascript",
+	"text/x-javascript",
+}
+
+func TestJavaScriptMediaTypesMatchRFC9239Section6(t *testing.T) {
+	want := make(map[string]struct{}, len(rfc9239JavaScriptMediaTypes))
+	for _, alias := range rfc9239JavaScriptMediaTypes {
+		want[alias] = struct{}{}
+	}
+	got := make(map[string]struct{}, len(media.JavaScriptMediaTypes))
+	for _, alias := range media.JavaScriptMediaTypes {
+		got[alias] = struct{}{}
+	}
+
+	for alias := range want {
+		if _, ok := got[alias]; !ok {
+			t.Errorf("media.JavaScriptMediaTypes is missing RFC 9239 JavaScript alias %q", alias)
+		}
+	}
+	for alias := range got {
+		if _, ok := want[alias]; !ok {
+			t.Errorf("media.JavaScriptMediaTypes has unexpected JavaScript alias %q", alias)
+		}
+	}
+}
+
 // TestConfigTextualPassthroughTypeRefusesEveryJavaScriptAlias is the runtime
 // counterpart of internal/config's load-time validation: the classifier that
 // decides at REQUEST time whether a response's declared content type is
@@ -66,22 +110,44 @@ func TestMatchUnscannablePassthroughRefusesJavaScriptAliasResponse(t *testing.T)
 	}
 }
 
-// TestJavaScriptAliasTableParityBetweenShieldAndConfig fails the moment the
-// shared table drifts: it directly checks that the classifier this package
-// uses (configTextualPassthroughType) and the classifier internal/config
-// uses at load time (isTextualUnscannablePassthroughType, exercised here
-// indirectly through the shared media.IsJavaScriptMediaType predicate both of
-// them call) return the SAME answer for every media.JavaScriptMediaTypes
-// entry. Editing internal/media.JavaScriptMediaTypes to add or remove an
-// alias updates both consumers at once by construction, so this test's real
-// job is to catch a FUTURE regression where either consumer stops calling the
-// shared predicate and reintroduces a private copy of the list.
-func TestJavaScriptAliasTableParityBetweenShieldAndConfig(t *testing.T) {
+func TestMatchUnscannablePassthroughRefusesParameterizedJavaScriptAliasResponse(t *testing.T) {
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	for _, contentType := range []string{
+		"application/javascript; charset=utf-8",
+		"Application/JavaScript; Charset=UTF-8",
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			entries := []config.UnscannablePassthroughEntry{{
+				Host:         "*.example.com",
+				Paths:        []string{"/artifacts/pkg.bin"},
+				ContentTypes: []string{"application/javascript"},
+				Reason:       "opaque signed archive",
+				Expires:      "2026-07-05",
+			}}
+			req := unscannablePassthroughRequest{
+				Host:              "downloads.example.com",
+				Path:              "/artifacts/pkg.bin",
+				ContentType:       contentType,
+				Header:            http.Header{"Content-Disposition": []string{"attachment; filename=\"pkg.bin\""}},
+				ContentLength:     4096,
+				SizeExemptDomains: []string{"*.example.com"},
+				Now:               now,
+			}
+			if _, ok := matchUnscannablePassthrough(req, entries); ok {
+				t.Errorf("matchUnscannablePassthrough matched parameterized JavaScript Content-Type %q as an opaque passthrough", contentType)
+			}
+		})
+	}
+}
+
+// TestJavaScriptAliasTableConsumerAgreement catches a future consumer that
+// stops calling the shared predicate and reintroduces a private alias list.
+func TestJavaScriptAliasTableConsumerAgreement(t *testing.T) {
 	for _, alias := range media.JavaScriptMediaTypes {
 		runtimeSaysTextual := configTextualPassthroughType(alias)
 		sharedTableSaysJS := media.IsJavaScriptMediaType(alias)
 		if runtimeSaysTextual != sharedTableSaysJS {
-			t.Errorf("alias %q: configTextualPassthroughType=%v but media.IsJavaScriptMediaType=%v, the two consumers disagree", alias, runtimeSaysTextual, sharedTableSaysJS)
+			t.Errorf("alias %q: configTextualPassthroughType=%v but media.IsJavaScriptMediaType=%v, consumers disagree", alias, runtimeSaysTextual, sharedTableSaysJS)
 		}
 	}
 }

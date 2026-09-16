@@ -127,8 +127,8 @@ func TestRFC9239JavaScriptMediaTypes(t *testing.T) {
 	}
 
 	for _, contentType := range []string{
-		"application/ecmascript; charset=utf-8",
-		"APPLICATION/ECMASCRIPT; charset=utf-8",
+		"application/javascript; charset=utf-8",
+		"Application/JavaScript; Charset=UTF-8",
 	} {
 		t.Run(contentType, func(t *testing.T) {
 			if got := DetectPipeline(contentType, nil); got != PipelineJS {

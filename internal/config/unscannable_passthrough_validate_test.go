@@ -373,13 +373,36 @@ func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 	}
 }
 
-// TestIsTextualUnscannablePassthroughTypeAgreesWithSharedJavaScriptTable is
-// the config-side half of the cross-package parity check (the shield-side
-// half lives in internal/proxy as
-// TestJavaScriptAliasTableParityBetweenShieldAndConfig). Both consumers must
-// call the SAME internal/media.JavaScriptMediaTypes table rather than keep
-// their own copy; this fails the moment either one starts disagreeing with
-// the shared predicate it is supposed to be built on.
+func TestValidateUnscannablePassthroughRefusesParameterizedJavaScriptAliases(t *testing.T) {
+	for _, contentType := range []string{
+		"application/javascript; charset=utf-8",
+		"Application/JavaScript; Charset=UTF-8",
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
+				Host:         "downloads.example.com",
+				Paths:        []string{"/artifacts/pkg.bin"},
+				ContentTypes: []string{contentType},
+				Reason:       "opaque signed archive",
+				Added:        "2026-07-04",
+				Expires:      "2099-01-01",
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("passthrough accepted parameterized JavaScript alias %q as an opaque content type", contentType)
+			}
+			if !strings.Contains(err.Error(), "textual/scannable") {
+				t.Fatalf("parameterized alias %q: error %q does not name it textual/scannable", contentType, err)
+			}
+		})
+	}
+}
+
+// TestIsTextualUnscannablePassthroughTypeAgreesWithSharedJavaScriptTable
+// verifies that config validation calls the shared predicate rather than
+// keeping a private alias list. The proxy and shield packages exercise their
+// own consumers separately.
 func TestIsTextualUnscannablePassthroughTypeAgreesWithSharedJavaScriptTable(t *testing.T) {
 	for _, alias := range media.JavaScriptMediaTypes {
 		if !isTextualUnscannablePassthroughType(alias) {

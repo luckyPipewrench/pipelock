@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
@@ -1331,6 +1332,204 @@ func appendCanonicalJSON(buf *bytes.Buffer, v any) error {
 		buf.Write(data)
 	}
 	return nil
+}
+
+// twoCapsulesSameKey emits two DISTINCT, independently-valid posture capsules
+// signed by the SAME key, so a mismatched-pairing test isolates the capsule
+// DIGEST check from signer-key mismatch (a different bug this test must not
+// accidentally exercise instead).
+func twoCapsulesSameKey(t *testing.T, evidence posturepkg.EvidenceBundle) (capsuleAPath, capsuleBPath, pubKeyPath string, priv ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgData, err := yaml.Marshal(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, cfgData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cliutil.LoadConfigOrDefault(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsuleA, err := posturepkg.Emit(cfg, posturepkg.Options{SigningKey: priv, EvidenceBundle: &evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A tiny expiration-window difference guarantees distinct capsule bytes
+	// (hence a distinct hash) even if GeneratedAt granularity collides.
+	capsuleB, err := posturepkg.Emit(cfg, posturepkg.Options{SigningKey: priv, EvidenceBundle: &evidence, ExpirationDays: posturepkg.DefaultExpirationDays + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathA, err := posturepkg.WriteProofJSON(filepath.Join(t.TempDir(), "a"), capsuleA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathB, err := posturepkg.WriteProofJSON(filepath.Join(t.TempDir(), "b"), capsuleB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathA == pathB {
+		t.Fatalf("test setup bug: same path for both capsules")
+	}
+	hashA, err := workspacediff.HashFileSHA256(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, err := workspacediff.HashFileSHA256(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashA == hashB {
+		t.Fatalf("test setup bug: both capsules hashed identically")
+	}
+	pubKeyPath = filepath.Join(t.TempDir(), "pub.key")
+	if err := os.WriteFile(pubKeyPath, []byte(signing.EncodePublicKey(pub)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return pathA, pathB, pubKeyPath, priv
+}
+
+// TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected is H1's CLI
+// surface proof: a workspace change statement genuinely signed and bound to
+// ONE capsule, verified against a DIFFERENT capsule (SAME signer key, so this
+// isolates the digest-binding check from an unrelated signer-key mismatch)
+// via the same shipped `posture verify` command, must be rejected. Before
+// this flag existed, no shipped command checked the pairing at all.
+func TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected(t *testing.T) {
+	capsuleAPath, capsuleBPath, pubKeyPath, priv := twoCapsulesSameKey(t, perfectEvidence())
+
+	capsuleAHash, err := workspacediff.HashFileSHA256(capsuleAPath)
+	if err != nil {
+		t.Fatalf("hash capsule A: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleAHash, priv)
+	if err != nil {
+		t.Fatalf("sign statement for capsule A: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", capsuleBPath, // WRONG capsule for this statement, same signer key.
+		"--key", pubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected posture verify to reject a statement bound to a different capsule")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+}
+
+// TestPostureVerify_WorkspaceStatement_MatchedPairPasses is the positive
+// control for the same surface: the SAME capsule the statement is bound to.
+func TestPostureVerify_WorkspaceStatement_MatchedPairPasses(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute(): %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Workspace change statement: signature valid and bound to this capsule") {
+		t.Fatalf("expected the binding confirmation line, got:\n%s", stdout.String())
+	}
+}
+
+// TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected proves the
+// binding check hashes the ACTUAL capsule FILE bytes, not just the parsed
+// struct: after the statement is bound and signed, the capsule file on disk
+// is overwritten (e.g. corrupted, replaced) and verification must fail even
+// though the statement's own signature is untouched.
+func TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the capsule file's bytes after binding: append trailing
+	// whitespace so the digest changes while the JSON still parses fine
+	// (proving the check compares BYTES, not just "does it still parse the
+	// same struct").
+	original, err := os.ReadFile(filepath.Clean(fix.ProofPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fix.ProofPath, append(original, '\n', ' '), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected rejection of a tampered capsule file")
+	}
 }
 
 func assertExitCode(t *testing.T, err error, wantCode int) {

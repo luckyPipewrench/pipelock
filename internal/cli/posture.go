@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -63,6 +64,7 @@ func postureVerifyCmd() *cobra.Command {
 		configFile       string
 		jsonOutput       bool
 		requireDiscovery bool
+		workspaceStmt    string
 	)
 
 	cmd := &cobra.Command{
@@ -129,6 +131,22 @@ Exit codes:
 				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, fmt.Errorf("verification failed: %w", err))
 			}
 
+			// A valid posture capsule and a valid workspace change statement
+			// are each individually authentic on their own signature, but
+			// that does NOT prove they came from the same session: a
+			// statement from an unrelated run verifies against the same key
+			// just as well. --workspace-statement additionally hashes the
+			// EXACT capsule bytes at --proof and requires that digest to
+			// match the statement's declared binding, so a mismatched pair
+			// is rejected here rather than accepted as if it were coherent.
+			if workspaceStmt != "" {
+				if bindErr := verifyWorkspaceStatementBinding(workspaceStmt, proofFile, pubKey); bindErr != nil {
+					return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule,
+						fmt.Errorf("workspace change statement verification failed: %w", bindErr))
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  Workspace change statement: signature valid and bound to this capsule")
+			}
+
 			if jsonOutput {
 				if encErr := writeVerifyJSON(cmd, result); encErr != nil {
 					return fmt.Errorf("encoding JSON output: %w", encErr)
@@ -157,11 +175,30 @@ Exit codes:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "local config for hash comparison")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	cmd.Flags().BoolVar(&requireDiscovery, "require-discovery", false, "fail if 0 servers discovered")
+	cmd.Flags().StringVar(&workspaceStmt, "workspace-statement", "", "path to a signed workspace-change-statement.json to verify against --proof (checks its signature AND that it is bound to this exact capsule's bytes)")
 
 	_ = cmd.MarkFlagRequired("proof")
 	_ = cmd.MarkFlagRequired("key")
 
 	return cmd
+}
+
+// verifyWorkspaceStatementBinding reads the signed workspace change statement
+// at stmtPath and verifies both its own signature and that it is bound to the
+// EXACT bytes of the capsule file at capsulePath (workspacediff.VerifyBinding
+// hashes capsulePath itself; it does not trust an already-parsed capsule
+// struct, so this check cannot be satisfied by a capsule that merely parses
+// the same).
+func verifyWorkspaceStatementBinding(stmtPath, capsulePath string, pubKey ed25519.PublicKey) error {
+	data, err := os.ReadFile(filepath.Clean(stmtPath))
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", stmtPath, err)
+	}
+	var signed workspacediff.SignedStatement
+	if err := json.Unmarshal(data, &signed); err != nil {
+		return fmt.Errorf("parsing %s: %w", stmtPath, err)
+	}
+	return workspacediff.VerifyBinding(signed, capsulePath, pubKey)
 }
 
 // printVerifyResult formats the human-readable verify output.

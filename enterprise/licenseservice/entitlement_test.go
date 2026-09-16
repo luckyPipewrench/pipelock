@@ -700,6 +700,72 @@ func TestClaimActiveTrialSlot_SameOwnerCannotMoveExpiryEarlier(t *testing.T) {
 	}
 }
 
+func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
+	tests := []struct {
+		name            string
+		setClaimTimeEnd bool
+	}{
+		{name: "drifted claim-time expiry", setClaimTimeEnd: true},
+		{name: "unverifiable claim-time expiry"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t)
+			ctx := t.Context()
+			now := time.Now().UTC()
+			originalExpiry := now.Add(24 * time.Hour)
+			first := trialEntitlement("order_suspect_slot_owner", "suspect-slot@example.com", originalExpiry)
+			if tt.setClaimTimeEnd {
+				first.LastLicensePeriodEnd = &originalExpiry
+			}
+			if err := db.Upsert(ctx, first); err != nil {
+				t.Fatalf("seed first trial: %v", err)
+			}
+			if _, err := db.db.ExecContext(ctx,
+				`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`,
+				now.Add(-time.Hour), "suspect-slot@example.com",
+			); err != nil {
+				t.Fatalf("expire suspect slot: %v", err)
+			}
+
+			replacement := trialEntitlement("order_suspect_slot_replacement", "suspect-slot@example.com", now.Add(48*time.Hour))
+			if err := db.Upsert(ctx, replacement); !errors.Is(err, ErrActiveTrialExists) {
+				t.Fatalf("take over suspect expired slot: err = %v, want ErrActiveTrialExists", err)
+			}
+		})
+	}
+}
+
+func TestClaimActiveTrialSlot_HealthyExpiredSlotIsTakenOver(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	expired := now.Add(-time.Hour)
+	first := trialEntitlement("order_healthy_slot_owner", "healthy-slot@example.com", expired)
+	first.LastLicensePeriodEnd = &expired
+	if err := db.Upsert(ctx, first); err != nil {
+		t.Fatalf("seed expired trial: %v", err)
+	}
+
+	replacementExpiry := now.Add(24 * time.Hour)
+	replacement := trialEntitlement("order_healthy_slot_replacement", "healthy-slot@example.com", replacementExpiry)
+	replacement.LastLicensePeriodEnd = &replacementExpiry
+	if err := db.Upsert(ctx, replacement); err != nil {
+		t.Fatalf("take over healthy expired slot: %v", err)
+	}
+
+	var owner string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT subscription_id FROM active_trial_slots WHERE normalized_email = ?`, "healthy-slot@example.com",
+	).Scan(&owner); err != nil {
+		t.Fatalf("read replacement slot owner: %v", err)
+	}
+	if owner != replacement.SubscriptionID {
+		t.Fatalf("slot owner = %q, want %q", owner, replacement.SubscriptionID)
+	}
+}
+
 func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()
@@ -721,12 +787,13 @@ func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testi
 		t.Fatalf("RecordPendingOneTimeTrialRefund = (%+v, %v), want (nil, nil)", got, err)
 	}
 
-	err := db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, LicenseIssuance{
+	issuance := LicenseIssuance{
 		LicenseID:      "lic_refund_before_mint",
 		SubscriptionID: ent.SubscriptionID,
 		IssuedAt:       time.Now().UTC(),
 		ExpiresAt:      expiresAt,
-	}, "msg_refund_before_mint", "order.paid")
+	}
+	err := db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, issuance, "msg_refund_before_mint", "order.paid")
 	if !errors.Is(err, ErrTrialRefundPending) {
 		t.Fatalf("mint after pending refund: err = %v, want ErrTrialRefundPending", err)
 	}
@@ -735,6 +802,9 @@ func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testi
 	}
 	if got := countLicenseIssuances(t, db, ent.SubscriptionID); got != 0 {
 		t.Fatalf("license issuances after refused mint = %d, want 0", got)
+	}
+	if err := db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, issuance, "msg_refund_before_mint", "order.paid"); !errors.Is(err, ErrTrialRefundPending) {
+		t.Fatalf("retry after refused mint: err = %v, want ErrTrialRefundPending", err)
 	}
 }
 
@@ -1486,6 +1556,11 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 			}
 			if strings.Contains(buf.String(), "order_legacy") {
 				t.Fatalf("drift report logged unverifiable row: %s", buf.String())
+			}
+			for _, subscriptionID := range tt.drifted {
+				if !strings.Contains(buf.String(), subscriptionID) {
+					t.Fatalf("drift report did not log drifted row %q: %s", subscriptionID, buf.String())
+				}
 			}
 		})
 	}

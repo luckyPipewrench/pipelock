@@ -1246,11 +1246,23 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 				THEN active_trial_slots.expires_at
 			ELSE excluded.expires_at
 		END
-	WHERE active_trial_slots.expires_at <= ?
-	   OR active_trial_slots.subscription_id = excluded.subscription_id
+	WHERE active_trial_slots.subscription_id = excluded.subscription_id
+	   OR (
+		active_trial_slots.expires_at <= ?
+		AND EXISTS (
+			SELECT 1
+			FROM entitlements AS owner
+			WHERE owner.subscription_id = active_trial_slots.subscription_id
+			  AND owner.tier IN (?, ?)
+			  AND owner.billing_interval = ?
+			  AND owner.last_license_period_end IS NOT NULL
+			  AND owner.last_license_period_end = active_trial_slots.expires_at
+		)
+	)
 	`
 	result, err := exec.ExecContext(ctx, query,
 		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), time.Now().UTC(),
+		tierTrial, tierEnterpriseTrial, billingIntervalOneTime,
 	)
 	if err != nil {
 		return fmt.Errorf("claim active trial slot for %s: %w", ent.SubscriptionID, err)

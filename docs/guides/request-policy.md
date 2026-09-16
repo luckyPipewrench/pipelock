@@ -245,6 +245,7 @@ forwarded.
 
 ## See also
 
+- [GraphQL request policy example](../../examples/request-policy-graphql/README.md): runnable allow and block cases
 - [Request Policy configuration reference](../configuration.md#request-policy): every field, defaults, and route-matching semantics
 - [Block-reason header](block-reason-header.md): the `request_policy_deny` reason and the full block-reason vocabulary
 - [Request redaction](redaction.md): rewriting matched values instead of blocking the request

@@ -172,6 +172,7 @@ rich media before attempting a sensitive action.
 
 ## See also
 
+- [MCP media policy example](../../examples/mcp-media-policy/README.md) for runnable media allow and block cases
 - [Configuration reference](../configuration.md#media-policy-v21) for all fields
 - [Bypass resistance](../bypass-resistance.md) for steganography limitations
 - [Attacks blocked](../attacks-blocked.md) for SVG and media attack examples

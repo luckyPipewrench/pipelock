@@ -58,4 +58,4 @@ Restart Pi after install. The changed settings file alone is not a live Gemini r
 "$PIPELOCK_BIN" pi remove
 ```
 
-See `../../docs/guides/pi.md`.
+See the [Pi integration guide](../../docs/guides/pi.md).

@@ -8,7 +8,7 @@ The 2026 agent-security field splits along three independent axes: where the dec
 
 | Tool / category | `decision_location` | `enforcement_location` | `evidence_profile` | HTTP+WS egress content scanning | MCP coverage | A2A coverage | Direct-egress boundary | Best fit |
 |---|---|---|---|---|---|---|---|---|
-| **Pipelock** | `network_mediator` | `http_proxy` + `mcp_proxy` + optional `kernel_boundary` | `mediator_signed_receipt` — Ed25519, hash-chained, offline-verifiable, standalone CLI + Go/TS/Rust verifiers | DLP, injection, SSRF, encoding evasion, shell obfuscation, WebSocket DLP | Bidirectional: input + tool + chain + drift | Yes (message + Agent Card) | Yes when containment or deployment egress boundary is configured | Agent-agnostic boundary enforcement with offline-verifiable mediation evidence |
+| **Pipelock** | `network_mediator` | `http_proxy` + `mcp_proxy` + optional `kernel_boundary` | `mediator_signed_receipt` — Ed25519, hash-chained, offline-verifiable, standalone CLI + Go/TS/Rust verifiers | DLP, injection, SSRF (configured MCP upstreams allow local/private servers but block cloud metadata), encoding evasion, shell obfuscation, WebSocket DLP | Bidirectional: input + tool + chain + drift | Yes (message + Agent Card) | Yes when containment or deployment egress boundary is configured | Agent-agnostic boundary enforcement with offline-verifiable mediation evidence |
 | **Microsoft Agent Governance Toolkit** | `in_runtime` | `tool_adapter` + `agent_framework` | `runtime_log` / telemetry | No wire-level HTTP+WS content inspection; egress control depends on framework policy and surrounding infra | MCPGateway and framework-level policy surfaces | Partial (framework-dependent) | In-process policy; direct-egress boundary depends on deployment infra | In-process governance for AGT-instrumented agents on supported frameworks |
 | **CAPSEM** (google/capsem) | `network_mediator` (host MITM) | `http_proxy` + `mcp_proxy` (VM-host) | `runtime_log` (SQLite, full-body capture) | Yes — TLS terminated and body capture available; native DLP policy scope is implementation-specific | MCP gateway with allow/block/ask/rewrite | Unknown | Yes within supported VM-host topology | VM-isolated coding agents on a developer laptop |
 | **Signet** (Prismer-AI) | `external_service` (sidecar) | `mcp_proxy` | signed enforcement evidence (Ed25519; uses "logs vs evidence" framing) | No | MCP-stdio channel | No | Partial (single mediated transport) | Signed enforcement evidence for MCP-stdio |
@@ -39,11 +39,11 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 |---------|----------|-----|---------|-----|
 | **Layer** | Application firewall + process containment (HTTP + MCP + WebSocket + Landlock + netns, plus seccomp on linux/amd64) | MCP proxy | Kernel (seccomp/eBPF/FUSE) | OS sandbox |
 | **Language** | Go | Go | Go | TypeScript |
-| **Binary** | Single, ~36MB | Single | Single + kernel modules | npm package |
+| **Binary** | Single; [31.2 MiB measured Linux/amd64 OSS build](performance.md#binary-size) | Single | Single + kernel modules | npm package |
 | **Domain allowlist** | Yes | Yes (MCP-level) | Yes (LLM proxy) | Yes |
 | **DLP (secret detection)** | Regex + entropy + env scan + BIP-39 seed phrases | Regex (per-argument) | Regex (LLM proxy) | No |
 | **Crypto secret detection** | Yes (BIP-39, WIF, xprv, ETH hex) | No | No | No |
-| **SSRF protection** | Yes (DNS pinning) | No | N/A (kernel-level) | N/A |
+| **SSRF protection** | Yes (DNS pinning); configured MCP upstreams allow local/private servers but block cloud metadata | No | N/A (kernel-level) | N/A |
 | **Prompt injection detection** | Yes (response scanning on fetched content + MCP results) | No | No | No |
 | **File integrity monitoring** | SHA256 manifests | No | Workspace checkpoints | Filesystem restrictions |
 | **Ed25519 signing** | Yes | No | No | No |
@@ -82,7 +82,7 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 - You need to **prevent credential exfiltration** from AI agents with API keys
 - You want **content inspection** (DLP, injection detection) on what agents fetch
 - You need **audit logging** for network activity mediated by the proxy
-- You want a **single binary** with no dependencies or kernel modules
+- You want a **single Go binary**. `make stats` reports 27 direct Go module dependencies; a statically linked build doesn't need a separate Go runtime.
 - You're running agents in **CI/CD** and need machine-readable output
 - You want **workspace integrity monitoring** to detect file tampering
 

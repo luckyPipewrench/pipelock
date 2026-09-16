@@ -32,7 +32,7 @@ SPDX-License-Identifier: Apache-2.0
 |---|---|
 | Credential exfiltration through mediated traffic | DLP, provider-key detection, env leak scanning, body/header/MCP input scanning. |
 | Prompt injection in fetched/tool content | Response scanning and MCP tool/result scanning. |
-| SSRF to metadata/private networks | URL scanner SSRF layer after DLP/blocklist pre-resolution checks. |
+| SSRF to metadata/private networks | URL scanner SSRF layer after DLP/blocklist pre-resolution checks. Configured MCP upstreams allow local/private servers but still block cloud metadata endpoints. |
 | Malicious or stale policy bundle | Signed bundle verification, payload hash, lineage checks, and not-before skew bounded by `MessageNotBeforeSkew`. |
 | Fleet-wide emergency-control forgery | Purpose-bound Ed25519 threshold keys for remote kill and rollback. |
 | Revoked follower evidence accepted after decommission | Enrollment-store audit-key resolver; `conductor follower remove` retains an inactive tombstone so the removed identity can't use a static audit key. |

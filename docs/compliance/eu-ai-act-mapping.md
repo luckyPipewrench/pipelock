@@ -124,7 +124,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | **Adversarial examples / model evasion** (Art. 15(5)) | Content scanning on responses and MCP tool results; zero-width char stripping; NFKC normalization; case-insensitive matching; null byte stripping. Covers text-based injection patterns, not model-level evasion. | Partial |
 | **Confidentiality attacks** (Art. 15(5)) | DLP scanning (65 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
 | **Data poisoning** (Art. 15(5)) | File integrity monitoring (SHA256 manifests), Ed25519 signing and verification, response scanning on fetched content | Partial |
-| **Resilient against unauthorized alteration** (Art. 15(5)) | Pipelock blocks mediated exfiltration attempts and SSRF probes by inspecting traffic at the network and tool boundary. Coverage is bounded to traffic that traverses the Pipelock proxy (forward, intercept, reverse, fetch, MCP, WebSocket, A2A surfaces); capability separation reduces risk further when deployment topology or sandboxing forces agent traffic through Pipelock, but the topology that routes traffic through the proxy is deployment-enforced, not binary-enforced. Out-of-band channels not routed through Pipelock fall outside this control. | Partial |
+| **Resilient against unauthorized alteration** (Art. 15(5)) | Pipelock blocks mediated exfiltration attempts and SSRF probes by inspecting traffic at the network and tool boundary. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked. Coverage is bounded to traffic that traverses the Pipelock proxy (forward, intercept, reverse, fetch, MCP, WebSocket, A2A surfaces); capability separation reduces risk further when deployment topology or sandboxing forces agent traffic through Pipelock, but the topology that routes traffic through the proxy is deployment-enforced, not binary-enforced. Out-of-band channels not routed through Pipelock fall outside this control. | Partial |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |
 | **Resilient to errors and faults** (Art. 15(4)) | DNS rebinding protection (resolve-validate-dial); IPv4-mapped IPv6 normalization; CRLF normalization in diff parsing | Full |
 | **Accuracy metrics declared** (Art. 15(1-3)) | Prometheus counters per scanner layer; false positive tuning via audit mode | Partial |
@@ -195,7 +195,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 |-----------------|-------------|-----------------|-----------|
 | MEASURE 1.1 | Metrics selected and documented | Prometheus: `pipelock_requests_total`, `pipelock_scanner_hits_total`, `pipelock_request_duration_seconds` | Art. 12 |
 | MEASURE 2.5 | System demonstrated valid and reliable | CI: eight required contexts (security scan; Go 1.25 and 1.26 aggregates; macOS test; lint; build with Helm as a transitive prerequisite; govulncheck on default and enterprise graphs; CodeQL), plus race-tested OSS and enterprise matrices (see [README](../../README.md#testing)) | Art. 15 |
-| MEASURE 2.6 | Evaluated for misuse and abuse | Scanning layers target misuse: DLP catches exfiltration, SSRF catches internal probing, injection detection catches hijacking | Art. 9, 15 |
+| MEASURE 2.6 | Evaluated for misuse and abuse | Scanning layers target misuse: DLP catches exfiltration, SSRF catches internal probing except local/private configured MCP upstreams, injection detection catches hijacking | Art. 9, 15 |
 | MEASURE 2.7 | Security and resilience evaluated | Security audit completed (26 of 32 items fixed); DNS rebinding protection; fail-closed architecture | Art. 15 |
 | MEASURE 3.1 | Risks tracked on ongoing basis | Prometheus real-time tracking; zerolog persistent timeline; both queryable and alertable | Art. 12 |
 | MEASURE 3.3 | Feedback mechanisms for improvement | HITL `ask` action: human decisions logged for policy refinement; audit mode measures before enforcing | Art. 14 |
@@ -220,7 +220,7 @@ Mapping from individual Pipelock controls to both frameworks.
 | Control | Description | EU AI Act | NIST AI RMF |
 |---------|-------------|-----------|-------------|
 | Capability separation | Agent has secrets, no network; proxy has network, no agent secrets. Deployment enforces boundary | Art. 15(5) | GOVERN 1.2, MAP 1.1 |
-| SSRF protection | Private IP blocking, DNS rebinding prevention, metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
+| SSRF protection | Private IP blocking and DNS rebinding prevention, except configured MCP upstreams, which allow local/private servers but retain metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |
 | DLP scanning | 65 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |

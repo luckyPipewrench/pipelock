@@ -11,6 +11,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PIPELOCK_BIN="${PIPELOCK_BIN:-$ROOT_DIR/pipelock}"
 export PIPELOCK_BIN
 
+# Check navigation before starting examples that need a binary or containers.
+python3 "$ROOT_DIR/examples/check_guide_links.py"
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 

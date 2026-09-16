@@ -99,6 +99,7 @@ response_scanning:
 
 ## See also
 
+- [SSE streaming example](../../examples/sse-streaming-scan/README.md) for runnable streaming scan cases
 - [Response scanning configuration](../configuration.md#response-scanning)
 - [Mediation envelope](./mediation-envelope.md) (signed proof of each
   scanning decision, including SSE stream terminations)

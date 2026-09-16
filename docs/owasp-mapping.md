@@ -74,7 +74,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 - **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no agent secrets. Deployment (Docker, Kubernetes NetworkPolicy) enforces the boundary. Neither process has both capabilities.
 - **Domain allowlisting:** the agent can only reach explicitly allowed API endpoints (e.g., `*.anthropic.com`, `github.com`).
-- **SSRF protection:** blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting.
+- **SSRF protection:** blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting. Configured MCP upstreams are an exception: they permit local/private servers while still blocking cloud metadata endpoints.
 - **Docker Compose isolation:** `pipelock generate docker-compose` creates a network topology where the agent container has no direct internet access.
 
 ---

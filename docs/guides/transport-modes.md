@@ -145,6 +145,8 @@ Proxies a remote MCP server over HTTP with the same scanning as stdio mode.
 
 **Scanning:** Same 6 layers as MCP stdio (response, input, tool, policy, chain, session binding).
 
+Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked. The upstream URL comes from operator configuration, not from the agent's request.
+
 **Transport sub-modes:**
 - **Stdio-to-HTTP bridge** (`pipelock mcp proxy --upstream URL`): Translates stdio JSON-RPC to HTTP requests against a streamable HTTP MCP server
 - **HTTP reverse proxy** (`pipelock mcp proxy --listen ADDR --upstream URL` or `pipelock run --mcp-listen ADDR --mcp-upstream URL`): Listens on an HTTP port and reverse-proxies to the upstream MCP server

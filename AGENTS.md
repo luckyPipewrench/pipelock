@@ -1,6 +1,6 @@
 # AGENTS.md - Pipelock Contributor Guide
 
-Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Direct egress controls are deployment guidance; binary-enforced coverage applies to mediated traffic.
+Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Direct egress controls are deployment guidance; binary-enforced coverage applies to mediated traffic. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
 ## Quick Reference
 
@@ -127,6 +127,8 @@ Core and configured DLP run before DNS resolution; SSRF/DNS runs after them. `cf
 - HTTP reverse proxy: `--listen ADDR --upstream http://...`
 
 MCP scanning layers include response scanning, input scanning (`mcp_input_scanning`), tool scanning (`mcp_tool_scanning`), tool policy (`mcp_tool_policy`), chain detection (`tool_chain_detection`), session binding (`mcp_session_binding`), binary integrity, provenance, media policy, taint, redaction, and contracts where configured.
+
+Configured MCP upstream dialing uses the cloud metadata floor in `internal/mcp/upstream_dial.go`. It permits local/private MCP servers; it doesn't apply the full private-address SSRF policy used for agent-chosen destinations.
 
 ### Config And Runtime
 

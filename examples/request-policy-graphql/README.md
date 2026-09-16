@@ -58,7 +58,7 @@ curl -sS --noproxy '' -D - -x "http://127.0.0.1:PROXY" \
 - `forward_proxy.enabled: true` is required for absolute-URI inspection.
 - Route `hosts` must match the URL host exactly (`api.vendor.example`).
 - `dns.host_overrides` pins that hostname to loopback so the stub is reachable offline.
-- See `../../docs/guides/request-policy.md`.
+- See the [request policy guide](../../docs/guides/request-policy.md).
 
 ## Contributing
 

@@ -66,8 +66,7 @@ Block-path receipts do not require `require_receipts: true` — that flag fail-c
 allow-path traffic when emission fails. Keys are generated at runtime under a
 temp dir and never committed.
 
-See `../../docs/guides/receipt-verification.md` and
-`../../docs/guides/flight-recorder.md`.
+See the [receipt verification guide](../../docs/guides/receipt-verification.md) and [flight recorder guide](../../docs/guides/flight-recorder.md).
 
 ## Contributing
 

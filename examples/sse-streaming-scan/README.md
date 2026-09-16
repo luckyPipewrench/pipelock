@@ -45,8 +45,7 @@ curl -N http://127.0.0.1:8890/inject
 
 ## Config Notes
 
-See `../../docs/guides/sse-streaming.md`. Defaults already enable SSE
-streaming scan; this example makes `action: block` explicit on reverse_proxy.
+See the [SSE streaming guide](../../docs/guides/sse-streaming.md). Defaults already enable SSE streaming scan; this example makes `action: block` explicit on reverse_proxy.
 
 ## Contributing
 

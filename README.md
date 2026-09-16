@@ -32,7 +32,7 @@
   <img src="assets/demo.gif" alt="Pipelock blocking a live secret-exfiltration attempt from an AI agent" width="900">
 </div>
 
-Pipelock sits between AI agents and the network. It inspects mediated HTTP, WebSocket, MCP, and A2A traffic, plus CONNECT tunnel contents when TLS interception is enabled, for secret exfiltration, prompt injection, SSRF, tool poisoning, and risky tool-call chains. Plain CONNECT without interception is scanned at the hostname and URL level.
+Pipelock sits between AI agents and the network. It inspects mediated HTTP, WebSocket, MCP, and A2A traffic, plus CONNECT tunnel contents when TLS interception is enabled, for secret exfiltration, prompt injection, SSRF, tool poisoning, and risky tool-call chains. Plain CONNECT without interception is scanned at the hostname and URL level. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
 Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. The [Gauntlet](https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml) workflow is the product's scheduled candidate exam against a pinned corpus commit; it does not auto-publish a public score. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
@@ -268,7 +268,7 @@ Canonical comparison hub: [AI runtime security comparison](https://pipelab.org/c
 |--------|----------|
 | ASI01 Agent Goal Hijack | **Strong:** bidirectional MCP + response scanning |
 | ASI02 Tool Misuse | **Partial:** proxy as controlled tool, MCP scanning |
-| ASI03 Identity & Privilege Abuse | **Strong:** capability separation + SSRF protection |
+| ASI03 Identity & Privilege Abuse | **Strong:** capability separation + SSRF protection; configured MCP upstreams allow local/private servers but still block cloud metadata endpoints |
 | ASI04 Supply Chain Vulnerabilities | **Partial:** integrity monitoring + MCP scanning |
 | ASI05 Unexpected Code Execution | **Moderate:** HITL approval, fail-closed defaults |
 | ASI06 Memory & Context Poisoning | **Moderate:** injection detection + session taint propagation |
@@ -289,7 +289,7 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 
 ### Detection And Scanning
 
-- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
+- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. Configured MCP upstream dialing permits local/private servers while enforcing the cloud metadata floor. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
 - **DLP:** 65 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment secrets, and financial identifiers with checksum validation. BIP-39 seed phrase detection uses dictionary lookup, sliding windows, and SHA-256 checksum validation.
 - **Response scanning:** 33 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
 - **Streaming SSE:** `text/event-stream` responses from LLM gateways and MCP HTTP/SSE flow token by token with per-event and rolling cross-event DLP and injection scanning. A detection terminates the stream fail-closed. See [SSE streaming guide](docs/guides/sse-streaming.md).
@@ -430,7 +430,7 @@ All detection, enforcement, containment, receipt verification, and the free sing
 
 | Capability | Free | Pro | Enterprise |
 |---|:--:|:--:|:--:|
-| Scanning and detection (ordered URL pipeline, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
+| Scanning and detection (ordered URL pipeline, DLP, injection, SSRF except private/local configured MCP upstreams, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
 | MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners) | Yes | Yes | Yes |
 | Containment, sandbox, host `contain`, 6-source kill switch | Yes | Yes | Yes |
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |

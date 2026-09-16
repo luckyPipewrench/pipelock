@@ -37,8 +37,8 @@ while IFS= read -r -d '' path; do
 		missing=1
 	fi
 
-	# Enterprise-tier sources carry the repository's ELv2 notice instead of
-	# the Apache SPDX identifier used by the open-source core. Declaring the
+	# Enterprise-tier sources carry the ELv2 notice and Elastic SPDX identifier.
+	# The open-source core uses the Apache SPDX identifier. Declaring the
 	# Apache identifier on ELv2 code is the failure that matters: it marks
 	# paid-tier code as permissively licensed, contradicting NOTICE, and no
 	# amount of correct prose elsewhere in the file undoes that claim.
@@ -49,6 +49,13 @@ while IFS= read -r -d '' path; do
 		fi
 		if ! grep -q 'Licensed under the Elastic License 2.0' "$path"; then
 			echo "$path: enterprise-tier source missing Elastic License 2.0 notice" >&2
+			missing=1
+		fi
+		if ! grep -Fxq \
+			-e '// SPDX-License-Identifier: Elastic-2.0' \
+			-e '# SPDX-License-Identifier: Elastic-2.0' \
+			-e '<!-- SPDX-License-Identifier: Elastic-2.0 -->' "$path"; then
+			echo "$path: enterprise-tier source missing SPDX-License-Identifier: Elastic-2.0" >&2
 			missing=1
 		fi
 		continue

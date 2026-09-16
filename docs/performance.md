@@ -200,7 +200,20 @@ Response scanning is the most CPU-intensive path. At high throughput with large 
 | Shared proxy (small org) | 100-1,000 req/sec | 0.5 CPU, 128MB RAM |
 | Platform deployment | 10,000+ req/sec | 2+ CPU, 256MB RAM |
 
-The binary is ~36MB static (v3.4.0 release build with symbol stripping). Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
+Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
+
+### Binary size
+
+A Linux/amd64 OSS build from commit `23bb3f4a8`, built with Go 1.25.10 and `CGO_ENABLED=0 make build`, measured 32,759,992 bytes (31.2 MiB). The Makefile uses `-trimpath` and strips symbols with `-s -w`; `file pipelock` reported a statically linked executable. This measurement excludes the `enterprise` build tag. Size varies with the source revision, Go version, target platform, build tags, and linker flags.
+
+To measure your build from the repository root:
+
+```bash
+CGO_ENABLED=0 make build
+go version
+file pipelock
+wc -c < pipelock
+```
 
 ## Design Decisions That Affect Performance
 

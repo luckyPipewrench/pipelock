@@ -40,7 +40,7 @@ export PIPELOCK_BIN="$PWD/pipelock"
 
 ## Config Notes
 
-See `../../docs/guides/media-policy.md`. Audio/video strip is the default;
+See the [media policy guide](../../docs/guides/media-policy.md). Audio/video strip is the default;
 this example only makes the posture explicit.
 
 ## Contributing

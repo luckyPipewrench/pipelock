@@ -294,8 +294,15 @@ func (h *WebhookHandler) recordPendingOneTimeTrialRefund(ctx context.Context, or
 	if err := h.ledger.LogError(order.ID, "record pending one-time trial refund", errors.New("refund arrived before fulfillment")); err != nil {
 		return fmt.Errorf("record pending one-time trial refund audit: %w", err)
 	}
-	if err := h.db.UpsertEvalOrder(ctx, eo); err != nil {
-		return fmt.Errorf("record pending one-time trial refund: %w", err)
+	entitlement, err := h.db.RecordPendingOneTimeTrialRefund(ctx, eo)
+	if err != nil {
+		return err
+	}
+	if entitlement != nil {
+		if isRefundableOneTimeTrial(entitlement) {
+			return h.revokeOneTimeTrialForOrder(ctx, entitlement, order, refundState, msgID, eventType)
+		}
+		return fmt.Errorf("pending one-time trial refund for %s found non-trial entitlement", order.ID)
 	}
 	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
 		return fmt.Errorf("mark pending one-time trial refund webhook committed: %w", err)

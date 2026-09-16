@@ -625,10 +625,17 @@ func TestUpsert_ActiveTrialClaimsItsSlot(t *testing.T) {
 	if !errors.Is(err, ErrActiveTrialExists) {
 		t.Fatalf("second trial after Upsert: err = %v, want ErrActiveTrialExists", err)
 	}
-	// The same subscription may still renew its own slot.
+	// The same subscription may write again (idempotent redelivery, a status
+	// mirror), but expires_at is write-once: it must not move even for its
+	// own owner, or a stale/earlier terminal write could reopen the slot
+	// before the trial the operator sees is actually over.
 	renewal := trialEntitlement("order_upsert_trial", "holder@example.com", periodEnd.Add(24*time.Hour))
 	if err := db.Upsert(ctx, renewal); err != nil {
-		t.Fatalf("renew own trial: %v", err)
+		t.Fatalf("re-upsert own trial: %v", err)
+	}
+	slotExpiry := readSlotExpiry(t, db, "holder@example.com")
+	if !slotExpiry.Equal(periodEnd) {
+		t.Fatalf("slot expires_at = %s, want unchanged original %s", slotExpiry, periodEnd)
 	}
 
 	// A revocation is a record, not a claim: it must not be refused.
@@ -636,6 +643,97 @@ func TestUpsert_ActiveTrialClaimsItsSlot(t *testing.T) {
 	revoked.Status = statusRevoked
 	if err := db.Upsert(ctx, revoked); err != nil {
 		t.Fatalf("revoked trial upsert: %v", err)
+	}
+}
+
+// readSlotExpiry reads the raw expires_at for a canonical email's slot.
+func readSlotExpiry(t *testing.T, db *EntitlementDB, email string) time.Time {
+	t.Helper()
+	canonical, err := NormalizeEmail(email)
+	if err != nil {
+		t.Fatalf("NormalizeEmail(%q): %v", email, err)
+	}
+	var got time.Time
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT expires_at FROM active_trial_slots WHERE normalized_email = ?`, canonical,
+	).Scan(&got); err != nil {
+		t.Fatalf("read slot expiry for %q: %v", email, err)
+	}
+	return got.UTC()
+}
+
+// TestClaimActiveTrialSlot_SameOwnerCannotMoveExpiryEarlier reproduces the
+// exact drift the same-owner conflict branch used to allow: claim a slot
+// through its original expiry, then a later active Upsert for the SAME
+// subscription with an EARLIER CurrentPeriodEnd (a stale/incorrect terminal
+// write) must not move the slot into the past, because that would let a new
+// order for the same email mint a second trial while the first subscription's
+// token is still valid.
+func TestClaimActiveTrialSlot_SameOwnerCannotMoveExpiryEarlier(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	originalExpiry := now.Add(30 * 24 * time.Hour)
+
+	if err := db.Upsert(ctx, trialEntitlement("order_owner_a", "owner@example.com", originalExpiry)); err != nil {
+		t.Fatalf("initial claim: %v", err)
+	}
+
+	// A later active write for the SAME subscription reports an earlier
+	// period end than what was originally claimed.
+	staleEarlier := trialEntitlement("order_owner_a", "owner@example.com", now.Add(-time.Minute))
+	if err := db.Upsert(ctx, staleEarlier); err != nil {
+		t.Fatalf("stale earlier upsert for same owner: %v", err)
+	}
+
+	gotExpiry := readSlotExpiry(t, db, "owner@example.com")
+	if !gotExpiry.Equal(originalExpiry) {
+		t.Fatalf("slot expires_at = %s, want unchanged original %s (write-once)", gotExpiry, originalExpiry)
+	}
+
+	// A second order for the same email must still be denied: the slot did
+	// NOT move into the past.
+	err := issueTrial(t, db, trialEntitlement("order_owner_b", "owner@example.com", originalExpiry))
+	if !errors.Is(err, ErrActiveTrialExists) {
+		t.Fatalf("second trial after stale same-owner write: err = %v, want ErrActiveTrialExists", err)
+	}
+}
+
+func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+	ent := trialEntitlement("order_refund_before_mint", "refund-before-mint@example.com", expiresAt)
+
+	// This is the committed state from the refund handler after another
+	// service instance already completed its stale preflight read. The mint
+	// transaction itself must re-read it, rather than trusting that earlier
+	// read, before it can claim a slot or insert an entitlement.
+	if got, err := db.RecordPendingOneTimeTrialRefund(ctx, &EvalOrder{
+		OrderID:          ent.SubscriptionID,
+		NormalizedEmail:  ent.CustomerEmail,
+		ProductID:        ent.ProductID,
+		RefundState:      refundStateFull,
+		FulfillmentState: fulfillmentRevoked,
+		RevocationState:  revocationPendingNoLicense,
+	}); err != nil || got != nil {
+		t.Fatalf("RecordPendingOneTimeTrialRefund = (%+v, %v), want (nil, nil)", got, err)
+	}
+
+	err := db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, LicenseIssuance{
+		LicenseID:      "lic_refund_before_mint",
+		SubscriptionID: ent.SubscriptionID,
+		IssuedAt:       time.Now().UTC(),
+		ExpiresAt:      expiresAt,
+	}, "msg_refund_before_mint", "order.paid")
+	if !errors.Is(err, ErrTrialRefundPending) {
+		t.Fatalf("mint after pending refund: err = %v, want ErrTrialRefundPending", err)
+	}
+	if got, err := db.GetBySubscriptionID(ctx, ent.SubscriptionID); err != nil || got != nil {
+		t.Fatalf("GetBySubscriptionID after refused mint = (%+v, %v), want (nil, nil)", got, err)
+	}
+	if got := countLicenseIssuances(t, db, ent.SubscriptionID); got != 0 {
+		t.Fatalf("license issuances after refused mint = %d, want 0", got)
 	}
 }
 
@@ -1307,5 +1405,69 @@ func TestOpenEntitlementDB_RefusesAConfiguredInMemoryDatabase(t *testing.T) {
 	t.Cleanup(func() { _ = sentinel.Close() })
 	if got := sentinel.JournalMode(); got != journalModeMemory {
 		t.Fatalf("sentinel JournalMode() = %q, want %q", got, journalModeMemory)
+	}
+}
+
+// TestReportDriftedTrialSlots_NamesDisagreementWithoutRepairing pins the
+// diagnostic for slot rows a repaired write-once claim can no longer produce
+// going forward, but that a pre-existing row (claimed while the retired sync
+// writer could still move expires_at) may still carry. It must be named, not
+// silently repaired.
+func TestReportDriftedTrialSlots_NamesDisagreementWithoutRepairing(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	original := time.Now().UTC().Add(30 * 24 * time.Hour)
+
+	ent := trialEntitlement("order_drift_a", "drift@example.com", original)
+	ent.LastLicensePeriodEnd = &original
+	if err := db.Upsert(ctx, ent); err != nil {
+		t.Fatalf("seed trial: %v", err)
+	}
+
+	// A clean database reports nothing.
+	clean, err := db.DriftedTrialSlots(ctx)
+	if err != nil {
+		t.Fatalf("DriftedTrialSlots clean: %v", err)
+	}
+	if len(clean) != 0 {
+		t.Fatalf("clean database reported drift: %+v", clean)
+	}
+
+	// Simulate a row left behind by the retired sync writer: the slot's
+	// expires_at disagrees with the entitlement's immutable claim-time period
+	// end, while current_period_end may later change during a state mirror.
+	drifted := original.Add(-48 * time.Hour)
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`, drifted, "drift@example.com",
+	); err != nil {
+		t.Fatalf("simulate drifted slot: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`, drifted, ent.SubscriptionID,
+	); err != nil {
+		t.Fatalf("simulate later entitlement state mirror: %v", err)
+	}
+
+	rows, err := db.DriftedTrialSlots(ctx)
+	if err != nil {
+		t.Fatalf("DriftedTrialSlots: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SubscriptionID != "order_drift_a" {
+		t.Fatalf("DriftedTrialSlots = %+v, want one row for order_drift_a", rows)
+	}
+	if !rows[0].SlotExpiresAt.Equal(drifted) || !rows[0].EntitlementClaimEndsAt.Equal(original) {
+		t.Fatalf("DriftedTrialSlots row = %+v, want slot=%s entitlement=%s", rows[0], drifted, original)
+	}
+
+	var buf bytes.Buffer
+	db.ReportDriftedTrialSlots(ctx, zerolog.New(&buf))
+	out := buf.String()
+	if !strings.Contains(out, "order_drift_a") {
+		t.Fatalf("report missing subscription id: %s", out)
+	}
+
+	// Never auto-repaired: the slot still carries the drifted value.
+	if got := readSlotExpiry(t, db, "drift@example.com"); !got.Equal(drifted) {
+		t.Fatalf("ReportDriftedTrialSlots repaired the row: got %s, want still %s", got, drifted)
 	}
 }

@@ -36,6 +36,11 @@ const (
 	revocationApplied          = "applied"
 )
 
+// ErrTrialRefundPending means a refund was recorded for a one-time trial
+// before its issuance transaction committed. Minting the trial would grant a
+// credential for an already-refunded order, so the transaction must roll back.
+var ErrTrialRefundPending = errors.New("one-time trial refund is pending")
+
 // EvalOrder tracks the fulfillment + refund lifecycle of a one-time Enterprise
 // Eval purchase, keyed by the Polar order ID. It exists separately from
 // entitlements so a refund that arrives BEFORE the paid event (out-of-order
@@ -61,6 +66,71 @@ type EvalOrder struct {
 // UpsertEvalOrder inserts or updates an eval-order record outside a transaction.
 func (e *EntitlementDB) UpsertEvalOrder(ctx context.Context, eo *EvalOrder) error {
 	return upsertEvalOrder(ctx, e.db, eo)
+}
+
+// reserveTrialRefundGuard creates or locks the order state that both trial
+// issuance and refund-before-issuance use, then re-reads it in the issuance
+// transaction. The write makes the two paths mutually exclusive across
+// service instances: a refund that commits first is observed here, and a
+// refund that waits for this transaction re-checks the committed entitlement.
+func reserveTrialRefundGuard(ctx context.Context, tx *sql.Tx, ent *Entitlement) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO trial_order_guards (order_id, pending_refund)
+		VALUES (?, 0)
+		ON CONFLICT(order_id) DO NOTHING
+	`, ent.SubscriptionID); err != nil {
+		return fmt.Errorf("reserve trial refund guard for %s: %w", ent.SubscriptionID, err)
+	}
+	var pending bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT pending_refund FROM trial_order_guards WHERE order_id = ?`, ent.SubscriptionID,
+	).Scan(&pending); err != nil {
+		return fmt.Errorf("re-read trial refund guard for %s: %w", ent.SubscriptionID, err)
+	}
+	state, err := getEvalOrder(ctx, tx, ent.SubscriptionID)
+	if err != nil {
+		return fmt.Errorf("re-read one-time trial refund state for %s: %w", ent.SubscriptionID, err)
+	}
+	if pending || state != nil && (state.RefundState != refundStateNone || state.RevocationState != revocationNone) {
+		return fmt.Errorf("%w for order %s", ErrTrialRefundPending, ent.SubscriptionID)
+	}
+	return nil
+}
+
+// RecordPendingOneTimeTrialRefund atomically records an out-of-order trial
+// refund and checks whether an issuance committed while the refund waited for
+// the shared order-state write. A caller that receives an entitlement must
+// revoke it instead of treating the refund as pending.
+func (e *EntitlementDB) RecordPendingOneTimeTrialRefund(ctx context.Context, eo *EvalOrder) (*Entitlement, error) {
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin pending one-time trial refund transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO trial_order_guards (order_id, pending_refund)
+		VALUES (?, 1)
+		ON CONFLICT(order_id) DO UPDATE SET pending_refund = 1
+	`, eo.OrderID); err != nil {
+		return nil, fmt.Errorf("record pending one-time trial refund guard: %w", err)
+	}
+	if err := upsertEvalOrder(ctx, tx, eo); err != nil {
+		return nil, fmt.Errorf("record pending one-time trial refund: %w", err)
+	}
+	entitlement, err := getEntitlementBySubscriptionID(ctx, tx, eo.OrderID)
+	if err != nil {
+		return nil, fmt.Errorf("re-read entitlement after pending one-time trial refund: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit pending one-time trial refund: %w", err)
+	}
+	committed = true
+	return entitlement, nil
 }
 
 // upsertEvalOrder inserts or updates an eval-order record using the given execer

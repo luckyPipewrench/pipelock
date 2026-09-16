@@ -124,6 +124,11 @@ func run(log zerolog.Logger) error {
 	// limit, so preserving their live trials is visible rather than quiet.
 	db.ReportDuplicateActiveTrials(context.Background(), log)
 
+	// Name any slot whose expiry disagrees with its entitlement's claim-time
+	// period end, so a row left behind by the retired sync writer is visible
+	// instead of silently governing eligibility. Never auto-repaired.
+	db.ReportDriftedTrialSlots(context.Background(), log)
+
 	// Open the append-only audit ledger.
 	ledger, err := licenseservice.OpenAuditLedger(cfg.LedgerPath)
 	if err != nil {

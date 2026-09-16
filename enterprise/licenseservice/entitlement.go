@@ -368,6 +368,15 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 		expires_at       DATETIME NOT NULL
 	);
 
+	-- trial_order_guards serializes a one-time trial issuance with an
+	-- out-of-order refund for the same provider order. It is deliberately
+	-- separate from eval_orders: trials are not evals, but they need one
+	-- durable per-order row both paths can lock before issuing a credential.
+	CREATE TABLE IF NOT EXISTS trial_order_guards (
+		order_id       TEXT PRIMARY KEY,
+		pending_refund BOOLEAN NOT NULL DEFAULT 0
+	);
+
 	CREATE TABLE IF NOT EXISTS license_revocations (
 		license_id      TEXT PRIMARY KEY,
 		subscription_id TEXT NOT NULL,
@@ -541,6 +550,75 @@ func (e *EntitlementDB) ReportDuplicateActiveTrials(ctx context.Context, log zer
 		log.Warn().
 			Strs("subscription_ids", subscriptions).
 			Msg("these orders are active trials for one customer; only the longest-running one holds the trial slot, the others keep running until they expire")
+	}
+}
+
+// DriftedTrialSlotSubscription identifies one slot row whose expires_at
+// disagrees with its owning entitlement's claim-time expiry.
+type DriftedTrialSlotSubscription struct {
+	SubscriptionID         string
+	SlotExpiresAt          time.Time
+	EntitlementClaimEndsAt time.Time
+}
+
+// DriftedTrialSlots finds active_trial_slots rows whose expires_at no longer
+// matches the owning entitlement's claim-time expiry.
+//
+// last_license_period_end is written from CurrentPeriodEnd in the same
+// transaction that claims a trial slot and records its issuance. Unlike
+// current_period_end, terminal state mirrors can change later, so this is the
+// schema field that records the claim-time expiry. The now-removed sync writer
+// could push a different value into the slot on cancel or revoke. This
+// diagnostic names those pre-existing disagreements without repairing a live
+// row, because an operator must decide which value to preserve.
+func (e *EntitlementDB) DriftedTrialSlots(ctx context.Context) ([]DriftedTrialSlotSubscription, error) {
+	const query = `
+	SELECT s.subscription_id, s.expires_at, e.last_license_period_end
+	FROM active_trial_slots s
+	JOIN entitlements e ON e.subscription_id = s.subscription_id
+	WHERE e.tier IN (?, ?)
+	  AND e.billing_interval = ?
+	  AND e.last_license_period_end IS NOT NULL
+	  AND s.expires_at <> e.last_license_period_end
+	ORDER BY s.subscription_id ASC
+	`
+	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, billingIntervalOneTime)
+	if err != nil {
+		return nil, fmt.Errorf("read drifted trial slots: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var drifted []DriftedTrialSlotSubscription
+	for rows.Next() {
+		var d DriftedTrialSlotSubscription
+		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &d.EntitlementClaimEndsAt); err != nil {
+			return nil, fmt.Errorf("scan drifted trial slot: %w", err)
+		}
+		d.SlotExpiresAt = d.SlotExpiresAt.UTC()
+		d.EntitlementClaimEndsAt = d.EntitlementClaimEndsAt.UTC()
+		drifted = append(drifted, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate drifted trial slots: %w", err)
+	}
+	return drifted, nil
+}
+
+// ReportDriftedTrialSlots logs every trial slot whose expiry disagrees with
+// its owning entitlement's claim-time expiry, alongside the duplicate-trial
+// report. It never repairs a row; see DriftedTrialSlots.
+func (e *EntitlementDB) ReportDriftedTrialSlots(ctx context.Context, log zerolog.Logger) {
+	drifted, err := e.DriftedTrialSlots(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("could not check for drifted trial slot expiries")
+		return
+	}
+	for _, d := range drifted {
+		log.Warn().
+			Str("subscription_id", d.SubscriptionID).
+			Time("slot_expires_at", d.SlotExpiresAt).
+			Time("entitlement_claim_expires_at", d.EntitlementClaimEndsAt).
+			Msg("trial slot expiry disagrees with its entitlement's claim-time expiry; not auto-repaired, reconcile manually")
 	}
 }
 
@@ -742,6 +820,10 @@ func upsertEntitlement(ctx context.Context, exec entitlementExecer, ent *Entitle
 // GetBySubscriptionID retrieves a single entitlement by its Polar subscription ID.
 // Returns nil, nil if not found.
 func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (*Entitlement, error) {
+	return getEntitlementBySubscriptionID(ctx, e.db, subID)
+}
+
+func getEntitlementBySubscriptionID(ctx context.Context, q entitlementQueryer, subID string) (*Entitlement, error) {
 	const query = `
 	SELECT
 		subscription_id, customer_email, product_id, tier, billing_interval,
@@ -755,7 +837,7 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 	`
 
 	ent := &Entitlement{}
-	err := e.db.QueryRowContext(ctx, query, subID).Scan(
+	err := q.QueryRowContext(ctx, query, subID).Scan(
 		&ent.SubscriptionID, &ent.CustomerEmail, &ent.ProductID, &ent.Tier, &ent.BillingInterval,
 		&ent.Status, &ent.CurrentPeriodEnd, &ent.Founding, &ent.FoundingReservedAt, &ent.Org,
 		&ent.Features,
@@ -1075,6 +1157,9 @@ func (e *EntitlementDB) UpsertWithLicenseIssuanceAndWebhook(ctx context.Context,
 		}
 	}
 	if isTrialTier(ent.Tier) {
+		if err := reserveTrialRefundGuard(ctx, tx, ent); err != nil {
+			return err
+		}
 		if err := claimActiveTrialSlot(ctx, tx, ent); err != nil {
 			return err
 		}
@@ -1117,12 +1202,23 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	if err != nil {
 		return err
 	}
+	// expires_at is write-once per owner: the same subscription retrying or
+	// re-upserting its own active claim (idempotent redelivery, a later Upsert
+	// with a different CurrentPeriodEnd) must never move the expiry it already
+	// holds, or a terminal write with a stale/earlier period could reopen the
+	// slot before the trial the operator sees is actually over. Only a claim
+	// that is taking over an EXPIRED slot from a DIFFERENT owner sets a new
+	// expiry.
 	const query = `
 	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at)
 	VALUES (?, ?, ?)
 	ON CONFLICT(normalized_email) DO UPDATE SET
 		subscription_id = excluded.subscription_id,
-		expires_at = excluded.expires_at
+		expires_at = CASE
+			WHEN active_trial_slots.subscription_id = excluded.subscription_id
+				THEN active_trial_slots.expires_at
+			ELSE excluded.expires_at
+		END
 	WHERE active_trial_slots.expires_at <= ?
 	   OR active_trial_slots.subscription_id = excluded.subscription_id
 	`

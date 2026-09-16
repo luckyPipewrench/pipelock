@@ -3288,9 +3288,13 @@ func TestHandleOrderEvent_EnterpriseTrial(t *testing.T) {
 		t.Fatalf("second active enterprise trial minted an entitlement: %+v", duplicate)
 	}
 
-	first.CurrentPeriodEnd = time.Now().Add(-time.Minute)
-	if err := ts.db.Upsert(ctx, first); err != nil {
-		t.Fatalf("expire first enterprise trial: %v", err)
+	// The slot expiry, not a later entitlement status mirror, controls when a
+	// new trial may be claimed. Simulate that original window having passed.
+	if _, err := ts.db.db.ExecContext(ctx,
+		`UPDATE active_trial_slots SET expires_at = ? WHERE subscription_id = ?`,
+		time.Now().Add(-time.Minute), first.SubscriptionID,
+	); err != nil {
+		t.Fatalf("expire first enterprise trial slot: %v", err)
 	}
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_after_expiry")); err != nil {
 		t.Fatalf("HandleOrderEvent enterprise trial after expiry: %v", err)

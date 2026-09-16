@@ -390,3 +390,41 @@ func TestEvidenceAuditorProbeReportsCancellationNotAnEmptyState(t *testing.T) {
 		t.Fatalf("cancellation was misreported as an empty probe state: %q", reason)
 	}
 }
+
+// Fixing the cancellation swallow inside runSystemctlOp was not enough: the
+// decision layer took any "unavailable" answer, cancellation included, and
+// turned it into a clean skip with a nil error, so an interrupted init exited
+// zero claiming the host had no user systemd session.
+func TestInitCancelledProbeFailsRatherThanSkipping(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+	stub(t, &evidenceAuditorSystemctl, runSystemctlOp)
+	originalRun := evidenceAuditorRunCommand
+	t.Cleanup(func() { evidenceAuditorRunCommand = originalRun })
+	evidenceAuditorRunCommand = func(*exec.Cmd) ([]byte, error) { return nil, &exec.ExitError{} }
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	home := t.TempDir()
+	var out bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", filepath.Join(home, "cfg", "pipelock.yaml"),
+		"--skip-canary",
+		"--skip-validate",
+	})
+
+	err := cmd.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatalf("a cancelled init reported success\noutput:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Evidence corpus auditor: skipped") {
+		t.Fatalf("cancellation was reported as a clean skip\noutput:\n%s", out.String())
+	}
+}

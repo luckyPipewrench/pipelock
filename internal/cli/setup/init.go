@@ -392,6 +392,14 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 	}
 
 	if unavailable, reason := evidenceAuditorUserSystemdUnavailable(cmd.Context()); unavailable {
+		// The probe reports one boolean, so it cannot distinguish "this host
+		// has no user session" from "we were cancelled while asking". Only the
+		// context can. Without this check an interrupted init exits zero and
+		// reports a clean skip, which tells the operator the host lacks
+		// systemd when nothing of the sort was established.
+		if ctxErr := cmd.Context().Err(); ctxErr != nil {
+			return nil, fmt.Errorf("probing systemd --user: %w", ctxErr)
+		}
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", reason)
 		}

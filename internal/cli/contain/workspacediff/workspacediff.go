@@ -72,6 +72,16 @@ type Budget struct {
 	MaxTotalPathBytes int64
 }
 
+// BoundaryCheck identifies the strength of the mount-boundary check used for
+// a workspace snapshot. A device-only check cannot detect a bind mount on the
+// same filesystem, so it must never be presented as mount-ID coverage.
+type BoundaryCheck string
+
+const (
+	BoundaryCheckMountID    BoundaryCheck = "mount-id"
+	BoundaryCheckDeviceOnly BoundaryCheck = "device-only"
+)
+
 // DefaultBudget returns Pipelock's local default snapshot budget: 200,000
 // entries or 64 MiB of cumulative path bytes, whichever is hit first. Both
 // are conservative operational defaults, not derived from any external
@@ -82,12 +92,13 @@ func DefaultBudget() Budget {
 
 // Manifest is the recorded state of a granted workspace at one point in time.
 type Manifest struct {
-	Root         string            `json:"root"`
-	CapBytes     int64             `json:"cap_bytes"`
-	RootMissing  bool              `json:"root_missing"`
-	Entries      map[string]Entry  `json:"entries"`
-	Unreadable   []UnreadableEntry `json:"unreadable"` // paths not fully recorded, with why
-	unreadableOf map[string]struct{}
+	Root          string            `json:"root"`
+	CapBytes      int64             `json:"cap_bytes"`
+	BoundaryCheck BoundaryCheck     `json:"boundary_check"`
+	RootMissing   bool              `json:"root_missing"`
+	Entries       map[string]Entry  `json:"entries"`
+	Unreadable    []UnreadableEntry `json:"unreadable"` // paths not fully recorded, with why
+	unreadableOf  map[string]struct{}
 
 	// BudgetExceeded/BudgetReason record that the walk stopped early because
 	// it hit the Budget passed to Snapshot, rather than because the
@@ -147,6 +158,11 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 	// included, not only directories -- falling back to the device check
 	// only when the kernel doesn't report a mount ID.
 	rootMnt, rootMntOK := mountID(cleanRoot)
+	if rootMntOK {
+		m.BoundaryCheck = BoundaryCheckMountID
+	} else {
+		m.BoundaryCheck = BoundaryCheckDeviceOnly
+	}
 
 	walkErr := filepath.WalkDir(cleanRoot, func(path string, d fs.DirEntry, err error) error {
 		m.entryCount++
@@ -188,6 +204,7 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 			if entryMnt, entryOK := mountID(path); crossedMount(rootMnt, entryMnt, rootMntOK, entryOK) {
 				crossed = true
 			} else if !rootMntOK || !entryOK {
+				m.BoundaryCheck = BoundaryCheckDeviceOnly
 				if rootDevOK {
 					if dev, _, ok := statIDs(info); ok && dev != rootDev {
 						crossed = true
@@ -331,6 +348,7 @@ type Counts struct {
 type Statement struct {
 	Root               string            `json:"root"`
 	CapBytes           int64             `json:"cap_bytes"`
+	BoundaryCheck      BoundaryCheck     `json:"boundary_check"`
 	GeneratedAt        time.Time         `json:"generated_at"`
 	RootMissingAtStart bool              `json:"root_missing_at_start"`
 	RootMissingAtEnd   bool              `json:"root_missing_at_end"`
@@ -360,21 +378,26 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 	st := Statement{
 		Root:               before.Root,
 		CapBytes:           before.CapBytes,
+		BoundaryCheck:      boundaryCheckFor(before, after),
 		GeneratedAt:        now,
 		RootMissingAtStart: before.RootMissing,
 		RootMissingAtEnd:   after.RootMissing,
 	}
 
+	boundaryReason := ""
+	if st.BoundaryCheck == BoundaryCheckDeviceOnly {
+		boundaryReason = "mount boundary check unavailable on this kernel"
+	}
 	if after.RootMissing && !before.RootMissing {
 		st.Incomplete = true
-		st.IncompleteReason = "workspace root no longer exists at session end; cannot enumerate changes"
+		st.IncompleteReason = joinIncompleteReasons(boundaryReason, "workspace root no longer exists at session end; cannot enumerate changes")
 		st.Unreadable = mergeUnreadable(before.Unreadable, after.Unreadable)
 		st.Counts.Unreadable = len(st.Unreadable)
 		return st, nil
 	}
 	if before.RootMissing && after.RootMissing {
 		st.Incomplete = true
-		st.IncompleteReason = "workspace root did not exist at session start or end"
+		st.IncompleteReason = joinIncompleteReasons(boundaryReason, "workspace root did not exist at session start or end")
 		return st, nil
 	}
 
@@ -428,6 +451,9 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 	}
 
 	var reasons []string
+	if boundaryReason != "" {
+		reasons = append(reasons, boundaryReason)
+	}
 	if len(st.Unreadable) > 0 {
 		reasons = append(reasons, fmt.Sprintf(
 			"%d path(s) unreadable, mount-excluded, or identity-changed; their subtrees are omitted from added/removed/modified rather than reported as changed",
@@ -447,6 +473,23 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 		st.IncompleteReason = strings.Join(reasons, "; ")
 	}
 	return st, nil
+}
+
+func boundaryCheckFor(before, after Manifest) BoundaryCheck {
+	if before.BoundaryCheck == BoundaryCheckDeviceOnly || after.BoundaryCheck == BoundaryCheckDeviceOnly {
+		return BoundaryCheckDeviceOnly
+	}
+	return BoundaryCheckMountID
+}
+
+func joinIncompleteReasons(reasons ...string) string {
+	filtered := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		if reason != "" {
+			filtered = append(filtered, reason)
+		}
+	}
+	return strings.Join(filtered, "; ")
 }
 
 func excludedPrefixes(a, b []UnreadableEntry) []string {

@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"os"
@@ -33,7 +34,7 @@ func TestRunContainRun_RefusesWhenContractCannotBeWritten(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
 			posture = true
 			return "/unused", nil
 		},

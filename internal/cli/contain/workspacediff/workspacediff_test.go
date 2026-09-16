@@ -11,12 +11,68 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 var testNow = time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+func TestDefaultBudgetMatchesContainCLIDoc(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "contain-cli.md"))
+	if err != nil {
+		t.Fatalf("read contain CLI documentation: %v", err)
+	}
+	matches := regexp.MustCompile(`currently ([0-9,]+) entries or ([0-9]+) MiB of path bytes`).FindStringSubmatch(string(data))
+	if matches == nil {
+		t.Fatal("contain CLI documentation does not state the workspace snapshot budget")
+	}
+	docEntries, err := strconv.Atoi(strings.ReplaceAll(matches[1], ",", ""))
+	if err != nil {
+		t.Fatalf("parse documented entry budget %q: %v", matches[1], err)
+	}
+	docPathMiB, err := strconv.ParseInt(matches[2], 10, 64)
+	if err != nil {
+		t.Fatalf("parse documented path budget %q: %v", matches[2], err)
+	}
+	budget := DefaultBudget()
+	if docEntries != budget.MaxEntries {
+		t.Fatalf("documented entry budget = %d, code = %d", docEntries, budget.MaxEntries)
+	}
+	if docPathMiB != budget.MaxTotalPathBytes>>20 {
+		t.Fatalf("documented path budget = %d MiB, code = %d MiB", docPathMiB, budget.MaxTotalPathBytes>>20)
+	}
+}
+
+func TestDiff_DeviceOnlyBoundaryCheckMarksStatementIncomplete(t *testing.T) {
+	before := Manifest{
+		Root:          "/granted",
+		CapBytes:      1,
+		Entries:       map[string]Entry{},
+		BoundaryCheck: BoundaryCheckDeviceOnly,
+	}
+	after := Manifest{
+		Root:          "/granted",
+		CapBytes:      1,
+		Entries:       map[string]Entry{},
+		BoundaryCheck: BoundaryCheckMountID,
+	}
+	statement, err := Diff(before, after, testNow)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if statement.BoundaryCheck != BoundaryCheckDeviceOnly {
+		t.Fatalf("boundary_check = %q, want %q", statement.BoundaryCheck, BoundaryCheckDeviceOnly)
+	}
+	if !statement.Incomplete {
+		t.Fatal("device-only mount boundary checking must mark the statement incomplete")
+	}
+	if statement.IncompleteReason != "mount boundary check unavailable on this kernel" {
+		t.Fatalf("incomplete_reason = %q", statement.IncompleteReason)
+	}
+}
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()

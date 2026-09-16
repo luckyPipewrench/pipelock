@@ -110,7 +110,7 @@ func TestExitVerifyIntegrityErrorJSONIncludesCapsuleTimes(t *testing.T) {
 		Evidence: posturepkg.EvidenceBundle{
 			FlightRecorder: posturepkg.FlightRecorderCounts{LastReceiptAt: &last},
 		},
-	}, errors.New("signature mismatch"))
+	}, false, errors.New("signature mismatch"))
 	if err == nil || cliutil.ExitCodeOf(err) != exitVerifyIntegrity {
 		t.Fatalf("exit err = %v", err)
 	}

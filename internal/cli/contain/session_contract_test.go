@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"io"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ func TestRunContainRun_DryRunPrintsContractWithoutLaunchOrPosture(t *testing.T) 
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
 			posture = true
 			return "/unused", nil
 		},
@@ -147,7 +148,9 @@ func TestRunContainRun_ContractReflectsTheToolsTheLauncherAccepts(t *testing.T) 
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+			return "/unused", nil
+		},
 	}
 	var buf bytes.Buffer
 	if err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{}, []string{"claude"}); err != nil {

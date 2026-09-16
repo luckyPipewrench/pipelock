@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"io"
 	"os"
 	"path/filepath"
@@ -287,7 +288,9 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 				launched = true
 				return nil
 			},
-			emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+			emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+				return "/unused", nil
+			},
 		}
 		err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 		if err == nil || !strings.Contains(err.Error(), "expired") {
@@ -309,7 +312,7 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 				launched = true
 				return nil
 			},
-			emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
+			emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
 				posture = true
 				return "/unused", nil
 			},

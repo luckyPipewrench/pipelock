@@ -1439,6 +1439,61 @@ func TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected(t *testing.T
 	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
+func TestPostureVerify_WorkspaceStatement_JSONBindingFailureReportsUnbound(t *testing.T) {
+	capsuleAPath, capsuleBPath, pubKeyPath, priv := twoCapsulesSameKey(t, perfectEvidence())
+
+	capsuleAHash, err := workspacediff.HashFileSHA256(capsuleAPath)
+	if err != nil {
+		t.Fatalf("hash capsule A: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleAHash, priv)
+	if err != nil {
+		t.Fatalf("sign statement for capsule A: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", capsuleBPath,
+		"--key", pubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+		"--json",
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected posture verify to reject a statement bound to a different capsule")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+
+	var out struct {
+		WorkspaceStatement *struct {
+			Bound  bool   `json:"bound"`
+			Reason string `json:"reason"`
+		} `json:"workspace_statement"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, stdout.String())
+	}
+	if out.WorkspaceStatement == nil || out.WorkspaceStatement.Bound {
+		t.Fatalf("workspace_statement = %+v, want bound=false", out.WorkspaceStatement)
+	}
+	if out.WorkspaceStatement.Reason == "" {
+		t.Fatalf("workspace_statement.reason missing from output:\n%s", stdout.String())
+	}
+}
+
 // TestPostureVerify_WorkspaceStatement_MatchedPairPasses is the positive
 // control for the same surface: the SAME capsule the statement is bound to.
 // TestPostureVerify_WorkspaceStatement_JSONModeStaysValidJSON is M7: before

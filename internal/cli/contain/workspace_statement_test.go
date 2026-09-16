@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -87,7 +88,7 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 			}
 			return os.WriteFile(filepath.Join(workspace, "existing.txt"), []byte("after"), 0o600)
 		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return "", err
@@ -126,6 +127,12 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 	if err := json.Unmarshal(data, &signed); err != nil {
 		t.Fatalf("unmarshal statement: %v", err)
 	}
+	if len(signed.Statements) != 1 {
+		t.Fatalf("statements = %d, want 1", len(signed.Statements))
+	}
+	if got := "boundary_check=" + string(signed.Statements[0].BoundaryCheck); !strings.Contains(stdout.String(), got) {
+		t.Fatalf("stdout missing statement boundary-check outcome %q:\n%s", got, stdout.String())
+	}
 
 	// Session binding: the statement carries the sha256 of THIS run's exact
 	// posture capsule bytes.
@@ -138,9 +145,6 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 	}
 	if err := workspacediff.Verify(signed, pub); err != nil {
 		t.Fatalf("verify signature: %v", err)
-	}
-	if len(signed.Statements) != 1 {
-		t.Fatalf("statements = %d, want 1", len(signed.Statements))
 	}
 	st := signed.Statements[0]
 	if st.Root != filepath.Clean(workspace) {
@@ -178,7 +182,7 @@ func TestRunContainRun_WorkspaceRootDisappearsMidSession_StatementSaysSo(t *test
 		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			return os.RemoveAll(workspace)
 		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return "", err
@@ -240,7 +244,7 @@ func TestRunContainRun_NoGrants_NoStatementEmitted(t *testing.T) {
 		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			return nil
 		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return "", err
@@ -288,7 +292,7 @@ func TestRunContainRun_MissingSigningKey_WarnsButLaunchStillSucceeds(t *testing.
 			launched = true
 			return nil
 		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return "", err
@@ -317,14 +321,11 @@ func TestRunContainRun_MissingSigningKey_WarnsButLaunchStillSucceeds(t *testing.
 	}
 }
 
-// TestRunContainRun_KeyRotationMidSession_StatementUsesPreLaunchKey is M5:
-// the signing key is loaded once, before launch, and reused for the
-// post-launch statement even if the config's key path is rewritten to point
-// at a DIFFERENT key while the launched tool is running. Without the fix
-// (loading the key again after launch), the statement would end up signed by
-// the rotated-in key, one the posture capsule launched under was never bound
-// to.
-func TestRunContainRun_KeyRotationMidSession_StatementUsesPreLaunchKey(t *testing.T) {
+// TestRunContainRun_KeyRotationBetweenLoadAndEmitUsesPreLaunchKey proves the
+// signing key is read before posture emission and reused by REAL posture
+// emission and statement signing. Replacing the key file in that interval
+// must not let the capsule and statement acquire different signers.
+func TestRunContainRun_KeyRotationBetweenLoadAndEmitUsesPreLaunchKey(t *testing.T) {
 	env := allPassEnv(t)
 	workspace := t.TempDir()
 	invBody := workspaceInvBody(t, workspace)
@@ -340,32 +341,22 @@ func TestRunContainRun_KeyRotationMidSession_StatementUsesPreLaunchKey(t *testin
 	configDir := t.TempDir()
 	configPath, preLaunchPub := writeContainConfigWithSigningKey(t, configDir)
 
-	// A SECOND, different key the operator "rotates in" while the tool runs.
+	// A second key replaces the configured key file between preload and emit.
 	_, rotatedPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotatedKeyPath := filepath.Join(configDir, "rotated.key")
-	if err := signing.SavePrivateKey(rotatedPriv, rotatedKeyPath); err != nil {
-		t.Fatal(err)
-	}
+	keyPath := filepath.Join(configDir, "signing.key")
 
 	runEnv := containRunEnv{
 		probe:      env,
 		loadConfig: func(f string) (*config.Config, error) { return config.Load(f) },
-		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
-			// Simulate an operator rotating the signing key mid-session by
-			// rewriting the config the launched process's session would
-			// otherwise re-read.
-			body := fmt.Sprintf("metrics_listen: 127.0.0.1:9091\nflight_recorder:\n  signing_key_path: %s\n", rotatedKeyPath)
-			return os.WriteFile(configPath, []byte(body), 0o600)
-		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
-			path := filepath.Join(outputDir, "proof.json")
-			if err := os.MkdirAll(outputDir, 0o750); err != nil {
+		launch:     func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+		emitPosture: func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, probe *probeEnv, args []string) (string, error) {
+			if err := signing.SavePrivateKey(rotatedPriv, keyPath); err != nil {
 				return "", err
 			}
-			return path, os.WriteFile(path, []byte("capsule bytes"), 0o600)
+			return emitContainRunPosture(cfg, privKey, outputDir, probe, args)
 		},
 	}
 	opts := containRunOptions{configFile: configPath, postureOutput: postureDir, workspaceDiffCapBytes: 1 << 20}
@@ -383,6 +374,22 @@ func TestRunContainRun_KeyRotationMidSession_StatementUsesPreLaunchKey(t *testin
 	}
 	if err := workspacediff.Verify(signed, preLaunchPub); err != nil {
 		t.Fatalf("expected the statement to verify against the PRE-launch key, got %v", err)
+	}
+	proofPath := filepath.Join(postureDir, posturepkg.ProofFilename)
+	proofData, err := os.ReadFile(proofPath)
+	if err != nil {
+		t.Fatalf("read posture capsule: %v", err)
+	}
+	var capsule posturepkg.Capsule
+	if err := json.Unmarshal(proofData, &capsule); err != nil {
+		t.Fatalf("parse posture capsule: %v", err)
+	}
+	if _, err := posturepkg.VerifyCapsule(&capsule, preLaunchPub, posturepkg.VerifyOpts{
+		Policy:               posturepkg.PolicyNone,
+		SkipMinScoreGate:     true,
+		SkipReceiptFreshness: true,
+	}); err != nil {
+		t.Fatalf("expected the posture capsule to verify against the pre-launch key, got %v", err)
 	}
 }
 
@@ -453,7 +460,7 @@ func TestRunContainRun_ConfigLoadedOnceReusedForCapsuleAndStatementKey(t *testin
 			return cfg, nil
 		},
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(cfg *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(cfg *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			if cfg.FlightRecorder.SigningKeyPath != observedKeyPaths[0] {
 				t.Fatalf("posture emitter cfg signing key = %q, want the pre-rotation key %q (config was reloaded)",
 					cfg.FlightRecorder.SigningKeyPath, observedKeyPaths[0])
@@ -516,7 +523,7 @@ func TestRunContainRun_SnapshotFailurePreLaunch_WarnsButLaunchStillSucceeds(t *t
 			launched = true
 			return nil
 		},
-		emitPosture: func(_ *config.Config, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
 				return "", err

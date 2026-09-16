@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ func TestRunContainRun_InventoryFailureStopsBeforePreflight(t *testing.T) {
 					launches++
 					return nil
 				},
-				emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
 					postureCalls++
 					return "proof.json", nil
 				},

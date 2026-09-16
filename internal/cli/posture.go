@@ -118,17 +118,17 @@ Exit codes:
 
 			capsule, capsuleBytes, err := loadProofFile(proofFile)
 			if err != nil {
-				return exitVerifyIntegrityError(cmd, jsonOutput, policy, nil, fmt.Errorf("loading proof: %w", err))
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, nil, workspaceStmt != "", fmt.Errorf("loading proof: %w", err))
 			}
 
 			pubKey, err := loadPublicKey(keyFile)
 			if err != nil {
-				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, fmt.Errorf("loading public key: %w", err))
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, workspaceStmt != "", fmt.Errorf("loading public key: %w", err))
 			}
 
 			result, err := posturepkg.VerifyCapsule(capsule, pubKey, opts)
 			if err != nil {
-				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, fmt.Errorf("verification failed: %w", err))
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, workspaceStmt != "", fmt.Errorf("verification failed: %w", err))
 			}
 
 			// A valid posture capsule and a valid workspace change statement
@@ -142,7 +142,7 @@ Exit codes:
 			workspaceStmtBound := false
 			if workspaceStmt != "" {
 				if bindErr := verifyWorkspaceStatementBinding(workspaceStmt, capsuleBytes, pubKey); bindErr != nil {
-					return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule,
+					return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, true,
 						fmt.Errorf("workspace change statement verification failed: %w", bindErr))
 				}
 				workspaceStmtBound = true
@@ -152,7 +152,7 @@ Exit codes:
 			}
 
 			if jsonOutput {
-				if encErr := writeVerifyJSON(cmd, result, workspaceStmt != "", workspaceStmtBound); encErr != nil {
+				if encErr := writeVerifyJSON(cmd, result, workspaceStmt != "", workspaceStmtBound, ""); encErr != nil {
 					return fmt.Errorf("encoding JSON output: %w", encErr)
 				}
 				if !result.Passed {
@@ -299,13 +299,14 @@ type verifyJSONOutput struct {
 }
 
 type workspaceStatementJSONResult struct {
-	Bound bool `json:"bound"`
+	Bound  bool   `json:"bound"`
+	Reason string `json:"reason,omitempty"`
 }
 
-func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, workspaceStmtRequested, workspaceStmtBound bool) error {
+func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, workspaceStmtRequested, workspaceStmtBound bool, workspaceStmtReason string) error {
 	out := verifyJSONOutput{VerifyResult: result}
 	if workspaceStmtRequested {
-		out.WorkspaceStatement = &workspaceStatementJSONResult{Bound: workspaceStmtBound}
+		out.WorkspaceStatement = &workspaceStatementJSONResult{Bound: workspaceStmtBound, Reason: workspaceStmtReason}
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
@@ -317,6 +318,7 @@ func exitVerifyIntegrityError(
 	jsonOutput bool,
 	policy string,
 	capsule *posturepkg.Capsule,
+	workspaceStmtRequested bool,
 	err error,
 ) error {
 	if jsonOutput {
@@ -333,7 +335,7 @@ func exitVerifyIntegrityError(
 			result.ExpiresAt = capsule.ExpiresAt
 			result.LastReceiptAt = capsule.Evidence.FlightRecorder.LastReceiptAt
 		}
-		if jsonErr := writeVerifyJSON(cmd, result, false, false); jsonErr != nil {
+		if jsonErr := writeVerifyJSON(cmd, result, workspaceStmtRequested, false, err.Error()); jsonErr != nil {
 			return fmt.Errorf("encoding JSON output: %w", jsonErr)
 		}
 	}

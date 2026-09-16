@@ -129,7 +129,24 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 		}
 		return Manifest{}, fmt.Errorf("workspacediff: stat root %s: %w", cleanRoot, err)
 	}
+	// M6: os.Root confines every subsequent open to cleanRoot's directory
+	// tree using the OS's per-component (openat-family) resolution, so a
+	// symlink swapped into an INTERMEDIATE path component between the walk
+	// observing a path and hashFileSafe opening it cannot smuggle the open
+	// outside the workspace -- O_NOFOLLOW on the final component alone
+	// (openRegularNoFollow) only ever protected the last path segment.
+	rootHandle, err := os.OpenRoot(cleanRoot)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("workspacediff: open root %s: %w", cleanRoot, err)
+	}
+	defer func() { _ = rootHandle.Close() }()
 	rootDev, _, rootDevOK := statIDs(rootInfo)
+	// H3: st_dev alone cannot see a directory bind-mounted from elsewhere on
+	// the SAME filesystem (identical st_dev, different mount). Mount ID
+	// (Linux statx STATX_MNT_ID) does; consult it for every entry -- files
+	// included, not only directories -- falling back to the device check
+	// only when the kernel doesn't report a mount ID.
+	rootMnt, rootMntOK := mountID(cleanRoot)
 
 	walkErr := filepath.WalkDir(cleanRoot, func(path string, d fs.DirEntry, err error) error {
 		m.entryCount++
@@ -162,6 +179,29 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 		}
 
 		mode := info.Mode()
+		// Mount-boundary check applied to EVERY non-root entry regardless of
+		// kind (H3): a bind-mounted regular file, not just a bind-mounted
+		// directory, must be excluded rather than silently treated as part
+		// of this workspace.
+		if path != cleanRoot && mode&os.ModeSymlink == 0 {
+			crossed := false
+			if entryMnt, entryOK := mountID(path); crossedMount(rootMnt, entryMnt, rootMntOK, entryOK) {
+				crossed = true
+			} else if !rootMntOK || !entryOK {
+				if rootDevOK {
+					if dev, _, ok := statIDs(info); ok && dev != rootDev {
+						crossed = true
+					}
+				}
+			}
+			if crossed {
+				m.markUnreadable(path, "crossed a mount boundary; excluded, not descended into")
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
 		switch {
 		case mode&os.ModeSymlink != 0:
 			target, rerr := os.Readlink(path)
@@ -171,12 +211,6 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 			}
 			m.Entries[path] = Entry{Path: path, Kind: KindSymlink, Size: info.Size(), ModTime: info.ModTime(), Target: target}
 		case d.IsDir():
-			if path != cleanRoot && rootDevOK {
-				if dev, _, ok := statIDs(info); ok && dev != rootDev {
-					m.markUnreadable(path, "crossed a mount boundary; excluded, not descended into")
-					return filepath.SkipDir
-				}
-			}
 			m.Entries[path] = Entry{Path: path, Kind: KindDir, ModTime: info.ModTime()}
 		case mode.IsRegular():
 			e := Entry{Path: path, Kind: KindFile, Size: info.Size(), ModTime: info.ModTime()}
@@ -184,7 +218,12 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 				e.Oversize = true
 			} else {
 				wantDev, wantIno, haveIDs := statIDsWithInode(info)
-				digest, oversize, herr := hashFileSafe(path, capBytes, wantDev, wantIno, haveIDs)
+				relPath, relErr := filepath.Rel(cleanRoot, path)
+				if relErr != nil {
+					m.markUnreadable(path, fmt.Sprintf("could not safely hash: %v", relErr))
+					return nil
+				}
+				digest, oversize, herr := hashFileSafe(rootHandle, relPath, path, capBytes, wantDev, wantIno, haveIDs)
 				if herr != nil {
 					m.markUnreadable(path, fmt.Sprintf("could not safely hash: %v", herr))
 					return nil
@@ -226,10 +265,10 @@ func (m *Manifest) markUnreadable(path, reason string) {
 // secret outside the workspace). Content is read through a length-capped
 // reader so an attacker cannot force reading past capBytes even if the file
 // grew after the size check.
-func hashFileSafe(path string, capBytes int64, wantDev, wantIno uint64, haveIDs bool) (digest string, oversize bool, err error) {
-	f, err := openRegularNoFollow(path)
+func hashFileSafe(root *os.Root, relPath, path string, capBytes int64, wantDev, wantIno uint64, haveIDs bool) (digest string, oversize bool, err error) {
+	f, err := root.OpenFile(relPath, os.O_RDONLY, 0)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("open %s (root-confined): %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -341,33 +380,45 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 
 	excluded := excludedPrefixes(before.Unreadable, after.Unreadable)
 
-	beforeEntries := before.Entries
-	afterEntries := after.Entries
-	seen := make(map[string]struct{}, len(beforeEntries)+len(afterEntries))
-	for p := range beforeEntries {
-		seen[p] = struct{}{}
-	}
-	for p := range afterEntries {
-		seen[p] = struct{}{}
-	}
-	for p := range seen {
-		if withinExcluded(p, excluded) {
-			continue
+	// M4: if EITHER snapshot's walk stopped early on the Budget, a path's
+	// presence in one snapshot but not the other proves nothing -- the walk
+	// may simply not have reached it that time (its ORDER can shift between
+	// the two walks, e.g. a new path sorting ahead of it), not that it was
+	// actually added, removed, or modified. Reporting entry-level
+	// conclusions from a budget-truncated pair would silently misreport an
+	// untouched path as removed. Suppress ALL entry-level conclusions in
+	// that case; the operator still gets accurate counts (zero, since none
+	// are trustworthy) and an explicit Incomplete reason naming why.
+	budgetTruncated := before.BudgetExceeded || after.BudgetExceeded
+	if !budgetTruncated {
+		beforeEntries := before.Entries
+		afterEntries := after.Entries
+		seen := make(map[string]struct{}, len(beforeEntries)+len(afterEntries))
+		for p := range beforeEntries {
+			seen[p] = struct{}{}
 		}
-		b, inBefore := beforeEntries[p]
-		a, inAfter := afterEntries[p]
-		switch {
-		case inBefore && !inAfter:
-			st.Removed = append(st.Removed, p)
-		case !inBefore && inAfter:
-			st.Added = append(st.Added, p)
-		case inBefore && inAfter && entryChanged(b, a):
-			st.Modified = append(st.Modified, p)
+		for p := range afterEntries {
+			seen[p] = struct{}{}
 		}
+		for p := range seen {
+			if withinExcluded(p, excluded) {
+				continue
+			}
+			b, inBefore := beforeEntries[p]
+			a, inAfter := afterEntries[p]
+			switch {
+			case inBefore && !inAfter:
+				st.Removed = append(st.Removed, p)
+			case !inBefore && inAfter:
+				st.Added = append(st.Added, p)
+			case inBefore && inAfter && entryChanged(b, a):
+				st.Modified = append(st.Modified, p)
+			}
+		}
+		sort.Strings(st.Added)
+		sort.Strings(st.Removed)
+		sort.Strings(st.Modified)
 	}
-	sort.Strings(st.Added)
-	sort.Strings(st.Removed)
-	sort.Strings(st.Modified)
 	st.Unreadable = mergeUnreadable(before.Unreadable, after.Unreadable)
 	st.Counts = Counts{
 		Added:      len(st.Added),
@@ -382,12 +433,14 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 			"%d path(s) unreadable, mount-excluded, or identity-changed; their subtrees are omitted from added/removed/modified rather than reported as changed",
 			len(st.Unreadable)))
 	}
-	if before.BudgetExceeded || after.BudgetExceeded {
+	if budgetTruncated {
 		reason := before.BudgetReason
 		if after.BudgetExceeded {
 			reason = after.BudgetReason
 		}
-		reasons = append(reasons, fmt.Sprintf("snapshot budget exceeded: %s", reason))
+		reasons = append(reasons, fmt.Sprintf(
+			"snapshot budget exceeded: %s; added/removed/modified are suppressed entirely because a partial walk cannot distinguish an untouched path from a real change",
+			reason))
 	}
 	if len(reasons) > 0 {
 		st.Incomplete = true
@@ -568,24 +621,29 @@ func Verify(signed SignedStatement, trustedKey ed25519.PublicKey) error {
 // capsule file's actual bytes.
 var ErrCapsuleDigestMismatch = errors.New("workspacediff: statement is not bound to this capsule file")
 
-// VerifyBinding is the ONLY check that proves a statement and a posture
+// VerifyBindingBytes is the ONLY check that proves a statement and a posture
 // capsule are from the same session. Verify alone checks just the
 // statement's own signature, which a statement from an unrelated session
-// still passes; VerifyBinding additionally hashes the exact bytes at
-// capsulePath and requires that digest to equal the statement's declared
-// posture_capsule_sha256. Use this, not Verify alone, wherever a capsule and
-// a statement are checked as a pair (see `pipelock posture verify
-// --workspace-statement`).
-func VerifyBinding(signed SignedStatement, capsulePath string, trustedKey ed25519.PublicKey) error {
+// still passes; VerifyBindingBytes additionally hashes capsuleBytes and
+// requires that digest to equal the statement's declared
+// posture_capsule_sha256.
+//
+// capsuleBytes MUST be the exact bytes the caller already authenticated
+// (e.g. the buffer VerifyCapsule ran against), never bytes re-read from the
+// capsule's path after that authentication: hashing a freshly re-opened path
+// here would authenticate one set of bytes and bind against a possibly
+// different set read moments later (TOCTOU), letting a capsule swapped in
+// between the two reads pass binding it was never checked against. There is
+// deliberately no path-taking variant of this function so no caller can
+// reproduce that gap.
+func VerifyBindingBytes(signed SignedStatement, capsuleBytes []byte, trustedKey ed25519.PublicKey) error {
 	if err := Verify(signed, trustedKey); err != nil {
 		return fmt.Errorf("statement signature: %w", err)
 	}
-	capsuleHash, err := HashFileSHA256(capsulePath)
-	if err != nil {
-		return fmt.Errorf("hash capsule file %s: %w", capsulePath, err)
-	}
+	sum := sha256.Sum256(capsuleBytes)
+	capsuleHash := hex.EncodeToString(sum[:])
 	if !strings.EqualFold(capsuleHash, signed.PostureCapsuleSHA256) {
-		return fmt.Errorf("%w: capsule file hash=%s, statement binds to=%s", ErrCapsuleDigestMismatch, capsuleHash, signed.PostureCapsuleSHA256)
+		return fmt.Errorf("%w: capsule bytes hash=%s, statement binds to=%s", ErrCapsuleDigestMismatch, capsuleHash, signed.PostureCapsuleSHA256)
 	}
 	return nil
 }

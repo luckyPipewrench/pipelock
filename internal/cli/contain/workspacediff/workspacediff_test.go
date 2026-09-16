@@ -5,6 +5,8 @@ package workspacediff
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -424,7 +426,11 @@ func TestVerifyBinding_MatchedPairPasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyBinding(signed, capsulePath, pub); err != nil {
+	capsuleBytes, err := os.ReadFile(capsulePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBindingBytes(signed, capsuleBytes, pub); err != nil {
 		t.Fatalf("expected matched pair to verify, got %v", err)
 	}
 }
@@ -460,8 +466,12 @@ func TestVerifyBinding_MismatchedSessionsRejected(t *testing.T) {
 	if err := Verify(statementForA, pub); err != nil {
 		t.Fatalf("statement's own signature should verify: %v", err)
 	}
-	if err := VerifyBinding(statementForA, capsuleB, pub); err == nil {
-		t.Fatalf("expected VerifyBinding to reject session A's statement paired with session B's capsule")
+	capsuleBBytes, err := os.ReadFile(capsuleB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBindingBytes(statementForA, capsuleBBytes, pub); err == nil {
+		t.Fatalf("expected VerifyBindingBytes to reject session A's statement paired with session B's capsule")
 	} else if !errors.Is(err, ErrCapsuleDigestMismatch) {
 		t.Fatalf("expected ErrCapsuleDigestMismatch, got %v", err)
 	}
@@ -486,8 +496,45 @@ func TestVerifyBinding_TamperedCapsuleBytesRejected(t *testing.T) {
 	if err := os.WriteFile(capsulePath, []byte("tampered capsule bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyBinding(signed, capsulePath, pub); err == nil {
+	tamperedBytes, err := os.ReadFile(capsulePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyBindingBytes(signed, tamperedBytes, pub); err == nil {
 		t.Fatalf("expected rejection of a statement bound to now-tampered capsule bytes")
+	}
+}
+
+// TestVerifyBindingBytes_TOCTOU_RejectsBytesAuthenticatedElsewhere is H1: the
+// caller must bind against the EXACT bytes it already authenticated
+// (Verify/VerifyCapsule), never bytes re-read from the capsule's path after
+// that authentication. This proves VerifyBindingBytes takes bytes directly
+// (there is no path-taking VerifyBinding left to reproduce the gap): binding
+// against bytes from capsule B, even though a caller "authenticated" capsule
+// A moments earlier by some other means, is correctly rejected -- the API
+// makes the caller's own bytes the only thing that can ever be checked.
+func TestVerifyBindingBytes_TOCTOU_RejectsBytesAuthenticatedElsewhere(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	authenticatedBytes := []byte("bytes the caller actually authenticated (capsule A)")
+	swappedBytes := []byte("different bytes now sitting at the same path (capsule B)")
+
+	sum := sha256.Sum256(authenticatedBytes)
+	signed, err := Sign([]Statement{{Root: "/g"}}, hex.EncodeToString(sum[:]), priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Binding against the bytes actually authenticated passes.
+	if err := VerifyBindingBytes(signed, authenticatedBytes, pub); err != nil {
+		t.Fatalf("expected binding against the authenticated bytes to pass, got %v", err)
+	}
+	// Binding against a swapped buffer -- simulating a caller that mistakenly
+	// re-reads the path instead of reusing the authenticated bytes -- fails
+	// closed instead of silently verifying the wrong capsule.
+	if err := VerifyBindingBytes(signed, swappedBytes, pub); err == nil {
+		t.Fatalf("expected rejection when bound bytes differ from the authenticated bytes")
+	} else if !errors.Is(err, ErrCapsuleDigestMismatch) {
+		t.Fatalf("expected ErrCapsuleDigestMismatch, got %v", err)
 	}
 }
 
@@ -508,37 +555,64 @@ func TestValidateSchema_RejectsBadShapeAndVersion(t *testing.T) {
 	}
 }
 
-// TestSnapshot_MountBoundary_ExcludedNotDescended is H2. A real bind mount
-// needs root/CAP_SYS_ADMIN, unavailable in unprivileged CI, so this proves
-// the device-id comparison the walk callback relies on: statIDs on two
-// distinct real filesystem objects on the SAME device must report the SAME
-// device id (the common case), which is the precondition the mount-boundary
-// branch depends on to tell "same device" from "different device" at all.
-// The full crossing behavior (excluded, not descended, reason recorded) is
-// exercised implicitly by every other Snapshot test never entering a
-// mismatched-device branch; see docs/contain-cli.md for the manual bind-mount
-// reproduction this unit test cannot perform in CI.
-func TestSnapshot_MountBoundary_DeviceComparisonHelper(t *testing.T) {
+// TestCrossedMount_Table is H3's core unit test: the comparison primitive
+// crossedMount, exercised over a table of (rootMnt, entryMnt, rootOK,
+// entryOK) so the "same mount", "different mount" (the actual bind-mount
+// signal st_dev cannot see), and "mount id unavailable -> fall back, don't
+// guess" cases are all pinned down without needing root/CAP_SYS_ADMIN to set
+// up a real bind mount in CI.
+func TestCrossedMount_Table(t *testing.T) {
+	tests := []struct {
+		name              string
+		rootMnt, entryMnt uint64
+		rootOK, entryOK   bool
+		want              bool
+	}{
+		{name: "same mount id", rootMnt: 7, entryMnt: 7, rootOK: true, entryOK: true, want: false},
+		{
+			name:    "different mount id, same could-be device (the actual bind-mount case)",
+			rootMnt: 7, entryMnt: 9, rootOK: true, entryOK: true, want: true,
+		},
+		{name: "root mount id unavailable", rootMnt: 0, entryMnt: 9, rootOK: false, entryOK: true, want: false},
+		{name: "entry mount id unavailable", rootMnt: 7, entryMnt: 0, rootOK: true, entryOK: false, want: false},
+		{name: "neither available", rootMnt: 0, entryMnt: 0, rootOK: false, entryOK: false, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := crossedMount(tt.rootMnt, tt.entryMnt, tt.rootOK, tt.entryOK); got != tt.want {
+				t.Fatalf("crossedMount(%d, %d, %v, %v) = %v, want %v", tt.rootMnt, tt.entryMnt, tt.rootOK, tt.entryOK, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSnapshot_MountBoundary_NoRealBindMount_SameMountIDByDefault documents
+// the same limitation the old device-only test carried, now correctly
+// scoped: it does NOT and CANNOT prove mount-boundary exclusion (that needs
+// a real bind mount, root/CAP_SYS_ADMIN, unavailable in unprivileged CI --
+// see docs/contain-cli.md for the manual reproduction). What it proves is
+// the mount-id primitive itself: two ordinary files under the same tmpdir,
+// with no bind mount involved, report the SAME mount id (or both report
+// "unavailable" on a platform/kernel without STATX_MNT_ID), so crossedMount
+// correctly returns false for the common, non-bind-mounted case in the same
+// walk this package actually runs.
+func TestSnapshot_MountBoundary_NoRealBindMount_SameMountIDByDefault(t *testing.T) {
 	dir := t.TempDir()
 	fileA := filepath.Join(dir, "a")
 	fileB := filepath.Join(dir, "b")
 	writeFile(t, fileA, "a")
 	writeFile(t, fileB, "b")
-	infoA, err := os.Lstat(fileA)
-	if err != nil {
-		t.Fatal(err)
+
+	mntA, okA := mountID(fileA)
+	mntB, okB := mountID(fileB)
+	if okA != okB {
+		t.Fatalf("mountID availability disagreed between two files in the same tmpdir: okA=%v okB=%v", okA, okB)
 	}
-	infoB, err := os.Lstat(fileB)
-	if err != nil {
-		t.Fatal(err)
+	if !okA {
+		t.Skip("mountID (STATX_MNT_ID) unavailable on this platform/kernel; falls back to statIDs, covered elsewhere")
 	}
-	devA, _, okA := statIDs(infoA)
-	devB, _, okB := statIDs(infoB)
-	if !okA || !okB {
-		t.Skip("statIDs unavailable on this platform")
-	}
-	if devA != devB {
-		t.Fatalf("two files in the same tmpdir reported different devices: %d vs %d", devA, devB)
+	if crossedMount(mntA, mntB, okA, okB) {
+		t.Fatalf("two ordinary files in the same tmpdir with no bind mount reported crossedMount=true (mntA=%d, mntB=%d)", mntA, mntB)
 	}
 }
 
@@ -572,7 +646,12 @@ func TestSnapshot_TOCTOU_IdentityMismatchRefusesToHash(t *testing.T) {
 	}
 	writeFile(t, real, "swapped-in content")
 
-	_, _, err = hashFileSafe(real, 1<<20, dev, ino, true)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	_, _, err = hashFileSafe(root, "real", real, 1<<20, dev, ino, true)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse a path whose identity changed since the walk observed it")
 	}
@@ -600,9 +679,14 @@ func TestSnapshot_TOCTOU_SymlinkSwapRefusesToHash(t *testing.T) {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
-	_, _, err = hashFileSafe(real, 1<<20, dev, ino, true)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	_, _, err = hashFileSafe(root, "real", real, 1<<20, dev, ino, true)
 	if err == nil {
-		t.Fatalf("expected hashFileSafe to refuse hashing through a symlink swapped in after the walk (O_NOFOLLOW should have failed the open)")
+		t.Fatalf("expected hashFileSafe to refuse hashing through a symlink swapped in after the walk (os.Root should refuse the escaping symlink)")
 	}
 }
 
@@ -633,6 +717,121 @@ func TestSnapshot_BudgetExceeded_IncompleteNamesTheCap(t *testing.T) {
 	}
 	if !strings.Contains(st.IncompleteReason, "budget") {
 		t.Fatalf("expected IncompleteReason to mention the budget, got %q", st.IncompleteReason)
+	}
+}
+
+// TestDiff_BudgetTruncated_SuppressesEntryLevelConclusions is M4: when a
+// snapshot's walk stops early on the Budget, a path missing from one
+// snapshot but present in the other proves nothing -- the walk order can
+// shift between runs (here, adding "0" pushes "c" out of the 4-entry
+// window it was inside during the FIRST snapshot), so an untouched path
+// must never be reported as removed (or added/modified) just because the
+// budget-truncated walk didn't reach it that time.
+func TestDiff_BudgetTruncated_SuppressesEntryLevelConclusions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a"), "a")
+	writeFile(t, filepath.Join(root, "b"), "b")
+	writeFile(t, filepath.Join(root, "c"), "c")
+	writeFile(t, filepath.Join(root, "d"), "d")
+
+	budget := Budget{MaxEntries: 4}
+	before, err := Snapshot(root, 1<<20, budget)
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	if !before.BudgetExceeded {
+		t.Fatalf("expected the first snapshot to hit the 4-entry budget over root+a+b+c+d")
+	}
+	if _, ok := before.Entries[filepath.Join(root, "c")]; !ok {
+		t.Fatalf("expected the first (untruncated-by-new-file) walk to have reached c before hitting budget")
+	}
+
+	// Add a new file that sorts BEFORE "a", shifting the second walk's
+	// 4-entry window so it never reaches "c" this time, even though "c"
+	// was never touched.
+	writeFile(t, filepath.Join(root, "0"), "0")
+	after, err := Snapshot(root, 1<<20, budget)
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	if !after.BudgetExceeded {
+		t.Fatalf("expected the second snapshot to also hit the 4-entry budget")
+	}
+	if _, ok := after.Entries[filepath.Join(root, "c")]; ok {
+		t.Fatalf("test setup assumption broken: expected the shifted window to NOT reach c")
+	}
+
+	st, err := Diff(before, after, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range st.Removed {
+		if p == filepath.Join(root, "c") {
+			t.Fatalf("c must NOT be reported removed: it was never touched, only pushed out of a budget-truncated walk's window; got Removed=%v", st.Removed)
+		}
+	}
+	if len(st.Added) != 0 || len(st.Removed) != 0 || len(st.Modified) != 0 {
+		t.Fatalf("expected all entry-level conclusions suppressed for a budget-truncated pair, got added=%v removed=%v modified=%v", st.Added, st.Removed, st.Modified)
+	}
+	if !st.Incomplete {
+		t.Fatalf("expected Incomplete=true")
+	}
+	if !strings.Contains(st.IncompleteReason, "budget") {
+		t.Fatalf("expected IncompleteReason to mention the budget, got %q", st.IncompleteReason)
+	}
+}
+
+// TestSnapshot_M6_IntermediateSymlinkTraversal_RefusesToHashOutside proves
+// M6: O_NOFOLLOW on hashFileSafe's own final path component only ever
+// protected the LAST segment. An attacker who controls an INTERMEDIATE
+// directory can rename it away and replace it with a symlink pointing back
+// at the real directory (or anywhere else); a walker that opens the full
+// absolute path by string concatenation follows that intermediate symlink
+// transparently. root.OpenFile resolves every component relative to the
+// root directory handle and refuses a component that is a symlink pointing
+// outside the root, so hashing root/sub/file after this swap must fail
+// rather than silently succeeding through the symlink.
+func TestSnapshot_M6_IntermediateSymlinkTraversal_RefusesToHashOutside(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(sub, "file")
+	writeFile(t, filePath, "content")
+
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, ok := statIDs(info)
+	if !ok {
+		t.Skip("statIDs unavailable on this platform")
+	}
+
+	// Move "sub" outside root, then symlink root/sub back at the moved
+	// directory: root/sub is now an intermediate path component that is a
+	// symlink. The final component ("file") is untouched and its identity
+	// (dev/ino) is unchanged, so a check that only re-verifies the final
+	// open's identity would NOT catch this -- only refusing to traverse the
+	// symlinked intermediate component at all does.
+	moved := filepath.Join(t.TempDir(), "moved-sub")
+	if err := os.Rename(sub, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, sub); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rootHandle.Close() }()
+
+	_, _, err = hashFileSafe(rootHandle, filepath.Join("sub", "file"), filePath, 1<<20, dev, ino, true)
+	if err == nil {
+		t.Fatalf("expected hashFileSafe to refuse traversing an intermediate path component replaced by a symlink")
 	}
 }
 

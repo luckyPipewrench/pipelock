@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestRenderSessionContract_ExactText(t *testing.T) {
@@ -98,7 +100,7 @@ func TestRunContainRun_DryRunPrintsContractWithoutLaunchOrPosture(t *testing.T) 
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
 			posture = true
 			return "/unused", nil
 		},
@@ -139,12 +141,13 @@ func TestRunContainRun_ContractReflectsTheToolsTheLauncherAccepts(t *testing.T) 
 	}
 	var launched bool
 	runEnv := containRunEnv{
-		probe: env,
+		probe:      env,
+		loadConfig: func(string) (*config.Config, error) { return config.Defaults(), nil },
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+		emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 	}
 	var buf bytes.Buffer
 	if err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{}, []string{"claude"}); err != nil {

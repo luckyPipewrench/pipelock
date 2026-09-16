@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
 
@@ -39,7 +41,7 @@ func TestRunContainRun_InventoryFailureStopsBeforePreflight(t *testing.T) {
 					launches++
 					return nil
 				},
-				emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+				emitPosture: func(*config.Config, string, *probeEnv, []string) (string, error) {
 					postureCalls++
 					return "proof.json", nil
 				},

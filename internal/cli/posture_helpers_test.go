@@ -29,7 +29,7 @@ func TestLoadProofFileRejectsMissingAndTrailingJSON(t *testing.T) {
 	t.Parallel()
 
 	missing := filepath.Join(t.TempDir(), "missing.json")
-	if _, err := loadProofFile(missing); err == nil || !strings.Contains(err.Error(), "reading") {
+	if _, _, err := loadProofFile(missing); err == nil || !strings.Contains(err.Error(), "reading") {
 		t.Fatalf("missing proof err = %v", err)
 	}
 
@@ -37,7 +37,7 @@ func TestLoadProofFileRejectsMissingAndTrailingJSON(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{}{"extra":true}`), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := loadProofFile(path); err == nil || !strings.Contains(err.Error(), "trailing JSON") {
+	if _, _, err := loadProofFile(path); err == nil || !strings.Contains(err.Error(), "trailing JSON") {
 		t.Fatalf("trailing JSON err = %v", err)
 	}
 }

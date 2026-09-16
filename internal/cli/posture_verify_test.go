@@ -1441,6 +1441,67 @@ func TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected(t *testing.T
 
 // TestPostureVerify_WorkspaceStatement_MatchedPairPasses is the positive
 // control for the same surface: the SAME capsule the statement is bound to.
+// TestPostureVerify_WorkspaceStatement_JSONModeStaysValidJSON is M7: before
+// the fix, "  Workspace change statement: signature valid..." was printed
+// as a bare prose line even under --json, corrupting stdout so it no longer
+// parses as one JSON document. The binding outcome must live INSIDE the
+// JSON result instead.
+func TestPostureVerify_WorkspaceStatement_JSONModeStaysValidJSON(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute(): %v", err)
+	}
+
+	// The whole of stdout must parse as ONE JSON document: any stray prose
+	// line (before or after) breaks this.
+	var out struct {
+		Verified           bool `json:"verified"`
+		Passed             bool `json:"passed"`
+		WorkspaceStatement *struct {
+			Bound bool `json:"bound"`
+		} `json:"workspace_statement"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, stdout.String())
+	}
+	if !out.Verified || !out.Passed {
+		t.Fatalf("expected a passing verified result, got %+v", out)
+	}
+	if out.WorkspaceStatement == nil || !out.WorkspaceStatement.Bound {
+		t.Fatalf("expected workspace_statement.bound=true in the JSON result, got %+v", out.WorkspaceStatement)
+	}
+}
+
 func TestPostureVerify_WorkspaceStatement_MatchedPairPasses(t *testing.T) {
 	fix := newTestVerifyFixture(t, perfectEvidence())
 

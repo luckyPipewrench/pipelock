@@ -15,9 +15,3 @@ import "os"
 func statIDs(_ os.FileInfo) (dev, ino uint64, ok bool) {
 	return 0, 0, false
 }
-
-// openRegularNoFollow falls back to a plain open: there is no portable
-// O_NOFOLLOW equivalent used here for non-unix platforms.
-func openRegularNoFollow(path string) (*os.File, error) {
-	return os.Open(path)
-}

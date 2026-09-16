@@ -52,7 +52,12 @@ type containRunOptions struct {
 type containRunEnv struct {
 	probe       *probeEnv
 	launch      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
-	emitPosture func(configFile, outputDir string, env *probeEnv, args []string) (string, error)
+	emitPosture func(cfg *config.Config, outputDir string, env *probeEnv, args []string) (string, error)
+	// loadConfig loads the ONE config snapshot reused for both posture
+	// capsule emission and workspace-statement signing key resolution (H2).
+	// Defaults to config.Load; overridable in tests that stub emitPosture
+	// and never intend to touch a real config file on disk.
+	loadConfig func(configFile string) (*config.Config, error)
 }
 
 func defaultContainRunEnv() containRunEnv {
@@ -60,6 +65,7 @@ func defaultContainRunEnv() containRunEnv {
 		probe:       defaultProbeEnv(),
 		launch:      launchContainedAgent,
 		emitPosture: emitContainRunPosture,
+		loadConfig:  func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
 	}
 }
 
@@ -203,10 +209,18 @@ func runContainRun(
 	}
 	// Session-start manifest of every granted workspace, taken before the
 	// posture capsule is emitted and before launch, so it reflects the
-	// workspace exactly as granted at the moment this session begins.
+	// workspace exactly as granted at the moment this session begins. A
+	// failure here must not abort the launch: docs/contain-cli.md promises
+	// the workspace change statement never blocks launch on its own
+	// (the same contract the missing-signing-key path already honors), so
+	// this warns and proceeds with the statement unavailable for this
+	// session rather than refusing containment the operator otherwise
+	// qualifies for.
 	beforeSnapshots, snapErr := snapshotWorkspaces(grants, opts.workspaceDiffCapBytes)
 	if snapErr != nil {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("snapshot granted workspaces: %w", snapErr))
+		beforeSnapshots = nil
+		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", snapErr)
+		_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, snapErr.Error())
 	}
 
 	// Resolve the workspace-statement signing key BEFORE launch, from the
@@ -216,13 +230,26 @@ func runContainRun(
 	// statement with a key the posture capsule launched under was never
 	// bound to. A failure here is reported once, up front, rather than
 	// silently discovered after the agent has already run.
-	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(opts.configFile)
+	// Load config ONCE here and reuse this exact snapshot for both the
+	// posture capsule emission below and the workspace-statement signing key
+	// resolution: loading it twice would let an operator's key rotation
+	// between the two loads sign the statement with a key the capsule this
+	// session launched under was never bound to (H2).
+	if env.loadConfig == nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("internal: containRunEnv.loadConfig is not set"))
+	}
+	runCfg, runCfgErr := env.loadConfig(opts.configFile)
+	if runCfgErr != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
+	}
+
+	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(runCfg)
 	if len(grants) > 0 && workspaceSigningKeyErr != nil {
 		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", workspaceSigningKeyErr)
 		_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, workspaceSigningKeyErr.Error())
 	}
 
-	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
+	posturePath, err := env.emitPosture(runCfg, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
 	}
@@ -240,10 +267,20 @@ func runContainRun(
 	// workspaces; already-reported-unavailable when the key could not be
 	// loaded before launch.
 	if len(beforeSnapshots) > 0 && workspaceSigningKeyErr == nil {
-		if stmtPath, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posturePath, workspaceSigningKey); stmtErr != nil {
+		stmtPath, incomplete, incompleteReason, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posturePath, workspaceSigningKey)
+		switch {
+		case stmtErr != nil:
 			_, _ = fmt.Fprintf(stderr, "pipelock contain run: workspace change statement failed: %v\n", stmtErr)
 			_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, stmtErr.Error())
-		} else {
+		case incomplete:
+			// The statement was signed and written successfully, but its
+			// CONTENT says the diff could not fully observe the workspace
+			// (a budget cap or an unreadable/mount-excluded path). That is
+			// never a [PASS]: an operator scanning for [PASS]/[FAIL] lines
+			// must not read a partial observation as a clean result (M5).
+			_, _ = fmt.Fprintf(stdout, "  [WARN] signed workspace change statement is INCOMPLETE: %s\n", stmtPath)
+			_, _ = fmt.Fprintf(stdout, "%s reason=%q path=%s\n", workspaceStatementIncompleteLine, incompleteReason, stmtPath)
+		default:
 			_, _ = fmt.Fprintf(stdout, "  [PASS] signed workspace change statement: %s\n", stmtPath)
 			_, _ = fmt.Fprintf(stdout, "%s path=%s\n", workspaceStatementWrittenLine, stmtPath)
 		}
@@ -263,17 +300,14 @@ func runContainRun(
 const (
 	workspaceStatementUnavailableLine = "workspace_change_statement=unavailable"
 	workspaceStatementWrittenLine     = "workspace_change_statement=written"
+	workspaceStatementIncompleteLine  = "workspace_change_statement=incomplete"
 )
 
 // resolveWorkspaceStatementSigningKey loads the SAME signing key the posture
 // capsule uses (flight_recorder.signing_key_path from configFile), read once
 // before launch so a key rotation during the launched session cannot change
 // which key ends up signing the statement.
-func resolveWorkspaceStatementSigningKey(configFile string) (ed25519.PrivateKey, error) {
-	cfg, err := config.Load(filepath.Clean(configFile))
-	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
-	}
+func resolveWorkspaceStatementSigningKey(cfg *config.Config) (ed25519.PrivateKey, error) {
 	keyPath := filepath.Clean(cfg.FlightRecorder.SigningKeyPath)
 	if keyPath == "." || cfg.FlightRecorder.SigningKeyPath == "" {
 		return nil, errors.New("flight_recorder.signing_key_path is required to sign the workspace change statement")
@@ -314,15 +348,16 @@ func emitContainRunWorkspaceStatement(
 	grants []workspaceGrant,
 	posturePath string,
 	privKey ed25519.PrivateKey,
-) (string, error) {
+) (path string, incomplete bool, incompleteReason string, err error) {
 	capsuleSHA256, err := workspacediff.HashFileSHA256(posturePath)
 	if err != nil {
-		return "", fmt.Errorf("hash posture capsule: %w", err)
+		return "", false, "", fmt.Errorf("hash posture capsule: %w", err)
 	}
 
 	statements := make([]workspacediff.Statement, 0, len(grants))
 	seen := make(map[string]struct{}, len(grants))
 	now := containRunNow(env)
+	var incompleteReasons []string
 	for _, g := range grants {
 		if _, ok := seen[g.Path]; ok {
 			continue
@@ -330,24 +365,34 @@ func emitContainRunWorkspaceStatement(
 		seen[g.Path] = struct{}{}
 		beforeSnap, ok := before[g.Path]
 		if !ok {
-			return "", fmt.Errorf("missing session-start snapshot for %s", g.Path)
+			return "", false, "", fmt.Errorf("missing session-start snapshot for %s", g.Path)
 		}
-		afterSnap, err := workspacediff.Snapshot(g.Path, opts.workspaceDiffCapBytes, workspacediff.DefaultBudget())
-		if err != nil {
-			return "", fmt.Errorf("snapshot %s at session end: %w", g.Path, err)
+		afterSnap, snapErr := workspacediff.Snapshot(g.Path, opts.workspaceDiffCapBytes, workspacediff.DefaultBudget())
+		if snapErr != nil {
+			return "", false, "", fmt.Errorf("snapshot %s at session end: %w", g.Path, snapErr)
 		}
-		st, err := workspacediff.Diff(beforeSnap, afterSnap, now)
-		if err != nil {
-			return "", fmt.Errorf("diff %s: %w", g.Path, err)
+		st, diffErr := workspacediff.Diff(beforeSnap, afterSnap, now)
+		if diffErr != nil {
+			return "", false, "", fmt.Errorf("diff %s: %w", g.Path, diffErr)
+		}
+		if st.Incomplete {
+			incompleteReasons = append(incompleteReasons, fmt.Sprintf("%s: %s", g.Path, st.IncompleteReason))
 		}
 		statements = append(statements, st)
 	}
 
 	signed, err := workspacediff.Sign(statements, capsuleSHA256, privKey)
 	if err != nil {
-		return "", err
+		return "", false, "", err
 	}
-	return workspacediff.WriteJSON(filepath.Dir(posturePath), signed)
+	path, err = workspacediff.WriteJSON(filepath.Dir(posturePath), signed)
+	if err != nil {
+		return "", false, "", err
+	}
+	if len(incompleteReasons) > 0 {
+		return path, true, strings.Join(incompleteReasons, "; "), nil
+	}
+	return path, false, "", nil
 }
 
 // containRunNow returns the probe environment's clock, defaulting to time.Now
@@ -600,11 +645,7 @@ func parseAgentGIDs(ids []string, primary uint32) ([]uint32, error) {
 	return out, nil
 }
 
-func emitContainRunPosture(configFile, outputDir string, env *probeEnv, args []string) (string, error) {
-	cfg, err := config.Load(filepath.Clean(configFile))
-	if err != nil {
-		return "", fmt.Errorf("loading config: %w", err)
-	}
+func emitContainRunPosture(cfg *config.Config, outputDir string, env *probeEnv, args []string) (string, error) {
 	launchEvidence, err := containRunLaunchEvidence(env, args)
 	if err != nil {
 		return "", fmt.Errorf("build launch evidence: %w", err)

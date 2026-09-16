@@ -116,7 +116,7 @@ Exit codes:
 				opts.ConfigHash = hash
 			}
 
-			capsule, err := loadProofFile(proofFile)
+			capsule, capsuleBytes, err := loadProofFile(proofFile)
 			if err != nil {
 				return exitVerifyIntegrityError(cmd, jsonOutput, policy, nil, fmt.Errorf("loading proof: %w", err))
 			}
@@ -139,16 +139,20 @@ Exit codes:
 			// EXACT capsule bytes at --proof and requires that digest to
 			// match the statement's declared binding, so a mismatched pair
 			// is rejected here rather than accepted as if it were coherent.
+			workspaceStmtBound := false
 			if workspaceStmt != "" {
-				if bindErr := verifyWorkspaceStatementBinding(workspaceStmt, proofFile, pubKey); bindErr != nil {
+				if bindErr := verifyWorkspaceStatementBinding(workspaceStmt, capsuleBytes, pubKey); bindErr != nil {
 					return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule,
 						fmt.Errorf("workspace change statement verification failed: %w", bindErr))
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  Workspace change statement: signature valid and bound to this capsule")
+				workspaceStmtBound = true
+				if !jsonOutput {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  Workspace change statement: signature valid and bound to this capsule")
+				}
 			}
 
 			if jsonOutput {
-				if encErr := writeVerifyJSON(cmd, result); encErr != nil {
+				if encErr := writeVerifyJSON(cmd, result, workspaceStmt != "", workspaceStmtBound); encErr != nil {
 					return fmt.Errorf("encoding JSON output: %w", encErr)
 				}
 				if !result.Passed {
@@ -184,12 +188,12 @@ Exit codes:
 }
 
 // verifyWorkspaceStatementBinding reads the signed workspace change statement
-// at stmtPath and verifies both its own signature and that it is bound to the
-// EXACT bytes of the capsule file at capsulePath (workspacediff.VerifyBinding
-// hashes capsulePath itself; it does not trust an already-parsed capsule
-// struct, so this check cannot be satisfied by a capsule that merely parses
-// the same).
-func verifyWorkspaceStatementBinding(stmtPath, capsulePath string, pubKey ed25519.PublicKey) error {
+// at stmtPath and verifies both its own signature and that it is bound to
+// capsuleBytes -- the EXACT bytes this command already authenticated via
+// loadProofFile, never bytes re-read from the capsule's path (H1: a re-read
+// here would authenticate one set of bytes and bind against a possibly
+// different set read moments later).
+func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKey ed25519.PublicKey) error {
 	data, err := os.ReadFile(filepath.Clean(stmtPath))
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", stmtPath, err)
@@ -198,7 +202,7 @@ func verifyWorkspaceStatementBinding(stmtPath, capsulePath string, pubKey ed2551
 	if err := json.Unmarshal(data, &signed); err != nil {
 		return fmt.Errorf("parsing %s: %w", stmtPath, err)
 	}
-	return workspacediff.VerifyBinding(signed, capsulePath, pubKey)
+	return workspacediff.VerifyBindingBytes(signed, capsuleBytes, pubKey)
 }
 
 // printVerifyResult formats the human-readable verify output.
@@ -284,10 +288,28 @@ func weightedSuffix(d posturepkg.FactorDetail) string {
 	return fmt.Sprintf(" [%d/%d]", d.Weighted, d.Weight)
 }
 
-func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult) error {
+// verifyJSONOutput is the --json result shape for `pipelock posture verify`.
+// It embeds posturepkg.VerifyResult unmodified and adds the
+// workspace-statement binding outcome only when --workspace-statement was
+// requested, so a bound-statement check never has to fall back to a stray
+// prose line that would corrupt --json output (M7).
+type verifyJSONOutput struct {
+	*posturepkg.VerifyResult
+	WorkspaceStatement *workspaceStatementJSONResult `json:"workspace_statement,omitempty"`
+}
+
+type workspaceStatementJSONResult struct {
+	Bound bool `json:"bound"`
+}
+
+func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, workspaceStmtRequested, workspaceStmtBound bool) error {
+	out := verifyJSONOutput{VerifyResult: result}
+	if workspaceStmtRequested {
+		out.WorkspaceStatement = &workspaceStatementJSONResult{Bound: workspaceStmtBound}
+	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	return enc.Encode(result)
+	return enc.Encode(out)
 }
 
 func exitVerifyIntegrityError(
@@ -311,7 +333,7 @@ func exitVerifyIntegrityError(
 			result.ExpiresAt = capsule.ExpiresAt
 			result.LastReceiptAt = capsule.Evidence.FlightRecorder.LastReceiptAt
 		}
-		if jsonErr := writeVerifyJSON(cmd, result); jsonErr != nil {
+		if jsonErr := writeVerifyJSON(cmd, result, false, false); jsonErr != nil {
 			return fmt.Errorf("encoding JSON output: %w", jsonErr)
 		}
 	}
@@ -327,11 +349,17 @@ func formatVerifyAge(ts time.Time) string {
 	return fmt.Sprintf("%dd", days)
 }
 
-func loadProofFile(path string) (*posturepkg.Capsule, error) {
+// loadProofFile reads and parses the proof file at path, returning both the
+// parsed capsule AND the exact raw bytes it was parsed from. Callers that
+// need to bind or hash the capsule (see VerifyBindingBytes) MUST use these
+// same bytes rather than re-opening path: re-reading the path separately
+// would authenticate one set of bytes and bind against a possibly different
+// set read moments later (H1 TOCTOU).
+func loadProofFile(path string) (*posturepkg.Capsule, []byte, error) {
 	cleanPath := filepath.Clean(path)
 	f, err := os.Open(cleanPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", cleanPath, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", cleanPath, err)
 	}
 	defer func() {
 		_ = f.Close()
@@ -339,22 +367,22 @@ func loadProofFile(path string) (*posturepkg.Capsule, error) {
 
 	data, err := io.ReadAll(io.LimitReader(f, maxProofJSONBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", cleanPath, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", cleanPath, err)
 	}
 	if len(data) > maxProofJSONBytes {
-		return nil, fmt.Errorf("proof JSON exceeds %d bytes", maxProofJSONBytes)
+		return nil, nil, fmt.Errorf("proof JSON exceeds %d bytes", maxProofJSONBytes)
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var capsule posturepkg.Capsule
 	if err := dec.Decode(&capsule); err != nil {
-		return nil, fmt.Errorf("parsing proof JSON: %w", err)
+		return nil, nil, fmt.Errorf("parsing proof JSON: %w", err)
 	}
 	if err := rejectTrailingJSON(dec); err != nil {
-		return nil, fmt.Errorf("parsing proof JSON: %w", err)
+		return nil, nil, fmt.Errorf("parsing proof JSON: %w", err)
 	}
-	return &capsule, nil
+	return &capsule, data, nil
 }
 
 // loadPublicKey resolves either a public key path or a raw hex argument.

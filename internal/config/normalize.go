@@ -227,6 +227,48 @@ func validateExplicitEntropyThreshold(rawYAML []byte, cfg *Config) error {
 	return fmt.Errorf("fetch_proxy.monitoring.entropy_threshold must be greater than 0 when configured; omit it to use the default (4.5)")
 }
 
+// reconcileNewToolAdmissionAlias canonicalizes the deprecated
+// mcp_tool_scanning.new_tool_action key (warn|block) into
+// mcp_tool_scanning.new_tool_admission (admit|withhold) so both spellings
+// produce an identical effective policy and, downstream, an identical
+// CanonicalPolicyHash. Must run after strict YAML decode and before
+// ApplyDefaults fills NewToolAdmission with its default, and before any
+// hash is computed. Returns an error if both keys are explicitly set;
+// otherwise records a one-time deprecation notice on cfg when the old key
+// was used, surfaced later by validateMCPToolScanning.
+func reconcileNewToolAdmissionAlias(rawYAML []byte, cfg *Config) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
+		return fmt.Errorf("parsing config for new_tool_admission alias reconciliation: %w", err)
+	}
+	toolScanning, _ := raw["mcp_tool_scanning"].(map[string]interface{})
+	admissionVal, admissionPresent := toolScanning["new_tool_admission"]
+	actionVal, actionPresent := toolScanning["new_tool_action"]
+	admissionSet := admissionPresent && admissionVal != nil
+	actionSet := actionPresent && actionVal != nil
+
+	if admissionSet && actionSet {
+		return errors.New("mcp_tool_scanning: set only one of new_tool_admission or the deprecated new_tool_action alias, not both")
+	}
+	if !actionSet {
+		// Nothing to reconcile; clear any stray parsed value defensively
+		// (yaml null decodes to "" already, this just documents the intent).
+		cfg.MCPToolScanning.NewToolAction = ""
+		return nil
+	}
+	switch cfg.MCPToolScanning.NewToolAction {
+	case ActionWarn:
+		cfg.MCPToolScanning.NewToolAdmission = NewToolAdmit
+	case ActionBlock:
+		cfg.MCPToolScanning.NewToolAdmission = NewToolWithhold
+	default:
+		return fmt.Errorf("invalid mcp_tool_scanning new_tool_action %q: must be warn or block", cfg.MCPToolScanning.NewToolAction)
+	}
+	cfg.NewToolActionAliasWarning = "mcp_tool_scanning.new_tool_action is deprecated; use new_tool_admission: admit|withhold instead"
+	cfg.MCPToolScanning.NewToolAction = ""
+	return nil
+}
+
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
 	normalizeLearn(&c.Learn)
@@ -329,8 +371,8 @@ func (c *Config) ApplyDefaults() {
 	if c.MCPToolScanning.Enabled && c.MCPToolScanning.Action == "" {
 		c.MCPToolScanning.Action = ActionWarn
 	}
-	if c.MCPToolScanning.Enabled && c.MCPToolScanning.NewToolAction == "" {
-		c.MCPToolScanning.NewToolAction = ActionWarn
+	if c.MCPToolScanning.Enabled && c.MCPToolScanning.NewToolAdmission == "" {
+		c.MCPToolScanning.NewToolAdmission = NewToolAdmit
 	}
 	if c.MCPDataClassLabels.UnknownClass == "" {
 		c.MCPDataClassLabels.UnknownClass = Defaults().MCPDataClassLabels.UnknownClass

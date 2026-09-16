@@ -148,15 +148,15 @@ type ToolScanConfig struct {
 	ListenerDriftResetTarget string
 	Action                   string // warn, block
 	DetectDrift              bool
-	// NewToolAction governs admission of a tool NAME absent from an
+	// NewToolAdmission governs admission of a tool NAME absent from an
 	// already-established drift baseline (as opposed to a changed definition
 	// of an already-known name, which Action/DetectDrift already govern).
-	// "" and "warn" admit it as today, with at most a non-blocking
-	// observation. "block" withholds it from the baseline and reports it as
-	// drift on every later tools/list until an authorized operator
+	// "" and "admit" admit it as today, with at most a non-blocking
+	// observation. "withhold" withholds it from the baseline and reports it
+	// as drift on every later tools/list until an authorized operator
 	// re-baseline (ListenerDriftResetFile) admits it. It never affects the
 	// very first tools/list, which establishes the baseline.
-	NewToolAction string // warn, block
+	NewToolAdmission string // admit, withhold
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.
@@ -2184,7 +2184,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		// just nothing to scan for poisoning. It is still a valid inventory, so
 		// it establishes the drift baseline: otherwise an upstream could
 		// bootstrap with an empty list and introduce a new name afterwards that
-		// read as another initial inventory, bypassing new_tool_action: block.
+		// read as another initial inventory, bypassing new_tool_admission: withhold.
 		if cfg != nil && cfg.DetectDrift {
 			driftBaseline := cfg.DriftBaseline
 			if driftBaseline == nil {
@@ -2550,7 +2550,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// approved one. Unset (default "") preserves the previous behavior:
 			// a new tool is still admitted, with at most a non-blocking
 			// observation.
-			blockNewTools := cfg.NewToolAction == "block"
+			blockNewTools := cfg.NewToolAdmission == "withhold"
 			// Compare and promote atomically. A change is a lowered evidence
 			// bar, not a verdict: block on what it introduced, and accept a
 			// change that only adds descriptive text so a legitimate vendor
@@ -2676,7 +2676,7 @@ func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 			continue
 		case len(o.DriftCues) > 0:
 			_, _ = fmt.Fprintf(logW,
-				"pipelock: line %d: tool %q: %s admitted under new_tool_action warn; new definition is now the baseline\n",
+				"pipelock: line %d: tool %q: %s admitted under new_tool_admission admit; new definition is now the baseline\n",
 				lineNum, o.ToolName, strings.Join(o.DriftCues, ","))
 		default:
 			_, _ = fmt.Fprintf(logW,

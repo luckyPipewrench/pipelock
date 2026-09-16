@@ -2316,7 +2316,7 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
-			NewToolAction:           toolCfg.NewToolAction,
+			NewToolAdmission:        toolCfg.NewToolAdmission,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

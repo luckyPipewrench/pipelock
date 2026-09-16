@@ -2251,6 +2251,12 @@ func (c *Config) validateMCPInputScanning() error {
 
 func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
+	if c.NewToolActionAliasWarning != "" && warnings != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "mcp_tool_scanning.new_tool_action",
+			Message: c.NewToolActionAliasWarning,
+		})
+	}
 	// Validate MCP tool scanning config
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
@@ -2259,22 +2265,22 @@ func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
-		switch c.MCPToolScanning.NewToolAction {
-		case "", ActionWarn, ActionBlock:
-			// valid; "" is filled to warn by normalize
+		switch c.MCPToolScanning.NewToolAdmission {
+		case "", NewToolAdmit, NewToolWithhold:
+			// valid; "" is filled to admit by normalize
 		default:
-			return fmt.Errorf("invalid mcp_tool_scanning new_tool_action %q: must be warn or block", c.MCPToolScanning.NewToolAction)
+			return fmt.Errorf("invalid mcp_tool_scanning new_tool_admission %q: must be admit or withhold", c.MCPToolScanning.NewToolAdmission)
 		}
 		// New-tool admission is evaluated only inside the drift-detection
 		// path, so this pair leaves the control inert. Warn rather than
 		// reject: refusing would turn an existing running configuration into
-		// a startup failure on upgrade, and an operator who set block has
+		// a startup failure on upgrade, and an operator who set withhold has
 		// asked for more checking, not for the process to stop. Silence is
 		// the one option that is wrong, because it reads as policy applied.
-		if c.MCPToolScanning.NewToolAction == ActionBlock && !c.MCPToolScanning.DetectDrift && warnings != nil {
+		if c.MCPToolScanning.NewToolAdmission == NewToolWithhold && !c.MCPToolScanning.DetectDrift && warnings != nil {
 			*warnings = append(*warnings, Warning{
-				Field:   "mcp_tool_scanning.new_tool_action",
-				Message: "new_tool_action: block has no effect while mcp_tool_scanning.detect_drift is false, because new-tool admission is only evaluated during drift detection; set detect_drift: true for it to apply",
+				Field:   "mcp_tool_scanning.new_tool_admission",
+				Message: "new_tool_admission: withhold has no effect while mcp_tool_scanning.detect_drift is false, because new-tool admission is only evaluated during drift detection; set detect_drift: true for it to apply",
 			})
 		}
 	}

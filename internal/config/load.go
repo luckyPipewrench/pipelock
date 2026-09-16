@@ -133,6 +133,12 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 
 	cfg.rawBytes = data
 
+	// Reconcile the deprecated mcp_tool_scanning.new_tool_action alias into
+	// new_tool_admission before defaults or hashing see the field.
+	if err := reconcileNewToolAdmissionAlias(data, cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	// Detect omitted security booleans via raw YAML introspection and
 	// default them to true (fail-closed). Must run before ApplyDefaults().
 	applySecurityDefaults(data, cfg)

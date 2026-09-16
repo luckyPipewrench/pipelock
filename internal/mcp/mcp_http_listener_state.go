@@ -545,7 +545,7 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 		ListenerDriftResetFile:  cfg.ListenerDriftResetFile,
 		Action:                  cfg.Action,
 		DetectDrift:             cfg.DetectDrift,
-		NewToolAction:           cfg.NewToolAction,
+		NewToolAdmission:        cfg.NewToolAdmission,
 		BindingUnknownAction:    cfg.BindingUnknownAction,
 		BindingNoBaselineAction: cfg.BindingNoBaselineAction,
 		ExtraPoison:             cfg.ExtraPoison,

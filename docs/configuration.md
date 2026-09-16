@@ -1134,7 +1134,7 @@ mcp_tool_scanning:
   enabled: true
   action: warn
   detect_drift: true
-  new_tool_action: warn
+  new_tool_admission: admit
 ```
 
 | Field | Default | Description |
@@ -1142,7 +1142,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
-| `new_tool_action` | `"warn"` | warn or block. Governs a tool NAME absent from an already-established drift baseline, as distinct from a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. |
+| `new_tool_admission` | `"admit"` | admit or withhold. Governs baseline ADMISSION of a tool NAME absent from an already-established drift baseline, as distinct from the response VERDICT on a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. Deprecated alias: `new_tool_action` (`warn`/`block`), which canonicalizes to `admit`/`withhold`; setting both keys is a config error. |
 | `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
 | `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
 | `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
@@ -1210,8 +1210,8 @@ checks above, add a wholly NEW tool whose description carries the same
 outbound-destination or agent-directive behavior, and it becomes the
 approved baseline the moment it is scanned clean.
 
-`new_tool_action` closes that promotion path independently of `action`. Set it
-to `block` to withhold a newly-visible name from the baseline instead of
+`new_tool_admission` closes that promotion path independently of `action`. Set
+it to `withhold` to withhold a newly-visible name from the baseline instead of
 promoting it:
 
 ```yaml
@@ -1219,10 +1219,10 @@ mcp_tool_scanning:
   enabled: true
   action: block
   detect_drift: true
-  new_tool_action: block
+  new_tool_admission: withhold
 ```
 
-With `new_tool_action: block`, a tool name absent from the established
+With `new_tool_admission: withhold`, a tool name absent from the established
 baseline is reported as drift (cue `new-tool`) and withheld — not promoted
 — exactly the way a changed definition is withheld under `action: block`.
 It is reported again on every later `tools/list` until an authorized
@@ -1241,26 +1241,34 @@ both first inventories: each contributes its names, neither reads the other's
 names as new, and the baseline is established when the last of them finishes.
 A name that first appears after that point is withheld under `block`.
 
-`new_tool_action` governs baseline admission, not the response verdict, and
-the two are spelled with the same words. Read the pair together: whether the
-`tools/list` response carrying a new tool is delivered to the agent is decided
-by `action` alone. Under `action: block` the response is refused, so the agent
-never sees the new tool. Under `action: warn` the response is still forwarded
-and the agent can call the new tool; what `new_tool_action: block` buys there
-is that the name never becomes approved, so it is reported on every later
-`tools/list` instead of being trusted after one sighting. Session binding is
-not a second line of defense for this, because a forwarded response commits
-its tool names into the binding inventory. Set `action: block` if a new tool
-must not reach the agent at all.
+`new_tool_admission` governs baseline admission, not the response verdict.
+The vocabulary is deliberately different from `action`'s `warn`/`block` so the
+two controls can never be misread as the same knob. Read the pair together:
+whether the `tools/list` response carrying a new tool is delivered to the
+agent is decided by `action` alone. Under `action: block` the response is
+refused, so the agent never sees the new tool. Under `action: warn` the
+response is still forwarded and the agent can call the new tool; what
+`new_tool_admission: withhold` buys there is that the name never becomes
+approved, so it is reported on every later `tools/list` instead of being
+trusted after one sighting. Session binding is not a second line of defense
+for this, because a forwarded response commits its tool names into the
+binding inventory. Set `action: block` if a new tool must not reach the
+agent at all.
 
-The default (`warn`, including the omitted/unset value) preserves the
+The default (`admit`, including the omitted/unset value) preserves the
 behavior every existing deployment already had: a new tool is still
 admitted, and its arrival is recorded only as a non-blocking observation
 (never a `DriftDetected` match), so an upstream vendor that legitimately
 adds tools between releases does not need an operator response. Choosing
-`block` is a deliberate posture change for deployments that want every new
-tool name to require the same operator sign-off a changed definition
+`withhold` is a deliberate posture change for deployments that want every
+new tool name to require the same operator sign-off a changed definition
 already requires.
+
+The deprecated `new_tool_action` alias (`warn`/`block`) still loads and
+canonicalizes to the equivalent `new_tool_admission` value (`warn` ->
+`admit`, `block` -> `withhold`), emitting a one-time load warning naming the
+replacement. Setting both `new_tool_admission` and `new_tool_action` in the
+same config is a load error naming both keys.
 
 With `action: block`, a confirmed upstream update that Pipelock blocked needs
 an operator re-baseline. Configure a signed one-shot control-file path, the

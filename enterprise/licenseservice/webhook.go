@@ -993,18 +993,15 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	if err != nil {
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
-	// One active trial per normalized email, mirroring the Enterprise Eval
-	// rule. The entitlement stores the NORMALIZED email (the eval precedent)
-	// so the count comparison and the stored identity share one canonical
-	// key; storing the raw order email would let a case variant of the same
-	// address bypass the check. The dedupe runs only for a FIRST processing
-	// of this order: a webhook replay of an already-processed order must
-	// stay idempotent rather than tripping over the entitlement it created
-	// itself. Fail closed on a normalization or count error: never mint on
-	// an unverifiable state. The count-then-write pair is serialized by
-	// processMu; the service runs as a single writer against its SQLite
-	// store, and a database-level constraint for multi-writer deployments is
-	// tracked separately.
+	// The trial slot table (active_trial_slots) is the SOLE eligibility
+	// authority for one-active-trial-per-email; it is consulted later, at the
+	// atomic claim inside handleActive's Upsert, not here. A pre-count against
+	// the entitlements table used to run in this spot, ahead of that claim,
+	// which gave the rule two independent mechanisms that could disagree (an
+	// entitlement whose CurrentPeriodEnd drifted after claim, for one). Only
+	// the atomic slot claim decides eligibility now, and its denial is
+	// audited identically (see the ErrActiveTrialExists handling in
+	// handleActiveDelivery).
 	customerEmail := order.Customer.Email
 	if tier == tierTrial || tier == tierEnterpriseTrial {
 		email, err := NormalizeEmail(order.Customer.Email)
@@ -1020,25 +1017,6 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			err := fmt.Errorf("one-time trial order %s refused: pending refund", order.ID)
 			_ = h.ledger.LogError(order.ID, "one-time trial fulfillment refused: pending refund", err)
 			return err
-		}
-		if existing == nil {
-			active, err := h.db.CountActiveTierForEmail(ctx, tier, email, time.Now())
-			if err != nil {
-				return fmt.Errorf("count active %s for order %s: %w", tier, order.ID, err)
-			}
-			if active > 0 {
-				denial := fmt.Errorf("an active %s already exists for this email", tier)
-				if lerr := h.ledger.LogError(order.ID, tier+" denied", denial); lerr != nil {
-					h.log.Warn().Err(lerr).
-						Str("order_id", order.ID).
-						Msg("trial denial could not be recorded in the audit ledger")
-				}
-				h.log.Warn().
-					Str("order_id", order.ID).
-					Str("tier", tier).
-					Msg("trial order denied: an active trial already exists for this email")
-				return nil
-			}
 		}
 	}
 	if existing != nil && existing.BillingInterval == billingIntervalOneTime &&

@@ -664,47 +664,23 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	if err := upsertEntitlement(ctx, tx, ent); err != nil {
 		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
 	}
-	// An ACTIVE trial written through this path must claim its slot, exactly as
-	// the issuance path does. syncActiveTrialSlot alone is update-only and
-	// reports success when no row matched, so a trial could commit owning
-	// nothing and a later subscription would then claim the free slot: two
-	// active trials for one email. A non-active status (revoked, canceled, or a
-	// cron status mirror) only refreshes a slot it already holds, so revocation
-	// never tries to take one.
+	// The slot table is the SOLE eligibility authority and records each
+	// trial's ORIGINAL expiry immutably at claim time. Only an ACTIVE write
+	// claims a slot; a non-active status (revoked, canceled, or a cron status
+	// mirror) never touches active_trial_slots at all, so a cancellation or
+	// revocation cannot shorten, extend, or otherwise drift the expiry that
+	// was recorded when the trial was first claimed. The same email stays
+	// denied a second trial until that original expiry passes, regardless of
+	// what CurrentPeriodEnd this terminal write carries.
 	if ent.Status == statusActive {
 		if err := claimActiveTrialSlot(ctx, tx, ent); err != nil && !errors.Is(err, ErrTrialEmailNotCanonical) {
 			return err
 		}
-	} else if err := syncActiveTrialSlot(ctx, tx, ent); err != nil {
-		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit trial entitlement transaction: %w", err)
 	}
 	committed = true
-	return nil
-}
-
-// syncActiveTrialSlot refreshes the expiry of a slot this subscription ALREADY
-// owns. It is update-only on purpose and must never be the sole guard on a path
-// that can create a trial: a missing row means this subscription owns no slot,
-// and treating that as success is how a second trial gets in.
-func syncActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
-	// Any failure to canonicalize means this subscription can own no slot, so
-	// there is nothing to refresh. Skip rather than fail: this path grants
-	// nothing, and failing here would block revoking or status-mirroring an
-	// entitlement whose email predates canonicalization.
-	email, err := trialSlotKey(ent)
-	if err != nil {
-		return nil
-	}
-	const query = `
-	UPDATE active_trial_slots SET expires_at = ?
-	WHERE normalized_email = ? AND subscription_id = ?
-	`
-	if _, err := exec.ExecContext(ctx, query, ent.CurrentPeriodEnd.UTC(), email, ent.SubscriptionID); err != nil {
-		return fmt.Errorf("sync active trial slot for %s: %w", ent.SubscriptionID, err)
-	}
 	return nil
 }
 

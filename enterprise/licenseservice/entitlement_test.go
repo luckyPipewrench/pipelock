@@ -125,14 +125,6 @@ func TestClaimActiveTrialSlotErrorsFailClosed(t *testing.T) {
 	}
 }
 
-func TestSyncActiveTrialSlotErrorFailsClosed(t *testing.T) {
-	ent := testEntitlement("order_sync_error")
-	err := syncActiveTrialSlot(t.Context(), claimExecer{err: errors.New("write failed")}, ent)
-	if err == nil || !strings.Contains(err.Error(), "sync active trial slot") {
-		t.Fatalf("sync error = %v", err)
-	}
-}
-
 // testEntitlement returns a minimal valid entitlement for testing.
 func testEntitlement(subID string) *Entitlement {
 	return &Entitlement{

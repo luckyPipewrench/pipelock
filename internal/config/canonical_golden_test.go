@@ -1188,6 +1188,29 @@ func TestCanonicalPolicyHash_GoldenRichConfig(t *testing.T) {
 	}
 }
 
+// TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden pins the legacy
+// JSON key and warn|block representation used for the renamed
+// new_tool_admission operator vocabulary. Alias-equality tests alone cannot
+// catch a coordinated mapping change, so these fixed digests pin both values.
+func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
+	tests := []struct {
+		name      string
+		admission string
+		wantHash  string
+	}{
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "0869297f12244f4d9d8bccf96fd309bc1809b9efad42b41730b768d9dea7b58e"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1db9fb8041ea0f2b152f759fe3cccf351d5430c4a5af6a8a4786ba378ba79ea9"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadGoldenConfig(t, "mcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n  new_tool_admission: "+tt.admission+"\n")
+			if got := cfg.computeCanonicalPolicyHash(); got != tt.wantHash {
+				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s", tt.wantHash, got)
+			}
+		})
+	}
+}
+
 // TestCanonicalPolicyHash_GoldenInvariantUnderAllowlistOrder verifies
 // that reversing every set-like slice (api_allowlist, internal,
 // trusted_domains) in the rich fixture produces the SAME hash. Proves

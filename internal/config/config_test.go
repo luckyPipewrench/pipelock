@@ -5151,8 +5151,10 @@ func TestLoad_MCPToolScanningNewToolAdmission_Table(t *testing.T) {
 		{name: "old warn canonicalizes to admit", actionLine: "  new_tool_action: warn\n", wantAdmission: NewToolAdmit, wantDeprecated: true},
 		{name: "old block canonicalizes to withhold", actionLine: "  new_tool_action: block\n", wantAdmission: NewToolWithhold, wantDeprecated: true},
 		{name: "old null is treated as omitted", actionLine: "  new_tool_action:\n", wantAdmission: NewToolAdmit},
+		{name: "old empty string is treated as omitted", actionLine: "  new_tool_action: \"\"\n", wantAdmission: NewToolAdmit},
 		{name: "new null is treated as omitted", admissionLine: "  new_tool_admission:\n", wantAdmission: NewToolAdmit},
-		{name: "both set is an error naming both keys", admissionLine: "  new_tool_admission: withhold\n", actionLine: "  new_tool_action: block\n", wantErrContains: []string{"new_tool_admission", "new_tool_action"}},
+		{name: "new spelling and empty old alias are allowed", admissionLine: "  new_tool_admission: withhold\n", actionLine: "  new_tool_action: \"\"\n", wantAdmission: NewToolWithhold},
+		{name: "both non-empty keys are an error naming both keys", admissionLine: "  new_tool_admission: withhold\n", actionLine: "  new_tool_action: block\n", wantErrContains: []string{"new_tool_admission", "new_tool_action"}},
 		{name: "invalid canonical value", admissionLine: "  new_tool_admission: banana\n", wantErrContains: []string{"must be admit or withhold"}},
 		{name: "invalid deprecated alias value", actionLine: "  new_tool_action: banana\n", wantErrContains: []string{"must be warn or block"}},
 	}
@@ -5200,6 +5202,33 @@ func TestLoad_MCPToolScanningNewToolAdmission_Table(t *testing.T) {
 				t.Errorf("deprecation warning present = %v, want %v (warnings: %+v)", deprecated, tt.wantDeprecated, warnings)
 			}
 		})
+	}
+}
+
+func TestMarshal_MCPToolScanningRoundTripLoads(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = ActionWarn
+	cfg.MCPToolScanning.DetectDrift = true
+	cfg.MCPToolScanning.NewToolAdmission = NewToolWithhold
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "new_tool_action:") {
+		t.Fatalf("serialized config contains empty deprecated alias:\n%s", data)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	roundTripped, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load marshaled config: %v", err)
+	}
+	if got, want := roundTripped.MCPToolScanning.NewToolAdmission, NewToolWithhold; got != want {
+		t.Errorf("NewToolAdmission = %q, want %q", got, want)
 	}
 }
 

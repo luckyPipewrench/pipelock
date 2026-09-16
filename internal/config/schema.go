@@ -699,7 +699,7 @@ type MCPToolScanning struct {
 	// which also zeroes this field afterward; do not read it directly.
 	// Setting both new_tool_admission and new_tool_action is a config error.
 	// json:"-" keeps the alias out of the canonical hash entirely.
-	NewToolAction string `yaml:"new_tool_action" json:"-"` // deprecated alias: warn, block
+	NewToolAction string `yaml:"new_tool_action,omitempty" json:"-"` // deprecated alias: warn, block
 	// json:"-" because this is an operator control-file location, not
 	// request-time policy: it changes how an authorized operator re-baselines
 	// state, not what Pipelock decides for a scanned request. The file carries

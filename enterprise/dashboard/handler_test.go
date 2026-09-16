@@ -6,13 +6,18 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"html"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,7 +67,7 @@ func TestHandler_Gating(t *testing.T) {
 
 	dir := t.TempDir()
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: dir,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: dir,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -75,8 +80,8 @@ func TestHandler_Gating(t *testing.T) {
 	}
 
 	handler = New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
 		HasFeature: func(string) bool {
 			return false
 		},
@@ -105,10 +110,10 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
@@ -249,7 +254,7 @@ func TestHandler_RequiresExplicitAuthBoundary(t *testing.T) {
 			opts: Options{
 				ReceiptDir:       t.TempDir(),
 				HasFeature:       allowAgentsFeature,
-				TrustedOuterAuth: true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 			},
 			wantStatus: http.StatusOK,
 		},
@@ -308,6 +313,273 @@ func TestHandler_RequiresExplicitAuthBoundary(t *testing.T) {
 	}
 }
 
+func TestHandler_TrustedOuterAuthRequiresBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		opts      Options
+		wantPanic bool
+	}{
+		{
+			name: "trusted outer auth without boundary panics",
+			opts: Options{
+				ReceiptDir:       t.TempDir(),
+				HasFeature:       allowAgentsFeature,
+				TrustedOuterAuth: true,
+			},
+			wantPanic: true,
+		},
+		{
+			name: "trusted outer auth with whitespace-only boundary panics",
+			opts: Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "   ",
+			},
+			wantPanic: true,
+		},
+		{
+			name: "trusted outer auth with boundary does not panic",
+			opts: Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			},
+			wantPanic: false,
+		},
+		{
+			name: "boundary set without trusted outer auth does not panic",
+			opts: Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuthBoundary: "unused when TrustedOuterAuth is false",
+			},
+			wantPanic: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				r := recover()
+				gotPanic := r != nil
+				if gotPanic != test.wantPanic {
+					t.Fatalf("panic = %v (%v), want panic = %v", gotPanic, r, test.wantPanic)
+				}
+				if gotPanic {
+					msg := fmt.Sprint(r)
+					if !strings.Contains(msg, "TrustedOuterAuthBoundary") {
+						t.Fatalf("panic message %q does not name the missing field", msg)
+					}
+				}
+			}()
+			_ = New(test.opts)
+		})
+	}
+}
+
+// TestHandler_TrustedOuterAuthIsNotAuthentication is the integration test
+// CodeRabbit asked for: TrustedOuterAuth only satisfies New's construction
+// validation, and it must never itself grant access. A handler built with
+// TrustedOuterAuth false and no Authorize/AuthorizePermission must refuse
+// every registered route — enumerated from dashboardRouteSpecs() rather than
+// hand-listed, so a new route is covered automatically — and a handler whose
+// Authorize callback errors must refuse too, proving the callback (not the
+// boundary flag) is what the real authentication wrapper enforces.
+func TestHandler_TrustedOuterAuthIsNotAuthentication(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no callbacks and TrustedOuterAuth false denies every route", func(t *testing.T) {
+		t.Parallel()
+
+		handler := New(Options{
+			ReceiptDir: t.TempDir(),
+			HasFeature: allowAllDashboardFeatures,
+			// TrustedOuterAuth intentionally omitted (false): this is the
+			// unauthenticated case the wrapper must reject.
+		})
+		specs := dashboardRouteSpecs()
+		if len(specs) == 0 {
+			t.Fatal("dashboardRouteSpecs() returned no routes; guard inspected nothing")
+		}
+		for _, spec := range specs {
+			spec := spec
+			t.Run(spec.pattern, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, spec.pattern, nil)
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("GET %s status = %d, want %d (unauthenticated request must be refused); body=%s",
+						spec.pattern, rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("Authorize error denies despite TrustedOuterAuth", func(t *testing.T) {
+		t.Parallel()
+
+		errAuth := errors.New("fake outer auth wrapper: unauthenticated")
+		handler := New(Options{
+			ReceiptDir:               t.TempDir(),
+			HasFeature:               allowAllDashboardFeatures,
+			TrustedOuterAuth:         true,
+			TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			Authorize: func(*http.Request) error {
+				return errAuth
+			},
+		})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/overview", nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d (Authorize error must deny even though TrustedOuterAuth is set); body=%s",
+				rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+	})
+}
+
+// TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization verifies
+// the startup log line names the true security posture: a "disabled" warning
+// only when neither Authorize nor AuthorizePermission is configured, and an
+// informational "boundary declared, authorization active" line when either
+// callback is also set. Uses slog's default handler output captured via
+// slog.SetDefault, restored via defer, because New has no logger injection
+// seam and adding one would be a test seam in production code.
+func TestHandler_TrustedOuterAuthLogMessageReflectsActiveAuthorization(t *testing.T) {
+	captureLog := func(t *testing.T, fn func()) string {
+		t.Helper()
+		prev := slog.Default()
+		defer slog.SetDefault(prev)
+		var buf bytes.Buffer
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		fn()
+		return buf.String()
+	}
+
+	t.Run("no auth callbacks logs disabled warning", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			})
+		})
+		if !strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output missing disabled warning: %s", out)
+		}
+		if strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output should not claim active authorization with no callbacks: %s", out)
+		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
+		}
+	})
+
+	t.Run("Authorize configured logs boundary-declared line, not disabled", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				Authorize:                func(*http.Request) error { return nil },
+			})
+		})
+		if strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output should not claim auth is disabled when Authorize is set: %s", out)
+		}
+		if !strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output missing active-authorization line: %s", out)
+		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
+		}
+	})
+
+	t.Run("AuthorizePermission configured logs boundary-declared line, not disabled", func(t *testing.T) {
+		out := captureLog(t, func() {
+			_ = New(Options{
+				ReceiptDir:               t.TempDir(),
+				HasFeature:               allowAgentsFeature,
+				TrustedOuterAuth:         true,
+				TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				AuthorizePermission:      func(*http.Request, Permission) error { return nil },
+			})
+		})
+		if strings.Contains(out, "own authentication is disabled") {
+			t.Fatalf("log output should not claim auth is disabled when AuthorizePermission is set: %s", out)
+		}
+		if !strings.Contains(out, "authorization remains active") {
+			t.Fatalf("log output missing active-authorization line: %s", out)
+		}
+		if !strings.Contains(out, "test-fixture: fake outer auth boundary") {
+			t.Fatalf("log output missing the configured boundary value: %s", out)
+		}
+	})
+}
+
+// TestShippedDashboardServeNeverSetsTrustedOuterAuth guards the shipped
+// `pipelock dashboard serve` path: no production file in enterprise/cli may
+// set TrustedOuterAuth, because that option disables this handler's own
+// authentication and is documented as embedder-only. It parses every non-test
+// Go file in that package and looks for the field being SET (a composite
+// literal key or an assignment target), so moving the options literal into a
+// helper in another file cannot slip past it the way a one-file byte search
+// could. The CLI wiring lives in a different package, so this is the closest
+// semantic check short of exercising the CLI itself.
+func TestShippedDashboardServeNeverSetsTrustedOuterAuth(t *testing.T) {
+	t.Parallel()
+
+	cliDir := filepath.Join("..", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		t.Fatalf("read enterprise/cli: %v", err)
+	}
+	fset := token.NewFileSet()
+	parsed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(cliDir, name)
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		parsed++
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.KeyValueExpr:
+				if ident, ok := node.Key.(*ast.Ident); ok && ident.Name == "TrustedOuterAuth" {
+					t.Errorf("%s sets TrustedOuterAuth in a composite literal; the shipped "+
+						"`pipelock dashboard serve` path must rely on Authorize/AuthorizePermission, "+
+						"not the embedder-only outer-auth opt-out", fset.Position(node.Pos()))
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "TrustedOuterAuth" {
+						t.Errorf("%s assigns TrustedOuterAuth; the shipped path must not enable "+
+							"the embedder-only outer-auth opt-out", fset.Position(node.Pos()))
+					}
+				}
+			}
+			return true
+		})
+	}
+	if parsed == 0 {
+		t.Fatal("no production Go files parsed under enterprise/cli; the guard inspected nothing")
+	}
+}
+
 func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 	t.Parallel()
 
@@ -319,13 +591,13 @@ func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 	}
 	var audit strings.Builder
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		Config:           cfg,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return nil },
-		AuditWriter:      &audit,
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		Config:       cfg,
+		HasFeature:   allowAgentsFeature,
+		Authorize:    func(*http.Request) error { return nil },
+		AuditWriter:  &audit,
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -350,9 +622,9 @@ func TestHandler_EvidenceNoSessionsExplainsReceiptSource(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evidence", nil))
@@ -375,9 +647,9 @@ func TestHandler_RootRendersOverviewNotEvidence(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
@@ -425,8 +697,8 @@ func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 	writeReceiptsToDir(t, dir, []receipt.Receipt{resigned})
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
 		TrustedKeys: map[string]TrustedKey{
 			keyHex: {Source: trustedKeySource},
 		},
@@ -483,9 +755,9 @@ func TestHandler_MethodAndPathRejection(t *testing.T) {
 
 	dir := t.TempDir()
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
 	})
 
 	tests := []struct {
@@ -579,11 +851,11 @@ func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAllDashboardFeatures,
-		Authorize:        func(*http.Request) error { return nil },
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   allowAllDashboardFeatures,
+		Authorize:    func(*http.Request) error { return nil },
+		AuthorizeRaw: allowRawAccess,
 		AuthorizePermission: func(*http.Request, Permission) error {
 			return errors.New("permission denied")
 		},
@@ -619,10 +891,10 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 
 	var got []Permission
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAllDashboardFeatures,
-		Authorize:        func(*http.Request) error { return nil },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAllDashboardFeatures,
+		Authorize:  func(*http.Request) error { return nil },
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			got = append(got, permission)
 			return nil
@@ -663,7 +935,7 @@ func TestHandler_SharedNavReachabilityFromRenderedViews(t *testing.T) {
 	dir, trusted := writeTrustedHandlerSession(t)
 	investigatorPath := receiptDetailPath(t, dir)
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		HasFeature:          allowAllDashboardFeatures,
@@ -706,7 +978,7 @@ func TestHandler_SharedHeaderCSSSingleSourcedAcrossRenderedViews(t *testing.T) {
 	dir, trusted := writeTrustedHandlerSession(t)
 	investigatorPath := receiptDetailPath(t, dir)
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		HasFeature:          allowAllDashboardFeatures,
@@ -819,9 +1091,9 @@ func TestHandler_SharedNavFiltersUnauthorizedRoutes(t *testing.T) {
 		{
 			name: "agents-only evidence page",
 			handler: New(Options{
-				TrustedOuterAuth: true,
-				ReceiptDir:       t.TempDir(),
-				HasFeature:       allowAgentsFeature,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+				ReceiptDir: t.TempDir(),
+				HasFeature: allowAgentsFeature,
 			}),
 			gate: &dashboardHandler{
 				hasFeature:       allowAgentsFeature,
@@ -833,7 +1105,7 @@ func TestHandler_SharedNavFiltersUnauthorizedRoutes(t *testing.T) {
 		{
 			name: "fleet-permission denied from evidence page",
 			handler: New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          allowAllDashboardFeatures,
 				AuthorizePermission: allowAgentsNavPermissions,
@@ -848,7 +1120,7 @@ func TestHandler_SharedNavFiltersUnauthorizedRoutes(t *testing.T) {
 		{
 			name: "agents-permission denied from fleet page",
 			handler: New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          allowAllDashboardFeatures,
 				AuthorizePermission: allowFleetNavPermissions,
@@ -902,7 +1174,7 @@ func TestLicenseTierAccessMatrix(t *testing.T) {
 	allowEveryPermission := func(*http.Request, Permission) error { return nil }
 	newMatrixHandler := func(hasFeature func(string) bool, fleetSource *fakeFleetSource) http.Handler {
 		return New(Options{
-			TrustedOuterAuth:    true,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 			ReceiptDir:          dir,
 			TrustedKeys:         trusted,
 			HasFeature:          hasFeature,
@@ -1000,9 +1272,9 @@ func TestHandler_SharedNavDoesNotReflectRequestPayloads(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAllDashboardFeatures,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAllDashboardFeatures,
 	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, `/agents?agent=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E`, nil)
 	req.Header.Set("X-Dashboard-Nav", hostileImage)
@@ -1039,9 +1311,9 @@ func TestHandler_AgentsFilterBoundsAgentInput(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowAllDashboardFeatures,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAllDashboardFeatures,
 	})
 	bounded := strings.Repeat("a", agentFilterMaxRunes)
 	oversized := bounded + `"><script>alert(1)</script>`
@@ -1321,7 +1593,7 @@ func TestHandler_RawViewShownWhenRawPermissionGranted(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		HasFeature:          allowAgentsFeature,
@@ -1371,12 +1643,12 @@ func TestHandler_RawViewRequiresRawPermission(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return nil },
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		Authorize:    func(*http.Request) error { return nil },
+		AuthorizeRaw: allowRawAccess,
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			if permission == PermissionRawRead {
 				return errors.New("raw denied")
@@ -1407,7 +1679,7 @@ func TestHandler_ReadLimitWarning(t *testing.T) {
 	writeReceiptsToDir(t, dir, buildDashboardChain(t, priv, 4))
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:       dir,
 		ReceiptReadLimit: 2,
 		TimelineLimit:    1,
@@ -1441,9 +1713,9 @@ func TestHandler_AbsenceRender(t *testing.T) {
 	dir := t.TempDir()
 	writeZeroReceiptSessionFile(t, dir, zeroSessionID)
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+zeroSessionID, nil))
@@ -1466,10 +1738,10 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 	// A rejecting authorizer must fail closed even when the feature is present.
 	denied := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return errors.New("no principal") },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return errors.New("no principal") },
 	})
 	rec := httptest.NewRecorder()
 	denied.ServeHTTP(rec, req)
@@ -1482,10 +1754,10 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 	// An accepting authorizer reaches the handler.
 	allowed := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		HasFeature:       allowAgentsFeature,
-		Authorize:        func(*http.Request) error { return nil },
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return nil },
 	})
 	rec = httptest.NewRecorder()
 	allowed.ServeHTTP(rec, req)
@@ -1517,10 +1789,10 @@ func TestHandler_RedactsRawByDefault(t *testing.T) {
 
 	// No AuthorizeRaw configured => raw is redacted for everyone (fail closed).
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
@@ -1572,11 +1844,11 @@ func TestHandler_RawAccessShowsDetail(t *testing.T) {
 	dir, trusted := writeTrustedHandlerSession(t)
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
@@ -1605,10 +1877,10 @@ func TestHandler_RawAccessDecisionIsCachedPerRequest(t *testing.T) {
 	var calls int
 	var audit strings.Builder
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
 		AuthorizeRaw: func(*http.Request) error {
 			calls++
 			if calls == 1 {
@@ -1641,8 +1913,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("metadata_role_and_path_session", func(t *testing.T) {
 		var meta strings.Builder
 		metaHandler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &meta,
 		})
 		metaHandler.ServeHTTP(httptest.NewRecorder(),
@@ -1661,8 +1933,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("query_param_session", func(t *testing.T) {
 		var q strings.Builder
 		qHandler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &q,
 		})
 		qHandler.ServeHTTP(httptest.NewRecorder(),
@@ -1675,8 +1947,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("empty_session", func(t *testing.T) {
 		var none strings.Builder
 		noneHandler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &none,
 		})
 		noneHandler.ServeHTTP(httptest.NewRecorder(),
@@ -1689,8 +1961,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("raw_role", func(t *testing.T) {
 		var raw strings.Builder
 		rawHandler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuthorizeRaw: allowRawAccess, AuditWriter: &raw,
 		})
 		rawHandler.ServeHTTP(httptest.NewRecorder(),
@@ -1703,8 +1975,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("auth_digest_fields_are_quoted", func(t *testing.T) {
 		var audit strings.Builder
 		handler := New(Options{
-			TrustedOuterAuth: true,
-			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &audit,
 		})
 		ctx := WithAuthAuditInfo(context.Background(), AuthAuditInfo{
@@ -1758,12 +2030,12 @@ func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
 
 	var audit strings.Builder
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir,
-		TrustedKeys:      trusted,
-		HasFeature:       allowAgentsFeature,
-		AuditWriter:      &audit,
-		AuthorizeRaw:     allowRawAccess,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		AuditWriter:  &audit,
+		AuthorizeRaw: allowRawAccess,
 	})
 
 	const requests = 25
@@ -1921,8 +2193,8 @@ func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
 
 	var buf strings.Builder
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 		Authorize:   func(*http.Request) error { return errors.New("denied") },
 		AuditWriter: &buf,
 	})

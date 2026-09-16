@@ -492,6 +492,109 @@ func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testi
 	}
 }
 
+// dashboardListeningAddr extracts the "host:port" from the
+// "pipelock: dashboard listening on http://host:port" banner runDashboardServe
+// prints once it is actually accepting connections.
+var dashboardListeningAddrPattern = regexp.MustCompile(`dashboard listening on \w+://([^\s]+)`)
+
+func dashboardListeningAddr(t *testing.T, banner string) string {
+	t.Helper()
+	m := dashboardListeningAddrPattern.FindStringSubmatch(banner)
+	if len(m) != 2 {
+		t.Fatalf("could not find listening address in banner: %q", banner)
+	}
+	return m[1]
+}
+
+// TestDashboardServe_RefusesUnauthenticatedRequest drives the real shipped
+// `pipelock dashboard serve` wiring end to end: runDashboardServe, on a real
+// :0 TCP listener, using the exact Options literal construction path at
+// dashboard.go:354 (token auth via --auth-token-file, the only auth method
+// exercised without a client-cert or OIDC fixture). It then issues a plain,
+// unauthenticated net/http request at the bound address and asserts the
+// server refuses it. This is the CodeRabbit-requested integration proof that
+// the production listener applies its authentication wrapper; it must fail
+// if a future change ever wires dashboard.Options.TrustedOuterAuth into this
+// path without also requiring a real Authorize/AuthorizePermission callback.
+func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+
+	out := &dashSyncBuffer{}
+	errOut := &dashSyncBuffer{}
+	cmd := dashboardServeCmd()
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd.SetContext(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runDashboardServe(cmd, dashboardServeOptions{
+			listen:        "127.0.0.1:0",
+			receiptDir:    t.TempDir(),
+			authTokenFile: writeDashTokenFile(t),
+		}, license.License{Features: []string{license.FeatureAgents}})
+	}()
+
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before the listening banner: %v", err)
+			return false
+		default:
+			return out.contains("dashboard listening on")
+		}
+	}, "serve never printed the listening banner; stderr: %s", errOut.String())
+
+	addr := dashboardListeningAddr(t, out.String())
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Plain net/http client, no Authorization header at all: this is what an
+	// unauthenticated caller on the real listener actually sends.
+	unauthReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/overview", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := client.Do(unauthReq)
+	if err != nil {
+		t.Fatalf("GET %s/overview: %v", addr, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d (unauthenticated request against the real shipped listener must be refused); body=%s",
+			resp.StatusCode, http.StatusUnauthorized, body)
+	}
+
+	// The correct token must still be let through by the very same wrapper,
+	// proving the 401 above was the auth check and not, say, a 404.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/overview", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	req.SetBasicAuth("", dashTestToken)
+	authedResp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated GET %s/overview: %v", addr, err)
+	}
+	defer func() { _ = authedResp.Body.Close() }()
+	if authedResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(authedResp.Body)
+		t.Fatalf("authenticated status = %d, want %d; body=%s", authedResp.StatusCode, http.StatusOK, body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runDashboardServe returned an error on context-cancel shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not shut down after context cancel")
+	}
+}
+
 func TestDashboardServe_InspectionConfigRejectsMalformedYAML(t *testing.T) {
 	t.Setenv(license.EnvLicenseKey, "")
 	dir := t.TempDir()

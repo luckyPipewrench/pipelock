@@ -104,7 +104,7 @@ func TestFleetOverview_Gating(t *testing.T) {
 			t.Parallel()
 
 			handler := New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          tt.hasFeature,
 				FleetSource:         &fakeFleetSource{},
@@ -135,8 +135,8 @@ func TestFleetOverview_CrossTierGating(t *testing.T) {
 		"/session/example/receipt/0",
 	}
 	fleetOnly := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
 		HasFeature: func(feature string) bool {
 			return feature == license.FeatureFleet
 		},
@@ -151,8 +151,8 @@ func TestFleetOverview_CrossTierGating(t *testing.T) {
 	}
 
 	agentsOnly := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
 		HasFeature: func(feature string) bool {
 			return feature == license.FeatureAgents
 		},
@@ -169,9 +169,9 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowFleetFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
@@ -201,7 +201,7 @@ func TestFleetOverview_ConnectedSourceNoFollowersExplainsScope(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{},
@@ -239,7 +239,7 @@ func TestFleetOverview_DefaultScopeFallbackWhenNoQueryScope(t *testing.T) {
 	// With a configured source AND a default scope, a plain "/fleet" nav click
 	// (no org_id/fleet_id) resolves via the default instead of 400ing.
 	withDefault := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{followers: testFleetFollowers()},
@@ -256,7 +256,7 @@ func TestFleetOverview_DefaultScopeFallbackWhenNoQueryScope(t *testing.T) {
 	// (400) when a source is configured. This proves the default is what makes
 	// the bare nav click resolve.
 	noDefault := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{followers: testFleetFollowers()},
@@ -294,7 +294,7 @@ func TestFleetOverview_FailClosedScopeAuthorization(t *testing.T) {
 
 			source := &fakeFleetSource{followers: testFleetFollowers()}
 			handler := New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          allowFleetFeature,
 				FleetSource:         source,
@@ -326,7 +326,7 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 	})
 	source := &fakeFleetSource{followers: followers}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         source,
@@ -380,10 +380,10 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 
 	source := &fakeFleetSource{followers: testFleetFollowers()[:1]}
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
-		FleetSource:      source,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: source,
 		// No AuthorizeRaw: metadata view must fail closed.
 		AuthorizeFleetScope: allowFleetScope,
 	})
@@ -454,7 +454,7 @@ func TestFleetOverview_RawViewEscapesFollowerStrings(t *testing.T) {
 	follower.BatchID = hostileImage
 	follower.LastApplyErrorMessage = hostileScript
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{followers: []FleetFollowerView{follower}},
@@ -483,7 +483,7 @@ func TestFleetOverview_SourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{err: errors.New("source unavailable")},
@@ -500,7 +500,7 @@ func TestFleetOverview_RejectsInvalidScope(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{},
@@ -541,7 +541,7 @@ func TestFleetOverview_TruncatesFollowerRows(t *testing.T) {
 		}
 	}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		FleetSource:         &fakeFleetSource{followers: followers},
@@ -573,7 +573,7 @@ func TestFleetOverview_FailClosedUnknownCompleteness(t *testing.T) {
 			t.Parallel()
 
 			handler := New(Options{
-				TrustedOuterAuth:    true,
+				TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 				ReceiptDir:          t.TempDir(),
 				HasFeature:          allowFleetFeature,
 				FleetSource:         tt.source,
@@ -596,10 +596,10 @@ func TestFleetOverview_RejectsNonGet(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
-		FleetSource:      &fakeFleetSource{},
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: &fakeFleetSource{},
 	})
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		t.Run(method, func(t *testing.T) {
@@ -621,10 +621,10 @@ func TestFleetOverview_RejectsNonExactPath(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
-		FleetSource:      &fakeFleetSource{},
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: &fakeFleetSource{},
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet/extra", nil))

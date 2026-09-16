@@ -1039,7 +1039,7 @@ func TestDashboardRendersDeliveryFailureAndStaleReadModelLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature,
 	})
 	for _, path := range []string{"/", "/overview", "/evidence"} {
 		path := path

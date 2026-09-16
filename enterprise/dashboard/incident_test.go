@@ -22,7 +22,7 @@ func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/incident", nil))
@@ -58,7 +58,7 @@ func TestIncident_UnconfiguredSourcesRenderAbsence(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, incidentTarget(), nil))
@@ -91,7 +91,7 @@ func TestIncident_CorrelatesDecisionAndAppliedSummary(t *testing.T) {
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	fleet := &fakeFleetSource{followers: testFleetFollowers()}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -161,11 +161,11 @@ func TestIncident_MetadataViewRedactsDecision(t *testing.T) {
 	view.Conflict = "source error for " + wbSensitiveHash
 	source := &fakeConductorSource{view: view, found: true}
 	handler := New(Options{
-		TrustedOuterAuth: true,
-		ReceiptDir:       t.TempDir(),
-		HasFeature:       allowFleetFeature,
-		ConductorSource:  source,
-		FleetSource:      &fakeFleetSource{followers: testFleetFollowers()},
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+		ReceiptDir:      t.TempDir(),
+		HasFeature:      allowFleetFeature,
+		ConductorSource: source,
+		FleetSource:     &fakeFleetSource{followers: testFleetFollowers()},
 		// No AuthorizeRaw: fail closed.
 		AuthorizeFleetScope: allowFleetScope,
 	})
@@ -198,7 +198,7 @@ func TestIncident_DecisionMissingRendersEmpty(t *testing.T) {
 
 	source := &fakeConductorSource{found: false}
 	handler := New(Options{
-		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary", ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, incidentTarget(), nil))
@@ -214,7 +214,7 @@ func TestIncident_FleetSourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     &fakeConductorSource{found: false},
@@ -234,7 +234,7 @@ func TestIncident_DecisionSourceErrorRendersUnavailablePanel(t *testing.T) {
 	var audit strings.Builder
 	fleet := &fakeFleetSource{followers: testFleetFollowers()}
 	handler := New(Options{
-		TrustedOuterAuth:    true,
+		TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     &fakeConductorSource{err: errors.New("backend exploded SECRET-" + "AKIA" + "IOSFODNN7EXAMPLE")},

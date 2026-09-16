@@ -79,7 +79,16 @@ type Options struct {
 	// TrustedOuterAuth explicitly opts into mounting the dashboard behind an
 	// authentication boundary outside this handler. It is required when both
 	// Authorize and AuthorizePermission are nil; otherwise routes fail closed.
+	// Setting it requires TrustedOuterAuthBoundary to also be set; New panics
+	// otherwise, because this option disables the handler's own auth entirely.
 	TrustedOuterAuth bool
+	// TrustedOuterAuthBoundary names the external authentication boundary that
+	// fronts this handler (e.g. "ingress mTLS + internal admin listener",
+	// "corp SSO reverse proxy on 10.x"). Required when TrustedOuterAuth is
+	// true; it is not verified, only recorded, so New logs it at startup and
+	// AllPermissions/route-gate behavior is unaffected. Ignored when
+	// TrustedOuterAuth is false.
+	TrustedOuterAuthBoundary string
 	// AuthorizeRaw gates the sensitive raw view (receipt destinations and full
 	// signed payloads). A request is shown raw detail only when AuthorizeRaw is
 	// non-nil AND returns nil for it; every other authenticated request gets the

@@ -111,6 +111,46 @@ jobs:
             --exclude sdk/conformance/testdata/aarp-corpus/ \
             < "${diff_file}"
 
+  # Pull requests skip the Go 1.26 lane by default (see the producer jobs
+  # below), but a PR that changes CI policy, Go pins, or the guard that checks
+  # them must still prove both versions before merge -- the whole reason the
+  # 1.26 lane is being skipped elsewhere is that it never catches anything
+  # OTHER than a real toolchain change, and this is exactly that case. Uses a
+  # job-level output (not a workflow-level `paths:` trigger filter) because a
+  # `paths:`-filtered workflow run is entirely skipped rather than reporting a
+  # check, and a skipped workflow leaves a required check permanently pending
+  # instead of green.
+  changed-files:
+    needs: [security-scan]
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ci_policy: ${{ steps.check.outputs.ci_policy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect CI-policy file changes
+        id: check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+            .github/workflows/ go.mod go.sum scripts/check-go-matrix.sh)"
+          if [ -n "$changed" ]; then
+            echo "PR touches CI-policy files:"
+            printf '%s\n' "$changed"
+            echo "ci_policy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR touches no CI-policy files"
+            echo "ci_policy=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Keep each Go minor in a separate producer. A matrix-level aggregate cannot
   # distinguish which minor failed: its single result is red for either one.
   test-oss-go125:
@@ -168,13 +208,14 @@ jobs:
           exit "$test_status"
 
   test-oss-go126:
-    needs: [security-scan]
-    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
-    # push to main (and is proven again, pinned, in release.yaml before a tag).
-    # Three days of PR history showed this lane catching only timing flakes,
-    # never a version-specific failure, so duplicating it on every PR was pure
-    # runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' }}
+    needs: [security-scan, changed-files]
+    # Pull requests run only the Go 1.25 floor unless the PR itself touches
+    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
+    # otherwise runs on push to main (and is proven again, pinned, in
+    # release.yaml before a tag). Three days of PR history showed this lane
+    # catching only timing flakes, never a version-specific failure, so
+    # duplicating it on every ordinary PR was pure runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
     name: test-oss (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -288,13 +329,14 @@ jobs:
           fail_ci_if_error: false
 
   test-enterprise-go126:
-    needs: [security-scan]
-    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
-    # push to main (and is proven again, pinned, in release.yaml before a tag).
-    # Three days of PR history showed this lane catching only timing flakes,
-    # never a version-specific failure, so duplicating it on every PR was pure
-    # runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' }}
+    needs: [security-scan, changed-files]
+    # Pull requests run only the Go 1.25 floor unless the PR itself touches
+    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
+    # otherwise runs on push to main (and is proven again, pinned, in
+    # release.yaml before a tag). Three days of PR history showed this lane
+    # catching only timing flakes, never a version-specific failure, so
+    # duplicating it on every ordinary PR was pure runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
     name: test-enterprise (1.26, ${{ matrix.shard }})
     timeout-minutes: 20
@@ -395,13 +437,14 @@ jobs:
         run: make test-replay-harness
 
   test-replay-go126:
-    needs: [security-scan]
-    # Pull requests run only the Go 1.25 floor; this Go 1.26 lane runs on
-    # push to main (and is proven again, pinned, in release.yaml before a tag).
-    # Three days of PR history showed this lane catching only timing flakes,
-    # never a version-specific failure, so duplicating it on every PR was pure
-    # runner-queue contention.
-    if: ${{ github.event_name != 'pull_request' }}
+    needs: [security-scan, changed-files]
+    # Pull requests run only the Go 1.25 floor unless the PR itself touches
+    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
+    # otherwise runs on push to main (and is proven again, pinned, in
+    # release.yaml before a tag). Three days of PR history showed this lane
+    # catching only timing flakes, never a version-specific failure, so
+    # duplicating it on every ordinary PR was pure runner-queue contention.
+    if: ${{ github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -436,20 +479,24 @@ jobs:
           test "${{ needs.test-replay-go125.result }}" = "success"
 
   test-go126:
-    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-replay-go126]
+    needs: [security-scan, changed-files, test-oss-go126, test-enterprise-go126, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # "test (1.26)" is a required check name on every PR (see the branch
     # ruleset), so it must exist and complete on pull_request events even
     # though the producer jobs above are skipped there on purpose. Accept
-    # "skipped" only when the event is pull_request; a push to main (or any
-    # other event) still demands a real "success" from every producer.
+    # "skipped" only when the event is pull_request AND the changed-files job
+    # said no CI-policy file changed -- the exact logical counterpart of the
+    # producers' own `if:` condition. A push to main (or any other event), or
+    # a pull_request that DID touch CI policy, still demands a real "success"
+    # from every producer.
     name: test (1.26)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
         env:
           EVENT_NAME: ${{ github.event_name }}
+          CI_POLICY_CHANGED: ${{ needs.changed-files.outputs.ci_policy }}
         run: |
           set -u
           expect_result() {
@@ -458,14 +505,18 @@ jobs:
             if [ "$result" = "success" ]; then
               return 0
             fi
-            if [ "$EVENT_NAME" = "pull_request" ] && [ "$result" = "skipped" ]; then
-              echo "${job_name} skipped on pull_request: the Go 1.26 lane runs on push to main and release.yaml, not on every PR"
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "$CI_POLICY_CHANGED" != "true" ] && [ "$result" = "skipped" ]; then
+              echo "${job_name} skipped on pull_request: no CI-policy files changed, and the Go 1.26 lane otherwise runs on push to main and release.yaml, not on every PR"
               return 0
             fi
-            echo "${job_name} result was '${result}', expected success (or skipped on pull_request)" >&2
+            echo "${job_name} result was '${result}', expected success (or skipped on an ordinary pull_request)" >&2
             return 1
           }
           test "${{ needs.security-scan.result }}" = "success"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "changed-files result: ${{ needs.changed-files.result }}"
+            test "${{ needs.changed-files.result }}" = "success"
+          fi
           expect_result "test-oss-go126" "${{ needs.test-oss-go126.result }}"
           expect_result "test-enterprise-go126" "${{ needs.test-enterprise-go126.result }}"
           expect_result "test-replay-go126" "${{ needs.test-replay-go126.result }}"

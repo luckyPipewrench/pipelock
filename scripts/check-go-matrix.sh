@@ -4,17 +4,24 @@
 #
 # Pull-request CI runs only the Go floor version (see ci.yaml's
 # test-oss-go126/test-enterprise-go126/test-replay-go126 jobs, which are
-# skipped with `if: github.event_name != 'pull_request'`). Pushes to main and
-# the release workflow are the only two places every supported Go minor is
-# still exercised together, and AGENTS.md promises "CI tests Go 1.25 and
-# 1.26". This asserts release.yaml's test matrix is a superset of the Go
-# minors ci.yaml runs on a push to main, so trimming a version from one
-# workflow without the other fails here instead of silently narrowing the
-# pre-tag guarantee.
+# skipped on pull_request unless the diff touches CI/Go-pin files). Pushes to
+# main and the release workflow are the only two places every supported Go
+# minor is still exercised together, and AGENTS.md promises "CI tests Go 1.25
+# and 1.26". This asserts release.yaml's release-tests matrix is a superset of
+# the Go minors ci.yaml's producer jobs actually install, so trimming a
+# version from one workflow without the other fails here.
 #
-# This checks MINOR versions only (1.25, 1.26), not exact patches: the
-# release matrix intentionally pins an exact patch (see its own comment on
-# why) and that patch drifts independently of this guard.
+# Structural, not name-based: an earlier version of this guard inferred each
+# CI job's Go minor from its job-ID suffix (test-oss-go126 -> 1.26), so
+# bumping a producer's actual `go-version:` to 1.27 while leaving its ID
+# `-go126` would false-green. This reads each job's real setup-go
+# `go-version:` (resolving `${{ matrix.* }}` against that job's own
+# `strategy.matrix` when the pin is templated, as release-tests's is), never
+# the job name.
+#
+# Minor versions only (1.25, 1.26), not exact patches: release.yaml
+# intentionally pins an exact patch and that patch drifts independently of
+# this guard (see the comment on that pin).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,59 +35,155 @@ for f in "$CI_WORKFLOW" "$RELEASE_WORKFLOW"; do
 	fi
 done
 
-# ci.yaml's Go-minor test lanes are named test-<suite>-go<major><minor-no-dot>,
-# e.g. test-oss-go125, test-enterprise-go126, test-replay-go126. Every one of
-# these runs on push to main (the pull_request skip only ever excludes the
-# go126 lanes, never the go125 ones), so the set of distinct job-name suffixes
-# is exactly the set of Go minors ci.yaml proves on main.
-mapfile -t ci_minors < <(
-	grep -oE '^  test-(oss|enterprise|replay)-go[0-9]+:' "$CI_WORKFLOW" \
-		| grep -oE 'go[0-9]+' \
-		| sed -E 's/^go([0-9])([0-9]+)$/\1.\2/' \
-		| sort -u
-)
+python3 - "$CI_WORKFLOW" "$RELEASE_WORKFLOW" <<'PYEOF'
+import re
+import sys
 
-if [[ "${#ci_minors[@]}" -eq 0 ]]; then
-	printf 'check-go-matrix: found no test-*-go<NN> jobs in %s; parse broke\n' "$CI_WORKFLOW" >&2
-	exit 2
-fi
+import yaml
 
-# release.yaml's release-tests matrix pins exact patches as
-# `version: 'X.Y.Z'`. Reduce to major.minor for the superset comparison.
-mapfile -t release_minors < <(
-	awk '/^  release-tests:/{in_block=1} in_block && /^  [a-zA-Z_-]+:$/ && !/^  release-tests:$/{in_block=0} in_block' "$RELEASE_WORKFLOW" \
-		| grep -oE "version: '[0-9]+\.[0-9]+\.[0-9]+'" \
-		| grep -oE "[0-9]+\.[0-9]+\.[0-9]+" \
-		| sed -E 's/^([0-9]+\.[0-9]+)\.[0-9]+$/\1/' \
-		| sort -u
-)
+ci_path, release_path = sys.argv[1], sys.argv[2]
 
-if [[ "${#release_minors[@]}" -eq 0 ]]; then
-	printf 'check-go-matrix: found no release-tests go matrix versions in %s; parse broke\n' "$RELEASE_WORKFLOW" >&2
-	exit 2
-fi
+# Fail-closed: these are the six producer jobs pull-request CI is allowed to
+# skip. If any is renamed or removed, this guard must fail rather than
+# silently checking fewer lanes than it was written for.
+EXPECTED_CI_JOBS = [
+	"test-oss-go125",
+	"test-oss-go126",
+	"test-enterprise-go125",
+	"test-enterprise-go126",
+	"test-replay-go125",
+	"test-replay-go126",
+]
 
-printf 'ci.yaml push-event Go minors: %s\n' "${ci_minors[*]}"
-printf 'release.yaml release-tests Go minors: %s\n' "${release_minors[*]}"
+MAJOR_MINOR_RE = re.compile(r"^(\d+)\.(\d+)")
 
-missing=()
-for minor in "${ci_minors[@]}"; do
-	found=0
-	for r in "${release_minors[@]}"; do
-		if [[ "$r" == "$minor" ]]; then
-			found=1
-			break
-		fi
-	done
-	if [[ "$found" -eq 0 ]]; then
-		missing+=("$minor")
-	fi
-done
 
-if [[ "${#missing[@]}" -gt 0 ]]; then
-	printf 'check-go-matrix: release.yaml is missing Go minor(s) that ci.yaml proves on push to main: %s\n' "${missing[*]}" >&2
-	printf 'check-go-matrix: a tag would ship having been proven on fewer Go versions than main is.\n' >&2
-	exit 1
-fi
+def load(path):
+	with open(path, encoding="utf-8") as fh:
+		doc = yaml.safe_load(fh)
+	if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+		print(f"check-go-matrix: {path} has no parseable jobs map", file=sys.stderr)
+		sys.exit(2)
+	return doc["jobs"]
 
-printf 'check-go-matrix: release.yaml covers every Go minor ci.yaml runs on push to main.\n'
+
+def resolve_expr(value, matrix):
+	"""Resolve a `${{ matrix.x.y }}` (or literal) go-version value.
+
+	`matrix` is the job's own `strategy.matrix` mapping. When a pin is
+	templated, every combination the matrix produces is expanded and returned;
+	a literal value is returned as a single-element list.
+	"""
+	if not isinstance(value, str):
+		return []
+	m = re.fullmatch(r"\$\{\{\s*matrix\.([\w.]+)\s*\}\}", value.strip())
+	if not m:
+		return [value]
+	path = m.group(1).split(".")
+
+	def walk(node, remaining):
+		if not remaining:
+			return [node]
+		key = remaining[0]
+		if isinstance(node, list):
+			out = []
+			for item in node:
+				out.extend(walk(item, remaining))
+			return out
+		if isinstance(node, dict) and key in node:
+			return walk(node[key], remaining[1:])
+		return []
+
+	root = matrix.get(path[0]) if matrix else None
+	if root is None:
+		return []
+	return walk(root, path[1:])
+
+
+def go_versions_for_job(job):
+	"""Every go-version string a job's setup-go steps install, expanded across
+	that job's own matrix (never a sibling job's matrix)."""
+	if not isinstance(job, dict):
+		return []
+	matrix = {}
+	strategy = job.get("strategy")
+	if isinstance(strategy, dict) and isinstance(strategy.get("matrix"), dict):
+		matrix = strategy["matrix"]
+	versions = []
+	for step in job.get("steps") or []:
+		if not isinstance(step, dict):
+			continue
+		uses = step.get("uses", "")
+		if not isinstance(uses, str) or "actions/setup-go" not in uses:
+			continue
+		with_block = step.get("with")
+		if not isinstance(with_block, dict):
+			continue
+		versions.extend(resolve_expr(with_block.get("go-version"), matrix))
+	return versions
+
+
+def minors(versions):
+	out = set()
+	for v in versions:
+		m = MAJOR_MINOR_RE.match(str(v))
+		if m:
+			out.add(f"{m.group(1)}.{m.group(2)}")
+	return out
+
+
+ci_jobs = load(ci_path)
+missing_jobs = [name for name in EXPECTED_CI_JOBS if name not in ci_jobs]
+if missing_jobs:
+	print(
+		f"check-go-matrix: expected producer job(s) missing from {ci_path}: "
+		f"{', '.join(missing_jobs)}; this guard's job list is out of date with "
+		"the workflow, or a producer was renamed/removed without updating it",
+		file=sys.stderr,
+	)
+	sys.exit(2)
+
+ci_minors = set()
+for name in EXPECTED_CI_JOBS:
+	job_minors = minors(go_versions_for_job(ci_jobs[name]))
+	if not job_minors:
+		print(
+			f"check-go-matrix: could not read a go-version from {ci_path} job "
+			f"{name!r}; parse broke",
+			file=sys.stderr,
+		)
+		sys.exit(2)
+	ci_minors |= job_minors
+
+release_jobs = load(release_path)
+if "release-tests" not in release_jobs:
+	print(f"check-go-matrix: no 'release-tests' job in {release_path}", file=sys.stderr)
+	sys.exit(2)
+release_minors = minors(go_versions_for_job(release_jobs["release-tests"]))
+if not release_minors:
+	print(
+		f"check-go-matrix: found no release-tests go matrix versions in "
+		f"{release_path}; parse broke",
+		file=sys.stderr,
+	)
+	sys.exit(2)
+
+print(f"ci.yaml producer-job Go minors: {' '.join(sorted(ci_minors))}")
+print(f"release.yaml release-tests Go minors: {' '.join(sorted(release_minors))}")
+
+missing = sorted(ci_minors - release_minors)
+if missing:
+	print(
+		"check-go-matrix: release.yaml is missing Go minor(s) that ci.yaml's "
+		f"producer jobs install: {' '.join(missing)}",
+		file=sys.stderr,
+	)
+	print(
+		"check-go-matrix: a tag would ship having been proven on fewer Go "
+		"versions than main is.",
+		file=sys.stderr,
+	)
+	sys.exit(1)
+
+print("check-go-matrix: release.yaml covers every Go minor ci.yaml's producer jobs install.")
+PYEOF

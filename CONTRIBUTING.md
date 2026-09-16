@@ -44,7 +44,7 @@ go test -race -count=1 ./...     # All tests with race detector
 ## Pull Requests
 
 1. Fill in a clear description of what changed and why
-2. CI requires eight GitHub Actions contexts: **security-scan**, **test (1.25)**, **test (1.26)**, **test-macos**, **lint**, **build**, **govulncheck**, and **codeql**. The advisory **Pipelock CI Summary** rolls them up for readability but isn't a required context. On a pull request, **test (1.26)** exists as a required check but its Go 1.26 test matrix is skipped and reports success rather than run again; the full matrix runs on both Go 1.25 and 1.26 on push to `main`, and both versions are proven again, pinned, in the release workflow before a tag.
+2. CI requires eight GitHub Actions contexts: **security-scan**, **test (1.25)**, **test (1.26)**, **test-macos**, **lint**, **build**, **govulncheck**, and **codeql**. The advisory **Pipelock CI Summary** rolls them up for readability but isn't a required context. On an ordinary pull request, **test (1.26)** exists as a required check but its Go 1.26 test matrix is skipped and reports success rather than run again; a PR that itself touches `.github/workflows/**`, `go.mod`, `go.sum`, or the guard that checks them runs the full matrix anyway. The full matrix always runs on both Go 1.25 and 1.26 on push to `main`, and both versions are proven again, pinned, in the release workflow before a tag.
 3. Address reviewer feedback and bot comments. Automated AI review (e.g. CodeRabbit) is **advisory only** — maintainers make all security decisions, and a bot's passing status or summary does not by itself mean a change was security-reviewed.
 4. PRs are squash-merged
 

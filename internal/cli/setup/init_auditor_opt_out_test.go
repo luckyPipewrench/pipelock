@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -312,5 +313,80 @@ func TestInitAuditorExistingConfigWithoutRecorderDirReportsSkip(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no flight_recorder.dir") {
 		t.Fatalf("the skip must say why\noutput:\n%s", out.String())
+	}
+}
+
+// Ordering has to be asserted at the moment the installer is ENTERED. The
+// installer writes every managed file before it ever calls systemctl, so
+// comparing the disclosure against the post-install confirmation (or against
+// the systemctl seam) still passes if the disclosure is printed after the
+// first file has already landed -- which is exactly the contract this feature
+// exists to hold.
+func TestInitAuditorDisclosurePrecedesTheInstallerItself(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+
+	var seen string
+	var out bytes.Buffer
+	stub(t, &evidenceAuditorInstall, func(context.Context, string) (evidenceCorpusAuditorInstall, error) {
+		seen = out.String()
+		return evidenceCorpusAuditorInstall{TimerPath: "/tmp/fake.timer"}, nil
+	})
+
+	home := t.TempDir()
+	cmd := InitCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", filepath.Join(home, "cfg", "pipelock.yaml"),
+		"--skip-canary",
+		"--skip-validate",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\noutput:\n%s", err, out.String())
+	}
+
+	if seen == "" {
+		t.Fatal("the installer seam never ran, so ordering was not exercised")
+	}
+	if !strings.Contains(seen, evidenceAuditorDisclosure) {
+		t.Fatalf("the installer was entered before the disclosure was printed\noutput at installer entry:\n%s", seen)
+	}
+}
+
+// A cancelled context kills the probe process, which returns an
+// *exec.ExitError. Treating that as a state result reported an empty state,
+// which the caller turns into a "no usable systemd session" skip -- so an
+// interrupted init silently claimed the host had no systemd.
+func TestEvidenceAuditorProbeReportsCancellationNotAnEmptyState(t *testing.T) {
+	originalRun := evidenceAuditorRunCommand
+	t.Cleanup(func() { evidenceAuditorRunCommand = originalRun })
+	evidenceAuditorRunCommand = func(*exec.Cmd) ([]byte, error) {
+		return nil, &exec.ExitError{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runSystemctlOp(ctx, systemctlUserRunning)
+	var stateErr *systemctlUserStateError
+	if errors.As(err, &stateErr) {
+		t.Fatalf("cancellation was reported as state %q instead of a cancellation", stateErr.state)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled", err)
+	}
+
+	// And the decision layer must not turn it into a skip.
+	stub(t, &evidenceAuditorSystemctl, runSystemctlOp)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(ctx)
+	if !unavailable {
+		t.Fatal("a cancelled probe must not report a usable session")
+	}
+	if strings.Contains(reason, "returned no result") {
+		t.Fatalf("cancellation was misreported as an empty probe state: %q", reason)
 	}
 }

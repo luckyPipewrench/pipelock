@@ -357,6 +357,14 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 	return nil
 }
 
+// evidenceAuditorInstall is the seam for the install itself. The disclosure
+// contract is "nothing lands before it is named", and the first thing that
+// lands is a managed file written inside the installer -- well before it runs
+// systemctl. Asserting order against the systemctl seam or the post-install
+// message therefore cannot catch a disclosure printed after the first write,
+// so the ordering test hooks the installer entry point instead.
+var evidenceAuditorInstall = installEvidenceCorpusAuditor
+
 // runEvidenceAuditorPhase decides and, unless skipped, performs the evidence
 // corpus auditor install for `pipelock init`. It is on Linux by default:
 // --no-auditor opts out, --dry-run installs nothing, and a host with no
@@ -422,7 +430,7 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 		_, _ = fmt.Fprintf(w, "  %s\n", evidenceAuditorDisclosure)
 	}
 
-	installed, err := installEvidenceCorpusAuditor(cmd.Context(), auditorRecorderDir)
+	installed, err := evidenceAuditorInstall(cmd.Context(), auditorRecorderDir)
 	if err != nil {
 		return nil, err
 	}

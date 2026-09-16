@@ -54,6 +54,15 @@ func runSystemctlOp(ctx context.Context, op systemctlOp) error {
 		// produced output (missing binary, unreachable bus, etc.) is a bare
 		// error.
 		if runErr != nil {
+			// A cancelled context kills the process, which surfaces as an
+			// *exec.ExitError. Classifying that as a state result would report
+			// an empty state, which the caller reads as "no usable session"
+			// and turns into a silent skip -- so an interrupted init would
+			// claim the host has no systemd instead of reporting the
+			// cancellation. Check the context before trusting the exit shape.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("systemctl --user %s: %w", op, ctxErr)
+			}
 			var exitErr *exec.ExitError
 			if !errors.As(runErr, &exitErr) {
 				return fmt.Errorf("systemctl --user %s: %w", op, runErr)

@@ -6,6 +6,7 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -106,5 +107,31 @@ func TestServer_ReloadAcceptsValidHostPattern(t *testing.T) {
 	}
 	if len(live.TrustedDomains) != 2 {
 		t.Errorf("live trusted_domains = %q, want the two patterns the reload carried", live.TrustedDomains)
+	}
+}
+
+func TestServer_ReloadRejectsOverHorizonTemporaryExpiry(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+
+	newCfg := oldCfg.Clone()
+	newCfg.ResponseScanning.SizeExemptDomains = append(newCfg.ResponseScanning.SizeExemptDomains, "downloads.vendor.example")
+	newCfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+		Host:         "downloads.vendor.example",
+		Paths:        []string{"/opaque/pkg.bin"},
+		ContentTypes: []string{"application/octet-stream"},
+		Reason:       "temporary opaque archive",
+		Expires:      time.Now().UTC().Add(config.MaxUnscannablePassthroughHorizon + 24*time.Hour).Format("2006-01-02"),
+	}}
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload accepted an over-horizon temporary expiry")
+	}
+	if !strings.Contains(err.Error(), "response_scanning.unscannable_passthrough[0].expires") || !strings.Contains(err.Error(), "maximum temporary horizon") {
+		t.Fatalf("Reload error = %q, want the over-horizon field and remediation", err)
+	}
+	if live := s.proxy.CurrentConfig(); live != oldCfg {
+		t.Fatal("a rejected expiry reload changed the live config")
 	}
 }

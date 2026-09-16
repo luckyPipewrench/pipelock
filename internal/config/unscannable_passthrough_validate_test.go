@@ -18,7 +18,7 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
 			Added:        "2026-07-04",
-			Expires:      "2099-01-01",
+			Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 		}
 	}
 
@@ -217,7 +217,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 		ContentTypes: []string{" Application/Octet-Stream; Charset=binary "},
 		Reason:       " opaque signed archive ",
 		Added:        " 2026-07-04 ",
-		Expires:      " 2099-01-01 ",
+		Expires:      " " + temporaryExpiryDate(MaxUnscannablePassthroughHorizon) + " ",
 	}}
 
 	if err := cfg.Validate(); err != nil {
@@ -237,7 +237,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	if got.Reason != "opaque signed archive" {
 		t.Fatalf("reason = %q, want trimmed", got.Reason)
 	}
-	if got.Added != "2026-07-04" || got.Expires != "2099-01-01" {
+	if got.Added != "2026-07-04" || got.Expires != temporaryExpiryDate(MaxUnscannablePassthroughHorizon) {
 		t.Fatalf("dates = %q/%q, want trimmed YYYY-MM-DD", got.Added, got.Expires)
 	}
 }

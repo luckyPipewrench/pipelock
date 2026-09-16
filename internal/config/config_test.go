@@ -531,6 +531,7 @@ func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt
 
 func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 	t.Parallel()
+	expires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
 
 	tests := []struct {
 		name    string
@@ -545,17 +546,17 @@ func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 				ContentTypes: []string{"Application/Octet-Stream; charset=binary"},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-12-31",
+				Expires:      expires,
 			},
 		},
 		{
 			name:    "missing reason",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "url host",
-			entry:   UnscannablePassthroughEntry{Host: "https://downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "https://downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
@@ -570,22 +571,22 @@ func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 		},
 		{
 			name:    "bad path prefix",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31", PathPrefixes: []string{"artifacts/"}},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires, PathPrefixes: []string{"artifacts/"}},
 			wantErr: true,
 		},
 		{
 			name:    "path traversal",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/../private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/../private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "escaped path traversal",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/%252e%252e/private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/%252e%252e/private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "non canonical path",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts//private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts//private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 	}

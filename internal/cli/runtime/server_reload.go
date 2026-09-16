@@ -61,6 +61,11 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	if newCfg == nil {
 		return errors.New("rejected: invalid config reload: config is nil")
 	}
+	if validationErr := newCfg.ValidateExpiryAuthorizations(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	if validationErr := newCfg.ValidateReservedDoWLimits(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)

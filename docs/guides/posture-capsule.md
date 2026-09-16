@@ -92,6 +92,7 @@ Flags:
 | `--max-age` | `30d` | Maximum capsule age in days. Format `Nd` only (e.g. `30d`, `7d`). Use `--max-age 0` to skip freshness. |
 | `--max-receipt-age` | `7d` | Maximum age of the most recent flight-recorder receipt, format `Nd`. `0` skips. |
 | `--require-discovery` | `false` | Require at least one discovered MCP server (strict policy already enforces this). |
+| `--workspace-statement` | (optional) | Path to a signed workspace-change statement that must bind to `--proof`; an incomplete statement is authentic partial evidence and fails verification. |
 | `--json` | `false` | Machine-readable output including per-factor score breakdown. |
 
 ### Exit codes
@@ -102,7 +103,7 @@ Flags:
 |------|---------|
 | `0` | Verification passed: signature valid, schema supported, capsule fresh, score meets minimum, all policy gates passed. |
 | `1` | **Verification could not complete.** Flag parse error, bad proof file, bad key, signature did not verify, expired capsule, or schema mismatch. The capsule cannot be trusted. |
-| `2` | **Verified but failed.** Signature is valid and the capsule is authentic, but one or more policy gates or the minimum-score gate did not pass. The environment does not meet the policy. |
+| `2` | **Verified but failed.** Signature is valid and the capsule is authentic, but one or more policy gates or the minimum-score gate did not pass, or a bound workspace statement reports an incomplete observation. The environment does not meet the requested verification requirements. |
 
 ### Policies
 

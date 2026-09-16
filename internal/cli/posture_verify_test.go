@@ -1596,6 +1596,197 @@ func TestPostureVerify_WorkspaceStatement_MatchedPairPasses(t *testing.T) {
 	}
 }
 
+func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
+	tests := []struct {
+		name                 string
+		statement            func(*testing.T) workspacediff.Statement
+		wantPassed           bool
+		wantBoundaryCheck    workspacediff.BoundaryCheck
+		wantIncompleteReason string
+	}{
+		{
+			name:              "complete statement passes",
+			statement:         completeWorkspaceStatement,
+			wantPassed:        true,
+			wantBoundaryCheck: workspacediff.BoundaryCheckMountID,
+		},
+		{
+			name:                 "device-only statement fails as partial evidence",
+			statement:            deviceOnlyWorkspaceStatement,
+			wantPassed:           false,
+			wantBoundaryCheck:    workspacediff.BoundaryCheckDeviceOnly,
+			wantIncompleteReason: "mount boundary check unavailable",
+		},
+		{
+			name:                 "budget-exhausted statement fails as partial evidence",
+			statement:            budgetExhaustedWorkspaceStatement,
+			wantPassed:           false,
+			wantBoundaryCheck:    workspacediff.BoundaryCheckMountID,
+			wantIncompleteReason: "snapshot budget exceeded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			stmtPath := writeWorkspaceStatementForVerify(t, fix, tt.statement(t))
+
+			var jsonOutput bytes.Buffer
+			jsonCmd := rootCmd()
+			jsonCmd.SetOut(&jsonOutput)
+			jsonCmd.SetErr(&bytes.Buffer{})
+			jsonCmd.SetArgs([]string{
+				"posture", "verify",
+				"--proof", fix.ProofPath,
+				"--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone,
+				"--workspace-statement", stmtPath,
+				"--json",
+			})
+			err := jsonCmd.Execute()
+			if tt.wantPassed {
+				if err != nil {
+					t.Fatalf("JSON verification: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected incomplete workspace statement to fail verification")
+				}
+				assertExitCode(t, err, exitVerifyPolicyFail)
+			}
+
+			var out struct {
+				Verified           bool   `json:"verified"`
+				Passed             bool   `json:"passed"`
+				Error              string `json:"error"`
+				WorkspaceStatement struct {
+					Bound            bool   `json:"bound"`
+					Complete         *bool  `json:"complete"`
+					BoundaryCheck    string `json:"boundary_check"`
+					IncompleteReason string `json:"incomplete_reason"`
+				} `json:"workspace_statement"`
+			}
+			if err := json.Unmarshal(jsonOutput.Bytes(), &out); err != nil {
+				t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, jsonOutput.String())
+			}
+			if out.Passed != tt.wantPassed {
+				t.Errorf("passed = %v, want %v\noutput:\n%s", out.Passed, tt.wantPassed, jsonOutput.String())
+			}
+			if !out.Verified {
+				t.Errorf("verified = false, want true\noutput:\n%s", jsonOutput.String())
+			}
+			if !out.WorkspaceStatement.Bound {
+				t.Fatalf("workspace_statement.bound = false, want true\noutput:\n%s", jsonOutput.String())
+			}
+			if out.WorkspaceStatement.Complete == nil || *out.WorkspaceStatement.Complete != tt.wantPassed {
+				t.Errorf("workspace_statement.complete = %v, want %v", out.WorkspaceStatement.Complete, tt.wantPassed)
+			}
+			if out.WorkspaceStatement.BoundaryCheck != string(tt.wantBoundaryCheck) {
+				t.Errorf("workspace_statement.boundary_check = %q, want %q", out.WorkspaceStatement.BoundaryCheck, tt.wantBoundaryCheck)
+			}
+			if !strings.Contains(out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason) {
+				t.Errorf("workspace_statement.incomplete_reason = %q, want it to contain %q", out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason)
+			}
+			if !tt.wantPassed && !strings.Contains(out.Error, "incomplete") {
+				t.Errorf("error = %q, want it to name incomplete evidence", out.Error)
+			}
+
+			var textOutput bytes.Buffer
+			textCmd := rootCmd()
+			textCmd.SetOut(&textOutput)
+			textCmd.SetErr(&bytes.Buffer{})
+			textCmd.SetArgs([]string{
+				"posture", "verify",
+				"--proof", fix.ProofPath,
+				"--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone,
+				"--workspace-statement", stmtPath,
+			})
+			err = textCmd.Execute()
+			if tt.wantPassed {
+				if err != nil {
+					t.Fatalf("text verification: %v", err)
+				}
+			} else {
+				assertExitCode(t, err, exitVerifyPolicyFail)
+			}
+			if !strings.Contains(textOutput.String(), "boundary check: "+string(tt.wantBoundaryCheck)) {
+				t.Errorf("text output does not name boundary check %q:\n%s", tt.wantBoundaryCheck, textOutput.String())
+			}
+			if !strings.Contains(textOutput.String(), tt.wantIncompleteReason) {
+				t.Errorf("text output does not name incomplete reason %q:\n%s", tt.wantIncompleteReason, textOutput.String())
+			}
+		})
+	}
+}
+
+func completeWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("produce complete workspace statement: %v", err)
+	}
+	return statement
+}
+
+func deviceOnlyWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckDeviceOnly},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("produce device-only workspace statement: %v", err)
+	}
+	return statement
+}
+
+func budgetExhaustedWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "entry"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write workspace entry: %v", err)
+	}
+	before, err := workspacediff.Snapshot(root, 1024, workspacediff.Budget{MaxEntries: 1})
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	after, err := workspacediff.Snapshot(root, 1024, workspacediff.Budget{MaxEntries: 1})
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	statement, err := workspacediff.Diff(before, after, time.Now())
+	if err != nil {
+		t.Fatalf("produce budget-exhausted workspace statement: %v", err)
+	}
+	if !statement.Incomplete {
+		t.Fatalf("test setup: expected budget-exhausted statement to be incomplete, got %+v", statement)
+	}
+	return statement
+}
+
+func writeWorkspaceStatementForVerify(t *testing.T, fix testVerifyFixture, statement workspacediff.Statement) string {
+	t.Helper()
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{statement}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign workspace statement: %v", err)
+	}
+	path, err := workspacediff.WriteJSON(t.TempDir(), signed)
+	if err != nil {
+		t.Fatalf("write workspace statement: %v", err)
+	}
+	return path
+}
+
 // TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected proves the
 // binding check hashes the ACTUAL capsule FILE bytes, not just the parsed
 // struct: after the statement is bound and signed, the capsule file on disk

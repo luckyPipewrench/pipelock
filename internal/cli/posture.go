@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -140,19 +141,30 @@ Exit codes:
 			// match the statement's declared binding, so a mismatched pair
 			// is rejected here rather than accepted as if it were coherent.
 			workspaceStmtBound := false
+			var workspaceStmtSummary *workspaceStatementSummary
 			if workspaceStmt != "" {
-				if bindErr := verifyWorkspaceStatementBinding(workspaceStmt, capsuleBytes, pubKey); bindErr != nil {
+				signedStmt, bindErr := verifyWorkspaceStatementBinding(workspaceStmt, capsuleBytes, pubKey)
+				if bindErr != nil {
 					return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, true,
 						fmt.Errorf("workspace change statement verification failed: %w", bindErr))
 				}
 				workspaceStmtBound = true
+				summary := summarizeWorkspaceStatement(signedStmt)
+				workspaceStmtSummary = &summary
 				if !jsonOutput {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "  Workspace change statement: signature valid and bound to this capsule")
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Workspace change statement: signature valid and bound to this capsule (boundary check: %s)\n", summary.BoundaryCheck)
+					if !summary.Complete {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Workspace change statement: incomplete: %s\n", summary.IncompleteReason)
+					}
+				}
+				if !summary.Complete {
+					result.Passed = false
+					result.Error = fmt.Sprintf("workspace change statement is incomplete: %s", summary.IncompleteReason)
 				}
 			}
 
 			if jsonOutput {
-				if encErr := writeVerifyJSON(cmd, result, workspaceStmt != "", workspaceStmtBound, ""); encErr != nil {
+				if encErr := writeVerifyJSON(cmd, result, workspaceStmt != "", workspaceStmtBound, "", workspaceStmtSummary); encErr != nil {
 					return fmt.Errorf("encoding JSON output: %w", encErr)
 				}
 				if !result.Passed {
@@ -193,16 +205,55 @@ Exit codes:
 // loadProofFile, never bytes re-read from the capsule's path (H1: a re-read
 // here would authenticate one set of bytes and bind against a possibly
 // different set read moments later).
-func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKey ed25519.PublicKey) error {
+func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKey ed25519.PublicKey) (workspacediff.SignedStatement, error) {
 	data, err := os.ReadFile(filepath.Clean(stmtPath))
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", stmtPath, err)
+		return workspacediff.SignedStatement{}, fmt.Errorf("reading %s: %w", stmtPath, err)
 	}
 	var signed workspacediff.SignedStatement
 	if err := json.Unmarshal(data, &signed); err != nil {
-		return fmt.Errorf("parsing %s: %w", stmtPath, err)
+		return workspacediff.SignedStatement{}, fmt.Errorf("parsing %s: %w", stmtPath, err)
 	}
-	return workspacediff.VerifyBindingBytes(signed, capsuleBytes, pubKey)
+	if err := workspacediff.VerifyBindingBytes(signed, capsuleBytes, pubKey); err != nil {
+		return workspacediff.SignedStatement{}, err
+	}
+	return signed, nil
+}
+
+type workspaceStatementSummary struct {
+	Complete         bool
+	BoundaryCheck    string
+	IncompleteReason string
+}
+
+func summarizeWorkspaceStatement(signed workspacediff.SignedStatement) workspaceStatementSummary {
+	summary := workspaceStatementSummary{Complete: true}
+	boundaryChecks := make(map[string]struct{}, len(signed.Statements))
+	incompleteReasons := make([]string, 0, len(signed.Statements))
+	for _, statement := range signed.Statements {
+		boundaryChecks[string(statement.BoundaryCheck)] = struct{}{}
+		if statement.Incomplete {
+			summary.Complete = false
+			if statement.IncompleteReason != "" {
+				incompleteReasons = append(incompleteReasons, statement.IncompleteReason)
+			}
+		}
+	}
+	summary.BoundaryCheck = joinWorkspaceStatementFields(boundaryChecks)
+	summary.IncompleteReason = strings.Join(incompleteReasons, "; ")
+	if !summary.Complete && summary.IncompleteReason == "" {
+		summary.IncompleteReason = "signed workspace observation is incomplete"
+	}
+	return summary
+}
+
+func joinWorkspaceStatementFields(fields map[string]struct{}) string {
+	values := make([]string, 0, len(fields))
+	for field := range fields {
+		values = append(values, field)
+	}
+	sort.Strings(values)
+	return strings.Join(values, "; ")
 }
 
 // printVerifyResult formats the human-readable verify output.
@@ -299,14 +350,22 @@ type verifyJSONOutput struct {
 }
 
 type workspaceStatementJSONResult struct {
-	Bound  bool   `json:"bound"`
-	Reason string `json:"reason,omitempty"`
+	Bound            bool   `json:"bound"`
+	Complete         *bool  `json:"complete,omitempty"`
+	BoundaryCheck    string `json:"boundary_check,omitempty"`
+	IncompleteReason string `json:"incomplete_reason,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
-func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, workspaceStmtRequested, workspaceStmtBound bool, workspaceStmtReason string) error {
+func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, workspaceStmtRequested, workspaceStmtBound bool, workspaceStmtReason string, summary *workspaceStatementSummary) error {
 	out := verifyJSONOutput{VerifyResult: result}
 	if workspaceStmtRequested {
 		out.WorkspaceStatement = &workspaceStatementJSONResult{Bound: workspaceStmtBound, Reason: workspaceStmtReason}
+		if summary != nil {
+			out.WorkspaceStatement.Complete = &summary.Complete
+			out.WorkspaceStatement.BoundaryCheck = summary.BoundaryCheck
+			out.WorkspaceStatement.IncompleteReason = summary.IncompleteReason
+		}
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
@@ -335,7 +394,7 @@ func exitVerifyIntegrityError(
 			result.ExpiresAt = capsule.ExpiresAt
 			result.LastReceiptAt = capsule.Evidence.FlightRecorder.LastReceiptAt
 		}
-		if jsonErr := writeVerifyJSON(cmd, result, workspaceStmtRequested, false, err.Error()); jsonErr != nil {
+		if jsonErr := writeVerifyJSON(cmd, result, workspaceStmtRequested, false, err.Error(), nil); jsonErr != nil {
 			return fmt.Errorf("encoding JSON output: %w", jsonErr)
 		}
 	}

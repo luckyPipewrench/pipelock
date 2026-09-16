@@ -118,7 +118,7 @@ func TestLiteralHostMatchLists_BreadthPerList(t *testing.T) {
 			message := err.Error()
 			for _, want := range []string{
 				"tls_interception.passthrough_domains[0]", entry, "public suffix",
-				"which would match every domain registered under it",
+				"splices the connection without decrypting it",
 			} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("entry %q: error %q does not contain %q", entry, message, want)
@@ -126,29 +126,76 @@ func TestLiteralHostMatchLists_BreadthPerList(t *testing.T) {
 			}
 		}
 
-		// A PRIVATE-section boundary is accepted, which is the line this rule
-		// deliberately draws: the flag says who administers the boundary, not
-		// who owns the content under it.
+		// PASSTHROUGH IS STRICTER than the ordinary grant-list rule: a
+		// PRIVATE-section boundary (*.github.io, *.s3.amazonaws.com) is
+		// refused here even though ValidateHostGrantList accepts it for
+		// api_allowlist and the exempt/trusted lists. Passthrough splices
+		// the TLS connection without decrypting it, so a wildcard over
+		// either section turns off body and response scanning for every
+		// unrelated tenant under that boundary — the ICANN-only rule that
+		// governs an ordinary grant list would still admit "*.github.io"
+		// here and disable scanning for every GitHub Pages project.
+		for _, entry := range []string{"*.github.io", "*.s3.amazonaws.com", "*.cloudfront.net"} {
+			cfg := Defaults()
+			cfg.TLSInterception.PassthroughDomains = []string{entry}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("passthrough accepted the private-section public suffix %q", entry)
+			}
+			message := err.Error()
+			for _, want := range []string{
+				"tls_interception.passthrough_domains[0]", entry, "PRIVATE-section public suffix",
+				"splices the connection without decrypting it",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("entry %q: error %q does not contain %q", entry, message, want)
+				}
+			}
+		}
+
+		// One label BELOW a private suffix is a registrable name under that
+		// boundary, not the boundary itself, and stays accepted.
 		cfg := Defaults()
-		cfg.TLSInterception.PassthroughDomains = []string{"*.github.io"}
+		cfg.TLSInterception.PassthroughDomains = []string{"*.myorg.github.io"}
 		if err := cfg.Validate(); err != nil {
-			t.Fatalf("passthrough refused the private-section boundary *.github.io: %v", err)
+			t.Fatalf("passthrough refused *.myorg.github.io, one label below the private suffix: %v", err)
+		}
+
+		// An EXACT private-suffix host (no wildcard) is not a breadth
+		// concern at all: it names one host, not every host under the
+		// boundary, so it stays accepted.
+		cfg = Defaults()
+		cfg.TLSInterception.PassthroughDomains = []string{"github.io"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("passthrough refused the exact private-suffix host github.io: %v", err)
 		}
 	})
 
 	// Availability control, and the reason this is a per-list rule rather
-	// than a blanket refusal. A private-suffix base and an ordinary vendor
-	// wildcard are configuration an operator legitimately writes, including
-	// the shipped default.
+	// than a blanket refusal. An ordinary vendor wildcard that is NOT a
+	// public suffix at all is configuration an operator legitimately writes,
+	// including the shipped default.
 	t.Run("passthrough keeps the wildcards operators actually write", func(t *testing.T) {
 		for _, entry := range []string{
-			"*.googlevideo.com", "*.apple.com", "*.s3.amazonaws.com", "mtls.vendor.example",
+			"*.googlevideo.com", "*.apple.com", "mtls.vendor.example",
 		} {
 			cfg := Defaults()
 			cfg.TLSInterception.PassthroughDomains = []string{entry}
 			if err := cfg.Validate(); err != nil {
 				t.Fatalf("passthrough refused the legitimate entry %q: %v", entry, err)
 			}
+		}
+	})
+
+	// SCOPE PROOF: the same private-section wildcard that passthrough now
+	// refuses is still accepted in an ordinary exemption list, because that
+	// list still scans what it exempts and only passthrough disables
+	// decryption entirely.
+	t.Run("the same private-section wildcard stays allowed in exempt_domains", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{"*.github.io"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("exempt_domains refused the private-section boundary *.github.io: %v", err)
 		}
 	})
 

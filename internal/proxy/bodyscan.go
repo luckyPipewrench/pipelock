@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -327,8 +328,17 @@ func contentDispositionAttachment(contentDisposition string) bool {
 	return err == nil && strings.EqualFold(disposition, "attachment")
 }
 
+// configTextualPassthroughType MUST agree with internal/config's
+// isTextualUnscannablePassthroughType, which is the config-load-time copy of
+// this same rule. Both refuse every RFC 9239 section 6 JavaScript alias
+// through the shared internal/media.JavaScriptMediaTypes table; see the
+// parity test in internal/config for the mechanical check that would fail if
+// one of the two copies changed without the other.
 func configTextualPassthroughType(mediaType string) bool {
 	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	if media.IsJavaScriptMediaType(mediaType) {
 		return true
 	}
 	switch mediaType {
@@ -337,8 +347,6 @@ func configTextualPassthroughType(mediaType string) bool {
 		"application/x-ndjson",
 		"application/xml",
 		"application/xhtml+xml",
-		"application/javascript",
-		"application/ecmascript",
 		"application/x-www-form-urlencoded",
 		"application/x-yaml",
 		"application/yaml",

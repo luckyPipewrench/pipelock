@@ -6,6 +6,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
 func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
@@ -319,5 +321,69 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 
 	if got := cloneUnscannablePassthrough(nil); got != nil {
 		t.Fatalf("cloneUnscannablePassthrough(nil) = %#v, want nil", got)
+	}
+}
+
+// TestValidateUnscannablePassthroughRefusesJavaScriptAliases pins that EVERY
+// RFC 9239 section 6 JavaScript alias is refused as a content type for an
+// opaque-download exception, not only the two that used to be spelled out
+// ("application/javascript", "application/ecmascript"). Before this,
+// "application/x-javascript" and "application/x-ecmascript" fell through:
+// they carry no "text/" prefix and were absent from the switch, so a response
+// declaring one of them could sit in an explicit unscanned-download exception
+// even though internal/shield.mediaTypeToPipeline already treats it as
+// JavaScript needing the browser shield's rewrite pipeline.
+func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
+	for _, alias := range media.JavaScriptMediaTypes {
+		t.Run(alias, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
+				Host:         "downloads.example.com",
+				Paths:        []string{"/artifacts/pkg.bin"},
+				ContentTypes: []string{alias},
+				Reason:       "opaque signed archive",
+				Added:        "2026-07-04",
+				Expires:      "2099-01-01",
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("passthrough accepted JavaScript alias %q as an opaque content type", alias)
+			}
+			if !strings.Contains(err.Error(), "textual/scannable") {
+				t.Fatalf("alias %q: error %q does not name it textual/scannable", alias, err)
+			}
+		})
+	}
+
+	// Positive control: an actually-opaque type still qualifies, so the
+	// refusal above is about JavaScript specifically and not a regression
+	// that refuses every content type.
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
+	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
+		Host:         "downloads.example.com",
+		Paths:        []string{"/artifacts/pkg.bin"},
+		ContentTypes: []string{"application/octet-stream"},
+		Reason:       "opaque signed archive",
+		Added:        "2026-07-04",
+		Expires:      "2099-01-01",
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("application/octet-stream refused as an opaque content type: %v", err)
+	}
+}
+
+// TestIsTextualUnscannablePassthroughTypeAgreesWithSharedJavaScriptTable is
+// the config-side half of the cross-package parity check (the shield-side
+// half lives in internal/proxy as
+// TestJavaScriptAliasTableParityBetweenShieldAndConfig). Both consumers must
+// call the SAME internal/media.JavaScriptMediaTypes table rather than keep
+// their own copy; this fails the moment either one starts disagreeing with
+// the shared predicate it is supposed to be built on.
+func TestIsTextualUnscannablePassthroughTypeAgreesWithSharedJavaScriptTable(t *testing.T) {
+	for _, alias := range media.JavaScriptMediaTypes {
+		if !isTextualUnscannablePassthroughType(alias) {
+			t.Errorf("isTextualUnscannablePassthroughType(%q) = false, want true (shared table says JavaScript)", alias)
+		}
 	}
 }

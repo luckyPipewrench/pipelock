@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -434,14 +435,20 @@ func isTextualUnscannablePassthroughType(mediaType string) bool {
 	if strings.HasPrefix(mediaType, "text/") {
 		return true
 	}
+	// Every RFC 9239 section 6 JavaScript alias is refused here, not just
+	// the two spelled out below, so an opaque-download exception cannot
+	// admit the same content the browser shield already treats as
+	// JavaScript (internal/shield.mediaTypeToPipeline). Shared table:
+	// internal/media.JavaScriptMediaTypes.
+	if media.IsJavaScriptMediaType(mediaType) {
+		return true
+	}
 	switch mediaType {
 	case "application/json",
 		"application/ld+json",
 		"application/x-ndjson",
 		"application/xml",
 		"application/xhtml+xml",
-		"application/javascript",
-		"application/ecmascript",
 		"application/x-www-form-urlencoded",
 		"application/x-yaml",
 		"application/yaml",
@@ -1309,7 +1316,13 @@ func matcherParityError(raw, normalized string) error {
 // `pipelock check --config`, which names the field, index and value.
 func validateLiteralHostMatchList(label string, entries []string, judgeBreadth bool) error {
 	if judgeBreadth {
-		if err := ValidateHostGrantList(entries, label); err != nil {
+		// The only caller passing true is
+		// tls_interception.passthrough_domains, so this uses the stricter
+		// passthrough-only breadth rule (any public suffix, private section
+		// included) rather than the ordinary grant-list rule used by
+		// api_allowlist and the exempt/trusted lists. See
+		// passthroughWildcardBaseBreadthError for why the two differ.
+		if err := validatePassthroughHostGrantList(entries, label); err != nil {
 			return err
 		}
 	} else if err := ValidateHostMatchList(entries, label); err != nil {
@@ -1747,6 +1760,57 @@ func wildcardBaseBreadthError(base string) error {
 	}
 	if suffix, icann := publicsuffix.PublicSuffix(base); icann && suffix == base {
 		return fmt.Errorf("wildcard must target a registrable domain like *.example.%s, not the public suffix %q, which would match every domain registered under it", base, base)
+	}
+	return nil
+}
+
+// passthroughWildcardBaseBreadthError is wildcardBaseBreadthError's stricter
+// sibling for tls_interception.passthrough_domains ONLY. It refuses a
+// wildcard over ANY public-suffix boundary, ICANN section and PRIVATE section
+// alike, where wildcardBaseBreadthError accepts a private-section base such
+// as "*.github.io" or "*.s3.amazonaws.com".
+//
+// The two lists differ in what the wildcard actually turns off, and that
+// difference is why they get different rules rather than sharing one. An
+// ordinary grant list (api_allowlist, an exempt/trusted list) still scans
+// what it lets through; the breadth question there is only "how much may
+// reach the scanner." tls_interception.passthrough_domains is not a grant
+// onto a scanned path — it SPLICES the TLS connection without decrypting it,
+// so a matching host gets no body or response scanning at all. A wildcard
+// over a private-suffix boundary there does not merely widen who is exempt
+// from one detector; it turns off every detector for every unrelated tenant
+// under that boundary (every github.io project, every S3 bucket under that
+// suffix), which is the same fail-open shape the ICANN refusal already
+// exists to prevent and public-suffix status does not distinguish.
+func passthroughWildcardBaseBreadthError(base string) error {
+	if !strings.Contains(base, ".") {
+		return fmt.Errorf("wildcard must target a concrete domain like *.example.com, not the whole %q namespace", base)
+	}
+	if suffix, icann := publicsuffix.PublicSuffix(base); suffix == base {
+		section := "a registry-operated (ICANN) public suffix"
+		if !icann {
+			section = "a PRIVATE-section public suffix"
+		}
+		return fmt.Errorf("wildcard must target a registrable domain like *.example.%s, not %s %q: tls_interception.passthrough_domains splices the connection without decrypting it, so this would turn off body and response scanning for every unrelated tenant under that boundary, which is a stricter bar than an ordinary exemption list", base, section, base)
+	}
+	return nil
+}
+
+// validatePassthroughHostGrantList is ValidateHostGrantList with the
+// passthrough-only breadth rule above instead of the shared one, for
+// tls_interception.passthrough_domains.
+func validatePassthroughHostGrantList(hosts []string, label string) error {
+	if err := ValidateHostMatchList(hosts, label); err != nil {
+		return err
+	}
+	for i, raw := range hosts {
+		normalized := NormalizeHostPattern(raw)
+		if !strings.HasPrefix(normalized, "*.") {
+			continue
+		}
+		if err := passthroughWildcardBaseBreadthError(normalized[2:]); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
 	}
 	return nil
 }

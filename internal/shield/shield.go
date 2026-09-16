@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
 // PipelineType determines which rewriting pipeline applies to a response.
@@ -146,20 +147,16 @@ func DetectPipeline(contentType string, bodyPrefix []byte) PipelineType {
 
 // mediaTypeToPipeline maps a parsed media type string to a pipeline.
 func mediaTypeToPipeline(mt string) PipelineType {
-	switch mt {
-	case "text/html", "application/xhtml+xml":
+	switch {
+	case mt == "text/html" || mt == "application/xhtml+xml":
 		return PipelineHTML
 	// RFC 9239 section 6: historical JavaScript registrations are aliases
-	// with equivalent processing requirements.
-	case "text/javascript",
-		"application/javascript", "application/x-javascript",
-		"text/javascript1.0", "text/javascript1.1", "text/javascript1.2",
-		"text/javascript1.3", "text/javascript1.4", "text/javascript1.5",
-		"text/jscript", "text/livescript",
-		"text/ecmascript", "application/ecmascript", "application/x-ecmascript",
-		"text/x-ecmascript", "text/x-javascript":
+	// with equivalent processing requirements. The table is shared with
+	// internal/config's unscannable-passthrough classifier so the two
+	// cannot drift apart; see internal/media.JavaScriptMediaTypes.
+	case media.IsJavaScriptMediaType(mt):
 		return PipelineJS
-	case "image/svg+xml":
+	case mt == "image/svg+xml":
 		return PipelineSVG
 	default:
 		return PipelineNone

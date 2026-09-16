@@ -176,6 +176,60 @@ func TestSessionManager_AdaptiveWhoamiDoesNotReadBoundAgentSession(t *testing.T)
 	}
 }
 
+// TestSessionManager_AdaptiveWhoamiProvenance covers every grade the admin
+// whoami endpoint can report: self-declared for any supplied name (including
+// one forged to look like a bound/config-default identity, since this
+// endpoint has no listener-binding or source-CIDR context to authenticate
+// it), and unknown for the omitted-header case.
+func TestSessionManager_AdaptiveWhoamiProvenance(t *testing.T) {
+	tests := []struct {
+		name           string
+		agent          string
+		wantProvenance string
+	}{
+		{
+			name:           "self-declared header",
+			agent:          adaptiveAPIAgent,
+			wantProvenance: string(envelope.ActorAuthSelfDeclared),
+		},
+		{
+			name:           "forged header claiming a bound name still reports self-declared",
+			agent:          "infra-bound-agent",
+			wantProvenance: string(envelope.ActorAuthSelfDeclared),
+		},
+		{
+			name:           "omitted header reports unknown",
+			agent:          "",
+			wantProvenance: string(envelope.ActorAuthUnknown),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := newAdaptiveOperatorTestManager(t)
+			if tt.agent != "" {
+				// Pre-seed a genuinely bound session under the forged name
+				// so a leak would present as Exists=true with a
+				// bound-looking key, not just a wrong Provenance string.
+				// Skipped for the empty-agent case: an empty name has no
+				// per-agent namespace to bind, so its bound key already
+				// folds to the client-IP key under test - seeding it there
+				// would assert a pre-existing, unrelated session exists,
+				// not a provenance leak.
+				boundKey := sessionKeyFor(tt.agent, adaptiveAPIClientIP, envelope.ActorAuthBound)
+				sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
+			}
+
+			got := sm.AdaptiveWhoami(adaptiveAPIClientIP, tt.agent)
+			if got.Provenance != tt.wantProvenance {
+				t.Fatalf("Provenance = %q, want %q: %+v", got.Provenance, tt.wantProvenance, got)
+			}
+			if tt.agent != "" && got.Exists {
+				t.Fatalf("whoami exposed bound session under grade %q: %+v", tt.wantProvenance, got)
+			}
+		})
+	}
+}
+
 func TestSessionManager_ResetAllIdentitySessionsSkipsInvocationsAndClearsIPState(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 	cfg := adaptiveOperatorSessionConfig()
@@ -381,6 +435,9 @@ func TestSessionAPI_HandleAdaptiveWhoami(t *testing.T) {
 	}
 	if !resp.Exists || resp.Classification != adaptiveClassificationObserve {
 		t.Fatalf("unexpected whoami classification: %+v", resp)
+	}
+	if resp.Provenance != string(envelope.ActorAuthSelfDeclared) {
+		t.Fatalf("unexpected whoami provenance: %+v", resp)
 	}
 }
 

@@ -1748,7 +1748,7 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 | `/api/v1/sessions/{key}/trust` | POST | Grant a task-scoped trust override |
 | `/api/v1/adaptive/status` | GET | Summarize adaptive state, escalation counts, recent event counts, and top anomalies |
 | `/api/v1/adaptive/flush` | POST | Reset identity-session adaptive state and clear shared IP-domain burst tracking |
-| `/api/v1/adaptive/whoami` | GET | Show the caller's client-IP/session classification as seen by the proxy |
+| `/api/v1/adaptive/whoami` | GET | Show the caller's client-IP/session classification as seen by the proxy; the response's `provenance` field states whether the `X-Pipelock-Agent` name is `self-declared` (always, since this admin endpoint cannot authenticate it) or `unknown` (omitted) |
 | `/api/v1/baseline` | GET | List behavioral-baseline profiles and states |
 | `/api/v1/baseline/{agent}` | GET | Show learned ranges, retained/observed/trimmed sessions, and ratification state |
 | `/api/v1/baseline/{agent}/ratify` | POST | Lock a pending `ratify` profile so it enforces immediately |

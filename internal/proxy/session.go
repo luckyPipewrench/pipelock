@@ -1236,9 +1236,16 @@ type scopedAirlockTransition struct {
 }
 
 type AdaptiveWhoami struct {
-	ClientIP           string  `json:"client_ip"`
-	Agent              string  `json:"agent,omitempty"`
-	SessionKey         string  `json:"session_key"` //nolint:gosec // Operator-visible session identity, not a credential.
+	ClientIP   string `json:"client_ip"`
+	Agent      string `json:"agent,omitempty"`
+	SessionKey string `json:"session_key"` //nolint:gosec // Operator-visible session identity, not a credential.
+	// Provenance states how Agent was established, using the same grade
+	// vocabulary as sessionKeyFor's envelope.ActorAuth (see sessionkey.go).
+	// The admin whoami endpoint has no listener-binding or source-CIDR
+	// context of its own, so a non-empty Agent is always self-declared -
+	// an operator- or attacker-supplied X-Pipelock-Agent header value, never
+	// an authenticated bound identity - and an empty Agent is unknown.
+	Provenance         string  `json:"provenance"`
 	Exists             bool    `json:"exists"`
 	Classification     string  `json:"classification"`
 	EscalationLevel    string  `json:"escalation_level"`
@@ -2248,6 +2255,7 @@ func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami 
 		ClientIP:        clientIP,
 		Agent:           agent,
 		SessionKey:      key,
+		Provenance:      whoamiAgentProvenance(agent),
 		Classification:  config.ActionAllow,
 		AirlockTier:     config.AirlockTierNone,
 		EscalationLevel: session.EscalationLabel(0),

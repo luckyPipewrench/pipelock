@@ -10,7 +10,15 @@ pipelock continue install --config "$PWD/pipelock.yaml" --dry-run
 pipelock continue install --config "$PWD/pipelock.yaml"
 ```
 
-Restart Continue after installation and run a harmless tool action to confirm the server connects. The installer wraps local `command`/`args` servers and remote `url` servers, and it is idempotent.
+Restart Continue after installation and run a harmless tool action to confirm the server connects. The installer wraps local `command`/`args` servers and remote `url` servers without custom headers, and it is idempotent.
+
+## Remote servers with headers
+
+The Continue installer refuses remote entries with nonempty `headers` because its generated launch doesn't forward those headers. The error identifies the file and server entry. Installation and dry runs stop before changing any configuration or backup, including when the entry is in a standalone YAML block. Empty or null header mappings don't affect wrapping.
+
+Use a manual `pipelock mcp proxy` wrapper for a remote server that needs authentication headers. Store one `Header-Name: value` per line in a private file with `0o600` permissions. In the Continue entry, set `type` to `stdio` and `command` to Pipelock's absolute executable path. Set `args` to `mcp`, `proxy`, `--header-file`, the header file's absolute path, `--upstream`, and the server URL. Include `--config` and its path when using a custom Pipelock configuration. The manual stdio entry replaces the remote `url` and `headers` fields; header values belong only in the private file.
+
+An older installer may have left a `headers` field beside an already-wrapped remote command. Installing again refuses that entry without nesting another proxy or removing its headers, even when the executable path hasn't changed. Preserve the original configuration or backup while converting it to a manual wrapper.
 
 ## Configuration files
 

@@ -388,30 +388,17 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 		}
 		result, err := wrapContinueServer(remote, "/usr/bin/pipelock", "")
 		declared := hostCapabilities["continue"]
-		var observedHeaders headerCapability
-		switch {
-		case err != nil:
-			observedHeaders = headerCapabilityRejected
-		default:
-			if _, stillHasHeaders := result[mcpFieldHeaders]; !stillHasHeaders {
-				t.Fatalf("continue wrap unexpectedly consumed/dropped headers cleanly: %v", result)
-			}
-			argsRaw := result[mcpFieldArgs]
-			var args []string
-			if v, ok := argsRaw.([]string); ok {
-				args = v
-			} else {
-				args = interfaceSliceToStrings(argsRaw)
-			}
-			for _, a := range args {
-				if a == "Authorization" || strings.Contains(a, "test-only-value") {
-					t.Fatalf("continue's generated args unexpectedly consumed the header: %v", args)
-				}
-			}
-			observedHeaders = headerCapabilityUnconsumedPassthrough
+		if err == nil || result != nil || !strings.Contains(err.Error(), "headers") || !strings.Contains(err.Error(), "--header-file") {
+			t.Fatalf("continue must refuse remote headers with an actionable error: result=%v err=%v", result, err)
 		}
+		observedHeaders := headerCapabilityRejected
 		if observedHeaders != declared.Headers {
 			t.Errorf("host %q: declared header capability %q, observed %q", "continue", declared.Headers, observedHeaders)
+		}
+		delete(remote, mcpFieldHeaders)
+		withoutHeaders, err := wrapContinueServer(remote, "/usr/bin/pipelock", "")
+		if err != nil || !hasSubsequence(commandArgStrings(withoutHeaders[mcpFieldArgs]), []string{"--upstream", "https://api.vendor.example/mcp"}) {
+			t.Fatalf("continue refused or changed the headerless positive control: result=%v err=%v", withoutHeaders, err)
 		}
 
 		stdio := map[string]interface{}{

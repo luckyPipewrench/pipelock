@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -221,6 +222,9 @@ func planContinueFile(path, exe, configFile string, remove bool) (continuePlan, 
 			}
 			result, err = unwrapMCPServer(server)
 		} else {
+			if err := validateContinueHeaders(server); err != nil {
+				return continuePlan{}, fmt.Errorf("%s mcpServers[%d]: %w", path, i, err)
+			}
 			if isWrappedBySelf(server) {
 				continue
 			}
@@ -354,6 +358,9 @@ func continueServerName(server map[string]interface{}, index int) string {
 }
 
 func wrapContinueServer(server map[string]interface{}, exe, configFile string) (map[string]interface{}, error) {
+	if err := validateContinueHeaders(server); err != nil {
+		return nil, err
+	}
 	// Normalize a foreign wrapper down to its bare child before wrapping, so an
 	// upgrade over a pipelock installed at a different path rewraps the ORIGINAL
 	// command instead of nesting proxy invocations. A recovered remote
@@ -422,6 +429,39 @@ func wrapContinueServer(server map[string]interface{}, exe, configFile string) (
 	}
 	result[mcpFieldPipelock] = metaMap
 	return result, nil
+}
+
+// validateContinueHeaders runs before the self-wrapper skip as well as before
+// wrapping a fresh entry. Older Continue installs left remote headers beside
+// the generated command, where the proxy never consumed them.
+func validateContinueHeaders(server map[string]interface{}) error {
+	switch headers := server[mcpFieldHeaders].(type) {
+	case nil:
+		return nil
+	case map[string]interface{}:
+		if len(headers) == 0 {
+			return nil
+		}
+	case map[string]string:
+		if len(headers) == 0 {
+			return nil
+		}
+	}
+
+	_, remote := server[mcpFieldURL]
+	if isWrappedBySelf(server) {
+		// Read the actual invocation, not restoration metadata. A child
+		// argument named --upstream after the separator still means stdio.
+		inner, err := mcpwrap.RecoverInner(commandArgStrings(server[mcpFieldArgs]))
+		if err != nil {
+			return fmt.Errorf("checking Continue wrapper with headers: %w", err)
+		}
+		remote = remote || inner.Transport == mcpwrap.TransportUpstream
+	}
+	if remote {
+		return errors.New("remote Continue server has headers that this installer cannot forward; configure a manual pipelock mcp proxy wrapper with --header-file instead")
+	}
+	return nil
 }
 
 func continueRejectDuplicateKeys(node *yaml.Node) error {

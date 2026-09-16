@@ -131,14 +131,10 @@ var hostCapabilities = map[string]hostCapability{
 		SelfWrapSkip: true, ForeignRefusal: true,
 	},
 	"continue": {
-		// wrapContinueServer copies every field it does not itself
-		// consume (command/args/url/type/_pipelock) straight into the
-		// rewritten entry, including a "headers" block. Nothing in this
-		// path builds a --header-file or reads headers out of the
-		// server map, so the field rides through unconsumed. This is a
-		// deliberately recorded contract, not a fix target here.
+		// Remote headers are refused before planning any file writes,
+		// including headers left on a wrapper by an older install.
 		Host: "continue", Engine: engineLegacyShared,
-		Headers: headerCapabilityUnconsumedPassthrough, Env: envCapabilityKeyOnly,
+		Headers: headerCapabilityRejected, Env: envCapabilityKeyOnly,
 		SelfWrapSkip: true, ForeignRefusal: true,
 	},
 	"codex": {

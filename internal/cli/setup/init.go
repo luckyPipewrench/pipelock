@@ -82,6 +82,11 @@ const (
 	// outcome still gets a status: "not installed" must never be reported by
 	// saying nothing at all.
 	auditorStatusSkippedNoRecorderDir = "skipped_no_recorder_dir"
+	// An existing config that will not load at all is a different outcome from
+	// one that loads and configures no directory. Reporting both as
+	// "no recorder dir" hides a malformed or unreadable file behind a reason
+	// that is not true of it.
+	auditorStatusSkippedUnreadableConfig = "skipped_unreadable_config"
 )
 
 type initVerifyResult struct {
@@ -384,7 +389,14 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 		// Both surfaces must read as a plan, not as an action. The bare
 		// disclosure starts with "Installing", which is false under --dry-run
 		// and was previously handed to JSON consumers verbatim.
+		// The plan is conditional and must say so. Dry run deliberately runs no
+		// probe (so it starts nothing and writes nothing), which means it
+		// cannot know whether this host has a usable systemd --user session;
+		// claiming a flat "would install" told operators on a container or a
+		// recorder-less config that a real run would install something it
+		// would in fact skip.
 		planned := "Would install " + evidenceAuditorDisclosure[len("Installing "):]
+		planned += " A real run installs it only on Linux with a usable systemd --user session and a configured flight_recorder.dir, and names the skip reason otherwise."
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  %s\n\n", planned)
 		}
@@ -408,21 +420,27 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 
 	auditorRecorderDir := cfg.FlightRecorder.Dir
 	installAuditor := result.Setup.Written
+	skipStatus := auditorStatusSkippedNoRecorderDir
+	skipReason := "existing config configures no flight_recorder.dir to audit"
 	if result.Setup.SkippedExsting {
 		// Preserve init's historic no-op behavior for an arbitrary existing
 		// config. A previously generated, valid config is enough to repair a
 		// missing managed auditor on rerun without rewriting the config.
-		if existing, loadErr := config.Load(configPath); loadErr == nil && existing.FlightRecorder.Dir != "" {
+		existing, loadErr := config.Load(configPath)
+		switch {
+		case loadErr != nil:
+			skipStatus = auditorStatusSkippedUnreadableConfig
+			skipReason = fmt.Sprintf("existing config could not be read: %v", loadErr)
+		case existing.FlightRecorder.Dir != "":
 			auditorRecorderDir = existing.FlightRecorder.Dir
 			installAuditor = true
 		}
 	}
 	if !installAuditor {
-		reason := "existing config configures no flight_recorder.dir to audit"
 		if !opts.jsonOutput {
-			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", reason)
+			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", skipReason)
 		}
-		return &initAuditorResult{Status: auditorStatusSkippedNoRecorderDir, Detail: reason}, nil
+		return &initAuditorResult{Status: skipStatus, Detail: skipReason}, nil
 	}
 
 	// Disclose BEFORE installing: name the unit, what it does, and how to
@@ -432,10 +450,18 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 	// consent contract still holds for the operator watching the terminal.
 	// Suppressing it entirely meant --json enabled a timer having named it
 	// nowhere until after the unit was already running.
+	// The disclosure is the whole consent boundary, so a write that failed
+	// means the operator was never told. Discarding that error installed the
+	// timer anyway against a broken pipe or a rejecting writer, which is the
+	// one outcome this phase exists to prevent.
+	var disclosureErr error
 	if opts.jsonOutput {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", evidenceAuditorDisclosure)
+		_, disclosureErr = fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", evidenceAuditorDisclosure)
 	} else {
-		_, _ = fmt.Fprintf(w, "  %s\n", evidenceAuditorDisclosure)
+		_, disclosureErr = fmt.Fprintf(w, "  %s\n", evidenceAuditorDisclosure)
+	}
+	if disclosureErr != nil {
+		return nil, fmt.Errorf("writing evidence auditor disclosure: %w", disclosureErr)
 	}
 
 	installed, err := evidenceAuditorInstall(cmd.Context(), auditorRecorderDir)

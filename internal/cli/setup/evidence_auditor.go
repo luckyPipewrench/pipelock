@@ -23,7 +23,7 @@ const (
 // evidenceAuditorDisclosure is printed before pipelock init installs the
 // auditor, so nothing lands on a user's system without being named first.
 const evidenceAuditorDisclosure = "Installing " + evidenceCorpusAuditorTimer +
-	": runs 'pipelock evidence doctor' every 15 minutes against your flight recorder directory and exports a Prometheus metric; remove it with 'systemctl --user disable --now " + evidenceCorpusAuditorTimer + "'."
+	": runs 'pipelock evidence doctor' every 15 minutes against your flight recorder directory and exports a Prometheus metric; disable it with 'systemctl --user disable --now " + evidenceCorpusAuditorTimer + "', which stops it and leaves the generated unit, alert and metric files in place."
 
 var (
 	evidenceAuditorUserConfigDir = os.UserConfigDir

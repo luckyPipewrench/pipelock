@@ -433,3 +433,86 @@ func TestInitCancelledProbeFailsRatherThanSkipping(t *testing.T) {
 		t.Fatalf("cancellation was reported as a clean skip\noutput:\n%s", out.String())
 	}
 }
+
+// failingWriter rejects every write, standing in for a closed pipe or a
+// rejecting terminal.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("writer rejected") }
+
+// The disclosure is the consent boundary: if it could not be written, the
+// operator was never told, so nothing may be installed. Discarding that write
+// error installed the timer anyway.
+func TestInitAuditorDisclosureWriteFailureBlocksTheInstaller(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+
+	installerCalled := false
+	stub(t, &evidenceAuditorInstall, func(context.Context, string) (evidenceCorpusAuditorInstall, error) {
+		installerCalled = true
+		return evidenceCorpusAuditorInstall{TimerPath: "/tmp/should-not-happen.timer"}, nil
+	})
+
+	home := t.TempDir()
+	cmd := InitCmd()
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(failingWriter{})
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", filepath.Join(home, "cfg", "pipelock.yaml"),
+		"--skip-canary",
+		"--skip-validate",
+	})
+
+	err := cmd.Execute()
+	if installerCalled {
+		t.Fatal("the installer ran even though the disclosure could not be written")
+	}
+	if err == nil {
+		t.Fatal("init reported success after failing to disclose")
+	}
+	if !strings.Contains(err.Error(), "disclosure") {
+		t.Fatalf("error = %v, want it to name the disclosure write", err)
+	}
+}
+
+// An existing config that will not parse is a different outcome from one that
+// parses and configures no directory. Reporting both as "no recorder dir" hid
+// a malformed or unreadable file behind a reason untrue of it.
+func TestInitAuditorUnreadableExistingConfigIsReportedAsSuch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+	stub(t, &evidenceAuditorInstall, func(context.Context, string) (evidenceCorpusAuditorInstall, error) {
+		t.Fatal("nothing may be installed for an unreadable config")
+		return evidenceCorpusAuditorInstall{}, nil
+	})
+
+	home := t.TempDir()
+	configPath := filepath.Join(home, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: [this is not valid yaml\n"), 0o600); err != nil {
+		t.Fatalf("seed unreadable config: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", configPath,
+		"--skip-canary",
+		"--skip-validate",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\noutput:\n%s", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), "could not be read") {
+		t.Fatalf("summary must say the config was unreadable\noutput:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "configures no flight_recorder.dir") {
+		t.Fatalf("an unreadable config was misreported as having no recorder dir\noutput:\n%s", out.String())
+	}
+}

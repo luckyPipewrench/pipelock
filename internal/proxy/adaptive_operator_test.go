@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -137,7 +138,7 @@ func TestTopAdaptiveAnomaliesSortsAndCaps(t *testing.T) {
 func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 
-	missing := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent)
+	missing := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if missing.Exists || missing.Classification != config.ActionAllow || missing.SessionKey != adaptiveAPIIdentityKey {
 		t.Fatalf("missing whoami response: %+v", missing)
 	}
@@ -145,18 +146,18 @@ func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 	sess := sm.GetOrCreate(adaptiveAPIIdentityKey)
 	sess.RecordSignal(session.SignalBlock, 1.0)
 
-	observed := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent)
+	observed := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if !observed.Exists || observed.Classification != adaptiveClassificationObserve || observed.EscalationLevel != testLevelElevated {
 		t.Fatalf("observed whoami response: %+v", observed)
 	}
 
 	sess.SetBlockAll(true)
-	blocked := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent)
+	blocked := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if blocked.Classification != config.ActionBlock || !blocked.BlockAll {
 		t.Fatalf("blocked whoami response: %+v", blocked)
 	}
 
-	ipOnly := sm.AdaptiveWhoami(adaptiveAPIClientIP, "")
+	ipOnly := sm.AdaptiveWhoami(adaptiveAPIClientIP, "", envelope.ActorAuthSelfDeclared)
 	if ipOnly.SessionKey != adaptiveAPIClientIP || ipOnly.Agent != "" {
 		t.Fatalf("ip-only whoami response: %+v", ipOnly)
 	}
@@ -167,7 +168,7 @@ func TestSessionManager_AdaptiveWhoamiDoesNotReadBoundAgentSession(t *testing.T)
 	boundKey := sessionKeyFor(adaptiveAPIAgent, adaptiveAPIClientIP, envelope.ActorAuthBound)
 	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 
-	got := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent)
+	got := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if got.SessionKey != adaptiveAPIClientIP {
 		t.Fatalf("whoami key = %q, want folded client key %q", got.SessionKey, adaptiveAPIClientIP)
 	}
@@ -176,32 +177,22 @@ func TestSessionManager_AdaptiveWhoamiDoesNotReadBoundAgentSession(t *testing.T)
 	}
 }
 
-// TestSessionManager_AdaptiveWhoamiProvenance covers every grade the admin
-// whoami endpoint can report: self-declared for any supplied name (including
-// one forged to look like a bound/config-default identity, since this
-// endpoint has no listener-binding or source-CIDR context to authenticate
-// it), and unknown for the omitted-header case.
+// TestSessionManager_AdaptiveWhoamiProvenance covers the grades AdaptiveWhoami
+// echoes as Provenance directly from its auth argument: self-declared for a
+// supplied name (including one forged to look like a bound identity - the
+// grade is whatever the CALLER passed in, and HandleAdaptiveWhoami is the one
+// responsible for never passing Bound for a header-only request; see the
+// HandleAdaptiveWhoami-level tests below for that), and unknown for the
+// omitted-name case.
 func TestSessionManager_AdaptiveWhoamiProvenance(t *testing.T) {
 	tests := []struct {
-		name           string
-		agent          string
-		wantProvenance string
+		name  string
+		agent string
+		auth  envelope.ActorAuth
 	}{
-		{
-			name:           "self-declared header",
-			agent:          adaptiveAPIAgent,
-			wantProvenance: string(envelope.ActorAuthSelfDeclared),
-		},
-		{
-			name:           "forged header claiming a bound name still reports self-declared",
-			agent:          "infra-bound-agent",
-			wantProvenance: string(envelope.ActorAuthSelfDeclared),
-		},
-		{
-			name:           "omitted header reports unknown",
-			agent:          "",
-			wantProvenance: string(envelope.ActorAuthUnknown),
-		},
+		{name: "self-declared header", agent: adaptiveAPIAgent, auth: envelope.ActorAuthSelfDeclared},
+		{name: "forged header claiming a bound name still reports self-declared", agent: "infra-bound-agent", auth: envelope.ActorAuthSelfDeclared},
+		{name: "omitted header reports unknown", agent: "", auth: envelope.ActorAuthUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,23 +201,91 @@ func TestSessionManager_AdaptiveWhoamiProvenance(t *testing.T) {
 				// Pre-seed a genuinely bound session under the forged name
 				// so a leak would present as Exists=true with a
 				// bound-looking key, not just a wrong Provenance string.
-				// Skipped for the empty-agent case: an empty name has no
-				// per-agent namespace to bind, so its bound key already
-				// folds to the client-IP key under test - seeding it there
-				// would assert a pre-existing, unrelated session exists,
-				// not a provenance leak.
 				boundKey := sessionKeyFor(tt.agent, adaptiveAPIClientIP, envelope.ActorAuthBound)
 				sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 			}
 
-			got := sm.AdaptiveWhoami(adaptiveAPIClientIP, tt.agent)
-			if got.Provenance != tt.wantProvenance {
-				t.Fatalf("Provenance = %q, want %q: %+v", got.Provenance, tt.wantProvenance, got)
+			got := sm.AdaptiveWhoami(adaptiveAPIClientIP, tt.agent, tt.auth)
+			if got.Provenance != string(tt.auth) {
+				t.Fatalf("Provenance = %q, want %q: %+v", got.Provenance, tt.auth, got)
 			}
 			if tt.agent != "" && got.Exists {
-				t.Fatalf("whoami exposed bound session under grade %q: %+v", tt.wantProvenance, got)
+				t.Fatalf("whoami exposed bound session under grade %q: %+v", tt.auth, got)
 			}
 		})
+	}
+}
+
+// TestSessionAPI_HandleAdaptiveWhoami_BoundContext covers the case the round-2
+// review found missing: a request that arrives through the SAME context
+// override real per-agent listener binding injects (edition.WithAgentOverride,
+// set by AgentHandler in internal/cli/runtime/run.go and served per
+// server_lifecycle.go's agent listeners) must report Provenance=bound and
+// read the SAME folded bucket a bound request lands in - and a header trying
+// to claim a different name must be completely ignored, because context
+// override outranks the header in edition.ResolveAgentIdentity.
+func TestSessionAPI_HandleAdaptiveWhoami_BoundContext(t *testing.T) {
+	sm := newAdaptiveOperatorTestManager(t)
+	boundKey := sessionKeyFor("infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
+	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
+	handler := newTestSessionAPIHandler(t, sm)
+
+	ctx := edition.WithAgentOverride(t.Context(), "infra-agent")
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/adaptive/whoami", nil)
+	req.RemoteAddr = adaptiveAPIClientIP + ":4567"
+	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
+	// A forged header claiming a different bound-sounding name must not
+	// change the resolved identity: context override outranks it.
+	req.Header.Set("X-Pipelock-Agent", "attacker-claimed-name")
+	w := httptest.NewRecorder()
+
+	handler.HandleAdaptiveWhoami(w, req)
+
+	var resp AdaptiveWhoami
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Provenance != string(envelope.ActorAuthBound) {
+		t.Fatalf("Provenance = %q, want bound: %+v", resp.Provenance, resp)
+	}
+	if resp.Agent != "infra-agent" {
+		t.Fatalf("Agent = %q, want the bound context override, not the forged header: %+v", resp.Agent, resp)
+	}
+	if resp.SessionKey != boundKey {
+		t.Fatalf("SessionKey = %q, want the bound bucket %q: %+v", resp.SessionKey, boundKey, resp)
+	}
+	if !resp.Exists || resp.Classification != adaptiveClassificationObserve {
+		t.Fatalf("bound whoami did not read the bound bucket: %+v", resp)
+	}
+}
+
+// TestSessionAPI_HandleAdaptiveWhoami_HeaderOnlyStaysSelfDeclared is the
+// negative side of the bound-context test: with no context override, a
+// header-supplied name can never grade as bound, and it reads only the
+// folded client-IP bucket, never a same-named bound bucket.
+func TestSessionAPI_HandleAdaptiveWhoami_HeaderOnlyStaysSelfDeclared(t *testing.T) {
+	sm := newAdaptiveOperatorTestManager(t)
+	boundKey := sessionKeyFor("infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
+	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/whoami", nil)
+	req.RemoteAddr = adaptiveAPIClientIP + ":4567"
+	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
+	req.Header.Set("X-Pipelock-Agent", "infra-agent")
+	w := httptest.NewRecorder()
+
+	handler.HandleAdaptiveWhoami(w, req)
+
+	var resp AdaptiveWhoami
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Provenance != string(envelope.ActorAuthSelfDeclared) {
+		t.Fatalf("Provenance = %q, want self-declared: %+v", resp.Provenance, resp)
+	}
+	if resp.SessionKey == boundKey || resp.Exists {
+		t.Fatalf("header-only whoami read the bound bucket %q it should never see: %+v", boundKey, resp)
 	}
 }
 
@@ -418,7 +477,7 @@ func TestSessionAPI_HandleAdaptiveWhoami(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/whoami", nil)
 	req.RemoteAddr = adaptiveAPIClientIP + ":4567"
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
-	req.Header.Set("X-Pipelock-Agent", " "+adaptiveAPIAgent+" ")
+	req.Header.Set("X-Pipelock-Agent", adaptiveAPIAgent)
 	w := httptest.NewRecorder()
 
 	handler.HandleAdaptiveWhoami(w, req)

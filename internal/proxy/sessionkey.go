@@ -22,19 +22,3 @@ import (
 func sessionKeyFor(agent, clientIP string, auth envelope.ActorAuth) string {
 	return identitykey.CEESafeKey(agent, clientIP, auth)
 }
-
-// whoamiAgentProvenance grades an agent name read on the admin whoami API,
-// using the same envelope.ActorAuth vocabulary sessionKeyFor's callers use
-// elsewhere. Unlike real proxied traffic, the admin API has no listener
-// binding or source-CIDR context of its own, so it can never establish a
-// bound or config-default identity for its own request: a supplied name is
-// always self-declared (untrusted, request-controlled), and an absent one
-// is unknown. This mirrors AdaptiveWhoami's key construction, which always
-// grades the same way so a self-declared name cannot fold into a trusted
-// namespace.
-func whoamiAgentProvenance(agent string) string {
-	if agent == "" {
-		return string(envelope.ActorAuthUnknown)
-	}
-	return string(envelope.ActorAuthSelfDeclared)
-}

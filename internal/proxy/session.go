@@ -1239,12 +1239,14 @@ type AdaptiveWhoami struct {
 	ClientIP   string `json:"client_ip"`
 	Agent      string `json:"agent,omitempty"`
 	SessionKey string `json:"session_key"` //nolint:gosec // Operator-visible session identity, not a credential.
-	// Provenance states how Agent was established, using the same grade
-	// vocabulary as sessionKeyFor's envelope.ActorAuth (see sessionkey.go).
-	// The admin whoami endpoint has no listener-binding or source-CIDR
-	// context of its own, so a non-empty Agent is always self-declared -
-	// an operator- or attacker-supplied X-Pipelock-Agent header value, never
-	// an authenticated bound identity - and an empty Agent is unknown.
+	// Provenance is the envelope.ActorAuth grade (bound/matched/
+	// config-default/self-declared/unknown) the SAME resolver real proxied
+	// traffic uses assigned to Agent for THIS request: a context override
+	// from per-agent listener binding, or (in enterprise editions) a
+	// source-CIDR match, grades Bound and cannot be forged by the caller;
+	// anything else falls through to the header/query/default path, which
+	// can only ever grade Matched/ConfigDefault/SelfDeclared/Unknown. A
+	// forged header can never upgrade to Bound.
 	Provenance         string  `json:"provenance"`
 	Exists             bool    `json:"exists"`
 	Classification     string  `json:"classification"`
@@ -2247,15 +2249,21 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 	return status
 }
 
-func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami {
-	// The status endpoint has no actor-auth context. Treat its caller-supplied
-	// agent name as unknown so lookup cannot create a trusted name partition.
-	key := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
+// AdaptiveWhoami reports the adaptive-enforcement state for clientIP/agent,
+// keyed and graded EXACTLY as real proxied traffic would be: the caller
+// (HandleAdaptiveWhoami) resolves agent/auth via the same resolver the proxy
+// transports use (edition.Edition.ResolveAgent / edition.ResolveAgentIdentity),
+// so a bound identity here reads the same folded session bucket a bound
+// request would land in, and a self-declared or forged header folds the same
+// way a self-declared request's traffic does - it can never read or be
+// mistaken for a bound bucket.
+func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string, auth envelope.ActorAuth) AdaptiveWhoami {
+	key := sessionKeyFor(agent, clientIP, auth)
 	out := AdaptiveWhoami{
 		ClientIP:        clientIP,
 		Agent:           agent,
 		SessionKey:      key,
-		Provenance:      whoamiAgentProvenance(agent),
+		Provenance:      string(auth),
 		Classification:  config.ActionAllow,
 		AirlockTier:     config.AirlockTierNone,
 		EscalationLevel: session.EscalationLabel(0),

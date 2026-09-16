@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
@@ -159,6 +160,15 @@ type SessionAPIHandler struct {
 	// client address. The per-action limiters above run after
 	// authentication, so without this a wrong guess consumed nothing.
 	authFailures *authlimit.Limiter
+
+	// resolveAgentIdentity grades the calling request's agent identity using
+	// the SAME resolver real proxied traffic uses (edition.Edition.ResolveAgent
+	// / edition.ResolveAgentIdentity), so /api/v1/adaptive/whoami reports the
+	// actual bound/matched/config-default/self-declared grade instead of
+	// re-deriving a second, weaker classification from the raw header. Never
+	// nil: NewSessionAPIHandler defaults it to the same no-registry fallback
+	// reverse.go uses when no richer Edition is wired in.
+	resolveAgentIdentity func(*http.Request) edition.AgentIdentity
 }
 
 // SessionAPIOptions configures a SessionAPIHandler. Using an options struct
@@ -175,6 +185,14 @@ type SessionAPIOptions struct {
 	Logger        *audit.Logger
 	Deferred      *deferred.Manager
 	APIToken      string `json:"-"` //nolint:gosec // options input, never serialized
+
+	// ResolveAgentIdentity grades a request's agent identity the same way
+	// the proxy's own transports do. Proxy wires this to
+	// p.resolveAgentFromRequest so whoami sees context overrides (per-agent
+	// listener binding) and, in enterprise editions, source-CIDR binding.
+	// Nil defaults to edition.ResolveAgentIdentity(r, nil, "", false), the
+	// same no-registry fallback reverse.go uses without a richer Edition.
+	ResolveAgentIdentity func(*http.Request) edition.AgentIdentity
 }
 
 // NewSessionAPIHandler creates a session API handler from the given options.
@@ -198,7 +216,13 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionBaseline:  {windowStart: time.Now()},
 			sessionAPIActionDeferred:  {windowStart: time.Now()},
 		},
-		authFailures: authlimit.NewDefault(),
+		authFailures:         authlimit.NewDefault(),
+		resolveAgentIdentity: opts.ResolveAgentIdentity,
+	}
+	if h.resolveAgentIdentity == nil {
+		h.resolveAgentIdentity = func(r *http.Request) edition.AgentIdentity {
+			return edition.ResolveAgentIdentity(r, nil, "", false)
+		}
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via
 	// SetAPIToken so the nil-vs-empty logic stays in one place.
@@ -1483,12 +1507,19 @@ func (h *SessionAPIHandler) HandleAdaptiveWhoami(w http.ResponseWriter, r *http.
 		return
 	}
 	clientIP, _ := requestMeta(r)
-	agent := strings.TrimSpace(r.Header.Get("X-Pipelock-Agent"))
+	// Resolve identity the same way real proxied traffic does: a context
+	// override from per-agent listener binding (AgentHandler) or, in
+	// enterprise editions, a source-CIDR match both grade Bound and cannot
+	// be forged by the request; anything else falls through to the header,
+	// which can only ever grade Matched/ConfigDefault/SelfDeclared. A forged
+	// header can never upgrade to Bound, and a genuinely bound request can
+	// never be reported as self-declared.
+	id := h.resolveAgentIdentity(r)
 	h.logSessionAdmin("adaptive_whoami", clientIP, "", "ok", http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
 	// SessionKey is a deterministic identity hash for adaptive scoring, not a secret -
 	// it's the operator-facing identifier in the public adaptive API surface.
-	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, agent)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
+	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, id.Name, id.Auth)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
 }
 
 // airlockCfgFromManager fetches the active airlock config from the manager

@@ -309,6 +309,64 @@ func TestClient_AdaptiveWhoami_HappyPath(t *testing.T) {
 	}
 }
 
+// TestClient_AdaptiveWhoami_ToleratesNewerServerField is the mixed-version
+// regression: a CLI built one commit behind the server
+// must still be able to read a response that carries a field the CLI's own
+// struct does not know about yet, the same way it must already tolerate
+// AdaptiveWhoami.Provenance itself when a customer upgrades server-first.
+// Simulated here as raw JSON (not proxy.AdaptiveWhoami{}) with an
+// unrecognized "future_field" key mixed in among known ones.
+func TestClient_AdaptiveWhoami_ToleratesNewerServerField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"client_ip": "203.0.113.9",
+			"session_key": "agent-a|203.0.113.9",
+			"exists": true,
+			"classification": "observe",
+			"provenance": "bound",
+			"future_field": {"nested": "value from a server newer than this CLI"}
+		}`))
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.AdaptiveWhoami(context.Background())
+	if err != nil {
+		t.Fatalf("older CLI must tolerate an additive server field, got: %v", err)
+	}
+	if resp.SessionKey != "agent-a|203.0.113.9" || resp.Classification != "observe" || resp.Provenance != "bound" {
+		t.Errorf("unexpected adaptive whoami: %+v", resp)
+	}
+}
+
+// TestDecodeAdminJSON_RefusesMalformedResponses proves the tolerance added
+// above is scoped to genuinely additive/unknown fields, not to a
+// truncated or corrupted response: decodeAdminJSON still refuses an empty
+// body, a null payload, duplicate keys, and trailing tokens after the
+// JSON value, exactly as contract.DecodeStrictJSON does.
+func TestDecodeAdminJSON_RefusesMalformedResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty", raw: ""},
+		{name: "null", raw: "null"},
+		{name: "duplicate keys", raw: `{"session_key":"a","session_key":"b"}`},
+		{name: "trailing tokens", raw: `{"session_key":"a"}{"session_key":"b"}`},
+		{name: "syntax error", raw: `{"session_key":`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out proxy.AdaptiveWhoami
+			if err := decodeAdminJSON([]byte(tt.raw), &out); err == nil {
+				t.Fatalf("decodeAdminJSON(%q) = nil error, want a refusal", tt.raw)
+			}
+		})
+	}
+}
+
 func TestClient_AdaptiveMethodsReturnAPIError(t *testing.T) {
 	tests := []struct {
 		name string

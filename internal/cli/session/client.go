@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
@@ -293,8 +294,48 @@ func (c *Client) do(ctx context.Context, method, target string, body io.Reader, 
 	if len(raw) > maxClientResponseBytes {
 		return fmt.Errorf("response exceeds %d bytes", maxClientResponseBytes)
 	}
-	if err := contract.DecodeStrictJSON(raw, out); err != nil {
+	if err := decodeAdminJSON(raw, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// decodeAdminJSON decodes an admin API JSON response into out. It is
+// deliberately NOT contract.DecodeStrictJSON: that decoder's unknown-field
+// rejection is a normative control for signed-artifact transports, where an
+// unrecognized field must never silently vanish before Validate() sees the
+// typed struct. The admin API here is unsigned, unauthenticated-in-shape
+// operator state (session/adaptive/baseline snapshots) that legitimately
+// grows additive, informational fields over time, such as
+// AdaptiveWhoami.Provenance, and a CLI built one commit behind the server
+// must keep working against it during a rolling upgrade, the same way any
+// tolerant-reader JSON client does. It still refuses everything that
+// indicates a genuinely malformed or truncated response: empty/null
+// payload, duplicate keys, a decode/syntax error, and trailing tokens after
+// the JSON value.
+func decodeAdminJSON(raw []byte, out any) error {
+	trimmed := bytes.TrimLeft(raw, " \t\n\r")
+	trimmed = bytes.TrimRight(trimmed, " \t\n\r")
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return contract.ErrEmptyPayload
+	}
+	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("admin response: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(out); err != nil {
+		return fmt.Errorf("admin response: %w", err)
+	}
+	// Trailing tokens after the value (another value, a delimiter) still
+	// indicate a malformed response and are rejected, matching
+	// contract.DecodeStrictJSON's trailing-token check.
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return fmt.Errorf("%w: %w", contract.ErrTrailingTokens, err)
+		}
+		return fmt.Errorf("%w after top-level value", contract.ErrTrailingTokens)
 	}
 	return nil
 }

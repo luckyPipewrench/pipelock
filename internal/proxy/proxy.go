@@ -770,6 +770,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			Metrics:       m,
 			Logger:        logger,
 			APIToken:      apiToken,
+			// Reuse the exact resolver every proxy transport uses so
+			// /api/v1/adaptive/whoami sees the same context override
+			// (per-agent listener binding) and, in enterprise editions,
+			// source-CIDR binding that real traffic on this request would.
+			ResolveAgentIdentity: func(r *http.Request) edition.AgentIdentity {
+				_, id := p.resolveAgentFromRequest(r)
+				return id
+			},
 		})
 	}
 

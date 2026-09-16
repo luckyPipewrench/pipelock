@@ -428,7 +428,7 @@ func TestProtocolLifecycleSessionResetAndMetrics(t *testing.T) {
 		if len(status.Sessions) != 2 || status.Sessions[0].Key != "10.0.0.1" {
 			t.Fatalf("status sessions = %+v, want stable key ordering", status.Sessions)
 		}
-		who := sm.AdaptiveWhoami("10.0.0.1", "alpha")
+		who := sm.AdaptiveWhoami("10.0.0.1", "alpha", envelope.ActorAuthSelfDeclared)
 		if !who.Exists || who.AirlockTier != config.AirlockTierNone {
 			t.Fatalf("whoami = %+v, want normalized none tier", who)
 		}

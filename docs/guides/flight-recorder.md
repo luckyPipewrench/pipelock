@@ -32,8 +32,11 @@ or the session bus is unreachable), init skips the auditor with a printed
 notice instead of failing. Remove an installed timer with
 `systemctl --user disable --now pipelock-evidence-corpus-auditor.timer`. The
 init summary names the auditor's outcome either way (installed, skipped by
-flag, skipped because no user systemd session exists, or skipped for a dry
-run).
+flag, skipped because no user systemd session exists, skipped because an
+existing config configures no `flight_recorder.dir` to audit, or skipped for a
+dry run). Under `--json` the outcome is also reported in the
+`evidence_corpus_auditor` object, and the disclosure is written to stderr so
+stdout stays a single JSON document.
 
 Point the Prometheus node-exporter textfile collector at
 `$XDG_CONFIG_HOME/pipelock/prometheus/textfile/`, and add a rule-file GLOB such

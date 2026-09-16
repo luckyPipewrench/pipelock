@@ -6,13 +6,15 @@
 package dashboard
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"html"
 	"net/http"
 	"net/http/httptest"
@@ -379,23 +381,56 @@ func TestHandler_TrustedOuterAuthRequiresBoundary(t *testing.T) {
 }
 
 // TestShippedDashboardServeNeverSetsTrustedOuterAuth guards the shipped
-// `pipelock dashboard serve` path (enterprise/cli/dashboard.go): it must
-// never wire TrustedOuterAuth, because that option disables this handler's
-// own authentication and is documented as embedder-only. A grep-based guard
-// rather than a constructor assertion, because the CLI wiring lives in a
-// different package/build unit and this test only needs to catch someone
-// adding the field to that literal, not exercise the CLI itself.
+// `pipelock dashboard serve` path: no production file in enterprise/cli may
+// set TrustedOuterAuth, because that option disables this handler's own
+// authentication and is documented as embedder-only. It parses every non-test
+// Go file in that package and looks for the field being SET (a composite
+// literal key or an assignment target), so moving the options literal into a
+// helper in another file cannot slip past it the way a one-file byte search
+// could. The CLI wiring lives in a different package, so this is the closest
+// semantic check short of exercising the CLI itself.
 func TestShippedDashboardServeNeverSetsTrustedOuterAuth(t *testing.T) {
 	t.Parallel()
 
-	src, err := os.ReadFile(filepath.Join("..", "cli", "dashboard.go"))
+	cliDir := filepath.Join("..", "cli")
+	entries, err := os.ReadDir(cliDir)
 	if err != nil {
-		t.Fatalf("read enterprise/cli/dashboard.go: %v", err)
+		t.Fatalf("read enterprise/cli: %v", err)
 	}
-	if bytes.Contains(src, []byte("TrustedOuterAuth")) {
-		t.Fatalf("enterprise/cli/dashboard.go references TrustedOuterAuth; the shipped " +
-			"`pipelock dashboard serve` path must rely on Authorize/AuthorizePermission, " +
-			"not the embedder-only outer-auth opt-out")
+	fset := token.NewFileSet()
+	parsed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(cliDir, name)
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		parsed++
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.KeyValueExpr:
+				if ident, ok := node.Key.(*ast.Ident); ok && ident.Name == "TrustedOuterAuth" {
+					t.Errorf("%s sets TrustedOuterAuth in a composite literal; the shipped "+
+						"`pipelock dashboard serve` path must rely on Authorize/AuthorizePermission, "+
+						"not the embedder-only outer-auth opt-out", fset.Position(node.Pos()))
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "TrustedOuterAuth" {
+						t.Errorf("%s assigns TrustedOuterAuth; the shipped path must not enable "+
+							"the embedder-only outer-auth opt-out", fset.Position(node.Pos()))
+					}
+				}
+			}
+			return true
+		})
+	}
+	if parsed == 0 {
+		t.Fatal("no production Go files parsed under enterprise/cli; the guard inspected nothing")
 	}
 }
 

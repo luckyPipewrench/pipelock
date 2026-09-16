@@ -178,8 +178,8 @@ func TestDiff_OversizeCap_NoDigestButSizeChangeDetected(t *testing.T) {
 	big := filepath.Join(root, "big.bin")
 	writeFile(t, big, "0123456789") // 10 bytes
 
-	cap := int64(4) // force oversize
-	before, err := Snapshot(root, cap, DefaultBudget())
+	capBytes := int64(4) // force oversize
+	before, err := Snapshot(root, capBytes, DefaultBudget())
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDiff_OversizeCap_NoDigestButSizeChangeDetected(t *testing.T) {
 	// Sleep-free mtime bump: change size, which oversize comparison covers
 	// even without content hashing.
 	writeFile(t, big, "01234567890123456789")
-	after, err := Snapshot(root, cap, DefaultBudget())
+	after, err := Snapshot(root, capBytes, DefaultBudget())
 	if err != nil {
 		t.Fatalf("snapshot after: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestWriteJSON_ReplacesExistingLoosePermissionFile(t *testing.T) {
 	}
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "workspace-change-statement.json")
-	if err := os.WriteFile(existing, []byte("stale"), 0o644); err != nil { //nolint:gosec // deliberately loose, this is the pre-existing state under test
+	if err := os.WriteFile(existing, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	path, err := WriteJSON(dir, signed)
@@ -682,9 +682,9 @@ func TestSnapshot_MountBoundary_NoRealBindMount_SameMountIDByDefault(t *testing.
 // with an identity mismatch, which is the exact check the walk relies on.
 func TestSnapshot_TOCTOU_IdentityMismatchRefusesToHash(t *testing.T) {
 	dir := t.TempDir()
-	real := filepath.Join(dir, "real")
-	writeFile(t, real, "original content")
-	info, err := os.Lstat(real)
+	realPath := filepath.Join(dir, "real")
+	writeFile(t, realPath, "original content")
+	info, err := os.Lstat(realPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,17 +697,17 @@ func TestSnapshot_TOCTOU_IdentityMismatchRefusesToHash(t *testing.T) {
 	// inode. hashFileSafe must detect the identity mismatch against the
 	// dev/ino observed at walk time and refuse to hash it, rather than
 	// silently hashing whatever now sits at that path.
-	if err := os.Remove(real); err != nil {
+	if err := os.Remove(realPath); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, real, "swapped-in content")
+	writeFile(t, realPath, "swapped-in content")
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	_, _, err = hashFileSafe(root, "real", real, 1<<20, dev, ino, true)
+	_, _, err = hashFileSafe(root, "real", realPath, 1<<20, dev, ino, true)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse a path whose identity changed since the walk observed it")
 	}
@@ -717,9 +717,9 @@ func TestSnapshot_TOCTOU_SymlinkSwapRefusesToHash(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "outside-target")
 	writeFile(t, target, "secret outside the workspace")
-	real := filepath.Join(dir, "real")
-	writeFile(t, real, "original content")
-	info, err := os.Lstat(real)
+	realPath := filepath.Join(dir, "real")
+	writeFile(t, realPath, "original content")
+	info, err := os.Lstat(realPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,10 +728,10 @@ func TestSnapshot_TOCTOU_SymlinkSwapRefusesToHash(t *testing.T) {
 		t.Skip("statIDs unavailable on this platform")
 	}
 
-	if err := os.Remove(real); err != nil {
+	if err := os.Remove(realPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, real); err != nil {
+	if err := os.Symlink(target, realPath); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
@@ -740,7 +740,7 @@ func TestSnapshot_TOCTOU_SymlinkSwapRefusesToHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	_, _, err = hashFileSafe(root, "real", real, 1<<20, dev, ino, true)
+	_, _, err = hashFileSafe(root, "real", realPath, 1<<20, dev, ino, true)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse hashing through a symlink swapped in after the walk (os.Root should refuse the escaping symlink)")
 	}

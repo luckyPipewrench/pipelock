@@ -370,7 +370,7 @@ type Statement struct {
 // mid-session must never make its still-present descendants look "removed."
 // Whenever any such path exists, or a snapshot's walk budget was exceeded,
 // the statement sets Incomplete=true and says why, so "nothing reported" can
-// never be confused with "nothing observed."
+// never be confused with "nothing observed".
 func Diff(before, after Manifest, now time.Time) (Statement, error) {
 	if before.Root != after.Root {
 		return Statement{}, fmt.Errorf("workspacediff: root mismatch: before=%s after=%s", before.Root, after.Root)

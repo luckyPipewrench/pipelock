@@ -28,7 +28,7 @@ func mountID(path string) (id uint64, ok bool) {
 // crossedMount reports whether entryMnt names a DIFFERENT mount than
 // rootMnt. Both mount IDs must be known (rootOK && entryOK); when either is
 // unavailable this returns false so the caller relies on its device-based
-// fallback instead of silently treating "unknown" as "not crossed."
+// fallback instead of silently treating "unknown" as "not crossed".
 func crossedMount(rootMnt, entryMnt uint64, rootOK, entryOK bool) bool {
 	if !rootOK || !entryOK {
 		return false

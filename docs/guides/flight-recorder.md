@@ -36,8 +36,10 @@ them under `$XDG_CONFIG_HOME/systemd/user/` and
 `$XDG_CONFIG_HOME/pipelock/prometheus/` if you want them gone. The
 init summary names the auditor's outcome either way (installed, skipped by
 flag, skipped because no user systemd session exists, skipped because an
-existing config configures no `flight_recorder.dir` to audit, or skipped for a
-dry run). Under `--json` the outcome is also reported in the
+existing config configures no `flight_recorder.dir` to audit, skipped because
+an existing config could not be read, or skipped for a dry run). A cancelled
+run fails rather than reporting a skip, and a disclosure that cannot be written
+fails before anything is installed. Under `--json` the outcome is also reported in the
 `evidence_corpus_auditor` object, and the disclosure is written to stderr so
 stdout stays a single JSON document.
 

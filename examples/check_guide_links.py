@@ -13,17 +13,27 @@ from urllib.parse import unquote, urlsplit
 # Match repository example paths in links, prose and shell walkthroughs. A
 # preceding path component excludes charts/pipelock/examples and remote URLs.
 EXAMPLE = re.compile(r"(?<![\w./-])(?:\.\./)*/?examples/([\w.-]+)")
-INLINE_LINK = re.compile(r'(?<!!)\[[^\]\n]*\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"]*")?\s*\)')
+INLINE_LINK = re.compile(
+    r'(?<!!)\[[^\]\n]*\]\(\s*<?([^\s)>]+)>?'
+    r'(?:\s+(?:"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'|\((?:\\.|[^)])*\)))?'
+    r'\s*\)'
+)
 REFERENCE = re.compile(r'^ {0,3}\[([^\]\n]+)\]:\s*<?([^\s>]+)>?.*$', re.MULTILINE)
 REFERENCE_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\[([^\]\n]*)\]")
 SHORTCUT_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]")
+HTML_HREF = re.compile(r"""<a\s[^>]*href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+INDENTED_CODE = re.compile(r"^(?:    |\t)")
+LIST_ITEM = re.compile(r"^( {0,3})(?:[*+-]|\d+[.)])\s")
+NESTED_LIST_ITEM = re.compile(r"^(?:    |\t)+(?:[*+-]|\d+[.)])\s")
 
 
 def visible_markdown(text: str) -> str:
     """Exclude comments and code so a quoted link cannot satisfy a backlink."""
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<!--.*", "", text, flags=re.DOTALL)
     lines = []
     fence = ""
+    in_list = False
     for line in text.splitlines():
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
         if marker:
@@ -33,8 +43,17 @@ def visible_markdown(text: str) -> str:
             elif value[0] == fence[0] and len(value) >= len(fence):
                 fence = ""
             continue
-        if not fence and not line.startswith(("    ", "\t")):
-            lines.append(line)
+        if fence:
+            continue
+        if INDENTED_CODE.match(line):
+            if in_list and NESTED_LIST_ITEM.match(line):
+                lines.append(line)
+            continue
+        lines.append(line)
+        if LIST_ITEM.match(line):
+            in_list = True
+        elif line.strip():
+            in_list = False
     return re.sub(r"(`+).*?\1", "", "\n".join(lines), flags=re.DOTALL)
 
 
@@ -46,6 +65,7 @@ def link_targets(text: str) -> list[str]:
     definitions = {normalize(label): target for label, target in REFERENCE.findall(text)}
     text = REFERENCE.sub("", text)
     targets = INLINE_LINK.findall(text)
+    targets.extend(HTML_HREF.findall(text))
     text = INLINE_LINK.sub("", text)
     for label, reference in REFERENCE_LINK.findall(text):
         target = definitions.get(normalize(reference or label))
@@ -77,6 +97,7 @@ def check(root: Path) -> tuple[int, list[str]]:
     checked = 0
     for guide in guides:
         text = re.sub(r"<!--.*?-->", "", guide.read_text(encoding="utf-8"), flags=re.DOTALL)
+        text = re.sub(r"<!--.*", "", text, flags=re.DOTALL)
         for name in sorted(set(EXAMPLE.findall(text))):
             checked += 1
             example = root / "examples" / name

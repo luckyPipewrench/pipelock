@@ -300,7 +300,7 @@ Once an active manifest is promoted, the runtime gates every URL-bearing transpo
 **Decision sequence (every gated path):**
 
 1. **Kill switch.** Any of the four kill-switch sources (config, API, SIGUSR1, sentinel file) blocks the request before any other check.
-2. **Scanner verdict.** DLP / SSRF / injection / blocklist run as today. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked. A scanner block returns 403 with the existing `X-Pipelock-Block-Reason` and skips contract evaluation. **Scanner block always wins over contract allow.**
+2. **Scanner verdict.** DLP / SSRF / injection / blocklist run as today. A scanner block returns 403 with the existing `X-Pipelock-Block-Reason` and skips contract evaluation. **Scanner block always wins over contract allow.**
 3. **No active contract.** If no manifest is active for the agent, the scanner verdict passes through unchanged.
 4. **Contract verdict.** With an active manifest, the runtime evaluates the request against the matching rule kind (`http_destination` for URL transports; `mcp_tool_call` for MCP). An allow rule passes the request; an unmatched destination is **default-deny**.
 5. **Mode gate.** Live mode emits the contract block. Shadow mode allows the request and emits a `would_have_blocked` shadow-delta record. Capture mode is silent (no block, no shadow record); capture is for the observation phase only.

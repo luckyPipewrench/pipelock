@@ -289,7 +289,7 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 
 ### Detection And Scanning
 
-- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. Configured MCP upstream dialing permits local/private servers while enforcing the cloud metadata floor. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
+- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
 - **DLP:** 65 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment secrets, and financial identifiers with checksum validation. BIP-39 seed phrase detection uses dictionary lookup, sliding windows, and SHA-256 checksum validation.
 - **Response scanning:** 33 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
 - **Streaming SSE:** `text/event-stream` responses from LLM gateways and MCP HTTP/SSE flow token by token with per-event and rolling cross-event DLP and injection scanning. A detection terminates the stream fail-closed. See [SSE streaming guide](docs/guides/sse-streaming.md).
@@ -430,8 +430,8 @@ All detection, enforcement, containment, receipt verification, and the free sing
 
 | Capability | Free | Pro | Enterprise |
 |---|:--:|:--:|:--:|
-| Scanning and detection (ordered URL pipeline, DLP, injection, SSRF except private/local configured MCP upstreams, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
-| MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners) | Yes | Yes | Yes |
+| Scanning and detection (ordered URL pipeline, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
+| MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners; configured upstreams allow local/private servers and still block cloud metadata) | Yes | Yes | Yes |
 | Containment, sandbox, host `contain`, 6-source kill switch | Yes | Yes | Yes |
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |
 | Canary tokens, skill-scan, `explain`, single-instance Prometheus and Grafana | Yes | Yes | Yes |

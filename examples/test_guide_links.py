@@ -35,6 +35,12 @@ class GuideLinksTest(unittest.TestCase):
             BACKLINK,
             "[Guide](/docs/guides/demo.md#section)",
             '[Guide](<../../docs/guides/demo.md> "Guide title")',
+            "[Guide](../../docs/guides/demo.md 'Guide title')",
+            "[Guide](../../docs/guides/demo.md (Guide title))",
+            "[Guide](<../../docs/guides/demo.md> 'Guide title')",
+            '<a href="../../docs/guides/demo.md">Guide</a>',
+            '<a href="/docs/guides/demo.md">Guide</a>',
+            "- parent\n    - [Guide](../../docs/guides/demo.md)\n",
             "[Guide][ref]\n\n[ref]: ../../docs/guides/demo.md",
             "[Guide][]\n\n[guide]: ../../docs/guides/demo.md",
             "[Guide]\n\n[guide]: ../../docs/guides/demo.md",
@@ -46,8 +52,9 @@ class GuideLinksTest(unittest.TestCase):
     def test_missing_or_non_link_text_fails(self):
         for text in [
             "", "../../docs/guides/demo.md", "`" + BACKLINK.strip() + "`",
-            "<!-- " + BACKLINK + " -->", "```md\n" + BACKLINK + "```\n",
-            "~~~\n" + BACKLINK + "~~~\n", "    " + BACKLINK,
+            "<!-- " + BACKLINK + " -->", "<!-- " + BACKLINK,
+            "```md\n" + BACKLINK + "```\n",
+            "~~~\n" + BACKLINK + "~~~\n", "    " + BACKLINK, "    - " + BACKLINK,
             "![Guide](../../docs/guides/demo.md)",
             "[Guide](../../docs/guides/other.md)",
             "[ref]: ../../docs/guides/demo.md\n",
@@ -75,7 +82,8 @@ class GuideLinksTest(unittest.TestCase):
             "cd examples/demo\n"
             "[Chart](../../charts/pipelock/examples/values.yaml)\n"
             "[External](https://vendor.example/examples/unrelated/)\n"
-            "<!-- examples/hidden/ -->\n",
+            "<!-- examples/hidden/ -->\n"
+            "<!-- examples/unclosed/\n",
             encoding="utf-8",
         )
         self.assertEqual(check_guide_links.check(self.root), (1, []))

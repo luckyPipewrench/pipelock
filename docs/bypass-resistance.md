@@ -4,7 +4,7 @@ This page documents the evasion techniques pipelock handles and the ones it does
 
 ## How Scanning Works
 
-Pipelock scans mediated URLs, tool arguments, and responses. For URL scanning, DLP runs before DNS resolution so secrets are caught before a DNS query leaves the proxy, and DNS-based SSRF checks validate the resolved addresses. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
+Pipelock scans mediated URLs, tool arguments, and responses. For URL scanning, DLP runs before DNS resolution so secrets are caught before a DNS query leaves the proxy, and DNS-based SSRF checks validate the resolved addresses. Agent-chosen destinations use the full private-address SSRF policy. Configured MCP upstream dialing is a different surface: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
 Response scanning uses a 6-pass normalization pipeline. Each pass catches a different evasion class.
 

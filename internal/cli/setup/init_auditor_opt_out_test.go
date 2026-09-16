@@ -6,7 +6,9 @@ package setup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -153,8 +155,14 @@ func TestInitDryRunInstallsNothingAndPrintsPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init failed: %v\noutput:\n%s", err, out)
 	}
-	if !strings.Contains(out, "Would install evidence corpus auditor: "+evidenceAuditorDisclosure) {
+	// The plan must read as a plan. The bare disclosure opens with
+	// "Installing", which is false under --dry-run, so the dry-run surface
+	// rewrites that opening rather than prefixing it.
+	if !strings.Contains(out, "Would install "+evidenceCorpusAuditorTimer+":") {
 		t.Fatalf("dry run must print the plan, not perform it\noutput:\n%s", out)
+	}
+	if strings.Contains(out, "Installing "+evidenceCorpusAuditorTimer) {
+		t.Fatalf("dry run claimed an install was happening\noutput:\n%s", out)
 	}
 	if !strings.Contains(out, "Evidence auditor:   skipped (dry run)") {
 		t.Fatalf("summary missing dry-run skipped state\noutput:\n%s", out)
@@ -220,5 +228,89 @@ func TestInitAuditorEnableFailureIsReportedNotSkipped(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "installing evidence corpus auditor") {
 		t.Fatalf("error = %v, want it to name the auditor install step", err)
+	}
+}
+
+// --json previously suppressed the disclosure entirely and emitted its JSON
+// only after the unit was already enabled, so the machine-readable mode
+// installed a timer having named it nowhere beforehand. The disclosure now
+// goes to stderr: stdout stays a single valid JSON document, and the consent
+// contract holds on both surfaces.
+func TestInitAuditorJSONDisclosesOnStderrAndKeepsStdoutValidJSON(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+
+	home := t.TempDir()
+	var out, errOut bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", filepath.Join(home, "cfg", "pipelock.yaml"),
+		"--json",
+		"--skip-canary",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errOut.String())
+	}
+
+	if !strings.Contains(errOut.String(), evidenceAuditorDisclosure) {
+		t.Fatalf("--json must still disclose before installing\nstderr:\n%s", errOut.String())
+	}
+	if strings.Contains(out.String(), evidenceAuditorDisclosure) {
+		t.Fatalf("the disclosure must not pollute the JSON document\nstdout:\n%s", out.String())
+	}
+
+	var result initResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not a single valid JSON document: %v\nstdout:\n%s", err, out.String())
+	}
+	if result.Auditor == nil || result.Auditor.Status != auditorStatusInstalled {
+		t.Fatalf("auditor status = %+v, want %q", result.Auditor, auditorStatusInstalled)
+	}
+}
+
+// An existing config that configures no flight_recorder.dir leaves nothing to
+// audit. That path used to return no auditor result at all, so the summary and
+// the JSON both went silent and "not installed" was invisible to the operator.
+func TestInitAuditorExistingConfigWithoutRecorderDirReportsSkip(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the auditor is installed only on linux")
+	}
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op == systemctlUserRunning {
+			return &systemctlUserStateError{state: "running"}
+		}
+		t.Fatalf("no unit should be installed when there is no recorder directory (op %q)", op)
+		return nil
+	})
+
+	home := t.TempDir()
+	configPath := filepath.Join(home, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: audit\n"), 0o600); err != nil {
+		t.Fatalf("seed existing config: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", configPath,
+		"--skip-canary",
+		"--skip-validate",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\noutput:\n%s", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), "Evidence auditor:   skipped (") {
+		t.Fatalf("summary must name the auditor outcome even when it no-ops\noutput:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "no flight_recorder.dir") {
+		t.Fatalf("the skip must say why\noutput:\n%s", out.String())
 	}
 }

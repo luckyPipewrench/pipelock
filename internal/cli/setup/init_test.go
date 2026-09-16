@@ -421,10 +421,12 @@ func TestInitCmd_JSONOutput(t *testing.T) {
 	home := t.TempDir()
 	configPath := filepath.Join(home, "init.yaml")
 
-	var buf bytes.Buffer
+	var buf, errBuf bytes.Buffer
 	cmd := InitCmd()
 	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+	// Separate streams on purpose: under --json, stdout carries one JSON
+	// document and nothing else. The pre-install disclosure goes to stderr.
+	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{
 		"--scan-home", home,
 		"--output", configPath,
@@ -514,10 +516,12 @@ func TestInitCmd_DiscoverWithClaudeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var buf bytes.Buffer
+	var buf, errBuf bytes.Buffer
 	cmd := InitCmd()
 	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
+	// Separate streams on purpose: under --json, stdout carries one JSON
+	// document and nothing else. The pre-install disclosure goes to stderr.
+	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{
 		"--scan-home", home,
 		"--output", configPath,

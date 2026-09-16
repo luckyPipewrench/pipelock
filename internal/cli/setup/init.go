@@ -77,6 +77,11 @@ const (
 	auditorStatusSkippedFlag      = "skipped_flag"
 	auditorStatusSkippedDryRun    = "skipped_dry_run"
 	auditorStatusSkippedNoSystemd = "skipped_no_systemd"
+	// An existing config that cannot be loaded, or that configures no
+	// flight_recorder.dir, leaves nothing for the auditor to watch. That
+	// outcome still gets a status: "not installed" must never be reported by
+	// saying nothing at all.
+	auditorStatusSkippedNoRecorderDir = "skipped_no_recorder_dir"
 )
 
 type initVerifyResult struct {
@@ -368,10 +373,14 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 	}
 
 	if opts.dryRun {
+		// Both surfaces must read as a plan, not as an action. The bare
+		// disclosure starts with "Installing", which is false under --dry-run
+		// and was previously handed to JSON consumers verbatim.
+		planned := "Would install " + evidenceAuditorDisclosure[len("Installing "):]
 		if !opts.jsonOutput {
-			_, _ = fmt.Fprintf(w, "  Would install evidence corpus auditor: %s\n\n", evidenceAuditorDisclosure)
+			_, _ = fmt.Fprintf(w, "  %s\n\n", planned)
 		}
-		return &initAuditorResult{Status: auditorStatusSkippedDryRun, Detail: evidenceAuditorDisclosure}, nil
+		return &initAuditorResult{Status: auditorStatusSkippedDryRun, Detail: planned}, nil
 	}
 
 	if unavailable, reason := evidenceAuditorUserSystemdUnavailable(cmd.Context()); unavailable {
@@ -393,12 +402,23 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 		}
 	}
 	if !installAuditor {
-		return nil, nil
+		reason := "existing config configures no flight_recorder.dir to audit"
+		if !opts.jsonOutput {
+			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", reason)
+		}
+		return &initAuditorResult{Status: auditorStatusSkippedNoRecorderDir, Detail: reason}, nil
 	}
 
 	// Disclose BEFORE installing: name the unit, what it does, and how to
-	// remove it, so an operator sees this before anything is enabled.
-	if !opts.jsonOutput {
+	// remove it, so an operator sees this before anything is enabled. Under
+	// --json the disclosure goes to stderr rather than being dropped: stdout
+	// stays a single valid JSON document for machine consumers, and the
+	// consent contract still holds for the operator watching the terminal.
+	// Suppressing it entirely meant --json enabled a timer having named it
+	// nowhere until after the unit was already running.
+	if opts.jsonOutput {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", evidenceAuditorDisclosure)
+	} else {
 		_, _ = fmt.Fprintf(w, "  %s\n", evidenceAuditorDisclosure)
 	}
 
@@ -686,7 +706,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (--no-auditor)")
 		case auditorStatusSkippedDryRun:
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (dry run)")
-		case auditorStatusSkippedNoSystemd:
+		case auditorStatusSkippedNoSystemd, auditorStatusSkippedNoRecorderDir:
 			_, _ = fmt.Fprintf(w, "  Evidence auditor:   skipped (%s)\n", result.Auditor.Detail)
 		}
 	}

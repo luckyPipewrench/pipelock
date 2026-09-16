@@ -258,6 +258,62 @@ func TestMCPIntegrityManifestVerifyReportsUnknownWorkingDirectory(t *testing.T) 
 	}
 }
 
+func TestMCPIntegrityManifestGenerateReportsUnknownWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "server")
+	if err := os.WriteFile(binary, []byte("binary"), 0o600); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	missingWorkDir := filepath.Join(dir, "missing-workdir")
+
+	t.Run("JSON", func(t *testing.T) {
+		cmd := testMCPRoot()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"mcp", "integrity", "manifest", "generate",
+			"--output", filepath.Join(dir, "json-manifest.json"),
+			"--workdir", missingWorkDir,
+			"--json",
+			"--", binary,
+		})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		var report mcpIntegrityReport
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatalf("unmarshal JSON report: %v\n%s", err, out.String())
+		}
+		if report.OK {
+			t.Fatalf("JSON report OK = true for unknown location: %+v", report)
+		}
+		if report.Location != mcpintegrity.BinaryLocationUnknown {
+			t.Fatalf("JSON report location = %q, want unknown", report.Location)
+		}
+		if !strings.Contains(report.LocationReason, "resolving working directory") {
+			t.Fatalf("JSON report location reason = %q", report.LocationReason)
+		}
+	})
+
+	t.Run("text", func(t *testing.T) {
+		cmd := testMCPRoot()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"mcp", "integrity", "manifest", "generate",
+			"--output", filepath.Join(dir, "text-manifest.json"),
+			"--workdir", missingWorkDir,
+			"--", binary,
+		})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		if !strings.Contains(out.String(), "MCP binary location unknown:") {
+			t.Fatalf("text output missing unknown location diagnostic:\n%s", out.String())
+		}
+	})
+}
+
 func TestMCPIntegrityManifestRequiresPaths(t *testing.T) {
 	genCmd := testMCPRoot()
 	genCmd.SetOut(&bytes.Buffer{})

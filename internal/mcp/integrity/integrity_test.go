@@ -492,6 +492,85 @@ func TestResolveAndPrepareBinaryLocation(t *testing.T) {
 	}
 }
 
+func TestResolve_ClassifiesFinalExecutableLocation(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("test uses /usr/bin/env-style wrapper and shebang paths")
+	}
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{workDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("MkdirAll %q: %v", dir, err)
+		}
+	}
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile %q: %v", path, err)
+		}
+	}
+
+	envPath, err := exec.LookPath("env")
+	if err != nil {
+		t.Skipf("env unavailable: %v", err)
+	}
+	insideBinary := filepath.Join(workDir, "inside-server")
+	outsideBinary := filepath.Join(outsideDir, "outside-server")
+	insideInterpreter := filepath.Join(workDir, "interpreter")
+	outsideScript := filepath.Join(outsideDir, "server-script")
+	writeFile(insideBinary, testPlainBinary)
+	writeFile(outsideBinary, testPlainBinary)
+	writeFile(insideInterpreter, testPlainBinary)
+	writeFile(outsideScript, "#!"+insideInterpreter+"\necho server\n")
+
+	for _, tt := range []struct {
+		name       string
+		command    []string
+		wantPath   string
+		location   BinaryLocation
+		suspicious bool
+	}{
+		{
+			name:       "env wrapped binary inside working directory",
+			command:    []string{envPath, insideBinary},
+			wantPath:   insideBinary,
+			location:   BinaryLocationInside,
+			suspicious: true,
+		},
+		{
+			name:     "env wrapped binary outside working directory",
+			command:  []string{envPath, outsideBinary},
+			wantPath: outsideBinary,
+			location: BinaryLocationOutside,
+		},
+		{
+			name:       "shebang interpreter inside working directory and script outside",
+			command:    []string{outsideScript},
+			wantPath:   insideInterpreter,
+			location:   BinaryLocationInside,
+			suspicious: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Resolve(tt.command, workDir)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if result.ResolvedPath != tt.wantPath {
+				t.Fatalf("ResolvedPath = %q, want %q", result.ResolvedPath, tt.wantPath)
+			}
+			if result.Location != tt.location {
+				t.Fatalf("Location = %q, want %q", result.Location, tt.location)
+			}
+			if result.Suspicious != tt.suspicious {
+				t.Fatalf("Suspicious = %t, want %t", result.Suspicious, tt.suspicious)
+			}
+		})
+	}
+}
+
 // --- Verify Tests ---
 
 func TestVerify_KnownBinary(t *testing.T) {

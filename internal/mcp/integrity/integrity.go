@@ -114,7 +114,7 @@ const (
 
 // VerifyResult is the outcome of a pre-spawn integrity check.
 type VerifyResult struct {
-	Verified           bool   // true when all hashes match the manifest
+	Verified           bool   // true when all hashes match the manifest; callers enforcing containment must also check Location
 	ResolvedPath       string // binary path after EvalSymlinks + LookPath
 	InterpreterPath    string // interpreter binary path when env/shebang rewrites ResolvedPath
 	ExpectedHash       string // from manifest (empty if binary is unknown)
@@ -257,12 +257,6 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 	}
 	result.ResolvedPath = resolved
 
-	// Check if binary is inside the agent working directory. An unresolved
-	// location is distinct from an outside binary so callers cannot present an
-	// unchecked containment warning as healthy.
-	result.Location, result.LocationError = binaryLocation(resolved, workDir)
-	result.Suspicious = result.Location == BinaryLocationInside
-
 	// Hash the binary via fd (mitigates read-after-open races but not
 	// in-place replacement after close; see package doc for limitations).
 	actualHash, err := hashFileByFD(resolved)
@@ -346,6 +340,14 @@ func Resolve(command []string, workDir string) (*VerifyResult, error) {
 			result.ActualHash = interpHash
 		}
 	}
+
+	// Classify the final executable. Env wrappers and shebangs can replace the
+	// initially resolved command path, so classifying before those rewrites
+	// would report containment for an executable that is not the one hashed.
+	// An unresolved location remains distinct from outside so callers cannot
+	// present an unchecked containment warning as healthy.
+	result.Location, result.LocationError = binaryLocation(result.ResolvedPath, workDir)
+	result.Suspicious = result.Location == BinaryLocationInside
 
 	return result, nil
 }

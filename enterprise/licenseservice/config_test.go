@@ -67,9 +67,11 @@ func TestLoadConfig_ProviderSuccessWindow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setRequiredConfigEnv(t)
-			if tt.value != "" {
-				t.Setenv("PROVIDER_SUCCESS_WINDOW", tt.value)
-			}
+			// Always set it, including to empty for the default case. Leaving
+			// it alone lets a value inherited from the developer's shell drive
+			// envOrDefault, so the default case would pass or fail depending
+			// on where it ran. t.Setenv restores the prior value afterwards.
+			t.Setenv("PROVIDER_SUCCESS_WINDOW", tt.value)
 
 			cfg, err := LoadConfig()
 			if (err != nil) != tt.wantErr {

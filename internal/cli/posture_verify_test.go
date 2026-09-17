@@ -1947,11 +1947,17 @@ func TestPostureVerify_WorkspaceStatement_UnknownFieldRejected(t *testing.T) {
 		"--policy", testVerifyPolicyNone,
 		"--workspace-statement", stmtPath,
 	})
-	if err := cmd.Execute(); err == nil {
+	err = cmd.Execute()
+	if err == nil {
 		t.Fatalf("expected rejection of a statement carrying an unknown field")
-	} else if !errors.Is(err, contract.ErrUnknownField) {
+	}
+	if !errors.Is(err, contract.ErrUnknownField) {
 		t.Fatalf("error = %v, want unknown-field rejection", err)
 	}
+	// The refusal has to reach the operator as an integrity failure, not some
+	// other exit class: a caller that scripts on the exit code would otherwise
+	// treat a rejected artifact as an ordinary error.
+	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
 func assertExitCode(t *testing.T, err error, wantCode int) {

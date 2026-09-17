@@ -1531,10 +1531,10 @@ func TestStepInstallNFTRulesRefusesSymlinkedRulesDirAncestor(t *testing.T) {
 	rulesParent := filepath.Dir(env.nftRulesPath) // .../etc/nftables.d
 	grandparent := filepath.Dir(rulesParent)      // .../etc
 	elsewhere := filepath.Join(filepath.Dir(grandparent), "elsewhere-nftables.d")
-	if err := os.MkdirAll(grandparent, 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.MkdirAll(grandparent, 0o750); err != nil {
 		t.Fatalf("mkdir grandparent: %v", err)
 	}
-	if err := os.MkdirAll(elsewhere, 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.MkdirAll(elsewhere, 0o750); err != nil {
 		t.Fatalf("mkdir elsewhere: %v", err)
 	}
 	if err := os.Symlink(elsewhere, rulesParent); err != nil {

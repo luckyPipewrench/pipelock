@@ -47,7 +47,7 @@ func withContainmentReconcileLock(lockPath string, fn func() error) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	fd := int(f.Fd()) //nolint:gosec // Fd() returns a valid file descriptor, no overflow risk on 64-bit.
+	fd := int(f.Fd())
 	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("containment reconcile lock: acquire %s: %w; %s", lockPath, err, containmentReconcileLockRecovery)
 	}
@@ -76,7 +76,7 @@ func withContainmentReconcileLock(lockPath string, fn func() error) error {
 // Every refusal is a hard error naming lockPath and the recovery command;
 // none of them silently proceed without the lock.
 func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600) //nolint:gosec // G304: lockPath is a fixed operator/install-time constant, not attacker input; O_NOFOLLOW below refuses a symlink at that path.
+	f, err := os.OpenFile(filepath.Clean(lockPath), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// The lock's parent directory (the nft rules directory) does
@@ -118,8 +118,8 @@ func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("containment reconcile lock: cannot verify the owner of %s; %s", lockPath, containmentReconcileLockRecovery)
 	}
-	invokingUID := uint32(os.Getuid()) //nolint:gosec // Getuid() is always non-negative on every supported platform.
-	if sys.Uid != 0 && sys.Uid != invokingUID {
+	invokingUID := os.Getuid()
+	if sys.Uid != 0 && int(sys.Uid) != invokingUID {
 		_ = f.Close()
 		return nil, fmt.Errorf("containment reconcile lock: %s is owned by uid %d, not root or the invoking uid %d; refusing to lock it; %s", lockPath, sys.Uid, invokingUID, containmentReconcileLockRecovery)
 	}

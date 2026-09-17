@@ -1378,6 +1378,16 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 			WHEN active_trial_slots.subscription_id = excluded.subscription_id
 				THEN active_trial_slots.expires_at
 			ELSE excluded.expires_at
+		END,
+		-- A takeover installs a NEW owner, so the row must carry that owner's
+		-- claim state. Keeping the previous owner's state would let a recurring
+		-- trial inherit verified from the slot it took over and become
+		-- takeover-eligible again once its own entitlement ends. A same-owner
+		-- retry keeps what it already holds, for the same reason expires_at does.
+		takeover_state = CASE
+			WHEN active_trial_slots.subscription_id = excluded.subscription_id
+				THEN active_trial_slots.takeover_state
+			ELSE excluded.takeover_state
 		END
 	WHERE active_trial_slots.subscription_id = excluded.subscription_id
 	   OR (

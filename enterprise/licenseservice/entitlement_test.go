@@ -890,6 +890,50 @@ func TestClaimActiveTrialSlot_RecurringTrialIsNotVerified(t *testing.T) {
 	}
 }
 
+// A takeover installs a new owner, so the slot must carry THAT owner's claim
+// state. If it kept the previous owner's, a recurring trial could take over an
+// expired one-time slot, inherit verified, and become takeover-eligible again
+// once its own entitlement ended.
+func TestClaimActiveTrialSlot_TakeoverCarriesTheNewOwnersClaimState(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	expired := now.Add(-time.Hour)
+
+	first := trialEntitlement("order_state_carry_owner", "state-carry@example.com", expired)
+	first.LastLicensePeriodEnd = &expired
+	if err := db.Upsert(ctx, first); err != nil {
+		t.Fatalf("seed expired one-time trial: %v", err)
+	}
+	var seeded string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT takeover_state FROM active_trial_slots WHERE normalized_email = ?`, "state-carry@example.com",
+	).Scan(&seeded); err != nil {
+		t.Fatalf("read seeded slot: %v", err)
+	}
+	if seeded != trialSlotTakeoverVerified {
+		t.Fatalf("seeded takeover state = %q, want %q so the takeover has something to inherit",
+			seeded, trialSlotTakeoverVerified)
+	}
+
+	replacement := trialEntitlement("order_state_carry_replacement", "state-carry@example.com", now.Add(24*time.Hour))
+	replacement.BillingInterval = "month"
+	if err := db.Upsert(ctx, replacement); err != nil {
+		t.Fatalf("recurring replacement takes over the expired slot: %v", err)
+	}
+
+	var got string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT takeover_state FROM active_trial_slots WHERE normalized_email = ?`, "state-carry@example.com",
+	).Scan(&got); err != nil {
+		t.Fatalf("read slot after takeover: %v", err)
+	}
+	if got != trialSlotTakeoverUnverifiable {
+		t.Fatalf("takeover state = %q, want %q: the slot kept the previous owner's state",
+			got, trialSlotTakeoverUnverifiable)
+	}
+}
+
 func TestClaimActiveTrialSlot_HealthyExpiredSlotIsTakenOver(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()

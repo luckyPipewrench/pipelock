@@ -1299,10 +1299,13 @@ func matcherParityError(raw, normalized string) error {
 // tls_interception.passthrough_domains SPLICES a matching host without
 // decrypting it, so "*.com" there turns body and response scanning off for
 // every .com destination. That is the same detector-off shape this repository
-// already breadth-checks on trusted_domains and the exempt lists, so it gets
-// the grant-list rule: a wildcard whose base is an ICANN public suffix is
-// refused, while a private-suffix base such as "*.s3.amazonaws.com" stays
-// accepted because an operator legitimately writes it.
+// already breadth-checks on trusted_domains and the exempt lists, but
+// passthrough gets a STRICTER rule than those: a wildcard whose base is ANY
+// public suffix is refused here, private-section entries such as
+// "*.s3.amazonaws.com" included, because splicing turns every detector off
+// for every unrelated tenant under that boundary. The ordinary grant lists
+// still accept a private-section wildcard, because they go on scanning what
+// they exempt. See passthroughWildcardBaseBreadthError.
 //
 // forward_proxy.redirect_websocket_hosts is NOT the same: a wide wildcard
 // routes more traffic INTO the /ws proxy, which still scans it, so breadth

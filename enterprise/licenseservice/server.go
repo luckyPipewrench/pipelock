@@ -300,16 +300,24 @@ type readinessResponse struct {
 }
 
 // handleReady reports whether the most recent successful Polar API read is
-// within the configured tolerance. New services are ready until their first
-// provider call so a pod is not removed before receiving traffic.
+// within the configured tolerance. A service that has not called the provider
+// yet stays ready, so a pod is not removed before it receives traffic. Once a
+// read has been ATTEMPTED, the absence of a success is a failure rather than
+// that grace period: reporting ready there routes traffic to an instance whose
+// provider is unreachable, which is what /ready exists to prevent.
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	lastSuccess := s.handler.polar.LastProviderSuccess()
 	response := readinessResponse{Ready: true}
 	status := http.StatusOK
 
-	if lastSuccess.IsZero() {
+	switch {
+	case lastSuccess.IsZero() && s.handler.polar.ProviderAttempted():
+		response.Ready = false
+		response.Reason = "no successful provider read yet"
+		status = http.StatusServiceUnavailable
+	case lastSuccess.IsZero():
 		response.Reason = "no provider call yet"
-	} else {
+	default:
 		formatted := lastSuccess.UTC().Format(time.RFC3339)
 		response.LastProviderSuccess = &formatted
 		if s.now().Sub(lastSuccess) > s.cfg.ProviderSuccessWindow {

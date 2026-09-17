@@ -186,6 +186,18 @@ func TestServer_ReadinessEndpoint(t *testing.T) {
 			wantReason:  "last provider success exceeds the readiness tolerance",
 		},
 		{
+			// The startup grace ends at the FIRST attempt. A failed read
+			// leaves lastProviderSuccess zero, which is indistinguishable
+			// from "never called" unless the attempt is tracked, and
+			// answering ready there sends traffic to an instance whose
+			// provider is unreachable.
+			name:       "first provider call failed is unavailable",
+			failAfter:  true,
+			wantStatus: http.StatusServiceUnavailable,
+			wantReady:  false,
+			wantReason: "no successful provider read yet",
+		},
+		{
 			name:        "failed call after recent success remains ready",
 			lastSuccess: timePtr(now.Add(-time.Minute)),
 			failAfter:   true,

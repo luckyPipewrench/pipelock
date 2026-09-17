@@ -84,6 +84,13 @@ type PolarClient struct {
 
 	lastProviderSuccessMu sync.RWMutex
 	lastProviderSuccess   time.Time
+	// providerAttempted records that a provider read has been ATTEMPTED,
+	// separately from whether one has SUCCEEDED. Readiness cannot tell those
+	// apart from the success timestamp alone: a failed read leaves it zero,
+	// which reads identically to a service that has not called the provider
+	// yet, and answering "ready" there sends traffic to an instance whose
+	// provider is unreachable.
+	providerAttempted bool
 }
 
 // NewPolarClient creates a Polar API client with the given token, base URL, and
@@ -106,6 +113,12 @@ func NewPolarClient(apiToken, baseURL, apiVersion string) *PolarClient {
 // GetSubscription and GetOrder, so their behavior (auth header, body cap, status
 // handling) cannot drift apart. label is used in error messages.
 func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) error {
+	// Mark the attempt before anything can fail, so every failure path below
+	// is covered without each one having to remember.
+	p.lastProviderSuccessMu.Lock()
+	p.providerAttempted = true
+	p.lastProviderSuccessMu.Unlock()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("create %s request: %w", label, err)
@@ -160,6 +173,15 @@ func (p *PolarClient) LastProviderSuccess() time.Time {
 	p.lastProviderSuccessMu.RLock()
 	defer p.lastProviderSuccessMu.RUnlock()
 	return p.lastProviderSuccess
+}
+
+// ProviderAttempted reports whether a provider read has been attempted at all.
+// Paired with LastProviderSuccess it separates "not called yet", which is the
+// startup grace, from "called and failed", which is not ready.
+func (p *PolarClient) ProviderAttempted() bool {
+	p.lastProviderSuccessMu.RLock()
+	defer p.lastProviderSuccessMu.RUnlock()
+	return p.providerAttempted
 }
 
 // GetSubscription fetches the current state of a subscription from Polar's API.

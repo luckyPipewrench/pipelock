@@ -59,6 +59,9 @@ func TestLoadConfig_ProviderSuccessWindow(t *testing.T) {
 		{name: "custom", value: "5m", want: 5 * time.Minute},
 		{name: "zero rejected", value: "0", wantErr: true},
 		{name: "negative rejected", value: "-1m", wantErr: true},
+		// The other rejections all parse and then fail the positivity check,
+		// so none of them reaches the parse error path.
+		{name: "malformed rejected", value: "not-a-duration", wantErr: true},
 	}
 
 	for _, tt := range tests {

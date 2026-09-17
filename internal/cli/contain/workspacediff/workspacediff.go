@@ -114,10 +114,10 @@ type Manifest struct {
 // under capBytes get a sha256 content digest read through a symlink-safe,
 // identity-checked open (see hashFileSafe); larger regular files are recorded
 // with Oversize=true and no digest, never partially hashed. Directories the
-// caller cannot read, directories that cross a mount boundary out of root,
-// and files whose identity changed between listing and opening are all
-// recorded as Unreadable with a reason, never silently skipped or descended
-// into. A missing root is not an error: it is recorded as RootMissing so the
+// caller cannot read, any entry that crosses a mount boundary out of root
+// whether it is a file or a directory, and files whose identity changed
+// between listing and opening are all recorded as Unreadable with a reason,
+// never silently skipped or descended into. A missing root is not an error: it is recorded as RootMissing so the
 // caller can produce a fail-closed statement instead of an empty diff. The
 // walk stops early, with BudgetExceeded set, if it exceeds budget.
 func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {

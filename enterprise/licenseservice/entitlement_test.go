@@ -327,6 +327,41 @@ func TestEntitlementDB_UpsertWithLicenseIssuance(t *testing.T) {
 	}
 }
 
+// The issuance path claims the trial slot BEFORE it checks whether the
+// persisted subscription is already terminal, so a stale active event for a
+// canceled trial reaches the claim first. Both run in one transaction, so the
+// refusal must roll the claim back: if it did not, a canceled order could take
+// an email's slot and deny that email a legitimate trial with no way back.
+func TestUpsertWithLicenseIssuance_TerminalTrialLeavesNoSlotClaim(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	email := "terminal-slot@example.com"
+
+	canceled := trialEntitlement("order_terminal_slot", email, now.Add(24*time.Hour))
+	canceled.Status = statusCanceled
+	if err := db.Upsert(ctx, canceled); err != nil {
+		t.Fatalf("seed canceled trial: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx, `DELETE FROM active_trial_slots`); err != nil {
+		t.Fatalf("clear slots seeded by the upsert: %v", err)
+	}
+
+	// A stale active event for that same canceled subscription.
+	stale := *canceled
+	stale.Status = statusActive
+	err := db.UpsertWithLicenseIssuance(ctx, &stale, LicenseIssuance{
+		LicenseID:      "lic_terminal_slot",
+		SubscriptionID: stale.SubscriptionID,
+		ExpiresAt:      now.Add(24 * time.Hour),
+		IssuedAt:       now,
+	})
+	if !errors.Is(err, ErrTerminalEntitlement) {
+		t.Fatalf("err = %v, want ErrTerminalEntitlement", err)
+	}
+	assertNoActiveTrialSlot(t, db, email)
+}
+
 func TestEntitlementDB_GetBySubscriptionID_NotFound(t *testing.T) {
 	db := openTestDB(t)
 

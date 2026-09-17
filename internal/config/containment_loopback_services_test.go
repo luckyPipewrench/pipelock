@@ -280,6 +280,9 @@ func TestContainmentLoopbackServicesYAMLDecodesADeclaration(t *testing.T) {
 	if len(cfg.Containment.LoopbackServices) != 1 || cfg.Containment.LoopbackServices[0].Port != 9222 {
 		t.Fatalf("decoded %+v, want one entry on port 9222", cfg.Containment.LoopbackServices)
 	}
+	if err := cfg.validateContainmentLoopbackServices(); err != nil {
+		t.Fatalf("decoded declaration must validate: %v", err)
+	}
 }
 
 // TestConfigValidateContainmentLoopbackServices proves containment.loopback_services

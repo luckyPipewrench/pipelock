@@ -181,10 +181,19 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	// either leaves the previous content fully intact or lands the new
 	// content fully intact -- never empty or partial. If the kernel
 	// transaction below then fails, restoreOnFailure below writes the
-	// PREVIOUS content back (also atomically), so the file and the
-	// (unloaded) kernel never disagree in the fail-open direction: an
-	// operator or the next reload reading the file sees what the kernel
-	// actually enforces, not a change that was never applied.
+	// PREVIOUS content back (also atomically), so an operator reading the
+	// file is not shown a change that was never applied.
+	//
+	// What this ordering does NOT buy, stated because the opposite was
+	// claimed while defending it: the persisted file is not what a reboot
+	// replays. The boot unit runs `contain reload-nft-rules`, which derives
+	// the declared set from the managed CONFIG and re-renders from that, so
+	// a stale file cannot re-introduce a revoked service. The window that
+	// remains is a process killed between the rename and the kernel
+	// transaction on a machine that keeps running: the file then describes
+	// a boundary the kernel is not enforcing until the next reconciliation,
+	// which `contain verify` reports. Closing that properly needs a durable
+	// commit protocol rather than a different order.
 	fileChanged := !bytesEqual(persisted, rules)
 	if fileChanged {
 		if err := env.writeFile(env.rulesPath, rules, modeConfigSecret); err != nil {

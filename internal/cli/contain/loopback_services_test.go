@@ -1981,6 +1981,20 @@ func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 		}
 	})
 
+	// nft can report a failed command solely through its non-zero exit status.
+	// Keep that path distinct from the OS-error case above: removing the exit
+	// check must fail this test rather than being masked by an error return.
+	t.Run("a non-zero exit is reported", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.prevNFTTableStateKnown = false
+		runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "", 1, nil)
+
+		err := stepInstallNFTRulesUndo(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "exited 1") {
+			t.Fatalf("error = %v, want non-zero exit to be reported", err)
+		}
+	})
+
 	// Positive control: the ordinary rollback, where the drop succeeds, must
 	// still complete, so reporting a failure cannot be satisfied by failing
 	// every rollback.

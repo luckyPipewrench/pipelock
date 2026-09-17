@@ -272,3 +272,56 @@ func TestServer_ReloadAcceptsValidLoopbackServiceCandidate(t *testing.T) {
 		t.Fatalf("live config = %+v, want the accepted declaration", got.Containment.LoopbackServices)
 	}
 }
+
+// TestServer_ReloadValidatesLoopbackServicesAgainstTheEffectivePort covers the
+// ordering the first version of this rejection got wrong. The declaration is
+// validated against the proxy port read from fetch_proxy.listen, and a reload
+// cannot rebind the listener: the candidate's value is discarded and the live
+// address restored. A check placed before that restore reads a port the
+// process will never listen on, which is wrong in both directions. This test
+// drives the direction a test server can construct: a declaration that
+// collides with the CANDIDATE's requested port but not with the effective one
+// must be accepted, because the candidate's port is discarded.
+func TestServer_ReloadValidatesLoopbackServicesAgainstTheEffectivePort(t *testing.T) {
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, "mode: balanced\n"),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            &syncBuffer{},
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+
+	const declaredPort = 9200
+	candidate, loadErr := loadServerTestConfig(t, "mode: balanced\n")
+	if loadErr != nil {
+		t.Fatalf("load candidate: %v", loadErr)
+	}
+	// The candidate asks to move the listener onto the very port it declares
+	// as a loopback service. Reload refuses listener changes and restores the
+	// live address, so that collision never exists in the published config.
+	candidate.FetchProxy.Listen = "127.0.0.1:" + strconv.Itoa(declaredPort)
+	// Capture it now: reloadLocked restores the live address INTO this same
+	// config object, so reading the field after the call reports the
+	// restored value and the comparison below would always hold.
+	requestedListen := candidate.FetchProxy.Listen
+	candidate.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+		Host: "127.0.0.1", Port: declaredPort, Owner: "search-team", Reason: "local index",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}}
+
+	if err := s.Reload(candidate); err != nil {
+		t.Fatalf("reload rejected a declaration that only collides with the discarded candidate port: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if len(live.Containment.LoopbackServices) != 1 || live.Containment.LoopbackServices[0].Port != declaredPort {
+		t.Fatalf("live declaration = %+v, want the accepted entry on port %d", live.Containment.LoopbackServices, declaredPort)
+	}
+	if live.FetchProxy.Listen == requestedListen {
+		t.Fatal("this test is vacuous unless reload discarded the candidate's listener")
+	}
+}

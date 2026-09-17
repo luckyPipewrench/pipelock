@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func validLoopbackService(now time.Time) ContainmentLoopbackService {
@@ -234,11 +236,49 @@ func TestValidateContainmentLoopbackServices(t *testing.T) {
 // already exercises: a nil slice (key omitted or explicit YAML null) and an
 // explicit empty list must both validate as "no declared exception," never
 // as an error, so an operator cannot be blocked by declaring nothing.
-func TestValidateContainmentLoopbackServicesRejectsYAMLNull(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	var nilServices []ContainmentLoopbackService
-	if err := ValidateContainmentLoopbackServices(nilServices, 8888, now); err != nil {
-		t.Fatalf("nil services: got %v, want nil", err)
+func TestContainmentLoopbackServicesEmptyYAMLShapesDecodeToNoDeclarations(t *testing.T) {
+	// Handing the validator a nil Go slice, as this test once did, cannot
+	// see a decoder disagreement at all: it skips the decode entirely and
+	// asserts only that the empty case is legal, under a name that claimed
+	// the opposite. Decode the YAML instead, so a change in how the key is
+	// read is what the assertion actually covers.
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{"key omitted", "containment: {}\n"},
+		{"explicit null", "containment:\n  loopback_services: null\n"},
+		{"explicit tilde", "containment:\n  loopback_services: ~\n"},
+		{"explicit empty list", "containment:\n  loopback_services: []\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			if err := yaml.Unmarshal([]byte(tc.yaml), &cfg); err != nil {
+				t.Fatalf("decode %q: %v", tc.yaml, err)
+			}
+			if len(cfg.Containment.LoopbackServices) != 0 {
+				t.Fatalf("decoded %+v, want no declared services", cfg.Containment.LoopbackServices)
+			}
+			if err := cfg.validateContainmentLoopbackServices(); err != nil {
+				t.Fatalf("an empty declaration must validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestContainmentLoopbackServicesYAMLDecodesADeclaration is the positive
+// control for the shapes above: a real declared entry must survive the same
+// decode, so "decodes to nothing" cannot pass by decoding nothing ever.
+func TestContainmentLoopbackServicesYAMLDecodesADeclaration(t *testing.T) {
+	body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9222\n" +
+		"    owner: platform\n    reason: browser automation control port\n" +
+		"    expires_at: \"" + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + "\"\n"
+	cfg := Defaults()
+	if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cfg.Containment.LoopbackServices) != 1 || cfg.Containment.LoopbackServices[0].Port != 9222 {
+		t.Fatalf("decoded %+v, want one entry on port 9222", cfg.Containment.LoopbackServices)
 	}
 }
 

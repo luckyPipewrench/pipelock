@@ -12,7 +12,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -3807,9 +3806,40 @@ func TestHandleOrderEvent_EnterpriseTrialRefusesUnknownMetadataTier(t *testing.T
 // retired entitlements-table pre-count is no longer consulted for
 // eligibility: forcing it to fail no longer affects whether a trial mints,
 // because the atomic slot claim is the sole authority now.
+type countEligibilityError struct {
+	calls atomic.Int32
+}
+
+func (e *countEligibilityError) Error() string {
+	e.calls.Add(1)
+	return "forced count failure"
+}
+
+// assertCountEligibilityNotConsulted proves the mint path never consults the
+// retired entitlements-table count. The injected error counts Error() calls:
+// production formats the error into its wrapper ("count active %s for %s: %w"),
+// so any consultation by the mint path increments the counter. A direct call
+// through the same helper is the positive control: if the counting error or the
+// read path is ever too broken to detect a call, the assertion reports that
+// instead of passing vacuously.
+func assertCountEligibilityNotConsulted(t *testing.T, db *EntitlementDB, countErr *countEligibilityError, tier, email string) {
+	t.Helper()
+	calls := countErr.calls.Load()
+	if calls != 0 {
+		t.Fatalf("retired count helper was consulted %d time(s) during mint; eligibility must come from the atomic slot claim alone", calls)
+	}
+	if _, err := db.CountActiveTierForEmail(t.Context(), tier, email, time.Now()); err == nil {
+		t.Fatal("counting error stopped being returned by the count helper; this assertion can no longer detect consultation")
+	}
+	if got := countErr.calls.Load(); got <= calls {
+		t.Fatalf("count-helper probe did not register (calls %d -> %d); consultation would go undetected", calls, got)
+	}
+}
+
 func TestHandleOrderEvent_EnterpriseTrialCountEligibilityRetired(t *testing.T) {
 	ts := newTestSetup(t)
-	errForceCountActiveTier = errors.New("forced count failure")
+	countErr := &countEligibilityError{}
+	errForceCountActiveTier = countErr
 	t.Cleanup(func() { errForceCountActiveTier = nil })
 
 	if err := ts.handler.HandleOrderEvent(t.Context(), enterpriseTrialOrderEvent(t, "order_enterprise_trial_count_error")); err != nil {
@@ -3822,6 +3852,7 @@ func TestHandleOrderEvent_EnterpriseTrialCountEligibilityRetired(t *testing.T) {
 	if ent == nil {
 		t.Fatal("enterprise trial did not mint despite a forced, now-irrelevant count failure")
 	}
+	assertCountEligibilityNotConsulted(t, ts.db, countErr, tierEnterpriseTrial, ent.CustomerEmail)
 }
 
 func TestHandleOrderEvent_ZeroAmountTrialMintsOncePerEmail(t *testing.T) {
@@ -4027,7 +4058,8 @@ func TestHandleOrderEvent_TrialLegacyNonASCIICaseVariantRowStillCounts(t *testin
 // trial case above for the Pro trial tier.
 func TestHandleOrderEvent_TrialCountEligibilityRetired(t *testing.T) {
 	ts := newTestSetup(t)
-	errForceCountActiveTier = errors.New("forced count failure")
+	countErr := &countEligibilityError{}
+	errForceCountActiveTier = countErr
 	t.Cleanup(func() { errForceCountActiveTier = nil })
 
 	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, "order_free_12_epsilon", "epsilon@example.com")); err != nil {
@@ -4040,6 +4072,7 @@ func TestHandleOrderEvent_TrialCountEligibilityRetired(t *testing.T) {
 	if ent == nil {
 		t.Fatal("trial did not mint despite a forced, now-irrelevant count failure")
 	}
+	assertCountEligibilityNotConsulted(t, ts.db, countErr, tierTrial, ent.CustomerEmail)
 }
 
 func TestHandleOrderEvent_TrialUnnormalizableEmailFailsClosed(t *testing.T) {

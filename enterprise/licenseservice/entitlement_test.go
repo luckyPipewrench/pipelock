@@ -696,6 +696,43 @@ func readSlotExpiry(t *testing.T, db *EntitlementDB, email string) time.Time {
 	return got.UTC()
 }
 
+// readSlotOwner returns the subscription id that owns the canonical email's
+// active trial slot.
+func readSlotOwner(t *testing.T, db *EntitlementDB, email string) string {
+	t.Helper()
+	canonical, err := NormalizeEmail(email)
+	if err != nil {
+		t.Fatalf("NormalizeEmail(%q): %v", email, err)
+	}
+	var owner string
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT subscription_id FROM active_trial_slots WHERE normalized_email = ?`, canonical,
+	).Scan(&owner); err != nil {
+		t.Fatalf("read slot owner for %q: %v", email, err)
+	}
+	return owner
+}
+
+// assertNoActiveTrialSlot asserts the canonical email holds no active trial
+// slot row at all: a refused mint must not leave a leaked claim behind, or
+// that claim permanently blocks a later legitimate trial for the email.
+func assertNoActiveTrialSlot(t *testing.T, db *EntitlementDB, email string) {
+	t.Helper()
+	canonical, err := NormalizeEmail(email)
+	if err != nil {
+		t.Fatalf("NormalizeEmail(%q): %v", email, err)
+	}
+	var rows int
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM active_trial_slots WHERE normalized_email = ?`, canonical,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count active trial slots for %q: %v", email, err)
+	}
+	if rows != 0 {
+		t.Fatalf("active_trial_slots holds %d row(s) for %q, want none", rows, canonical)
+	}
+}
+
 // TestClaimActiveTrialSlot_SameOwnerCannotMoveExpiryEarlier reproduces the
 // exact drift the same-owner conflict branch used to allow: claim a slot
 // through its original expiry, then a later active Upsert for the SAME
@@ -766,6 +803,19 @@ func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
 			replacement := trialEntitlement("order_suspect_slot_replacement", "suspect-slot@example.com", now.Add(48*time.Hour))
 			if err := db.Upsert(ctx, replacement); !errors.Is(err, ErrActiveTrialExists) {
 				t.Fatalf("take over suspect expired slot: err = %v, want ErrActiveTrialExists", err)
+			}
+
+			// The denial is only half the contract. The refused claim must
+			// also have left no damage behind: an implementation that
+			// reassigned the slot or recorded the replacement entitlement
+			// before returning ErrActiveTrialExists would pass the error
+			// check above while spending the email's one trial anyway.
+			if owner := readSlotOwner(t, db, "suspect-slot@example.com"); owner != first.SubscriptionID {
+				t.Fatalf("refused takeover reassigned the slot: owner = %q, want the original owner %q",
+					owner, first.SubscriptionID)
+			}
+			if got, err := db.GetBySubscriptionID(ctx, replacement.SubscriptionID); err != nil || got != nil {
+				t.Fatalf("refused takeover recorded the replacement: (%+v, %v), want (nil, nil)", got, err)
 			}
 		})
 	}
@@ -855,6 +905,18 @@ func TestClaimActiveTrialSlot_RenewedEntitlementHoldsSlotUntilItEnds(t *testing.
 		t.Fatalf("take over a slot whose owner trial is still live: err = %v, want ErrActiveTrialExists", err)
 	}
 
+	// The refusal must not have spent the email's trial on the way out:
+	// the slot still names the ORIGINAL owner and the replacement wrote
+	// no entitlement row. (The positive control below deliberately takes
+	// the slot, so these hold only at this refusal step.)
+	if owner := readSlotOwner(t, db, first.CustomerEmail); owner != first.SubscriptionID {
+		t.Fatalf("refused takeover reassigned the slot: owner = %q, want the original owner %q",
+			owner, first.SubscriptionID)
+	}
+	if got, err := db.GetBySubscriptionID(ctx, replacement.SubscriptionID); err != nil || got != nil {
+		t.Fatalf("refused takeover recorded the replacement: (%+v, %v), want (nil, nil)", got, err)
+	}
+
 	// Positive control: once the owner's trial has actually ended, the same
 	// replacement takes the slot. The guard delays takeover, it does not
 	// permanently deny the email.
@@ -930,6 +992,11 @@ func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testi
 	if got := countLicenseIssuances(t, db, ent.SubscriptionID); got != 0 {
 		t.Fatalf("license issuances after refused mint = %d, want 0", got)
 	}
+	// A transaction that claimed the email's slot and THEN refused the
+	// refund would leak a claim that permanently blocks a later legitimate
+	// trial for this email, and the checks above would still pass: they
+	// never look at active_trial_slots.
+	assertNoActiveTrialSlot(t, db, ent.CustomerEmail)
 	if err := db.UpsertWithLicenseIssuanceAndWebhook(ctx, ent, issuance, "msg_refund_before_mint", "order.paid"); !errors.Is(err, ErrTrialRefundPending) {
 		t.Fatalf("retry after refused mint: err = %v, want ErrTrialRefundPending", err)
 	}
@@ -1670,12 +1737,31 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 					t.Fatalf("seed unverifiable slot %s: %v", subscriptionID, err)
 				}
 			}
+			// An invalid owner is one whose entitlement is no longer a trial
+			// tier or no longer a one-time interval. The owner WAS a trial when
+			// it claimed the slot (the seeding loop above, with a matching
+			// last_license_period_end), so age the entitlement out of the trial
+			// tier BEFORE classification runs and let the classifier decide.
+			// Hand-writing takeover_state here would never exercise the
+			// classification branch: a classifier that dropped the tier
+			// condition would call this slot verified and nothing would notice.
 			for _, subscriptionID := range tt.invalidOwners {
 				if _, err := db.db.ExecContext(ctx,
-					`UPDATE active_trial_slots SET takeover_state = ? WHERE subscription_id = ?`,
-					trialSlotTakeoverUnverifiable, subscriptionID,
+					`UPDATE entitlements SET tier = ? WHERE subscription_id = ?`,
+					tierPro, subscriptionID,
 				); err != nil {
-					t.Fatalf("seed invalid-owner classification %s: %v", subscriptionID, err)
+					t.Fatalf("age owner %s out of the trial tier: %v", subscriptionID, err)
+				}
+				if _, err := db.db.ExecContext(ctx,
+					`UPDATE active_trial_slots SET takeover_state = ? WHERE subscription_id = ?`,
+					trialSlotTakeoverUnclassified, subscriptionID,
+				); err != nil {
+					t.Fatalf("queue slot %s for classification: %v", subscriptionID, err)
+				}
+			}
+			if len(tt.invalidOwners) > 0 {
+				if err := db.classifyLegacyTrialSlots(ctx); err != nil {
+					t.Fatalf("classify legacy slots: %v", err)
 				}
 			}
 			for _, subscriptionID := range tt.drifted {
@@ -1714,6 +1800,23 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 			}
 			if !slices.Equal(report.OrphanedSubscriptionIDs, tt.wantOrphaned) {
 				t.Fatalf("orphaned subscription IDs = %v, want %v", report.OrphanedSubscriptionIDs, tt.wantOrphaned)
+			}
+			// The report folds 'unclassified' into the same unverifiable list,
+			// so only the stored takeover_state proves the CLASSIFIER ran and
+			// took the non-trial-owner branch rather than the row never having
+			// been classified (or having been called drifted or verified).
+			for _, subscriptionID := range tt.invalidOwners {
+				var state string
+				if err := db.db.QueryRowContext(ctx,
+					`SELECT takeover_state FROM active_trial_slots WHERE subscription_id = ?`,
+					subscriptionID,
+				).Scan(&state); err != nil {
+					t.Fatalf("read classified state for %s: %v", subscriptionID, err)
+				}
+				if state != trialSlotTakeoverUnverifiable {
+					t.Fatalf("slot %s classified as %q, want %q: a non-trial owner must be unverifiable, not drifted or verified",
+						subscriptionID, state, trialSlotTakeoverUnverifiable)
+				}
 			}
 			for _, subscriptionID := range tt.drifted {
 				if got := readSlotExpiry(t, db, subscriptionID+"@example.com"); !got.Equal(original.Add(-time.Hour)) {

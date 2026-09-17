@@ -1813,19 +1813,12 @@ func deviceOnlyWorkspaceStatement(t *testing.T) workspacediff.Statement {
 
 func budgetExhaustedWorkspaceStatement(t *testing.T) workspacediff.Statement {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "entry"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write workspace entry: %v", err)
-	}
-	before, err := workspacediff.Snapshot(root, 1024, workspacediff.Budget{MaxEntries: 1})
-	if err != nil {
-		t.Fatalf("snapshot before: %v", err)
-	}
-	after, err := workspacediff.Snapshot(root, 1024, workspacediff.Budget{MaxEntries: 1})
-	if err != nil {
-		t.Fatalf("snapshot after: %v", err)
-	}
-	statement, err := workspacediff.Diff(before, after, time.Now())
+	const budgetReason = "exceeded max entry cap (1 entries)"
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1024, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID, BudgetExceeded: true, BudgetReason: budgetReason},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1024, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID, BudgetExceeded: true, BudgetReason: budgetReason},
+		time.Now(),
+	)
 	if err != nil {
 		t.Fatalf("produce budget-exhausted workspace statement: %v", err)
 	}

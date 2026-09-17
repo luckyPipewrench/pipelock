@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -235,6 +236,9 @@ func TestDiff_OversizeCap_SameMetadataIsIncomplete(t *testing.T) {
 }
 
 func TestDiff_UnreadableDirectory_RecordedNeverSilentlySkipped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission denial does not hold on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root can read anything; permission-denial case does not apply")
 	}
@@ -291,6 +295,9 @@ func TestDiff_UnreadableDirectory_RecordedNeverSilentlySkipped(t *testing.T) {
 // never re-enters "blocked"), and the naive before/after set-diff reports it
 // as Removed even though it may still exist.
 func TestDiff_UnreadableSubtree_DescendantsNotReportedAsRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission denial does not hold on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root can read anything; permission-denial case does not apply")
 	}
@@ -1283,6 +1290,9 @@ func TestHashFileSHA256RejectsMissingCapsule(t *testing.T) {
 // manifest. An empty manifest would later diff as "nothing changed", which is
 // the wrong failure direction for evidence: unreadable must never read as clean.
 func TestSnapshot_RootStatErrorIsNotSilentlyEmpty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission denial does not hold on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root can stat through an unreadable parent")
 	}

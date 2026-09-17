@@ -134,12 +134,6 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 	if strings.Contains(stderr.String(), "workspace change statement failed") {
 		t.Fatalf("unexpected statement failure warning: %s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "signed workspace change statement") {
-		t.Fatalf("stdout missing statement line:\n%s", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), workspaceStatementWrittenLine) {
-		t.Fatalf("stdout missing machine-readable outcome line:\n%s", stdout.String())
-	}
 
 	stmtPath := filepath.Join(postureDir, "workspace-change-statement.json")
 	data, err := os.ReadFile(filepath.Clean(stmtPath))
@@ -157,6 +151,34 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 		t.Fatalf("stdout missing statement boundary-check outcome %q:\n%s", got, stdout.String())
 	}
 
+	st := signed.Statements[0]
+	switch st.BoundaryCheck {
+	case workspacediff.BoundaryCheckMountID:
+		if !strings.Contains(stdout.String(), "signed workspace change statement") {
+			t.Fatalf("stdout missing statement line:\n%s", stdout.String())
+		}
+		if !strings.Contains(stdout.String(), workspaceStatementWrittenLine) {
+			t.Fatalf("stdout missing machine-readable outcome line:\n%s", stdout.String())
+		}
+		if st.Incomplete {
+			t.Fatalf("statement unexpectedly incomplete: %+v", st)
+		}
+	case workspacediff.BoundaryCheckDeviceOnly:
+		if !strings.Contains(stdout.String(), workspaceStatementIncompleteLine) {
+			t.Fatalf("stdout missing machine-readable incomplete outcome line:\n%s", stdout.String())
+		}
+		if strings.Contains(stdout.String(), workspaceStatementWrittenLine) {
+			t.Fatalf("stdout must not also claim the written outcome for an incomplete statement:\n%s", stdout.String())
+		}
+		if !st.Incomplete {
+			t.Fatalf("device-only boundary check must mark the statement incomplete: %+v", st)
+		}
+	default:
+		// A boundary check this test does not know about would otherwise make
+		// both branches above unreachable and the assertions silently vacuous.
+		t.Fatalf("unknown boundary check %q; this test asserts nothing for it", st.BoundaryCheck)
+	}
+
 	// Session binding: the statement carries the sha256 of THIS run's exact
 	// posture capsule bytes.
 	wantCapsuleHash, err := workspacediff.HashFileSHA256(filepath.Join(postureDir, "proof.json"))
@@ -169,15 +191,11 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 	if err := workspacediff.Verify(signed, pub); err != nil {
 		t.Fatalf("verify signature: %v", err)
 	}
-	st := signed.Statements[0]
 	if st.Root != filepath.Clean(workspace) {
 		t.Fatalf("root = %q, want %q", st.Root, workspace)
 	}
 	assertContainsPath(t, "added", st.Added, filepath.Join(workspace, "new.txt"))
 	assertContainsPath(t, "modified", st.Modified, filepath.Join(workspace, "existing.txt"))
-	if st.Incomplete {
-		t.Fatalf("statement unexpectedly incomplete: %+v", st)
-	}
 }
 
 func TestRunContainRun_WorkspaceRootDisappearsMidSession_StatementSaysSo(t *testing.T) {

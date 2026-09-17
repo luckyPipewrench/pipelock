@@ -126,29 +126,6 @@ func TestClaimActiveTrialSlotErrorsFailClosed(t *testing.T) {
 	}
 }
 
-func TestRecordTrialSlotClaimExpiryWriteFailureFailsClosed(t *testing.T) {
-	ent := testEntitlement("order_record_claim_expiry")
-	want := errors.New("write failed")
-
-	err := recordTrialSlotClaimExpiry(t.Context(), claimExecer{err: want}, ent)
-	if !errors.Is(err, want) {
-		t.Fatalf("recordTrialSlotClaimExpiry error = %v, want wrapped write failure", err)
-	}
-	if !strings.Contains(err.Error(), ent.SubscriptionID) {
-		t.Fatalf("recordTrialSlotClaimExpiry error = %q, want subscription ID %q", err, ent.SubscriptionID)
-	}
-}
-
-func TestRecordTrialSlotClaimExpiryUncanonicalizableEmailFailsClosed(t *testing.T) {
-	ent := testEntitlement("order_uncanonicalizable_claim_expiry")
-	ent.CustomerEmail = "not-an-email"
-
-	err := recordTrialSlotClaimExpiry(t.Context(), claimExecer{}, ent)
-	if !errors.Is(err, ErrTrialEmailNotCanonical) {
-		t.Fatalf("recordTrialSlotClaimExpiry error = %v, want ErrTrialEmailNotCanonical", err)
-	}
-}
-
 func TestEntitlementDB_TrialSlotExpiryReportsClosedDatabaseFailure(t *testing.T) {
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -167,18 +144,18 @@ func TestEntitlementDB_TrialSlotExpiryReportsClosedDatabaseFailure(t *testing.T)
 	}
 }
 
-func TestEntitlementDB_ClaimExpiryWriteFailureRollsBackTrial(t *testing.T) {
+func TestEntitlementDB_TrialSlotClaimFailureRollsBackTrial(t *testing.T) {
 	db := openTestDB(t)
-	if _, err := db.db.ExecContext(t.Context(), `CREATE TRIGGER fail_trial_claim_expiry BEFORE UPDATE OF last_license_period_end ON entitlements BEGIN SELECT RAISE(ABORT, 'forced claim-expiry failure'); END`); err != nil {
-		t.Fatalf("create claim-expiry failure trigger: %v", err)
+	if _, err := db.db.ExecContext(t.Context(), `CREATE TRIGGER fail_trial_slot_claim BEFORE INSERT ON active_trial_slots BEGIN SELECT RAISE(ABORT, 'forced slot-claim failure'); END`); err != nil {
+		t.Fatalf("create slot-claim failure trigger: %v", err)
 	}
 	ent := trialEntitlement("order_claim_expiry_rollback", "claim-expiry-rollback@example.com", time.Now().Add(time.Hour))
-	if err := db.Upsert(t.Context(), ent); err == nil || !strings.Contains(err.Error(), "forced claim-expiry failure") {
-		t.Fatalf("Upsert error = %v, want claim-expiry failure", err)
+	if err := db.Upsert(t.Context(), ent); err == nil || !strings.Contains(err.Error(), "forced slot-claim failure") {
+		t.Fatalf("Upsert error = %v, want slot-claim failure", err)
 	}
 	stored, err := db.GetBySubscriptionID(t.Context(), ent.SubscriptionID)
 	if err != nil || stored != nil {
-		t.Fatalf("trial after failed claim-expiry write = %+v, %v; want no committed entitlement", stored, err)
+		t.Fatalf("trial after failed slot claim = %+v, %v; want no committed entitlement", stored, err)
 	}
 }
 
@@ -760,9 +737,10 @@ func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
 	tests := []struct {
 		name            string
 		setClaimTimeEnd bool
+		takeoverState   string
 	}{
-		{name: "drifted claim-time expiry", setClaimTimeEnd: true},
-		{name: "unverifiable claim-time expiry"},
+		{name: "drifted claim-time expiry", setClaimTimeEnd: true, takeoverState: trialSlotTakeoverDrifted},
+		{name: "unverifiable claim-time expiry", takeoverState: trialSlotTakeoverUnverifiable},
 	}
 
 	for _, tt := range tests {
@@ -779,8 +757,8 @@ func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
 				t.Fatalf("seed first trial: %v", err)
 			}
 			if _, err := db.db.ExecContext(ctx,
-				`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`,
-				now.Add(-time.Hour), "suspect-slot@example.com",
+				`UPDATE active_trial_slots SET expires_at = ?, takeover_state = ? WHERE normalized_email = ?`,
+				now.Add(-time.Hour), tt.takeoverState, "suspect-slot@example.com",
 			); err != nil {
 				t.Fatalf("expire suspect slot: %v", err)
 			}
@@ -822,21 +800,14 @@ func TestClaimActiveTrialSlot_HealthyExpiredSlotIsTakenOver(t *testing.T) {
 	}
 }
 
-func TestEntitlementDB_UpsertTrialSlotClaimExpiry(t *testing.T) {
-	t.Run("direct upsert records expiry and allows expired takeover", func(t *testing.T) {
+func TestClaimActiveTrialSlot_ClaimWithoutPeriodEndCanBeTakenOver(t *testing.T) {
+	t.Run("direct upsert", func(t *testing.T) {
 		db := openTestDB(t)
 		ctx := t.Context()
 		firstExpiry := time.Now().UTC().Add(-time.Hour)
 		first := trialEntitlement("order_direct_slot_owner", "direct-slot@example.com", firstExpiry)
 		if err := db.Upsert(ctx, first); err != nil {
 			t.Fatalf("upsert first trial: %v", err)
-		}
-		stored, err := db.GetBySubscriptionID(ctx, first.SubscriptionID)
-		if err != nil {
-			t.Fatalf("get first trial: %v", err)
-		}
-		if stored.LastLicensePeriodEnd == nil || !stored.LastLicensePeriodEnd.Equal(firstExpiry) {
-			t.Fatalf("first claim expiry = %v, want %v", stored.LastLicensePeriodEnd, firstExpiry)
 		}
 
 		replacementExpiry := time.Now().UTC().Add(24 * time.Hour)
@@ -854,70 +825,44 @@ func TestEntitlementDB_UpsertTrialSlotClaimExpiry(t *testing.T) {
 			t.Fatalf("slot owner = %q, want %q", owner, replacement.SubscriptionID)
 		}
 	})
+}
 
-	t.Run("same owner preserves recorded expiry", func(t *testing.T) {
-		db := openTestDB(t)
-		ctx := t.Context()
-		recordedExpiry := time.Now().UTC().Add(24 * time.Hour)
-		first := trialEntitlement("order_same_slot_owner", "same-slot@example.com", recordedExpiry)
-		first.LastLicensePeriodEnd = &recordedExpiry
-		if err := db.Upsert(ctx, first); err != nil {
-			t.Fatalf("upsert first trial: %v", err)
-		}
+func TestClaimActiveTrialSlot_RenewedEntitlementDoesNotBlockTakeover(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	first := trialEntitlement("order_renewed_slot_owner", "renewed-slot@example.com", now.Add(-time.Hour))
+	first.LastLicensePeriodEnd = &first.CurrentPeriodEnd
+	if err := db.Upsert(ctx, first); err != nil {
+		t.Fatalf("upsert first trial: %v", err)
+	}
 
-		update := *first
-		update.CurrentPeriodEnd = recordedExpiry.Add(24 * time.Hour)
-		update.LastLicensePeriodEnd = nil
-		if err := db.Upsert(ctx, &update); err != nil {
-			t.Fatalf("upsert same owner update: %v", err)
-		}
-		stored, err := db.GetBySubscriptionID(ctx, first.SubscriptionID)
-		if err != nil {
-			t.Fatalf("get updated trial: %v", err)
-		}
-		if stored.LastLicensePeriodEnd == nil || !stored.LastLicensePeriodEnd.Equal(recordedExpiry) {
-			t.Fatalf("same-owner claim expiry = %v, want %v", stored.LastLicensePeriodEnd, recordedExpiry)
-		}
-	})
+	renewedEnd := now.Add(24 * time.Hour)
+	renewal := *first
+	renewal.CurrentPeriodEnd = renewedEnd
+	renewal.LastLicensePeriodEnd = &renewedEnd
+	if err := db.Upsert(ctx, &renewal); err != nil {
+		t.Fatalf("upsert renewal: %v", err)
+	}
 
-	t.Run("legacy same owner records slot expiry and allows expired takeover", func(t *testing.T) {
-		db := openTestDB(t)
-		ctx := t.Context()
-		now := time.Now().UTC()
-		expiredSlotExpiry := now.Add(-time.Hour)
-		first := trialEntitlement("order_legacy_slot_owner", "legacy-slot@example.com", now.Add(time.Hour))
-		if err := db.Upsert(ctx, first); err != nil {
-			t.Fatalf("upsert first trial: %v", err)
-		}
-		if _, err := db.db.ExecContext(ctx,
-			`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`, expiredSlotExpiry, first.CustomerEmail,
-		); err != nil {
-			t.Fatalf("seed expired legacy slot: %v", err)
-		}
-		if _, err := db.db.ExecContext(ctx,
-			`UPDATE entitlements SET last_license_period_end = NULL WHERE subscription_id = ?`, first.SubscriptionID,
-		); err != nil {
-			t.Fatalf("seed legacy null claim expiry: %v", err)
-		}
+	replacement := trialEntitlement("order_renewed_slot_replacement", first.CustomerEmail, now.Add(48*time.Hour))
+	if err := db.Upsert(ctx, replacement); err != nil {
+		t.Fatalf("take over expired slot after entitlement renewal: %v", err)
+	}
+}
 
-		renewal := *first
-		renewal.CurrentPeriodEnd = now.Add(24 * time.Hour)
-		if err := db.Upsert(ctx, &renewal); err != nil {
-			t.Fatalf("upsert legacy same-owner renewal: %v", err)
-		}
-		stored, err := db.GetBySubscriptionID(ctx, first.SubscriptionID)
-		if err != nil {
-			t.Fatalf("get renewed trial: %v", err)
-		}
-		if stored.LastLicensePeriodEnd == nil || !stored.LastLicensePeriodEnd.Equal(expiredSlotExpiry) {
-			t.Fatalf("legacy same-owner claim expiry = %v, want slot expiry %v", stored.LastLicensePeriodEnd, expiredSlotExpiry)
-		}
+func TestUpsertWithLicenseIssuanceAndWebhook_ClaimWithoutPeriodEndCanBeTakenOver(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC()
+	first := trialEntitlement("order_issuance_slot_owner", "issuance-slot@example.com", now.Add(-time.Hour))
+	if err := issueTrial(t, db, first); err != nil {
+		t.Fatalf("issue first trial without period end: %v", err)
+	}
 
-		replacement := trialEntitlement("order_legacy_slot_replacement", first.CustomerEmail, now.Add(48*time.Hour))
-		if err := db.Upsert(ctx, replacement); err != nil {
-			t.Fatalf("take over expired legacy slot: %v", err)
-		}
-	})
+	replacement := trialEntitlement("order_issuance_slot_replacement", first.CustomerEmail, now.Add(24*time.Hour))
+	if err := issueTrial(t, db, replacement); err != nil {
+		t.Fatalf("take over issuance-path slot: %v", err)
+	}
 }
 
 func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testing.T) {
@@ -1691,29 +1636,35 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 			}
 			for _, subscriptionID := range tt.unverifiable {
 				if _, err := db.db.ExecContext(ctx,
-					`UPDATE entitlements SET last_license_period_end = NULL WHERE subscription_id = ?`, subscriptionID,
+					`UPDATE active_trial_slots SET takeover_state = ? WHERE subscription_id = ?`,
+					trialSlotTakeoverUnverifiable, subscriptionID,
 				); err != nil {
-					t.Fatalf("seed legacy null claim expiry %s: %v", subscriptionID, err)
+					t.Fatalf("seed unverifiable slot %s: %v", subscriptionID, err)
 				}
 			}
 			for _, subscriptionID := range tt.invalidOwners {
 				if _, err := db.db.ExecContext(ctx,
-					`UPDATE entitlements SET tier = ? WHERE subscription_id = ?`, tierPro, subscriptionID,
+					`UPDATE active_trial_slots SET takeover_state = ? WHERE subscription_id = ?`,
+					trialSlotTakeoverUnverifiable, subscriptionID,
 				); err != nil {
-					t.Fatalf("change trial owner to non-trial tier %s: %v", subscriptionID, err)
+					t.Fatalf("seed invalid-owner classification %s: %v", subscriptionID, err)
 				}
 			}
 			for _, subscriptionID := range tt.drifted {
 				if _, err := db.db.ExecContext(ctx,
-					`UPDATE active_trial_slots SET expires_at = ? WHERE subscription_id = ?`, original.Add(-time.Hour), subscriptionID,
+					`UPDATE active_trial_slots
+					 SET expires_at = ?, legacy_entitlement_expires_at = ?, takeover_state = ?
+					 WHERE subscription_id = ?`,
+					original.Add(-time.Hour), original, trialSlotTakeoverDrifted, subscriptionID,
 				); err != nil {
 					t.Fatalf("simulate drifted slot %s: %v", subscriptionID, err)
 				}
 			}
 			for _, subscriptionID := range tt.orphaned {
 				if _, err := db.db.ExecContext(ctx,
-					`INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at) VALUES (?, ?, ?)`,
-					subscriptionID+"@example.com", subscriptionID, original,
+					`INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at, takeover_state)
+					 VALUES (?, ?, ?, ?)`,
+					subscriptionID+"@example.com", subscriptionID, original, trialSlotTakeoverOrphaned,
 				); err != nil {
 					t.Fatalf("seed orphaned slot %s: %v", subscriptionID, err)
 				}
@@ -1760,5 +1711,189 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClassifyLegacyTrialSlots_FreezesSuspectJudgment(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	original := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	drifted := trialEntitlement("order_legacy_drifted", "legacy-drifted@example.com", original)
+	drifted.LastLicensePeriodEnd = &original
+	if err := db.Upsert(ctx, drifted); err != nil {
+		t.Fatalf("seed drifted owner: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE active_trial_slots SET expires_at = ?, takeover_state = ? WHERE subscription_id = ?`,
+		original.Add(-time.Hour), trialSlotTakeoverUnclassified, drifted.SubscriptionID,
+	); err != nil {
+		t.Fatalf("seed unclassified drifted slot: %v", err)
+	}
+
+	unverifiable := trialEntitlement("order_legacy_unverifiable", "legacy-unverifiable@example.com", original)
+	if err := db.Upsert(ctx, unverifiable); err != nil {
+		t.Fatalf("seed unverifiable owner: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE active_trial_slots SET takeover_state = ? WHERE subscription_id = ?`,
+		trialSlotTakeoverUnclassified, unverifiable.SubscriptionID,
+	); err != nil {
+		t.Fatalf("seed unclassified unverifiable slot: %v", err)
+	}
+
+	if _, err := db.db.ExecContext(ctx,
+		`INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at, takeover_state)
+		 VALUES (?, ?, ?, ?)`,
+		"legacy-orphaned@example.com", "order_legacy_orphaned", original, trialSlotTakeoverUnclassified,
+	); err != nil {
+		t.Fatalf("seed unclassified orphaned slot: %v", err)
+	}
+	if err := db.classifyLegacyTrialSlots(ctx); err != nil {
+		t.Fatalf("classify legacy slots: %v", err)
+	}
+
+	// Later ordinary entitlement writes cannot erase the migration judgement.
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE entitlements SET last_license_period_end = ? WHERE subscription_id IN (?, ?)`,
+		original, drifted.SubscriptionID, unverifiable.SubscriptionID,
+	); err != nil {
+		t.Fatalf("mutate entitlement evidence after classification: %v", err)
+	}
+	if err := db.classifyLegacyTrialSlots(ctx); err != nil {
+		t.Fatalf("rerun legacy classification: %v", err)
+	}
+
+	report, err := db.TrialSlotExpiryDriftReport(ctx)
+	if err != nil {
+		t.Fatalf("TrialSlotExpiryDriftReport: %v", err)
+	}
+	driftedRows, err := db.DriftedTrialSlots(ctx)
+	if err != nil {
+		t.Fatalf("DriftedTrialSlots: %v", err)
+	}
+	if len(driftedRows) != 1 || driftedRows[0].SubscriptionID != drifted.SubscriptionID {
+		t.Fatalf("DriftedTrialSlots = %+v, want %q", driftedRows, drifted.SubscriptionID)
+	}
+	if len(report.Drifted) != 1 || report.Drifted[0].SubscriptionID != drifted.SubscriptionID {
+		t.Fatalf("drifted slots = %+v, want %q", report.Drifted, drifted.SubscriptionID)
+	}
+	if !slices.Equal(report.UnverifiableSubscriptionIDs, []string{unverifiable.SubscriptionID}) {
+		t.Fatalf("unverifiable slots = %v, want %q", report.UnverifiableSubscriptionIDs, unverifiable.SubscriptionID)
+	}
+	if !slices.Equal(report.OrphanedSubscriptionIDs, []string{"order_legacy_orphaned"}) {
+		t.Fatalf("orphaned slots = %v, want order_legacy_orphaned", report.OrphanedSubscriptionIDs)
+	}
+}
+
+func TestClassifyLegacyTrialSlots_UpgradesOldSchema(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	expiresAt := time.Now().UTC().Add(-time.Hour)
+	owner := trialEntitlement("order_old_schema_owner", "old-schema@example.com", expiresAt)
+	owner.LastLicensePeriodEnd = &expiresAt
+	if err := db.Upsert(ctx, owner); err != nil {
+		t.Fatalf("seed old-schema owner: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx, `
+		DROP TABLE active_trial_slots;
+		CREATE TABLE active_trial_slots (
+			normalized_email TEXT PRIMARY KEY,
+			subscription_id TEXT NOT NULL,
+			expires_at DATETIME NOT NULL
+		);
+		INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at)
+		VALUES ('old-schema@example.com', 'order_old_schema_owner', '2026-01-01T00:00:00Z');
+	`); err != nil {
+		t.Fatalf("create old trial-slot schema: %v", err)
+	}
+	if err := db.classifyLegacyTrialSlots(ctx); err != nil {
+		t.Fatalf("upgrade and classify old trial-slot schema: %v", err)
+	}
+
+	var state string
+	var observed time.Time
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT takeover_state, legacy_entitlement_expires_at FROM active_trial_slots WHERE normalized_email = ?`,
+		owner.CustomerEmail,
+	).Scan(&state, &observed); err != nil {
+		t.Fatalf("read upgraded trial slot: %v", err)
+	}
+	if state != trialSlotTakeoverDrifted {
+		t.Fatalf("upgraded trial slot state = %q, want %q", state, trialSlotTakeoverDrifted)
+	}
+	if !observed.UTC().Equal(expiresAt) {
+		t.Fatalf("upgraded trial slot observed expiry = %s, want %s", observed, expiresAt)
+	}
+}
+
+func TestBackfillActiveTrialSlots_ClassifiesLegacyEvidence(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	slotEnd := time.Now().UTC().Add(24 * time.Hour)
+	tests := []struct {
+		name     string
+		claimEnd *time.Time
+		want     string
+	}{
+		{name: "matching", claimEnd: &slotEnd, want: trialSlotTakeoverVerified},
+		{name: "missing", want: trialSlotTakeoverUnverifiable},
+		{name: "drifted", claimEnd: func() *time.Time { v := slotEnd.Add(time.Hour); return &v }(), want: trialSlotTakeoverDrifted},
+	}
+	for _, tt := range tests {
+		ent := trialEntitlement("order_backfill_"+tt.name, "backfill-"+tt.name+"@example.com", slotEnd)
+		ent.LastLicensePeriodEnd = tt.claimEnd
+		if err := db.Upsert(ctx, ent); err != nil {
+			t.Fatalf("seed %s entitlement: %v", tt.name, err)
+		}
+	}
+	if _, err := db.db.ExecContext(ctx, `DELETE FROM active_trial_slots`); err != nil {
+		t.Fatalf("clear runtime-created slots: %v", err)
+	}
+	if err := db.backfillActiveTrialSlots(ctx); err != nil {
+		t.Fatalf("backfill active trial slots: %v", err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			if err := db.db.QueryRowContext(ctx,
+				`SELECT takeover_state FROM active_trial_slots WHERE normalized_email = ?`,
+				"backfill-"+tt.name+"@example.com",
+			).Scan(&got); err != nil {
+				t.Fatalf("read backfilled slot: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("takeover state = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTrialSlotExpiryDriftReport_UnknownEvidenceIsReportedUnverifiable(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	expiresAt := time.Now().UTC().Add(-time.Hour)
+	for _, row := range []struct {
+		subscriptionID string
+		state          string
+	}{
+		{subscriptionID: "order_unknown_state", state: "future-state"},
+		{subscriptionID: "order_drifted_without_evidence", state: trialSlotTakeoverDrifted},
+	} {
+		if _, err := db.db.ExecContext(ctx,
+			`INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at, takeover_state)
+			 VALUES (?, ?, ?, ?)`,
+			row.subscriptionID+"@example.com", row.subscriptionID, expiresAt, row.state,
+		); err != nil {
+			t.Fatalf("seed %s: %v", row.subscriptionID, err)
+		}
+	}
+	report, err := db.TrialSlotExpiryDriftReport(ctx)
+	if err != nil {
+		t.Fatalf("TrialSlotExpiryDriftReport: %v", err)
+	}
+	want := []string{"order_drifted_without_evidence", "order_unknown_state"}
+	if !slices.Equal(report.UnverifiableSubscriptionIDs, want) {
+		t.Fatalf("unverifiable slots = %v, want %v", report.UnverifiableSubscriptionIDs, want)
 	}
 }

@@ -3288,20 +3288,27 @@ func TestHandleOrderEvent_EnterpriseTrial(t *testing.T) {
 		t.Fatalf("second active enterprise trial minted an entitlement: %+v", duplicate)
 	}
 
-	// A healthy slot and its owner agree on the original claim-time expiry.
-	// Simulate that stored claim window having passed.
+	// Simulate that the slot-owned claim window has passed.
 	expiredAt := time.Now().Add(-time.Minute).UTC()
-	if _, err := ts.db.db.ExecContext(ctx,
+	var initialSlotOwner string
+	if err := ts.db.db.QueryRowContext(ctx,
+		`SELECT subscription_id FROM active_trial_slots WHERE subscription_id = ?`,
+		first.SubscriptionID,
+	).Scan(&initialSlotOwner); err != nil {
+		t.Fatalf("read initial enterprise trial slot: %v", err)
+	}
+	if initialSlotOwner != first.SubscriptionID {
+		t.Fatalf("initial enterprise trial slot owner = %q, want %q", initialSlotOwner, first.SubscriptionID)
+	}
+	result, err := ts.db.db.ExecContext(ctx,
 		`UPDATE active_trial_slots SET expires_at = ? WHERE subscription_id = ?`,
 		expiredAt, first.SubscriptionID,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("expire first enterprise trial slot: %v", err)
 	}
-	if _, err := ts.db.db.ExecContext(ctx,
-		`UPDATE entitlements SET last_license_period_end = ? WHERE subscription_id = ?`,
-		expiredAt, first.SubscriptionID,
-	); err != nil {
-		t.Fatalf("expire first enterprise trial claim record: %v", err)
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("expire first enterprise trial slot affected %d rows, want 1: %v", affected, err)
 	}
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_after_expiry")); err != nil {
 		t.Fatalf("HandleOrderEvent enterprise trial after expiry: %v", err)
@@ -3392,20 +3399,28 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 	// claimed), so aging the trial out requires advancing the SLOT itself,
 	// not the entitlement's CurrentPeriodEnd. Mutating the entitlement alone
 	// used to reopen the slot early through a since-removed sync path; this
-	// advances the stored claim-time expiry with the slot to simulate a healthy
-	// expiry and prove the removed sync path does not reopen a slot early.
+	// advances the slot-owned expiry to simulate a healthy expiry and prove the
+	// removed sync path does not reopen a slot early.
 	expiredAt := time.Now().Add(-time.Minute).UTC()
-	if _, err := ts.db.db.ExecContext(ctx,
+	var initialSlotOwner string
+	if err := ts.db.db.QueryRowContext(ctx,
+		`SELECT subscription_id FROM active_trial_slots WHERE normalized_email = ?`,
+		"enterprise-trial@example.com",
+	).Scan(&initialSlotOwner); err != nil {
+		t.Fatalf("read initial enterprise trial slot: %v", err)
+	}
+	if initialSlotOwner != entitlement.SubscriptionID {
+		t.Fatalf("initial enterprise trial slot owner = %q, want %q", initialSlotOwner, entitlement.SubscriptionID)
+	}
+	result, err := ts.db.db.ExecContext(ctx,
 		`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`,
 		expiredAt, "enterprise-trial@example.com",
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("age enterprise trial slot: %v", err)
 	}
-	if _, err := ts.db.db.ExecContext(ctx,
-		`UPDATE entitlements SET last_license_period_end = ? WHERE subscription_id = ?`,
-		expiredAt, entitlement.SubscriptionID,
-	); err != nil {
-		t.Fatalf("age enterprise trial claim record: %v", err)
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("age enterprise trial slot affected %d rows, want 1: %v", affected, err)
 	}
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement_after_expiry")); err != nil {
 		t.Fatalf("replacement enterprise trial after original period expiry: %v", err)
@@ -3422,8 +3437,8 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 // TestOneTimeTrialRevocation_SlotExpiryIsImmutable proves the decided
 // behavior for a FULL refund on a Pro trial: revoking the trial (status ->
 // revoked) must not move the trial slot's expiry. A second trial for the same
-// email stays denied until the ORIGINAL claim-time expiry passes, then a new
-// trial is allowed once the healthy slot and claim record agree it has passed.
+// email stays denied until the ORIGINAL slot expiry passes, then a new trial
+// is allowed without consulting mutable entitlement state.
 func TestOneTimeTrialRevocation_SlotExpiryIsImmutable(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -3482,20 +3497,28 @@ func TestOneTimeTrialRevocation_SlotExpiryIsImmutable(t *testing.T) {
 		t.Fatalf("retry minted before original expiry: ent=%+v err=%v", retry, err)
 	}
 
-	// Age the healthy slot and its claim record past the original expiry and
-	// confirm a new trial is allowed.
+	// Age the healthy slot past the original expiry and confirm a new trial is
+	// allowed.
 	expiredAt := time.Now().Add(-time.Minute).UTC()
-	if _, err := ts.db.db.ExecContext(ctx,
+	var initialSlotOwner string
+	if err := ts.db.db.QueryRowContext(ctx,
+		`SELECT subscription_id FROM active_trial_slots WHERE normalized_email = ?`,
+		email,
+	).Scan(&initialSlotOwner); err != nil {
+		t.Fatalf("read initial trial slot: %v", err)
+	}
+	if initialSlotOwner != entitlement.SubscriptionID {
+		t.Fatalf("initial trial slot owner = %q, want %q", initialSlotOwner, entitlement.SubscriptionID)
+	}
+	result, err := ts.db.db.ExecContext(ctx,
 		`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`,
 		expiredAt, email,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("age trial slot: %v", err)
 	}
-	if _, err := ts.db.db.ExecContext(ctx,
-		`UPDATE entitlements SET last_license_period_end = ? WHERE subscription_id = ?`,
-		expiredAt, entitlement.SubscriptionID,
-	); err != nil {
-		t.Fatalf("age trial claim record: %v", err)
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("age trial slot affected %d rows, want 1: %v", affected, err)
 	}
 	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_21_trial-slot-immutable", email)); err != nil {
 		t.Fatalf("retry after original expiry: %v", err)

@@ -23,6 +23,14 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+const (
+	trialSlotTakeoverUnclassified = "unclassified"
+	trialSlotTakeoverVerified     = "verified"
+	trialSlotTakeoverDrifted      = "drifted"
+	trialSlotTakeoverUnverifiable = "unverifiable"
+	trialSlotTakeoverOrphaned     = "orphaned"
+)
+
 // Entitlement represents a customer's subscription state and the last
 // license token issued against it. The "last_license_*" fields enable
 // idempotency: if the current subscription state matches the last-issued
@@ -363,9 +371,11 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding_reserved ON entitlements(founding_reserved_at);
 
 	CREATE TABLE IF NOT EXISTS active_trial_slots (
-		normalized_email TEXT PRIMARY KEY,
-		subscription_id  TEXT NOT NULL,
-		expires_at       DATETIME NOT NULL
+		normalized_email              TEXT PRIMARY KEY,
+		subscription_id               TEXT NOT NULL,
+		expires_at                    DATETIME NOT NULL,
+		takeover_state                TEXT NOT NULL DEFAULT 'unclassified',
+		legacy_entitlement_expires_at DATETIME
 	);
 
 	-- trial_order_guards serializes a one-time trial issuance with an
@@ -478,7 +488,76 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	if _, err := e.db.ExecContext(ctx, ddl); err != nil {
 		return err
 	}
+	if err := e.classifyLegacyTrialSlots(ctx); err != nil {
+		return err
+	}
 	return e.backfillActiveTrialSlots(ctx)
+}
+
+// classifyLegacyTrialSlots makes the one-time judgement needed for rows that
+// predate write-once slot expiry. Ordinary entitlement writes never touch this
+// classification, so takeover does not depend on keeping two tables equal.
+func (e *EntitlementDB) classifyLegacyTrialSlots(ctx context.Context) error {
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"takeover_state", `ALTER TABLE active_trial_slots ADD COLUMN takeover_state TEXT NOT NULL DEFAULT 'unclassified'`},
+		{"legacy_entitlement_expires_at", `ALTER TABLE active_trial_slots ADD COLUMN legacy_entitlement_expires_at DATETIME`},
+	}
+	for _, column := range columns {
+		var exists bool
+		if err := e.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM pragma_table_info('active_trial_slots') WHERE name = ?)`, column.name,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("inspect active trial slot column %s: %w", column.name, err)
+		}
+		if !exists {
+			if _, err := e.db.ExecContext(ctx, column.ddl); err != nil {
+				return fmt.Errorf("add active trial slot column %s: %w", column.name, err)
+			}
+		}
+	}
+
+	const classify = `
+	UPDATE active_trial_slots
+	SET legacy_entitlement_expires_at = (
+			SELECT last_license_period_end FROM entitlements
+			WHERE subscription_id = active_trial_slots.subscription_id
+		),
+		takeover_state = CASE
+			WHEN NOT EXISTS (
+				SELECT 1 FROM entitlements
+				WHERE subscription_id = active_trial_slots.subscription_id
+			) THEN ?
+			WHEN EXISTS (
+				SELECT 1 FROM entitlements
+				WHERE subscription_id = active_trial_slots.subscription_id
+				  AND tier IN (?, ?)
+				  AND billing_interval = ?
+				  AND last_license_period_end IS NOT NULL
+				  AND last_license_period_end = active_trial_slots.expires_at
+			) THEN ?
+			WHEN EXISTS (
+				SELECT 1 FROM entitlements
+				WHERE subscription_id = active_trial_slots.subscription_id
+				  AND tier IN (?, ?)
+				  AND billing_interval = ?
+				  AND last_license_period_end IS NOT NULL
+			) THEN ?
+			ELSE ?
+		END
+	WHERE takeover_state = ?
+	`
+	if _, err := e.db.ExecContext(ctx, classify,
+		trialSlotTakeoverOrphaned,
+		tierTrial, tierEnterpriseTrial, billingIntervalOneTime, trialSlotTakeoverVerified,
+		tierTrial, tierEnterpriseTrial, billingIntervalOneTime, trialSlotTakeoverDrifted,
+		trialSlotTakeoverUnverifiable, trialSlotTakeoverUnclassified,
+	); err != nil {
+		return fmt.Errorf("classify legacy active trial slots: %w", err)
+	}
+	return nil
 }
 
 // DuplicateActiveTrialEmails reports canonical emails that already hold more
@@ -570,16 +649,10 @@ type TrialSlotExpiryDriftReport struct {
 	OrphanedSubscriptionIDs     []string
 }
 
-// DriftedTrialSlots finds active_trial_slots rows whose expires_at no longer
-// matches the owning entitlement's claim-time expiry.
-//
-// last_license_period_end is written from CurrentPeriodEnd in the same
-// transaction that claims a trial slot and records its issuance. Unlike
-// current_period_end, terminal state mirrors can change later, so this is the
-// schema field that records the claim-time expiry. The now-removed sync writer
-// could push a different value into the slot on cancel or revoke. This
-// diagnostic names those pre-existing disagreements without repairing a live
-// row, because an operator must decide which value to preserve.
+// DriftedTrialSlots finds legacy active_trial_slots rows classified at
+// migration whose expiry disagreed with the owning entitlement's recorded
+// claim-time expiry. The immutable classification preserves that evidence
+// without making takeover depend on later entitlement writes.
 func (e *EntitlementDB) DriftedTrialSlots(ctx context.Context) ([]DriftedTrialSlotSubscription, error) {
 	report, err := e.TrialSlotExpiryDriftReport(ctx)
 	if err != nil {
@@ -588,24 +661,16 @@ func (e *EntitlementDB) DriftedTrialSlots(ctx context.Context) ([]DriftedTrialSl
 	return report.Drifted, nil
 }
 
-// TrialSlotExpiryDriftReport finds drifted trial slots, slots whose owner is
-// not eligible to hold a trial, legacy slots whose entitlement lacks a
-// claim-time expiry, and slots with no owning entitlement. It never repairs
-// any kind of row.
+// TrialSlotExpiryDriftReport reports the immutable classification recorded
+// when legacy slot rows were migrated. It never reclassifies or repairs rows.
 func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSlotExpiryDriftReport, error) {
 	const query = `
-	SELECT s.subscription_id, s.expires_at, e.subscription_id, e.last_license_period_end,
-	       e.tier, e.billing_interval
-	FROM active_trial_slots s
-	LEFT JOIN entitlements e ON e.subscription_id = s.subscription_id
-	WHERE e.subscription_id IS NULL
-	   OR e.tier NOT IN (?, ?)
-	   OR e.billing_interval <> ?
-	   OR e.last_license_period_end IS NULL
-	   OR s.expires_at <> e.last_license_period_end
-	ORDER BY s.subscription_id ASC
+	SELECT subscription_id, expires_at, legacy_entitlement_expires_at, takeover_state
+	FROM active_trial_slots
+	WHERE takeover_state <> ?
+	ORDER BY subscription_id ASC
 	`
-	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, billingIntervalOneTime)
+	rows, err := e.db.QueryContext(ctx, query, trialSlotTakeoverVerified)
 	if err != nil {
 		return TrialSlotExpiryDriftReport{}, fmt.Errorf("read trial slot expiry drift report: %w", err)
 	}
@@ -615,25 +680,28 @@ func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSl
 	for rows.Next() {
 		var (
 			d        DriftedTrialSlotSubscription
-			ownerID  sql.NullString
 			claimEnd sql.NullTime
-			tier     sql.NullString
-			interval sql.NullString
+			state    string
 		)
-		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &ownerID, &claimEnd, &tier, &interval); err != nil {
+		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &claimEnd, &state); err != nil {
 			return TrialSlotExpiryDriftReport{}, fmt.Errorf("scan trial slot expiry drift report: %w", err)
 		}
-		if !ownerID.Valid {
+		switch state {
+		case trialSlotTakeoverOrphaned:
 			report.OrphanedSubscriptionIDs = append(report.OrphanedSubscriptionIDs, d.SubscriptionID)
-			continue
-		}
-		if !isTrialTier(tier.String) || interval.String != billingIntervalOneTime || !claimEnd.Valid {
+		case trialSlotTakeoverUnverifiable, trialSlotTakeoverUnclassified:
 			report.UnverifiableSubscriptionIDs = append(report.UnverifiableSubscriptionIDs, d.SubscriptionID)
-			continue
+		case trialSlotTakeoverDrifted:
+			if !claimEnd.Valid {
+				report.UnverifiableSubscriptionIDs = append(report.UnverifiableSubscriptionIDs, d.SubscriptionID)
+				continue
+			}
+			d.SlotExpiresAt = d.SlotExpiresAt.UTC()
+			d.EntitlementClaimEndsAt = claimEnd.Time.UTC()
+			report.Drifted = append(report.Drifted, d)
+		default:
+			report.UnverifiableSubscriptionIDs = append(report.UnverifiableSubscriptionIDs, d.SubscriptionID)
 		}
-		d.SlotExpiresAt = d.SlotExpiresAt.UTC()
-		d.EntitlementClaimEndsAt = claimEnd.Time.UTC()
-		report.Drifted = append(report.Drifted, d)
 	}
 	if err := rows.Err(); err != nil {
 		return TrialSlotExpiryDriftReport{}, fmt.Errorf("iterate trial slot expiry drift report: %w", err)
@@ -641,9 +709,8 @@ func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSl
 	return report, nil
 }
 
-// ReportDriftedTrialSlots logs every trial slot whose expiry disagrees with
-// its owning entitlement's claim-time expiry, alongside the duplicate-trial
-// report. It returns the legacy subscription IDs whose slots were
+// ReportDriftedTrialSlots logs every legacy trial slot classified as drifted
+// or orphaned. It returns the legacy subscription IDs whose slots were
 // unverifiable so the startup diagnostic can state that separately. It never
 // repairs a row; see TrialSlotExpiryDriftReport.
 func (e *EntitlementDB) ReportDriftedTrialSlots(ctx context.Context, log zerolog.Logger) []string {
@@ -708,7 +775,7 @@ func (e *EntitlementDB) ReportJournalMode(log zerolog.Logger) {
 // trial early. Ties break on subscription_id so a rerun is deterministic.
 func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 	const selectTrials = `
-	SELECT customer_email, subscription_id, current_period_end
+	SELECT customer_email, subscription_id, current_period_end, last_license_period_end
 	FROM entitlements
 	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
 	ORDER BY current_period_end DESC, subscription_id ASC
@@ -722,8 +789,10 @@ func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 	defer func() { _ = rows.Close() }()
 
 	type slot struct {
-		subscriptionID string
-		expiresAt      time.Time
+		subscriptionID       string
+		expiresAt            time.Time
+		takeoverState        string
+		legacyEntitlementEnd *time.Time
 	}
 	// Rows arrive newest-expiry first, so the first canonical key wins and
 	// later duplicates are skipped rather than overwriting a longer trial.
@@ -731,7 +800,8 @@ func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 	for rows.Next() {
 		var rawEmail, subscriptionID string
 		var expiresAt time.Time
-		if err := rows.Scan(&rawEmail, &subscriptionID, &expiresAt); err != nil {
+		var claimEnd sql.NullTime
+		if err := rows.Scan(&rawEmail, &subscriptionID, &expiresAt, &claimEnd); err != nil {
 			return fmt.Errorf("scan trial entitlement for slot backfill: %w", err)
 		}
 		canonical, nerr := NormalizeEmail(rawEmail)
@@ -744,18 +814,36 @@ func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 		if _, seen := claimed[canonical]; seen {
 			continue
 		}
-		claimed[canonical] = slot{subscriptionID: subscriptionID, expiresAt: expiresAt.UTC()}
+		takeoverState := trialSlotTakeoverUnverifiable
+		var legacyEntitlementEnd *time.Time
+		if claimEnd.Valid {
+			claimEndUTC := claimEnd.Time.UTC()
+			legacyEntitlementEnd = &claimEndUTC
+			takeoverState = trialSlotTakeoverDrifted
+			if claimEndUTC.Equal(expiresAt.UTC()) {
+				takeoverState = trialSlotTakeoverVerified
+			}
+		}
+		claimed[canonical] = slot{
+			subscriptionID:       subscriptionID,
+			expiresAt:            expiresAt.UTC(),
+			takeoverState:        takeoverState,
+			legacyEntitlementEnd: legacyEntitlementEnd,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate trial entitlements for slot backfill: %w", err)
 	}
 
 	const insertSlot = `
-	INSERT OR IGNORE INTO active_trial_slots (normalized_email, subscription_id, expires_at)
-	VALUES (?, ?, ?)
+	INSERT OR IGNORE INTO active_trial_slots (
+		normalized_email, subscription_id, expires_at, takeover_state, legacy_entitlement_expires_at
+	) VALUES (?, ?, ?, ?, ?)
 	`
 	for email, s := range claimed {
-		if _, err := e.db.ExecContext(ctx, insertSlot, email, s.subscriptionID, s.expiresAt); err != nil {
+		if _, err := e.db.ExecContext(ctx, insertSlot,
+			email, s.subscriptionID, s.expiresAt, s.takeoverState, s.legacyEntitlementEnd,
+		); err != nil {
 			return fmt.Errorf("backfill active trial slot for %s: %w", s.subscriptionID, err)
 		}
 	}
@@ -799,11 +887,6 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 		err := claimActiveTrialSlot(ctx, tx, ent)
 		if err != nil && !errors.Is(err, ErrTrialEmailNotCanonical) {
 			return err
-		}
-		if err == nil {
-			if err := recordTrialSlotClaimExpiry(ctx, tx, ent); err != nil {
-				return err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1261,8 +1344,8 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	// that is taking over an EXPIRED slot from a DIFFERENT owner sets a new
 	// expiry.
 	const query = `
-	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at)
-	VALUES (?, ?, ?)
+	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at, takeover_state)
+	VALUES (?, ?, ?, ?)
 	ON CONFLICT(normalized_email) DO UPDATE SET
 		subscription_id = excluded.subscription_id,
 		expires_at = CASE
@@ -1273,20 +1356,12 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	WHERE active_trial_slots.subscription_id = excluded.subscription_id
 	   OR (
 		active_trial_slots.expires_at <= ?
-		AND EXISTS (
-			SELECT 1
-			FROM entitlements AS owner
-			WHERE owner.subscription_id = active_trial_slots.subscription_id
-			  AND owner.tier IN (?, ?)
-			  AND owner.billing_interval = ?
-			  AND owner.last_license_period_end IS NOT NULL
-			  AND owner.last_license_period_end = active_trial_slots.expires_at
-		)
+		AND active_trial_slots.takeover_state = ?
 	)
 	`
 	result, err := exec.ExecContext(ctx, query,
-		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), time.Now().UTC(),
-		tierTrial, tierEnterpriseTrial, billingIntervalOneTime,
+		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), trialSlotTakeoverVerified,
+		time.Now().UTC(), trialSlotTakeoverVerified,
 	)
 	if err != nil {
 		return fmt.Errorf("claim active trial slot for %s: %w", ent.SubscriptionID, err)
@@ -1297,37 +1372,6 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	}
 	if changed == 0 {
 		return fmt.Errorf("%w for this email", ErrActiveTrialExists)
-	}
-	return nil
-}
-
-// recordTrialSlotClaimExpiry records the original slot expiry for an owner
-// whose entitlement predates claim-time expiry tracking. Existing values are
-// immutable here: the same owner may retry or update its entitlement without
-// changing the slot's write-once expiry record.
-func recordTrialSlotClaimExpiry(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
-	email, err := trialSlotKey(ent)
-	if err != nil {
-		return err
-	}
-	const query = `
-	UPDATE entitlements
-	SET last_license_period_end = (
-		SELECT expires_at
-		FROM active_trial_slots
-		WHERE normalized_email = ?
-	)
-	WHERE subscription_id = ?
-	  AND last_license_period_end IS NULL
-	  AND EXISTS (
-		SELECT 1
-		FROM active_trial_slots
-		WHERE normalized_email = ?
-		  AND subscription_id = entitlements.subscription_id
-	)
-	`
-	if _, err := exec.ExecContext(ctx, query, email, ent.SubscriptionID, email); err != nil {
-		return fmt.Errorf("record trial slot claim expiry for %s: %w", ent.SubscriptionID, err)
 	}
 	return nil
 }

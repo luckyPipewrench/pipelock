@@ -204,7 +204,7 @@ func seedTrialSlotExpiryReport(t *testing.T, dbPath string) {
 	}
 	expiresAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for _, subscriptionID := range []string{"slot_drifted", "slot_unverifiable"} {
-		if err := db.Upsert(t.Context(), &licenseservice.Entitlement{
+		ent := &licenseservice.Entitlement{
 			SubscriptionID:   subscriptionID,
 			CustomerEmail:    subscriptionID + "@example.com",
 			ProductID:        "prod_trial",
@@ -213,7 +213,11 @@ func seedTrialSlotExpiryReport(t *testing.T, dbPath string) {
 			Status:           "active",
 			CurrentPeriodEnd: expiresAt,
 			Features:         "[]",
-		}); err != nil {
+		}
+		if subscriptionID == "slot_drifted" {
+			ent.LastLicensePeriodEnd = &expiresAt
+		}
+		if err := db.Upsert(t.Context(), ent); err != nil {
 			t.Fatalf("seed %s: %v", subscriptionID, err)
 		}
 	}
@@ -226,11 +230,14 @@ func seedTrialSlotExpiryReport(t *testing.T, dbPath string) {
 		t.Fatalf("open seeded database directly: %v", err)
 	}
 	defer func() { _ = raw.Close() }()
-	if _, err := raw.ExecContext(t.Context(), `UPDATE active_trial_slots SET expires_at = ? WHERE subscription_id = ?`, expiresAt.Add(-time.Hour), "slot_drifted"); err != nil {
+	if _, err := raw.ExecContext(t.Context(), `UPDATE active_trial_slots SET expires_at = ?, takeover_state = 'unclassified' WHERE subscription_id = ?`, expiresAt.Add(-time.Hour), "slot_drifted"); err != nil {
 		t.Fatalf("drift slot expiry: %v", err)
 	}
 	if _, err := raw.ExecContext(t.Context(), `UPDATE entitlements SET tier = ? WHERE subscription_id = ?`, "pro", "slot_unverifiable"); err != nil {
 		t.Fatalf("make owner unverifiable: %v", err)
+	}
+	if _, err := raw.ExecContext(t.Context(), `UPDATE active_trial_slots SET takeover_state = 'unclassified' WHERE subscription_id = ?`, "slot_unverifiable"); err != nil {
+		t.Fatalf("mark unverifiable slot for legacy classification: %v", err)
 	}
 	if _, err := raw.ExecContext(t.Context(), `INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at) VALUES (?, ?, ?)`, "slot_orphaned@example.com", "slot_orphaned", expiresAt); err != nil {
 		t.Fatalf("seed orphaned slot: %v", err)

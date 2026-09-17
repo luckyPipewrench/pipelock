@@ -543,7 +543,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[CrewAI](docs/guides/crewai.md):** `MCPServerStdio` wrapping, `MCPServerAdapter`
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
 - **[Hermes](docs/guides/hermes.md):** full-plugin coverage or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
-- **[Grok Build](docs/guides/grok.md):** forward-proxy coverage for the `grok` CLI via `HTTPS_PROXY` / `HTTP_PROXY` (env-only; no installer)
+- **[Grok Build](docs/guides/grok.md):** forward proxy via `HTTPS_PROXY` / `HTTP_PROXY` plus manual MCP wrap (`grok mcp add … -- pipelock mcp proxy`); no automatic installer
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
 - **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; use `--config` to embed a validated policy path and `pipelock cursor remove` to remove Pipelock-managed hooks. You can also use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
 - **VS Code:** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy; `--global` targets the user-level `mcp.json`

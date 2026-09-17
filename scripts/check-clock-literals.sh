@@ -51,12 +51,24 @@ MARKER='clock-literal-ok:'
 go_field='(Expires|ExpiresAt|BestEffortExpiry)'
 yaml_key='(expires|expires_at)'
 date_literal='[0-9]{4}-[0-9]{2}-[0-9]{2}'
+# A YAML value may be bare, double-quoted or single-quoted, and a Go fixture may
+# embed any of them in a string. Matching only the first two let
+# `expires_at: '2028-01-01'` through, which is the same evasion the guard exists
+# to close.
+quote='["'"'"']?'
 
 mode="${1:-check}"
 
 # A finding is identified by file plus the literal itself, never by line
 # number, so moving code around does not churn the inventory while changing a
 # date still shows up as new.
+#
+# Multiplicity is part of the identity. Collapsing with `sort -u` made a new
+# pinned literal invisible whenever it duplicated a date already recorded for
+# that file, which defeats the whole point of the ratchet: reproduced 2026-09-17
+# by adding a second `2030-01-01T00:05:00Z` to a file that already had one and
+# watching the guard report OK. Every occurrence is emitted, and the comparison
+# is a multiset difference, so the second one is new.
 findings() {
 	local file pattern
 	while IFS= read -r file; do
@@ -64,7 +76,7 @@ findings() {
 		for pattern in \
 			"${go_field}:[[:space:]]+\"${date_literal}" \
 			"\.${go_field}[[:space:]]*=[[:space:]]*\"${date_literal}" \
-			"${yaml_key}:[[:space:]]*\\\\?\"?${date_literal}"; do
+			"${yaml_key}:[[:space:]]*\\\\?${quote}${date_literal}"; do
 			emit "$file" "$pattern"
 		done
 	done < <(git ls-files '*.go')
@@ -74,7 +86,7 @@ findings() {
 	# that way.
 	while IFS= read -r file; do
 		[ -f "$file" ] || continue
-		emit "$file" "^[[:space:]]*${yaml_key}:[[:space:]]*\"?${date_literal}"
+		emit "$file" "^[[:space:]]*${yaml_key}:[[:space:]]*${quote}${date_literal}"
 	done < <(git ls-files 'configs/*.yaml' 'examples/**/*.yaml' 'examples/**/*.yml' 'charts/**/*.yaml')
 }
 
@@ -93,12 +105,30 @@ emit() {
 			| grep -qE "${MARKER}[[:space:]]*[^[:space:]]"; then
 			continue
 		fi
-		printf '%s\t%s\n' "$file" "$(printf '%s' "$text" \
-			| grep -oE "$date_literal[T0-9:Z.+-]*" | head -1)"
+		# One record per MATCHING FIELD on the line, not per date on the
+		# line: a fixture can carry a clock-read `Expires` beside a
+		# `Created` that nothing reads, and only the former is a finding.
+		# Each grep here can legitimately match nothing, and under
+		# `set -e` with `pipefail` that aborted the pipeline and DROPPED
+		# records instead of reporting them: seven entries vanished from a
+		# freshly regenerated inventory, which the check then reported as
+		# "no longer present". A guard that loses findings quietly is worse
+		# than one that never ran, so every stage tolerates a non-match.
+		printf '%s' "$text" \
+			| { grep -oE "${pattern}[T0-9:Z.+-]*" || true; } \
+			| { grep -oE "${date_literal}[T0-9:Z.+-]*" || true; } \
+			| while IFS= read -r found; do
+				[ -n "$found" ] || continue
+				printf '%s\t%s\n' "$file" "$found"
+			done
 	done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
 }
 
-current="$(findings | sort -u)"
+# comm compares byte-wise in the C collation, so both sides must be sorted that
+# way or it silently mispairs lines and reports phantom differences: observed
+# immediately after a regeneration, where seven entries just written to the file
+# came back as "no longer present".
+current="$(findings | LC_ALL=C sort)"
 
 if [ "$mode" = "--update" ]; then
 	{
@@ -120,8 +150,11 @@ if [ ! -f "$BASELINE" ]; then
 	exit 1
 fi
 
-recorded="$(grep -v '^#' "$BASELINE" | grep -v '^[[:space:]]*$' | sort -u)"
-added="$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$recorded") || true)"
+# awk exits 0 whether or not it matched, so a fully cleared inventory reports
+# clean instead of aborting. `sort` without -u keeps multiplicity on this side
+# too, so the comparison below is a real multiset difference.
+recorded="$(awk '!/^#/ && NF' "$BASELINE" | LC_ALL=C sort)"
+added="$(LC_ALL=C comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$recorded") || true)"
 
 if [ -n "$added" ]; then
 	echo "clock-literals: a pinned calendar date entered a field a clock reads:" >&2
@@ -148,7 +181,7 @@ fi
 # A cleared entry is reported, never failed. Leaving it in the file is untidy
 # rather than wrong, and failing on it would punish the person who just removed
 # a literal.
-removed="$(comm -13 <(printf '%s\n' "$current") <(printf '%s\n' "$recorded") || true)"
+removed="$(LC_ALL=C comm -13 <(printf '%s\n' "$current") <(printf '%s\n' "$recorded") || true)"
 if [ -n "$removed" ]; then
 	echo "clock-literals: OK; $(printf '%s\n' "$removed" | grep -c .) recorded entr(ies) no longer present, refresh with '$0 --update'"
 	exit 0

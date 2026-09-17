@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1632,4 +1633,84 @@ func TestStepInstallNFTRulesPreservesExistingRulesDirMode(t *testing.T) {
 			t.Fatalf("created rules directory mode = %#o, want %#o", got, modeDirReadable)
 		}
 	})
+}
+
+// TestEnsureNFTRulesDirSafeReportsEachFailure covers the three ways creating
+// the rules directory can fail after the safety check passes. Each one must
+// surface the operation that failed and the directory it failed on, because
+// this runs before the lock is ever acquired: an operator who sees only a
+// generic install failure here cannot tell a missing parent from a
+// permission problem, and those need different repairs.
+func TestEnsureNFTRulesDirSafeReportsEachFailure(t *testing.T) {
+	statErr := errors.New("stat exploded")
+	mkdirErr := errors.New("mkdir refused")
+	chmodErr := errors.New("chmod refused")
+
+	for _, tc := range []struct {
+		name    string
+		stat    func(string) (os.FileInfo, error)
+		mkdir   func(string, os.FileMode) error
+		chmod   func(string, os.FileMode) error
+		wantErr string
+	}{
+		{
+			name:    "stat fails for a reason other than absence",
+			stat:    func(string) (os.FileInfo, error) { return nil, statErr },
+			wantErr: "stat exploded",
+		},
+		{
+			name:    "mkdir fails",
+			stat:    func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+			mkdir:   func(string, os.FileMode) error { return mkdirErr },
+			wantErr: "mkdir refused",
+		},
+		{
+			name:    "chmod fails after the directory is created",
+			stat:    func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+			mkdir:   func(string, os.FileMode) error { return nil },
+			chmod:   func(string, os.FileMode) error { return chmodErr },
+			wantErr: "chmod refused",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			env.nftRulesPath = filepath.Join(t.TempDir(), "nftables.d", "50-pipelock-containment.nft")
+			env.stat = tc.stat
+			if tc.mkdir != nil {
+				env.mkdirAll = tc.mkdir
+			}
+			if tc.chmod != nil {
+				env.chmod = tc.chmod
+			}
+			err := ensureNFTRulesDirSafe(env)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), filepath.Dir(env.nftRulesPath)) {
+				t.Errorf("error = %v, want it to name the directory", err)
+			}
+		})
+	}
+}
+
+// TestEnsureNFTRulesDirSafeAcceptsAnExistingDirectory is the positive
+// control for the table above: the ordinary reinstall path, where the
+// directory already exists, must succeed and must not touch its mode.
+func TestEnsureNFTRulesDirSafeAcceptsAnExistingDirectory(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := filepath.Join(t.TempDir(), "nftables.d")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	env.nftRulesPath = filepath.Join(dir, "50-pipelock-containment.nft")
+	env.chmod = func(string, os.FileMode) error {
+		t.Fatal("chmod must not run for a directory that already exists")
+		return nil
+	}
+	if err := ensureNFTRulesDirSafe(env); err != nil {
+		t.Fatalf("ensureNFTRulesDirSafe: %v", err)
+	}
 }

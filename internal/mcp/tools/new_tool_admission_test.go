@@ -127,6 +127,22 @@ func TestScanTools_NewToolAfterBaseline_Block(t *testing.T) {
 	}
 }
 
+func TestScanTools_NewToolAfterBaseline_UnknownAdmissionWithholds(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "banana"}
+
+	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
+	if r := ScanTools(line1, sc, cfg); !r.Clean {
+		t.Fatalf("first tools/list should establish the baseline cleanly, got %+v", r)
+	}
+
+	line2 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`)
+	if r := ScanTools(line2, sc, cfg); r.Clean {
+		t.Fatalf("unknown new-tool admission must withhold rather than admit, got %+v", r)
+	}
+}
+
 // TestScanTools_NewToolAfterBaseline_BlockThenReset covers admission after an
 // authorized operator re-baseline: ResetDriftState clears the drift baseline,
 // so the next tools/list re-establishes it and the previously withheld tool

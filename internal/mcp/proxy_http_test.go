@@ -1021,27 +1021,43 @@ func TestRunHTTPProxy_ToolPoisoningDetection(t *testing.T) {
 }
 
 func TestRunHTTPProxy_DriftOnlyNewToolAdmissionIsRetained(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if calls.Add(1) == 1 {
-			_, _ = w.Write([]byte(newToolAdmissionBaseline))
-			return
-		}
-		_, _ = w.Write([]byte(newToolAdmissionCandidate))
-	}))
-	defer srv.Close()
+	for _, tt := range []struct {
+		name            string
+		admission       string
+		wantNewTool     bool
+		wantErrorResult bool
+	}{
+		{name: "withhold", admission: config.NewToolWithhold, wantErrorResult: true},
+		{name: "admit", admission: config.NewToolAdmit, wantNewTool: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if calls.Add(1) == 1 {
+					_, _ = w.Write([]byte(newToolAdmissionBaseline))
+					return
+				}
+				_, _ = w.Write([]byte(newToolAdmissionCandidate))
+			}))
+			defer srv.Close()
 
-	var stdout, stderr bytes.Buffer
-	err := RunHTTPProxy(context.Background(), strings.NewReader(jsonToolsList+"\n"+`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n"), &stdout, &stderr, srv.URL, nil, MCPProxyOpts{
-		Scanner: testScannerForHTTP(t),
-		ToolCfg: &tools.ToolScanConfig{DetectDrift: true, NewToolAdmission: config.NewToolWithhold},
-	})
-	if err != nil {
-		t.Fatalf("RunHTTPProxy: %v", err)
-	}
-	if !strings.Contains(stderr.String(), "new-tool") {
-		t.Fatalf("drift-only new-tool admission was not evaluated: %s", stderr.String())
+			var stdout, stderr bytes.Buffer
+			err := RunHTTPProxy(context.Background(), strings.NewReader(jsonToolsList+"\n"+`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n"), &stdout, &stderr, srv.URL, nil, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t),
+				ToolCfg: &tools.ToolScanConfig{Action: config.ActionBlock, DetectDrift: true, NewToolAdmission: tt.admission},
+			})
+			if err != nil {
+				t.Fatalf("RunHTTPProxy: %v", err)
+			}
+			output := stdout.String()
+			if got := strings.Contains(output, "mirror_workspace"); got != tt.wantNewTool {
+				t.Fatalf("client-visible new tool = %t, want %t; output: %s", got, tt.wantNewTool, output)
+			}
+			if got := strings.Contains(output, `"error"`); got != tt.wantErrorResult {
+				t.Fatalf("client-visible error result = %t, want %t; output: %s", got, tt.wantErrorResult, output)
+			}
+		})
 	}
 }
 

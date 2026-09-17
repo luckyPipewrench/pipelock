@@ -5291,12 +5291,12 @@ func TestValidate_MCPToolScanningNewToolAdmissionInvalid(t *testing.T) {
 	}
 }
 
-func TestValidate_MCPToolScanningNewToolAdmissionDisabledSkipsValidation(t *testing.T) {
+func TestValidate_MCPToolScanningNewToolAdmissionDisabledRejectsInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = false
 	cfg.MCPToolScanning.NewToolAdmission = testInvalid
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("disabled tool scanning should skip new_tool_admission validation, got: %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Error("disabled tool scanning must reject invalid new_tool_admission before runtime can auto-enable it")
 	}
 }
 

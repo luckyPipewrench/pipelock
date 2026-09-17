@@ -21,6 +21,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
@@ -2549,8 +2550,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// egress behavior under a new name instead of editing an
 			// approved one. Unset (default "") preserves the previous behavior:
 			// a new tool is still admitted, with at most a non-blocking
-			// observation.
-			blockNewTools := cfg.NewToolAdmission == "withhold"
+			// observation. Any non-empty value other than the documented
+			// admit value is withheld: configuration validation rejects such
+			// values, and this keeps a malformed internally constructed config
+			// from widening admission if it bypasses validation.
+			blockNewTools := cfg.NewToolAdmission != "" && cfg.NewToolAdmission != config.NewToolAdmit
 			// Compare and promote atomically. A change is a lowered evidence
 			// bar, not a verdict: block on what it introduced, and accept a
 			// change that only adds descriptive text so a legitimate vendor

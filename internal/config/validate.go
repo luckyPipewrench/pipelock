@@ -2257,19 +2257,23 @@ func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 			Message: c.NewToolActionAliasWarning,
 		})
 	}
-	// Validate MCP tool scanning config
+	// Validate new-tool admission independently of whether scanning is enabled.
+	// Runtime MCP mode can enable an otherwise unset tool-scanning section, so
+	// accepting an invalid value while disabled would let it reach enforcement.
+	switch c.MCPToolScanning.NewToolAdmission {
+	case "", NewToolAdmit, NewToolWithhold:
+		// valid; "" is filled to admit by normalize when scanning is enabled
+	default:
+		return fmt.Errorf("invalid mcp_tool_scanning new_tool_admission %q: must be admit or withhold", c.MCPToolScanning.NewToolAdmission)
+	}
+
+	// Validate MCP tool scanning config.
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
 		case ActionWarn, ActionBlock:
 			// valid
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
-		}
-		switch c.MCPToolScanning.NewToolAdmission {
-		case "", NewToolAdmit, NewToolWithhold:
-			// valid; "" is filled to admit by normalize
-		default:
-			return fmt.Errorf("invalid mcp_tool_scanning new_tool_admission %q: must be admit or withhold", c.MCPToolScanning.NewToolAdmission)
 		}
 		// New-tool admission is evaluated only inside the drift-detection
 		// path, so this pair leaves the control inert. Warn rather than

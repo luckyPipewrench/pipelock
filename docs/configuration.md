@@ -2776,7 +2776,7 @@ rules:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `rules_dir` | `~/.local/share/pipelock/rules` | Directory for installed bundles (`$XDG_DATA_HOME/pipelock/rules`) |
-| `min_confidence` | `""` (all) | Skip rules below this confidence level |
+| `min_confidence` | `"medium"` | Skip rules below this confidence level. An omitted or empty value resolves to `medium`. |
 | `include_experimental` | `false` | Include experimental rules from bundles |
 | `allow_degraded` | `false` | Explicit emergency override that lets strict mode start or reload with degraded rule-bundle integrity/coverage after emitting warnings and audit events |
 | `allow_unversioned_bundle_load` | `true` | Warn and load a bundle with `min_pipelock` when the running build cannot prove its released version. Set `false` to refuse that bundle until the binary reports a released version. |

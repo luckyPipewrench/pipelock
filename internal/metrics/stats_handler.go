@@ -16,7 +16,18 @@ const maxTopEntries = 100
 
 // PrometheusHandler returns an HTTP handler that serves /metrics in Prometheus text format.
 func (m *Metrics) PrometheusHandler() http.Handler {
-	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+	handler := promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		ceeFunc := m.CEEStatsFunc
+		m.mu.Unlock()
+		// Match /stats: read the current proxy state outside the metrics lock.
+		// A zero snapshot also clears bytes retained before reset or reload.
+		if ceeFunc != nil {
+			m.SetCrossRequestFragmentBytes(float64(ceeFunc().FragmentBufferBytes))
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // StatsHandler returns an HTTP handler that serves a JSON stats summary.

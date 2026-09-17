@@ -123,8 +123,8 @@ func (m *Metrics) SetCrossRequestFragmentBytes(bytes float64) {
 	}
 }
 
-// SetCEEStatsFunc registers a callback that returns live CEE state for the
-// /stats endpoint. Called on each /stats request (not on every proxy request).
+// SetCEEStatsFunc registers a callback that returns live CEE state for /stats
+// and the Prometheus fragment memory gauge. It runs on each endpoint request.
 func (m *Metrics) SetCEEStatsFunc(fn func() CEEStats) {
 	if m == nil {
 		return

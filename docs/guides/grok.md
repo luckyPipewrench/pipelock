@@ -15,7 +15,7 @@ This guide does **not** add a `pipelock grok install` command. There is no autom
 
 ## What Is Covered
 
-Coverage depends on which surface you wire and whether TLS interception is enabled. Ordinary CONNECT without interception is hostname-visible only — bodies, headers, and prompts stay encrypted end-to-end. That is the same [CONNECT tunnel body blindness](../bypass-resistance.md#known-limitations) honesty as other forward-proxy guides.
+Coverage depends on which surface you wire and whether TLS interception is enabled. Ordinary CONNECT without interception is hostname-visible only — bodies, headers, and prompts stay encrypted end-to-end. Grok joins [CONNECT tunnel body blindness](../bypass-resistance.md#known-limitations) honesty from bypass-resistance.
 
 | Surface | Covered? | How / condition |
 |---|---|---|
@@ -23,7 +23,7 @@ Coverage depends on which surface you wire and whether TLS interception is enabl
 | Full outbound DLP + response injection on model HTTPS | Yes **only with** TLS interception + trusted OS CA | Same listener; see [TLS interception](tls-interception.md) |
 | Streaming inference responses (bodies) | Yes **only when** TLS interception makes HTTPS bodies visible | Same as above |
 | MCP stdio servers wrapped with `pipelock mcp proxy` | Yes (manual wrap) | `grok mcp add … -- pipelock mcp proxy --config … -- <upstream>` |
-| Remote HTTP MCP with static auth headers | Manual only | Prefer `--header-file` + `--upstream` (Continue/Codex honesty); do not put secrets on argv |
+| Remote HTTP MCP with static auth headers | Manual only | Prefer `--header-file` + `--upstream` (Continue/Hermes honesty); do not put secrets on argv |
 | Automatic `pipelock grok install`, Pro-only named listeners, unpublished controls | No | Not claimed here |
 
 Grok's enterprise docs load root certificates from the **OS trust store** (rustls). Install Pipelock's CA there when intercepting. Do not invent Node-only `NODE_EXTRA_CA_CERTS` wiring for the Rust CLI.
@@ -132,7 +132,7 @@ grok mcp add --transport http api https://mcp.example.com/mcp \
 
 **What is and is not auto-wrapped:** Pipelock does not rewrite Grok's `[mcp_servers.*]` `url` / `headers` entries. A native `url=` remote stays a direct Grok→server HTTP path unless you replace it with a stdio wrap.
 
-For remotes that need static auth headers, follow Continue/Codex honesty: do **not** put secrets on the process command line (`/proc/<pid>/cmdline` is world-readable). Store one `Header-Name: value` per line in a private `0600` file and wrap via `--header-file` + `--upstream`:
+For remotes that need static auth headers, follow Continue/Hermes honesty: do **not** put secrets on the process command line (`/proc/<pid>/cmdline` is world-readable). Store one `Header-Name: value` per line in a private `0600` file and wrap via `--header-file` + `--upstream`:
 
 ```bash
 # Private header file (0600); one Header-Name: value per line

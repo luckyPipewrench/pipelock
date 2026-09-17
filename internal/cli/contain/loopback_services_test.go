@@ -1959,3 +1959,38 @@ func TestStepInstallNFTRulesKeepsHardenedDirModeWhenRulesChange(t *testing.T) {
 		t.Fatalf("rules directory mode = %#o after a rules change, want the operator's 0750 preserved", got)
 	}
 }
+
+// TestStepInstallNFTRulesUndoReportsAFailedTableDrop covers the rollback path
+// taken when install fails on a host that had no prior containment table.
+// Undo drops the table this step created, and that command's error used to be
+// discarded, so a rollback could report success while the table it was meant
+// to remove was still loaded in the kernel. Every other branch of that
+// function returns its error; this one was the outlier.
+func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
+	t.Run("a failed drop is reported", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.prevNFTTableStateKnown = false
+		runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "", 1, fmt.Errorf("device or resource busy"))
+
+		err := stepInstallNFTRulesUndo(context.Background(), env)
+		if err == nil {
+			t.Fatal("expected the failed table drop to be reported")
+		}
+		if !strings.Contains(err.Error(), "delete table") {
+			t.Errorf("error = %v, want it to name the failed drop", err)
+		}
+	})
+
+	// Positive control: the ordinary rollback, where the drop succeeds, must
+	// still complete, so reporting a failure cannot be satisfied by failing
+	// every rollback.
+	t.Run("a successful drop still completes", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.prevNFTTableStateKnown = false
+		runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "", 0, nil)
+
+		if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
+			t.Fatalf("an ordinary rollback must complete: %v", err)
+		}
+	})
+}

@@ -1947,7 +1947,15 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 			return err
 		}
 	} else {
-		_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
+		// Report a failed drop. Every other branch of this rollback returns
+		// its error; discarding this one meant an install that failed on a
+		// host with no prior table could report a clean rollback while the
+		// table this step created was still loaded in the kernel.
+		if _, code, err := env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault()); err != nil {
+			return fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err)
+		} else if code != 0 {
+			return fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code)
+		}
 	}
 	if err := restoreBackup(env, env.nftRulesPath); err != nil {
 		return err

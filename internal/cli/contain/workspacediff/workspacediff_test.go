@@ -1277,3 +1277,32 @@ func TestHashFileSHA256RejectsMissingCapsule(t *testing.T) {
 		t.Fatal("HashFileSHA256 accepted a directory as capsule bytes")
 	}
 }
+
+// TestSnapshot_RootStatErrorIsNotSilentlyEmpty proves a root that cannot be
+// stat'd for a reason OTHER than absence returns an error rather than an empty
+// manifest. An empty manifest would later diff as "nothing changed", which is
+// the wrong failure direction for evidence: unreadable must never read as clean.
+func TestSnapshot_RootStatErrorIsNotSilentlyEmpty(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can stat through an unreadable parent")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Removing execute permission on the parent makes stat of the child fail
+	// with a permission error rather than a not-exist error.
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(parent, 0o750) }()
+
+	m, err := Snapshot(root, 1<<20, DefaultBudget())
+	if err == nil {
+		t.Fatalf("Snapshot = %+v, want an error when the root cannot be stat'd", m)
+	}
+	if m.RootMissing {
+		t.Fatal("a permission failure must not be reported as a missing root")
+	}
+}

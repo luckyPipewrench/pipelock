@@ -1579,8 +1579,16 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 			return statusFail, err.Error()
 		}
 	}
-	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, proxy-only loopback allow, direct-DNS drops, and persistence unit",
-		env.nftTable, env.nftChain, current.agentUID)
+	// Say what the chain actually allows. Reporting "proxy-only loopback
+	// allow" while declared services are present described the opposite of
+	// the state just verified, on the one line an operator reads to learn
+	// what the boundary permits.
+	loopbackSummary := "proxy-only loopback allow"
+	if len(loopbackServices) > 0 {
+		loopbackSummary = fmt.Sprintf("proxy loopback allow plus %d declared loopback service(s)", len(loopbackServices))
+	}
+	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
+		env.nftTable, env.nftChain, current.agentUID, loopbackSummary)
 }
 
 type containmentUIDs struct {

@@ -3781,6 +3781,16 @@ func (c *Config) ValidateSuppressions() error {
 	return c.validateSuppress(nil)
 }
 
+// ValidateContainmentLoopbackServiceDeclarations validates the declared
+// loopback-service surface independently of the full config, for the same
+// reason ValidateSuppressions exists: a caller handing Reload an in-memory
+// config never passes through Load, so the whole-config validator that
+// normally catches a malformed, expired, or proxy-port-colliding declaration
+// never runs on that path.
+func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
+	return c.validateContainmentLoopbackServices()
+}
+
 // credentialAudienceDomainSubset reports whether every candidate domain is
 // contained by at least one compiled audience domain. Inputs have already
 // passed ValidateTrustedDomains, so only exact hosts and leading-wildcard

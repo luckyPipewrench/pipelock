@@ -1909,3 +1909,53 @@ func TestContainmentDropCounterRefusesUnusableLoopbackPolicy(t *testing.T) {
 		}
 	})
 }
+
+// TestStepInstallNFTRulesKeepsHardenedDirModeWhenRulesChange covers the gap
+// the no-op-reinstall test above left open. The mode-preservation fix lives in
+// the pre-lock helper, which sets a mode only on a directory it created, but
+// the rules-write branch separately re-created and re-chmod'd the same
+// directory whenever the rules body actually moved. A no-op reinstall
+// therefore preserved an operator's hardened mode while any real rules change
+// silently widened it, which is the case an operator actually hits.
+func TestStepInstallNFTRulesKeepsHardenedDirModeWhenRulesChange(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	dir := filepath.Dir(env.nftRulesPath)
+	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
+	env.lockFn = withContainmentReconcileLock
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+
+	s := stepInstallNFTRules()
+	if _, err := s.apply(context.Background(), env); err != nil {
+		t.Fatalf("first install must succeed: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Clean(env.nftRulesPath))
+	if err != nil {
+		t.Fatalf("read rules: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o750); err != nil { // #nosec G302 -- directory hardened by the operator in this fixture.
+		t.Fatalf("harden rules directory: %v", err)
+	}
+
+	// Move the rules body for real: a different proxy port renders a
+	// different managed block, so this install takes the write branch.
+	env.proxyPort = env.proxyPort + 1
+	if _, err := s.apply(context.Background(), env); err != nil {
+		t.Fatalf("install with changed rules must succeed: %v", err)
+	}
+
+	after, err := os.ReadFile(filepath.Clean(env.nftRulesPath))
+	if err != nil {
+		t.Fatalf("read rules: %v", err)
+	}
+	if string(before) == string(after) {
+		t.Fatal("this test is vacuous unless the rules body actually changed")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat rules directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Fatalf("rules directory mode = %#o after a rules change, want the operator's 0750 preserved", got)
+	}
+}

@@ -75,6 +75,16 @@ func withContainmentReconcileLock(lockPath string, fn func() error) error {
 //
 // Every refusal is a hard error naming lockPath and the recovery command;
 // none of them silently proceed without the lock.
+// lockDirectoryNotWritable reports whether opening the lock failed because
+// its directory refuses writes, which is the one refusal rerunning install
+// cannot repair. Both errnos land here: EACCES for ownership or mode, and
+// EROFS for a read-only mount. EROFS does NOT satisfy os.ErrPermission, so
+// matching permission alone sent a read-only mount to the generic remedy
+// even though the detailed message names that exact case.
+func lockDirectoryNotWritable(err error) bool {
+	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EROFS)
+}
+
 func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Clean(lockPath), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -86,7 +96,7 @@ func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
 			// host that has never completed an install.
 			return nil, fmt.Errorf("containment reconcile lock: directory %s is missing; %s", filepath.Dir(lockPath), containmentReconcileLockRecovery)
 		}
-		if errors.Is(err, os.ErrPermission) {
+		if lockDirectoryNotWritable(err) {
 			// Rerunning install CANNOT fix this one, so do not name it.
 			// ensureNFTRulesDirSafe deliberately leaves the mode of a
 			// directory it did not create alone, so an install rerun opens

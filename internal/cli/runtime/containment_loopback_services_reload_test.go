@@ -162,3 +162,113 @@ func TestServer_ReloadWarnsOnContainmentLoopbackServicesChangeWithoutRejecting(t
 		t.Fatalf("stderr = %q, an unrelated/unchanged reload must not warn about loopback_services", stderr.String())
 	}
 }
+
+// TestServer_ReloadRejectsInvalidLoopbackServiceCandidate covers the reload
+// boundary a file-based reload never exercises. config.Load validates the
+// declaration, so a config read from disk cannot carry an invalid one; a
+// caller handing Reload an in-memory config skips Load entirely, and the
+// whole-config re-validation further down the function collects warnings and
+// discards its error. An expired declaration could therefore become the live
+// policy, which is a declaration authorizing an extra hole in the agent's
+// egress boundary that no validator ever approved.
+func TestServer_ReloadRejectsInvalidLoopbackServiceCandidate(t *testing.T) {
+	valid := "mode: balanced\n"
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, valid),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            &syncBuffer{},
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+
+	before := s.proxy.CurrentConfig()
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantErr string
+	}{
+		{
+			name: "expired declaration",
+			mutate: func(c *config.Config) {
+				c.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+					Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
+					ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+				}}
+			},
+			wantErr: "expired",
+		},
+		{
+			name: "host that is not a loopback literal",
+			mutate: func(c *config.Config) {
+				c.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+					Host: "10.20.0.20", Port: 9200, Owner: "search-team", Reason: "local index",
+					ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+				}}
+			},
+			wantErr: "loopback literal",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, loadErr := loadServerTestConfig(t, valid)
+			if loadErr != nil {
+				t.Fatalf("load candidate: %v", loadErr)
+			}
+			tc.mutate(candidate)
+
+			err := s.Reload(candidate)
+			if err == nil {
+				t.Fatal("expected the reload to be rejected")
+			}
+			if !strings.Contains(err.Error(), "rejected: invalid config reload") {
+				t.Errorf("error = %v, want the standard reload rejection prefix", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to name the validation failure %q", err, tc.wantErr)
+			}
+			if got := s.proxy.CurrentConfig(); len(got.Containment.LoopbackServices) != len(before.Containment.LoopbackServices) {
+				t.Errorf("live config changed to %+v; a rejected candidate must not become live", got.Containment.LoopbackServices)
+			}
+		})
+	}
+}
+
+// TestServer_ReloadAcceptsValidLoopbackServiceCandidate is the positive
+// control: a well-formed declaration handed to Reload directly must still be
+// accepted, so the rejection above cannot be satisfied by refusing every
+// in-memory candidate.
+func TestServer_ReloadAcceptsValidLoopbackServiceCandidate(t *testing.T) {
+	valid := "mode: balanced\n"
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, valid),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            &syncBuffer{},
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+
+	candidate, loadErr := loadServerTestConfig(t, valid)
+	if loadErr != nil {
+		t.Fatalf("load candidate: %v", loadErr)
+	}
+	candidate.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+		Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}}
+	if err := s.Reload(candidate); err != nil {
+		t.Fatalf("a valid declaration handed to Reload must be accepted: %v", err)
+	}
+	if got := s.proxy.CurrentConfig(); len(got.Containment.LoopbackServices) != 1 {
+		t.Fatalf("live config = %+v, want the accepted declaration", got.Containment.LoopbackServices)
+	}
+}

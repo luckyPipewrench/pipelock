@@ -76,6 +76,17 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	// A declared loopback service authorizes an extra hole in the agent's
+	// egress boundary, so a candidate whose declaration does not validate
+	// must not become the live policy. The file reloader validates through
+	// config.Load, but a caller handing Reload an in-memory config does not,
+	// and the whole-config re-validation further down only collects
+	// warnings.
+	if validationErr := newCfg.ValidateContainmentLoopbackServiceDeclarations(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	// Host patterns get the same treatment, for the same reason: the file
 	// reloader validates through config.Load, but the Conductor apply boundary
 	// enters here directly and this seam must stay fail-closed for every

@@ -1891,12 +1891,12 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 
 	rulesChanged := false
 	if !rulesMatch {
-		if err := env.mkdirAll(filepath.Dir(env.nftRulesPath), modeDirReadable); err != nil {
-			return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftRulesPath), err)
-		}
-		if err := env.chmod(filepath.Dir(env.nftRulesPath), modeDirReadable); err != nil {
-			return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftRulesPath), err)
-		}
+		// No mkdir or chmod here. ensureNFTRulesDirSafe already ran, before
+		// the reconcile lock and before either path into this function, and
+		// it deliberately sets the mode ONLY on a directory it created. An
+		// unconditional chmod here rewrote that mode on every rules change,
+		// so an operator who hardened the rules directory had it widened
+		// again the next time the rules body moved.
 		if err := backupAndWrite(env, env.nftRulesPath, []byte(body), modeNFTFile); err != nil {
 			return false, err
 		}

@@ -6,6 +6,7 @@
 package contain
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,5 +198,33 @@ func TestWithContainmentReconcileLockUnwritableParentNamesTheRealRemedy(t *testi
 	}
 	if !strings.Contains(msg, "cannot repair it") {
 		t.Errorf("error = %v, want it to say rerunning install alone cannot repair this", err)
+	}
+}
+
+// TestLockDirectoryNotWritableClassifiesBothErrnos pins the two refusals that
+// rerunning install cannot repair. EROFS is the one that matters here: a
+// read-only mount does NOT satisfy os.ErrPermission, so a condition written
+// against permission alone sends a read-only filesystem to the generic
+// "rerun install" remedy even though the detailed message this predicate
+// selects is the one that names a read-only mount by name. That branch cannot
+// be provoked unprivileged, so the classification is pinned directly.
+func TestLockDirectoryNotWritableClassifiesBothErrnos(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"permission denied", syscall.EACCES, true},
+		{"read-only filesystem", syscall.EROFS, true},
+		{"wrapped read-only filesystem", fmt.Errorf("open lock: %w", syscall.EROFS), true},
+		{"not exist is a different remedy", os.ErrNotExist, false},
+		{"is a directory", syscall.EISDIR, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lockDirectoryNotWritable(tc.err); got != tc.want {
+				t.Errorf("lockDirectoryNotWritable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

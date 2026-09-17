@@ -389,9 +389,14 @@ func TestTriggerScopedAirlockOnEscalation_SkipsInactiveConfiguration(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			sess := &SessionState{}
 			_, _, _ = sess.RecordScopedSignal(scope, session.SignalBlock, 3)
+			before := sess.AirlockForScope(scope).Tier()
 			triggerScopedAirlockOnEscalation(sess, scope, tc.cfg, decide.EscalationParams{})
-			if got := sess.AirlockForScope(scope).Tier(); got == config.AirlockTierDrain {
-				t.Fatalf("inactive trigger entered drain tier")
+			got := sess.AirlockForScope(scope).Tier()
+			if got != before {
+				t.Fatalf("inactive trigger changed airlock tier %q -> %q, want unchanged", before, got)
+			}
+			if got == config.AirlockTierSoft || got == config.AirlockTierHard || got == config.AirlockTierDrain {
+				t.Fatalf("inactive trigger entered active airlock tier %q", got)
 			}
 		})
 	}

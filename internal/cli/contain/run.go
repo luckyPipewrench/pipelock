@@ -52,12 +52,17 @@ type containRunOptions struct {
 type containRunEnv struct {
 	probe       *probeEnv
 	launch      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
-	emitPosture func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (string, error)
+	emitPosture func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error)
 	// loadConfig loads the ONE config snapshot reused for both posture
 	// capsule emission and workspace-statement signing key resolution (H2).
 	// Defaults to config.Load; overridable in tests that stub emitPosture
 	// and never intend to touch a real config file on disk.
 	loadConfig func(configFile string) (*config.Config, error)
+}
+
+type postureEmission struct {
+	path          string
+	capsuleSHA256 string
 }
 
 func defaultContainRunEnv() containRunEnv {
@@ -262,11 +267,11 @@ func runContainRun(
 	if workspaceSigningKeyErr == nil {
 		capsuleSigningKey = workspaceSigningKey
 	}
-	posturePath, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
+	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
 	}
-	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posturePath)
+	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posture.path)
 	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)
 	_, _ = fmt.Fprintf(stdout, "pipelock contain run: launching %s as %s\n", tool, env.probe.agentUserName)
 
@@ -280,7 +285,7 @@ func runContainRun(
 	// workspaces; already-reported-unavailable when the key could not be
 	// loaded before launch.
 	if len(beforeSnapshots) > 0 && workspaceSigningKeyErr == nil {
-		stmtPath, incomplete, incompleteReason, boundaryCheck, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posturePath, workspaceSigningKey)
+		stmtPath, incomplete, incompleteReason, boundaryCheck, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posture.path, posture.capsuleSHA256, workspaceSigningKey)
 		switch {
 		case stmtErr != nil:
 			_, _ = fmt.Fprintf(stderr, "pipelock contain run: workspace change statement failed: %v\n", stmtErr)
@@ -360,13 +365,9 @@ func emitContainRunWorkspaceStatement(
 	before map[string]workspacediff.Manifest,
 	grants []workspaceGrant,
 	posturePath string,
+	capsuleSHA256 string,
 	privKey ed25519.PrivateKey,
 ) (path string, incomplete bool, incompleteReason string, boundaryCheck workspacediff.BoundaryCheck, err error) {
-	capsuleSHA256, err := workspacediff.HashFileSHA256(posturePath)
-	if err != nil {
-		return "", false, "", "", fmt.Errorf("hash posture capsule: %w", err)
-	}
-
 	statements := make([]workspacediff.Statement, 0, len(grants))
 	seen := make(map[string]struct{}, len(grants))
 	now := containRunNow(env)
@@ -663,14 +664,14 @@ func parseAgentGIDs(ids []string, primary uint32) ([]uint32, error) {
 	return out, nil
 }
 
-func emitContainRunPosture(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (string, error) {
+func emitContainRunPosture(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error) {
 	launchEvidence, err := containRunLaunchEvidence(env, args)
 	if err != nil {
-		return "", fmt.Errorf("build launch evidence: %w", err)
+		return postureEmission{}, fmt.Errorf("build launch evidence: %w", err)
 	}
 	containmentEvidence, err := containRunContainmentEvidence(env, launchEvidence.TargetUID)
 	if err != nil {
-		return "", fmt.Errorf("build containment evidence: %w", err)
+		return postureEmission{}, fmt.Errorf("build containment evidence: %w", err)
 	}
 	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{
 		ContainLaunch: &launchEvidence,
@@ -678,13 +679,14 @@ func emitContainRunPosture(cfg *config.Config, privKey ed25519.PrivateKey, outpu
 		SigningKey:    privKey,
 	})
 	if err != nil {
-		return "", err
+		return postureEmission{}, err
 	}
-	path, err := posturepkg.WriteProofJSON(outputDir, capsule)
+	path, capsuleBytes, err := posturepkg.WriteProofJSONWithBytes(outputDir, capsule)
 	if err != nil {
-		return "", err
+		return postureEmission{}, err
 	}
-	return path, nil
+	sum := sha256.Sum256(capsuleBytes)
+	return postureEmission{path: path, capsuleSHA256: hex.EncodeToString(sum[:])}, nil
 }
 
 func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainLaunchEvidence, error) {

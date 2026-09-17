@@ -34,9 +34,9 @@ func TestRunContainRun_RefusesWhenContractCannotBeWritten(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 			posture = true
-			return "/unused", nil
+			return postureEmission{path: "/unused"}, nil
 		},
 	}
 	sentinel := errors.New("stdout closed")

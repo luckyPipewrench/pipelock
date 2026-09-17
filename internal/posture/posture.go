@@ -276,26 +276,34 @@ func VerifyAt(capsule *Capsule, trustedKey ed25519.PublicKey, now time.Time) err
 
 // WriteProofJSON writes proof.json atomically into the output directory.
 func WriteProofJSON(outputDir string, capsule *Capsule) (string, error) {
+	path, _, err := WriteProofJSONWithBytes(outputDir, capsule)
+	return path, err
+}
+
+// WriteProofJSONWithBytes writes proof.json atomically and returns the exact
+// bytes published to disk. Callers binding other signed evidence to the
+// capsule must use these bytes rather than reopen the output path.
+func WriteProofJSONWithBytes(outputDir string, capsule *Capsule) (string, []byte, error) {
 	if capsule == nil {
-		return "", fmt.Errorf("capsule is required")
+		return "", nil, fmt.Errorf("capsule is required")
 	}
 
 	cleanDir := filepath.Clean(outputDir)
 	if err := os.MkdirAll(cleanDir, 0o750); err != nil {
-		return "", fmt.Errorf("create output directory: %w", err)
+		return "", nil, fmt.Errorf("create output directory: %w", err)
 	}
 
 	data, err := json.Marshal(capsule)
 	if err != nil {
-		return "", fmt.Errorf("marshal capsule: %w", err)
+		return "", nil, fmt.Errorf("marshal capsule: %w", err)
 	}
 	data = append(data, '\n')
 
 	path := filepath.Join(cleanDir, ProofFilename)
 	if err := atomicfile.Write(path, data, 0o600); err != nil {
-		return "", fmt.Errorf("write %s: %w", ProofFilename, err)
+		return "", nil, fmt.Errorf("write %s: %w", ProofFilename, err)
 	}
-	return path, nil
+	return path, data, nil
 }
 
 // WriteProofMarkdown writes proof.md atomically into the output directory.

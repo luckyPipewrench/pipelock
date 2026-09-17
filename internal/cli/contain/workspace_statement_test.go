@@ -47,6 +47,26 @@ func writeContainConfigWithSigningKey(t *testing.T, dir string) (configPath stri
 	return configPath, pub
 }
 
+func testPostureEmission(path string, err error) (postureEmission, error) {
+	if err != nil {
+		return postureEmission{}, err
+	}
+	capsuleSHA256, err := workspacediff.HashFileSHA256(path)
+	if err != nil {
+		return postureEmission{}, err
+	}
+	return postureEmission{path: path, capsuleSHA256: capsuleSHA256}, nil
+}
+
+func testCapsuleSHA256(t *testing.T, path string) string {
+	t.Helper()
+	capsuleSHA256, err := workspacediff.HashFileSHA256(path)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	return capsuleSHA256
+}
+
 // workspaceInvBody renders a workspace-inventory JSON body granting path to
 // testAgentUser, matching the on-disk shape recordWorkspaceGrant produces.
 func workspaceInvBody(t *testing.T, path string) []byte {
@@ -91,15 +111,15 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 			}
 			return os.WriteFile(filepath.Join(workspace, "existing.txt"), []byte("after"), 0o600)
 		},
-		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
 			if err := os.WriteFile(path, []byte(fakeCapsuleBytes), 0o600); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
-			return path, nil
+			return testPostureEmission(path, nil)
 		},
 	}
 	opts := containRunOptions{
@@ -185,15 +205,15 @@ func TestRunContainRun_WorkspaceRootDisappearsMidSession_StatementSaysSo(t *test
 		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			return os.RemoveAll(workspace)
 		},
-		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
 			if err := os.WriteFile(path, []byte("capsule"), 0o600); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
-			return path, nil
+			return testPostureEmission(path, nil)
 		},
 	}
 	opts := containRunOptions{
@@ -247,12 +267,12 @@ func TestRunContainRun_NoGrants_NoStatementEmitted(t *testing.T) {
 		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			return nil
 		},
-		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
-			return path, os.WriteFile(path, []byte("capsule"), 0o600)
+			return testPostureEmission(path, os.WriteFile(path, []byte("capsule"), 0o600))
 		},
 	}
 	opts := containRunOptions{configFile: configPath, postureOutput: postureDir, workspaceDiffCapBytes: 1 << 20}
@@ -289,38 +309,26 @@ func TestRunContainRun_MissingSigningKey_WarnsButLaunchStillSucceeds(t *testing.
 
 	launched := false
 	runEnv := containRunEnv{
-		probe:      env,
-		loadConfig: func(f string) (*config.Config, error) { return config.Load(f) },
+		probe:       env,
+		loadConfig:  func(f string) (*config.Config, error) { return config.Load(f) },
+		emitPosture: emitContainRunPosture,
 		launch: func(_ context.Context, _ *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			launched = true
 			return nil
 		},
-		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
-			path := filepath.Join(outputDir, "proof.json")
-			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
-			}
-			return path, os.WriteFile(path, []byte("capsule"), 0o600)
-		},
 	}
 	opts := containRunOptions{configFile: configPath, postureOutput: postureDir, workspaceDiffCapBytes: 1 << 20}
 	var stdout bytes.Buffer
-	if err := runContainRun(context.Background(), strings.NewReader(""), &stdout, io.Discard, runEnv, opts, []string{"claude"}); err != nil {
-		t.Fatalf("runContainRun should not fail the whole session on a statement error: %v", err)
+	if err := runContainRun(context.Background(), strings.NewReader(""), &stdout, io.Discard, runEnv, opts, []string{"claude"}); err == nil || !strings.Contains(err.Error(), "posture capsule") {
+		t.Fatalf("runContainRun error = %v, want posture emission failure", err)
 	}
-	if !launched {
-		t.Fatalf("expected the tool to still launch")
+	if launched {
+		t.Fatalf("launch ran after posture emission rejected the missing signing key")
 	}
 	// M5: the signing key is resolved BEFORE launch, so an unavailable key is
 	// reported up front, not discovered only after the agent already ran.
 	if !strings.Contains(stdout.String(), "workspace change statement will be unavailable") {
-		t.Fatalf("expected an upfront WARN before launch, got:\n%s", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), workspaceStatementUnavailableLine) {
-		t.Fatalf("expected the machine-readable unavailable line, got:\n%s", stdout.String())
-	}
-	if _, err := os.Stat(filepath.Join(postureDir, "workspace-change-statement.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected no statement file to be written")
+		t.Fatalf("expected the key warning before posture emission, got:\n%s", stdout.String())
 	}
 }
 
@@ -355,9 +363,9 @@ func TestRunContainRun_KeyRotationBetweenLoadAndEmitUsesPreLaunchKey(t *testing.
 		probe:      env,
 		loadConfig: func(f string) (*config.Config, error) { return config.Load(f) },
 		launch:     func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, probe *probeEnv, args []string) (string, error) {
+		emitPosture: func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, probe *probeEnv, args []string) (postureEmission, error) {
 			if err := signing.SavePrivateKey(rotatedPriv, keyPath); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
 			return emitContainRunPosture(cfg, privKey, outputDir, probe, args)
 		},
@@ -463,16 +471,16 @@ func TestRunContainRun_ConfigLoadedOnceReusedForCapsuleAndStatementKey(t *testin
 			return cfg, nil
 		},
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(cfg *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(cfg *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
 			if cfg.FlightRecorder.SigningKeyPath != observedKeyPaths[0] {
 				t.Fatalf("posture emitter cfg signing key = %q, want the pre-rotation key %q (config was reloaded)",
 					cfg.FlightRecorder.SigningKeyPath, observedKeyPaths[0])
 			}
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
-			return path, os.WriteFile(path, []byte("capsule bytes"), 0o600)
+			return testPostureEmission(path, os.WriteFile(path, []byte("capsule bytes"), 0o600))
 		},
 	}
 	opts := containRunOptions{configFile: configPath, postureOutput: postureDir, workspaceDiffCapBytes: 1 << 20}
@@ -526,12 +534,12 @@ func TestRunContainRun_SnapshotFailurePreLaunch_WarnsButLaunchStillSucceeds(t *t
 			launched = true
 			return nil
 		},
-		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
 			path := filepath.Join(outputDir, "proof.json")
 			if err := os.MkdirAll(outputDir, 0o750); err != nil {
-				return "", err
+				return postureEmission{}, err
 			}
-			return path, os.WriteFile(path, []byte("capsule"), 0o600)
+			return testPostureEmission(path, os.WriteFile(path, []byte("capsule"), 0o600))
 		},
 	}
 	// workspaceDiffCapBytes=0 makes workspacediff.Snapshot fail deterministically
@@ -581,8 +589,8 @@ func TestRunContainRun_StatementErrorsRemainVisibleAndPreserveLaunchResult(t *te
 				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
 					return tt.launchErr
 				},
-				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
-					return filepath.Join(postureDir, "missing-proof.json"), nil
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+					return postureEmission{path: filepath.Join(postureDir, "missing-proof.json")}, nil
 				},
 			}
 			err := runContainRun(context.Background(), strings.NewReader(""), &stdout, &stderr, runEnv, containRunOptions{
@@ -612,10 +620,12 @@ func TestRunContainRun_RefusesMissingConfigLoaderOrLoadFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			env := allPassEnv(t)
 			runEnv := containRunEnv{
-				probe:       env,
-				loadConfig:  tt.loadConfig,
-				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) { return "", nil },
+				probe:      env,
+				loadConfig: tt.loadConfig,
+				launch:     func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+					return postureEmission{}, nil
+				},
 			}
 			err := runContainRun(context.Background(), strings.NewReader(""), io.Discard, io.Discard, runEnv, containRunOptions{workspaceDiffCapBytes: 1 << 20}, []string{"claude"})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -657,7 +667,7 @@ func TestEmitContainRunWorkspaceStatementRejectsIncompleteInputs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, _, emitErr := emitContainRunWorkspaceStatement(tt.opts, env, tt.before, tt.grants, posturePath, tt.key)
+			_, _, _, _, emitErr := emitContainRunWorkspaceStatement(tt.opts, env, tt.before, tt.grants, posturePath, testCapsuleSHA256(t, posturePath), tt.key)
 			if emitErr == nil || !strings.Contains(emitErr.Error(), tt.wantErr) {
 				t.Fatalf("emit error = %v, want %q", emitErr, tt.wantErr)
 			}
@@ -691,7 +701,7 @@ func TestWorkspaceStatementHelpersKeepOneObservationPerWorkspace(t *testing.T) {
 	snapshot := snapshots[workspace]
 	snapshot.BoundaryCheck = workspacediff.BoundaryCheckDeviceOnly
 	path, incomplete, reason, boundary, err := emitContainRunWorkspaceStatement(
-		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: snapshot}, []workspaceGrant{grant, grant}, posturePath, priv)
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: snapshot}, []workspaceGrant{grant, grant}, posturePath, testCapsuleSHA256(t, posturePath), priv)
 	if err != nil {
 		t.Fatalf("emit statement: %v", err)
 	}
@@ -726,7 +736,7 @@ func TestEmitContainRunWorkspaceStatementRefusesUnwritableOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, _, _, err := emitContainRunWorkspaceStatement(
-		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: before}, []workspaceGrant{{Path: workspace}}, posturePath, priv); err == nil {
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: before}, []workspaceGrant{{Path: workspace}}, posturePath, testCapsuleSHA256(t, posturePath), priv); err == nil {
 		t.Fatal("expected statement emission to fail when its output directory cannot create the atomic file")
 	}
 }

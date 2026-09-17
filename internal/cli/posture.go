@@ -38,6 +38,8 @@ const (
 	verifyDefaultMaxAge  = "30d"
 	verifyDefaultReceipt = "7d"
 	maxProofJSONBytes    = 8 << 20
+	// maxWorkspaceStatementBytes bounds untrusted CI input before JSON parsing.
+	maxWorkspaceStatementBytes = 8 << 20
 
 	// errPolicyFailed is the sentinel message for policy-fail exit code.
 	errPolicyFailed = "posture verification failed: policy gates or minimum score not met"
@@ -206,13 +208,24 @@ Exit codes:
 // here would authenticate one set of bytes and bind against a possibly
 // different set read moments later).
 func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKey ed25519.PublicKey) (workspacediff.SignedStatement, error) {
-	data, err := os.ReadFile(filepath.Clean(stmtPath))
+	cleanPath := filepath.Clean(stmtPath)
+	f, err := os.Open(cleanPath)
 	if err != nil {
-		return workspacediff.SignedStatement{}, fmt.Errorf("reading %s: %w", stmtPath, err)
+		return workspacediff.SignedStatement{}, fmt.Errorf("reading %s: %w", cleanPath, err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	data, err := io.ReadAll(io.LimitReader(f, maxWorkspaceStatementBytes+1))
+	if err != nil {
+		return workspacediff.SignedStatement{}, fmt.Errorf("reading %s: %w", cleanPath, err)
+	}
+	if len(data) > maxWorkspaceStatementBytes {
+		return workspacediff.SignedStatement{}, fmt.Errorf("workspace change statement exceeds %d bytes", maxWorkspaceStatementBytes)
 	}
 	var signed workspacediff.SignedStatement
 	if err := json.Unmarshal(data, &signed); err != nil {
-		return workspacediff.SignedStatement{}, fmt.Errorf("parsing %s: %w", stmtPath, err)
+		return workspacediff.SignedStatement{}, fmt.Errorf("parsing %s: %w", cleanPath, err)
 	}
 	if err := workspacediff.VerifyBindingBytes(signed, capsuleBytes, pubKey); err != nil {
 		return workspacediff.SignedStatement{}, err

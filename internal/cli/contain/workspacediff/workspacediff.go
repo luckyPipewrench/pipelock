@@ -468,6 +468,9 @@ func Diff(before, after Manifest, now time.Time) (Statement, error) {
 			"snapshot budget exceeded: %s; added/removed/modified are suppressed entirely because a partial walk cannot distinguish an untouched path from a real change",
 			reason))
 	}
+	if before.hasOversize() || after.hasOversize() {
+		reasons = append(reasons, "one or more files exceeded the content-digest cap; their contents cannot be fully compared")
+	}
 	if len(reasons) > 0 {
 		st.Incomplete = true
 		st.IncompleteReason = strings.Join(reasons, "; ")
@@ -492,7 +495,7 @@ func joinIncompleteReasons(reasons ...string) string {
 	return strings.Join(filtered, "; ")
 }
 
-func excludedPrefixes(a, b []UnreadableEntry) []string {
+func excludedPrefixes(a, b []UnreadableEntry) map[string]struct{} {
 	set := make(map[string]struct{}, len(a)+len(b))
 	for _, e := range a {
 		set[e.Path] = struct{}{}
@@ -500,19 +503,27 @@ func excludedPrefixes(a, b []UnreadableEntry) []string {
 	for _, e := range b {
 		set[e.Path] = struct{}{}
 	}
-	out := make([]string, 0, len(set))
-	for p := range set {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out
+	return set
 }
 
 // withinExcluded reports whether p is an excluded path itself or lies inside
 // one of its subtrees.
-func withinExcluded(p string, excluded []string) bool {
-	for _, prefix := range excluded {
-		if p == prefix || strings.HasPrefix(p, prefix+string(filepath.Separator)) {
+func withinExcluded(p string, excluded map[string]struct{}) bool {
+	for current := p; ; {
+		if _, ok := excluded[current]; ok {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+		current = parent
+	}
+}
+
+func (m Manifest) hasOversize() bool {
+	for _, entry := range m.Entries {
+		if entry.Oversize {
 			return true
 		}
 	}
@@ -592,6 +603,12 @@ func Sign(sts []Statement, capsuleSHA256 string, privKey ed25519.PrivateKey) (Si
 	if capsuleSHA256 == "" {
 		return SignedStatement{}, errors.New("workspacediff: capsuleSHA256 is required to bind the statement to its session")
 	}
+	if err := validateCapsuleSHA256(capsuleSHA256); err != nil {
+		return SignedStatement{}, err
+	}
+	if len(sts) == 0 {
+		return SignedStatement{}, errors.New("workspacediff: at least one workspace statement is required")
+	}
 	signed := SignedStatement{
 		SchemaVersion:        SchemaVersionV1,
 		Statements:           sts,
@@ -613,10 +630,20 @@ func ValidateSchema(signed SignedStatement) error {
 	if signed.SchemaVersion != SchemaVersionV1 {
 		return fmt.Errorf("workspacediff: unknown schema_version %q, want %q", signed.SchemaVersion, SchemaVersionV1)
 	}
-	if len(signed.PostureCapsuleSHA256) != sha256.Size*2 {
-		return fmt.Errorf("workspacediff: posture_capsule_sha256 must be a %d-hex-char sha256 digest, got %d chars", sha256.Size*2, len(signed.PostureCapsuleSHA256))
+	if err := validateCapsuleSHA256(signed.PostureCapsuleSHA256); err != nil {
+		return err
 	}
-	if _, err := hex.DecodeString(signed.PostureCapsuleSHA256); err != nil {
+	if len(signed.Statements) == 0 {
+		return errors.New("workspacediff: at least one workspace statement is required")
+	}
+	return nil
+}
+
+func validateCapsuleSHA256(capsuleSHA256 string) error {
+	if len(capsuleSHA256) != sha256.Size*2 {
+		return fmt.Errorf("workspacediff: posture_capsule_sha256 must be a %d-hex-char sha256 digest, got %d chars", sha256.Size*2, len(capsuleSHA256))
+	}
+	if _, err := hex.DecodeString(capsuleSHA256); err != nil {
 		return fmt.Errorf("workspacediff: posture_capsule_sha256 is not valid hex: %w", err)
 	}
 	return nil
@@ -634,6 +661,9 @@ func Verify(signed SignedStatement, trustedKey ed25519.PublicKey) error {
 	}
 	if signed.Signature == "" {
 		return errors.New("workspacediff: signature is empty")
+	}
+	if len(trustedKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("workspacediff: invalid trusted key length: got %d, want %d", len(trustedKey), ed25519.PublicKeySize)
 	}
 	expectedKeyID := hex.EncodeToString(trustedKey)
 	if signed.SignerKeyID != expectedKeyID {

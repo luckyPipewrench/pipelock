@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1596,6 +1597,62 @@ func TestPostureVerify_WorkspaceStatement_MatchedPairPasses(t *testing.T) {
 	}
 }
 
+func TestPostureVerify_WorkspaceStatementRejectsEmptyEvidence(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(strconv.FormatBool(jsonOutput), func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+			if err != nil {
+				t.Fatalf("hash capsule: %v", err)
+			}
+			signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+			if err != nil {
+				t.Fatalf("sign statement: %v", err)
+			}
+			signed.Statements = nil
+			stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+			data, err := json.Marshal(signed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout bytes.Buffer
+			cmd := rootCmd()
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath, "--policy", testVerifyPolicyNone, "--workspace-statement", stmtPath}
+			if jsonOutput {
+				args = append(args, "--json")
+			}
+			cmd.SetArgs(args)
+			err = cmd.Execute()
+			assertExitCode(t, err, exitVerifyIntegrity)
+			if !strings.Contains(err.Error(), "at least one workspace statement") {
+				t.Fatalf("error = %v, want empty-evidence rejection", err)
+			}
+		})
+	}
+}
+
+func TestPostureVerify_WorkspaceStatementRejectsOversizedInput(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	if err := os.WriteFile(stmtPath, bytes.Repeat([]byte("x"), maxWorkspaceStatementBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath, "--policy", testVerifyPolicyNone, "--workspace-statement", stmtPath})
+	err := cmd.Execute()
+	assertExitCode(t, err, exitVerifyIntegrity)
+	if !strings.Contains(err.Error(), "workspace change statement exceeds") {
+		t.Fatalf("error = %v, want size rejection", err)
+	}
+}
+
 func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 	tests := []struct {
 		name                 string
@@ -1684,7 +1741,11 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 			if out.WorkspaceStatement.BoundaryCheck != string(tt.wantBoundaryCheck) {
 				t.Errorf("workspace_statement.boundary_check = %q, want %q", out.WorkspaceStatement.BoundaryCheck, tt.wantBoundaryCheck)
 			}
-			if !strings.Contains(out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason) {
+			if tt.wantIncompleteReason == "" {
+				if out.WorkspaceStatement.IncompleteReason != "" {
+					t.Errorf("workspace_statement.incomplete_reason = %q, want empty for complete evidence", out.WorkspaceStatement.IncompleteReason)
+				}
+			} else if !strings.Contains(out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason) {
 				t.Errorf("workspace_statement.incomplete_reason = %q, want it to contain %q", out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason)
 			}
 			if !tt.wantPassed && !strings.Contains(out.Error, "incomplete") {
@@ -1713,7 +1774,11 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 			if !strings.Contains(textOutput.String(), "boundary check: "+string(tt.wantBoundaryCheck)) {
 				t.Errorf("text output does not name boundary check %q:\n%s", tt.wantBoundaryCheck, textOutput.String())
 			}
-			if !strings.Contains(textOutput.String(), tt.wantIncompleteReason) {
+			if tt.wantIncompleteReason == "" {
+				if strings.Contains(textOutput.String(), "Workspace change statement: incomplete:") {
+					t.Errorf("text output reports an incomplete reason for complete evidence:\n%s", textOutput.String())
+				}
+			} else if !strings.Contains(textOutput.String(), tt.wantIncompleteReason) {
 				t.Errorf("text output does not name incomplete reason %q:\n%s", tt.wantIncompleteReason, textOutput.String())
 			}
 		})
@@ -1834,8 +1899,13 @@ func TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected(t *testing.T) 
 		"--policy", testVerifyPolicyNone,
 		"--workspace-statement", stmtPath,
 	})
-	if err := cmd.Execute(); err == nil {
+	err = cmd.Execute()
+	if err == nil {
 		t.Fatalf("expected rejection of a tampered capsule file")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+	if !errors.Is(err, workspacediff.ErrCapsuleDigestMismatch) {
+		t.Fatalf("error = %v, want capsule digest mismatch", err)
 	}
 }
 

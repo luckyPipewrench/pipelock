@@ -101,9 +101,9 @@ func TestRunContainRun_DryRunPrintsContractWithoutLaunchOrPosture(t *testing.T) 
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 			posture = true
-			return "/unused", nil
+			return postureEmission{path: "/unused"}, nil
 		},
 	}
 	var buf bytes.Buffer
@@ -148,8 +148,8 @@ func TestRunContainRun_ContractReflectsTheToolsTheLauncherAccepts(t *testing.T) 
 			launched = true
 			return nil
 		},
-		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
-			return "/unused", nil
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+			return postureEmission{path: "/unused"}, nil
 		},
 	}
 	var buf bytes.Buffer

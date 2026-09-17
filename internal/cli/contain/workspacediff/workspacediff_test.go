@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -201,6 +200,38 @@ func TestDiff_OversizeCap_NoDigestButSizeChangeDetected(t *testing.T) {
 		t.Fatalf("diff: %v", err)
 	}
 	assertPaths(t, "modified", st.Modified, big)
+	if !st.Incomplete || !strings.Contains(st.IncompleteReason, "content-digest cap") {
+		t.Fatalf("oversize statement = %+v, want incomplete evidence", st)
+	}
+}
+
+func TestDiff_OversizeCap_SameMetadataIsIncomplete(t *testing.T) {
+	root := t.TempDir()
+	big := filepath.Join(root, "big.bin")
+	writeFile(t, big, "0123456789")
+
+	before, err := Snapshot(root, 4, DefaultBudget())
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	if err := os.WriteFile(big, []byte("abcdefghij"), 0o600); err != nil {
+		t.Fatalf("replace oversize content: %v", err)
+	}
+	mtime := before.Entries[big].ModTime
+	if err := os.Chtimes(big, mtime, mtime); err != nil {
+		t.Fatalf("restore modification time: %v", err)
+	}
+	after, err := Snapshot(root, 4, DefaultBudget())
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	statement, err := Diff(before, after, testNow)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if !statement.Incomplete || !strings.Contains(statement.IncompleteReason, "content-digest cap") {
+		t.Fatalf("statement = %+v, want incomplete oversize evidence", statement)
+	}
 }
 
 func TestDiff_UnreadableDirectory_RecordedNeverSilentlySkipped(t *testing.T) {
@@ -406,10 +437,20 @@ func TestSign_RejectsBadKeyLength(t *testing.T) {
 	}
 }
 
+func TestSignRejectsInvalidCapsuleDigest(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Sign([]Statement{{Root: "/workspace"}}, "cafebabe", priv); err == nil || !strings.Contains(err.Error(), "64-hex-char") {
+		t.Fatalf("Sign invalid digest error = %v, want digest-shape rejection", err)
+	}
+}
+
 func TestWriteJSON_PermsAndRoundTrip(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	_ = pub
-	signed, err := Sign([]Statement{{Root: "/g"}}, "cafebabe", priv)
+	signed, err := Sign([]Statement{{Root: "/g"}}, strings.Repeat("a", sha256.Size*2), priv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +637,7 @@ func TestVerifyBindingBytes_TOCTOU_RejectsBytesAuthenticatedElsewhere(t *testing
 }
 
 func TestValidateSchema_RejectsBadShapeAndVersion(t *testing.T) {
-	valid := SignedStatement{SchemaVersion: SchemaVersionV1, PostureCapsuleSHA256: strings.Repeat("a", 64)}
+	valid := SignedStatement{SchemaVersion: SchemaVersionV1, Statements: []Statement{{Root: "/workspace"}}, PostureCapsuleSHA256: strings.Repeat("a", 64)}
 	if err := ValidateSchema(valid); err != nil {
 		t.Fatalf("expected valid shape to pass: %v", err)
 	}
@@ -609,6 +650,28 @@ func TestValidateSchema_RejectsBadShapeAndVersion(t *testing.T) {
 	badDigest.PostureCapsuleSHA256 = "not-hex-and-wrong-length"
 	if err := ValidateSchema(badDigest); err == nil {
 		t.Fatalf("expected rejection of a non-digest-shaped binding")
+	}
+	emptyStatements := valid
+	emptyStatements.Statements = nil
+	if err := ValidateSchema(emptyStatements); err == nil {
+		t.Fatal("expected rejection of an empty workspace statement")
+	}
+}
+
+func TestVerifyRejectsInvalidTrustedKeyLength(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := Sign([]Statement{{Root: "/workspace"}}, strings.Repeat("a", sha256.Size*2), priv)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	for _, key := range []ed25519.PublicKey{pub[:ed25519.PublicKeySize-1], append(append(ed25519.PublicKey(nil), pub...), 0)} {
+		signed.SignerKeyID = hex.EncodeToString(key)
+		if err := Verify(signed, key); err == nil || !strings.Contains(err.Error(), "invalid trusted key length") {
+			t.Fatalf("Verify(%d-byte key) error = %v, want invalid length", len(key), err)
+		}
 	}
 }
 
@@ -998,7 +1061,7 @@ func TestSnapshotRecordsAllSupportedEntryKinds(t *testing.T) {
 	if err := os.Symlink("regular", link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+	if err := makeFIFO(pipe); err != nil {
 		t.Skipf("FIFO unsupported: %v", err)
 	}
 
@@ -1110,7 +1173,7 @@ func TestVerifyRejectsMalformedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	capsule := sha256.Sum256([]byte("capsule"))
-	signed, err := Sign(nil, hex.EncodeToString(capsule[:]), priv)
+	signed, err := Sign([]Statement{{Root: "/workspace"}}, hex.EncodeToString(capsule[:]), priv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1144,7 +1207,7 @@ func TestEvidenceValidationRejectsMalformedBindingAndOutputPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	capsule := sha256.Sum256([]byte("capsule"))
-	signed, err := Sign(nil, hex.EncodeToString(capsule[:]), priv)
+	signed, err := Sign([]Statement{{Root: "/workspace"}}, hex.EncodeToString(capsule[:]), priv)
 	if err != nil {
 		t.Fatal(err)
 	}

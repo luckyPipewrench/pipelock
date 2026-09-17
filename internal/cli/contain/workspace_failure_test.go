@@ -42,9 +42,9 @@ func TestRunContainRun_InventoryFailureStopsBeforePreflight(t *testing.T) {
 					launches++
 					return nil
 				},
-				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 					postureCalls++
-					return "proof.json", nil
+					return postureEmission{path: "proof.json"}, nil
 				},
 			}
 			var out bytes.Buffer

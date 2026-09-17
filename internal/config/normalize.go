@@ -244,7 +244,10 @@ func reconcileNewToolAdmissionAlias(rawYAML []byte, cfg *Config) error {
 	toolScanning, _ := raw["mcp_tool_scanning"].(map[string]interface{})
 	admissionVal, admissionPresent := toolScanning["new_tool_admission"]
 	actionVal, actionPresent := toolScanning["new_tool_action"]
-	admissionSet := admissionPresent && admissionVal != nil
+	// An explicitly empty canonical value is equivalent to omission, matching
+	// the deprecated alias below. It must not conflict with a non-empty alias
+	// that supplies the effective admission policy.
+	admissionSet := admissionPresent && admissionVal != nil && cfg.MCPToolScanning.NewToolAdmission != ""
 	// An explicitly empty deprecated value was accepted before this alias was
 	// introduced. Treat it like an omitted key so it neither conflicts with the
 	// canonical spelling nor bypasses ApplyDefaults.

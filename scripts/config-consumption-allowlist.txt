@@ -35,6 +35,8 @@ Added  # (B) audit-provenance date on ReverseProxy trusted_upstream, format-vali
 OnSeverity  # (B) rejected at validate when set, including when airlock is disabled
 AnomalyCount  # (B) rejected at validate when nonzero, including when airlock is disabled
 AnomalyWindowMinutes  # (B) rejected at validate when nonzero, including when airlock is disabled; default 0
+NewToolAction  # (B) deprecated alias consumed and cleared by reconcileNewToolAdmissionAlias during config load; canonical policy has no external alias consumer
+NewToolActionAliasWarning  # (B) load-time deprecation notice surfaced by validateMCPToolScanning; it describes spelling, not runtime policy
 
 # --- RESERVED (documented as reserved in docs/configuration.md Conductor section) ---
 StalePolicy  # RESERVED conductor follower knob; DecideStale exists with 0 callers (verified 2026-06-10); documented reserved

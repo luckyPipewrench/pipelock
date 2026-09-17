@@ -1142,7 +1142,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
-| `new_tool_admission` | `"admit"` | admit or withhold. Governs baseline ADMISSION of a tool NAME absent from an already-established drift baseline, as distinct from the response VERDICT on a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. Deprecated alias: `new_tool_action` (`warn`/`block`), which canonicalizes to `admit`/`withhold`; setting both keys is a config error. |
+| `new_tool_admission` | `"admit"` | admit or withhold. Governs baseline ADMISSION of a tool NAME absent from an already-established drift baseline, as distinct from the response VERDICT on a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. Deprecated alias: `new_tool_action` (`warn`/`block`), which canonicalizes to `admit`/`withhold`; an empty value on either key is treated as absent, and only two non-empty keys are a config error. |
 | `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
 | `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
 | `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
@@ -1267,8 +1267,9 @@ already requires.
 The deprecated `new_tool_action` alias (`warn`/`block`) still loads and
 canonicalizes to the equivalent `new_tool_admission` value (`warn` ->
 `admit`, `block` -> `withhold`), emitting a one-time load warning naming the
-replacement. Setting both `new_tool_admission` and `new_tool_action` in the
-same config is a load error naming both keys.
+replacement. An empty value on either key is treated as absent. Setting both
+`new_tool_admission` and `new_tool_action` is a load error only when both
+values are non-empty; the error names both keys.
 
 With `action: block`, a confirmed upstream update that Pipelock blocked needs
 an operator re-baseline. Configure a signed one-shot control-file path, the

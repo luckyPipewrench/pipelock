@@ -932,6 +932,53 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 	}
 }
 
+func TestRunWSProxy_DriftOnlyNewToolAdmissionIsRetained(t *testing.T) {
+	responses := make(chan int, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("ws upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for response := 1; response <= 2; response++ {
+			if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+				return
+			}
+			payload := []byte(newToolAdmissionBaseline)
+			if response == 2 {
+				payload = []byte(newToolAdmissionCandidate)
+			}
+			if err := gobwasutil.WriteServerMessage(conn, ws.OpText, payload); err != nil {
+				return
+			}
+			responses <- response
+		}
+	}))
+	defer srv.Close()
+
+	stdin, stdinW := io.Pipe()
+	var stdout, stderr lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(context.Background(), stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
+			Scanner: testScannerForWS(t),
+			ToolCfg: &tools.ToolScanConfig{DetectDrift: true, NewToolAdmission: config.NewToolWithhold},
+		})
+	}()
+	_, _ = stdinW.Write([]byte(jsonToolsList + "\n"))
+	waitForResponseNumber(t, responses, 1)
+	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
+	waitForResponseNumber(t, responses, 2)
+	testwait.For(t, time.Second, func() bool {
+		return stderr.contains("new-tool")
+	}, "drift-only new-tool admission evaluated")
+	_ = stdinW.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("RunWSProxy: %v", err)
+	}
+}
+
 func TestRunWSProxy_DialFailure(t *testing.T) {
 	sc := testScannerForWS(t)
 	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"test","params":{}}` + "\n")

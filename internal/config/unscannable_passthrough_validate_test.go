@@ -18,7 +18,7 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
 			Added:        "2026-07-04",
-			Expires:      "2099-01-01",
+			Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 		}
 	}
 
@@ -209,6 +209,10 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 }
 
 func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
+	// Generate the expiry ONCE. temporaryExpiryDate reads the current UTC
+	// date, so calling it again for the assertion can produce a different
+	// day if the clock rolls over midnight mid-test.
+	wantExpires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
 	cfg := Defaults()
 	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
@@ -217,7 +221,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 		ContentTypes: []string{" Application/Octet-Stream; Charset=binary "},
 		Reason:       " opaque signed archive ",
 		Added:        " 2026-07-04 ",
-		Expires:      " 2099-01-01 ",
+		Expires:      " " + wantExpires + " ",
 	}}
 
 	if err := cfg.Validate(); err != nil {
@@ -237,7 +241,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	if got.Reason != "opaque signed archive" {
 		t.Fatalf("reason = %q, want trimmed", got.Reason)
 	}
-	if got.Added != "2026-07-04" || got.Expires != "2099-01-01" {
+	if got.Added != "2026-07-04" || got.Expires != wantExpires {
 		t.Fatalf("dates = %q/%q, want trimmed YYYY-MM-DD", got.Added, got.Expires)
 	}
 }
@@ -297,7 +301,7 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 		PathPrefixes: []string{"/legacy"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 
 	clone := cfg.Clone()
@@ -343,7 +347,7 @@ func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 				ContentTypes: []string{alias},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-01-01",
+				Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 			}}
 			err := cfg.Validate()
 			if err == nil {
@@ -366,7 +370,7 @@ func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
 		Added:        "2026-07-04",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("application/octet-stream refused as an opaque content type: %v", err)
@@ -386,7 +390,7 @@ func TestValidateUnscannablePassthroughRefusesParameterizedJavaScriptAliases(t *
 				ContentTypes: []string{contentType},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-01-01",
+				Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 			}}
 			err := cfg.Validate()
 			if err == nil {

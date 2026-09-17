@@ -171,6 +171,16 @@ func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error
 	return nil
 }
 
+func validateUnscannablePassthroughExpiryHorizons(entries []UnscannablePassthroughEntry) error {
+	for i, entry := range entries {
+		field := fmt.Sprintf("response_scanning.unscannable_passthrough[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, entry.Expires, MaxUnscannablePassthroughHorizon); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 	if len(cfg.ContentEntropyWarnRoutes) == 0 {
 		return nil
@@ -238,12 +248,8 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		expires, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if expires.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
+			return err
 		}
 
 		slices.Sort(entry.ContentTypes)
@@ -328,12 +334,8 @@ func validateRequestBodySigV4CredentialRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		expires, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if expires.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+			return err
 		}
 
 		slices.Sort(entry.ContentTypes)
@@ -1883,8 +1885,8 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if _, err := time.Parse("2006-01-02", expires); err != nil {
-				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxPathEntropyExclusionHorizon); err != nil {
+				return err
 			}
 		}
 
@@ -1933,8 +1935,8 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 		}
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if _, err := time.Parse("2006-01-02", expires); err != nil {
-				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
+				return err
 			}
 		}
 
@@ -2140,6 +2142,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		if !hostMatchesResponseSizeExemptDomain(entry.Host, c.ResponseScanning.SizeExemptDomains) {
 			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
 		}
+	}
+	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
 	}
 	if err := validateAuthenticatedArtifacts(c.ResponseScanning.AuthenticatedArtifacts); err != nil {
 		return err
@@ -4645,12 +4650,90 @@ func normalizeReverseProxySubmitHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
-// MaxBestEffortConfigHorizon bounds how far ahead a configuration-sourced
-// best_effort_expiry may lie, measured from validation time. A best-effort
-// override trades kernel network isolation for cooperative proxy variables,
-// so one config edit must not be able to authorize that trade for a year.
-// Command-line durations are anchored per launch and keep their own bound.
-const MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
+// Expiry classification at validation time.
+//
+// | Field | Class | Maximum / reason |
+// | sandbox.best_effort_expiry | temporary | 30 days: cooperative proxy-only egress cannot replace kernel isolation for a release cycle. |
+// | response_scanning.unscannable_passthrough[].expires | temporary | 90 days: an opaque download needs a scanned or authenticated delivery path. |
+// | fetch_proxy.monitoring.path_entropy_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the narrow route or move to policy. |
+// | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
+// | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
+// | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |
+// | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |.
+const (
+	// MaxBestEffortConfigHorizon bounds a configuration-sourced cooperative
+	// egress override; command-line durations are anchored per launch.
+	MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
+
+	MaxUnscannablePassthroughHorizon          = 90 * 24 * time.Hour
+	MaxPathEntropyExclusionHorizon            = 180 * 24 * time.Hour
+	MaxQueryEntropyParamExclusionHorizon      = 180 * 24 * time.Hour
+	MaxRequestBodyEntropyWarnRouteHorizon     = 90 * 24 * time.Hour
+	MaxRequestBodySigV4CredentialRouteHorizon = 30 * 24 * time.Hour
+)
+
+func validateTemporaryExpiryDate(field, value string, maximum time.Duration) error {
+	expires, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return fmt.Errorf("%s %q must be YYYY-MM-DD: %w", field, value, err)
+	}
+	today := todayUTC()
+	if expires.Before(today) {
+		return fmt.Errorf("%s %q is already expired", field, value)
+	}
+	latest := today.Add(maximum)
+	if expires.After(latest) {
+		return fmt.Errorf("%s %q exceeds the maximum temporary horizon of %d days (latest allowed date %q); shorten it or, if the condition is permanent, use the documented durable mechanism instead", field, value, int(maximum.Hours()/24), latest.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// ValidateExpiryAuthorizations applies the expiry-specific validation that the
+// hot-reload activation boundary needs before it can preserve restart-only
+// settings. Startup uses Validate, but direct Reload callers bypass Load.
+func (c *Config) ValidateExpiryAuthorizations() error {
+	now := time.Now().UTC()
+	if c.Sandbox.BestEffort {
+		if err := validateBestEffortAuthorization("sandbox", c.Sandbox.BestEffortReason, c.Sandbox.BestEffortExpiry, now); err != nil {
+			return err
+		}
+	}
+	if err := c.validateAgentSandboxOverrides(now); err != nil {
+		return err
+	}
+	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	for i, entry := range c.FetchProxy.Monitoring.PathEntropyExclusions {
+		if expires := strings.TrimSpace(entry.Expires); expires != "" {
+			field := fmt.Sprintf("fetch_proxy.monitoring.path_entropy_exclusions[%d].expires", i)
+			if err := validateTemporaryExpiryDate(field, expires, MaxPathEntropyExclusionHorizon); err != nil {
+				return err
+			}
+		}
+	}
+	for i, entry := range c.FetchProxy.Monitoring.QueryEntropyParamExclusions {
+		if expires := strings.TrimSpace(entry.Expires); expires != "" {
+			field := fmt.Sprintf("fetch_proxy.monitoring.query_entropy_param_exclusions[%d].expires", i)
+			if err := validateTemporaryExpiryDate(field, expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
+				return err
+			}
+		}
+	}
+	for i, entry := range c.RequestBodyScanning.ContentEntropyWarnRoutes {
+		field := fmt.Sprintf("request_body_scanning.content_entropy_warn_routes[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
+			return err
+		}
+	}
+	for i, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
+		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // validateBestEffortAuthorization checks the reason and expiry that must
 // accompany a configuration-sourced best_effort override. field names the

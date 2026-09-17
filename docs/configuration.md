@@ -152,8 +152,8 @@ fetch_proxy:
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
-| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
-| `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
+| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
+| `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply. Optional `expires` is temporary and capped at 180 days |
 
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
@@ -188,10 +188,10 @@ fetch_proxy:
         path_prefix: /document/d/      # literal prefix of the normalized path
         reason: service-issued document identifier
         owner: platform
-        expires: 2027-01-01            # optional, YYYY-MM-DD
+        expires: 2026-12-15            # optional; within the 180-day temporary window
 ```
 
-An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
+An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. When supplied, `expires` is a temporary incident control and may be at most 180 days ahead; shorten it, or use an exact `request_policy` route for a permanent governed path. Editing governance metadata does not change the policy hash a receipt carries.
 
 **Shipped defaults.** Five document-sharing routes ship enabled, because an ordinary Google Docs, Sheets, Slides, Forms or Drive link carries an opaque service-issued file ID by construction and was otherwise blocked on a fresh install:
 
@@ -224,13 +224,15 @@ fetch_proxy:
         param: query
         reason: structured search grammar can contain dense operators
         owner: platform-security
-        expires: 2026-12-31
+        expires: 2026-12-15            # optional; within the 180-day temporary window
 ```
 
 The endpoint-parameter matcher is intentionally strict: empty `scheme` defaults
 to `https`, `host` is an exact DNS hostname without a port or wildcard, `path`
 must match the URL's canonical escaped path exactly, and the raw query string
 must contain exactly one key with the same unescaped spelling as `param`.
+
+An optional `expires` here is a temporary incident control and may be at most 180 days ahead. Shorten it when the endpoint is repaired; if the parameter contract is permanent, govern the endpoint with an exact `request_policy` route instead.
 
 **Query entropy exclusions** skip only the query-string entropy gate for specific
 hosts. They are broader than endpoint-parameter exclusions and should be reserved
@@ -428,7 +430,7 @@ request_body_scanning:
       methods: [POST]                  # optional; omit to match every HTTP method
       reason: encrypted customer archives
       owner: storage team
-      expires: 2099-12-31
+      expires: 2026-12-15              # temporary route warning; 90-day maximum
   trusted_hosts:                       # optional destinations where injection-shaped request text and fully redacted critical DLP follow `action` instead of hard blocking
     - api.vendor.example
   sigv4_credential_routes:             # optional exact HTTPS body routes that carry presigned URLs
@@ -438,7 +440,7 @@ request_body_scanning:
       methods: [POST]
       reason: register attachment URL
       owner: platform team
-      expires: 2099-12-31
+      expires: 2026-10-15              # credential-floor exception; 30-day maximum
 ```
 
 | Field | Default | Description |
@@ -457,8 +459,8 @@ request_body_scanning:
 | `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
-| `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
-| `sigv4_credential_routes` | `[]` | Exact, expiring HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
+| `content_entropy_warn_routes` | `[]` | Exact, temporary HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry no more than 90 days ahead; methods are optional. Shorten the exception, or use a permanent scanned upload design instead. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
+| `sigv4_credential_routes` | `[]` | Exact, temporary HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry no more than 30 days ahead. Shorten the exception, or move the credential handoff out of the request body for a permanent integration. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
 | `trusted_hosts` | `[]` | Destinations where two request-side hard blocks fall back to `action`: injection-shaped text found in a request body, and a critical credential finding that redaction fully rewrote. Every request-side scan still runs, other findings keep their configured actions, and `response_scanning.exempt_domains` never affects request-side decisions. Supports `*.example.com` wildcards. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
@@ -999,7 +1001,7 @@ response_scanning:
       content_types: ["application/octet-stream"]
       reason: "opaque signed archive"
       added: "2026-07-04"
-      expires: "2099-12-31"
+      expires: "2026-12-15" # temporary opaque download; 90-day maximum
   authenticated_artifacts:      # exact signed rules artifacts verified by the proxy
     - host: "pipelab.org"
       path: "/rules/pipelock-community/bundle.yaml"
@@ -1022,7 +1024,7 @@ response_scanning:
 | `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses use the larger bounded whole-buffer scan ceiling instead of failing the normal scan cap. Browser Shield also uses that bounded ceiling for whole-body rewriting. |
 | `size_exempt_scan_max_bytes` | `67108864` | Maximum bytes read into memory for one over-cap response from a `size_exempt_domains` host before the existing response scanners run. Exceeding this ceiling blocks fail-closed with no upstream bytes delivered. |
 | `size_exempt_scan_max_inflight_bytes` | `268435456` | Per-proxy-instance memory reservation budget for concurrent over-cap size-exempt scans. If a scan cannot reserve its ceiling immediately, the response blocks fail-closed instead of waiting. |
-| `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. Every RFC 9239 JavaScript media type and alias (`text/javascript`, `application/javascript`, `application/ecmascript`, `application/x-javascript`, `application/x-ecmascript`, `text/ecmascript`, and the rest of the section-6 list) is refused as a `content_types` entry, matching what the browser shield already treats as JavaScript, so an opaque-download exception cannot admit an equivalent script response under a less common alias. |
+| `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The `expires` date may be no more than 90 days ahead; shorten it, or use a scanned delivery path or authenticated artifact for a permanent need. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. Every RFC 9239 JavaScript media type and alias (`text/javascript`, `application/javascript`, `application/ecmascript`, `application/x-javascript`, `application/x-ecmascript`, `text/ecmascript`, and the rest of the section-6 list) is refused as a `content_types` entry, matching what the browser shield already treats as JavaScript, so an opaque-download exception cannot admit an equivalent script response under a less common alias. |
 | `authenticated_artifacts` | `[]` | Exact official signed rules artifacts which the forward proxy and decrypted CONNECT interceptor buffer and verify before bypassing only response prompt-injection matching. Each entry requires exact `host`, canonical non-root `path`, and signed `bundle_name`; no wildcard, prefix, query, userinfo, or non-default port matches. The proxy fetches the sidecar signature without forwarding caller credentials, refuses every redirect, verifies an embedded official Ed25519 key and the bundle identity, then records an audit event and artifact-labelled allow receipt. Any mismatch, redirect, oversized body, invalid signer/signature, or wrong bundle name blocks before upstream bytes reach the client. Request DLP, authority, SSRF, budgets, Browser Shield, and media policy remain active. Upgrade binaries before adding this field: older binaries reject unknown config fields. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. A server that is omitted, missing, or does not match an entry is treated as `untrusted` and blocks response-injection findings. A malformed entry is not a fallback: an unknown trust value, an invalid server name, or a duplicate entry fails config validation, so the configuration does not load. `reasoning` permits warn-and-forward only when `response_scanning.action` is `warn`; a stricter section action still applies. |
 | `patterns` | 33 built-in | Injection and state/control poisoning patterns |
@@ -3749,7 +3751,6 @@ reverse_proxy:
     port: 443
     reason: "submission endpoint"
     added: "2026-05-26"
-    expires: "2099-12-31"
   max_body_bytes: 1048576
   request_timeout_seconds: 10
 ```
@@ -3759,7 +3760,7 @@ reverse_proxy:
 | `profile` | `""` | Empty keeps generic reverse-proxy behavior. `submit` enables the constrained submission gate. |
 | `allowed_methods` | `["POST"]` | HTTP methods allowed by the submit listener. Values must be known methods (the standard verbs plus the safe body-bearing `QUERY` method). |
 | `allowed_paths` | required | Exact canonical paths allowed by the submit listener. Entries must start with `/`; encoded dot, slash, backslash, semicolon path parameters, and non-canonical request paths are rejected. |
-| `trusted_upstream` | required | Auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required; expired `expires` dates fail config load. |
+| `trusted_upstream` | required | Durable, auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required. Optional `expires` has no maximum because this is reviewed rather than churned through an expiry; an expired date still fails config load. There is no automatic review or last-used signal today, so operators must review these entries through their normal configuration review. |
 | `max_body_bytes` | required | Positive listener body cap. The effective cap is the smaller of this value and `request_body_scanning.max_body_bytes`. |
 | `request_timeout_seconds` | required | Positive total request timeout for the submit listener, including scanning and upstream forwarding. |
 

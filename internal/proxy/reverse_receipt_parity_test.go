@@ -1003,7 +1003,7 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 					Paths:        []string{"/artifact.bin"},
 					ContentTypes: []string{"application/octet-stream"},
 					Reason:       "opaque test artifact",
-					Expires:      "2099-01-01",
+					Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 				}}
 				cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
 				cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
@@ -1355,7 +1355,7 @@ func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutc
 		Paths:        []string{"/artifact.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque test artifact",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 	}}
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
@@ -1410,7 +1410,7 @@ func TestReverseProxy_UnscannablePassthroughCaptureOutcomeSkipped(t *testing.T) 
 		Paths:        []string{"/manual.pdf"},
 		ContentTypes: []string{"application/pdf"},
 		Reason:       "operator-approved PDF artifact",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 	}}
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
@@ -1465,7 +1465,7 @@ func TestReverseProxy_BinaryUnscannablePassthroughOutcomeReason(t *testing.T) {
 		Paths:        []string{"/clip.mp3"},
 		ContentTypes: []string{"audio/mpeg"},
 		Reason:       "opaque audio artifact",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 	}}
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes

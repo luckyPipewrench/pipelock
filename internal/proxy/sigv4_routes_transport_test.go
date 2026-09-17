@@ -39,7 +39,7 @@ func sigV4CredentialRouteTestConfig() *config.Config {
 		Methods:      []string{http.MethodPost, http.MethodGet},
 		Reason:       "attachment registration",
 		Owner:        "platform",
-		Expires:      "2099-12-31",
+		Expires:      temporaryExpiryDate(config.MaxRequestBodySigV4CredentialRouteHorizon),
 	}}
 	return cfg
 }

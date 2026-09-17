@@ -448,6 +448,24 @@ for f in "${FILES[@]}"; do
             blk="$WORK/$tag-$n.yaml"
             [ -f "$blk" ] || break
             kind="$(cat "${blk}.kind")"
+            # A temporary `expires:` field is capped at a horizon measured from
+            # TODAY, and it is also rejected once the date passes. No literal
+            # date is therefore stable: one far enough out to survive breaches
+            # the cap, and one inside the cap expires. A shipped snippet
+            # carrying a literal would turn this gate red on a calendar date
+            # with no commit involved (docs carried five such dates, the
+            # earliest due 2026-10-16). Normalize the EXTRACTED COPY only, so
+            # the gate keeps asking the question it can answer — is this
+            # snippet's shape valid and bootable — and stops asserting that a
+            # date printed in a guide is still current. The doc is untouched.
+            # Fragments keep their literal, because their audited expected
+            # error may name it.
+            if [ "$kind" = config ]; then
+                # Match a quoted value too: YAML accepts expires: "2026-10-15",
+                # and a normalizer that only handles the bare form leaves the
+                # very bomb it exists to defuse in place.
+                sed -i -E "s/^([[:space:]]*expires:[[:space:]]*)([\"']?)[0-9]{4}-[0-9]{2}-[0-9]{2}\2/\1\2$(date -u -d '+7 days' +%Y-%m-%d)\2/" "$blk"
+            fi
             probe "$blk" "$f (yaml block $n)" "$kind"
         done
         ;;

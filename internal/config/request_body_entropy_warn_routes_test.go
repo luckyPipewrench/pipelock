@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validEntropyWarnRouteConfig() *Config {
@@ -17,7 +18,7 @@ func validEntropyWarnRouteConfig() *Config {
 	cfg.RequestBodyScanning.ContentEntropyAction = ActionBlock
 	cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []RequestBodyEntropyWarnRoute{{
 		Host: "UPLOAD.VENDOR.EXAMPLE.", Path: "/v1/files", ContentTypes: []string{"application/octet-stream; charset=binary"},
-		Methods: []string{"post"}, Reason: "encrypted customer archive", Owner: "storage team", Expires: "2099-12-31",
+		Methods: []string{"post"}, Reason: "encrypted customer archive", Owner: "storage team", Expires: temporaryExpiryDate(MaxRequestBodyEntropyWarnRouteHorizon),
 	}}
 	return cfg
 }
@@ -45,8 +46,7 @@ request_body_scanning:
       methods: [POST]
       reason: encrypted customer archive
       owner: storage team
-      expires: 2099-12-31
-`
+      expires: ` + temporaryExpiryDate(MaxRequestBodyEntropyWarnRouteHorizon) + "\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestEntropyWarnRoutesSurfaceLoadAndReloadDowngradeWarnings(t *testing.T) {
 	}
 
 	beforeExtension := validEntropyWarnRouteConfig()
-	beforeExtension.RequestBodyScanning.ContentEntropyWarnRoutes[0].Expires = "2098-12-31"
+	beforeExtension.RequestBodyScanning.ContentEntropyWarnRoutes[0].Expires = temporaryExpiryDate(MaxRequestBodyEntropyWarnRouteHorizon - 2*24*time.Hour)
 	afterExtension := validEntropyWarnRouteConfig()
 	if !hasReloadWarning(ValidateReload(beforeExtension, afterExtension), "request_body_scanning.content_entropy_warn_routes") {
 		t.Fatal("extending an entropy warning route expiry did not surface a reload downgrade warning")
@@ -153,7 +153,7 @@ func TestEntropyWarnRoutesReloadIdentitySeparatesOwnerAndReason(t *testing.T) {
 	for _, want := range []string{
 		`host="upload.vendor.example"`, `path="/v1/files"`, `methods=["post"]`,
 		`content_types=["application/octet-stream; charset=binary"]`, `owner="storage"`,
-		`reason="team encrypted upload"`, `expires="2099-12-31"`,
+		`reason="team encrypted upload"`, `expires="` + temporaryExpiryDate(MaxRequestBodyEntropyWarnRouteHorizon) + `"`,
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("reload warning %q does not contain %q", message, want)

@@ -4146,7 +4146,7 @@ func TestInterceptTunnel_UnscannablePassthroughRequireReceiptsEmitsSingleIntentO
 		Paths:        []string{"/opaque/pkg.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 	}}
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })

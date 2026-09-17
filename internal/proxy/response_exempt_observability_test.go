@@ -54,7 +54,7 @@ func TestResponseScanExemptOverCapUnscannedObservability_Forward(t *testing.T) {
 					Paths:        []string{"/payload"},
 					ContentTypes: []string{"application/octet-stream"},
 					Reason:       "opaque test artifact",
-					Expires:      "2099-01-01",
+					Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 				}}
 			},
 			wantStatus: http.StatusOK,

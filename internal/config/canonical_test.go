@@ -215,7 +215,7 @@ func TestCanonicalPolicyHash_QueryEntropyParamExclusions(t *testing.T) {
 			Param:   "query",
 			Reason:  "renewed reason",
 			Owner:   "security-operations",
-			Expires: "2027-12-31",
+			Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 		}}
 	})
 	if metadataChanged != withEntry {

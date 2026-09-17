@@ -220,6 +220,8 @@ const (
 		`|\b(?:read|get|fetch|retrieve|cat|copy|extract|open|include)\b(?:[^.!?]|\.\S){0,80}(?:\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)(?:[^.!?]|\.\S){0,160}(?:\b(?:send|forward|transmit|share|email|exfiltrat\w*|leak)\b(?:[^.!?]|\.\S){0,60}?(?:(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+|\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b)|\b(?:paste|return|report|dump|print|output|display|show|upload|post|submit)\b(?:[^.!?]|\.\S){0,60}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+)|\bcurl\b(?:[^.!?]|\.\S){0,80}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b(?:[^.!?]|\.\S){0,40}?\bto\s+\S+\.\S+|https?://|\S+\.\S+)|\|\s*(?:openssl\s+base64|base64|xxd)\b|\bin\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)\b))` // #nosec G101 -- detection regex: contains credential path names to MATCH path-exfiltration instructions, not a hardcoded credential
 )
 
+const defaultGoogleDocsPathPrefix = "/document/d/"
+
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
@@ -284,7 +286,7 @@ func Defaults() *Config {
 				// request. docs.google.com/<anything-else> stays checked, and a
 				// lookalike host matches nothing here.
 				PathEntropyExclusions: []PathEntropyExclusion{
-					{Host: "docs.google.com", PathPrefix: "/document/d/", Reason: "Google Docs document route; opaque vendor file id"},
+					{Host: "docs.google.com", PathPrefix: defaultGoogleDocsPathPrefix, Reason: "Google Docs document route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/", Reason: "Google Sheets route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/presentation/d/", Reason: "Google Slides route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},

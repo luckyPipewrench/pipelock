@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -223,8 +224,13 @@ func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKe
 	if len(data) > maxWorkspaceStatementBytes {
 		return workspacediff.SignedStatement{}, fmt.Errorf("workspace change statement exceeds %d bytes", maxWorkspaceStatementBytes)
 	}
+	// A signed artifact is decoded strictly: an unknown field is dropped by a
+	// permissive parse, so a statement carrying one verifies here and means
+	// something else to a consumer that does read it. DecodeStrictJSON is the
+	// shared signed-artifact transport decoder and also rejects duplicate keys
+	// and trailing tokens.
 	var signed workspacediff.SignedStatement
-	if err := json.Unmarshal(data, &signed); err != nil {
+	if err := contract.DecodeStrictJSON(data, &signed); err != nil {
 		return workspacediff.SignedStatement{}, fmt.Errorf("parsing %s: %w", cleanPath, err)
 	}
 	if err := workspacediff.VerifyBindingBytes(signed, capsuleBytes, pubKey); err != nil {

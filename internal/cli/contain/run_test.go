@@ -741,17 +741,3 @@ func TestEmitContainRunPosture_WriteFailure(t *testing.T) {
 		t.Fatalf("error = %v, want output directory context", err)
 	}
 }
-
-func TestEmitContainRunPosture_LoadFailure(t *testing.T) {
-	// emitContainRunPosture takes an already-loaded *config.Config now (H2:
-	// loaded once by the caller and reused for both the capsule and the
-	// workspace statement key), so the load failure this used to exercise
-	// now surfaces from config.Load itself, at the single call site in Run().
-	_, err := config.Load(filepath.Join(t.TempDir(), "missing.yaml"))
-	if err == nil {
-		t.Fatal("expected config load error")
-	}
-	if !strings.Contains(err.Error(), "no such file") && !os.IsNotExist(err) {
-		t.Fatalf("error = %v, want config load context", err)
-	}
-}

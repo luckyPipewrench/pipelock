@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -1899,6 +1900,57 @@ func TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected(t *testing.T) 
 	assertExitCode(t, err, exitVerifyIntegrity)
 	if !errors.Is(err, workspacediff.ErrCapsuleDigestMismatch) {
 		t.Fatalf("error = %v, want capsule digest mismatch", err)
+	}
+}
+
+// A signed statement carrying a field this build does not know about is
+// refused rather than silently dropped. A permissive parse would verify the
+// signature over bytes that include the field and then hand consumers a struct
+// without it, so the artifact would mean one thing on the wire and another in
+// memory.
+func TestPostureVerify_WorkspaceStatement_UnknownFieldRejected(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(data, &asMap); err != nil {
+		t.Fatal(err)
+	}
+	asMap["unrecognized_future_field"] = "value"
+	withUnknown, err := json.Marshal(asMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	if err := os.WriteFile(stmtPath, withUnknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected rejection of a statement carrying an unknown field")
+	} else if !errors.Is(err, contract.ErrUnknownField) {
+		t.Fatalf("error = %v, want unknown-field rejection", err)
 	}
 }
 

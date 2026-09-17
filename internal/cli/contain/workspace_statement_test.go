@@ -306,7 +306,7 @@ func TestRunContainRun_NoGrants_NoStatementEmitted(t *testing.T) {
 	}
 }
 
-func TestRunContainRun_MissingSigningKey_WarnsButLaunchStillSucceeds(t *testing.T) {
+func TestRunContainRun_MissingSigningKey_WarnsUpFrontAndPostureEmissionRefusesLaunch(t *testing.T) {
 	env := allPassEnv(t)
 	workspace := t.TempDir()
 	invBody := workspaceInvBody(t, workspace)

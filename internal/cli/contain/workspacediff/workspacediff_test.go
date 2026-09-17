@@ -429,6 +429,19 @@ func TestSignAndVerify_RoundTripAndBinding(t *testing.T) {
 	if err := Verify(tampered2, pub); err == nil {
 		t.Fatalf("expected verification failure after statement content tamper")
 	}
+
+	// GeneratedAt on its own. The content tamper above also moves Root, which
+	// is signed independently, so it would still fail if a regression dropped
+	// GeneratedAt from signablePayload. Moving only the timestamp is what
+	// proves that field is covered: a statement re-dated to look like it came
+	// from a different run must not verify.
+	tampered3 := signed
+	redated := st
+	redated.GeneratedAt = testNow.Add(time.Hour)
+	tampered3.Statements = []Statement{redated}
+	if err := Verify(tampered3, pub); err == nil {
+		t.Fatalf("expected verification failure after generated_at tamper")
+	}
 }
 
 func TestSign_RejectsMissingBinding(t *testing.T) {

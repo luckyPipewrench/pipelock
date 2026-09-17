@@ -784,7 +784,7 @@ func (e *EntitlementDB) ReportJournalMode(log zerolog.Logger) {
 // trial early. Ties break on subscription_id so a rerun is deterministic.
 func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 	const selectTrials = `
-	SELECT customer_email, subscription_id, current_period_end, last_license_period_end
+	SELECT customer_email, subscription_id, current_period_end, last_license_period_end, billing_interval
 	FROM entitlements
 	WHERE tier IN (?, ?) AND status IN (?, ?) AND current_period_end > ?
 	ORDER BY current_period_end DESC, subscription_id ASC
@@ -807,10 +807,10 @@ func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 	// later duplicates are skipped rather than overwriting a longer trial.
 	claimed := make(map[string]slot)
 	for rows.Next() {
-		var rawEmail, subscriptionID string
+		var rawEmail, subscriptionID, billingInterval string
 		var expiresAt time.Time
 		var claimEnd sql.NullTime
-		if err := rows.Scan(&rawEmail, &subscriptionID, &expiresAt, &claimEnd); err != nil {
+		if err := rows.Scan(&rawEmail, &subscriptionID, &expiresAt, &claimEnd, &billingInterval); err != nil {
 			return fmt.Errorf("scan trial entitlement for slot backfill: %w", err)
 		}
 		canonical, nerr := NormalizeEmail(rawEmail)
@@ -829,9 +829,19 @@ func (e *EntitlementDB) backfillActiveTrialSlots(ctx context.Context) error {
 			claimEndUTC := claimEnd.Time.UTC()
 			legacyEntitlementEnd = &claimEndUTC
 			takeoverState = trialSlotTakeoverDrifted
-			if claimEndUTC.Equal(expiresAt.UTC()) {
+			// Only a one-time trial can reach verified, matching what the
+			// classification pass requires. A trial-tier row on a recurring
+			// interval is not the one-shot claim this slot represents, and
+			// verified is precisely the state that lets a later signup take
+			// the slot over once it falls due, so it stays unverifiable. The
+			// row still gets a slot: the owner is an active trial and must
+			// hold the email either way.
+			if billingInterval == billingIntervalOneTime && claimEndUTC.Equal(expiresAt.UTC()) {
 				takeoverState = trialSlotTakeoverVerified
 			}
+		}
+		if billingInterval != billingIntervalOneTime {
+			takeoverState = trialSlotTakeoverUnverifiable
 		}
 		claimed[canonical] = slot{
 			subscriptionID:       subscriptionID,

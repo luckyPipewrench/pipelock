@@ -2000,6 +2000,45 @@ func TestBackfillActiveTrialSlots_ClassifiesLegacyEvidence(t *testing.T) {
 	}
 }
 
+// A trial-tier row on a RECURRING interval is not the one-shot claim a slot
+// represents, so the backfill must not mark it verified even when its claim
+// expiry matches. Verified is exactly the state that lets a later signup take
+// the slot over once it falls due, which would hand that email a second trial
+// while this one is still billing.
+func TestBackfillActiveTrialSlots_NonOneTimeOwnerStaysUnverifiable(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	slotEnd := time.Now().UTC().Add(24 * time.Hour)
+	ent := trialEntitlement("order_backfill_recurring", "backfill-recurring@example.com", slotEnd)
+	ent.LastLicensePeriodEnd = &slotEnd
+	if err := db.Upsert(ctx, ent); err != nil {
+		t.Fatalf("seed recurring trial entitlement: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE entitlements SET billing_interval = ? WHERE subscription_id = ?`,
+		"month", ent.SubscriptionID,
+	); err != nil {
+		t.Fatalf("move the owner onto a recurring interval: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx, `DELETE FROM active_trial_slots`); err != nil {
+		t.Fatalf("clear runtime-created slots: %v", err)
+	}
+	if err := db.backfillActiveTrialSlots(ctx); err != nil {
+		t.Fatalf("backfill active trial slots: %v", err)
+	}
+
+	var got string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT takeover_state FROM active_trial_slots WHERE normalized_email = ?`,
+		"backfill-recurring@example.com",
+	).Scan(&got); err != nil {
+		t.Fatalf("read backfilled slot: %v", err)
+	}
+	if got != trialSlotTakeoverUnverifiable {
+		t.Fatalf("takeover state = %q, want %q for a non-one-time owner", got, trialSlotTakeoverUnverifiable)
+	}
+}
+
 func TestTrialSlotExpiryDriftReport_UnknownEvidenceIsReportedUnverifiable(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()

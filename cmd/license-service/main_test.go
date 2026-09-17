@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -179,8 +180,18 @@ func TestReportTrialSlotExpiryDrift(t *testing.T) {
 			}
 			defer func() { _ = db.Close() }()
 
+			// Reporting is diagnostic and must never repair: an
+			// implementation that rewrote an expiry, reassigned an owner, or
+			// dropped a row before logging would satisfy every log assertion
+			// below while silently changing who holds a trial.
+			before := readTrialSlotRows(t, dbPath)
+
 			var buf bytes.Buffer
 			reportTrialSlotExpiryDrift(t.Context(), db, zerolog.New(&buf))
+
+			if after := readTrialSlotRows(t, dbPath); after != before {
+				t.Fatalf("drift reporting modified slots:\nbefore:\n%safter:\n%s", before, after)
+			}
 			if len(tt.want) == 0 {
 				if got := buf.String(); got != "" {
 					t.Fatalf("clean startup report = %q, want no output", got)
@@ -194,6 +205,37 @@ func TestReportTrialSlotExpiryDrift(t *testing.T) {
 			}
 		})
 	}
+}
+
+// readTrialSlotRows returns every active trial slot as comparable text so a
+// caller can assert the rows are byte-identical before and after an operation.
+func readTrialSlotRows(t *testing.T, dbPath string) string {
+	t.Helper()
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open database for slot snapshot: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+	rows, err := raw.QueryContext(t.Context(),
+		`SELECT normalized_email, subscription_id, expires_at, takeover_state,
+			COALESCE(legacy_entitlement_expires_at, '')
+		 FROM active_trial_slots ORDER BY normalized_email`)
+	if err != nil {
+		t.Fatalf("read trial slot rows: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out strings.Builder
+	for rows.Next() {
+		var email, sub, expires, state, legacy string
+		if err := rows.Scan(&email, &sub, &expires, &state, &legacy); err != nil {
+			t.Fatalf("scan trial slot row: %v", err)
+		}
+		fmt.Fprintf(&out, "%s|%s|%s|%s|%s\n", email, sub, expires, state, legacy)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate trial slot rows: %v", err)
+	}
+	return out.String()
 }
 
 func seedTrialSlotExpiryReport(t *testing.T, dbPath string) {

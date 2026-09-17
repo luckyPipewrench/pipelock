@@ -218,6 +218,10 @@ func installServerTestUnavailableFeatureBundle(t *testing.T, xdgDataHome string)
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
 		t.Fatalf("mkdir unavailable bundle dir: %v", err)
 	}
+	// The expiry is computed, not pinned. A bundle whose expires_at has passed
+	// is reported as expired by the freshness check, which would confound this
+	// test's actual subject — a bundle that needs an unavailable engine feature
+	// — on a calendar date with no commit involved.
 	bundleYAML := `format_version: 2
 name: needs-future-engine
 version: "2026.07.0"
@@ -227,7 +231,7 @@ license: Apache-2.0
 tier: community
 monotonic_version: 1
 published_at: "2026-04-01T00:00:00Z"
-expires_at: "2027-04-01T00:00:00Z"
+expires_at: "` + time.Now().UTC().AddDate(1, 0, 0).Format(time.RFC3339) + `"
 key_id: ` + rules.KeyFingerprint(pub) + `
 required_features:
   - dlp

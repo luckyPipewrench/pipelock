@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
@@ -151,7 +152,7 @@ func TestStrictRuleBundleIntegrityError_DisabledEmbeddedKeysFailClosed(t *testin
 	bundleData := []byte(fmt.Sprintf("format_version: 2\nname: private-root-only\nversion: 2026.01.1\nauthor: test\n"+
 		"description: test bundle\n"+
 		"tier: community\nmonotonic_version: 1\npublished_at: 2026-01-01T00:00:00Z\n"+
-		"expires_at: 2036-01-01T00:00:00Z\nkey_id: %s\nrules: []\n", rules.KeyFingerprint(pub)))
+		"expires_at: %s\nkey_id: %s\nrules: []\n", time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339), rules.KeyFingerprint(pub)))
 	bundlePath := filepath.Join(bundleDir, "bundle.yaml")
 	if err := os.WriteFile(bundlePath, bundleData, 0o600); err != nil {
 		t.Fatal(err)

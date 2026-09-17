@@ -899,6 +899,9 @@ jobs:
       - name: Config example startability policy
         run: bash scripts/check-config-examples.sh
 
+      - name: Clock-dependent literal policy
+        run: bash scripts/check-clock-literals.sh
+
       - name: Install documentation search dependency
         run: bash scripts/ci-apt-install.sh ripgrep
 

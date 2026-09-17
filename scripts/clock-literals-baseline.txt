@@ -1,0 +1,52 @@
+# Pinned calendar dates in clock-read fields, as they existed when
+# scripts/check-clock-literals.sh landed. THIS IS A RECORD OF STATE,
+# NOT A CERTIFICATION: no entry here has been verified as safe.
+#
+# Removing an entry is ordinary work. Adding one needs a reason in
+# the pull request, or an inline 'clock-literal-ok: <reason>' marker
+# instead, which keeps it out of this file entirely.
+enterprise/cli/license_test.go	2026-06-01
+enterprise/cli/license_test.go	2026-06-02
+enterprise/config_test.go	2000-01-01T00:00:00Z
+internal/audit/logger_test.go	2026-06-01T00:00:00Z
+internal/authority/local_test.go	2030-01-01T00:05:00Z
+internal/cli/contain/session_contract_test.go	2026-01-01T00:00:00Z
+internal/cli/contain/verify_test.go	2000-01-01T00:00:00Z
+internal/cli/contain/verify_test.go	2099-01-01T00:00:00Z
+internal/cli/contain/workspace_lifecycle_test.go	2026-04-01T00:00:00Z
+internal/cli/contain/workspace_lifecycle_test.go	2026-05-01T00:00:00Z
+internal/cli/contain/workspace_lifecycle_test.go	2026-06-01T12:00:00Z
+internal/cli/contain/workspace_lifecycle_test.go	2026-07-01T00:00:00Z
+internal/cli/contain/workspace_lifecycle_test.go	2026-08-01T00:00:00Z
+internal/cli/diag/doctor_config_semantics_test.go	2000-01-01
+internal/cli/diag/doctor_path_entropy_exclusions_test.go	2020-01-01
+internal/cli/diag/shipped_path_entropy_advisory_test.go	2020-01-01
+internal/cli/runtime/conductor_test.go	2099-01-01T00:00:00Z
+internal/cli/runtime/containment_metrics_policy_test.go	2026-08-14T12:00:00Z
+internal/cli/runtime/containment_metrics_policy_test.go	2026-08-15T12:00:00Z
+internal/config/canonical_golden_test.go	2030-01-01T00:00:00Z
+internal/config/canonical_test.go	2026-09-09T12:00:00Z
+internal/config/canonical_test.go	2026-09-10T12:00:00Z
+internal/config/conductor_bundle_test.go	2099-01-01T00:00:00Z
+internal/config/config_test.go	2000-01-01T00:00:00Z
+internal/config/containment_error_paths_test.go	2026-08-14T12:00:00Z
+internal/config/containment_error_paths_test.go	2026-08-15T12:00:00Z
+internal/config/containment_runtime_test.go	2026-08-15T12:00:00Z
+internal/config/expiry_horizon_test.go	2099-12-31
+internal/config/request_body_entropy_warn_routes_test.go	2020-01-01
+internal/config/request_body_sigv4_routes_test.go	2020-01-01
+internal/config/unscannable_passthrough_validate_test.go	2000-01-01
+internal/proxy/body_entropy_warn_route_test.go	2099-12-31
+internal/proxy/bodyscan_test.go	2020-01-01
+internal/proxy/forward_test.go	2026-07-03
+internal/proxy/forward_test.go	2026-07-05
+internal/proxy/size_exempt_coverage_test.go	2026-07-04
+internal/proxy/unscannable_passthrough_javascript_test.go	2026-07-05
+internal/rules/bundle_test.go	2026-06-01T00:00:00Z
+internal/rules/freshness_test.go	2026-02-01T00:00:00Z
+internal/rules/freshness_test.go	2026-06-01T00:00:00Z
+internal/sandbox/helpers_mode_test.go	2026-09-03T11:59:59Z
+internal/sandbox/helpers_mode_test.go	2026-09-03T12:30:00Z
+internal/signing/recovery_test.go	2026-04-26T15:00:00Z
+internal/skillscan/scan_test.go	2000-01-01
+internal/skillscan/scan_test.go	2999-01-01

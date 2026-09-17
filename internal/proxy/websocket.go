@@ -85,6 +85,8 @@ type wsRelay struct {
 	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 	audienceMu       sync.Mutex
 	audienceAllows   map[string]struct{} // reset for each client frame to suppress body/direct duplicate telemetry
+	droppedDLPMu     sync.Mutex
+	droppedDLP       map[string]struct{} // reset for each client frame to suppress body/direct duplicate telemetry
 
 	// lastActivity is the shared idle clock, updated by BOTH relay directions
 	// on every frame read as monotonic nanoseconds since clockStart. Idle is
@@ -137,6 +139,12 @@ func (r *wsRelay) resetCredentialAudienceAllows() {
 	r.audienceMu.Lock()
 	r.audienceAllows = make(map[string]struct{})
 	r.audienceMu.Unlock()
+}
+
+func (r *wsRelay) resetDroppedDLP() {
+	r.droppedDLPMu.Lock()
+	r.droppedDLP = make(map[string]struct{})
+	r.droppedDLPMu.Unlock()
 }
 
 func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudienceAllow) {
@@ -762,8 +770,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	var clientConn net.Conn
 	upgradeClient := func() bool {
+		// Upgrade writes directly to the hijacked connection, so its explicit
+		// reply headers must carry the confirmed receipt ID. Copy no other fields.
+		replyHeaders := make(http.Header)
+		blockreason.SetRecordedReceipt(replyHeaders, w.Header().Get(blockreason.HeaderRecordedReceipt))
 		upgrader := ws.HTTPUpgrader{
 			Timeout: 10 * time.Second,
+			Header:  replyHeaders,
 		}
 		var upgradeErr error
 		clientConn, _, _, upgradeErr = upgrader.Upgrade(r, w)
@@ -1428,14 +1441,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
 		AudienceSurface: "websocket_frame",
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
-			if r.proxy == nil {
-				return
-			}
-			if r.proxy.logger != nil {
-				actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-				r.proxy.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
-			}
-			r.proxy.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
+			r.recordClientFrameDroppedDLP(match, reason)
 		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
 			r.recordCredentialAudienceAllow(allow)
@@ -1465,6 +1471,7 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 		return false
 	}
 	r.resetCredentialAudienceAllows()
+	r.resetDroppedDLP()
 
 	prevTail := *controlTail
 	scanInput := payload
@@ -1557,7 +1564,7 @@ func updateWSCrossMessageTail(tail []byte, msg []byte) []byte {
 func (r *wsRelay) scanClientText(ctx context.Context, log *audit.Logger, scanInput []byte) (blocked bool) {
 	dlpResult := r.scanner.ScanTextForDLP(ctx, string(scanInput))
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, "websocket_frame")
-	dlpResult.Matches = filteredMatches
+	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
 	for _, allow := range audienceAllows {
 		r.recordCredentialAudienceAllow(allow)
 	}
@@ -1632,7 +1639,35 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 		return true
 	}
 
+	crossDLP = r.filterClientFrameDLPMatches(crossDLP)
 	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+}
+
+func (r *wsRelay) filterClientFrameDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch {
+	return filterBodyDLPMatches(matches, r.targetURL, r.cfg.Suppress,
+		bodyDLPDisabledSet(r.cfg.RequestBodyScanning.DisablePatterns), r.recordClientFrameDroppedDLP)
+}
+
+func (r *wsRelay) recordClientFrameDroppedDLP(match scanner.TextDLPMatch, reason string) {
+	if r.proxy == nil {
+		return
+	}
+	key := wsDLPMatchKey(match) + "\x00" + reason
+	r.droppedDLPMu.Lock()
+	if r.droppedDLP == nil {
+		r.droppedDLP = make(map[string]struct{})
+	}
+	if _, exists := r.droppedDLP[key]; exists {
+		r.droppedDLPMu.Unlock()
+		return
+	}
+	r.droppedDLP[key] = struct{}{}
+	r.droppedDLPMu.Unlock()
+	if r.proxy.logger != nil {
+		actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+		r.proxy.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "body", reason)
+	}
+	r.proxy.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 }
 
 func joinLabeledWSCrossMessageSuffixes(prev, current []byte) ([]byte, bool) {
@@ -2413,6 +2448,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		r.resetCredentialAudienceAllows()
+		r.resetDroppedDLP()
 
 		// Complete message available. Count and scan.
 		isTextMessage := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText

@@ -823,6 +823,45 @@ func TestEntitlementDB_UpsertTrialSlotClaimExpiry(t *testing.T) {
 			t.Fatalf("same-owner claim expiry = %v, want %v", stored.LastLicensePeriodEnd, recordedExpiry)
 		}
 	})
+
+	t.Run("legacy same owner records slot expiry and allows expired takeover", func(t *testing.T) {
+		db := openTestDB(t)
+		ctx := t.Context()
+		now := time.Now().UTC()
+		expiredSlotExpiry := now.Add(-time.Hour)
+		first := trialEntitlement("order_legacy_slot_owner", "legacy-slot@example.com", now.Add(time.Hour))
+		if err := db.Upsert(ctx, first); err != nil {
+			t.Fatalf("upsert first trial: %v", err)
+		}
+		if _, err := db.db.ExecContext(ctx,
+			`UPDATE active_trial_slots SET expires_at = ? WHERE normalized_email = ?`, expiredSlotExpiry, first.CustomerEmail,
+		); err != nil {
+			t.Fatalf("seed expired legacy slot: %v", err)
+		}
+		if _, err := db.db.ExecContext(ctx,
+			`UPDATE entitlements SET last_license_period_end = NULL WHERE subscription_id = ?`, first.SubscriptionID,
+		); err != nil {
+			t.Fatalf("seed legacy null claim expiry: %v", err)
+		}
+
+		renewal := *first
+		renewal.CurrentPeriodEnd = now.Add(24 * time.Hour)
+		if err := db.Upsert(ctx, &renewal); err != nil {
+			t.Fatalf("upsert legacy same-owner renewal: %v", err)
+		}
+		stored, err := db.GetBySubscriptionID(ctx, first.SubscriptionID)
+		if err != nil {
+			t.Fatalf("get renewed trial: %v", err)
+		}
+		if stored.LastLicensePeriodEnd == nil || !stored.LastLicensePeriodEnd.Equal(expiredSlotExpiry) {
+			t.Fatalf("legacy same-owner claim expiry = %v, want slot expiry %v", stored.LastLicensePeriodEnd, expiredSlotExpiry)
+		}
+
+		replacement := trialEntitlement("order_legacy_slot_replacement", first.CustomerEmail, now.Add(48*time.Hour))
+		if err := db.Upsert(ctx, replacement); err != nil {
+			t.Fatalf("take over expired legacy slot: %v", err)
+		}
+	})
 }
 
 func TestUpsertWithLicenseIssuanceAndWebhook_TrialRechecksPendingRefund(t *testing.T) {
@@ -1543,6 +1582,7 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 		name             string
 		drifted          []string
 		unverifiable     []string
+		invalidOwners    []string
 		orphaned         []string
 		wantDrifted      []string
 		wantUnverifiable []string
@@ -1558,6 +1598,11 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 			name:             "one legacy null row",
 			unverifiable:     []string{"order_legacy"},
 			wantUnverifiable: []string{"order_legacy"},
+		},
+		{
+			name:             "trial owner changed to non-trial tier",
+			invalidOwners:    []string{"order_invalid_tier"},
+			wantUnverifiable: []string{"order_invalid_tier"},
 		},
 		{
 			name:         "one orphaned slot",
@@ -1579,7 +1624,7 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 			ctx := t.Context()
 			original := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
-			for _, subscriptionID := range append(tt.drifted, tt.unverifiable...) {
+			for _, subscriptionID := range append(append(tt.drifted, tt.unverifiable...), tt.invalidOwners...) {
 				ent := trialEntitlement(subscriptionID, subscriptionID+"@example.com", original)
 				if !slices.Contains(tt.unverifiable, subscriptionID) {
 					ent.LastLicensePeriodEnd = &original
@@ -1593,6 +1638,13 @@ func TestTrialSlotExpiryDriftReport(t *testing.T) {
 					`UPDATE entitlements SET last_license_period_end = NULL WHERE subscription_id = ?`, subscriptionID,
 				); err != nil {
 					t.Fatalf("seed legacy null claim expiry %s: %v", subscriptionID, err)
+				}
+			}
+			for _, subscriptionID := range tt.invalidOwners {
+				if _, err := db.db.ExecContext(ctx,
+					`UPDATE entitlements SET tier = ? WHERE subscription_id = ?`, tierPro, subscriptionID,
+				); err != nil {
+					t.Fatalf("change trial owner to non-trial tier %s: %v", subscriptionID, err)
 				}
 			}
 			for _, subscriptionID := range tt.drifted {

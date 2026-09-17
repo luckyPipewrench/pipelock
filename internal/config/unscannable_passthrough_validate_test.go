@@ -297,7 +297,7 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 		PathPrefixes: []string{"/legacy"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 
 	clone := cfg.Clone()

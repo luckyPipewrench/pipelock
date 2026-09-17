@@ -20,7 +20,7 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 		PathPrefix: "/document/d/",
 		Reason:     "service-issued document identifier",
 		Owner:      "platform",
-		Expires:    "2027-01-01",
+		Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon),
 	}
 
 	t.Run("control: a fully specified entry is accepted and normalized", func(t *testing.T) {

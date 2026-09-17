@@ -6,6 +6,7 @@ package diag
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -18,12 +19,20 @@ func pathEntropyFindings(t *testing.T, mutate func(*config.Config)) []ConfigSema
 		PathPrefix: "/document/d/",
 		Reason:     "service-issued document identifier",
 		Owner:      "platform",
-		Expires:    "2099-01-01",
+		Expires:    temporaryPathEntropyExpiryDate(),
 	}}
 	if mutate != nil {
 		mutate(cfg)
 	}
 	return analyzeDoctorPathEntropyExclusions(cfg)
+}
+
+func temporaryPathEntropyExpiryDate() string {
+	return time.Now().UTC().Add(config.MaxPathEntropyExclusionHorizon - 24*time.Hour).Format(time.DateOnly)
+}
+
+func temporaryQueryEntropyExpiryDate() string {
+	return time.Now().UTC().Add(config.MaxQueryEntropyParamExclusionHorizon - 24*time.Hour).Format(time.DateOnly)
 }
 
 func findingDetails(findings []ConfigSemanticFinding) string {

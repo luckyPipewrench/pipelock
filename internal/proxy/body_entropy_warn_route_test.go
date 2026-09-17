@@ -21,17 +21,26 @@ import (
 func entropyWarnRoute() config.RequestBodyEntropyWarnRoute {
 	return config.RequestBodyEntropyWarnRoute{
 		Host: "upload.vendor.example", Path: "/v1/files", ContentTypes: []string{"application/octet-stream"},
-		Methods: []string{"POST"}, Reason: "encrypted customer archive", Owner: "storage team", Expires: "2099-12-31",
+		Methods: []string{"POST"}, Reason: "encrypted customer archive", Owner: "storage team", Expires: temporaryExpiryDate(config.MaxRequestBodyEntropyWarnRouteHorizon),
 	}
 }
 
+func temporaryExpiryDate(maximum time.Duration) string {
+	return time.Now().UTC().Add(maximum - 24*time.Hour).Format(time.DateOnly)
+}
+
 func TestMatchBodyEntropyWarnRouteIsExactHTTPSAndExpiresAtRuntime(t *testing.T) {
+	route := entropyWarnRoute()
+	expires, err := time.Parse(time.DateOnly, route.Expires)
+	if err != nil {
+		t.Fatalf("parse route expiry: %v", err)
+	}
 	base := BodyScanRequest{
 		Scheme: "https", Host: "upload.vendor.example", Path: "/v1/files", EntropyRoutePath: "/v1/files", Method: "POST",
 		ContentType: "application/octet-stream; version=1", ContentEntropyAction: config.ActionBlock,
-		ContentEntropyWarnRoutes: []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()},
+		ContentEntropyWarnRoutes: []config.RequestBodyEntropyWarnRoute{route},
 	}
-	if got := matchBodyEntropyWarnRoute(base, time.Date(2099, 12, 31, 12, 0, 0, 0, time.UTC)); got == nil {
+	if got := matchBodyEntropyWarnRoute(base, expires); got == nil {
 		t.Fatal("exact route did not match on its expiry date")
 	}
 	for _, mutate := range []func(*BodyScanRequest){
@@ -46,11 +55,11 @@ func TestMatchBodyEntropyWarnRouteIsExactHTTPSAndExpiresAtRuntime(t *testing.T) 
 	} {
 		req := base
 		mutate(&req)
-		if got := matchBodyEntropyWarnRoute(req, time.Date(2099, 12, 31, 12, 0, 0, 0, time.UTC)); got != nil {
+		if got := matchBodyEntropyWarnRoute(req, expires); got != nil {
 			t.Fatalf("nearby route unexpectedly matched: %+v", req)
 		}
 	}
-	if got := matchBodyEntropyWarnRoute(base, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)); got != nil {
+	if got := matchBodyEntropyWarnRoute(base, expires.AddDate(0, 0, 1)); got != nil {
 		t.Fatal("expired route still matched in a long-running process")
 	}
 }
@@ -75,6 +84,7 @@ func TestMatchBodyEntropyWarnRouteRejectsEncodedTopologyBeforeDecode(t *testing.
 
 func TestScanRequestBodyEntropyWarnRoutePreservesFindingAndProvenance(t *testing.T) {
 	cfg := testScannerConfig()
+	route := entropyWarnRoute()
 	cfg.RequestBodyScanning.ContentEntropyEnabled = true
 	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
 	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
@@ -89,7 +99,7 @@ func TestScanRequestBodyEntropyWarnRoutePreservesFindingAndProvenance(t *testing
 		EntropyRoutePath: "/v1/files",
 		Action:           config.ActionBlock, ContentEntropyEnabled: true, ContentEntropyAction: config.ActionBlock,
 		ContentEntropyThreshold: 4.5, ContentEntropyMinLength: 32,
-		ContentEntropyWarnRoutes: []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()},
+		ContentEntropyWarnRoutes: []config.RequestBodyEntropyWarnRoute{route},
 	}
 	_, result := scanRequestBody(context.Background(), req)
 	if result.Clean || result.EntropyFinding == nil || result.EntropyWarnRoute == nil {
@@ -98,7 +108,7 @@ func TestScanRequestBodyEntropyWarnRoutePreservesFindingAndProvenance(t *testing
 	if result.Action != config.ActionWarn || result.EntropyAction != config.ActionWarn {
 		t.Fatalf("actions = %q/%q, want warn/warn", result.Action, result.EntropyAction)
 	}
-	for _, want := range []string{"encrypted customer archive", "storage team", "2099-12-31"} {
+	for _, want := range []string{"encrypted customer archive", "storage team", route.Expires} {
 		if !strings.Contains(result.Reason, want) {
 			t.Fatalf("reason %q does not contain %q", result.Reason, want)
 		}
@@ -138,9 +148,10 @@ func TestBodyEntropyReasonIncludesRouteProvenance(t *testing.T) {
 
 func TestCheckRedirectBindsEntropyWarningToAdmittedRoute(t *testing.T) {
 	p, cfg, sc := redirectPolicyTestProxy(t)
+	route := entropyWarnRoute()
 	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
-	cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()}
-	admitted := &BodyEntropyWarnRouteMatch{Host: "upload.vendor.example", Path: "/v1/files", Reason: "encrypted customer archive", Owner: "storage team", Expires: "2099-12-31"}
+	cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{route}
+	admitted := &BodyEntropyWarnRouteMatch{Host: "upload.vendor.example", Path: "/v1/files", Reason: "encrypted customer archive", Owner: "storage team", Expires: route.Expires}
 
 	ctx := context.WithValue(t.Context(), ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
@@ -254,7 +265,7 @@ func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(
 				if ar.Verdict != config.ActionWarn {
 					t.Fatalf("entropy receipt verdict = %q, want warn", ar.Verdict)
 				}
-				for _, want := range []string{"encrypted customer archive", "storage team", "2099-12-31"} {
+				for _, want := range []string{"encrypted customer archive", "storage team", entropyWarnRoute().Expires} {
 					if !strings.Contains(ar.Pattern, want) {
 						t.Fatalf("entropy receipt pattern %q does not contain %q", ar.Pattern, want)
 					}

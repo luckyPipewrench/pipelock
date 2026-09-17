@@ -2497,7 +2497,7 @@ func TestForwardProxy_UnscannablePassthroughStreamsUnscanned(t *testing.T) {
 			Paths:        []string{"/opaque/pkg.bin"},
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
-			Expires:      "2099-01-01",
+			Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 		}}
 		cfg.FetchProxy.MaxResponseMB = 1
 		cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
@@ -2571,7 +2571,7 @@ func TestForwardProxy_UnscannablePassthroughUnderCapStillScans(t *testing.T) {
 			Paths:        []string{"/opaque/pkg.bin"},
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
-			Expires:      "2099-01-01",
+			Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 		}}
 		cfg.FetchProxy.MaxResponseMB = 1
 		cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
@@ -2614,7 +2614,7 @@ func TestForwardProxy_UnscannablePassthroughNonMatchFallsBackToBoundedScan(t *te
 			Paths:        []string{"/opaque/pkg.bin"},
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
-			Expires:      "2099-01-01",
+			Expires:      temporaryExpiryDate(config.MaxUnscannablePassthroughHorizon),
 		}}
 		cfg.FetchProxy.MaxResponseMB = 1
 		cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0

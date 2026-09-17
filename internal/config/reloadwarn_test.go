@@ -306,7 +306,7 @@ func TestValidateReload_QueryEntropyParamExclusionsMetadataOnlyNoWarning(t *test
 		Param:   "query",
 		Reason:  "updated reason",
 		Owner:   "platform-security",
-		Expires: "2027-12-31",
+		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 	}}
 
 	for _, w := range ValidateReload(old, updated) {

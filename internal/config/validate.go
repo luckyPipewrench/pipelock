@@ -4650,7 +4650,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
-// Expiry classification at validation time:
+// Expiry classification at validation time.
 //
 // | Field | Class | Maximum / reason |
 // | sandbox.best_effort_expiry | temporary | 30 days: cooperative proxy-only egress cannot replace kernel isolation for a release cycle. |
@@ -4659,7 +4659,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 // | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
 // | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
 // | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |
-// | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |
+// | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |.
 const (
 	// MaxBestEffortConfigHorizon bounds a configuration-sourced cooperative
 	// egress override; command-line durations are anchored per launch.

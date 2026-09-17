@@ -3,7 +3,10 @@
 
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // The rich golden fixtures do NOT configure path_entropy_exclusions, so they
 // prove nothing about how this field canonicalizes. An earlier claim that they
@@ -96,7 +99,7 @@ func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 		PathPrefix: "/document/d/",
 		Reason:     "service-issued document identifier",
 		Owner:      "platform",
-		Expires:    "2027-01-01",
+		Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon),
 	})
 	if bare != annotated {
 		t.Fatalf("reason/owner/expires moved the policy hash:\n  bare      %s\n  annotated %s", bare, annotated)
@@ -107,7 +110,7 @@ func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 		PathPrefix: "/document/d/",
 		Reason:     "a different reason entirely",
 		Owner:      "someone else",
-		Expires:    "2030-12-31",
+		Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon - 24*time.Hour),
 	})
 	if changed != bare {
 		t.Fatalf("editing governance metadata moved the policy hash; an operator correcting a comment would look like a policy change")

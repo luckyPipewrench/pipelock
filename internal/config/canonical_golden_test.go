@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Golden-file canonical-hash stability fixtures. These pin the current
@@ -1259,14 +1260,16 @@ func TestCanonicalPolicyHash_ListenerDriftResetFileIsOperational(t *testing.T) {
 // binds them) and the deep-copy clone path. Entries are supplied unsorted and
 // differ in each sort key so the canonical comparator branches all run.
 func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
+	expires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
+	laterExpires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon - 24*time.Hour)
 	entries := []UnscannablePassthroughEntry{
-		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: "2099-02-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-09-09"},
+		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: laterExpires},
 	}
 
 	withPT := Defaults()

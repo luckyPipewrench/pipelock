@@ -520,7 +520,7 @@ func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt
 		Paths:        []string{"/artifacts/pkg.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
-		Expires:      "2099-12-31",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 
 	err := cfg.Validate()

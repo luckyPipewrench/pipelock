@@ -1213,9 +1213,14 @@ func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.
-// If the cap is hit or the deadline has passed, the checkout is still honored
-// (customer paid the founding price). Logs a warning to archive the Polar
-// product so no further founding checkouts are possible.
+// If the cap is hit, the checkout is still honored (customer paid the founding
+// price). Logs a warning to archive the Polar product so no further founding
+// checkouts are possible.
+//
+// The cap is therefore advisory rather than a refusal: nothing here denies a
+// paid checkout, and archiving the Polar product is the control that actually
+// stops the next one. Do not turn this into a rejection without deciding that
+// separately.
 //
 // The reservation is atomic: the mutex serializes access, and the founding
 // count is read from the DB (not an in-memory cache) to prevent drift

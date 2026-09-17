@@ -673,6 +673,19 @@ func TestCheckFoundingCap_BelowCapWritesNoCapHit(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
+	// The entitlement half matters as much as the ledger half: a guard that
+	// only proves no cap-hit was written would still pass if the slot were
+	// never granted at all.
+	if ent.Tier != tierFoundingPro {
+		t.Errorf("Tier = %q, want %q", ent.Tier, tierFoundingPro)
+	}
+	if !ent.Founding {
+		t.Error("Founding should remain true below the cap")
+	}
+	if ent.FoundingReservedAt == nil {
+		t.Error("FoundingReservedAt should be stamped below the cap")
+	}
+
 	ledgerBytes, err := os.ReadFile(ts.handler.ledger.path)
 	if err != nil {
 		t.Fatalf("read audit ledger: %v", err)

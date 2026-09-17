@@ -343,7 +343,7 @@ func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 				ContentTypes: []string{alias},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-01-01",
+				Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 			}}
 			err := cfg.Validate()
 			if err == nil {
@@ -366,7 +366,7 @@ func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
 		Added:        "2026-07-04",
-		Expires:      "2099-01-01",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("application/octet-stream refused as an opaque content type: %v", err)
@@ -386,7 +386,7 @@ func TestValidateUnscannablePassthroughRefusesParameterizedJavaScriptAliases(t *
 				ContentTypes: []string{contentType},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-01-01",
+				Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 			}}
 			err := cfg.Validate()
 			if err == nil {

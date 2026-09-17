@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -917,5 +918,299 @@ func TestHashFileSHA256_Deterministic(t *testing.T) {
 	}
 	if a != b || a == "" {
 		t.Fatalf("hash not stable: %q vs %q", a, b)
+	}
+}
+
+// metadataFreeFileInfo models a filesystem entry whose platform metadata does
+// not expose syscall.Stat_t. The evidence writer must report that limitation
+// instead of inventing a device/inode identity.
+type metadataFreeFileInfo struct{}
+
+func (metadataFreeFileInfo) Name() string       { return "metadata-free" }
+func (metadataFreeFileInfo) Size() int64        { return 0 }
+func (metadataFreeFileInfo) Mode() os.FileMode  { return 0 }
+func (metadataFreeFileInfo) ModTime() time.Time { return testNow }
+func (metadataFreeFileInfo) IsDir() bool        { return false }
+func (metadataFreeFileInfo) Sys() any           { return nil }
+
+func TestPlatformIdentityFallbacksAreExplicit(t *testing.T) {
+	if dev, ino, ok := statIDs(metadataFreeFileInfo{}); ok || dev != 0 || ino != 0 {
+		t.Fatalf("statIDs without Stat_t = (%d, %d, %t), want unavailable zero identity", dev, ino, ok)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing")
+	if id, ok := mountID(missing); ok || id != 0 {
+		t.Fatalf("mountID(%q) = (%d, %t), want unavailable fallback", missing, id, ok)
+	}
+}
+
+func TestSnapshotFailureEvidence(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "entry"), "data")
+	fileRoot := filepath.Join(root, "not-a-directory")
+	writeFile(t, fileRoot, "data")
+
+	tests := []struct {
+		name       string
+		root       string
+		cap        int64
+		budget     Budget
+		wantErr    string
+		wantAbsent bool
+		wantBudget string
+	}{
+		{name: "non-positive cap is refused", root: root, cap: 0, wantErr: "capBytes must be positive"},
+		{name: "regular file cannot be workspace root", root: fileRoot, cap: 1, wantErr: "open root"},
+		{name: "missing root is evidence not empty success", root: filepath.Join(root, "gone"), cap: 1, wantAbsent: true},
+		{name: "entry budget stops enumeration", root: root, cap: 1, budget: Budget{MaxEntries: 1}, wantBudget: "entry cap"},
+		{name: "path-byte budget stops enumeration", root: root, cap: 1, budget: Budget{MaxTotalPathBytes: 1}, wantBudget: "path-bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest, err := Snapshot(tt.root, tt.cap, tt.budget)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Snapshot error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if manifest.RootMissing != tt.wantAbsent {
+				t.Fatalf("RootMissing = %t, want %t", manifest.RootMissing, tt.wantAbsent)
+			}
+			if tt.wantBudget != "" && (!manifest.BudgetExceeded || !strings.Contains(manifest.BudgetReason, tt.wantBudget)) {
+				t.Fatalf("budget evidence = exceeded:%t reason:%q, want %q", manifest.BudgetExceeded, manifest.BudgetReason, tt.wantBudget)
+			}
+		})
+	}
+}
+
+func TestSnapshotRecordsAllSupportedEntryKinds(t *testing.T) {
+	root := t.TempDir()
+	regular := filepath.Join(root, "regular")
+	oversize := filepath.Join(root, "oversize")
+	link := filepath.Join(root, "link")
+	pipe := filepath.Join(root, "pipe")
+	writeFile(t, regular, "small")
+	writeFile(t, oversize, "larger than cap")
+	if err := os.Symlink("regular", link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Skipf("FIFO unsupported: %v", err)
+	}
+
+	manifest, err := Snapshot(root, 5, DefaultBudget())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got := manifest.Entries[regular]; got.Kind != KindFile || got.Digest == "" {
+		t.Fatalf("regular entry = %+v, want hashed file", got)
+	}
+	if got := manifest.Entries[oversize]; got.Kind != KindFile || !got.Oversize || got.Digest != "" {
+		t.Fatalf("oversize entry = %+v, want digest-free oversize file", got)
+	}
+	if got := manifest.Entries[link]; got.Kind != KindSymlink || got.Target != "regular" {
+		t.Fatalf("symlink entry = %+v, want recorded target", got)
+	}
+	if got := manifest.Entries[pipe]; got.Kind != KindOther {
+		t.Fatalf("FIFO entry = %+v, want other", got)
+	}
+}
+
+func TestHashFileSafeRefusesUntrustworthyReads(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file")
+	writeFile(t, path, "longer than cap")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, haveIDs := statIDs(info)
+	handle, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Close() }()
+
+	tests := []struct {
+		name     string
+		relPath  string
+		cap      int64
+		wantErr  string
+		badID    bool
+		oversize bool
+	}{
+		{name: "oversize after open is not partially hashed", relPath: "file", cap: 1, oversize: true},
+		{name: "missing file reports confined open failure", relPath: "missing", cap: 20, wantErr: "root-confined"},
+		{name: "directory is not accepted as a file", relPath: ".", cap: 20, wantErr: "no longer a regular file"},
+		{name: "identity change is refused", relPath: "file", cap: 20, wantErr: "identity changed", badID: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wantDev := dev
+			if tt.badID && haveIDs {
+				wantDev++
+			}
+			digest, oversize, hashErr := hashFileSafe(handle, tt.relPath, filepath.Join(root, tt.relPath), tt.cap, wantDev, ino, haveIDs)
+			if tt.wantErr != "" {
+				if hashErr == nil || !strings.Contains(hashErr.Error(), tt.wantErr) {
+					t.Fatalf("hashFileSafe error = %v, want %q", hashErr, tt.wantErr)
+				}
+				return
+			}
+			if hashErr != nil || oversize != tt.oversize || digest != "" {
+				t.Fatalf("hashFileSafe = digest:%q oversize:%t err:%v, want oversize evidence", digest, oversize, hashErr)
+			}
+		})
+	}
+}
+
+func TestDiffFailsClosedForPartialEvidence(t *testing.T) {
+	entry := func(path, digest string) Entry { return Entry{Path: path, Kind: KindFile, Digest: digest} }
+	tests := []struct {
+		name       string
+		before     Manifest
+		after      Manifest
+		wantErr    string
+		wantReason string
+		wantAdded  []string
+	}{
+		{name: "different roots cannot be compared", before: Manifest{Root: "/one"}, after: Manifest{Root: "/two"}, wantErr: "root mismatch"},
+		{name: "root absent at both ends is incomplete", before: Manifest{Root: "/work", RootMissing: true}, after: Manifest{Root: "/work", RootMissing: true}, wantReason: "did not exist"},
+		{name: "root disappearing keeps unreadable evidence", before: Manifest{Root: "/work", Entries: map[string]Entry{"/work/a": entry("/work/a", "a")}, Unreadable: []UnreadableEntry{{Path: "/work/hidden", Reason: "denied"}}}, after: Manifest{Root: "/work", RootMissing: true, Unreadable: []UnreadableEntry{{Path: "/work/hidden", Reason: "changed"}}}, wantReason: "no longer exists"},
+		{name: "unreadable subtree is excluded while visible changes remain", before: Manifest{Root: "/work", Entries: map[string]Entry{}}, after: Manifest{Root: "/work", Entries: map[string]Entry{"/work/hidden/new": entry("/work/hidden/new", "n"), "/work/visible": entry("/work/visible", "v")}, Unreadable: []UnreadableEntry{{Path: "/work/hidden", Reason: "denied"}}}, wantReason: "unreadable", wantAdded: []string{"/work/visible"}},
+		{name: "budget truncation suppresses all path conclusions", before: Manifest{Root: "/work", Entries: map[string]Entry{}}, after: Manifest{Root: "/work", Entries: map[string]Entry{"/work/new": entry("/work/new", "n")}, BudgetExceeded: true, BudgetReason: "entry cap"}, wantReason: "budget exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statement, err := Diff(tt.before, tt.after, testNow)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Diff error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Diff: %v", err)
+			}
+			if !statement.Incomplete || !strings.Contains(statement.IncompleteReason, tt.wantReason) {
+				t.Fatalf("statement = %+v, want incomplete reason containing %q", statement, tt.wantReason)
+			}
+			assertPaths(t, "added", statement.Added, tt.wantAdded...)
+		})
+	}
+}
+
+func TestVerifyRejectsMalformedEvidence(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule := sha256.Sum256([]byte("capsule"))
+	signed, err := Sign(nil, hex.EncodeToString(capsule[:]), priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		edit func(SignedStatement) SignedStatement
+		want string
+	}{
+		{name: "empty signature", edit: func(s SignedStatement) SignedStatement { s.Signature = ""; return s }, want: "signature is empty"},
+		{name: "wrong signer identity", edit: func(s SignedStatement) SignedStatement { s.SignerKeyID = "00"; return s }, want: "does not match trusted key"},
+		{name: "non-hex signature", edit: func(s SignedStatement) SignedStatement { s.Signature = "zz"; return s }, want: "decode signature"},
+		{name: "short signature", edit: func(s SignedStatement) SignedStatement { s.Signature = "00"; return s }, want: "invalid signature length"},
+		{name: "signature fails verification", edit: func(s SignedStatement) SignedStatement {
+			s.Signature = strings.Repeat("00", ed25519.SignatureSize)
+			return s
+		}, want: "verification failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Verify(tt.edit(signed), pub)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Verify error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvidenceValidationRejectsMalformedBindingAndOutputPath(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule := sha256.Sum256([]byte("capsule"))
+	signed, err := Sign(nil, hex.EncodeToString(capsule[:]), priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		signed SignedStatement
+		verify bool
+		want   string
+	}{
+		{name: "unknown schema is refused", signed: SignedStatement{}, verify: true, want: "unknown schema_version"},
+		{name: "non-hex capsule binding is refused", signed: func() SignedStatement {
+			s := signed
+			s.PostureCapsuleSHA256 = strings.Repeat("z", sha256.Size*2)
+			return s
+		}(), verify: true, want: "not valid hex"},
+		{name: "binding wraps signature failure", signed: SignedStatement{}, want: "statement signature"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotErr error
+			if tt.verify {
+				gotErr = Verify(tt.signed, pub)
+			} else {
+				gotErr = VerifyBindingBytes(tt.signed, []byte("capsule"), pub)
+			}
+			if gotErr == nil || !strings.Contains(gotErr.Error(), tt.want) {
+				t.Fatalf("validation error = %v, want %q", gotErr, tt.want)
+			}
+		})
+	}
+
+	outputFile := filepath.Join(t.TempDir(), "not-a-directory")
+	writeFile(t, outputFile, "file")
+	if _, err := WriteJSON(outputFile, signed); err == nil || !strings.Contains(err.Error(), "create output dir") {
+		t.Fatalf("WriteJSON output-root error = %v, want create output dir refusal", err)
+	}
+}
+
+func TestEntryChangedTreatsUnverifiableMetadataAsChanged(t *testing.T) {
+	baseTime := testNow
+	tests := []struct {
+		name   string
+		before Entry
+		after  Entry
+		want   bool
+	}{
+		{name: "kind changes", before: Entry{Kind: KindDir}, after: Entry{Kind: KindFile}, want: true},
+		{name: "symlink target changes", before: Entry{Kind: KindSymlink, Target: "one"}, after: Entry{Kind: KindSymlink, Target: "two"}, want: true},
+		{name: "oversize size changes", before: Entry{Kind: KindFile, Oversize: true, Size: 1, ModTime: baseTime}, after: Entry{Kind: KindFile, Oversize: true, Size: 2, ModTime: baseTime}, want: true},
+		{name: "other mtime changes", before: Entry{Kind: KindOther, Size: 1, ModTime: baseTime}, after: Entry{Kind: KindOther, Size: 1, ModTime: baseTime.Add(time.Second)}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := entryChanged(tt.before, tt.after); got != tt.want {
+				t.Fatalf("entryChanged(%+v, %+v) = %t, want %t", tt.before, tt.after, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHashFileSHA256RejectsMissingCapsule(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-capsule.json")
+	if _, err := HashFileSHA256(missing); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("HashFileSHA256 missing error = %v, want not-exist failure", err)
+	}
+	if _, err := HashFileSHA256(t.TempDir()); err == nil {
+		t.Fatal("HashFileSHA256 accepted a directory as capsule bytes")
 	}
 }

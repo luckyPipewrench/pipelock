@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 )
@@ -151,5 +153,39 @@ func TestRejectTrailingJSON(t *testing.T) {
 	}
 	if err := rejectTrailingJSON(dec); err == nil || !strings.Contains(err.Error(), "trailing JSON") {
 		t.Fatalf("two values err = %v", err)
+	}
+}
+
+func TestWorkspaceStatementBindingRejectsUnreadableAndMalformedFiles(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "unreadable", want: "reading"},
+		{name: "malformed", body: []byte(`{`), want: "parsing"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "statement.json")
+			if tt.body != nil {
+				if err := os.WriteFile(path, tt.body, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := verifyWorkspaceStatementBinding(path, []byte("capsule"), pub); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("binding error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestSummarizeWorkspaceStatementNamesAnonymousIncompleteEvidence(t *testing.T) {
+	summary := summarizeWorkspaceStatement(workspacediff.SignedStatement{Statements: []workspacediff.Statement{{Incomplete: true}}})
+	if summary.Complete || summary.IncompleteReason != "signed workspace observation is incomplete" {
+		t.Fatalf("summary = %+v, want explicit incomplete evidence", summary)
 	}
 }

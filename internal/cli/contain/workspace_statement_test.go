@@ -8,12 +8,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
@@ -546,5 +549,184 @@ func TestRunContainRun_SnapshotFailurePreLaunch_WarnsButLaunchStillSucceeds(t *t
 	}
 	if _, err := os.Stat(filepath.Join(postureDir, "workspace-change-statement.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no statement file to be written, stat err = %v", err)
+	}
+}
+
+func TestRunContainRun_StatementErrorsRemainVisibleAndPreserveLaunchResult(t *testing.T) {
+	workspace := t.TempDir()
+	postureDir := t.TempDir()
+	configPath, _ := writeContainConfigWithSigningKey(t, t.TempDir())
+
+	for _, tt := range []struct {
+		name      string
+		launchErr error
+	}{
+		{name: "statement hashing failure is reported", launchErr: nil},
+		{name: "launch failure survives statement failure", launchErr: errors.New("agent exited 7")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			invBody := workspaceInvBody(t, workspace)
+			readFile := env.readFile
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.workspaceInvPath {
+					return invBody, nil
+				}
+				return readFile(path)
+			}
+			var stdout, stderr bytes.Buffer
+			runEnv := containRunEnv{
+				probe:      env,
+				loadConfig: func(string) (*config.Config, error) { return config.Load(configPath) },
+				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
+					return tt.launchErr
+				},
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) {
+					return filepath.Join(postureDir, "missing-proof.json"), nil
+				},
+			}
+			err := runContainRun(context.Background(), strings.NewReader(""), &stdout, &stderr, runEnv, containRunOptions{
+				configFile:            configPath,
+				postureOutput:         postureDir,
+				workspaceDiffCapBytes: 1 << 20,
+			}, []string{"claude"})
+			if !strings.Contains(stdout.String(), workspaceStatementUnavailableLine) || !strings.Contains(stderr.String(), "workspace change statement failed") {
+				t.Fatalf("statement failure was not visible: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if !errors.Is(err, tt.launchErr) {
+				t.Fatalf("runContainRun error = %v, want launch error %v", err, tt.launchErr)
+			}
+		})
+	}
+}
+
+func TestRunContainRun_RefusesMissingConfigLoaderOrLoadFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		loadConfig func(string) (*config.Config, error)
+		want       string
+	}{
+		{name: "missing loader", want: "loadConfig is not set"},
+		{name: "loader failure", loadConfig: func(string) (*config.Config, error) { return nil, errors.New("config unreadable") }, want: "loading config"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			runEnv := containRunEnv{
+				probe:       env,
+				loadConfig:  tt.loadConfig,
+				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (string, error) { return "", nil },
+			}
+			err := runContainRun(context.Background(), strings.NewReader(""), io.Discard, io.Discard, runEnv, containRunOptions{workspaceDiffCapBytes: 1 << 20}, []string{"claude"})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("runContainRun error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEmitContainRunWorkspaceStatementRejectsIncompleteInputs(t *testing.T) {
+	workspace := t.TempDir()
+	posturePath := filepath.Join(t.TempDir(), "posture.json")
+	if err := os.WriteFile(posturePath, []byte("capsule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := allPassEnv(t)
+	env.now = func() time.Time { return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) }
+	before, err := workspacediff.Snapshot(workspace, 1<<20, workspacediff.DefaultBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := workspaceGrant{Path: workspace}
+	tests := []struct {
+		name    string
+		opts    containRunOptions
+		before  map[string]workspacediff.Manifest
+		grants  []workspaceGrant
+		key     ed25519.PrivateKey
+		wantErr string
+	}{
+		{name: "missing start snapshot", opts: containRunOptions{workspaceDiffCapBytes: 1 << 20}, before: map[string]workspacediff.Manifest{}, grants: []workspaceGrant{grant}, key: priv, wantErr: "missing session-start snapshot"},
+		{name: "end snapshot rejects invalid cap", opts: containRunOptions{}, before: map[string]workspacediff.Manifest{workspace: before}, grants: []workspaceGrant{grant}, key: priv, wantErr: "snapshot"},
+		{name: "root mismatch is not signed", opts: containRunOptions{workspaceDiffCapBytes: 1 << 20}, before: map[string]workspacediff.Manifest{workspace: {Root: "other", CapBytes: 1, Entries: map[string]workspacediff.Entry{}}}, grants: []workspaceGrant{grant}, key: priv, wantErr: "diff"},
+		{name: "invalid signing key is refused", opts: containRunOptions{workspaceDiffCapBytes: 1 << 20}, before: map[string]workspacediff.Manifest{workspace: before}, grants: []workspaceGrant{grant}, key: nil, wantErr: "invalid signing key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, _, emitErr := emitContainRunWorkspaceStatement(tt.opts, env, tt.before, tt.grants, posturePath, tt.key)
+			if emitErr == nil || !strings.Contains(emitErr.Error(), tt.wantErr) {
+				t.Fatalf("emit error = %v, want %q", emitErr, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceStatementHelpersKeepOneObservationPerWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	posturePath := filepath.Join(t.TempDir(), "posture.json")
+	if err := os.WriteFile(posturePath, []byte("capsule"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := resolveWorkspaceStatementSigningKey(&config.Config{FlightRecorder: config.FlightRecorder{SigningKeyPath: filepath.Join(t.TempDir(), "missing.key")}}); err == nil || !strings.Contains(err.Error(), "load signing key") {
+		t.Fatalf("missing signing key error = %v, want contextual load failure", err)
+	}
+
+	grant := workspaceGrant{Path: workspace}
+	snapshots, err := snapshotWorkspaces([]workspaceGrant{grant, grant}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want one per unique workspace", len(snapshots))
+	}
+	snapshot := snapshots[workspace]
+	snapshot.BoundaryCheck = workspacediff.BoundaryCheckDeviceOnly
+	path, incomplete, reason, boundary, err := emitContainRunWorkspaceStatement(
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: snapshot}, []workspaceGrant{grant, grant}, posturePath, priv)
+	if err != nil {
+		t.Fatalf("emit statement: %v", err)
+	}
+	if !incomplete || boundary != workspacediff.BoundaryCheckDeviceOnly || !strings.Contains(reason, "mount boundary check unavailable") {
+		t.Fatalf("statement outcome = incomplete:%t boundary:%q reason:%q, want explicit device-only incompleteness", incomplete, boundary, reason)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signed workspacediff.SignedStatement
+	if err := json.Unmarshal(data, &signed); err != nil {
+		t.Fatal(err)
+	}
+	if len(signed.Statements) != 1 {
+		t.Fatalf("signed statements = %d, want one for duplicate grants", len(signed.Statements))
+	}
+}
+
+func TestEmitContainRunWorkspaceStatementRefusesUnwritableOutput(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc is the Linux read-only output surface used by this error-path test")
+	}
+	workspace := t.TempDir()
+	posturePath := "/proc/version"
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := workspacediff.Snapshot(workspace, 1<<20, workspacediff.DefaultBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := emitContainRunWorkspaceStatement(
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: before}, []workspaceGrant{{Path: workspace}}, posturePath, priv); err == nil {
+		t.Fatal("expected statement emission to fail when its output directory cannot create the atomic file")
 	}
 }

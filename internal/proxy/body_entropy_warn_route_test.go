@@ -216,7 +216,8 @@ func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(
 			cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
 			cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
 			cfg.RequestBodyScanning.ContentEntropyMinLength = 32
-			cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()}
+			route := entropyWarnRoute()
+			cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{route}
 			cfg.FlightRecorder.RequireReceipts = requireReceipts
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(func() { sc.Close() })
@@ -265,7 +266,7 @@ func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(
 				if ar.Verdict != config.ActionWarn {
 					t.Fatalf("entropy receipt verdict = %q, want warn", ar.Verdict)
 				}
-				for _, want := range []string{"encrypted customer archive", "storage team", entropyWarnRoute().Expires} {
+				for _, want := range []string{"encrypted customer archive", "storage team", route.Expires} {
 					if !strings.Contains(ar.Pattern, want) {
 						t.Fatalf("entropy receipt pattern %q does not contain %q", ar.Pattern, want)
 					}

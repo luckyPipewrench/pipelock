@@ -121,7 +121,7 @@ func TestServer_ReloadRejectsOverHorizonTemporaryExpiry(t *testing.T) {
 		Paths:        []string{"/opaque/pkg.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "temporary opaque archive",
-		Expires:      time.Now().UTC().Add(config.MaxUnscannablePassthroughHorizon + 24*time.Hour).Format("2006-01-02"),
+		Expires:      time.Now().UTC().Add(config.MaxUnscannablePassthroughHorizon + 48*time.Hour).Format("2006-01-02"),
 	}}
 
 	err := s.Reload(newCfg)

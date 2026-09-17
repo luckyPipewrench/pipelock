@@ -209,6 +209,10 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 }
 
 func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
+	// Generate the expiry ONCE. temporaryExpiryDate reads the current UTC
+	// date, so calling it again for the assertion can produce a different
+	// day if the clock rolls over midnight mid-test.
+	wantExpires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
 	cfg := Defaults()
 	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
@@ -217,7 +221,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 		ContentTypes: []string{" Application/Octet-Stream; Charset=binary "},
 		Reason:       " opaque signed archive ",
 		Added:        " 2026-07-04 ",
-		Expires:      " " + temporaryExpiryDate(MaxUnscannablePassthroughHorizon) + " ",
+		Expires:      " " + wantExpires + " ",
 	}}
 
 	if err := cfg.Validate(); err != nil {
@@ -237,7 +241,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	if got.Reason != "opaque signed archive" {
 		t.Fatalf("reason = %q, want trimmed", got.Reason)
 	}
-	if got.Added != "2026-07-04" || got.Expires != temporaryExpiryDate(MaxUnscannablePassthroughHorizon) {
+	if got.Added != "2026-07-04" || got.Expires != wantExpires {
 		t.Fatalf("dates = %q/%q, want trimmed YYYY-MM-DD", got.Added, got.Expires)
 	}
 }

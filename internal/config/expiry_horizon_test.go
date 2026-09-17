@@ -60,7 +60,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				return validateUnscannable(dateAt(MaxUnscannablePassthroughHorizon))
 			},
 			oneDayPast: func() error {
-				return validateUnscannable(dateAt(MaxUnscannablePassthroughHorizon + 24*time.Hour))
+				return validateUnscannable(dateAt(MaxUnscannablePassthroughHorizon + 48*time.Hour))
 			},
 			omitted: func() error { return validateUnscannablePassthrough(nil) },
 			alreadyPast: func() error {
@@ -74,7 +74,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				return validatePathEntropyExclusions([]PathEntropyExclusion{{Host: "docs.vendor.example", PathPrefix: "/document/d/", Expires: dateAt(MaxPathEntropyExclusionHorizon)}})
 			},
 			oneDayPast: func() error {
-				return validatePathEntropyExclusions([]PathEntropyExclusion{{Host: "docs.vendor.example", PathPrefix: "/document/d/", Expires: dateAt(MaxPathEntropyExclusionHorizon + 24*time.Hour)}})
+				return validatePathEntropyExclusions([]PathEntropyExclusion{{Host: "docs.vendor.example", PathPrefix: "/document/d/", Expires: dateAt(MaxPathEntropyExclusionHorizon + 48*time.Hour)}})
 			},
 			omitted: func() error {
 				return validatePathEntropyExclusions([]PathEntropyExclusion{{Host: "docs.vendor.example", PathPrefix: "/document/d/"}})
@@ -90,7 +90,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				return validateQueryEntropyParamExclusions([]QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/v1/download", Param: "token", Expires: dateAt(MaxQueryEntropyParamExclusionHorizon)}})
 			},
 			oneDayPast: func() error {
-				return validateQueryEntropyParamExclusions([]QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/v1/download", Param: "token", Expires: dateAt(MaxQueryEntropyParamExclusionHorizon + 24*time.Hour)}})
+				return validateQueryEntropyParamExclusions([]QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/v1/download", Param: "token", Expires: dateAt(MaxQueryEntropyParamExclusionHorizon + 48*time.Hour)}})
 			},
 			omitted: func() error {
 				return validateQueryEntropyParamExclusions([]QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/v1/download", Param: "token"}})
@@ -106,7 +106,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				return validateRequestBodyEntropyWarnRoutes(&RequestBodyScanning{Enabled: true, ContentEntropyEnabled: true, ContentEntropyAction: ActionBlock, ContentEntropyWarnRoutes: []RequestBodyEntropyWarnRoute{{Host: "upload.vendor.example", Path: "/v1/files", ContentTypes: []string{"application/octet-stream"}, Reason: "temporary encrypted archive", Owner: "storage", Expires: dateAt(MaxRequestBodyEntropyWarnRouteHorizon)}}})
 			},
 			oneDayPast: func() error {
-				return validateRequestBodyEntropyWarnRoutes(&RequestBodyScanning{Enabled: true, ContentEntropyEnabled: true, ContentEntropyAction: ActionBlock, ContentEntropyWarnRoutes: []RequestBodyEntropyWarnRoute{{Host: "upload.vendor.example", Path: "/v1/files", ContentTypes: []string{"application/octet-stream"}, Reason: "temporary encrypted archive", Owner: "storage", Expires: dateAt(MaxRequestBodyEntropyWarnRouteHorizon + 24*time.Hour)}}})
+				return validateRequestBodyEntropyWarnRoutes(&RequestBodyScanning{Enabled: true, ContentEntropyEnabled: true, ContentEntropyAction: ActionBlock, ContentEntropyWarnRoutes: []RequestBodyEntropyWarnRoute{{Host: "upload.vendor.example", Path: "/v1/files", ContentTypes: []string{"application/octet-stream"}, Reason: "temporary encrypted archive", Owner: "storage", Expires: dateAt(MaxRequestBodyEntropyWarnRouteHorizon + 48*time.Hour)}}})
 			},
 			omitted: func() error { return validateRequestBodyEntropyWarnRoutes(&RequestBodyScanning{}) },
 			alreadyPast: func() error {
@@ -120,7 +120,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				return validateRequestBodySigV4CredentialRoutes(&RequestBodyScanning{Enabled: true, SigV4CredentialRoutes: []RequestBodySigV4CredentialRoute{{Host: "api.vendor.example", Path: "/v1/graphql", ContentTypes: []string{"application/json"}, Methods: []string{"POST"}, Reason: "temporary attachment migration", Owner: "platform", Expires: dateAt(MaxRequestBodySigV4CredentialRouteHorizon)}}})
 			},
 			oneDayPast: func() error {
-				return validateRequestBodySigV4CredentialRoutes(&RequestBodyScanning{Enabled: true, SigV4CredentialRoutes: []RequestBodySigV4CredentialRoute{{Host: "api.vendor.example", Path: "/v1/graphql", ContentTypes: []string{"application/json"}, Methods: []string{"POST"}, Reason: "temporary attachment migration", Owner: "platform", Expires: dateAt(MaxRequestBodySigV4CredentialRouteHorizon + 24*time.Hour)}}})
+				return validateRequestBodySigV4CredentialRoutes(&RequestBodyScanning{Enabled: true, SigV4CredentialRoutes: []RequestBodySigV4CredentialRoute{{Host: "api.vendor.example", Path: "/v1/graphql", ContentTypes: []string{"application/json"}, Methods: []string{"POST"}, Reason: "temporary attachment migration", Owner: "platform", Expires: dateAt(MaxRequestBodySigV4CredentialRouteHorizon + 48*time.Hour)}}})
 			},
 			omitted: func() error { return validateRequestBodySigV4CredentialRoutes(&RequestBodyScanning{}) },
 			alreadyPast: func() error {

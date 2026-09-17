@@ -271,9 +271,10 @@ block is not tolerated forever. Reload's block matcher recognizes an
 agent-owned loopback accept immediately following the managed proxy-port
 allow as PART of the managed block (this is what lets it grow the block to
 hold declared entries across reloads without leaving a stale one-off allow
-behind), so a hand-inserted rule in that position gets silently absorbed
-into -- and then removed by -- the next `contain reload-nft-rules`, the same
-way a genuinely removed declared entry is removed. `contain verify` flags
+behind), so a hand-inserted rule in that position is absorbed into -- and
+then removed by -- the next `contain reload-nft-rules`, the same way a
+genuinely removed declared entry is removed. Reload emits no warning of its
+own when it removes one. `contain verify` flags
 it as an unexpected verdict in the meantime, because it does not match any
 declared entry. Declare the service instead of hand-editing the rules; that
 is the trap `containment.loopback_services` exists to close.

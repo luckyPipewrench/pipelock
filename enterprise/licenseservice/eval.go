@@ -299,10 +299,9 @@ func (h *WebhookHandler) recordPendingOneTimeTrialRefund(ctx context.Context, or
 		return err
 	}
 	if entitlement != nil {
-		if isRefundableOneTimeTrial(entitlement) {
-			return h.revokeOneTimeTrialForOrder(ctx, entitlement, order, refundState, msgID, eventType)
-		}
-		return fmt.Errorf("pending one-time trial refund for %s found non-trial entitlement", order.ID)
+		// The store refuses a non-trial entitlement before committing, so
+		// reaching here means the order really is a refundable one-time trial.
+		return h.revokeOneTimeTrialForOrder(ctx, entitlement, order, refundState, msgID, eventType)
 	}
 	if err := h.db.MarkWebhookCommitted(ctx, msgID, eventType, order.ID); err != nil {
 		return fmt.Errorf("mark pending one-time trial refund webhook committed: %w", err)

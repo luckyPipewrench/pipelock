@@ -124,8 +124,27 @@ func TestRecordPendingOneTimeTrialRefundRefusesNonTrialEntitlement(t *testing.T)
 	order.Customer.Email = ent.CustomerEmail
 
 	err := s.handler.recordPendingOneTimeTrialRefund(t.Context(), order, refundStateFull, "msg_pending_refund_non_trial", EventOrderRefunded)
-	if err == nil || !strings.Contains(err.Error(), "found non-trial entitlement") {
-		t.Fatalf("recordPendingOneTimeTrialRefund error = %v, want non-trial refusal", err)
+	if !errors.Is(err, ErrPendingRefundNotOneTimeTrial) {
+		t.Fatalf("recordPendingOneTimeTrialRefund error = %v, want ErrPendingRefundNotOneTimeTrial", err)
+	}
+	// The refusal must happen before the transaction commits, or the guard row
+	// and eval order outlive a refund this service declined, and the stale
+	// pending marker then blocks a later legitimate trial for this order.
+	var guards int
+	if err := s.db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM trial_order_guards WHERE order_id = ?`, orderID).Scan(&guards); err != nil {
+		t.Fatalf("count trial_order_guards: %v", err)
+	}
+	if guards != 0 {
+		t.Fatalf("trial_order_guards rows = %d, want 0 after a refused refund", guards)
+	}
+	var orders int
+	if err := s.db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM eval_orders WHERE order_id = ?`, orderID).Scan(&orders); err != nil {
+		t.Fatalf("count eval_orders: %v", err)
+	}
+	if orders != 0 {
+		t.Fatalf("eval_orders rows = %d, want 0 after a refused refund", orders)
 	}
 	committed, err := s.db.WebhookCommitted(t.Context(), "msg_pending_refund_non_trial")
 	if err != nil || committed {

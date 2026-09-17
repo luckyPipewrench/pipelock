@@ -41,6 +41,11 @@ const (
 // credential for an already-refunded order, so the transaction must roll back.
 var ErrTrialRefundPending = errors.New("one-time trial refund is pending")
 
+// ErrPendingRefundNotOneTimeTrial refuses a pending trial refund whose order
+// resolves to something other than a refundable one-time trial, before any of
+// its markers are committed.
+var ErrPendingRefundNotOneTimeTrial = errors.New("pending refund order is not a refundable one-time trial")
+
 // EvalOrder tracks the fulfillment + refund lifecycle of a one-time Enterprise
 // Eval purchase, keyed by the Polar order ID. It exists separately from
 // entitlements so a refund that arrives BEFORE the paid event (out-of-order
@@ -128,6 +133,13 @@ func (e *EntitlementDB) RecordPendingOneTimeTrialRefund(ctx context.Context, eo 
 	entitlement, err := getEntitlementBySubscriptionID(ctx, tx, eo.OrderID)
 	if err != nil {
 		return nil, fmt.Errorf("re-read entitlement after pending one-time trial refund: %w", err)
+	}
+	// Refuse before committing. The caller rejects a non-trial entitlement, and
+	// if that refusal happened after the commit the guard row and eval order
+	// would survive a refund this service declined to record, leaving a pending
+	// refund marker that blocks a later legitimate trial for that order.
+	if entitlement != nil && !isRefundableOneTimeTrial(entitlement) {
+		return nil, fmt.Errorf("%w: %s", ErrPendingRefundNotOneTimeTrial, eo.OrderID)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit pending one-time trial refund: %w", err)

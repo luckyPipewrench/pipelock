@@ -3075,16 +3075,18 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
-	// escalated tracks whether the current request actually crossed an
+	// escalatedTo records the last escalation edge this request crossed, using
+	// the transition returned under the state lock rather than a later reread.
+	// The current request must actually cross an
 	// adaptive escalation threshold. Downstream airlock triggering is
-	// edge-bound on this flag so a session that merely sits at a trigger
+	// edge-bound on this transition so a session that merely sits at a trigger
 	// level (plateau) does not repeatedly re-arm airlock on every request.
 	// Plateau triggering produced a drain -> hard -> drain deadlock under
 	// retrying clients: timer-based de-escalation would recover to hard,
 	// the next allowed request would observe the still-elevated level,
 	// slam SetTier(drain) again, and the loop never broke. See
 	// TestAirlockEdgeTrigger_NoPlateauReentry.
-	escalated := false
+	escalatedTo := ""
 	var adaptiveCfg config.AdaptiveEnforcement
 	var ep decide.EscalationParams
 	if cfg.AdaptiveEnforcement.Enabled {
@@ -3111,8 +3113,8 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// session isn't completely invisible to adaptive scoring.
 			// Retries of the same mismatch still must not pump the score.
 			deniedEP := classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash())
-			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, deniedEP) {
-				escalated = true
+			if to := recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, deniedEP); to != "" {
+				escalatedTo = to
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
@@ -3120,14 +3122,14 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// occurrence of this destination+finding contributes threat score;
 			// retries of the same already-enforced denial must not pump it.
 			deniedEP := classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash())
-			if recordScopedAdaptiveSignal(sess, scope, adaptiveBlockSignal(result, &adaptiveCfg), deniedEP) {
-				escalated = true
+			if to := recordScopedAdaptiveSignal(sess, scope, adaptiveBlockSignal(result, &adaptiveCfg), deniedEP); to != "" {
+				escalatedTo = to
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
-			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep) {
-				escalated = true
+			if to := recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep); to != "" {
+				escalatedTo = to
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -3146,8 +3148,8 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			if !ok || a.Score <= 0 {
 				continue
 			}
-			if recordScopedAdaptiveSignal(sess, scope, sig, ep) {
-				escalated = true
+			if to := recordScopedAdaptiveSignal(sess, scope, sig, ep); to != "" {
+				escalatedTo = to
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		}
@@ -3162,9 +3164,9 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 
 	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
 	// every request that happens to observe a session at a trigger level.
-	// See the long comment at the `escalated` declaration above.
-	if escalated {
-		triggerScopedAirlockOnEscalation(sess, scope, &cfg.Airlock, ep)
+	// See the long comment at the `escalatedTo` declaration above.
+	if escalatedTo != "" {
+		triggerScopedAirlockOnEscalation(sess, scope, escalatedTo, &cfg.Airlock, ep)
 	}
 
 	for _, a := range anomalies {
@@ -3231,27 +3233,34 @@ func shouldScoreClassifiedDenial(rec session.Recorder, scope string, ep decide.E
 	return session.NoteClassifiedDenial(rec, scope, ep.DenialScanner, ep.DenialReason, ep.PolicyHash)
 }
 
-func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.SignalType, ep decide.EscalationParams) bool {
+// recordScopedAdaptiveSignal returns the committed escalation label, or an
+// empty string when no edge occurred. Observability may call external writers,
+// so consumers must not reconstruct that edge from mutable session state.
+func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.SignalType, ep decide.EscalationParams) string {
 	if sess == nil {
-		return false
+		return ""
 	}
 	scope = normalizeAdaptiveScope(scope)
 	if session.ClassifiedDenialSignal(sig) && !shouldScoreClassifiedDenial(sess, scope, ep) {
-		return false
+		return ""
 	}
-	if scope == "" {
-		return decide.RecordSignal(sess, sig, ep)
-	}
+	// RecordScopedSignal also owns the empty-scope global fallback and returns
+	// its from/to pair under the same lock as the score change.
 	escalated, from, to := sess.RecordScopedSignal(scope, sig, ep.Threshold)
 	if !escalated {
-		return false
+		return ""
 	}
 	score := sess.ScopedThreatScore(scope)
+	logKey, scopeNote := ep.Session, ""
+	if scope != "" {
+		logKey += " " + scope
+		scopeNote = "scope=" + scope + " "
+	}
 	if ep.ConsoleWriter != nil {
-		_, _ = fmt.Fprintf(ep.ConsoleWriter, "pipelock: session escalated %s -> %s (scope=%s score=%.1f)\n", from, to, scope, score)
+		_, _ = fmt.Fprintf(ep.ConsoleWriter, "pipelock: session escalated %s -> %s (%sscore=%.1f)\n", from, to, scopeNote, score)
 	}
 	if ep.Logger != nil {
-		ep.Logger.LogAdaptiveEscalation(ep.Session+" "+scope, from, to, ep.ClientIP, ep.RequestID, score)
+		ep.Logger.LogAdaptiveEscalation(logKey, from, to, ep.ClientIP, ep.RequestID, score)
 	}
 	if ep.Metrics != nil {
 		ep.Metrics.RecordSessionEscalation(from, to)
@@ -3260,19 +3269,19 @@ func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.Si
 		}
 		ep.Metrics.SetAdaptiveSessionLevel(to, 1)
 	}
-	return true
+	return to
 }
 
 func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig session.SignalType, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock, ep decide.EscalationParams) {
 	if sess, ok := rec.(*SessionState); ok && sess != nil {
 		scope = normalizeAdaptiveScope(scope)
-		escalated := recordScopedAdaptiveSignal(sess, scope, sig, ep)
-		if escalated && adaptiveCfg != nil {
+		escalatedTo := recordScopedAdaptiveSignal(sess, scope, sig, ep)
+		if escalatedTo != "" && adaptiveCfg != nil {
 			level := sess.EffectiveEscalationLevel(scope)
 			sess.SetScopedBlockAll(scope, decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock)
 		}
-		if escalated {
-			triggerScopedAirlockOnEscalation(sess, scope, airlockCfg, ep)
+		if escalatedTo != "" {
+			triggerScopedAirlockOnEscalation(sess, scope, escalatedTo, airlockCfg, ep)
 		}
 		return
 	}
@@ -3286,16 +3295,15 @@ func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig sessio
 // when a scoped adaptive signal crosses an escalation edge. Signal writers
 // share this helper so every transport preserves the same scoped identity,
 // provenance, audit event, and recovery behavior.
-func triggerScopedAirlockOnEscalation(sess *SessionState, scope string, airlockCfg *config.Airlock, ep decide.EscalationParams) {
+func triggerScopedAirlockOnEscalation(sess *SessionState, scope, escalatedTo string, airlockCfg *config.Airlock, ep decide.EscalationParams) {
 	if sess == nil || airlockCfg == nil || !airlockCfg.Enabled {
 		return
 	}
 
 	scope = normalizeAdaptiveScope(scope)
-	level := sess.EffectiveEscalationLevel(scope)
 	targetTier := ""
 	trigger := ""
-	switch session.EscalationLabel(level) {
+	switch escalatedTo {
 	case "elevated":
 		targetTier = airlockCfg.Triggers.OnElevated
 		trigger = airlockTriggerOnElevated
@@ -3319,7 +3327,7 @@ func triggerScopedAirlockOnEscalation(sess *SessionState, scope string, airlockC
 			Score:    sess.ScopedThreatScore(scope),
 		})
 		if ep.Logger != nil {
-			ep.Logger.LogAirlockEnter(ep.Session, to, "adaptive_"+session.EscalationLabel(level), ep.ClientIP, ep.RequestID)
+			ep.Logger.LogAirlockEnter(ep.Session, to, "adaptive_"+escalatedTo, ep.ClientIP, ep.RequestID)
 		}
 		if ep.Metrics != nil {
 			ep.Metrics.RecordAirlockTransition(from, to, "adaptive")

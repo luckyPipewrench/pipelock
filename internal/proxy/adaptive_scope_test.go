@@ -390,7 +390,7 @@ func TestTriggerScopedAirlockOnEscalation_SkipsInactiveConfiguration(t *testing.
 			sess := &SessionState{}
 			_, _, _ = sess.RecordScopedSignal(scope, session.SignalBlock, 3)
 			before := sess.AirlockForScope(scope).Tier()
-			triggerScopedAirlockOnEscalation(sess, scope, tc.cfg, decide.EscalationParams{})
+			triggerScopedAirlockOnEscalation(sess, scope, session.EscalationLabel(1), tc.cfg, decide.EscalationParams{})
 			got := sess.AirlockForScope(scope).Tier()
 			if got != before {
 				t.Fatalf("inactive trigger changed airlock tier %q -> %q, want unchanged", before, got)

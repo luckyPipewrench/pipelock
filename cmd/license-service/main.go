@@ -124,16 +124,7 @@ func run(log zerolog.Logger) error {
 	// limit, so preserving their live trials is visible rather than quiet.
 	db.ReportDuplicateActiveTrials(context.Background(), log)
 
-	// Name any slot whose expiry disagrees with its entitlement's claim-time
-	// period end, so a row left behind by the retired sync writer is visible
-	// instead of silently governing eligibility. Never auto-repaired.
-	unverifiableTrialSlots := db.ReportDriftedTrialSlots(context.Background(), log)
-	if len(unverifiableTrialSlots) != 0 {
-		log.Warn().
-			Int("unverifiable_count", len(unverifiableTrialSlots)).
-			Strs("subscription_ids", unverifiableTrialSlots).
-			Msg("trial slot expiry drift report has unverifiable legacy rows; not auto-repaired, reconcile manually")
-	}
+	reportTrialSlotExpiryDrift(context.Background(), db, log)
 
 	// Open the append-only audit ledger.
 	ledger, err := licenseservice.OpenAuditLedger(cfg.LedgerPath)
@@ -194,4 +185,18 @@ func run(log zerolog.Logger) error {
 
 	log.Info().Msg("license service stopped")
 	return nil
+}
+
+// reportTrialSlotExpiryDrift makes every startup-discovered trial-slot state
+// visible without modifying a live slot. Drifted and orphaned slots are logged
+// by the database reporter; unverifiable legacy owners are reported together.
+func reportTrialSlotExpiryDrift(ctx context.Context, db *licenseservice.EntitlementDB, log zerolog.Logger) {
+	unverifiableTrialSlots := db.ReportDriftedTrialSlots(ctx, log)
+	if len(unverifiableTrialSlots) == 0 {
+		return
+	}
+	log.Warn().
+		Int("unverifiable_count", len(unverifiableTrialSlots)).
+		Strs("subscription_ids", unverifiableTrialSlots).
+		Msg("trial slot expiry drift report has unverifiable legacy rows; not auto-repaired, reconcile manually")
 }

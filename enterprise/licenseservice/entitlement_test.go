@@ -126,6 +126,62 @@ func TestClaimActiveTrialSlotErrorsFailClosed(t *testing.T) {
 	}
 }
 
+func TestRecordTrialSlotClaimExpiryWriteFailureFailsClosed(t *testing.T) {
+	ent := testEntitlement("order_record_claim_expiry")
+	want := errors.New("write failed")
+
+	err := recordTrialSlotClaimExpiry(t.Context(), claimExecer{err: want}, ent)
+	if !errors.Is(err, want) {
+		t.Fatalf("recordTrialSlotClaimExpiry error = %v, want wrapped write failure", err)
+	}
+	if !strings.Contains(err.Error(), ent.SubscriptionID) {
+		t.Fatalf("recordTrialSlotClaimExpiry error = %q, want subscription ID %q", err, ent.SubscriptionID)
+	}
+}
+
+func TestRecordTrialSlotClaimExpiryUncanonicalizableEmailFailsClosed(t *testing.T) {
+	ent := testEntitlement("order_uncanonicalizable_claim_expiry")
+	ent.CustomerEmail = "not-an-email"
+
+	err := recordTrialSlotClaimExpiry(t.Context(), claimExecer{}, ent)
+	if !errors.Is(err, ErrTrialEmailNotCanonical) {
+		t.Fatalf("recordTrialSlotClaimExpiry error = %v, want ErrTrialEmailNotCanonical", err)
+	}
+}
+
+func TestEntitlementDB_TrialSlotExpiryReportsClosedDatabaseFailure(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close entitlement database: %v", err)
+	}
+
+	if _, err := db.DriftedTrialSlots(t.Context()); err == nil {
+		t.Fatal("DriftedTrialSlots succeeded after database close")
+	}
+	var buf bytes.Buffer
+	if got := db.ReportDriftedTrialSlots(t.Context(), zerolog.New(&buf)); got != nil {
+		t.Fatalf("ReportDriftedTrialSlots = %v after database close, want nil", got)
+	}
+	if got := buf.String(); !strings.Contains(got, "could not check for drifted trial slot expiries") {
+		t.Fatalf("closed database report = %q, want warning", got)
+	}
+}
+
+func TestEntitlementDB_ClaimExpiryWriteFailureRollsBackTrial(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.db.ExecContext(t.Context(), `CREATE TRIGGER fail_trial_claim_expiry BEFORE UPDATE OF last_license_period_end ON entitlements BEGIN SELECT RAISE(ABORT, 'forced claim-expiry failure'); END`); err != nil {
+		t.Fatalf("create claim-expiry failure trigger: %v", err)
+	}
+	ent := trialEntitlement("order_claim_expiry_rollback", "claim-expiry-rollback@example.com", time.Now().Add(time.Hour))
+	if err := db.Upsert(t.Context(), ent); err == nil || !strings.Contains(err.Error(), "forced claim-expiry failure") {
+		t.Fatalf("Upsert error = %v, want claim-expiry failure", err)
+	}
+	stored, err := db.GetBySubscriptionID(t.Context(), ent.SubscriptionID)
+	if err != nil || stored != nil {
+		t.Fatalf("trial after failed claim-expiry write = %+v, %v; want no committed entitlement", stored, err)
+	}
+}
+
 // testEntitlement returns a minimal valid entitlement for testing.
 func testEntitlement(subID string) *Entitlement {
 	return &Entitlement{

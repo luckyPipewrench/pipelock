@@ -1100,14 +1100,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Airlock action classification for forward proxy. Admission reads the same
 	// CEE-safe session the writer raised; that key is carried into redirect
 	// context so every hop admits against the same state.
-	forwardAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
+	forwardAirlockSess, _ := forwardRec.(*SessionState)
 	denyForwardAirlock := func() bool {
-		forwardSess := forwardAirlockSess
-		if forwardSess == nil {
-			return false
-		}
-		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
-		if tier != config.AirlockTierNone {
+		// Preserve this request's findings and also honor current quarantine
+		// if capacity eviction or a manager replacement changed the lookup.
+		for _, forwardSess := range [2]*SessionState{forwardAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
+			if forwardSess == nil {
+				continue
+			}
+			tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
 			if !allowed {
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)

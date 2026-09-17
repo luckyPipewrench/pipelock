@@ -4782,23 +4782,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Airlock check: drain tier blocks all traffic including fetch. Admission
 	// reads the same CEE-safe session the writer raised, and carries that key
 	// into redirect context so every hop admits against the same state.
-	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
+	fetchAirlockSess, _ := fetchRec.(*SessionState)
 	denyFetchAirlock := func() bool {
-		fetchSess := fetchAirlockSess
-		if fetchSess == nil {
-			return false
-		}
-		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
-		if tier == config.AirlockTierDrain {
-			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
-			p.metrics.RecordAirlockDenial(tier, TransportFetch, "read")
-			writeBlockedJSON(w,
-				blockInfoFor(blockreason.AirlockActive, ""),
-				http.StatusForbidden, FetchResponse{
-					URL: displayURL, Agent: agent, Blocked: true,
-					BlockReason: "session in airlock drain",
-				})
-			return true
+		// A finding belongs to its recorder even after replacement, while
+		// another request may have quarantined the current session meanwhile.
+		for _, fetchSess := range [2]*SessionState{fetchAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
+			if fetchSess == nil {
+				continue
+			}
+			tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
+			if tier == config.AirlockTierDrain {
+				p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
+				p.metrics.RecordAirlockDenial(tier, TransportFetch, "read")
+				writeBlockedJSON(w,
+					blockInfoFor(blockreason.AirlockActive, ""),
+					http.StatusForbidden, FetchResponse{
+						URL: displayURL, Agent: agent, Blocked: true,
+						BlockReason: "session in airlock drain",
+					})
+				return true
+			}
 		}
 		return false
 	}

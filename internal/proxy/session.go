@@ -2579,6 +2579,20 @@ func (sm *SessionManager) maintenanceLoop() {
 	}
 }
 
+// hasActiveAirlockLocked reports whether any lane still owns quarantine.
+// Caller holds s.mu, using the same session-to-airlock lock order as reset.
+func (s *SessionState) hasActiveAirlockLocked() bool {
+	if tier := s.airlock.Tier(); tier != "" && tier != config.AirlockTierNone {
+		return true
+	}
+	for _, st := range s.scopes {
+		if tier := st.airlock.Tier(); tier != "" && tier != config.AirlockTierNone {
+			return true
+		}
+	}
+	return false
+}
+
 // cleanup removes sessions idle beyond TTL and prunes stale IP domain entries.
 // Evicted sessions are recorded in the behavioral baseline (if enabled) after
 // the map lock is released to avoid holding sm.mu during baseline I/O.
@@ -2595,13 +2609,13 @@ func (sm *SessionManager) cleanup() {
 		sess.mu.Lock()
 		idle := sess.lastActivity.Before(cutoff)
 		escLevel := sess.escalationLevel
-		airlockTier := sess.airlock.Tier()
+		quarantined := sess.hasActiveAirlockLocked()
 		sess.mu.Unlock()
 
 		// Airlock sessions are exempt from idle eviction. A session in
 		// quarantine must not be evicted or it would escape enforcement.
 		// Empty string is the zero value (equivalent to "none").
-		if airlockTier != config.AirlockTierNone && airlockTier != "" {
+		if quarantined {
 			continue
 		}
 
@@ -2809,11 +2823,11 @@ func (sm *SessionManager) evictOldest() *SessionState {
 		sess.mu.Lock()
 		la := sess.lastActivity
 		escLevel := sess.escalationLevel
-		airlockTier := sess.airlock.Tier()
+		quarantined := sess.hasActiveAirlockLocked()
 		sess.mu.Unlock()
 
 		// Skip quarantined sessions: evicting them would escape enforcement.
-		if airlockTier != config.AirlockTierNone && airlockTier != "" {
+		if quarantined {
 			continue
 		}
 

@@ -102,6 +102,9 @@ func reserveTrialRefundGuard(ctx context.Context, tx *sql.Tx, ent *Entitlement) 
 // the shared order-state write. A caller that receives an entitlement must
 // revoke it instead of treating the refund as pending.
 func (e *EntitlementDB) RecordPendingOneTimeTrialRefund(ctx context.Context, eo *EvalOrder) (*Entitlement, error) {
+	if eo == nil {
+		return nil, errors.New("eval order is nil")
+	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin pending one-time trial refund transaction: %w", err)

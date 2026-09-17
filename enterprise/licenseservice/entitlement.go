@@ -567,6 +567,7 @@ type DriftedTrialSlotSubscription struct {
 type TrialSlotExpiryDriftReport struct {
 	Drifted                     []DriftedTrialSlotSubscription
 	UnverifiableSubscriptionIDs []string
+	OrphanedSubscriptionIDs     []string
 }
 
 // DriftedTrialSlots finds active_trial_slots rows whose expires_at no longer
@@ -587,16 +588,20 @@ func (e *EntitlementDB) DriftedTrialSlots(ctx context.Context) ([]DriftedTrialSl
 	return report.Drifted, nil
 }
 
-// TrialSlotExpiryDriftReport finds drifted trial slots and legacy slots whose
-// entitlement lacks a claim-time expiry. It never repairs either kind of row.
+// TrialSlotExpiryDriftReport finds drifted trial slots, legacy slots whose
+// entitlement lacks a claim-time expiry, and slots with no owning entitlement.
+// It never repairs any kind of row.
 func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSlotExpiryDriftReport, error) {
 	const query = `
-	SELECT s.subscription_id, s.expires_at, e.last_license_period_end
+	SELECT s.subscription_id, s.expires_at, e.subscription_id, e.last_license_period_end
 	FROM active_trial_slots s
-	JOIN entitlements e ON e.subscription_id = s.subscription_id
-	WHERE e.tier IN (?, ?)
-	  AND e.billing_interval = ?
-	  AND (e.last_license_period_end IS NULL OR s.expires_at <> e.last_license_period_end)
+	LEFT JOIN entitlements e ON e.subscription_id = s.subscription_id
+	WHERE e.subscription_id IS NULL
+	   OR (
+		e.tier IN (?, ?)
+		AND e.billing_interval = ?
+		AND (e.last_license_period_end IS NULL OR s.expires_at <> e.last_license_period_end)
+	)
 	ORDER BY s.subscription_id ASC
 	`
 	rows, err := e.db.QueryContext(ctx, query, tierTrial, tierEnterpriseTrial, billingIntervalOneTime)
@@ -609,10 +614,15 @@ func (e *EntitlementDB) TrialSlotExpiryDriftReport(ctx context.Context) (TrialSl
 	for rows.Next() {
 		var (
 			d        DriftedTrialSlotSubscription
+			ownerID  sql.NullString
 			claimEnd sql.NullTime
 		)
-		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &claimEnd); err != nil {
+		if err := rows.Scan(&d.SubscriptionID, &d.SlotExpiresAt, &ownerID, &claimEnd); err != nil {
 			return TrialSlotExpiryDriftReport{}, fmt.Errorf("scan trial slot expiry drift report: %w", err)
+		}
+		if !ownerID.Valid {
+			report.OrphanedSubscriptionIDs = append(report.OrphanedSubscriptionIDs, d.SubscriptionID)
+			continue
 		}
 		if !claimEnd.Valid {
 			report.UnverifiableSubscriptionIDs = append(report.UnverifiableSubscriptionIDs, d.SubscriptionID)
@@ -645,6 +655,11 @@ func (e *EntitlementDB) ReportDriftedTrialSlots(ctx context.Context, log zerolog
 			Time("slot_expires_at", d.SlotExpiresAt).
 			Time("entitlement_claim_expires_at", d.EntitlementClaimEndsAt).
 			Msg("trial slot expiry disagrees with its entitlement's claim-time expiry; not auto-repaired, reconcile manually")
+	}
+	for _, subscriptionID := range report.OrphanedSubscriptionIDs {
+		log.Warn().
+			Str("subscription_id", subscriptionID).
+			Msg("trial slot has no owning entitlement; not auto-repaired, reconcile manually")
 	}
 	return report.UnverifiableSubscriptionIDs
 }
@@ -778,8 +793,14 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	// denied a second trial until that original expiry passes, regardless of
 	// what CurrentPeriodEnd this terminal write carries.
 	if ent.Status == statusActive {
-		if err := claimActiveTrialSlot(ctx, tx, ent); err != nil && !errors.Is(err, ErrTrialEmailNotCanonical) {
+		err := claimActiveTrialSlot(ctx, tx, ent)
+		if err != nil && !errors.Is(err, ErrTrialEmailNotCanonical) {
 			return err
+		}
+		if err == nil {
+			if err := recordTrialSlotClaimExpiry(ctx, tx, ent); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -821,7 +842,7 @@ func upsertEntitlement(ctx context.Context, exec entitlementExecer, ent *Entitle
 		last_license_id        = excluded.last_license_id,
 		last_license_issued_at = excluded.last_license_issued_at,
 		last_license_expires_at= excluded.last_license_expires_at,
-		last_license_period_end= excluded.last_license_period_end,
+		last_license_period_end= COALESCE(excluded.last_license_period_end, entitlements.last_license_period_end),
 		last_license_tier      = excluded.last_license_tier,
 		last_license_interval  = excluded.last_license_interval,
 		last_license_product_id= excluded.last_license_product_id,
@@ -1273,6 +1294,23 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	}
 	if changed == 0 {
 		return fmt.Errorf("%w for this email", ErrActiveTrialExists)
+	}
+	return nil
+}
+
+// recordTrialSlotClaimExpiry records the original slot expiry for an owner
+// whose entitlement predates claim-time expiry tracking. Existing values are
+// immutable here: the same owner may retry or update its entitlement without
+// changing the slot's write-once expiry record.
+func recordTrialSlotClaimExpiry(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
+	const query = `
+	UPDATE entitlements
+	SET last_license_period_end = ?
+	WHERE subscription_id = ?
+	  AND last_license_period_end IS NULL
+	`
+	if _, err := exec.ExecContext(ctx, query, ent.CurrentPeriodEnd.UTC(), ent.SubscriptionID); err != nil {
+		return fmt.Errorf("record trial slot claim expiry for %s: %w", ent.SubscriptionID, err)
 	}
 	return nil
 }

@@ -1133,8 +1133,15 @@ func TestHashFileSafeRefusesUntrustworthyReads(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// statIDs reports ok=false off unix, and hashFileSafe then skips
+			// the identity comparison entirely. The read would succeed and
+			// return a digest, so this case would assert an error the platform
+			// can never produce.
+			if tt.badID && !haveIDs {
+				t.Skip("statIDs is unavailable here, so hashFileSafe cannot compare identities")
+			}
 			wantDev := dev
-			if tt.badID && haveIDs {
+			if tt.badID {
 				wantDev++
 			}
 			digest, oversize, hashErr := hashFileSafe(handle, tt.relPath, filepath.Join(root, tt.relPath), tt.cap, wantDev, ino, haveIDs)

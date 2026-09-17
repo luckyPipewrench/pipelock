@@ -81,7 +81,8 @@ Exit codes:
   0  Verification passed: signature valid, score meets minimum, all policy gates passed
   1  Verification could not complete: flag parse error, bad proof file, bad key,
      bad signature, expired capsule, or schema mismatch
-  2  Verified but failed: signature is valid, but policy gates or minimum score not met`,
+  2  Verified but failed: signature is valid, but policy gates or minimum score
+     not met, or a bound workspace change statement is incomplete`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			maxAgeDays, err := parseDays(maxAgeStr)

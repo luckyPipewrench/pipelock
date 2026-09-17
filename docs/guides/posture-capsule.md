@@ -142,7 +142,7 @@ The weighting is encoded in `internal/posture/score.go` and bumps `PolicyVersion
       --json > posture-result.json
 ```
 
-An exit code of `2` from the verify step fails the CI job because of a policy gate — remediation is "fix the environment or relax the policy". A `1` fails because the capsule is not trustworthy — remediation is "regenerate the capsule, check the public key, or investigate tampering".
+An exit code of `2` from the verify step fails the CI job for one of two reasons, and they have different remediations. A policy gate or the minimum score was not met — remediation is "fix the environment or relax the policy". Or a workspace change statement was supplied, verified and bound, but is incomplete — remediation is to read the statement's incomplete reason, because relaxing policy will not change that result. A `1` fails because the capsule is not trustworthy — remediation is "regenerate the capsule, check the public key, or investigate tampering".
 
 ## Artifact shape
 

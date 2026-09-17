@@ -1235,23 +1235,6 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 		return nil // already has a slot
 	}
 
-	now := time.Now()
-
-	if now.After(h.cfg.FoundingProDeadline) {
-		_ = h.ledger.Log(AuditEntry{
-			Event:          AuditFoundingCapHit,
-			SubscriptionID: ent.SubscriptionID,
-			CustomerEmail:  ent.CustomerEmail,
-			Detail:         "founding pro deadline passed, honoring paid checkout",
-		})
-		h.log.Warn().
-			Str("subscription_id", ent.SubscriptionID).
-			Msg("founding pro deadline passed, honoring paid checkout — archive Polar products")
-		// Fall through to reserve the founding slot. The customer paid the
-		// founding price, so they get founding. The real defense is archiving
-		// the Polar product so no new checkouts are possible.
-	}
-
 	// Read authoritative founding count from DB, not in-memory cache.
 	// This prevents drift if the process restarted or a previous Upsert
 	// changed the DB state outside the mutex.

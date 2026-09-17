@@ -228,21 +228,20 @@ func newTestSetup(t *testing.T) *testSetup {
 
 	cert, rootPub := testServiceIntermediateCert(t, pub)
 	cfg := &Config{
-		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
-		PolarAPIToken:       testPolarAPIToken,
-		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		CRLPrivateKey:       crlPriv,
-		ResendAPIKey:        "re_" + "test_key",
-		DBPath:              ":memory:",
-		LedgerPath:          filepath.Join(t.TempDir(), "test.jsonl"),
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
-		ListenAddr:          ":0",
-		FromEmail:           "test@pipelock.dev",
-		PolarAPIBase:        polarSrv.URL,
-		PolarAPIVersion:     defaultPolarAPIVersion,
+		PolarWebhookSecret: "whsec_" + "dGVzdA==",
+		PolarAPIToken:      testPolarAPIToken,
+		PrivateKeyPath:     filepath.Join(t.TempDir(), "test.key"),
+		IntermediateCert:   cert,
+		RootPublicKey:      rootPub,
+		CRLPrivateKey:      crlPriv,
+		ResendAPIKey:       "re_" + "test_key",
+		DBPath:             ":memory:",
+		LedgerPath:         filepath.Join(t.TempDir(), "test.jsonl"),
+		FoundingProCap:     50,
+		ListenAddr:         ":0",
+		FromEmail:          "test@pipelock.dev",
+		PolarAPIBase:       polarSrv.URL,
+		PolarAPIVersion:    defaultPolarAPIVersion,
 		OrderProducts: []OrderProductConfig{
 			{ProductID: "prod_trial", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
 			{ProductID: "prod_trial_test", Tier: tierTrial, AmountCents: 100, Currency: "usd"},
@@ -653,13 +652,20 @@ func TestCheckFoundingCap_CapReached(t *testing.T) {
 	}
 }
 
-func TestCheckFoundingCap_DeadlinePassed(t *testing.T) {
+// A founding checkout below the cap must not be recorded as a cap hit. The
+// founding_cap_hit event used to be emitted from two conditions: the real cap,
+// and a calendar deadline that defaulted to a date already in the past. Every
+// founding checkout after that date therefore wrote a cap-hit record while
+// slots remained, which makes the audit trail unable to answer when the cap
+// was actually reached. With the deadline gone the event has one meaning, and
+// this test fails if a second condition is ever reintroduced.
+func TestCheckFoundingCap_BelowCapWritesNoCapHit(t *testing.T) {
 	ts := newTestSetup(t)
-	ts.cfg.FoundingProDeadline = time.Now().Add(-24 * time.Hour) // yesterday
+	ts.cfg.FoundingProCap = 50
 
 	ctx := t.Context()
 
-	ent := testEntitlement("sub_past_deadline")
+	ent := testEntitlement("sub_below_cap")
 	ent.Tier = tierFoundingPro
 	ent.Founding = true
 
@@ -667,12 +673,21 @@ func TestCheckFoundingCap_DeadlinePassed(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should preserve founding_pro - customer paid the founding price.
-	if ent.Tier != tierFoundingPro {
-		t.Errorf("Tier = %q, want %q (paid checkout honored despite deadline)", ent.Tier, tierFoundingPro)
+	ledgerBytes, err := os.ReadFile(ts.handler.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger: %v", err)
 	}
-	if !ent.Founding {
-		t.Error("Founding should remain true (paid checkout honored)")
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerBytes)), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry AuditEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode ledger line %q: %v", line, err)
+		}
+		if entry.Event == AuditFoundingCapHit {
+			t.Fatalf("founding checkout below the cap recorded %q: %s", AuditFoundingCapHit, line)
+		}
 	}
 }
 
@@ -814,10 +829,9 @@ func TestProcessSubscription_ExpiryClampedToIntermediateNotAfter(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	notAfter := now.Add(2 * time.Hour)
 	cfg := &Config{
-		IntermediateCert:    testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_short", now.Add(-time.Minute), notAfter),
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: testServiceIntermediateCertWithRoot(t, rootPriv, signingPub, "im_short", now.Add(-time.Minute), notAfter),
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1461,10 +1475,9 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	cfg := &Config{
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: cert,
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
@@ -1494,10 +1507,9 @@ func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
 
 	cert, rootPub := testServiceIntermediateCert(t, certPub)
 	cfg := &Config{
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: cert,
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
@@ -1525,10 +1537,9 @@ func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
 	}
 
 	cfg := &Config{
-		IntermediateCert:    []byte("{bad json"),
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: []byte("{bad json"),
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")
@@ -1603,10 +1614,9 @@ func TestNewWebhookHandler_VerifiesIntermediateAtStartup(t *testing.T) {
 				t.Fatalf("GenerateKey(root): %v", err)
 			}
 			cfg := &Config{
-				IntermediateCert:    tt.cert(t, rootPriv, signingPub),
-				RootPublicKey:       tt.root(rootPub),
-				FoundingProCap:      50,
-				FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+				IntermediateCert: tt.cert(t, rootPriv, signingPub),
+				RootPublicKey:    tt.root(rootPub),
+				FoundingProCap:   50,
 			}
 			_, err = NewWebhookHandler(cfg, db, NewPolarClient("token", "http://localhost", defaultPolarAPIVersion), NewEmailSender("key", "from@test.com"), ledger, signingPriv, zerolog.Nop())
 			if (err != nil) != tt.wantErr {
@@ -2172,10 +2182,9 @@ func TestNewWebhookHandler_DBError(t *testing.T) {
 	cert, rootPub := testServiceIntermediateCert(t, pub)
 
 	cfg := &Config{
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: cert,
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient("token", "http://localhost", defaultPolarAPIVersion)
 	email := NewEmailSender("key", "from@test.com")

@@ -90,7 +90,6 @@ func newTestServer(t *testing.T) *Server {
 		DBPath:                ":memory:",
 		LedgerPath:            filepath.Join(t.TempDir(), "server-test.jsonl"),
 		FoundingProCap:        50,
-		FoundingProDeadline:   time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
 		ListenAddr:            ":0",
 		FromEmail:             "test@pipelock.dev",
 		PolarAPIBase:          polarSrv.URL,

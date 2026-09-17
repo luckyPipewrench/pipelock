@@ -129,22 +129,11 @@ func TestLoadConfig_InvalidFoundingCap(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_InvalidDeadline(t *testing.T) {
-	setRequiredConfigEnv(t)
-	t.Setenv("FOUNDING_PRO_DEADLINE", "not-a-date")
-
-	_, err := LoadConfig()
-	if err == nil {
-		t.Error("expected error for invalid deadline, got nil")
-	}
-}
-
 func TestLoadConfig_CustomValues(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("DB_PATH", "/tmp/custom.db")
 	t.Setenv("FOUNDING_PRO_CAP", "100")
-	t.Setenv("FOUNDING_PRO_DEADLINE", "2027-01-01")
 
 	cfg, err := LoadConfig()
 	if err != nil {

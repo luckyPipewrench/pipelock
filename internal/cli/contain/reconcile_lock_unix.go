@@ -86,6 +86,22 @@ func openContainmentReconcileLockFile(lockPath string) (*os.File, error) {
 			// host that has never completed an install.
 			return nil, fmt.Errorf("containment reconcile lock: directory %s is missing; %s", filepath.Dir(lockPath), containmentReconcileLockRecovery)
 		}
+		if errors.Is(err, os.ErrPermission) {
+			// Rerunning install CANNOT fix this one, so do not name it.
+			// ensureNFTRulesDirSafe deliberately leaves the mode of a
+			// directory it did not create alone, so an install rerun opens
+			// this same lock path and fails with the same EACCES. Name the
+			// directory whose ownership or mode is the actual cause, and
+			// the read-only-mount case that presents identically, so the
+			// operator repairs the thing the blocking path consults
+			// instead of running a command that reports the same error.
+			return nil, fmt.Errorf(
+				"containment reconcile lock: open %s refused: %w; the lock's directory %s is not writable by uid %d — "+
+					"correct that directory's ownership/mode (it must be root-owned and root-writable) or remount it read-write, "+
+					"then rerun `pipelock contain install`; rerunning install alone cannot repair it, because install does not "+
+					"change the mode of a rules directory it did not create",
+				lockPath, err, filepath.Dir(lockPath), os.Getuid())
+		}
 		return nil, fmt.Errorf("containment reconcile lock: open %s refused: %w; %s", lockPath, err, containmentReconcileLockRecovery)
 	}
 	info, err := f.Stat()

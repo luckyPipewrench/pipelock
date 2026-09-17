@@ -161,3 +161,41 @@ func TestWithContainmentReconcileLockAcceptsOwnRegularFile(t *testing.T) {
 		t.Fatalf("fn ran %d times, want 3", calls)
 	}
 }
+
+// TestWithContainmentReconcileLockUnwritableParentNamesTheRealRemedy covers
+// the operability half of the lock's failure surface: an EACCES on the
+// lock's directory must NOT tell the operator to rerun `contain install`
+// as its remedy, because install deliberately leaves the mode of a rules
+// directory it did not create alone and therefore fails with the identical
+// error. The refusal must instead name the directory whose ownership/mode
+// is the actual cause. An inert remedy teaches an operator that policy
+// changed when nothing did.
+func TestWithContainmentReconcileLockUnwritableParentNamesTheRealRemedy(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory write permissions, so EACCES cannot be provoked")
+	}
+	dir := filepath.Join(t.TempDir(), "rules.d")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
+
+	lockPath := filepath.Join(dir, "50-pipelock-containment.nft.reconcile.lock")
+	err := withContainmentReconcileLock(lockPath, func() error {
+		t.Fatal("fn must not run when the lock file cannot be opened")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an error for a lock path whose parent directory is not writable")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, dir) {
+		t.Errorf("error = %v, want it to name the unwritable directory %s", err, dir)
+	}
+	if !strings.Contains(msg, "not writable") {
+		t.Errorf("error = %v, want it to say the directory is not writable", err)
+	}
+	if !strings.Contains(msg, "cannot repair it") {
+		t.Errorf("error = %v, want it to say rerunning install alone cannot repair this", err)
+	}
+}

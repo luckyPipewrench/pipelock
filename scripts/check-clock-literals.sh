@@ -51,10 +51,22 @@ MARKER='clock-literal-ok:'
 go_field='(Expires|ExpiresAt|BestEffortExpiry)'
 yaml_key='(expires|expires_at)'
 date_literal='[0-9]{4}-[0-9]{2}-[0-9]{2}'
-# A YAML value may be bare, double-quoted or single-quoted, and a Go fixture may
-# embed any of them in a string. Matching only the first two let
-# `expires_at: '2028-01-01'` through, which is the same evasion the guard exists
-# to close.
+# THE COMPLETE SET OF DELIMITERS A DATE VALUE CAN CARRY. Enumerated here in one
+# place because this guard has now been defeated twice by a form nobody listed:
+# first `expires_at: '2028-01-01'` in YAML, then Expires: `2030-01-01` as a Go
+# raw string. Both were the same mistake, fixing the instance in front of me
+# instead of asking what the full set was. It is:
+#
+#   Go interpreted string   Expires: "2030-01-01"
+#   Go raw string           Expires: `2030-01-01`
+#   YAML bare               expires: 2030-01-01
+#   YAML single-quoted      expires: '2030-01-01'
+#   YAML double-quoted      expires: "2030-01-01"
+#
+# A Go value always carries one of its two delimiters; a YAML value may carry
+# none. Adding a language here means extending this list, not adding a pattern
+# beside it.
+go_quote='["`]'
 quote='["'"'"']?'
 
 mode="${1:-check}"
@@ -74,8 +86,8 @@ findings() {
 	while IFS= read -r file; do
 		[ -f "$file" ] || continue
 		for pattern in \
-			"${go_field}:[[:space:]]+\"${date_literal}" \
-			"\.${go_field}[[:space:]]*=[[:space:]]*\"${date_literal}" \
+			"${go_field}:[[:space:]]+${go_quote}${date_literal}" \
+			"\.${go_field}[[:space:]]*=[[:space:]]*${go_quote}${date_literal}" \
 			"${yaml_key}:[[:space:]]*\\\\?${quote}${date_literal}"; do
 			emit "$file" "$pattern"
 		done

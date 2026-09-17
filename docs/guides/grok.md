@@ -9,7 +9,7 @@ This guide does **not** add a `pipelock grok install` command. Coverage is env-o
 | Workflow | What Grok accesses | What could go wrong |
 |---|---|---|
 | Interactive / headless prompts | Repo files, diffs, tool results sent to the model | Secrets or private paths leaving in prompt context |
-| Model inference (OAuth or API key) | `cli-chat-proxy.grok.com` or `api.x.ai` over HTTPS | Uninspected egress and inbound streaming responses |
+| Model inference / auth (OAuth or API key) | `cli-chat-proxy.grok.com`, `auth.x.ai`, or `api.x.ai` over HTTPS | Uninspected egress and inbound streaming responses |
 | Shell / local tools | Commands and network from the agent session | Exfiltration that never hits the model API path |
 
 ## What Is Covered
@@ -24,30 +24,33 @@ Outbound HTTPS through CONNECT is hostname-visible by default. Full request/resp
 
 ## Quick Start
 
+Install Grok **before** exporting proxy env vars. With `pipelock run` already up, `curl`/`npm` install traffic would otherwise be forced through the proxy and can fail (or add install hosts to `NO_PROXY` / allow them in policy).
+
 ```bash
 # 1. Install pipelock (requires Go 1.25+)
 git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock
 
-# 2. Generate a config and start the forward proxy
+# 2. Install Grok (public install paths — do this before exporting proxy)
+curl -fsSL https://x.ai/cli/install.sh | bash
+# or: npm install -g @xai-official/grok
+
+# 3. Generate a config and start the forward proxy
 pipelock generate config --preset balanced -o pipelock.yaml
 pipelock run --config pipelock.yaml &
 
-# 3. Point Grok Build at Pipelock (CLI honors these env vars)
+# 4. Point Grok Build at Pipelock (CLI honors these env vars)
 export HTTPS_PROXY=http://127.0.0.1:8888
 export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost
 
-# 4. Install and run Grok (public install paths)
-curl -fsSL https://x.ai/cli/install.sh | bash
-# or: npm install -g @xai-official/grok
-
+# 5. Run Grok
 grok
 # headless: grok -p "Explain this repo"
 ```
 
-`HTTPS_PROXY` takes precedence over `HTTP_PROXY` when both are set. Set proxy idle timeouts to **at least 10 minutes** so long SSE model streams are not cut off mid-response (see [xAI enterprise network docs](https://docs.x.ai/build/enterprise)).
+The CLI honors standard proxy environment variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`). Set proxy idle timeouts to **at least 10 minutes** so long SSE model streams are not cut off mid-response (see [xAI enterprise network docs](https://docs.x.ai/build/enterprise)).
 
 Authenticate with the usual Grok paths (`grok login`, device auth, or `XAI_API_KEY`). Pipelock does not replace Grok authentication.
 
@@ -64,7 +67,7 @@ Without a trusted CA, intercepted HTTPS handshakes fail. Without interception, C
 
 `~/.grok/config.toml` can bind an `api_key` (or custom `base_url`) per model. That file is **not** a Pipelock proxy rewrite surface: it does not replace `HTTPS_PROXY` / `HTTP_PROXY`, and Pipelock does not rewrite it. Prefer env vars for this integration.
 
-Inference hosts commonly include `cli-chat-proxy.grok.com` (CLI OAuth path) and `api.x.ai` (API key path). Allow those destinations in your Pipelock policy the same way you allow other model endpoints.
+Required / common hosts include `cli-chat-proxy.grok.com` (inference proxy), `auth.x.ai` (OAuth/device auth), and `api.x.ai` (API key path). Allow those destinations in your Pipelock policy the same way you allow other model endpoints (see [xAI enterprise network docs](https://docs.x.ai/build/enterprise)).
 
 ## What Gets Scanned
 

@@ -280,5 +280,5 @@ func conformanceChainDropCounter(chainText string, uids containmentUIDs, proxyPo
 	// Conformance fixtures declare no loopback services: an extra agent
 	// loopback accept in fixture chain text is an unsafe verdict, which is
 	// the production verdict for an undeclared one.
-	return containmentDropCounterFromChainText(chainText, defaultNFTChain, uids, proxyPort, nil, "")
+	return containmentDropCounterFromChainText(chainText, defaultNFTChain, uids, proxyPort, nil, "", false)
 }

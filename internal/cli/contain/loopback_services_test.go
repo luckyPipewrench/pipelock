@@ -495,7 +495,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("absent managed config names that it was not found", func(t *testing.T) {
 		env := newEnv("", os.ErrNotExist)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != false {
+			t.Errorf("unusable = %v, want false: a host with no managed config is not an unusable declaration; failing on it would refuse every host that has not got one", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -506,7 +509,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("unreadable config (not absent) reports a problem", func(t *testing.T) {
 		env := newEnv("", os.ErrPermission)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != false {
+			t.Errorf("unusable = %v, want false: an unreadable file cannot be told apart from a host that declared nothing", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -517,7 +523,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("malformed yaml", func(t *testing.T) {
 		env := newEnv("containment: [", nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != true {
+			t.Errorf("unusable = %v, want true: the config exists and cannot be parsed", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -528,7 +537,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("non-mapping document", func(t *testing.T) {
 		env := newEnv("- just\n- a\n- list\n", nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != true {
+			t.Errorf("unusable = %v, want true: the config exists and its shape is wrong", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -540,7 +552,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("invalid declared entry", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 10.20.0.20\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != true {
+			t.Errorf("unusable = %v, want true: the config exists and its declaration fails validation", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -552,7 +567,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("expired declared entry names host, owner, and reconciliation remedy", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2000-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != true {
+			t.Errorf("unusable = %v, want true: an expired entry is a declaration this host can no longer honor", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -567,7 +585,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("loopback_services not a sequence", func(t *testing.T) {
 		body := "containment:\n  loopback_services: not-a-list\n"
 		env := newEnv(body, nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != true {
+			t.Errorf("unusable = %v, want true: the config exists and the key's shape is wrong", unusable)
+		}
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -579,7 +600,10 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("valid managed config decodes", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		if unusable != false {
+			t.Errorf("unusable = %v, want false: a declaration that parses and validates is usable", unusable)
+		}
 		if len(declared) != 1 || declared[0].Port != 9200 {
 			t.Fatalf("got %+v, want one decoded entry on port 9200", declared)
 		}
@@ -1839,4 +1863,49 @@ func TestProbeNFTContainmentPassesWithNoDeclarationAndCanonicalChain(t *testing.
 	if status != statusPass {
 		t.Fatalf("status = %q (detail %q), want pass for a host that declares nothing", status, detail)
 	}
+}
+
+// TestContainmentDropCounterRefusesUnusableLoopbackPolicy covers the sibling
+// of the probe's refusal. The drop counter feeds direct-canary attribution,
+// and it used to surface a loopback configuration problem only when the chain
+// ALSO carried an unsafe verdict. With a canonical chain and an unusable
+// declaration it therefore returned a clean count, reporting an attribution
+// nobody could verify the policy behind. This is the same defect the probe
+// had, in the path the first fix did not touch.
+func TestContainmentDropCounterRefusesUnusableLoopbackPolicy(t *testing.T) {
+	t.Parallel()
+	body, _ := legacyManagedBlockWithLoopbackServices(1, nil)
+	chainText := "table inet " + defaultNFTTable + " {\n\tchain " + defaultNFTChain +
+		" {\n\t\ttype filter hook output priority filter; policy accept;\n" + body + "\n\t}\n}"
+	uids := containmentUIDs{
+		operatorUID:   loopbackTestOperatorUID,
+		proxyUID:      loopbackTestProxyUID,
+		agentUID:      loopbackTestAgentUID,
+		operatorKnown: true,
+	}
+
+	t.Run("unusable declaration refuses the count", func(t *testing.T) {
+		_, err := containmentDropCounterFromChainText(
+			chainText, defaultNFTChain, uids, loopbackTestProxyPort, nil,
+			"managed config declares something Pipelock cannot honor (expired at 2000-01-01T00:00:00Z)", true)
+		if err == nil {
+			t.Fatal("expected a refusal: the chain is canonical but the declared policy cannot be honored")
+		}
+		if !strings.Contains(err.Error(), "cannot be honored") {
+			t.Errorf("error = %v, want it to say the declaration cannot be honored", err)
+		}
+		if !strings.Contains(err.Error(), "expired at") {
+			t.Errorf("error = %v, want it to carry the underlying problem", err)
+		}
+	})
+
+	// Positive control: the same canonical chain with a usable (empty)
+	// declaration must still produce a count, so the refusal above cannot be
+	// satisfied by refusing everything.
+	t.Run("usable declaration still counts", func(t *testing.T) {
+		if _, err := containmentDropCounterFromChainText(
+			chainText, defaultNFTChain, uids, loopbackTestProxyPort, nil, "", false); err != nil {
+			t.Fatalf("canonical chain with a usable declaration: %v", err)
+		}
+	})
 }

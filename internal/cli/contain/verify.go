@@ -2741,8 +2741,8 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	loopbackServices, loopbackProblem, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
-	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices, loopbackProblem)
+	loopbackServices, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices, loopbackProblem, loopbackUnusable)
 }
 
 // containmentDropCounterFromChainText is the single recognizer behind probe
@@ -2750,7 +2750,7 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 // output; the published conformance fixtures feed it fixture chain text. One
 // function, not two copies, so the artifact that exists to prove the egress
 // test is real can never drift from what `contain verify` actually checks.
-func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int, declaredLoopbackServices []config.ContainmentLoopbackService, loopbackProblem string) (uint64, error) {
+func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int, declaredLoopbackServices []config.ContainmentLoopbackService, loopbackProblem string, loopbackUnusable bool) (uint64, error) {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return 0, err
@@ -2760,6 +2760,16 @@ func containmentDropCounterFromChainText(out, chainName string, uids containment
 	}
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, uids.agentUID); ok {
 		return 0, &containmentBypassError{rule: rule}
+	}
+	// Same refusal probeNFTContainment makes, for the same reason. A
+	// declaration this host cannot honor makes the direct-canary
+	// attribution below unsafe even when the chain is canonical, because
+	// the count is then being read against a policy nobody could verify.
+	// Surfacing the problem only alongside an unsafe verdict, as the
+	// branch below once did alone, left exactly this path reporting a
+	// clean count for an unusable policy.
+	if loopbackUnusable {
+		return 0, fmt.Errorf("chain %s: containment.loopback_services cannot be honored, so direct-canary attribution is unsafe: %s", chainName, loopbackProblem)
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, port, declaredLoopbackServices) {
 		if loopbackProblem != "" {

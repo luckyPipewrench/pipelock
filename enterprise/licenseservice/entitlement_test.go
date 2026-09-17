@@ -827,7 +827,12 @@ func TestClaimActiveTrialSlot_ClaimWithoutPeriodEndCanBeTakenOver(t *testing.T) 
 	})
 }
 
-func TestClaimActiveTrialSlot_RenewedEntitlementDoesNotBlockTakeover(t *testing.T) {
+// A renewal extends the owner's trial without moving the write-once slot
+// expiry, so the slot falls due while the trial it represents is still
+// running. Taking it over then would hand the same email a second live trial,
+// which is the outcome the slot table exists to prevent. Takeover waits for
+// the trial to actually end; it is not denied permanently.
+func TestClaimActiveTrialSlot_RenewedEntitlementHoldsSlotUntilItEnds(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()
 	now := time.Now().UTC()
@@ -846,8 +851,31 @@ func TestClaimActiveTrialSlot_RenewedEntitlementDoesNotBlockTakeover(t *testing.
 	}
 
 	replacement := trialEntitlement("order_renewed_slot_replacement", first.CustomerEmail, now.Add(48*time.Hour))
+	if err := db.Upsert(ctx, replacement); !errors.Is(err, ErrActiveTrialExists) {
+		t.Fatalf("take over a slot whose owner trial is still live: err = %v, want ErrActiveTrialExists", err)
+	}
+
+	// Positive control: once the owner's trial has actually ended, the same
+	// replacement takes the slot. The guard delays takeover, it does not
+	// permanently deny the email.
+	ended := now.Add(-time.Minute)
+	if _, err := db.db.ExecContext(ctx,
+		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`,
+		ended, first.SubscriptionID,
+	); err != nil {
+		t.Fatalf("end the owner trial: %v", err)
+	}
 	if err := db.Upsert(ctx, replacement); err != nil {
-		t.Fatalf("take over expired slot after entitlement renewal: %v", err)
+		t.Fatalf("take over after the owner trial ended: %v", err)
+	}
+	var owner string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT subscription_id FROM active_trial_slots WHERE normalized_email = ?`, "renewed-slot@example.com",
+	).Scan(&owner); err != nil {
+		t.Fatalf("read replacement slot owner: %v", err)
+	}
+	if owner != replacement.SubscriptionID {
+		t.Fatalf("slot owner = %q, want %q", owner, replacement.SubscriptionID)
 	}
 }
 

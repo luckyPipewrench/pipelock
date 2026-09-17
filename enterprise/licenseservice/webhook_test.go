@@ -3310,6 +3310,20 @@ func TestHandleOrderEvent_EnterpriseTrial(t *testing.T) {
 	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
 		t.Fatalf("expire first enterprise trial slot affected %d rows, want 1: %v", affected, err)
 	}
+
+	// The slot is only half the state: aging it alone leaves the owner's trial
+	// running, and takeover refuses a slot whose owner trial has not ended. End
+	// the owner entitlement too, which is what "the first trial is over" means.
+	ownerResult, err := ts.db.db.ExecContext(ctx,
+		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`,
+		expiredAt, first.SubscriptionID,
+	)
+	if err != nil {
+		t.Fatalf("end the first enterprise trial: %v", err)
+	}
+	if affected, err := ownerResult.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("end the first enterprise trial affected %d rows, want 1: %v", affected, err)
+	}
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_after_expiry")); err != nil {
 		t.Fatalf("HandleOrderEvent enterprise trial after expiry: %v", err)
 	}
@@ -3422,6 +3436,20 @@ func TestHandleOrderRefund_RevokesMintedEnterpriseTrial(t *testing.T) {
 	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
 		t.Fatalf("age enterprise trial slot affected %d rows, want 1: %v", affected, err)
 	}
+
+	// The slot is only half the state: aging it alone leaves the owner's trial
+	// running, and takeover refuses a slot whose owner trial has not ended. End
+	// the owner entitlement too, which is what "the first trial is over" means.
+	ownerResult, err := ts.db.db.ExecContext(ctx,
+		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`,
+		expiredAt, entitlement.SubscriptionID,
+	)
+	if err != nil {
+		t.Fatalf("end the enterprise trial owner: %v", err)
+	}
+	if affected, err := ownerResult.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("end the enterprise trial owner affected %d rows, want 1: %v", affected, err)
+	}
 	if err := ts.handler.HandleOrderEvent(ctx, enterpriseTrialOrderEvent(t, "order_enterprise_trial_replacement_after_expiry")); err != nil {
 		t.Fatalf("replacement enterprise trial after original period expiry: %v", err)
 	}
@@ -3519,6 +3547,20 @@ func TestOneTimeTrialRevocation_SlotExpiryIsImmutable(t *testing.T) {
 	}
 	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
 		t.Fatalf("age trial slot affected %d rows, want 1: %v", affected, err)
+	}
+
+	// The slot is only half the state: aging it alone leaves the owner's trial
+	// running, and takeover refuses a slot whose owner trial has not ended. End
+	// the owner entitlement too, which is what "the first trial is over" means.
+	ownerResult, err := ts.db.db.ExecContext(ctx,
+		`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`,
+		expiredAt, entitlement.SubscriptionID,
+	)
+	if err != nil {
+		t.Fatalf("end the trial owner: %v", err)
+	}
+	if affected, err := ownerResult.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("end the trial owner affected %d rows, want 1: %v", affected, err)
 	}
 	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, "order_free_21_trial-slot-immutable", email)); err != nil {
 		t.Fatalf("retry after original expiry: %v", err)

@@ -512,8 +512,19 @@ func (e *EntitlementDB) classifyLegacyTrialSlots(ctx context.Context) error {
 		).Scan(&exists); err != nil {
 			return fmt.Errorf("inspect active trial slot column %s: %w", column.name, err)
 		}
-		if !exists {
-			if _, err := e.db.ExecContext(ctx, column.ddl); err != nil {
+		if exists {
+			continue
+		}
+		if _, err := e.db.ExecContext(ctx, column.ddl); err != nil {
+			// Another service process can add the same column between the check
+			// above and this statement. Re-read the schema rather than trusting
+			// the error text: if the column is there now, the concurrent starter
+			// did the work and this one has nothing left to do. Any other
+			// failure still stops startup.
+			var added bool
+			if rerr := e.db.QueryRowContext(ctx,
+				`SELECT EXISTS(SELECT 1 FROM pragma_table_info('active_trial_slots') WHERE name = ?)`, column.name,
+			).Scan(&added); rerr != nil || !added {
 				return fmt.Errorf("add active trial slot column %s: %w", column.name, err)
 			}
 		}
@@ -1343,6 +1354,13 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	// slot before the trial the operator sees is actually over. Only a claim
 	// that is taking over an EXPIRED slot from a DIFFERENT owner sets a new
 	// expiry.
+	//
+	// Write-once cuts the other way too: a later write that legitimately EXTENDS
+	// the owner's trial cannot move the slot expiry either, so the slot can fall
+	// due while the owner's trial is still running. Takeover therefore also
+	// requires that the current owner holds no active entitlement that has not
+	// yet ended. That condition can only refuse a claim, never admit one, so it
+	// cannot reopen the stale-write hole the write-once rule closes.
 	const query = `
 	INSERT INTO active_trial_slots (normalized_email, subscription_id, expires_at, takeover_state)
 	VALUES (?, ?, ?, ?)
@@ -1357,11 +1375,18 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 	   OR (
 		active_trial_slots.expires_at <= ?
 		AND active_trial_slots.takeover_state = ?
+		AND NOT EXISTS (
+			SELECT 1 FROM entitlements
+			WHERE subscription_id = active_trial_slots.subscription_id
+			  AND status = ?
+			  AND current_period_end > ?
+		)
 	)
 	`
+	now := time.Now().UTC()
 	result, err := exec.ExecContext(ctx, query,
 		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), trialSlotTakeoverVerified,
-		time.Now().UTC(), trialSlotTakeoverVerified,
+		now, trialSlotTakeoverVerified, statusActive, now,
 	)
 	if err != nil {
 		return fmt.Errorf("claim active trial slot for %s: %w", ent.SubscriptionID, err)

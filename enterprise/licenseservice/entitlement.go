@@ -505,28 +505,26 @@ func (e *EntitlementDB) classifyLegacyTrialSlots(ctx context.Context) error {
 		{"takeover_state", `ALTER TABLE active_trial_slots ADD COLUMN takeover_state TEXT NOT NULL DEFAULT 'unclassified'`},
 		{"legacy_entitlement_expires_at", `ALTER TABLE active_trial_slots ADD COLUMN legacy_entitlement_expires_at DATETIME`},
 	}
+	// Attempt the ALTER and decide from the schema afterwards, rather than
+	// checking first and trusting that answer. Checking first is a race: a
+	// second service process starting at the same time can add the column in
+	// between, and the loser then fails on a duplicate column. Asking the
+	// schema after the failure settles it for both the racing starter and the
+	// ordinary restart, and does not depend on the driver's error text. Any
+	// failure that did NOT leave the column in place still stops startup.
 	for _, column := range columns {
-		var exists bool
-		if err := e.db.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM pragma_table_info('active_trial_slots') WHERE name = ?)`, column.name,
-		).Scan(&exists); err != nil {
-			return fmt.Errorf("inspect active trial slot column %s: %w", column.name, err)
-		}
-		if exists {
+		_, execErr := e.db.ExecContext(ctx, column.ddl)
+		if execErr == nil {
 			continue
 		}
-		if _, err := e.db.ExecContext(ctx, column.ddl); err != nil {
-			// Another service process can add the same column between the check
-			// above and this statement. Re-read the schema rather than trusting
-			// the error text: if the column is there now, the concurrent starter
-			// did the work and this one has nothing left to do. Any other
-			// failure still stops startup.
-			var added bool
-			if rerr := e.db.QueryRowContext(ctx,
-				`SELECT EXISTS(SELECT 1 FROM pragma_table_info('active_trial_slots') WHERE name = ?)`, column.name,
-			).Scan(&added); rerr != nil || !added {
-				return fmt.Errorf("add active trial slot column %s: %w", column.name, err)
-			}
+		var present bool
+		if err := e.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM pragma_table_info('active_trial_slots') WHERE name = ?)`, column.name,
+		).Scan(&present); err != nil {
+			return fmt.Errorf("inspect active trial slot column %s after add failed: %w", column.name, errors.Join(execErr, err))
+		}
+		if !present {
+			return fmt.Errorf("add active trial slot column %s: %w", column.name, execErr)
 		}
 	}
 

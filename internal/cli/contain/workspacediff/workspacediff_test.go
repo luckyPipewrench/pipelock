@@ -693,14 +693,27 @@ func TestSnapshot_TOCTOU_IdentityMismatchRefusesToHash(t *testing.T) {
 		t.Skip("statIDs unavailable on this platform")
 	}
 
-	// Replace the file with a NEW file at the same path: same path, new
-	// inode. hashFileSafe must detect the identity mismatch against the
-	// dev/ino observed at walk time and refuse to hash it, rather than
-	// silently hashing whatever now sits at that path.
-	if err := os.Remove(realPath); err != nil {
+	// Create the replacement while the original still exists, so the two
+	// distinct live files must have different device/inode identities. A
+	// delete-then-recreate sequence can immediately reuse the inode on a
+	// filesystem whose allocator permits it, making the simulated swap
+	// indistinguishable from the walked file.
+	replacementPath := filepath.Join(dir, "replacement")
+	writeFile(t, replacementPath, "swapped-in content")
+	replacementInfo, err := os.Lstat(replacementPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, realPath, "swapped-in content")
+	replacementDev, replacementIno, replacementOK := statIDs(replacementInfo)
+	if !replacementOK {
+		t.Fatal("statIDs unavailable for replacement file")
+	}
+	if replacementDev == dev && replacementIno == ino {
+		t.Fatal("test setup produced identical identities for two live files")
+	}
+	if err := os.Rename(replacementPath, realPath); err != nil {
+		t.Fatal(err)
+	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {

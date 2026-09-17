@@ -77,14 +77,14 @@ Grok  <-->  pipelock mcp proxy  <-->  MCP Server
 Everything after `--` is the upstream MCP command (same shape as Codex):
 
 ```bash
-# Wrap a filesystem server
+# Wrap a filesystem server (absolute binary + config — Grok user-scope persists cwd-independently)
 grok mcp add filesystem \
-  -- pipelock mcp proxy --config pipelock.yaml \
-  -- npx -y @modelcontextprotocol/server-filesystem ~/projects
+  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
+  -- npx -y @modelcontextprotocol/server-filesystem /home/you/projects
 
 # Wrap a database server
 grok mcp add postgres \
-  -- pipelock mcp proxy --config pipelock.yaml \
+  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
   -- npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb
 ```
 
@@ -94,7 +94,7 @@ Prefer an **absolute** path to both `pipelock` and `--config` so the wrap does n
 
 ```toml
 [mcp_servers.filesystem]
-command = "pipelock"
+command = "/usr/local/bin/pipelock"
 args = [
   "mcp", "proxy",
   "--config", "/home/you/pipelock.yaml",
@@ -136,12 +136,13 @@ For remotes that need static auth headers, follow Continue/Hermes honesty: do **
 
 ```bash
 # Private header file (0600); one Header-Name: value per line
+install -d -m 700 ~/.config/pipelock/wrap-headers
 umask 077
 printf 'Authorization: Bearer %s\n' "$API_TOKEN" > ~/.config/pipelock/wrap-headers/grok-api.headers
 chmod 600 ~/.config/pipelock/wrap-headers/grok-api.headers
 
 grok mcp add api-wrapped \
-  -- pipelock mcp proxy --config pipelock.yaml \
+  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
   --header-file "$HOME/.config/pipelock/wrap-headers/grok-api.headers" \
   --upstream https://mcp.example.com/mcp
 ```
@@ -150,7 +151,7 @@ Equivalent TOML:
 
 ```toml
 [mcp_servers.api-wrapped]
-command = "pipelock"
+command = "/usr/local/bin/pipelock"
 args = [
   "mcp", "proxy",
   "--config", "/home/you/pipelock.yaml",
@@ -159,7 +160,7 @@ args = [
 ]
 ```
 
-OAuth-only remotes that Grok authenticates itself (browser flow, tokens under `~/.grok/mcp_credentials.json`) are outside automatic Pipelock wrapping. Route tool traffic through a stdio/`--upstream` wrap when you need MCP JSON-RPC scanning on that path.
+**OAuth ownership:** Replacing a native HTTP remote with a stdio `pipelock mcp proxy --upstream` wrap removes Grok from the HTTP transport, so Grok's OAuth flow does **not** run for that server. Pipelock only forwards operator-supplied static headers (`--header-file`); it cannot read or consume `~/.grok/mcp_credentials.json`. Keep OAuth-only remotes on Grok's native HTTP transport unless you have an auth-capable intermediary or a separately supplied token for `--header-file`. Do not treat the wrapper as preserving Grok OAuth.
 
 ### What gets scanned (MCP wrap)
 
@@ -251,8 +252,8 @@ Start with `balanced` to see what gets flagged, then move to a blocking preset o
 # Upstream alone
 npx -y @modelcontextprotocol/server-filesystem /tmp
 
-# Then wrap
-pipelock mcp proxy --config pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+# Then wrap (use absolute binary + config, same as persisted grok mcp entries)
+/usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
 grok mcp doctor filesystem
 ```

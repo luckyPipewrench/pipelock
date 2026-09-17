@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -274,5 +275,53 @@ func TestConfigValidateContainmentLoopbackServicesEmptyIsNoOp(t *testing.T) {
 	cfg.Containment.LoopbackServices = nil
 	if err := cfg.validateContainmentLoopbackServices(); err != nil {
 		t.Fatalf("empty loopback_services must short-circuit before parsing fetch_proxy.listen: %v", err)
+	}
+}
+
+// TestValidateContainmentLoopbackServicesRejectsPaddedHost pins the
+// declaration/render agreement: nftLoopbackAcceptLine renders Host verbatim
+// and selects its address family by exact literal match, so a padded
+// " ::1 " that validated would render as an IPv4 rule. Validation must
+// therefore reject non-canonical spacing rather than trim it, which keeps
+// the validated value and the rendered value identical by construction
+// instead of relying on two separate places trimming the same way.
+func TestValidateContainmentLoopbackServicesRejectsPaddedHost(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	for _, host := range []string{" ::1 ", "::1 ", " ::1", " 127.0.0.1", "127.0.0.1 ", "\t127.0.0.1"} {
+		t.Run(fmt.Sprintf("%q", host), func(t *testing.T) {
+			err := ValidateContainmentLoopbackServices([]ContainmentLoopbackService{{
+				Host:      host,
+				Port:      9222,
+				Owner:     "platform",
+				Reason:    "browser automation control port",
+				ExpiresAt: future,
+			}}, 8888, time.Now())
+			if err == nil {
+				t.Fatalf("host %q was accepted; a padded literal renders a different rule than it declares", host)
+			}
+			if !strings.Contains(err.Error(), "no surrounding whitespace") {
+				t.Errorf("error = %v, want it to explain that surrounding whitespace is refused", err)
+			}
+		})
+	}
+}
+
+// TestValidateContainmentLoopbackServicesAcceptsCanonicalHosts is the
+// positive control for the test above: the exact literals must still pass,
+// so the whitespace refusal cannot be satisfied by rejecting everything.
+func TestValidateContainmentLoopbackServicesAcceptsCanonicalHosts(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		t.Run(host, func(t *testing.T) {
+			if err := ValidateContainmentLoopbackServices([]ContainmentLoopbackService{{
+				Host:      host,
+				Port:      9222,
+				Owner:     "platform",
+				Reason:    "browser automation control port",
+				ExpiresAt: future,
+			}}, 8888, time.Now()); err != nil {
+				t.Fatalf("canonical host %q was refused: %v", host, err)
+			}
+		})
 	}
 }

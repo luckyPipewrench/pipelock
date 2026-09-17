@@ -173,9 +173,18 @@ func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, 
 	seen := make(map[string]struct{}, len(services))
 	for i, svc := range services {
 		field := fmt.Sprintf("containment.loopback_services[%d]", i)
-		host := strings.TrimSpace(svc.Host)
+		// Compare the host EXACTLY as declared, without trimming. The
+		// validated value is the value nftLoopbackAcceptLine renders
+		// verbatim into the nft rule, so accepting a padded " ::1 " here
+		// would validate one string and render a different one: the render
+		// selects its address family by exact literal match, so a padded
+		// "::1" takes the IPv4 branch and emits a rule that either fails
+		// the nft parse or cannot be matched by the verify probes. Refusing
+		// non-canonical spacing keeps declaration and rendered rule
+		// identical by construction rather than by two agreeing trims.
+		host := svc.Host
 		if host != "127.0.0.1" && host != "::1" {
-			return fmt.Errorf("%s.host %q must be a loopback literal (127.0.0.1 or ::1), not a hostname, wildcard, or CIDR", field, svc.Host)
+			return fmt.Errorf("%s.host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace, not a hostname, wildcard, or CIDR", field, svc.Host)
 		}
 		if svc.Port < 1 || svc.Port > 65535 {
 			return fmt.Errorf("%s.port %d must be between 1 and 65535", field, svc.Port)

@@ -1548,13 +1548,18 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
-	// declaredContainmentLoopbackServicesForVerify treats an unreadable or
-	// absent managed config as "no declared exceptions" rather than failing
-	// the probe: that is the identical, pre-existing verdict for a host that
-	// never declared any loopback_services entry, and it means a config-read
-	// problem can only ever make this probe MORE strict (an undeclared accept
-	// it now cannot explain still fails below), never less.
-	loopbackServices, loopbackProblem := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	// A managed config this probe cannot read or honor fails the probe
+	// outright. Reporting it only alongside an unsafe verdict left the
+	// canonical case silent: once reload has already reconciled to zero
+	// services the chain looks exactly like a host that declared nothing,
+	// so an unreadable, malformed, or expired declaration returned PASS
+	// while verify had no idea what it was meant to be proving. A
+	// containment probe that cannot read the policy has not verified the
+	// policy, whatever the chain happens to look like.
+	loopbackServices, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	if loopbackUnusable {
+		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
+	}
 	for _, svc := range loopbackServices {
 		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
 			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) accept rule is missing or appears after the agent catch-all drop", svc.Host, svc.Port, svc.Owner)
@@ -1567,9 +1572,6 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port, loopbackServices) {
-		if loopbackProblem != "" {
-			return statusFail, "chain contains unexpected verdict before agent drop: " + loopbackProblem
-		}
 		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
@@ -1730,7 +1732,7 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 			return fmt.Errorf("nftables rules file operator uid %d does not match current %s uid %d", current.operatorUID, env.operatorUser, operatorUID)
 		}
 	}
-	loopbackServices, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	loopbackServices, _, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	want := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         current.proxyUID,
@@ -1957,7 +1959,13 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 // "unexpected verdict" FAIL so an operator sees WHY a real declared service
 // (host:port, owner, expiry) is being treated as undeclared, instead of only
 // the class of the resulting nftables mismatch.
-func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string) {
+// The bool reports whether the managed config EXISTS and declares something
+// this probe cannot honor, which is the only one of these states that is the
+// operator's own unusable declaration rather than a host that has not got one
+// yet. A missing or unreadable config is not that: it is indistinguishable
+// from a host that never declared a service, and failing the probe on it
+// would refuse every host without a managed config at this path.
+func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string, bool) {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1966,15 +1974,15 @@ func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) 
 			// than reporting no problem at all: an operator who expects a
 			// declared service reachable needs to know verify found no
 			// managed config to read it from.
-			return nil, fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath)
+			return nil, fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath), false
 		}
-		return nil, fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err)
+		return nil, fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err), false
 	}
 	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err)
+		return nil, fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err), true
 	}
-	return declared, ""
+	return declared, "", false
 }
 
 // containmentBypassDetailPrefix is the single wording for a definite agent-UID
@@ -2733,7 +2741,7 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	loopbackServices, loopbackProblem := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	loopbackServices, loopbackProblem, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices, loopbackProblem)
 }
 

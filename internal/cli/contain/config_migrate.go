@@ -237,6 +237,13 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentLoopbackService, error) {
 	root, err := parseSingleYAMLDocument(data)
 	if err != nil {
+		// A document with no YAML content at all -- empty, or only
+		// comments -- declares nothing, exactly like a document carrying no
+		// containment key. Reporting that as an unhonorable declaration is a
+		// much louder claim than the file supports.
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("parse managed config: %w", err)
 	}
 	mapping := documentMapping(root)
@@ -268,6 +275,15 @@ func containmentLoopbackServicesFromMapping(root *yaml.Node) ([]config.Containme
 	}
 	services := mappingValue(containment, "loopback_services")
 	if services == nil {
+		return nil, nil
+	}
+	// An explicit YAML null means the same thing as an absent key: no
+	// declared services. config.Load already decodes it that way into a nil
+	// slice, and refusing it here made the two disagree about one file --
+	// `pipelock check` accepted it while `contain install --config` failed
+	// before staging anything, leaving the operator to discover that only
+	// omitting the key or writing [] would work.
+	if services.Kind == yaml.ScalarNode && services.Tag == "!!null" {
 		return nil, nil
 	}
 	if services.Kind != yaml.SequenceNode {

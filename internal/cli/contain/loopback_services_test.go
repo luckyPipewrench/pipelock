@@ -495,7 +495,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("absent managed config names that it was not found", func(t *testing.T) {
 		env := newEnv("", os.ErrNotExist)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -506,7 +506,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("unreadable config (not absent) reports a problem", func(t *testing.T) {
 		env := newEnv("", os.ErrPermission)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -517,7 +517,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("malformed yaml", func(t *testing.T) {
 		env := newEnv("containment: [", nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -528,7 +528,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 
 	t.Run("non-mapping document", func(t *testing.T) {
 		env := newEnv("- just\n- a\n- list\n", nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -540,7 +540,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("invalid declared entry", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 10.20.0.20\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -552,7 +552,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("expired declared entry names host, owner, and reconciliation remedy", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2000-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -567,7 +567,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("loopback_services not a sequence", func(t *testing.T) {
 		body := "containment:\n  loopback_services: not-a-list\n"
 		env := newEnv(body, nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if declared != nil {
 			t.Fatalf("got %v, want nil", declared)
 		}
@@ -579,7 +579,7 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 	t.Run("valid managed config decodes", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := newEnv(body, nil)
-		declared, problem := declaredContainmentLoopbackServicesForVerify(env, 8888)
+		declared, problem, _ := declaredContainmentLoopbackServicesForVerify(env, 8888)
 		if len(declared) != 1 || declared[0].Port != 9200 {
 			t.Fatalf("got %+v, want one decoded entry on port 9200", declared)
 		}
@@ -1712,5 +1712,131 @@ func TestEnsureNFTRulesDirSafeAcceptsAnExistingDirectory(t *testing.T) {
 	}
 	if err := ensureNFTRulesDirSafe(env); err != nil {
 		t.Fatalf("ensureNFTRulesDirSafe: %v", err)
+	}
+}
+
+// TestParseContainmentLoopbackServicesYAMLShapes parses REAL YAML for each way
+// an operator can express "no declared services", because the previous test
+// for this passed a nil Go slice straight to the validator and so could not
+// see a decoder disagreement at all. An explicit null must mean the same thing
+// as an omitted key: config.Load already decodes it into a nil slice, and when
+// this parser refused it, `pipelock check` accepted a file that
+// `contain install --config` then rejected before staging anything.
+func TestParseContainmentLoopbackServicesYAMLShapes(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+
+	for _, tc := range []struct {
+		name      string
+		yaml      string
+		wantCount int
+		wantErr   string
+	}{
+		{name: "containment absent entirely", yaml: "mode: balanced\n"},
+		{name: "containment present without the key", yaml: "containment:\n  metrics_exposure: null\n"},
+		{name: "explicit null", yaml: "containment:\n  loopback_services: null\n"},
+		{name: "explicit empty tilde", yaml: "containment:\n  loopback_services: ~\n"},
+		{name: "explicit empty list", yaml: "containment:\n  loopback_services: []\n"},
+		{
+			name: "one declared service",
+			yaml: "containment:\n  loopback_services:\n    - host: 127.0.0.1\n      port: 9222\n" +
+				"      owner: platform\n      reason: browser automation control port\n      expires_at: " + future + "\n",
+			wantCount: 1,
+		},
+		{
+			name:    "a scalar that is not null is still refused",
+			yaml:    "containment:\n  loopback_services: 9222\n",
+			wantErr: "must be a list",
+		},
+		{
+			name:    "a mapping is still refused",
+			yaml:    "containment:\n  loopback_services:\n    host: 127.0.0.1\n",
+			wantErr: "must be a list",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			declared, err := parseContainmentLoopbackServicesFromConfigBytes(
+				[]byte(tc.yaml), loopbackTestProxyPort, time.Now())
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected an error, got %d declared services", len(declared))
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(declared) != tc.wantCount {
+				t.Fatalf("declared = %d services, want %d", len(declared), tc.wantCount)
+			}
+		})
+	}
+}
+
+// TestProbeNFTContainmentFailsOnUnusableConfigWithCanonicalChain covers the
+// case the config-problem detail used to miss entirely. Once reload has
+// already reconciled an unusable declaration down to zero services, the live
+// chain is byte-identical to a host that declared nothing, so there is no
+// unsafe verdict to hang the problem off. Verify used to return PASS there
+// and claim a proxy-only loopback allow, which is a containment probe
+// reporting success while unable to read the policy it exists to prove.
+func TestProbeNFTContainmentFailsOnUnusableConfigWithCanonicalChain(t *testing.T) {
+	t.Parallel()
+	expiredConfigBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2000-01-01T00:00:00Z\"\n"
+
+	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = "rules.nft"
+		e.readFile = func(path string) ([]byte, error) {
+			if path == e.configPath {
+				return []byte(expiredConfigBody), nil
+			}
+			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+		}
+		// The canonical zero-service chain: nothing undeclared in it at all.
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return goodNFTContainmentOutput, 0, nil
+		}
+	})
+
+	status, detail := probeNFTContainment(context.Background(), base)
+	if status != statusFail {
+		t.Fatalf("status = %q (detail %q), want fail: the chain is canonical but the declaration cannot be honored", status, detail)
+	}
+	if !strings.Contains(detail, "cannot be honored") {
+		t.Errorf("detail = %q, want it to say the declaration cannot be honored", detail)
+	}
+	if !strings.Contains(detail, "127.0.0.1:9200") || !strings.Contains(detail, "owner=search-team") {
+		t.Errorf("detail = %q, want the offending entry and its owner named", detail)
+	}
+}
+
+// TestProbeNFTContainmentPassesWithNoDeclarationAndCanonicalChain is the
+// positive control for the test above: a host that genuinely declares
+// nothing, with the same canonical chain, must still PASS. Without this,
+// failing on an unreadable declaration could be satisfied by failing always.
+func TestProbeNFTContainmentPassesWithNoDeclarationAndCanonicalChain(t *testing.T) {
+	t.Parallel()
+	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.operatorUser = testOperatorUser
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = "rules.nft"
+		e.readFile = func(path string) ([]byte, error) {
+			if path == e.configPath {
+				return []byte("mode: balanced\n"), nil
+			}
+			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+		}
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return goodNFTContainmentOutput, 0, nil
+		}
+	})
+
+	status, detail := probeNFTContainment(context.Background(), base)
+	if status != statusPass {
+		t.Fatalf("status = %q (detail %q), want pass for a host that declares nothing", status, detail)
 	}
 }

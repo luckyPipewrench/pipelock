@@ -325,3 +325,63 @@ func TestServer_ReloadValidatesLoopbackServicesAgainstTheEffectivePort(t *testin
 		t.Fatal("this test is vacuous unless reload discarded the candidate's listener")
 	}
 }
+
+// TestServer_ReloadDoesNotPromiseReconciliationForARejectedCandidate pins the
+// ordering between the reconciliation warning and the checks that can still
+// refuse the reload. The warning tells an operator the declared set changed
+// and to run the reconciliation command; emitting it before validation meant
+// a candidate that was then REJECTED still produced that instruction, naming
+// a change that was never published and a reconciliation with nothing to do.
+// containmentManagedTestConfig satisfies the containment metrics check that
+// s.containmentManaged turns on, so a rejection in the test below comes from
+// the loopback declaration under test and not from an unrelated refusal.
+const containmentManagedTestConfig = "mode: balanced\nmetrics_listen: 127.0.0.1:9109\n"
+
+func TestServer_ReloadDoesNotPromiseReconciliationForARejectedCandidate(t *testing.T) {
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, containmentManagedTestConfig),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            stderr,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+	s.containmentManaged = true
+
+	rejected, loadErr := loadServerTestConfig(t, containmentManagedTestConfig)
+	if loadErr != nil {
+		t.Fatalf("load candidate: %v", loadErr)
+	}
+	rejected.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+		Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
+		ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	}}
+	if err := s.Reload(rejected); err == nil {
+		t.Fatal("this test is vacuous unless the candidate is rejected")
+	}
+	if strings.Contains(stderr.String(), "run `pipelock contain reload-nft-rules`") {
+		t.Errorf("a rejected candidate must not instruct the operator to reconcile; stderr = %q", stderr.String())
+	}
+
+	// Positive control: an ACCEPTED change must still produce the warning,
+	// so suppressing it for a rejection cannot suppress it everywhere.
+	accepted, loadErr := loadServerTestConfig(t, containmentManagedTestConfig)
+	if loadErr != nil {
+		t.Fatalf("load candidate: %v", loadErr)
+	}
+	accepted.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
+		Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}}
+	if err := s.Reload(accepted); err != nil {
+		t.Fatalf("a valid declaration must be accepted: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "run `pipelock contain reload-nft-rules`") {
+		t.Errorf("an accepted change must still tell the operator to reconcile; stderr = %q", stderr.String())
+	}
+}

@@ -105,6 +105,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	}
 
 	oldCfg := s.proxy.CurrentConfig()
+	loopbackServicesChanged := false
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at
@@ -157,10 +158,14 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		// runs reconciliation, is told the change has not taken effect yet --
 		// do not reject the reload over it, since the config value itself is
 		// valid and the drift is only between config and kernel state.
-		if s.containmentManaged && !reflect.DeepEqual(oldCfg.Containment.LoopbackServices, newCfg.Containment.LoopbackServices) {
-			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
-				"run `pipelock contain reload-nft-rules` as root to apply the change to the live nftables boundary")
-		}
+		// Only NOTE it here. The warning itself is emitted after the config is
+		// published, because several checks below this point can still reject
+		// the candidate: telling an operator that the reload updated policy,
+		// and then refusing the reload, describes something that did not
+		// happen and points them at a reconciliation command with nothing to
+		// reconcile.
+		loopbackServicesChanged = s.containmentManaged &&
+			!reflect.DeepEqual(oldCfg.Containment.LoopbackServices, newCfg.Containment.LoopbackServices)
 		// Emit sinks own live workers, queues, network connections and, for the
 		// durable forwarder, exclusive spool/cursor locks. Replacing them after
 		// the proxy publishes a candidate can make Reload return an error after
@@ -592,6 +597,11 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	}
 	if s.containmentManaged {
 		s.containmentMetricsDenied.Store(false)
+	}
+	// The candidate is live now, so this is true when it is said.
+	if loopbackServicesChanged {
+		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
+			"run `pipelock contain reload-nft-rules` as root to apply the change to the live nftables boundary")
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())

@@ -3163,47 +3163,8 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
 	// every request that happens to observe a session at a trigger level.
 	// See the long comment at the `escalated` declaration above.
-	if cfg.Airlock.Enabled && escalated {
-		targetTier := ""
-		trigger := ""
-		switch session.EscalationLabel(level) {
-		case "elevated":
-			targetTier = cfg.Airlock.Triggers.OnElevated
-			trigger = airlockTriggerOnElevated
-		case "high":
-			targetTier = cfg.Airlock.Triggers.OnHigh
-			trigger = airlockTriggerOnHigh
-		case "critical":
-			targetTier = cfg.Airlock.Triggers.OnCritical
-			trigger = airlockTriggerOnCritical
-		}
-		if targetTier != "" && targetTier != config.AirlockTierNone {
-			// Keep the existing per-agent profiling state, but enforce airlock on
-			// the trust-graded key. For request-controlled identities this folds
-			// agent-name rotation to the source IP; bound identities already use
-			// the same key as the profiling session.
-			enforcementKey := responseTaintSessionKey(agent, clientIP, opts.ActorAuth)
-			enforcementSess := sess
-			if enforcementKey != key {
-				enforcementSess = sm.GetOrCreate(enforcementKey)
-				_, _, _ = sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers)
-			}
-			if changed, from, to := enforcementSess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
-				enforcementSess.RecordEvent(SessionEvent{
-					Kind:     "airlock_enter",
-					Target:   scope,
-					Detail:   from + "->" + to,
-					Severity: "warn",
-					Score:    sess.ScopedThreatScore(scope),
-				})
-				if log != nil {
-					log.LogAirlockEnter(enforcementKey, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
-				}
-				if p.metrics != nil {
-					p.metrics.RecordAirlockTransition(from, to, "adaptive")
-				}
-			}
-		}
+	if escalated {
+		triggerScopedAirlockOnEscalation(sess, scope, &cfg.Airlock, ep)
 	}
 
 	for _, a := range anomalies {
@@ -3302,7 +3263,7 @@ func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.Si
 	return true
 }
 
-func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig session.SignalType, adaptiveCfg *config.AdaptiveEnforcement, ep decide.EscalationParams) {
+func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig session.SignalType, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock, ep decide.EscalationParams) {
 	if sess, ok := rec.(*SessionState); ok && sess != nil {
 		scope = normalizeAdaptiveScope(scope)
 		escalated := recordScopedAdaptiveSignal(sess, scope, sig, ep)
@@ -3310,12 +3271,60 @@ func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig sessio
 			level := sess.EffectiveEscalationLevel(scope)
 			sess.SetScopedBlockAll(scope, decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock)
 		}
+		if escalated {
+			triggerScopedAirlockOnEscalation(sess, scope, airlockCfg, ep)
+		}
 		return
 	}
 	if session.ClassifiedDenialSignal(sig) && !shouldScoreClassifiedDenial(rec, normalizeAdaptiveScope(scope), ep) {
 		return
 	}
 	decide.RecordSignal(rec, sig, ep)
+}
+
+// triggerScopedAirlockOnEscalation applies the configured airlock tier only
+// when a scoped adaptive signal crosses an escalation edge. Signal writers
+// share this helper so every transport preserves the same scoped identity,
+// provenance, audit event, and recovery behavior.
+func triggerScopedAirlockOnEscalation(sess *SessionState, scope string, airlockCfg *config.Airlock, ep decide.EscalationParams) {
+	if sess == nil || airlockCfg == nil || !airlockCfg.Enabled {
+		return
+	}
+
+	scope = normalizeAdaptiveScope(scope)
+	level := sess.EffectiveEscalationLevel(scope)
+	targetTier := ""
+	trigger := ""
+	switch session.EscalationLabel(level) {
+	case "elevated":
+		targetTier = airlockCfg.Triggers.OnElevated
+		trigger = airlockTriggerOnElevated
+	case "high":
+		targetTier = airlockCfg.Triggers.OnHigh
+		trigger = airlockTriggerOnHigh
+	case "critical":
+		targetTier = airlockCfg.Triggers.OnCritical
+		trigger = airlockTriggerOnCritical
+	}
+	if targetTier == "" || targetTier == config.AirlockTierNone {
+		return
+	}
+
+	if changed, from, to := sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
+		sess.RecordEvent(SessionEvent{
+			Kind:     "airlock_enter",
+			Target:   scope,
+			Detail:   from + "->" + to,
+			Severity: "warn",
+			Score:    sess.ScopedThreatScore(scope),
+		})
+		if ep.Logger != nil {
+			ep.Logger.LogAirlockEnter(ep.Session, to, "adaptive_"+session.EscalationLabel(level), ep.ClientIP, ep.RequestID)
+		}
+		if ep.Metrics != nil {
+			ep.Metrics.RecordAirlockTransition(from, to, "adaptive")
+		}
+	}
 }
 
 func adaptiveBlockSignal(result scanner.Result, adaptiveCfg *config.AdaptiveEnforcement) session.SignalType {
@@ -3768,7 +3777,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	sessionKey := sessionKeyFor(actx.Agent(), clientIP, envelope.NormalizeActorAuth(actx.AgentAuth()))
 	sess := sm.GetOrCreate(sessionKey)
 	for i := 0; i < signals; i++ {
-		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 			Logger:    p.logger,
 			Metrics:   p.metrics,
@@ -5007,7 +5016,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if headerBlocked {
 				headerSignal = session.SignalBlock
 			}
-			recordAdaptiveSignalForScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+			recordAdaptiveSignalForScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,
@@ -6193,7 +6202,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
 			sess := sm.GetOrCreate(sessionKey)
-			recordAdaptiveSignalForScope(sess, responseScope, sig, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+			recordAdaptiveSignalForScope(sess, responseScope, sig, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,

@@ -5448,6 +5448,89 @@ func TestForwardHTTPResponseInjection_SizeExemptDomainStillScanned(t *testing.T)
 	}
 }
 
+func TestForwardHTTPHeaderDLPBlockTriggersScopedAirlock(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	for _, tc := range []struct {
+		name          string
+		authorization string
+		wantStatus    int
+		wantAirlock   string
+	}{
+		{
+			name:          "blocked authorization enters configured drain tier",
+			authorization: "Bearer " + "AKIA" + "IOSFODNN7EXAMPLE",
+			wantStatus:    http.StatusForbidden,
+			wantAirlock:   config.AirlockTierDrain,
+		},
+		{
+			name:        "benign request remains outside airlock",
+			wantStatus:  http.StatusOK,
+			wantAirlock: config.AirlockTierNone,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.APIAllowlist = nil
+			cfg.FetchProxy.TimeoutSeconds = 5
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			cfg.SessionProfiling.Enabled = true
+			cfg.SessionProfiling.MaxSessions = 1000
+			cfg.SessionProfiling.DomainBurst = 100
+			cfg.SessionProfiling.WindowMinutes = 5
+			cfg.SessionProfiling.SessionTTLMinutes = 30
+			cfg.SessionProfiling.CleanupIntervalSeconds = 300
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 1
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
+			cfg.Airlock.Enabled = true
+			cfg.Airlock.Triggers.OnElevated = config.AirlockTierDrain
+			cfg.Airlock.Triggers.OnHigh = config.AirlockTierDrain
+			cfg.Airlock.Triggers.OnCritical = config.AirlockTierDrain
+
+			logger := audit.NewNop()
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			t.Cleanup(p.Close)
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, backend.URL+"/safe", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.RemoteAddr = "10.10.10.10:12345"
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("forward status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			sm := p.sessionMgrPtr.Load()
+			if sm == nil {
+				t.Fatal("session manager was not initialized")
+			}
+			sess := sm.GetOrCreate("10.10.10.10")
+			scope := adaptiveScopeForHost("127.0.0.1")
+			if got := sess.AirlockForScope(scope).Tier(); got != tc.wantAirlock {
+				t.Fatalf("scoped airlock tier = %q, want %q", got, tc.wantAirlock)
+			}
+		})
+	}
+}
+
 func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, "ok")

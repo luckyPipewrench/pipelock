@@ -181,7 +181,7 @@ func (r *wsRelay) recordFinding(sig session.SignalType, log *audit.Logger, scann
 	if r.cfg != nil {
 		policyHash = r.cfg.CanonicalPolicyHash()
 	}
-	recordAdaptiveSignalForScope(r.rec, adaptiveScopeForHost(r.hostname), sig, &r.cfg.AdaptiveEnforcement, decide.EscalationParams{
+	recordAdaptiveSignalForScope(r.rec, adaptiveScopeForHost(r.hostname), sig, &r.cfg.AdaptiveEnforcement, &r.cfg.Airlock, decide.EscalationParams{
 		Threshold:     r.cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:        log,
 		Metrics:       r.proxy.metrics,

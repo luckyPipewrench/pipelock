@@ -295,7 +295,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// headers to trusted services are expected and should not feed
 		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
 		if !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
-			recordAdaptiveSignalForScope(connectRec, adaptiveScopeForHost(host), session.SignalNearMiss, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+			recordAdaptiveSignalForScope(connectRec, adaptiveScopeForHost(host), session.SignalNearMiss, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    p.logger,
 				Metrics:   p.metrics,
@@ -1712,7 +1712,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardHeaderBlocked {
 			headerSignal = session.SignalBlock
 		}
-		recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+		recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 			Logger:    p.logger,
 			Metrics:   p.metrics,
@@ -2901,7 +2901,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 							sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 							sess := sm.GetOrCreate(sessionKey)
-							recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(r.URL.Hostname()), session.SignalStrip, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+							recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(r.URL.Hostname()), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 								Logger:    p.logger,
 								Metrics:   p.metrics,

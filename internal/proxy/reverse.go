@@ -683,7 +683,7 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 		return
 	}
 	key := sessionKeyFor(agent, clientIP, actorAuth)
-	recordAdaptiveSignalForScope(sm.GetOrCreate(key), adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+	recordAdaptiveSignalForScope(sm.GetOrCreate(key), adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    rp.logger,
 		Metrics:   rp.metrics,

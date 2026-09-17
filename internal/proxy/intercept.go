@@ -174,7 +174,7 @@ func interceptRecordFinding(ic *InterceptContext, sig session.SignalType, scanne
 	if ic.Config != nil {
 		policyHash = ic.Config.CanonicalPolicyHash()
 	}
-	recordAdaptiveSignalForScope(rec, interceptAdaptiveScope(ic), sig, &ic.Config.AdaptiveEnforcement, decide.EscalationParams{
+	recordAdaptiveSignalForScope(rec, interceptAdaptiveScope(ic), sig, &ic.Config.AdaptiveEnforcement, &ic.Config.Airlock, decide.EscalationParams{
 		Threshold:     ic.Config.AdaptiveEnforcement.EscalationThreshold,
 		Logger:        ic.Logger,
 		Metrics:       m,

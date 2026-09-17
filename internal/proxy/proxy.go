@@ -4783,7 +4783,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// reads the same CEE-safe session the writer raised, and carries that key
 	// into redirect context so every hop admits against the same state.
 	fetchAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
-	if fetchSess := fetchAirlockSess; fetchSess != nil {
+	denyFetchAirlock := func() bool {
+		fetchSess := fetchAirlockSess
+		if fetchSess == nil {
+			return false
+		}
 		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
 		if tier == config.AirlockTierDrain {
 			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
@@ -4794,8 +4798,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL: displayURL, Agent: agent, Blocked: true,
 					BlockReason: "session in airlock drain",
 				})
-			return
+			return true
 		}
+		return false
+	}
+	if denyFetchAirlock() {
+		return
 	}
 
 	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
@@ -5072,6 +5080,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Blocked:     true,
 				BlockReason: "request header contains secret",
 			})
+		return
+	}
+	// Header scanning may activate drain after the earlier admission check.
+	if headerHadFinding && denyFetchAirlock() {
 		return
 	}
 	// Re-check block_all after header DLP near-miss may have escalated the session.
@@ -5869,6 +5881,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				result:         rawResult,
 				content:        content,
 				displayURL:     displayURL,
+				responseURL:    finalResponseURL,
 				agent:          agent,
 				actorAuth:      id.Auth,
 				clientIP:       clientIP,
@@ -6000,6 +6013,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			result:         scanResult,
 			content:        content,
 			displayURL:     displayURL,
+			responseURL:    finalResponseURL,
 			agent:          agent,
 			actorAuth:      id.Auth,
 			clientIP:       clientIP,
@@ -6109,6 +6123,7 @@ type responseScanContext struct {
 	result         scanner.ResponseScanResult
 	content        string
 	displayURL     string
+	responseURL    string
 	agent          string
 	actorAuth      envelope.ActorAuth
 	clientIP       string
@@ -6200,8 +6215,8 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	// response scan result. Exempt domains skip scoring - their findings
 	// are logged but don't contribute to session escalation.
 	responseScope := ""
-	if parsedDisplayURL, err := url.Parse(displayURL); err == nil {
-		responseScope = adaptiveScopeForHost(parsedDisplayURL.Hostname())
+	if parsedResponseURL, err := url.Parse(firstNonEmptyString(in.responseURL, displayURL)); err == nil {
+		responseScope = adaptiveScopeForHost(parsedResponseURL.Hostname())
 	}
 	recordResponseSignal := func(sig session.SignalType) {
 		if exempt {

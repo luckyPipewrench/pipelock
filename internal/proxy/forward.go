@@ -1101,7 +1101,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// CEE-safe session the writer raised; that key is carried into redirect
 	// context so every hop admits against the same state.
 	forwardAirlockSess := p.airlockSessionForIdentity(agent, clientIP, id.Auth)
-	if forwardSess := forwardAirlockSess; forwardSess != nil {
+	denyForwardAirlock := func() bool {
+		forwardSess := forwardAirlockSess
+		if forwardSess == nil {
+			return false
+		}
 		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
@@ -1111,9 +1115,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				writeBlockedError(w,
 					blockInfoFor(blockreason.AirlockActive, ""),
 					"airlock: "+reason, http.StatusForbidden)
-				return
+				return true
 			}
 		}
+		return false
+	}
+	if denyForwardAirlock() {
+		return
 	}
 
 	hasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
@@ -1736,6 +1744,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBlockedError(w,
 			blockInfoFor(blockreason.DLPMatch, "header_dlp"),
 			"blocked: request header contains secret", http.StatusForbidden)
+		return
+	}
+
+	// A continuing header finding can activate airlock after initial admission.
+	// Reuse the same admission decision before allowing that request to egress.
+	if forwardHeaderHadFinding && denyForwardAirlock() {
 		return
 	}
 
@@ -2901,7 +2915,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 							sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 							sess := sm.GetOrCreate(sessionKey)
-							recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(r.URL.Hostname()), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
+							recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(fwdRespHost), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 								Logger:    p.logger,
 								Metrics:   p.metrics,

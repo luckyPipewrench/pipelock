@@ -328,11 +328,11 @@ func classifyHard(method, transport string, isTLSIntercepted bool) (bool, string
 		// Scan API is evaluation-plane, always allowed.
 		return true, ""
 
-	case TransportForward:
+	case TransportForward, TransportReverse:
 		if readOnlyMethods[method] {
 			return true, ""
 		}
-		return false, "airlock: hard tier blocks write methods on forward proxy"
+		return false, "airlock: hard tier blocks write methods on " + transport + " proxy"
 
 	case TransportConnect:
 		if !isTLSIntercepted {

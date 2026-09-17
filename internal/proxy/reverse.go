@@ -1178,6 +1178,26 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				sessionResult.Detail)
 			return
 		}
+		// Admission reads the same scoped state that request findings and
+		// profiling just updated. A configured quarantine must apply to this
+		// request before request policy, receipts, and upstream forwarding.
+		if airlockSess := rp.owner.airlockSessionForIdentity(agent, clientIP, actorAuth); airlockSess != nil {
+			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(upstreamHost))
+			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
+				rp.logger.LogAirlockDeny(airlockSess.key, tier, TransportReverse, r.Method, clientIP, requestID)
+				rp.metrics.RecordAirlockDenial(tier, TransportReverse, r.Method)
+				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "airlock")
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+					Layer: "airlock", Pattern: reason, Transport: TransportReverse,
+					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+				})
+				writeReverseProxyBlock(w, http.StatusForbidden,
+					blockInfoFor(blockreason.AirlockActive, ""), reason)
+				return
+			}
+		}
 		// block_all: deny ALL traffic (including clean) when the session sits at
 		// an escalation level whose adaptive action resolves to block.
 		if sessionResult.Level > 0 && decide.UpgradeAction("", sessionResult.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {

@@ -461,7 +461,10 @@ for f in "${FILES[@]}"; do
             # Fragments keep their literal, because their audited expected
             # error may name it.
             if [ "$kind" = config ]; then
-                sed -i -E "s/^([[:space:]]*expires:[[:space:]]*)[0-9]{4}-[0-9]{2}-[0-9]{2}/\1$(date -u -d '+7 days' +%Y-%m-%d)/" "$blk"
+                # Match a quoted value too: YAML accepts expires: "2026-10-15",
+                # and a normalizer that only handles the bare form leaves the
+                # very bomb it exists to defuse in place.
+                sed -i -E "s/^([[:space:]]*expires:[[:space:]]*)([\"']?)[0-9]{4}-[0-9]{2}-[0-9]{2}\2/\1\2$(date -u -d '+7 days' +%Y-%m-%d)\2/" "$blk"
             fi
             probe "$blk" "$f (yaml block $n)" "$kind"
         done

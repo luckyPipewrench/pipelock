@@ -1260,8 +1260,19 @@ func TestCanonicalPolicyHash_ListenerDriftResetFileIsOperational(t *testing.T) {
 // binds them) and the deep-copy clone path. Entries are supplied unsorted and
 // differ in each sort key so the canonical comparator branches all run.
 func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
+	// Read the clock ONCE and derive the second date from the first. Two
+	// independent calls can straddle a UTC midnight and return the same day,
+	// which silently removes the distinct Expires value this sort test exists
+	// to exercise.
 	expires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
-	laterExpires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon - 24*time.Hour)
+	expiresAt, err := time.Parse(time.DateOnly, expires)
+	if err != nil {
+		t.Fatalf("parse generated expiry %q: %v", expires, err)
+	}
+	laterExpires := expiresAt.AddDate(0, 0, -1).Format(time.DateOnly)
+	if laterExpires == expires {
+		t.Fatalf("derived expiry %q equals %q; the sort test needs two distinct values", laterExpires, expires)
+	}
 	entries := []UnscannablePassthroughEntry{
 		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: expires},
 		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: expires},

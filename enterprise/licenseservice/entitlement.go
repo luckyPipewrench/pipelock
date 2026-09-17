@@ -1391,9 +1391,18 @@ func claimActiveTrialSlot(ctx context.Context, exec entitlementExecer, ent *Enti
 		)
 	)
 	`
+	// A new claim is only VERIFIED when it is the one-shot trial this slot
+	// represents. The migration and the backfill already refuse to verify a
+	// trial-tier row on a recurring interval, and this is the same decision on
+	// the runtime path: verified is what permits a later takeover once the slot
+	// falls due, so a recurring trial must not earn it here either.
+	claimState := trialSlotTakeoverUnverifiable
+	if ent.BillingInterval == billingIntervalOneTime {
+		claimState = trialSlotTakeoverVerified
+	}
 	now := time.Now().UTC()
 	result, err := exec.ExecContext(ctx, query,
-		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), trialSlotTakeoverVerified,
+		email, ent.SubscriptionID, ent.CurrentPeriodEnd.UTC(), claimState,
 		now, trialSlotTakeoverVerified, statusActive, now,
 	)
 	if err != nil {

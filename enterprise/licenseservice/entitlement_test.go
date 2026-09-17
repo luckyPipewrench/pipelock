@@ -834,6 +834,16 @@ func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
 			); err != nil {
 				t.Fatalf("expire suspect slot: %v", err)
 			}
+			// End the owner's trial too. While it is still running, the
+			// owner-live condition refuses every takeover on its own and this
+			// test would pass without ever consulting takeover_state. Ending
+			// it leaves the suspect state as the only thing that can refuse.
+			if _, err := db.db.ExecContext(ctx,
+				`UPDATE entitlements SET current_period_end = ? WHERE subscription_id = ?`,
+				now.Add(-time.Minute), first.SubscriptionID,
+			); err != nil {
+				t.Fatalf("end the suspect slot owner's trial: %v", err)
+			}
 
 			replacement := trialEntitlement("order_suspect_slot_replacement", "suspect-slot@example.com", now.Add(48*time.Hour))
 			if err := db.Upsert(ctx, replacement); !errors.Is(err, ErrActiveTrialExists) {
@@ -853,6 +863,30 @@ func TestClaimActiveTrialSlot_SuspectExpiredSlotIsNotTakenOver(t *testing.T) {
 				t.Fatalf("refused takeover recorded the replacement: (%+v, %v), want (nil, nil)", got, err)
 			}
 		})
+	}
+}
+
+// The runtime claim path makes the same judgement the migration and backfill
+// do: only a one-time trial earns the verified state, because verified is what
+// permits a later takeover once the slot falls due. A trial-tier order on a
+// recurring interval is not the one-shot claim this slot represents.
+func TestClaimActiveTrialSlot_RecurringTrialIsNotVerified(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	ent := trialEntitlement("order_recurring_claim", "recurring-claim@example.com", time.Now().UTC().Add(24*time.Hour))
+	ent.BillingInterval = "month"
+	if err := db.Upsert(ctx, ent); err != nil {
+		t.Fatalf("claim slot for a recurring trial: %v", err)
+	}
+	var got string
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT takeover_state FROM active_trial_slots WHERE normalized_email = ?`,
+		"recurring-claim@example.com",
+	).Scan(&got); err != nil {
+		t.Fatalf("read claimed slot: %v", err)
+	}
+	if got != trialSlotTakeoverUnverifiable {
+		t.Fatalf("takeover state = %q, want %q for a recurring trial", got, trialSlotTakeoverUnverifiable)
 	}
 }
 

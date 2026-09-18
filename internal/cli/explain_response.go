@@ -100,7 +100,7 @@ Example:
 				}
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read response body from stdin: %w", err))
 			}
-			report, err := buildResponseExplainReport(cfg, cfgLabel, body)
+			report, err := buildResponseExplainReport(cmd.Context(), cfg, cfgLabel, body)
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
@@ -140,7 +140,7 @@ func newResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte) 
 	return report
 }
 
-func buildResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte) (responseExplainReport, error) {
+func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabel string, body []byte) (responseExplainReport, error) {
 	report := newResponseExplainReport(cfg, cfgLabel, body)
 	bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
 	for _, e := range bundleResult.Errors {
@@ -155,14 +155,19 @@ func buildResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte
 		return report, fmt.Errorf("create scanner: %w", err)
 	}
 	defer sc.Close()
-	result := sc.ScanResponseBodyWithSuppress(context.Background(), body, "", nil)
+	result := sc.ScanResponseBodyWithSuppress(ctx, body, "", nil)
 	// Runtime intercept/forward/reverse consult Scanner.ResponseAction(), not
 	// the raw YAML field. When response_scanning.enabled is false, that method
 	// returns block for core-floor hits even if the file still says warn.
 	report.Action = sc.ResponseAction()
 	if result.Failed() {
 		report.Allowed = false
-		report.Error = result.ScanError
+		// The scan error reaches a terminal and a JSON consumer. Two of its
+		// three sources are fixed context-error text, but an image-metadata
+		// decode error is shaped by the body, so it goes through the same
+		// control-character escaping the event explainer already uses rather
+		// than being trusted because its usual value is benign.
+		report.Error = escapeExplainEventTerminalControls(result.ScanError)
 		return report, nil
 	}
 	if result.Clean {
@@ -192,19 +197,32 @@ func buildResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte
 	return report, nil
 }
 
+// explainResponseMaxReadBytes bounds the read no matter how large the configured
+// ceilings are. The derived limit comes from operator configuration, and
+// `size_exempt_scan_max_bytes` is only validated as positive, so a large value
+// would otherwise have io.ReadAll allocate that much from stdin in one piece.
+// This is a diagnostic command; refusing an enormous body with a clear reason
+// beats exhausting memory on the operator's workstation.
+const explainResponseMaxReadBytes = 256 << 20
+
 func explainResponseReadLimit(cfg *config.Config) int {
 	if cfg == nil {
 		return explainFileReadLimitBytes
 	}
 	limit := 0
-	if mb := cfg.FetchProxy.MaxResponseMB; mb > 0 {
-		limit = mb * 1024 * 1024
+	// Multiply in int64 and reject the overflow rather than wrapping to a small
+	// or negative limit, which would silently truncate the body and report a
+	// clean scan of the part that fit.
+	if mb := int64(cfg.FetchProxy.MaxResponseMB); mb > 0 && mb <= explainResponseMaxReadBytes/(1024*1024) {
+		limit = int(mb * 1024 * 1024)
+	} else if mb > 0 {
+		limit = explainResponseMaxReadBytes
 	}
-	if n := int(cfg.TLSInterception.MaxResponseBytes); n > limit {
-		limit = n
+	if n := cfg.TLSInterception.MaxResponseBytes; n > int64(limit) {
+		limit = clampExplainResponseLimit(n)
 	}
-	if n := cfg.ResponseScanning.SizeExemptScanMaxBytes; n > limit {
-		limit = n
+	if n := int64(cfg.ResponseScanning.SizeExemptScanMaxBytes); n > int64(limit) {
+		limit = clampExplainResponseLimit(n)
 	}
 	if limit <= 0 {
 		return explainFileReadLimitBytes
@@ -212,9 +230,19 @@ func explainResponseReadLimit(cfg *config.Config) int {
 	return limit
 }
 
+func clampExplainResponseLimit(n int64) int {
+	if n > explainResponseMaxReadBytes {
+		return explainResponseMaxReadBytes
+	}
+	return int(n)
+}
+
 func readExplainResponseBody(r io.Reader, limit int) ([]byte, error) {
 	if limit <= 0 {
 		limit = explainFileReadLimitBytes
+	}
+	if limit > explainResponseMaxReadBytes {
+		limit = explainResponseMaxReadBytes
 	}
 	body, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	if err != nil {

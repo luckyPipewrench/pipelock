@@ -28,6 +28,13 @@ MINORS = ("125", "126")
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
 NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
+
+# The one aggregate gate that tolerates a skipped producer, the producers it
+# tolerates, and the producer-side condition that makes tolerating them correct.
+# Named once so the gate's expectation and its justification cannot drift apart.
+SKIP_CARVEOUT_AGGREGATE = "test-go126"
+SKIP_CARVEOUT_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
+SKIP_CARVEOUT_CONDITION = "needs.changed-files.outputs.ci_policy == 'true'"
 REQUIRED_PRODUCERS = {
     "security-scan",
     "test-go125",
@@ -90,6 +97,18 @@ def gate_script_is_safe(run: str) -> bool:
     # execute_gate is therefore not the backstop it appears to be, and the
     # docstring above was claiming a property the grammar did not hold.
     neutralized = NEEDS_RESULT_RE.sub("success", run)
+    # Then refuse the backslash. `echo "x\"` satisfies the `echo\ "[^"]*"`
+    # alternative below -- the escaped quote is just another `[^"]` byte -- while
+    # bash reads it as an OPEN string, so the next line is string content rather
+    # than the comment this validator skips it as. Proven by reproduction:
+    # `echo "x\"` followed by `# "; /usr/bin/touch FILE` was reported safe AND
+    # created the file. This is the same shape as the `$(...)` bypass guarded
+    # above, and it is the second form of it found, so the rule is the list:
+    # every quoting form bash treats specially must be named here, because the
+    # grammar's coverage is exactly the set someone thought to enumerate --
+    # command substitution `$(...)`, backtick, and now backslash continuation.
+    if "\\" in neutralized:
+        return False
     for line in neutralized.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -140,8 +159,8 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
         for result in ("failure", "cancelled", "", "unknown", "skipped"):
             values = successful | {dependency: result}
             legitimate_skip = (
-                aggregate == "test-go126"
-                and dependency in {"test-oss-go126", "test-enterprise-go126"}
+                aggregate == SKIP_CARVEOUT_AGGREGATE
+                and dependency in SKIP_CARVEOUT_PRODUCERS
                 and result == "skipped"
             )
             cases.append(
@@ -162,6 +181,30 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
             errors.append(
                 f"{aggregate} gate returned {actual} for {description} on {event_name}; "
                 f"expected {'zero' if expected == 0 else 'non-zero'}"
+            )
+    return errors
+
+
+def skip_carveout_errors(jobs: dict) -> list[str]:
+    """Return failures when a producer's skip carve-out is no longer justified.
+
+    `gate_execution_errors` accepts a `skipped` Go 1.26 producer on a pull
+    request and reds every other omitted result.  That acceptance is only
+    correct while the producer skips for the single reason the carve-out was
+    written for: the pull request touched no CI-policy path.  Nothing else
+    checks this, so a producer whose `if` loses that guard -- or gains a
+    broader one -- would start skipping for another reason entirely and the
+    aggregate required check would still go green.  Assert the producer's own
+    condition here rather than inferring it from the gate under test.
+    """
+    errors = []
+    for producer in sorted(SKIP_CARVEOUT_PRODUCERS):
+        condition = jobs.get(producer, {}).get("if")
+        if not isinstance(condition, str) or SKIP_CARVEOUT_CONDITION not in condition:
+            errors.append(
+                f"{producer} no longer skips only when the pull request touches no "
+                f"CI-policy path, so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
+                f"carve-out is unjustified"
             )
     return errors
 
@@ -247,6 +290,8 @@ def topology_errors(jobs: dict) -> list[str]:
             if any(step.get("run") == "make test-replay-harness" for step in jobs[producer].get("steps", [])):
                 errors.append(f"{producer} runs replay inside every shard")
 
+    errors.extend(skip_carveout_errors(jobs))
+
     missing_required = REQUIRED_PRODUCERS - jobs.keys()
     if missing_required:
         errors.append(f"missing required producers: {sorted(missing_required)}")
@@ -301,6 +346,32 @@ class CIWorkflowTopologyTest(unittest.TestCase):
             workflow.write_text("jobs: [", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "cannot parse CI workflow"):
                 workflow_jobs(workflow)
+
+    def test_escaped_quote_continuation_is_rejected(self):
+        # Positive control first: the same line without the backslash is real
+        # gate syntax and must stay accepted, so a FAIL below means the new
+        # backslash rule fired and not that the grammar broke outright.
+        self.assertTrue(gate_script_is_safe('echo "x"'))
+        unsafe = 'echo "x\\"\n# "; /usr/bin/touch /tmp/pipelock-fence-probe'
+        self.assertFalse(
+            gate_script_is_safe(unsafe),
+            "an escaped quote leaves bash inside a string, so the following line "
+            "is content rather than the comment this validator skips",
+        )
+        with self.assertRaisesRegex(ValueError, "outside the safe execution subset"):
+            execute_gate(unsafe, {}, "push")
+
+    def test_unjustified_producer_skip_fails_the_contract(self):
+        # Positive control: the real workflow justifies the carve-out today.
+        self.assertEqual(skip_carveout_errors(self.jobs), [])
+        broken = copy.deepcopy(self.jobs)
+        original = broken["test-oss-go126"]["if"]
+        broken["test-oss-go126"]["if"] = "${{ always() }}"
+        self.assertNotEqual(original, broken["test-oss-go126"]["if"], "mutation did not change the fixture")
+        errors = skip_carveout_errors(broken)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("test-oss-go126", errors[0])
+        self.assertIn("CI-policy path", errors[0])
 
     def test_go126_failure_cannot_red_go125_aggregate(self):
         aggregate_needs = set(self.jobs["test-go125"]["needs"])

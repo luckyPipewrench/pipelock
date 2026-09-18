@@ -809,6 +809,7 @@ func TestProbeNFTContainmentRequiresDeclaredLoopbackReplyRule(t *testing.T) {
 	}
 
 	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.lookupUser = containTestLookup
 		e.nftRulesPath = ""
 		e.nftPersistUnitPath = ""
 		e.readFile = func(path string) ([]byte, error) {

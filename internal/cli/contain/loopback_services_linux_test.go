@@ -20,6 +20,7 @@ import (
 
 const (
 	loopbackNamespaceHelperEnv     = "PIPELOCK_TEST_LOOPBACK_NAMESPACE_HELPER"
+	loopbackNamespaceUnavailable   = "loopback namespace capability unavailable"
 	loopbackNamespaceTimeout       = 5 * time.Second
 	loopbackNamespaceHelperTimeout = 4 * loopbackNamespaceTimeout
 	loopbackNamespaceTable         = "pipelock_loopback_test"
@@ -29,6 +30,11 @@ func TestLoopbackServiceSameUIDCompletionInNamespace(t *testing.T) {
 	if os.Getenv(loopbackNamespaceHelperEnv) != "" {
 		testLoopbackServiceSameUIDCompletionInNamespaceHelper(t)
 		return
+	}
+	for _, binary := range []string{"ip", "nft"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("namespace test prerequisite %s unavailable: %v", binary, err)
+		}
 	}
 
 	for _, tc := range []struct {
@@ -40,11 +46,15 @@ func TestLoopbackServiceSameUIDCompletionInNamespace(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output, err := runLoopbackNamespaceHelper(tc.family)
+			if strings.Contains(output, loopbackNamespaceUnavailable) {
+				t.Skipf("%s", oneLine(output))
+			}
+			if err != nil && strings.TrimSpace(output) == "" &&
+				(errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)) {
+				t.Skipf("%s: create user/network namespace: %v", loopbackNamespaceUnavailable, err)
+			}
 			if err == nil {
 				return
-			}
-			if strings.Contains(output, "operation not permitted") || strings.Contains(output, "permission denied") {
-				t.Skipf("user/network namespace unavailable: %s", oneLine(output))
 			}
 			t.Fatalf("namespace helper for %s failed: %v\n%s", tc.family, err, output)
 		})
@@ -52,12 +62,6 @@ func TestLoopbackServiceSameUIDCompletionInNamespace(t *testing.T) {
 }
 
 func runLoopbackNamespaceHelper(family string) (string, error) {
-	for _, binary := range []string{"ip", "nft"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			return "", fmt.Errorf("find %s: %w", binary, err)
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceHelperTimeout)
 	defer cancel()
 	// #nosec G204,G702 -- os.Args[0] is the current Go test binary, re-executed with fixed test flags.
@@ -75,12 +79,7 @@ func runLoopbackNamespaceHelper(family string) (string, error) {
 
 func testLoopbackServiceSameUIDCompletionInNamespaceHelper(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "ip", "link", "set", "lo", "up").CombinedOutput()
-	if err != nil {
-		t.Fatalf("ip link set lo up: %v\n%s", err, output)
-	}
+	namespaceRequireCapability(t)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
 		defer cleanupCancel()
@@ -88,7 +87,7 @@ func testLoopbackServiceSameUIDCompletionInNamespaceHelper(t *testing.T) {
 	})
 
 	host, network := namespaceLoopbackFamily(t)
-	listener := namespaceListener(t, ctx, network, host)
+	listener := namespaceListener(t, network, host)
 	servicePort := listener.Addr().(*net.TCPAddr).Port
 
 	paired := namespaceLoopbackRules(host, servicePort, true, true)
@@ -98,20 +97,46 @@ func testLoopbackServiceSameUIDCompletionInNamespaceHelper(t *testing.T) {
 		t.Fatal("rule mutations must produce three distinct nft fixtures")
 	}
 
-	loadNamespaceRules(t, ctx, paired)
-	namespaceAssertCompletion(t, ctx, network, listener.Addr().String())
+	loadNamespaceRules(t, paired)
+	namespaceAssertCompletion(t, network, listener.Addr().String())
 
-	loadNamespaceRules(t, ctx, forwardOnly)
+	loadNamespaceRules(t, forwardOnly)
 	namespaceAssertRejected(t, network, listener.Addr().String(), "missing established reply rule")
 
-	loadNamespaceRules(t, ctx, replyOnly)
+	loadNamespaceRules(t, replyOnly)
 	namespaceAssertRejected(t, network, listener.Addr().String(), "missing forward rule")
 
-	loadNamespaceRules(t, ctx, paired)
-	namespaceAssertCompletion(t, ctx, network, listener.Addr().String())
+	loadNamespaceRules(t, paired)
+	namespaceAssertCompletion(t, network, listener.Addr().String())
 	if network == "tcp4" {
-		namespaceAssertNewSourcePortRejected(t, ctx, host, servicePort)
+		namespaceAssertNewSourcePortRejected(t, host, servicePort)
 	}
+}
+
+func namespaceRequireCapability(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ip", "link", "set", "lo", "up").CombinedOutput()
+	if err != nil {
+		namespaceCapabilityFailure(t, "bring loopback up", err, output)
+	}
+	output, err = exec.CommandContext(ctx, "nft", "add", "table", "inet", loopbackNamespaceTable).CombinedOutput()
+	if err != nil {
+		namespaceCapabilityFailure(t, "create nft table", err, output)
+	}
+}
+
+func namespaceCapabilityFailure(t *testing.T, operation string, err error, output []byte) {
+	t.Helper()
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("namespace capability check %s timed out: %v\n%s", operation, err, output)
+	}
+	if strings.Contains(strings.ToLower(string(output)), "operation not permitted") ||
+		strings.Contains(strings.ToLower(string(output)), "permission denied") {
+		t.Skipf("%s: %s: %v\n%s", loopbackNamespaceUnavailable, operation, err, output)
+	}
+	t.Fatalf("namespace capability check %s: %v\n%s", operation, err, output)
 }
 
 func namespaceLoopbackFamily(t *testing.T) (string, string) {
@@ -127,8 +152,10 @@ func namespaceLoopbackFamily(t *testing.T) (string, string) {
 	}
 }
 
-func namespaceListener(t *testing.T, ctx context.Context, network, host string) net.Listener {
+func namespaceListener(t *testing.T, network, host string) net.Listener {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
+	defer cancel()
 	listenConfig := net.ListenConfig{}
 	listener, err := listenConfig.Listen(ctx, network, net.JoinHostPort(host, "0"))
 	if err != nil {
@@ -156,8 +183,10 @@ func namespaceLoopbackRules(host string, servicePort int, forward, reply bool) s
 	return rules.String()
 }
 
-func loadNamespaceRules(t *testing.T, ctx context.Context, rules string) {
+func loadNamespaceRules(t *testing.T, rules string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
+	defer cancel()
 	_ = exec.CommandContext(ctx, "nft", "delete", "table", "inet", loopbackNamespaceTable).Run()
 	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
@@ -181,8 +210,10 @@ func loadNamespaceRules(t *testing.T, ctx context.Context, rules string) {
 	}
 }
 
-func namespaceAssertCompletion(t *testing.T, ctx context.Context, network, address string) {
+func namespaceAssertCompletion(t *testing.T, network, address string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
+	defer cancel()
 	// A successful TCP dial completes the three-way handshake. The listener and
 	// client share the namespace UID, so the server's SYN-ACK must pass the
 	// paired reply rule in this OUTPUT chain.
@@ -202,14 +233,22 @@ func namespaceAssertRejected(t *testing.T, network, address, rejected string) {
 		_ = conn.Close()
 		t.Fatalf("%s unexpectedly allowed a same-UID loopback connection", rejected)
 	}
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if !namespaceDialTimedOut(ctx, err) {
 		t.Fatalf("%s rejected with %v, want a timeout from the nft drop", rejected, err)
 	}
 }
 
-func namespaceAssertNewSourcePortRejected(t *testing.T, ctx context.Context, host string, servicePort int) {
+func namespaceDialTimedOut(ctx context.Context, err error) bool {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && networkErr.Timeout()
+}
+
+func namespaceAssertNewSourcePortRejected(t *testing.T, host string, servicePort int) {
 	t.Helper()
-	target := namespaceListener(t, ctx, "tcp4", host)
+	target := namespaceListener(t, "tcp4", host)
 	newCtx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
 	defer cancel()
 	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: servicePort}}
@@ -218,7 +257,7 @@ func namespaceAssertNewSourcePortRejected(t *testing.T, ctx context.Context, hos
 		_ = conn.Close()
 		t.Fatal("NEW flow bound to the declared service source port unexpectedly passed the reply rule")
 	}
-	if !errors.Is(newCtx.Err(), context.DeadlineExceeded) {
+	if !namespaceDialTimedOut(newCtx, err) {
 		t.Fatalf("NEW flow bound to source port %d rejected with %v, want a timeout from the nft drop", servicePort, err)
 	}
 }

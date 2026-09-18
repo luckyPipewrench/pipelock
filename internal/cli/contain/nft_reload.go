@@ -275,8 +275,9 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 // already carries a forward allow for that exact host and port, so an
 // operator's hand-written reply rule for a service this block never declared
 // is left alone, exactly as the strict pair matcher leaves it alone.
-func partialManagedNFTBlockLength(rules []nftRuleWithHandle, i, loopbackStart, agentUID int) int {
+func partialManagedNFTBlockLength(rules []nftRuleWithHandle, i, loopbackStart, agentUID int) (int, map[int]bool) {
 	declared := map[string]bool{}
+	foreign := map[int]bool{}
 	tailStart := loopbackStart + 1
 	for tailStart < len(rules) {
 		line := rules[tailStart].line
@@ -286,21 +287,30 @@ func partialManagedNFTBlockLength(rules []nftRuleWithHandle, i, loopbackStart, a
 			tailStart++
 			continue
 		}
-		if key, ok := agentLoopbackReplyHostPortKey(line, agentUID); ok && declared[key] {
+		if key, ok := agentLoopbackReplyHostPortKey(line, agentUID); ok {
+			if !declared[key] {
+				// An operator reply rule for a service this block never declared.
+				// Step OVER it rather than stopping here: stopping abandons every
+				// managed rule after it, so a revoked service's forward allow would
+				// survive reload and stay reachable. Its handle is excluded from
+				// deletion, which is why the caller selects handles individually
+				// instead of deleting a contiguous span.
+				foreign[rules[tailStart].handle] = true
+			}
 			tailStart++
 			continue
 		}
 		break
 	}
 	if tailStart == loopbackStart+1 || tailStart+2 >= len(rules) {
-		return 0
+		return 0, nil
 	}
 	if !lineHasManagedDNSDrop(rules[tailStart].line, agentUID, "udp") ||
 		!lineHasManagedDNSDrop(rules[tailStart+1].line, agentUID, "tcp") ||
 		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
-		return 0
+		return 0, nil
 	}
-	return tailStart + 3 - i
+	return tailStart + 3 - i, foreign
 }
 
 // agentLoopbackReplyHostPortKey reports the host/port a reply accept answers
@@ -470,12 +480,15 @@ func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentU
 	rules := nftRulesWithHandles(live)
 	var handles []int
 	for i := 0; i < len(rules); {
-		blockLen := managedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID)
+		blockLen, foreign := managedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID)
 		if blockLen == 0 {
 			i++
 			continue
 		}
 		for _, rule := range rules[i : i+blockLen] {
+			if foreign[rule.handle] {
+				continue
+			}
 			handles = append(handles, rule.handle)
 		}
 		i += blockLen
@@ -491,17 +504,17 @@ func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentU
 // removes both halves of a declared service without absorbing unrelated
 // hand-written reply rules. A contiguous-forward legacy block remains
 // recognizable only to migrate rules rendered before reply pairs existed.
-func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, agentUID int) int {
+func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, agentUID int) (int, map[int]bool) {
 	if i+2 >= len(rules) {
-		return 0
+		return 0, nil
 	}
 	if !lineHasTerminalSkuidVerdict(rules[i].line, operatorUID, "accept") ||
 		!lineHasTerminalSkuidVerdict(rules[i+1].line, proxyUID, "accept") {
-		return 0
+		return 0, nil
 	}
 	loopbackStart := i + 2
 	if !lineHasAgentLoopbackAllowAnyPortAnyHost(rules[loopbackStart].line, agentUID) {
-		return 0
+		return 0, nil
 	}
 
 	// The first allow is the implicit proxy port. Every additional service in a
@@ -510,21 +523,21 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 	for tailStart < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[tailStart].line, agentUID) {
 		if tailStart+1 >= len(rules) || !lineHasAgentLoopbackReplyForForwardLine(rules[tailStart].line, rules[tailStart+1].line, agentUID) {
 			if length := legacyManagedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID); length > 0 {
-				return length
+				return length, nil
 			}
 			return partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
 		}
 		tailStart += 2
 	}
 	if tailStart+2 >= len(rules) {
-		return 0
+		return 0, nil
 	}
 	if !lineHasManagedDNSDrop(rules[tailStart].line, agentUID, "udp") ||
 		!lineHasManagedDNSDrop(rules[tailStart+1].line, agentUID, "tcp") ||
 		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
-		return 0
+		return 0, nil
 	}
-	return tailStart + 3 - i
+	return tailStart + 3 - i, nil
 }
 
 // legacyManagedNFTBlockLength recognizes the contiguous-forward format that

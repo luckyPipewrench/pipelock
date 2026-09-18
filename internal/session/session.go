@@ -7,6 +7,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -163,7 +164,12 @@ type RecoveryEventRecorder interface {
 	RecordAdaptiveRecoveryEvent(scope, reason string, from, to int)
 }
 
-// Store manages session lifecycle.
+// ErrCapacity indicates that admitting another session would discard active
+// quarantine or exceed the store's configured memory bound.
+var ErrCapacity = errors.New("session capacity exhausted; release active quarantine or increase max_sessions")
+
+// Store manages session lifecycle. When a non-nil store returns a nil recorder,
+// admission was refused and the caller must return ErrCapacity before new work.
 type Store interface {
 	GetOrCreate(key string) Recorder
 	Delete(key string)

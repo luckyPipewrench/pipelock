@@ -2380,7 +2380,9 @@ func (p *Proxy) currentCEEEntropy(identity identitykey.CEEIdentity) ceeEntropySn
 	sessions := p.sessionMgrPtr.Load()
 	var recorder session.Recorder
 	if sessions != nil {
-		recorder = sessions.GetOrCreate(identity.Key())
+		if sess := sessions.GetOrCreate(identity.Key()); sess != nil {
+			recorder = sess
+		}
 	}
 	return ceeEntropySnapshot{
 		Exceeded:       usage >= budget,
@@ -3018,6 +3020,9 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 
 	key := sessionKeyFor(agent, clientIP, opts.ActorAuth)
 	sess := sm.GetOrCreate(key)
+	if sess == nil {
+		return SessionResult{capacityDenied: true, Blocked: true, Detail: session.ErrCapacity.Error()}
+	}
 
 	// On-entry de-escalation: recover sessions stuck at block_all.
 	_, _, _ = trySessionRecovery(sess, &cfg.AdaptiveEnforcement, adaptiveRecoveryContext{
@@ -3066,11 +3071,11 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		case config.ActionWarn:
 			// Observe and allow.
 		case config.ActionAsk:
-			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
+			return SessionResult{recorder: sess, Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		case config.ActionBlock:
-			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
+			return SessionResult{recorder: sess, Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		default:
-			return SessionResult{Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
+			return SessionResult{recorder: sess, Blocked: true, Detail: detail, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		}
 	}
 
@@ -3183,7 +3188,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		})
 
 		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
-			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
+			return SessionResult{recorder: sess, Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 		}
 	}
 
@@ -3201,7 +3206,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		})
 	}
 
-	return SessionResult{Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
+	return SessionResult{recorder: sess, Level: level, AutoRecoverAt: autoRecoverAt, RecoverHint: recoverHint}
 }
 
 func baselineAgentKeyForSessionKey(key string) string {
@@ -3273,7 +3278,10 @@ func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.Si
 }
 
 func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig session.SignalType, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock, ep decide.EscalationParams) {
-	if sess, ok := rec.(*SessionState); ok && sess != nil {
+	if sess, ok := rec.(*SessionState); ok {
+		if sess == nil {
+			return
+		}
 		scope = normalizeAdaptiveScope(scope)
 		escalatedTo := recordScopedAdaptiveSignal(sess, scope, sig, ep)
 		if escalatedTo != "" && adaptiveCfg != nil {
@@ -4775,7 +4783,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// RecordClean at the end when no finding was detected.
 	var fetchRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		fetchRec = sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
+		sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
+		if sess == nil {
+			writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable,
+				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error()})
+			return
+		}
+		fetchRec = sess
 	}
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
@@ -4786,7 +4800,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	denyFetchAirlock := func() bool {
 		// A finding belongs to its recorder even after replacement, while
 		// another request may have quarantined the current session meanwhile.
-		for _, fetchSess := range [2]*SessionState{fetchAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
+		for _, fetchSess := range [3]*SessionState{sr.recorder, fetchAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
 			if fetchSess == nil {
 				continue
 			}
@@ -4923,10 +4937,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		info, status := sr.blockResponse()
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
-			Layer:               "session_profiling",
+			Layer:               info.Layer,
 			Pattern:             sr.Detail,
 			Transport:           "fetch",
 			Method:              http.MethodGet,
@@ -4944,8 +4959,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
-			http.StatusForbidden, FetchResponse{
+			info, status, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
@@ -5263,6 +5277,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// session. Use the CEE recorder, not the raw per-agent recorder, so
 		// rotated self-declared agent names cannot dodge adaptive session deny.
 		if ceeBlockAll {
+			if ceeRec == nil {
+				emitFetchReceipt(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+					Pattern: session.ErrCapacity.Error(), Transport: TransportFetch,
+					Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
+				})
+				writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable,
+					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error(), Layer: sessionCapacityLayer})
+				return
+			}
 			level := recEscalationLevel(ceeRec)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			emitFetchReceipt(receipt.EmitOpts{
@@ -6051,7 +6075,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
 	// This ensures warn/near-miss findings do not inadvertently decay score.
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		fetchScope := adaptiveScopeForHost(parsed.Hostname())
+		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
 			sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
 			scope:      fetchScope,

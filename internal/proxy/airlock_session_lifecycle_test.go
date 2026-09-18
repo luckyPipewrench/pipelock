@@ -173,3 +173,89 @@ func TestScopedAirlockSurvivesSessionEviction(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedAirlockCapacityRemainsBounded(t *testing.T) {
+	for _, scope := range []string{"", adaptiveScopeForHost(adaptiveScopePollHost)} {
+		t.Run(scope, func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, config.AirlockTierDrain)
+			cfg.SessionProfiling.MaxSessions = 2
+			sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, nil)
+			t.Cleanup(sm.Close)
+			for i := range cfg.SessionProfiling.MaxSessions {
+				sess := sm.GetOrCreate(fmt.Sprintf("quarantined-%d", i))
+				_, _, _ = sess.AirlockForScope(scope).SetTier(config.AirlockTierDrain)
+			}
+			for i := range 10 {
+				if sess := sm.GetOrCreate(fmt.Sprintf("new-client-%d", i)); sess != nil {
+					t.Fatal("capacity refusal returned a recorder")
+				}
+				if got := sm.Len(); got > cfg.SessionProfiling.MaxSessions {
+					t.Fatalf("session count = %d, capacity = %d", got, cfg.SessionProfiling.MaxSessions)
+				}
+			}
+			if rec := sm.AsStore().GetOrCreate("adapter-client"); rec != nil {
+				t.Fatal("store adapter returned a typed nil or admitted an extra session")
+			}
+			for i := range cfg.SessionProfiling.MaxSessions {
+				sess := sm.SessionByKey(fmt.Sprintf("quarantined-%d", i))
+				if sess == nil || sess.AirlockForScope(scope).Tier() != config.AirlockTierDrain {
+					t.Fatal("capacity refusal discarded quarantine")
+				}
+			}
+			_, _, _ = sm.SessionByKey("quarantined-0").ForceSetAirlockTierAllScopes(config.AirlockTierNone, airlockTriggerManual, airlockSourceAdminAPI)
+			if rec := sm.AsStore().GetOrCreate("admitted-after-release"); rec == nil {
+				t.Fatal("released quarantine did not restore admission")
+			}
+			if sm.Len() != cfg.SessionProfiling.MaxSessions || sm.SessionByKey("quarantined-1") == nil {
+				t.Fatal("recovery lost the bound or the remaining quarantine")
+			}
+		})
+	}
+}
+
+func TestReverseAirlockRetainsRequestRecorder(t *testing.T) {
+	for _, tier := range []string{config.AirlockTierDrain, config.AirlockTierNone} {
+		t.Run(tier, func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, tier)
+			var calls atomic.Int32
+			rp, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				_, _ = fmt.Fprint(w, "upstream-control")
+			})
+			oldManager := p.sessionMgrPtr.Load()
+			t.Cleanup(oldManager.Close)
+			original := oldManager.GetOrCreate(airlockAdmissionClient)
+			var replaced atomic.Bool
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, airlockLogCallback(func(record []byte) {
+				if !bytes.Contains(record, []byte(`"event":"`+string(audit.EventAdaptiveEscalation)+`"`)) || !replaced.CompareAndSwap(false, true) {
+					return
+				}
+				current := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
+				current.UpdateConfig(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, &cfg.Airlock)
+				p.sessionMgrPtr.Store(current)
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rp.logger, p.logger = logger, logger
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/control", nil)
+			req.RemoteAddr = airlockAdmissionClient + ":12345"
+			req.Header.Set("Authorization", "Bearer "+airlockHeaderMarker)
+			w := httptest.NewRecorder()
+			rp.ServeHTTP(w, req)
+			if !replaced.Load() {
+				t.Fatal("session replacement callback did not execute")
+			}
+			if got := airlockTierForScope(original, adaptiveScopeForHost(upstream.Hostname())); got != tier {
+				t.Fatalf("request recorder tier = %q, want %q", got, tier)
+			}
+			if tier == config.AirlockTierDrain {
+				if w.Code != http.StatusForbidden || calls.Load() != 0 {
+					t.Fatalf("quarantined request: status=%d upstream_calls=%d", w.Code, calls.Load())
+				}
+			} else if w.Code != http.StatusOK || calls.Load() != 1 {
+				t.Fatalf("positive control: status=%d upstream_calls=%d", w.Code, calls.Load())
+			}
+		})
+	}
+}

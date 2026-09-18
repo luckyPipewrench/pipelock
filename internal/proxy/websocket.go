@@ -424,10 +424,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		info, status := sr.blockResponse()
 		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
-			Layer:     "session_profiling",
+			Layer:     info.Layer,
 			Pattern:   sr.Detail,
 			Transport: TransportWS,
 			Method:    "WS",
@@ -436,8 +437,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
-			sr.Detail, http.StatusForbidden)
+			info, sr.Detail, status)
 		return
 	}
 
@@ -667,6 +667,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if ceeBlockAll {
+			if ceeRec == nil {
+				emitWebSocketReceipt(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+					Pattern: session.ErrCapacity.Error(), Transport: TransportWS,
+					Method: http.MethodGet, Target: targetURL, RequestID: requestID, Agent: agent,
+				})
+				p.metrics.RecordWSBlocked()
+				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			level := recEscalationLevel(ceeRec)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: ceeKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			p.metrics.RecordWSBlocked()
@@ -800,7 +810,24 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	var wsRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sessionKey := responseTaintSessionKey(agent, clientIP, id.Auth)
-		wsRec = sm.GetOrCreate(sessionKey)
+		sess := sm.GetOrCreate(sessionKey)
+		if sess == nil {
+			info := blockInfoFor(blockreason.DataBudget, sessionCapacityLayer)
+			p.metrics.RecordWSBlocked()
+			emitWebSocketReceipt(receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+				Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
+				Transport: TransportWS, Method: http.MethodGet, Target: targetURL,
+				RequestID: requestID, Agent: agent,
+			})
+			if clientConn != nil {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, info.CloseFramePayload())
+			} else {
+				writeBlockedError(w, info, session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+			}
+			return
+		}
+		wsRec = sess
 	}
 	wsScope := adaptiveScopeForHost(parsed.Hostname())
 
@@ -1531,6 +1558,10 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 	}
 
 	if ceeBlockAll {
+		if ceeRec == nil {
+			r.denySessionCapacity()
+			return true
+		}
 		level := recEscalationLevel(ceeRec)
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 		r.terminalOnce.Do(func() {
@@ -2541,15 +2572,16 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		return msg, false
 	}
 	if !r.scanText || !r.scanner.ResponseScanningEnabled() {
-		r.observeUpstreamResponseTaint(false)
-		return msg, false
+		return msg, !r.observeUpstreamResponseTaint(false)
 	}
 
 	// Exempt domains are still scanned for visibility but findings are pinned
 	// to warn with no adaptive scoring or action upgrade.
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
-	r.observeUpstreamResponseTaint(!scanResult.Clean && !scanResult.Failed())
+	if !r.observeUpstreamResponseTaint(!scanResult.Clean && !scanResult.Failed()) {
+		return nil, true
+	}
 	recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
 	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	recordDroppedResponseScanMatches(r.proxy.metrics, r.proxy.logger, actx, scanResult.SuppressedMatches, TransportWS)
@@ -2648,25 +2680,44 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	return msg, false
 }
 
-func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) {
+func (r *wsRelay) denySessionCapacity() {
+	r.terminalOnce.Do(func() {
+		_ = r.emitReceipt(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+			Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
+			Transport: TransportWS, Method: http.MethodGet, Target: r.targetURL,
+			RequestID: r.requestID, Agent: r.agent,
+		})
+	})
+	r.proxy.metrics.RecordWSBlocked()
+	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).CloseFramePayload())
+}
+
+func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
 	if r.cfg == nil || !r.cfg.Taint.Enabled {
-		return
+		return true
 	}
 	sm := r.proxy.sessionMgrPtr.Load()
 	if sm == nil || r.taintSessionKey == "" {
-		return
+		return true
 	}
 	rec := sm.GetOrCreate(r.taintSessionKey)
+	if rec == nil {
+		r.denySessionCapacity()
+		return false
+	}
 	risk := rec.RiskSnapshot()
 	for _, source := range risk.Sources {
 		if source.URL != r.targetURL || source.Kind != "websocket_response" {
 			continue
 		}
 		if !promptHit || source.MatchReason == "prompt_injection_pattern" {
-			return
+			return true
 		}
 	}
 	observeHTTPResponseTaint(rec, r.cfg, r.targetURL, "application/websocket", "websocket_response", promptHit)
+	return true
 }
 
 // upstreamToClient reads frames from upstream, injection-scans text, writes to client.
@@ -2890,7 +2941,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Complete message. Count and scan.
 		if opCode == ws.OpBinary {
-			r.observeUpstreamResponseTaint(false)
+			if !r.observeUpstreamResponseTaint(false) {
+				return bytesTransferred, textFrames, binaryFrames, true
+			}
 			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)

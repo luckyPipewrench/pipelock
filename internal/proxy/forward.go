@@ -276,7 +276,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	connectSessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 	var connectRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		connectRec = sm.GetOrCreate(connectSessionKey)
+		sess := sm.GetOrCreate(connectSessionKey)
+		if sess == nil {
+			writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		connectRec = sess
 	}
 
 	// Scan CONNECT request headers for DLP patterns. The CONNECT handshake
@@ -411,9 +416,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		info, status := sr.blockResponse()
 		writeBlockedError(w,
-			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
-			sr.Detail, http.StatusForbidden)
+			info, sr.Detail, status)
 		return
 	}
 
@@ -450,6 +455,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
 	ceeEntropy := p.currentCEEEntropy(identitykey.NewCEEIdentity(agent, clientIP, id.Auth))
+	if ceeEntropy.Active && ceeEntropy.Sessions != nil && ceeEntropy.Recorder == nil {
+		writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
 	if ceeEntropy.Active {
 		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
@@ -804,7 +813,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// escalation level lookups instead of a stale snapshot from sr.Level.
 		var interceptRec session.Recorder
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			interceptRec = sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
+			sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
+			if sess == nil {
+				_ = clientConn.Close()
+				return
+			}
+			interceptRec = sess
 		}
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
 			TargetHost:         host,
@@ -1092,7 +1106,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	forwardSessionKey := responseTaintSessionKey(agent, clientIP, id.Auth)
 	var forwardRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		forwardRec = sm.GetOrCreate(forwardSessionKey)
+		sess := sm.GetOrCreate(forwardSessionKey)
+		if sess == nil {
+			writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		forwardRec = sess
 	}
 	forwardTaint := evaluateHTTPTaint(cfg, forwardRec, r.Method, r.URL)
 	forwardRequiresReauth := false
@@ -1104,7 +1123,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	denyForwardAirlock := func() bool {
 		// Preserve this request's findings and also honor current quarantine
 		// if capacity eviction or a manager replacement changed the lookup.
-		for _, forwardSess := range [2]*SessionState{forwardAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
+		for _, forwardSess := range [3]*SessionState{sr.recorder, forwardAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
 			if forwardSess == nil {
 				continue
 			}
@@ -1172,9 +1191,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		info, status := sr.blockResponse()
 		writeBlockedError(w,
-			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
-			sr.Detail, http.StatusForbidden)
+			info, sr.Detail, status)
 		return
 	}
 
@@ -1842,6 +1861,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if ceeBlockAll {
+			if ceeRec == nil {
+				emitForwardReceipt(receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+					Pattern: session.ErrCapacity.Error(), Transport: TransportForward,
+					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+				})
+				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			level := recEscalationLevel(ceeRec)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			emitSessionDenyReceipt()
@@ -2394,7 +2422,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeBytes = 0
 			outcomeReason = "complete"
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
-				forwardScope := adaptiveScopeForHost(r.URL.Hostname())
+				forwardScope := adaptiveScopeForHost(fwdRespHost)
 				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 					sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
 					scope:      forwardScope,
@@ -2466,7 +2494,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeBytes = written
 		outcomeReason = "complete"
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
-			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
+			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
 		return
 	}
@@ -2588,7 +2616,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						outcomeBytes = written
 						outcomeReason = "unscannable_passthrough"
 						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
+							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 						}
 						return
 					}
@@ -2987,7 +3015,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "budget_truncated"
 		}
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
-			forwardScope := adaptiveScopeForHost(r.URL.Hostname())
+			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
 				scope:      forwardScope,
@@ -3036,7 +3064,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "budget_truncated"
 	}
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
-		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
+		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 }
 

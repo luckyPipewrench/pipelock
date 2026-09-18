@@ -15,6 +15,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -160,5 +162,73 @@ func TestAirlockResponseSignalUsesFinalOrigin(t *testing.T) {
 				t.Fatalf("redirecting origin tier=%q, want none", got)
 			}
 		})
+	}
+}
+
+func TestAirlockCleanRecoveryUsesFinalOrigin(t *testing.T) {
+	for _, transport := range []string{TransportForward, TransportFetch} {
+		for _, redirected := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/redirect=%t", transport, redirected), func(t *testing.T) {
+				var calls atomic.Int32
+				final := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls.Add(1)
+					w.Header().Set("Content-Type", "text/plain")
+					_, _ = fmt.Fprint(w, "ordinary clean response")
+				}))
+				if err := final.Listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				listenConfig := net.ListenConfig{}
+				listener, err := listenConfig.Listen(t.Context(), "tcp4", "127.0.0.2:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				final.Listener = listener
+				final.Start()
+				defer final.Close()
+				cfg := airlockAdmissionConfig(t, config.AirlockTierSoft)
+				cfg.AdaptiveEnforcement.EscalationThreshold = 3
+				cfg.AdaptiveEnforcement.CleanRequestsToDeescalate = 1
+				cfg.AdaptiveEnforcement.DecayPerCleanRequest = 1
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "airlock response marker", Regex: airlockResponseMarker}}
+				_, p, redirect := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, final.URL+"/result", http.StatusFound)
+				})
+				sess := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+				finalScope := adaptiveScopeForHost("127.0.0.2")
+				originalScope := adaptiveScopeForHost(redirect.Hostname())
+				for _, scope := range []string{originalScope, finalScope} {
+					recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{Threshold: 3})
+					if sess.EffectiveEscalationLevel(scope) != 1 {
+						t.Fatal("fixture did not establish elevated state")
+					}
+				}
+				target := final.URL + "/result"
+				if redirected {
+					target = redirect.String() + "/start"
+				}
+				if transport == TransportFetch {
+					target = "http://proxy.example/fetch?url=" + url.QueryEscape(target)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+				req.RemoteAddr = airlockAdmissionClient + ":12345"
+				w := httptest.NewRecorder()
+				if transport == TransportFetch {
+					p.handleFetch(w, req)
+				} else {
+					p.handleForwardHTTP(w, req)
+				}
+				if w.Code != http.StatusOK || calls.Load() != 1 || !strings.Contains(w.Body.String(), "ordinary clean response") {
+					t.Fatalf("clean response control failed: status=%d calls=%d body=%s", w.Code, calls.Load(), w.Body.String())
+				}
+				if got := sess.EffectiveEscalationLevel(finalScope); got != 0 {
+					t.Errorf("final response scope level=%d, want normal", got)
+				}
+				if got := sess.EffectiveEscalationLevel(originalScope); got != 1 {
+					t.Errorf("unrelated redirecting scope level=%d, want unchanged elevated", got)
+				}
+			})
+		}
 	}
 }

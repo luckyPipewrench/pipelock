@@ -6,6 +6,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -25,11 +27,20 @@ import (
 
 // SessionResult is the outcome of session profiling and adaptive signal recording.
 type SessionResult struct {
-	Blocked       bool      // session-level block (anomaly in block mode)
-	Detail        string    // human-readable reason
-	Level         int       // current escalation level for downstream UpgradeAction()
-	AutoRecoverAt time.Time // estimated adaptive level recovery time, when available
-	RecoverHint   string    // operator-facing recovery hint
+	capacityDenied bool
+	recorder       *SessionState // recorder actually updated, retained across manager replacement
+	Blocked        bool          // session-level block (anomaly in block mode)
+	Detail         string        // human-readable reason
+	Level          int           // current escalation level for downstream UpgradeAction()
+	AutoRecoverAt  time.Time     // estimated adaptive level recovery time, when available
+	RecoverHint    string        // operator-facing recovery hint
+}
+
+func (r SessionResult) blockResponse() (blockreason.Info, int) {
+	if r.capacityDenied {
+		return blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable
+	}
+	return blockInfoFor(blockreason.SessionAnomaly, "session_profiling"), http.StatusForbidden
 }
 
 // Anomaly represents a behavioral anomaly detected in a session.
@@ -46,6 +57,8 @@ type Anomaly struct {
 const maxRecentEvents = 20
 
 const adaptiveClassificationObserve = "observe"
+
+const sessionCapacityLayer = "session_capacity"
 
 var cooperativeToolUserAgentPattern = regexp.MustCompile(`(?i)^(?:yt-dlp|python-requests|pip|npm|pnpm|apt|dnf|curl|git)/`)
 
@@ -1678,7 +1691,9 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 }
 
 // GetOrCreate returns the session for a key, creating if needed.
-// Evicts oldest idle session if at capacity.
+// It evicts the oldest eligible session at capacity. A nil result refuses
+// admission: active quarantine must not be evicted or exceed MaxSessions.
+// Callers must deny new work rather than treating nil as disabled profiling.
 func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 	sm.startMaintenance()
 
@@ -1705,6 +1720,16 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 	cfg := sm.cfgPtr.Load()
 	if len(sm.sessions) >= cfg.MaxSessions {
 		evicted = sm.evictOldest()
+		if len(sm.sessions) >= cfg.MaxSessions {
+			if sm.metrics != nil {
+				sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+			}
+			sm.mu.Unlock()
+			if evicted != nil {
+				sm.recordSessionBaseline(evicted)
+			}
+			return nil
+		}
 	}
 
 	// Determine session kind from key format at creation time.
@@ -2778,7 +2803,11 @@ type storeAdapter struct {
 }
 
 func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
-	return a.sm.GetOrCreate(key)
+	sess := a.sm.GetOrCreate(key)
+	if sess == nil {
+		return nil
+	}
+	return sess
 }
 
 func (a *storeAdapter) Delete(key string) {

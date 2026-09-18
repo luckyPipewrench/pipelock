@@ -2460,3 +2460,53 @@ func TestReloadRemovesManagedForwardAroundUndeclaredReply(t *testing.T) {
 		}
 	}
 }
+
+// TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain pins the honesty
+// of the reload report for the case that changes the most while looking like it
+// changed nothing: a chain that carries only operator rules and no managed block.
+// Nothing is deleted and the persisted file already matches, so every signal the
+// reporter used to read says "no change" while the kernel gains the entire
+// managed block. An operator told their reconciliation did nothing has no reason
+// to check what it actually did.
+func TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		fileChanged  bool
+		removed      int
+		missingChain bool
+		applied      bool
+		want         string
+	}{
+		{
+			name:    "applied into a chain that had no managed block",
+			applied: true,
+			want:    "containment nft rules reconciled: loaded managed rules into a chain that carried none",
+		},
+		{
+			name:    "genuine no-op reports no change",
+			applied: false,
+			want:    "containment nft rules already reconciled, no change",
+		},
+		{
+			name:    "removals are still named",
+			applied: true, removed: 3,
+			want: "containment nft rules reconciled: removed 3 managed rule(s)",
+		},
+		{
+			name:         "a missing chain keeps its own wording",
+			applied:      true,
+			missingChain: true,
+			want:         "containment nft rules reconciled: loaded managed rules into a missing chain",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nftReloadOutcome(tc.fileChanged, tc.removed, tc.missingChain, tc.applied)
+			if got != tc.want {
+				t.Fatalf("nftReloadOutcome(%t,%d,%t,%t) = %q, want %q",
+					tc.fileChanged, tc.removed, tc.missingChain, tc.applied, got, tc.want)
+			}
+		})
+	}
+}

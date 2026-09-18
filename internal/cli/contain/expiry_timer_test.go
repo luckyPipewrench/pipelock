@@ -72,6 +72,213 @@ func TestEnsureNFTExpiryUnitsFreshRerunAndRepair(t *testing.T) {
 	}
 }
 
+func TestEnsureNFTExpiryUnitsReportsServiceWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	writeFile := env.writeFile
+	env.writeFile = func(path string, body []byte, mode os.FileMode) error {
+		if path == env.nftExpiryServicePath {
+			return errors.New("expiry service write denied")
+		}
+		return writeFile(path, body, mode)
+	}
+
+	changed, err := ensureNFTExpiryUnits(env)
+	if err == nil || !strings.Contains(err.Error(), env.nftExpiryServicePath) || !strings.Contains(err.Error(), "write denied") {
+		t.Fatalf("ensure expiry units error = %v, want named service write failure", err)
+	}
+	if changed {
+		t.Fatal("failed first unit write reported a changed expiry-unit set")
+	}
+}
+
+func TestEnsureContainmentUnitReportsFilesystemFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(t *testing.T, env *installEnv, path, body string)
+		wantPathDir bool
+		want        string
+	}{
+		{
+			name:        "mkdir",
+			wantPathDir: true,
+			mutate: func(_ *testing.T, env *installEnv, _ string, _ string) {
+				env.mkdirAll = func(string, os.FileMode) error { return errors.New("mkdir denied") }
+			},
+			want: "mkdir",
+		},
+		{
+			name:        "directory chmod",
+			wantPathDir: true,
+			mutate: func(_ *testing.T, env *installEnv, _ string, _ string) {
+				env.chmod = func(string, os.FileMode) error { return errors.New("directory chmod denied") }
+			},
+			want: "chmod",
+		},
+		{
+			name: "matching unit chmod",
+			mutate: func(t *testing.T, env *installEnv, path, body string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+				chmod := env.chmod
+				env.chmod = func(target string, mode os.FileMode) error {
+					if target == path {
+						return errors.New("unit chmod denied")
+					}
+					return chmod(target, mode)
+				}
+			},
+			want: "unit chmod denied",
+		},
+		{
+			name: "unexpected read",
+			mutate: func(_ *testing.T, env *installEnv, _ string, _ string) {
+				env.readFile = func(string) ([]byte, error) { return nil, errors.New("unit read denied") }
+			},
+			want: "unit read denied",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			path := filepath.Join(t.TempDir(), "system", "pipelock-containment-expiry.timer")
+			const body = "[Timer]\nOnCalendar=hourly\n"
+			tc.mutate(t, env, path, body)
+
+			changed, err := ensureContainmentUnit(env, path, body)
+			wantPath := path
+			if tc.wantPathDir {
+				wantPath = filepath.Dir(path)
+			}
+			if err == nil || !strings.Contains(err.Error(), wantPath) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ensure unit error = %v, want path %q and %q", err, wantPath, tc.want)
+			}
+			if changed {
+				t.Fatal("failed unit operation reported a changed unit")
+			}
+		})
+	}
+}
+
+func TestStepInstallNFTRulesReportsNewFailurePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(env *installEnv, runner *fakeRunner)
+		want   string
+	}{
+		{
+			name: "expiry service write",
+			mutate: func(env *installEnv, _ *fakeRunner) {
+				writeFile := env.writeFile
+				env.writeFile = func(path string, body []byte, mode os.FileMode) error {
+					if path == env.nftExpiryServicePath {
+						return errors.New("expiry service write denied")
+					}
+					return writeFile(path, body, mode)
+				}
+			},
+			want: "expiry service write denied",
+		},
+		{
+			name: "nft load",
+			mutate: func(env *installEnv, runner *fakeRunner) {
+				runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "load denied", 1, nil)
+			},
+			want: "nft load failed",
+		},
+		{
+			name: "systemd daemon reload",
+			mutate: func(_ *installEnv, runner *fakeRunner) {
+				runner.on(argvFor(testSystemctl, "daemon-reload"), "reload denied", 1, nil)
+			},
+			want: "systemctl daemon-reload",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			tc.mutate(env, runner)
+
+			changed, err := stepInstallNFTRules().apply(context.Background(), env)
+			if !changed {
+				t.Fatal("failed install reported no changes despite writing containment artifacts")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("install error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStepInstallNFTRulesUndoReportsExpiryUnitRestoreFailures(t *testing.T) {
+	for _, target := range []string{"timer", "service"} {
+		t.Run(target, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			path := env.nftExpiryTimerPath
+			if target == "service" {
+				path = env.nftExpiryServicePath
+			}
+			removeFile := env.removeFile
+			env.removeFile = func(candidate string) error {
+				if candidate == path {
+					return errors.New(target + " restore denied")
+				}
+				return removeFile(candidate)
+			}
+
+			err := stepInstallNFTRules().undo(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), target+" restore denied") {
+				t.Fatalf("undo error = %v, want failed restore for %s", err, path)
+			}
+		})
+	}
+}
+
+func TestStepInstallNFTRulesUndoReportsDisabledExpiryTimerRestoreFailure(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.prevNFTExpiryTimerStateKnown = true
+	env.prevNFTExpiryTimerEnabled = false
+	timer := filepath.Base(env.nftExpiryTimerPath)
+	runner.on(argvFor(testSystemctl, "disable", timer), "disable denied", 1, nil)
+
+	err := stepInstallNFTRules().undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "restore "+timer+" disabled state") || !strings.Contains(err.Error(), "disable denied") {
+		t.Fatalf("undo error = %v, want disabled timer restore failure", err)
+	}
+}
+
+func TestActionRemoveNFTRulesReportsExpiryUnitRemovalFailures(t *testing.T) {
+	for _, target := range []string{"timer", "service"} {
+		t.Run(target, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			env.nftMainPath = ""
+			path := env.nftExpiryTimerPath
+			if target == "service" {
+				path = env.nftExpiryServicePath
+			}
+			removeFile := env.removeFile
+			env.removeFile = func(candidate string) error {
+				if candidate == path {
+					return errors.New(target + " removal denied")
+				}
+				return removeFile(candidate)
+			}
+
+			err := actionRemoveNFTRules().undo(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), target+" removal denied") {
+				t.Fatalf("rollback error = %v, want failed removal for %s", err, path)
+			}
+		})
+	}
+}
+
 func TestRenderNFTExpiryUnitsContract(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	service := renderNFTExpiryService(env)
@@ -112,6 +319,45 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 		wantDetail   string
 	}{
 		{
+			name:         "unconfigured persistence path skips",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(_ *testing.T, env *probeEnv) {
+				env.nftPersistUnitPath = ""
+			},
+			wantStatus: statusSkip,
+			wantDetail: "persistence unit path is not configured",
+		},
+		{
+			name:         "persistence read failure fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(_ *testing.T, env *probeEnv) {
+				readFile := env.readFile
+				env.readFile = func(path string) ([]byte, error) {
+					if path == env.nftPersistUnitPath {
+						return nil, errors.New("persistence read denied")
+					}
+					return readFile(path)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "read nftables persistence unit",
+		},
+		{
+			name:         "absent persistence unit skips as uninstalled",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				if err := os.Remove(env.nftPersistUnitPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusSkip,
+			wantDetail: "containment is not installed",
+		},
+		{
 			name:         "enabled timer and unmasked service pass",
 			timerReply:   expiryTimerReply{out: "enabled\n"},
 			serviceReply: expiryTimerReply{out: "static\n"},
@@ -137,6 +383,36 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			serviceReply: expiryTimerReply{out: "masked\n", code: 1},
 			wantStatus:   statusFail,
 			wantDetail:   "unmask the affected unit",
+		},
+		{
+			name:         "timer missing schedule fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body := "[Timer]\nUnit=" + filepath.Base(env.nftExpiryServicePath) + "\n"
+				if err := os.WriteFile(env.nftExpiryTimerPath, []byte(body), modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "does not contain the managed expiry schedule",
+		},
+		{
+			name:         "expiry service read failure fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(_ *testing.T, env *probeEnv) {
+				readFile := env.readFile
+				env.readFile = func(path string) ([]byte, error) {
+					if path == env.nftExpiryServicePath {
+						return nil, errors.New("expiry service read denied")
+					}
+					return readFile(path)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "read containment expiry service",
 		},
 		{
 			name:         "altered service command fails",
@@ -190,6 +466,13 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			serviceReply: expiryTimerReply{err: errors.New("systemctl missing")},
 			wantStatus:   statusFail,
 			wantDetail:   "systemctl unavailable",
+		},
+		{
+			name:         "service not enabled fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "disabled\n", code: 1},
+			wantStatus:   statusFail,
+			wantDetail:   "systemctl is-enabled",
 		},
 	}
 

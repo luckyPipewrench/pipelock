@@ -198,7 +198,7 @@ func TestMigratePipelockConfigForContain_PreservesApprovedMetricsExposure(t *tes
 		}
 		return origLookup(name)
 	}
-	configBody := []byte("metrics_listen: 192.0.2.20:9191\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n")
+	configBody := []byte("metrics_listen: 192.0.2.20:9191\ncontainment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: " + farFutureExpiry() + "\n")
 	out, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), configBody)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -220,7 +220,7 @@ func TestMigratePipelockConfigForContain_RequiresExplicitListenerForMetricsExpos
 		}
 		return origLookup(name)
 	}
-	configBody := []byte("containment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: 2099-01-01T00:00:00Z\n")
+	configBody := []byte("containment:\n  metrics_exposure:\n    allow_full_metrics: true\n    allowed_source_cidrs: [192.0.2.42/32]\n    owner: observability\n    reason: Prometheus scrape\n    expires_at: " + farFutureExpiry() + "\n")
 	_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), configBody)
 	if err == nil || !strings.Contains(err.Error(), "requires an explicit non-loopback metrics_listen") {
 		t.Fatalf("migrate error = %v, want explicit-listener remediation", err)

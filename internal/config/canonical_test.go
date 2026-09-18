@@ -6,6 +6,7 @@ package config
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/datalabel"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -104,7 +105,7 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 					AllowedSourceCIDRs: []string{"192.0.2.42/32"},
 					Owner:              "observability",
 					Reason:             "Prometheus scrape",
-					ExpiresAt:          "2026-12-01T00:00:00Z",
+					ExpiresAt:          time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339),
 				}
 			},
 		},
@@ -200,7 +201,7 @@ func TestCanonicalPolicyHash_QueryEntropyParamExclusions(t *testing.T) {
 			Param:   "query",
 			Reason:  "structured query",
 			Owner:   "platform-security",
-			Expires: "2026-12-31",
+			Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 		}}
 	})
 	if withEntry == base {

@@ -6,6 +6,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateReload_ForwarderDestinationAllowlistExpanded(t *testing.T) {
@@ -288,6 +289,17 @@ func TestValidateReload_QueryEntropyParamExclusionsAdded(t *testing.T) {
 }
 
 func TestValidateReload_QueryEntropyParamExclusionsMetadataOnlyNoWarning(t *testing.T) {
+	// Read the clock ONCE and derive the earlier date from the later one. Two
+	// independent calls can straddle a UTC midnight and return the same day,
+	// which silently collapses the distinct Expires values this test relies on
+	// to prove that an expiry change is metadata.
+	expires := temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon)
+	expiresAt, err := time.Parse(time.DateOnly, expires)
+	if err != nil {
+		t.Fatalf("parse generated expiry %q: %v", expires, err)
+	}
+	earlier := expiresAt.AddDate(0, 0, -1).Format(time.DateOnly)
+
 	old := Defaults()
 	old.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
 		Scheme:  "https",
@@ -296,7 +308,7 @@ func TestValidateReload_QueryEntropyParamExclusionsMetadataOnlyNoWarning(t *test
 		Param:   "query",
 		Reason:  "initial reason",
 		Owner:   "platform-security",
-		Expires: "2026-12-31",
+		Expires: earlier,
 	}}
 	updated := Defaults()
 	updated.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
@@ -306,7 +318,7 @@ func TestValidateReload_QueryEntropyParamExclusionsMetadataOnlyNoWarning(t *test
 		Param:   "query",
 		Reason:  "updated reason",
 		Owner:   "platform-security",
-		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
+		Expires: expires,
 	}}
 
 	for _, w := range ValidateReload(old, updated) {

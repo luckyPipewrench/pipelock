@@ -2094,7 +2094,7 @@ func TestValidate_QueryEntropyParamExclusions_ValidAndNormalizes(t *testing.T) {
 		Param:   "query",
 		Reason:  " structured query ",
 		Owner:   " platform-security ",
-		Expires: "2026-12-31",
+		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -2112,7 +2112,7 @@ func TestValidate_QueryEntropyParamExclusions_RejectsBadEntries(t *testing.T) {
 		Param:   "query",
 		Reason:  "structured query",
 		Owner:   "platform-security",
-		Expires: "2026-12-31",
+		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 	}
 	tests := []struct {
 		name string

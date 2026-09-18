@@ -28,6 +28,10 @@ const (
 	// MaxReferenceBytes bounds authority references accepted from every
 	// transport and by the local verifier.
 	MaxReferenceBytes = 16 << 10
+	// maxGrantLifetime bounds the replay window of a signed action grant. The
+	// IETF OAuth Transaction Tokens BCP recommends transaction-token lifetimes
+	// below five minutes.
+	maxGrantLifetime = 5 * time.Minute
 )
 
 var errMalformedReference = errors.New("malformed local authority reference")
@@ -109,7 +113,7 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 		return Result{Decision: DecisionDeny, Reason: ReasonInvalidSignature}
 	}
 
-	expiresAt, err := validateGrant(parsed.payload)
+	notBefore, expiresAt, err := validateGrant(parsed.payload)
 	if err != nil {
 		return Result{Decision: DecisionDeny, Reason: ReasonMalformedReference}
 	}
@@ -127,7 +131,16 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 		verified.Reason = ReasonRevoked
 		return verified
 	}
-	if !v.now().Before(expiresAt) {
+	if expiresAt.Sub(notBefore) > maxGrantLifetime {
+		verified.Reason = ReasonLifetimeExceeded
+		return verified
+	}
+	now := v.now()
+	if now.Before(notBefore) {
+		verified.Reason = ReasonNotYetValid
+		return verified
+	}
+	if !now.Before(expiresAt) {
 		verified.Reason = ReasonExpired
 		return verified
 	}
@@ -157,6 +170,7 @@ type localGrant struct {
 	Actor         string `json:"actor"`
 	Action        string `json:"action"`
 	Destination   string `json:"destination"`
+	NotBefore     string `json:"not_before"`
 	ExpiresAt     string `json:"expires_at"`
 }
 
@@ -230,12 +244,12 @@ func validateNFCGrantStrings(grant map[string]any) error {
 	// profile uses exact field names so an alias cannot escape validation.
 	for field := range grant {
 		switch field {
-		case "schema_version", "canon", "issuer", "reference", "actor", "action", "destination", "expires_at":
+		case "schema_version", "canon", "issuer", "reference", "actor", "action", "destination", "not_before", "expires_at":
 		default:
 			return errMalformedReference
 		}
 	}
-	for _, field := range []string{"canon", "issuer", "reference", "actor", "action", "destination", "expires_at"} {
+	for _, field := range []string{"canon", "issuer", "reference", "actor", "action", "destination", "not_before", "expires_at"} {
 		value, present := grant[field]
 		if !present {
 			continue
@@ -248,18 +262,25 @@ func validateNFCGrantStrings(grant map[string]any) error {
 	return nil
 }
 
-func validateGrant(grant localGrant) (time.Time, error) {
+func validateGrant(grant localGrant) (time.Time, time.Time, error) {
 	if grant.SchemaVersion != localSchemaVersion ||
 		strings.TrimSpace(grant.Issuer) == "" ||
 		strings.TrimSpace(grant.Reference) == "" ||
-		grant.Actor == "" || grant.Action == "" || grant.Destination == "" || grant.ExpiresAt == "" {
-		return time.Time{}, errMalformedReference
+		grant.Actor == "" || grant.Action == "" || grant.Destination == "" || grant.NotBefore == "" || grant.ExpiresAt == "" {
+		return time.Time{}, time.Time{}, errMalformedReference
+	}
+	notBefore, err := time.Parse(time.RFC3339Nano, grant.NotBefore)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: not before: %w", errMalformedReference, err)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, grant.ExpiresAt)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%w: expiry: %w", errMalformedReference, err)
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: expiry: %w", errMalformedReference, err)
 	}
-	return expiresAt, nil
+	if !expiresAt.After(notBefore) {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: expiry must follow not before", errMalformedReference)
+	}
+	return notBefore, expiresAt, nil
 }
 
 func contextResult(ctx context.Context) (Result, bool) {

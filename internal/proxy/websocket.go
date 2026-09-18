@@ -675,6 +675,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		if ceeBlockAll {
 			if ceeRec == nil {
+				log.LogWSBlocked(audit.WSBlockedEvent{
+					Target: targetURL, Direction: audit.DirectionClientToServer, Scanner: sessionCapacityLayer,
+					Reason: session.ErrCapacity.Error(), ClientIP: clientIP, RequestID: requestID,
+					Agent: agent, AgentAuth: string(id.Auth),
+				})
 				emitWebSocketReceipt(receipt.EmitOpts{
 					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
 					Pattern: session.ErrCapacity.Error(), Transport: TransportWS,

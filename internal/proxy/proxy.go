@@ -3758,6 +3758,19 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 			signals = 0
 		}
 	}
+	var sess *SessionState
+	sessionKey := sessionKeyFor(actx.Agent(), clientIP, envelope.NormalizeActorAuth(actx.AgentAuth()))
+	if signals > 0 {
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			sess = sm.GetOrCreate(sessionKey)
+			if sess == nil {
+				p.logger.LogAnomaly(actx, sessionCapacityLayer, session.ErrCapacity.Error(), 0)
+			}
+		}
+		if sess == nil {
+			signals = 0
+		}
+	}
 	summary.AdaptiveSignalsRecorded = signals
 	summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
 
@@ -3787,12 +3800,6 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	if signals == 0 {
 		return
 	}
-	sm := p.sessionMgrPtr.Load()
-	if sm == nil {
-		return
-	}
-	sessionKey := sessionKeyFor(actx.Agent(), clientIP, envelope.NormalizeActorAuth(actx.AgentAuth()))
-	sess := sm.GetOrCreate(sessionKey)
 	for i := 0; i < signals; i++ {
 		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,

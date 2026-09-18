@@ -1141,6 +1141,33 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// upstream host (operator-fixed on this listener) the way forward uses the
 	// request host: the value is cross-transport accumulation, not per-request
 	// domain diversity.
+	var retainedAirlockSessions []*SessionState
+	denyReverseAirlock := func() bool {
+		if rp.owner == nil {
+			return false
+		}
+		retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions,
+			requestSignalRecorders[0], requestSignalRecorders[1],
+			rp.owner.airlockSessionForIdentity(agent, clientIP, resolvedIdentity.Auth))
+		for _, airlockSess := range retainedAirlockSessions {
+			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(rp.upstream.Hostname()))
+			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
+				rp.logger.LogAirlockDeny(airlockSess.key, tier, TransportReverse, r.Method, clientIP, requestID)
+				rp.metrics.RecordAirlockDenial(tier, TransportReverse, r.Method)
+				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "airlock")
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+					Layer: "airlock", Pattern: reason, Transport: TransportReverse,
+					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+				})
+				writeReverseProxyBlock(w, http.StatusForbidden,
+					blockInfoFor(blockreason.AirlockActive, ""), reason)
+				return true
+			}
+		}
+		return false
+	}
 	if rp.owner != nil {
 		actorAuth := resolvedIdentity.Auth
 		upstreamHost := rp.upstream.Hostname()
@@ -1186,25 +1213,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// Admission reads the same scoped state that request findings and
 		// profiling just updated. A configured quarantine must apply to this
 		// request before request policy, receipts, and upstream forwarding.
-		for _, airlockSess := range [4]*SessionState{requestSignalRecorders[0], requestSignalRecorders[1], sessionResult.recorder, rp.owner.airlockSessionForIdentity(agent, clientIP, actorAuth)} {
-			if airlockSess == nil {
-				continue
-			}
-			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(upstreamHost))
-			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
-				rp.logger.LogAirlockDeny(airlockSess.key, tier, TransportReverse, r.Method, clientIP, requestID)
-				rp.metrics.RecordAirlockDenial(tier, TransportReverse, r.Method)
-				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
-				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "airlock")
-				emitReverseReceipt(receipt.EmitOpts{
-					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
-					Layer: "airlock", Pattern: reason, Transport: TransportReverse,
-					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-				})
-				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.AirlockActive, ""), reason)
-				return
-			}
+		retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions, sessionResult.recorder)
+		if denyReverseAirlock() {
+			return
 		}
 		// block_all: deny ALL traffic (including clean) when the session sits at
 		// an escalation level whose adaptive action resolves to block.
@@ -1253,6 +1264,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			reverseTaintRec = sess
+			retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions, sess)
 		}
 		if parsedTarget, perr := url.Parse(targetURL); perr == nil {
 			reverseTaint := evaluateHTTPTaint(cfg, reverseTaintRec, r.Method, parsedTarget)
@@ -1341,6 +1353,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					ClientIP: clientIP, RequestID: requestID,
 				})
 			}
+			retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions, ceeRec)
 			if ceeRes.Blocked {
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "cross_request")
@@ -1509,6 +1522,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Policy evaluation and CEE may change security state after the initial
+	// check. Reuse admission immediately before authorizing upstream delivery.
+	if denyReverseAirlock() {
+		return
+	}
 	reverseActionID := receipt.NewActionID()
 	reverseAllowReceipt := withReverseContractReceipt(receipt.EmitOpts{
 		ActionID:  reverseActionID,

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -840,6 +841,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			if sess == nil {
 				p.logger.LogBlocked(targetCtx, sessionCapacityLayer, session.ErrCapacity.Error())
 				p.metrics.RecordTunnelBlocked(agentLabel)
+				emitConnectReceipt(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), ParentActionID: actionID,
+					Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+					Pattern: session.ErrCapacity.Error(), Transport: TransportConnect,
+					Method: http.MethodConnect, Target: connectReceiptTarget, RequestID: requestID, Agent: agent,
+				})
+				outcomeStatus = strconv.Itoa(http.StatusOK)
+				outcomeBytes = 0
+				outcomeReason = sessionCapacityLayer
 				_ = clientConn.Close()
 				return
 			}
@@ -881,8 +891,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
+	var airlockCancelled atomic.Bool
 	for _, connectAirlockSess := range connectAirlockSessions {
 		connectAirlockSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
+			airlockCancelled.Store(true)
 			safeClose(clientConn, "airlock.clientConn", p.logger)
 			safeClose(targetConn, "airlock.targetConn", p.logger)
 		})
@@ -890,6 +902,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Attach cancellation before flushing pipelined bytes. Registration closes
 	// the connections immediately if quarantine began after the admission check.
+	if airlockCancelled.Load() {
+		outcomeStatus = strconv.Itoa(http.StatusOK)
+		outcomeBytes = 0
+		outcomeReason = "airlock"
+		return
+	}
 	if clientReader.Buffered() > 0 {
 		buffered := make([]byte, clientReader.Buffered())
 		_, _ = clientReader.Read(buffered)

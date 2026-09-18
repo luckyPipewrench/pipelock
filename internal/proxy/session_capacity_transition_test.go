@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +18,10 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -45,6 +48,13 @@ func TestSessionCapacityCEERechecksBeforeForwarding(t *testing.T) {
 					_, _ = fmt.Fprint(w, capacityDeliveryWitness)
 				})
 				original := p.sessionMgrPtr.Load()
+				var auditStream bytes.Buffer
+				auditLogger, err := audit.NewWithStream("json", "stdout", "", true, true, &auditStream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(auditLogger.Close)
+				p.logger, rp.logger = auditLogger, auditLogger
 				t.Cleanup(original.Close)
 				var reached atomic.Bool
 				p.ceeAdmissionLocked = func() {
@@ -141,8 +151,66 @@ func TestSessionCapacityCEERechecksBeforeForwarding(t *testing.T) {
 				if refused && p.sessionMgrPtr.Load().Len() != 1 {
 					t.Fatal("refused request grew the quarantined session table")
 				}
+				if refused && !strings.Contains(auditStream.String(), `"scanner":"session_capacity"`) {
+					t.Fatalf("capacity refusal missing from audit stream: %s", auditStream.String())
+				}
 			})
 		}
+	}
+}
+
+func TestReverseAirlockRechecksAfterPolicy(t *testing.T) {
+	for _, tier := range []string{config.AirlockTierNone, config.AirlockTierDrain} {
+		t.Run(tier, func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+			var calls atomic.Int32
+			rp, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				_, _ = fmt.Fprint(w, capacityDeliveryWitness)
+			})
+			sess := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+			rp.reqPolicyFn = func(requestPolicyInput) requestPolicyResult {
+				_, _, _ = sess.AirlockForScope(adaptiveScopeForHost(upstream.Hostname())).SetTier(tier)
+				return requestPolicyResult{}
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.String()+"/control", nil)
+			req.RemoteAddr = airlockAdmissionClient + ":12345"
+			w := httptest.NewRecorder()
+			rp.ServeHTTP(w, req)
+			if tier == config.AirlockTierDrain {
+				if w.Code != http.StatusForbidden || calls.Load() != 0 {
+					t.Fatalf("late quarantine not enforced: status=%d upstream=%d", w.Code, calls.Load())
+				}
+			} else if w.Code != http.StatusOK || calls.Load() != 1 || w.Body.String() != capacityDeliveryWitness {
+				t.Fatalf("allowed control not delivered: status=%d upstream=%d", w.Code, calls.Load())
+			}
+		})
+	}
+}
+
+func TestShieldSignalEvidenceRequiresRecorder(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprintf("full=%t", full), func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+			cfg.SessionProfiling.MaxSessions = 1
+			_, p, upstream := newReverseParityHarness(t, cfg, func(http.ResponseWriter, *http.Request) {})
+			if full {
+				other := p.sessionMgrPtr.Load().GetOrCreate("other-quarantined-client")
+				_, _, _ = other.AirlockForScope("").SetTier(config.AirlockTierDrain)
+			}
+			summary := &receipt.ShieldSummary{TotalRewrites: 1}
+			actx := newHTTPAuditContext(t.Context(), p.logger, httpAuditEvent{
+				Method: http.MethodGet, TargetURL: upstream.String(), ClientIP: airlockAdmissionClient, RequestID: "req-shield-capacity",
+			})
+			p.recordShieldIntervention(summary, cfg, upstream.Hostname(), actx, airlockAdmissionClient, "req-shield-capacity", TransportForward, "")
+			want := 1
+			if full {
+				want = 0
+			}
+			if summary.AdaptiveSignalsRecorded != want {
+				t.Fatalf("reported signals=%d, want %d", summary.AdaptiveSignalsRecorded, want)
+			}
+		})
 	}
 }
 

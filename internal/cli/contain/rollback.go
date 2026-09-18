@@ -137,8 +137,11 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionPreserve("user-mode pipelock (operator decides whether to re-enable)"),
 		actionRemoveSystemUnit(),
 		actionDisablePipelockService(),
+		actionRemoveBrowserCATrust(),
 		// main restores these rather than removing them (#1624): a rollback must
-		// not destroy operator trust state it did not create.
+		// not destroy operator trust state it did not create. Browser-trust
+		// removal above reads the export to recompute the CA fingerprint, so it
+		// has to run before the export is restored to its pre-install bytes.
 		actionRestorePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
 		actionRestorePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
 		actionRemoveOwnedLoopbackAnchor(),

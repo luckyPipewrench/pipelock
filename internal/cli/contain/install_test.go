@@ -325,6 +325,15 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	runner.on(argvFor(testSystemctl, "is-active", anchorUnit), systemctlActive+"\n", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", anchorUnit), systemctlEnabled+"\n", 0, nil)
 
+	nss := &fakeNSS{db: filepath.Join(env.agentHome, nssDBRelLegacy()), entries: make(map[string]fakeNSSEntry)}
+	env.lookPath = func(string) (string, error) { return "/usr/bin/certutil", nil }
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == browserCACertutilName {
+			return nss.run(ctx, name, args...)
+		}
+		return runner.run(ctx, name, args...)
+	}
+
 	return env, runner, out
 }
 
@@ -2191,12 +2200,13 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 33 steps total after combining the runtime
-	// contract steps, credential guard, operator evidence ACL, and final
-	// readiness gate. Changing this count changes documented dry-run output.
+	// Sanity: the install flow has 34 steps total after combining the runtime
+	// contract steps, credential guard, operator evidence ACL, browser CA
+	// trust, and final readiness gate. Changing this count changes documented
+	// dry-run output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 33 {
-		t.Errorf("installSteps count: got %d, want 33", len(steps))
+	if len(steps) != 34 {
+		t.Errorf("installSteps count: got %d, want 34", len(steps))
 	}
 }
 

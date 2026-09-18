@@ -324,6 +324,9 @@ func installSteps(opts installOpts) []step {
 		stepExportPipelockCA(),
 		stepWriteCombinedCABundle(),
 		stepEnsureOwnedLoopbackAnchor(),
+		// Browsers do not consume the CA environment exported by plk-launch.
+		// Establish their per-user trust before containment can report ready.
+		stepEstablishBrowserCATrust(),
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
 		stepWriteCredentialGuard(),

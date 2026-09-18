@@ -110,6 +110,8 @@ type installEnv struct {
 	undiciShimPath     string // node undici proxy shim loaded via NODE_OPTIONS
 	profileScriptPath  string // /etc/profile.d login-shell runtime contract
 	agentHome          string // contained agent home (per-tool config destination)
+	lookPath           func(string) (string, error)
+	platformFamily     string
 	pipelockBinary     string // source binary path passed to --pipelock-binary
 	pipelockTarget     string // destination, default /usr/local/bin/pipelock
 	bashPath           string
@@ -211,6 +213,8 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		undiciShimPath:     defaultUndiciShimPath,
 		profileScriptPath:  defaultProfileScriptPath,
 		agentHome:          "/home/" + defaultAgentUser,
+		lookPath:           exec.LookPath,
+		platformFamily:     platform.family,
 		pipelockTarget:     defaultPipelockTarget,
 		bashPath:           platform.bashPath,
 		nologinPath:        platform.nologinPath,

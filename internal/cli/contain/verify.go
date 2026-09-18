@@ -134,6 +134,11 @@ type probeEnv struct {
 	wrapperDir           string
 	toolWrappers         []string
 	caBundlePath         string
+	caExportPath         string
+	agentHome            string
+	platformFamily       string
+	lookPath             func(string) (string, error)
+	browserCATrust       func(context.Context, *probeEnv) (string, string)
 	launchPath           string
 	nftTable             string
 	nftChain             string
@@ -195,6 +200,9 @@ func defaultProbeEnv() *probeEnv {
 		wrapperDir:           defaultWrapperDir,
 		toolWrappers:         append([]string(nil), defaultToolWrappers...),
 		caBundlePath:         defaultCABundlePath,
+		caExportPath:         defaultCAExportPath,
+		platformFamily:       platform.family,
+		lookPath:             exec.LookPath,
 		launchPath:           defaultLaunchScript,
 		nftTable:             defaultNFTTable,
 		nftChain:             defaultNFTChain,
@@ -358,6 +366,7 @@ func allProbes() []probe {
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
+		{probeBrowserCATrustNum, probeBrowserCATrust, "contained agent NSS database trusts the Pipelock CA", probeBrowserCATrustState},
 	}
 }
 
@@ -371,13 +380,24 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	// Preserve workspace_access as published probe 15. The new private-temp probe
-	// is 16; insert the conditional workspace result before it so configured
-	// output remains numerically ordered without renumbering the existing result.
+	// Preserve workspace_access as published probe 15. Insert it before the
+	// private-temp probe so configured output remains numerically ordered
+	// without renumbering published results, including the browser-CA probe
+	// that follows private-temp.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		privateTmp := probes[len(probes)-1]
-		probes[len(probes)-1] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
-		probes = append(probes, privateTmp)
+		out := make([]probe, 0, len(probes)+1)
+		inserted := false
+		for _, p := range probes {
+			if p.name == "private_tmp_isolation" && !inserted {
+				out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+				inserted = true
+			}
+			out = append(out, p)
+		}
+		if !inserted {
+			out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+		}
+		return out
 	}
 	return probes
 }

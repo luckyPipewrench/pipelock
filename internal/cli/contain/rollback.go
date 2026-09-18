@@ -139,6 +139,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionDisablePipelockService(),
 		actionRemovePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
 		actionRemovePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
+		actionRemoveBrowserCATrust(),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),

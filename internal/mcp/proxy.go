@@ -1494,6 +1494,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	var rec session.Recorder
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
+		if rec == nil {
+			return session.ErrCapacity
+		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
 

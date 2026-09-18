@@ -2305,8 +2305,15 @@ func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, st
 
 // LogAirlockEnter logs that a session entered an airlock tier.
 func (l *Logger) LogAirlockEnter(sessionKey, tier, trigger, clientIP, requestID string) {
+	l.LogAirlockEnterForScope(sessionKey, "", tier, trigger, clientIP, requestID)
+}
+
+// LogAirlockEnterForScope identifies the destination of a scoped transition in
+// both the local audit stream and the event sink. Empty scope is session-wide.
+func (l *Logger) LogAirlockEnterForScope(sessionKey, scope, tier, trigger, clientIP, requestID string) {
 	e := newLogEntry(l.zl.Warn(), EventAirlockEnter).
 		str("session", sessionKey).
+		optStr("scope", scope).
 		str("tier", tier).
 		str("trigger", trigger).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditAirlock, trigger)).

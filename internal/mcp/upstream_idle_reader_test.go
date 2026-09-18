@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -135,6 +136,13 @@ func TestIdleTimeoutReader_CallerCloseIsNotATimeout(t *testing.T) {
 // The budget must bound the GAP between reads, not the total lifetime, or it
 // reintroduces the severed-stream bug the total timeout caused.
 func TestIdleTimeoutReader_DoesNotCutASteadyStream(t *testing.T) {
+	// Virtual time preserves the gap-versus-lifetime assertion without letting
+	// unrelated CPU contention turn a scheduled producer into a stalled one.
+	synctest.Test(t, testIdleTimeoutReaderSteadyStream)
+}
+
+func testIdleTimeoutReaderSteadyStream(t *testing.T) {
+	t.Helper()
 	const chunks = 8
 	gap := 40 * time.Millisecond
 	chunk := []byte("data: {}\n\n")

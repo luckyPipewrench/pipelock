@@ -26,3 +26,21 @@ func TestConfigClone_ContainmentMetricsExposureDoesNotAlias(t *testing.T) {
 		t.Fatalf("original allowed source = %q, want independent clone", original.Containment.MetricsExposure.AllowedSourceCIDRs[0])
 	}
 }
+
+func TestConfigClone_ContainmentLoopbackServicesDoesNotAlias(t *testing.T) {
+	original := Defaults()
+	original.Containment.LoopbackServices = []ContainmentLoopbackService{{
+		Host:      "127.0.0.1",
+		Port:      9200,
+		Owner:     "search-team",
+		Reason:    "local index",
+		ExpiresAt: "2026-08-15T12:00:00Z",
+	}}
+
+	clone := original.Clone()
+	clone.Containment.LoopbackServices[0].Owner = "platform"
+
+	if original.Containment.LoopbackServices[0].Owner != "search-team" {
+		t.Fatalf("original owner = %q, want search-team", original.Containment.LoopbackServices[0].Owner)
+	}
+}

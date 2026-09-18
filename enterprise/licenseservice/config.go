@@ -71,10 +71,6 @@ type Config struct {
 	// that will ever be issued. Slots never reopen (canceled/refunded still count).
 	FoundingProCap int
 
-	// FoundingProDeadline is the date after which no new Founding Pro
-	// subscriptions are accepted, regardless of remaining slots.
-	FoundingProDeadline time.Time
-
 	// ListenAddr is the address the HTTP server binds to.
 	ListenAddr string
 
@@ -145,13 +141,12 @@ type OrderProductConfig struct {
 }
 
 const (
-	defaultListenAddr       = ":8080"
-	defaultFoundingProCap   = 50
-	defaultFoundingDeadline = "2026-06-30"
-	defaultDBPath           = "licenses.db"
-	defaultLedgerPath       = "audit.jsonl"
-	defaultFromEmail        = "licenses@mail.pipelab.org"
-	defaultPolarAPIBase     = "https://api.polar.sh"
+	defaultListenAddr     = ":8080"
+	defaultFoundingProCap = 50
+	defaultDBPath         = "licenses.db"
+	defaultLedgerPath     = "audit.jsonl"
+	defaultFromEmail      = "licenses@mail.pipelab.org"
+	defaultPolarAPIBase   = "https://api.polar.sh"
 	// defaultPolarAPIVersion is the dated Polar API contract this code was
 	// written against. Polar retires a version roughly nine months after
 	// release, at which point every request pinned to it returns 404. Nothing
@@ -203,14 +198,6 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("FOUNDING_PRO_CAP must be non-negative, got %d", foundingCap)
 	}
 	cfg.FoundingProCap = foundingCap
-
-	// Parse founding pro deadline.
-	deadlineStr := envOrDefault("FOUNDING_PRO_DEADLINE", defaultFoundingDeadline)
-	deadline, err := time.Parse(time.DateOnly, deadlineStr)
-	if err != nil {
-		return nil, fmt.Errorf("parse FOUNDING_PRO_DEADLINE (use YYYY-MM-DD): %w", err)
-	}
-	cfg.FoundingProDeadline = deadline
 
 	// Parse Enterprise Eval fulfillment config. Eval selling is opt-in: with no
 	// product IDs configured, eval orders are never fulfilled.

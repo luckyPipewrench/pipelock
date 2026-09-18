@@ -162,10 +162,9 @@ func TestRefreshCron_RefreshOne_PolarError(t *testing.T) {
 	defer errorPolar.Close()
 
 	cfg := &Config{
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: cert,
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient(testPolarAPIToken, errorPolar.URL, defaultPolarAPIVersion)
 	email := NewEmailSender("re_"+"key", "from@test.com")
@@ -245,10 +244,9 @@ func TestRefreshCron_RefreshOne_CanceledSub(t *testing.T) {
 	defer canceledPolar.Close()
 
 	cfg := &Config{
-		IntermediateCert:    cert,
-		RootPublicKey:       rootPub,
-		FoundingProCap:      50,
-		FoundingProDeadline: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+		IntermediateCert: cert,
+		RootPublicKey:    rootPub,
+		FoundingProCap:   50,
 	}
 	polar := NewPolarClient(testPolarAPIToken, canceledPolar.URL, defaultPolarAPIVersion)
 	email := NewEmailSender("re_"+"key", "from@test.com")

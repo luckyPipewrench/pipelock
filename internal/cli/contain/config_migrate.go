@@ -109,6 +109,13 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	} else if err := config.ValidateContainmentMetricsExposure(metricsListen, proxyPort, metricsExposure, time.Now()); err != nil {
 		return nil, nil, err
 	}
+	loopbackServices, err := containmentLoopbackServicesFromMapping(mapping)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := config.ValidateContainmentLoopbackServices(loopbackServices, proxyPort, time.Now()); err != nil {
+		return nil, nil, err
+	}
 
 	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {
 		return nil, nil, err
@@ -218,6 +225,81 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 		return nil, fmt.Errorf("parse containment.metrics_exposure: %w", err)
 	}
 	return &policy, nil
+}
+
+// parseContainmentLoopbackServicesFromConfigBytes parses and validates
+// containment.loopback_services out of raw managed-config YAML bytes. It is
+// the single source both contain install (declaredContainmentLoopbackServices,
+// which fails install closed on any error) and the boot/operator nft
+// reconciler (which instead falls back to zero declared services on any
+// error, logging why) call, so both consumers agree on exactly what counts
+// as a usable declared exception.
+func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentLoopbackService, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		// A document with no YAML content at all -- empty, or only
+		// comments -- declares nothing, exactly like a document carrying no
+		// containment key. Reporting that as an unhonorable declaration is a
+		// much louder claim than the file supports.
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("parse managed config: %w", err)
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, errors.New("managed config must be a YAML mapping")
+	}
+	declared, err := containmentLoopbackServicesFromMapping(mapping)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, now); err != nil {
+		return nil, err
+	}
+	return declared, nil
+}
+
+// containmentLoopbackServicesFromMapping is the outbound-exception sibling of
+// containmentMetricsExposureFromMapping: it decodes containment.loopback_services
+// from the same raw YAML mapping, using the same strict-decode-then-validate
+// shape, so a malformed or unreviewable declared exception is rejected at
+// config load / contain install time rather than silently ignored.
+func containmentLoopbackServicesFromMapping(root *yaml.Node) ([]config.ContainmentLoopbackService, error) {
+	containment := mappingValue(root, "containment")
+	if containment == nil {
+		return nil, nil
+	}
+	if containment.Kind != yaml.MappingNode {
+		return nil, errors.New("containment must be a mapping")
+	}
+	services := mappingValue(containment, "loopback_services")
+	if services == nil {
+		return nil, nil
+	}
+	// An explicit YAML null means the same thing as an absent key: no
+	// declared services. config.Load already decodes it that way into a nil
+	// slice, and refusing it here made the two disagree about one file --
+	// `pipelock check` accepted it while `contain install --config` failed
+	// before staging anything, leaving the operator to discover that only
+	// omitting the key or writing [] would work.
+	if services.Kind == yaml.ScalarNode && services.Tag == "!!null" {
+		return nil, nil
+	}
+	if services.Kind != yaml.SequenceNode {
+		return nil, errors.New("containment.loopback_services must be a list")
+	}
+	data, err := yaml.Marshal(services)
+	if err != nil {
+		return nil, fmt.Errorf("encode containment.loopback_services: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	var declared []config.ContainmentLoopbackService
+	if err := decoder.Decode(&declared); err != nil {
+		return nil, fmt.Errorf("parse containment.loopback_services: %w", err)
+	}
+	return declared, nil
 }
 
 // effectiveProxyPort returns the port the contained agent can actually reach.

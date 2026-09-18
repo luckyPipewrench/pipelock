@@ -277,5 +277,8 @@ func RunContainmentConformance(ctx context.Context, env ConformanceEnv) ([]Confo
 // containmentDropCounterFromChainText, the same recognizer production's
 // readContainmentDropCounter uses after its live `nft list chain` round trip.
 func conformanceChainDropCounter(chainText string, uids containmentUIDs, proxyPort int) (uint64, error) {
-	return containmentDropCounterFromChainText(chainText, defaultNFTChain, uids, proxyPort)
+	// Conformance fixtures declare no loopback services: an extra agent
+	// loopback accept in fixture chain text is an unsafe verdict, which is
+	// the production verdict for an undeclared one.
+	return containmentDropCounterFromChainText(chainText, defaultNFTChain, uids, proxyPort, nil, "", false)
 }

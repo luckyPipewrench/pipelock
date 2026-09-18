@@ -84,6 +84,13 @@ type installEnv struct {
 	nftRulesPath       string
 	nftMainPath        string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
 	nftPersistUnitPath string
+	reconcileLockPath  string
+	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
+	// critical section of the nft rules step in an exclusive lock, shared
+	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
+	// Defaults to the real flock-based implementation; tests substitute a
+	// fake to deterministically exercise the install/reload interleaving.
+	lockFn             func(lockPath string, fn func() error) error
 	sudoersPath        string
 	caBundlePath       string
 	systemCABundlePath string
@@ -165,6 +172,14 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		systemUnitPath:     defaultSystemUnitPath,
 		nftRulesPath:       defaultNFTRulesPath,
 		nftPersistUnitPath: defaultNFTPersistUnitPath,
+		// The reconcile lock lives beside the nft rules file under
+		// /etc/nftables.d/, a directory only root writes, NOT under
+		// dataDir: dataDir is recursively chowned to pipelock-proxy by
+		// stepChownToProxy, and a lock an unprivileged (relative to root)
+		// identity can unlink/replace defeats the whole point of locking.
+		// See withContainmentReconcileLock's doc comment.
+		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
+		lockFn:            withContainmentReconcileLock,
 		// Populated so rollback can clean up a legacy `include` line a
 		// pre-portability build appended here. New installs never write it.
 		nftMainPath:        defaultNFTMainConfigPath,

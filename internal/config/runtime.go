@@ -323,6 +323,9 @@ func (c *Config) Clone() *Config {
 		exposure.AllowedSourceCIDRs = append([]string(nil), c.Containment.MetricsExposure.AllowedSourceCIDRs...)
 		clone.Containment.MetricsExposure = &exposure
 	}
+	if c.Containment.LoopbackServices != nil {
+		clone.Containment.LoopbackServices = append([]ContainmentLoopbackService(nil), c.Containment.LoopbackServices...)
+	}
 	clone.MCPToolPolicy.Rules = cloneToolPolicyRules(c.MCPToolPolicy.Rules)
 	// Deep-copy the follower audience-labels map so a runtime caller that
 	// mutates clone.Conductor.Labels never aliases back into the loaded config,

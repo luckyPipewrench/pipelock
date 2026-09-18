@@ -260,6 +260,93 @@ Replace the documentation addresses with addresses assigned to the host and scra
 
 The proxy also refuses to dial its configured metrics address and port. An `ssrf.ip_allowlist`, trusted domain, or grant cannot reopen this path through the agent's permitted proxy connection.
 
+### Declared loopback services
+
+The contained agent can reach exactly one loopback destination by default: the
+proxy port. An operator who needs the agent to reach a second local TCP
+service (for example a local search index) declares it in the managed config
+instead of hand-editing the nftables rules. Declaring it is the ONLY
+supported path: a hand-inserted loopback accept adjacent to the managed
+block is not tolerated forever. Reload's block matcher recognizes an
+agent-owned loopback accept immediately following the managed proxy-port
+allow as PART of the managed block (this is what lets it grow the block to
+hold declared entries across reloads without leaving a stale one-off allow
+behind), so a hand-inserted rule in that position is absorbed into -- and
+then removed by -- the next `contain reload-nft-rules`, the same way a
+genuinely removed declared entry is removed. Reload emits no warning of its
+own when it removes one. `contain verify` flags
+it as an unexpected verdict in the meantime, because it does not match any
+declared entry. Declare the service instead of hand-editing the rules; that
+is the trap `containment.loopback_services` exists to close.
+
+```yaml
+containment:
+  loopback_services:
+    - host: 127.0.0.1
+      port: 9200
+      owner: search-team
+      reason: agent needs a local search index for retrieval
+      expires_at: 2026-12-01T00:00:00Z
+```
+
+Each entry carries the same required-and-bounded lifecycle as
+`containment.metrics_exposure`: `host` must be a loopback literal (`127.0.0.1`
+or `::1` -- not a hostname, wildcard, or CIDR), `port` is a single TCP port
+between 1 and 65535 and must not equal the agent-accessible proxy port (that
+allow is implicit), and `owner`, `reason`, and `expires_at` (RFC3339, must
+remain in the future) are all required so a reviewer can tell who accepted
+the exception, why, and when it ends. Pipelock rejects a malformed, expired,
+duplicate, or proxy-port-colliding entry at config load time, so `pipelock
+check` and `contain install` both fail closed on it rather than silently
+dropping the exception.
+
+`contain install` renders each declared entry into the same managed nftables
+block as the implicit proxy-port allow. `contain reload-nft-rules` -- the
+same command the boot-time persistence unit runs on every boot -- re-reads
+the managed config and re-renders that block from the CURRENT declared set
+every time it runs, not from whatever it last loaded: an entry an operator
+removes, or one whose `expires_at` has passed, is dropped from the live
+chain and from the persisted rules file at the next reconciliation, without
+needing a fresh `contain install`. **Every add, remove, or expiry of a
+`containment.loopback_services` entry needs a reconciliation pass to reach
+the kernel.** Run `pipelock contain reload-nft-rules` as root after editing
+the managed config; the boot-time unit reruns it automatically on the next
+boot, and `contain install` reruns it too if that is the change you are
+already making. If the managed config is missing, unreadable, or the
+declared set as a whole is malformed or contains an expired entry,
+reconciliation fails closed: it renders the managed block with ZERO
+declared loopback services (the agent stays contained and only loses the
+extra service) and logs a warning naming the config path and why (a missing
+managed config names `pipelock contain install` as the recovery command; an
+unreadable or malformed one names re-running reconciliation once it is
+fixed).
+
+Reconciliation itself is guarded by an exclusive lock, so `contain install`
+and `contain reload-nft-rules` never interleave on the same managed config
+and nft state. That lock file lives beside the persisted rules file under
+`/etc/nftables.d/`, a root-owned directory -- never under the
+pipelock-proxy-owned data directory -- and reconciliation refuses to trust
+anything at the lock path that is not a plain file owned by root or itself
+(a symlink or a named pipe placed there is rejected outright, not followed
+or blocked on). If the lock cannot be safely acquired, reconciliation fails
+with a hard error naming the lock path and `pipelock contain install` as
+the recovery. On the boot-time unit specifically, that means the containment
+rule from the previous boot is NOT re-loaded and the agent has no
+containment rule at all until an operator reruns `pipelock contain
+install` as root -- `systemctl status pipelock-containment-nft.service`
+shows the failure.
+
+`contain verify` checks the declared set against the live chain in both
+directions: an agent-owned loopback accept for a port that is neither the
+proxy port nor a declared entry fails as an unexpected verdict before the
+agent's catch-all drop, and a declared entry with no matching live accept
+fails by name (`host:port`, with its `owner`), so a declaration that never
+made it into the loaded ruleset is visible instead of silently assumed. When
+the declared set itself cannot be read or validated, the FAIL detail also
+names the unusable entry (host:port, owner, and the expiry or parse failure)
+and the remedy -- remove or re-approve the entry, then run `pipelock contain
+reload-nft-rules` -- instead of only the generic unexpected-verdict message.
+
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking
 rules, or an unreadable managed DROP counter is reported as not enforced rather

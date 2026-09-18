@@ -105,6 +105,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	}
 
 	oldCfg := s.proxy.CurrentConfig()
+	loopbackServicesChanged := false
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at
@@ -147,6 +148,24 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
 			}
 		}
+		// Config reload only swaps the in-memory Config.Containment.LoopbackServices
+		// value; it never touches the kernel nftables state. The declared set
+		// only reaches the agent's actual egress boundary through
+		// `pipelock contain reload-nft-rules` (the same command the boot-time
+		// containment persistence unit runs on every boot), which re-renders
+		// the managed block from the managed config. Warn once per reload so an
+		// operator who edits loopback_services and reloads Pipelock, but never
+		// runs reconciliation, is told the change has not taken effect yet --
+		// do not reject the reload over it, since the config value itself is
+		// valid and the drift is only between config and kernel state.
+		// Only NOTE it here. The warning itself is emitted after the config is
+		// published, because several checks below this point can still reject
+		// the candidate: telling an operator that the reload updated policy,
+		// and then refusing the reload, describes something that did not
+		// happen and points them at a reconciliation command with nothing to
+		// reconcile.
+		loopbackServicesChanged = s.containmentManaged &&
+			!reflect.DeepEqual(oldCfg.Containment.LoopbackServices, newCfg.Containment.LoopbackServices)
 		// Emit sinks own live workers, queues, network connections and, for the
 		// durable forwarder, exclusive spool/cursor locks. Replacing them after
 		// the proxy publishes a candidate can make Reload return an error after
@@ -432,6 +451,26 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		}
 	}
 
+	// A declared loopback service authorizes an extra hole in the agent's
+	// egress boundary, so a candidate whose declaration does not validate
+	// must not become the live policy. The file reloader validates through
+	// config.Load; a caller handing Reload an in-memory config does not, and
+	// the whole-config re-validation just below only collects warnings.
+	//
+	// This runs HERE, after the restart-only fields are preserved, rather
+	// than with the fail-closed checks at the top of this function. The
+	// declaration is validated against the proxy port, which is read from
+	// fetch_proxy.listen, and a reload cannot rebind the listener: the
+	// candidate's value is discarded and the live address restored above.
+	// Validating before that restore checks the declaration against a port
+	// the process will never listen on, so a service colliding with the
+	// ACTUAL proxy port passes and is published.
+	if validationErr := newCfg.ValidateContainmentLoopbackServiceDeclarations(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
+
 	// Surface advisory warnings on reload the same way NewServer does at
 	// startup. The Reloader discards warnings from Load()'s internal
 	// Validate() call, so re-run the idempotent validator after deduping
@@ -558,6 +597,11 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 	}
 	if s.containmentManaged {
 		s.containmentMetricsDenied.Store(false)
+	}
+	// The candidate is live now, so this is true when it is said.
+	if loopbackServicesChanged {
+		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
+			"run `pipelock contain reload-nft-rules` as root to apply the change to the live nftables boundary")
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())

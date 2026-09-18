@@ -1,0 +1,230 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build unix
+
+package contain
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// TestContainmentReconcileLockPathForDerivesFromRulesPath pins the shared
+// derivation both install and reload use: the lock lives beside the rules
+// file, so any test (or deployment) that changes rulesPath automatically
+// gets a matching, collision-free lock path.
+func TestContainmentReconcileLockPathForDerivesFromRulesPath(t *testing.T) {
+	got := containmentReconcileLockPathFor("/etc/nftables.d/50-pipelock-containment.nft")
+	want := "/etc/nftables.d/50-pipelock-containment.nft.reconcile.lock"
+	if got != want {
+		t.Fatalf("containmentReconcileLockPathFor() = %q, want %q", got, want)
+	}
+}
+
+// TestWithContainmentReconcileLockRefusesSymlink is the MEDIUM-severity
+// proof, half one: a symlink placed at the lock path (simulating a
+// compromised or malicious writer of the lock's parent directory swapping
+// the pathname) is refused via O_NOFOLLOW -- the open itself fails, never
+// resolving the link -- rather than silently locking whatever it points to.
+func TestWithContainmentReconcileLockRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("not a lock"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	lockPath := filepath.Join(dir, "50-pipelock-containment.nft.reconcile.lock")
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	called := false
+	err := withContainmentReconcileLock(lockPath, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected withContainmentReconcileLock to refuse a symlink at the lock path")
+	}
+	if called {
+		t.Fatal("fn must not run when the lock file is refused")
+	}
+	if !strings.Contains(err.Error(), lockPath) || !strings.Contains(err.Error(), "pipelock contain install") {
+		t.Fatalf("error = %v, want it to name the lock path and the recovery command", err)
+	}
+}
+
+// TestWithContainmentReconcileLockRefusesFIFOWithoutBlocking is the
+// MEDIUM-severity proof, half two: a FIFO placed at the lock path (the
+// other way a hostile parent-directory writer could hang a root caller
+// before it ever reaches Flock) is refused via the post-open fstat
+// non-regular-file check, and the refusal is immediate -- proven by a hard
+// deadline well under what a blocking open would need -- not merely
+// "eventually returns," because O_RDWR is what keeps this open from
+// blocking on a FIFO in the first place; a caller that opened O_WRONLY here
+// would hang forever with no peer reader.
+func TestWithContainmentReconcileLockRefusesFIFOWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "50-pipelock-containment.nft.reconcile.lock")
+	if err := syscall.Mkfifo(lockPath, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	done := make(chan error, 1)
+	called := false
+	go func() {
+		done <- withContainmentReconcileLock(lockPath, func() error {
+			called = true
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected withContainmentReconcileLock to refuse a FIFO at the lock path")
+		}
+		if called {
+			t.Fatal("fn must not run when the lock file is refused")
+		}
+		if !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("error = %v, want it to name the non-regular-file refusal", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("withContainmentReconcileLock blocked on a FIFO instead of refusing it immediately via the fstat check")
+	}
+}
+
+// TestWithContainmentReconcileLockRefusesForeignOwner proves the
+// owner-verification half of the fstat check independently of file type:
+// a plain regular file that is NOT owned by root or the invoking uid is
+// refused even though O_NOFOLLOW and the regular-file check both pass.
+func TestWithContainmentReconcileLockRefusesForeignOwner(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("requires root to fabricate a foreign-uid lock file for this proof")
+	}
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "50-pipelock-containment.nft.reconcile.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+	if err := os.Chown(lockPath, 65534, 65534); err != nil { // nobody:nogroup
+		t.Fatalf("chown lock file: %v", err)
+	}
+	err := withContainmentReconcileLock(lockPath, func() error {
+		t.Fatal("fn must not run when the lock file is owned by neither root nor the invoking uid")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "owned by uid") {
+		t.Fatalf("error = %v, want the foreign-owner refusal", err)
+	}
+}
+
+// TestWithContainmentReconcileLockRefusesUnwritableParentWithRecoveryError
+// proves the plain unwritable-parent-directory failure (no attack, just a
+// misconfigured/missing directory) also gets a hard error naming the
+// recovery command, not a silent skip of locking.
+func TestWithContainmentReconcileLockRefusesUnwritableParentWithRecoveryError(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "does-not-exist", "50-pipelock-containment.nft.reconcile.lock")
+	err := withContainmentReconcileLock(lockPath, func() error {
+		t.Fatal("fn must not run when the lock file cannot be opened at all")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an error for a lock path whose parent directory does not exist")
+	}
+	if !strings.Contains(err.Error(), "is missing") || !strings.Contains(err.Error(), "pipelock contain install") {
+		t.Fatalf("error = %v, want it to say the directory is missing and name the recovery command", err)
+	}
+}
+
+// TestWithContainmentReconcileLockAcceptsOwnRegularFile is the non-attack
+// control: a plain lock file this process (or root) already owns is
+// accepted, fn runs exactly once, and repeated calls remain safe -- the
+// hardening above must not make the ordinary, uncompromised path fail.
+func TestWithContainmentReconcileLockAcceptsOwnRegularFile(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "50-pipelock-containment.nft.reconcile.lock")
+	calls := 0
+	for range 3 {
+		if err := withContainmentReconcileLock(lockPath, func() error {
+			calls++
+			return nil
+		}); err != nil {
+			t.Fatalf("withContainmentReconcileLock: %v", err)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("fn ran %d times, want 3", calls)
+	}
+}
+
+// TestWithContainmentReconcileLockUnwritableParentNamesTheRealRemedy covers
+// the operability half of the lock's failure surface: an EACCES on the
+// lock's directory must NOT tell the operator to rerun `contain install`
+// as its remedy, because install deliberately leaves the mode of a rules
+// directory it did not create alone and therefore fails with the identical
+// error. The refusal must instead name the directory whose ownership/mode
+// is the actual cause. An inert remedy teaches an operator that policy
+// changed when nothing did.
+func TestWithContainmentReconcileLockUnwritableParentNamesTheRealRemedy(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory write permissions, so EACCES cannot be provoked")
+	}
+	dir := filepath.Join(t.TempDir(), "rules.d")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
+
+	lockPath := filepath.Join(dir, "50-pipelock-containment.nft.reconcile.lock")
+	err := withContainmentReconcileLock(lockPath, func() error {
+		t.Fatal("fn must not run when the lock file cannot be opened")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an error for a lock path whose parent directory is not writable")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, dir) {
+		t.Errorf("error = %v, want it to name the unwritable directory %s", err, dir)
+	}
+	if !strings.Contains(msg, "not writable") {
+		t.Errorf("error = %v, want it to say the directory is not writable", err)
+	}
+	if !strings.Contains(msg, "cannot repair it") {
+		t.Errorf("error = %v, want it to say rerunning install alone cannot repair this", err)
+	}
+}
+
+// TestLockDirectoryNotWritableClassifiesBothErrnos pins the two refusals that
+// rerunning install cannot repair. EROFS is the one that matters here: a
+// read-only mount does NOT satisfy os.ErrPermission, so a condition written
+// against permission alone sends a read-only filesystem to the generic
+// "rerun install" remedy even though the detailed message this predicate
+// selects is the one that names a read-only mount by name. That branch cannot
+// be provoked unprivileged, so the classification is pinned directly.
+func TestLockDirectoryNotWritableClassifiesBothErrnos(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"permission denied", syscall.EACCES, true},
+		{"read-only filesystem", syscall.EROFS, true},
+		{"wrapped read-only filesystem", fmt.Errorf("open lock: %w", syscall.EROFS), true},
+		{"not exist is a different remedy", os.ErrNotExist, false},
+		{"is a directory", syscall.EISDIR, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lockDirectoryNotWritable(tc.err); got != tc.want {
+				t.Errorf("lockDirectoryNotWritable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

@@ -136,11 +136,9 @@ Grok can register remotes with HTTP transport:
 ```bash
 # Native Grok remote (OAuth handled by Grok — not auto-wrapped by Pipelock)
 grok mcp add --transport http linear https://mcp.linear.app/mcp
-
-# Native Grok remote with static headers (header values land in config / argv surface)
-grok mcp add --transport http api https://mcp.example.com/mcp \
-  --header "Authorization: Bearer ${API_TOKEN}"
 ```
+
+Do **not** register static bearer tokens with native `grok mcp add --header …`. Those values land in config and on the process argument list. For static headers, use the private `--header-file` wrap below.
 
 **What is and is not auto-wrapped:** Pipelock does not rewrite Grok's `[mcp_servers.*]` `url` / `headers` entries. A native `url=` remote **bypasses `pipelock mcp proxy`** and therefore skips MCP-layer JSON-RPC scanning (tool args/results/definitions). If `HTTPS_PROXY` / `HTTP_PROXY` are set, that HTTP connection may still traverse Pipelock's **forward proxy**; without TLS interception, CONNECT bodies stay opaque (hostname-level controls only). Replace the entry with a stdio wrap when you need MCP JSON-RPC scanning.
 

@@ -83,11 +83,17 @@ mode="${1:-check}"
 # is a multiset difference, so the second one is new.
 findings() {
 	local file pattern
+	# Piped rather than a process substitution: findings runs inside a command
+	# substitution that is itself a pipeline, and in that nesting a /dev/fd
+	# pathname can be opened after its descriptor is gone. A pipe has no such
+	# dependency. The loop body sets nothing the caller needs, so running it in
+	# a subshell costs nothing.
+	#
 	# NUL-delimited, because git ls-files QUOTES a path containing a newline
 	# ("weird\nname.go") and the quoted form fails [ -f ], so the file is
 	# silently skipped and a literal inside it evades the gate. Verified by
 	# reproduction rather than assumed.
-	while IFS= read -r -d '' file; do
+	git ls-files -z '*.go' | while IFS= read -r -d '' file; do
 		[ -f "$file" ] || continue
 		for pattern in \
 			"${go_field}:[[:space:]]+${go_quote}${date_literal}" \
@@ -95,15 +101,16 @@ findings() {
 			"${yaml_key}:[[:space:]]*\\\\?${quote}${date_literal}"; do
 			emit "$file" "$pattern"
 		done
-	done < <(git ls-files -z '*.go')
+	done
 
 	# Shipped configuration a customer runs. A literal here expires for them,
 	# not only for CI. This surface is currently empty and the guard keeps it
 	# that way.
-	while IFS= read -r -d '' file; do
+	git ls-files -z 'configs/*.yaml' 'examples/**/*.yaml' 'examples/**/*.yml' 'charts/**/*.yaml' |
+		while IFS= read -r -d '' file; do
 		[ -f "$file" ] || continue
 		emit "$file" "^[[:space:]]*${yaml_key}:[[:space:]]*${quote}${date_literal}"
-	done < <(git ls-files -z 'configs/*.yaml' 'examples/**/*.yaml' 'examples/**/*.yml' 'charts/**/*.yaml')
+	done
 }
 
 # An inline marker with a non-empty reason clears a line outright, so a

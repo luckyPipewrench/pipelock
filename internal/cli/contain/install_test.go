@@ -127,6 +127,13 @@ func argvFor(name string, args ...string) string {
 	return name + " " + strings.Join(args, " ")
 }
 
+func renderTestNFTPersistUnit(rulesPath, pipelockTarget string) string {
+	return renderNFTPersistUnit(&installEnv{
+		nftRulesPath:   rulesPath,
+		pipelockTarget: pipelockTarget,
+	})
+}
+
 func managedChainReloadPath(env *installEnv) string {
 	return env.nftRulesPath + ".reload"
 }
@@ -217,40 +224,42 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:                out,
-		errOut:             out,
-		operatorUser:       containInstallOperatorUser,
-		proxyUserName:      "pipelock-proxy",
-		agentUserName:      "pipelock-agent",
-		configDir:          filepath.Join(root, "etc", "pipelock"),
-		dataDir:            filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:         filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath:     filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:       filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:        filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		nftPersistUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
-		sudoersPath:        filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:       filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		systemCABundlePath: filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
-		caExportPath:       filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:       filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:       filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath:     filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:      filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		workspaceInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
-		evidenceACLInvPath: filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
-		guardScriptPath:    filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
-		guardServiceUnit:   filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
-		guardPathUnit:      filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
-		undiciShimPath:     filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
-		profileScriptPath:  filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
-		agentHome:          filepath.Join(root, "home", "pipelock-agent"),
-		pipelockTarget:     filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		bashPath:           "/bin/bash",
-		nologinPath:        "/usr/sbin/nologin",
-		nftPath:            testNFT,
-		curlPath:           "/usr/bin/curl",
-		proxyPort:          8888,
+		out:                  out,
+		errOut:               out,
+		operatorUser:         containInstallOperatorUser,
+		proxyUserName:        "pipelock-proxy",
+		agentUserName:        "pipelock-agent",
+		configDir:            filepath.Join(root, "etc", "pipelock"),
+		dataDir:              filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:           filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:       filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:         filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:          filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		nftPersistUnitPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
+		nftExpiryServicePath: filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
+		nftExpiryTimerPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
+		sudoersPath:          filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:         filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		systemCABundlePath:   filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
+		caExportPath:         filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:         filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:         filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:       filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:        filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath:     filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		evidenceACLInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		guardScriptPath:      filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit:     filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:        filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
+		undiciShimPath:       filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
+		profileScriptPath:    filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
+		agentHome:            filepath.Join(root, "home", "pipelock-agent"),
+		pipelockTarget:       filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		bashPath:             "/bin/bash",
+		nologinPath:          "/usr/sbin/nologin",
+		nftPath:              testNFT,
+		curlPath:             "/usr/bin/curl",
+		proxyPort:            8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -285,6 +294,12 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	// subprocess writing through pipelock).
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir configDir: %v", err)
+	}
+	// Rollback removes these units before asking systemd to confirm they are
+	// inactive. A fresh fake host has no active expiry units unless a test
+	// overrides this state to exercise an error or activity path.
+	for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
+		runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
 	}
 
 	return env, runner, out
@@ -664,6 +679,12 @@ func writeNFTPersistUnitFixture(t *testing.T, env *installEnv) {
 	}
 	if err := os.WriteFile(env.nftPersistUnitPath, []byte(renderNFTPersistUnit(env)), 0o600); err != nil {
 		t.Fatalf("write persistence unit: %v", err)
+	}
+	if err := os.WriteFile(env.nftExpiryServicePath, []byte(renderNFTExpiryService(env)), 0o600); err != nil {
+		t.Fatalf("write expiry service: %v", err)
+	}
+	if err := os.WriteFile(env.nftExpiryTimerPath, []byte(renderNFTExpiryTimer(env)), 0o600); err != nil {
+		t.Fatalf("write expiry timer: %v", err)
 	}
 }
 
@@ -1311,6 +1332,9 @@ func TestStepInstallNFTRules_SkipsWhenLoaded(t *testing.T) {
 	writeNFTPersistUnitFixture(t, env)
 	// Make the exact-chain nft query succeed with a healthy live chain.
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), body, 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -1345,6 +1369,9 @@ func TestStepInstallNFTRules_SkipsWhenLoadedForRootOperator(t *testing.T) {
 	}
 	writeNFTPersistUnitFixture(t, env)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), body, 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)

@@ -83,7 +83,11 @@ mode="${1:-check}"
 # is a multiset difference, so the second one is new.
 findings() {
 	local file pattern
-	while IFS= read -r file; do
+	# NUL-delimited, because git ls-files QUOTES a path containing a newline
+	# ("weird\nname.go") and the quoted form fails [ -f ], so the file is
+	# silently skipped and a literal inside it evades the gate. Verified by
+	# reproduction rather than assumed.
+	while IFS= read -r -d '' file; do
 		[ -f "$file" ] || continue
 		for pattern in \
 			"${go_field}:[[:space:]]+${go_quote}${date_literal}" \
@@ -91,15 +95,15 @@ findings() {
 			"${yaml_key}:[[:space:]]*\\\\?${quote}${date_literal}"; do
 			emit "$file" "$pattern"
 		done
-	done < <(git ls-files '*.go')
+	done < <(git ls-files -z '*.go')
 
 	# Shipped configuration a customer runs. A literal here expires for them,
 	# not only for CI. This surface is currently empty and the guard keeps it
 	# that way.
-	while IFS= read -r file; do
+	while IFS= read -r -d '' file; do
 		[ -f "$file" ] || continue
 		emit "$file" "^[[:space:]]*${yaml_key}:[[:space:]]*${quote}${date_literal}"
-	done < <(git ls-files 'configs/*.yaml' 'examples/**/*.yaml' 'examples/**/*.yml' 'charts/**/*.yaml')
+	done < <(git ls-files -z 'configs/*.yaml' 'examples/**/*.yaml' 'examples/**/*.yml' 'charts/**/*.yaml')
 }
 
 # An inline marker with a non-empty reason clears a line outright, so a

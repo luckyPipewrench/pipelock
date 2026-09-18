@@ -32,9 +32,21 @@ NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
 # The one aggregate gate that tolerates a skipped producer, the producers it
 # tolerates, and the producer-side condition that makes tolerating them correct.
 # Named once so the gate's expectation and its justification cannot drift apart.
+EVENT_NAMES = ("push", "pull_request")
 SKIP_CARVEOUT_AGGREGATE = "test-go126"
 SKIP_CARVEOUT_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
-SKIP_CARVEOUT_CONDITION = "needs.changed-files.outputs.ci_policy == 'true'"
+# The COMPLETE approved predicate, not a fragment of it. A substring test here
+# is the weak form and was reproduced as a bypass: appending
+# `&& github.event.action != 'opened'` keeps the fragment, still skips an opened
+# pull request whose CI policy DID change, and the aggregate gate accepts any
+# skipped producer on a pull request. Compare the whole normalized string so a
+# broadened predicate cannot keep the approved words while changing when the
+# producer actually skips.
+SKIP_CARVEOUT_CONDITION = (
+    "${{ !cancelled() && needs.security-scan.result == 'success' "
+    "&& (github.event_name != 'pull_request' "
+    "|| needs.changed-files.outputs.ci_policy == 'true') }}"
+)
 REQUIRED_PRODUCERS = {
     "security-scan",
     "test-go125",
@@ -154,7 +166,10 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
     """
     errors = []
     successful = {dependency: "success" for dependency in dependencies}
-    cases = [("all producers succeed", successful, "push", 0)]
+    cases = [
+        ("all producers succeed", successful, event_name, 0)
+        for event_name in EVENT_NAMES
+    ]
     for dependency in sorted(dependencies):
         for result in ("failure", "cancelled", "", "unknown", "skipped"):
             values = successful | {dependency: result}
@@ -163,14 +178,24 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
                 and dependency in SKIP_CARVEOUT_PRODUCERS
                 and result == "skipped"
             )
-            cases.append(
-                (
-                    f"{dependency}={result or 'empty'}",
-                    values,
-                    "pull_request" if legitimate_skip else "push",
-                    0 if legitimate_skip else 1,
+            # Run EVERY state under BOTH events. Testing failures only on `push`
+            # left a reproduced fail-open: the accepted grammar permits a gate to
+            # branch on $EVENT_NAME, so a gate whose skip test compares two
+            # literals -- `[ "skipped" != "skipped" ]` -- reds every failure on a
+            # push and silently returns zero for the SAME failure on a pull
+            # request, which is the event where the required check gates a merge.
+            # The carve-out is the one state allowed to pass, and only on a pull
+            # request; the identical skip on a push must still red.
+            for event_name in EVENT_NAMES:
+                passes = legitimate_skip and event_name == "pull_request"
+                cases.append(
+                    (
+                        f"{dependency}={result or 'empty'}",
+                        values,
+                        event_name,
+                        0 if passes else 1,
+                    )
                 )
-            )
     for description, values, event_name, expected in cases:
         try:
             actual = execute_gate(run, values, event_name)
@@ -198,9 +223,11 @@ def skip_carveout_errors(jobs: dict) -> list[str]:
     condition here rather than inferring it from the gate under test.
     """
     errors = []
+    approved = " ".join(SKIP_CARVEOUT_CONDITION.split())
     for producer in sorted(SKIP_CARVEOUT_PRODUCERS):
         condition = jobs.get(producer, {}).get("if")
-        if not isinstance(condition, str) or SKIP_CARVEOUT_CONDITION not in condition:
+        normalized = " ".join(condition.split()) if isinstance(condition, str) else None
+        if normalized != approved:
             errors.append(
                 f"{producer} no longer skips only when the pull request touches no "
                 f"CI-policy path, so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
@@ -372,6 +399,66 @@ class CIWorkflowTopologyTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("test-oss-go126", errors[0])
         self.assertIn("CI-policy path", errors[0])
+
+    def test_pull_request_only_swallow_fails_the_contract(self):
+        # A gate that reds every failure on a push and returns zero for the SAME
+        # failure on a pull request, using only syntax the fence accepts: the
+        # skip test compares two literals, so it is false on every event and the
+        # `exit 1` becomes reachable only when the event is not a pull request.
+        swallows_on_pull_request = """set -u
+test "${{ needs.security-scan.result }}" = "success"
+echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
+if ! test "${{ needs.test-oss-go126.result }}" = "success"; then
+  if [ "$EVENT_NAME" != "pull_request" ] || [ "skipped" != "skipped" ]; then
+    exit 1
+  fi
+fi
+echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
+if ! test "${{ needs.test-enterprise-go126.result }}" = "success"; then
+  if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go126.result }}" != "skipped" ]; then
+    exit 1
+  fi
+fi
+echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
+test "${{ needs.test-replay-go126.result }}" = "success"
+"""
+        dependencies = set(self.jobs["test-go126"]["needs"])
+        # Positive control: the gate the workflow actually ships passes.
+        real_gate = next(
+            step["run"]
+            for step in self.jobs["test-go126"]["steps"]
+            if step.get("name") == "Required check compatibility gate"
+        )
+        self.assertEqual(gate_execution_errors("test-go126", real_gate, dependencies), [])
+        self.assertTrue(
+            gate_script_is_safe(swallows_on_pull_request),
+            "the fixture must pass the fence, or it proves nothing about event coverage",
+        )
+        self.assertEqual(
+            execute_gate(swallows_on_pull_request, dict.fromkeys(dependencies, "success"), "push"),
+            0,
+            "the fixture must green a wholly successful run",
+        )
+        errors = gate_execution_errors("test-go126", swallows_on_pull_request, dependencies)
+        self.assertTrue(
+            any("test-oss-go126=failure on pull_request" in error for error in errors),
+            f"a pull-request-only swallow went unreported: {errors}",
+        )
+
+    def test_broadened_skip_predicate_fails_the_contract(self):
+        broken = copy.deepcopy(self.jobs)
+        original = broken["test-oss-go126"]["if"]
+        broadened = original.replace("}}", "&& github.event.action != 'opened' }}")
+        self.assertNotEqual(original, broadened, "mutation did not change the fixture")
+        self.assertIn(
+            "needs.changed-files.outputs.ci_policy == 'true'",
+            broadened,
+            "the mutation must KEEP the approved words, or it does not test the substring weakness",
+        )
+        broken["test-oss-go126"]["if"] = broadened
+        errors = skip_carveout_errors(broken)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("test-oss-go126", errors[0])
 
     def test_go126_failure_cannot_red_go125_aggregate(self):
         aggregate_needs = set(self.jobs["test-go125"]["needs"])

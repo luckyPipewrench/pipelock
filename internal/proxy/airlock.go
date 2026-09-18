@@ -6,13 +6,27 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// retainAirlockSessions keeps the concrete recorders used by a request even
+// after replacement removes them from the manager. Deduplication prevents
+// registering the same connection cancellation repeatedly on one state.
+func retainAirlockSessions(retained []*SessionState, recorders ...session.Recorder) []*SessionState {
+	for _, rec := range recorders {
+		if sess, ok := rec.(*SessionState); ok && sess != nil && !slices.Contains(retained, sess) {
+			retained = append(retained, sess)
+		}
+	}
+	return retained
+}
 
 // Transport constants identify request origin for action classification.
 const (
@@ -328,11 +342,11 @@ func classifyHard(method, transport string, isTLSIntercepted bool) (bool, string
 		// Scan API is evaluation-plane, always allowed.
 		return true, ""
 
-	case TransportForward:
+	case TransportForward, TransportReverse:
 		if readOnlyMethods[method] {
 			return true, ""
 		}
-		return false, "airlock: hard tier blocks write methods on forward proxy"
+		return false, "airlock: hard tier blocks write methods on " + transport + " proxy"
 
 	case TransportConnect:
 		if !isTLSIntercepted {

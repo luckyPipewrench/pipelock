@@ -88,6 +88,44 @@ func TestLogAirlockEnter_OptionalFieldsOmitted(t *testing.T) {
 	}
 }
 
+func TestLogAirlockEnterForScope(t *testing.T) {
+	for _, scope := range []string{"", "host:api.vendor.example"} {
+		t.Run(scope, func(t *testing.T) {
+			var stream bytes.Buffer
+			logger, err := NewWithStream("json", "stdout", "", true, true, &stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			sink := &collectingSink{}
+			emitter := emit.NewEmitter("test", sink)
+			logger.SetEmitter(emitter)
+			t.Cleanup(func() { _ = emitter.Close() })
+			logger.LogAirlockEnterForScope(testAirlockSession, scope, testAirlockTier, testAirlockTrigger, testClientIP, testReqID)
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(stream.Bytes()), &entry); err != nil {
+				t.Fatal(err)
+			}
+			event, ok := sink.lastEvent()
+			if !ok || event.Type != string(EventAirlockEnter) {
+				t.Fatal("airlock transition did not reach the event sink")
+			}
+			for _, fields := range []map[string]any{entry, event.Fields} {
+				if fields["session"] != testAirlockSession || fields["tier"] != testAirlockTier || fields["request_id"] != testReqID {
+					t.Fatalf("transition correlation changed: %+v", fields)
+				}
+				if scope == "" {
+					if _, present := fields["scope"]; present {
+						t.Fatal("session-wide transition invented a destination")
+					}
+				} else if fields["scope"] != scope {
+					t.Fatalf("scope=%v, want %s", fields["scope"], scope)
+				}
+			}
+		})
+	}
+}
+
 func TestLogAirlockDeny(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

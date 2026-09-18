@@ -308,15 +308,15 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 				"disable --now " + filepath.Base(env.nftExpiryTimerPath),
 				"stop " + filepath.Base(env.nftExpiryServicePath),
 			} {
-				if !runnerCalled(runner, testSystemctl, want) {
+				if !runnerCalled(runner, want) {
 					t.Fatalf("rollback did not run %q: %+v", want, runner.calls)
 				}
 			}
 			timer := filepath.Base(env.nftExpiryTimerPath)
-			if got := runnerCalled(runner, testSystemctl, "enable "+timer); got != tc.enabled {
+			if got := runnerCalled(runner, "enable "+timer); got != tc.enabled {
 				t.Errorf("enable restored = %v, want %v: %+v", got, tc.enabled, runner.calls)
 			}
-			if got := runnerCalled(runner, testSystemctl, "start "+timer); got != tc.active {
+			if got := runnerCalled(runner, "start "+timer); got != tc.active {
 				t.Errorf("start restored = %v, want %v: %+v", got, tc.active, runner.calls)
 			}
 			got, err := os.ReadFile(env.nftExpiryTimerPath)
@@ -376,9 +376,9 @@ func TestStepInstallNFTRulesReconcilesStoppedExpiryTimerOnMatchingRerun(t *testi
 	}
 }
 
-func runnerCalled(runner *fakeRunner, name, args string) bool {
+func runnerCalled(runner *fakeRunner, args string) bool {
 	for _, call := range runner.calls {
-		if call.name == name && strings.Join(call.args, " ") == args {
+		if call.name == testSystemctl && strings.Join(call.args, " ") == args {
 			return true
 		}
 	}
@@ -782,6 +782,63 @@ func TestStepInstallNFTRulesRollsBackExpiryUnitsAfterEnableFailure(t *testing.T)
 				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("%s survived failed install rollback: %v", path, err)
 				}
+			}
+		})
+	}
+}
+
+func TestStepInstallNFTRulesCapturesExpiryStateBeforePartialUnitWriteFailure(t *testing.T) {
+	for _, failedPath := range []string{"service", "timer"} {
+		t.Run(failedPath, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			original := map[string]string{
+				env.nftPersistUnitPath:   "[Service]\nExecStart=/bin/true\n",
+				env.nftExpiryServicePath: "[Service]\nExecStart=/bin/true\n",
+				env.nftExpiryTimerPath:   "[Timer]\nOnCalendar=hourly\n",
+			}
+			for path, body := range original {
+				if err := os.WriteFile(path, []byte(body), modeUnitFile); err != nil {
+					t.Fatalf("seed %s: %v", path, err)
+				}
+			}
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
+			writeFile := env.writeFile
+			fail := env.nftExpiryServicePath
+			if failedPath == "timer" {
+				fail = env.nftExpiryTimerPath
+			}
+			failDuringApply := true
+			env.writeFile = func(path string, body []byte, mode os.FileMode) error {
+				if failDuringApply && path == fail {
+					return errors.New("write denied")
+				}
+				return writeFile(path, body, mode)
+			}
+
+			s := stepInstallNFTRules()
+			changed, err := s.apply(context.Background(), env)
+			if err == nil || !changed {
+				t.Fatalf("apply = (%t, %v), want changed failure", changed, err)
+			}
+			if !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive || !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled {
+				t.Fatalf("pre-state was not captured before partial write: %+v", env)
+			}
+			failDuringApply = false
+			if err := s.undo(context.Background(), env); err != nil {
+				t.Fatalf("undo: %v", err)
+			}
+			for path, want := range original {
+				got, err := env.readFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("restored %s = %q, %v; want %q", path, got, err, want)
+				}
+			}
+			timer := filepath.Base(env.nftExpiryTimerPath)
+			if !runnerCalled(runner, "enable "+timer) || !runnerCalled(runner, "start "+timer) {
+				t.Fatalf("rollback did not restore enabled active timer: %+v", runner.calls)
 			}
 		})
 	}

@@ -122,9 +122,13 @@ type installEnv struct {
 	prevNFTTableStateKnown       bool
 	prevNFTPersistEnabled        bool
 	prevNFTPersistStateKnown     bool
+	prevNFTPersistUnitExisted    bool
 	prevNFTExpiryTimerEnabled    bool
 	prevNFTExpiryTimerActive     bool
 	prevNFTExpiryTimerStateKnown bool
+	prevNFTExpiryServiceExisted  bool
+	prevNFTExpiryTimerExisted    bool
+	prevNFTUnitFilesStateKnown   bool
 	preflightBinaryHash          string
 	archivedBackups              map[string][]string
 	serviceBinaryChanged         bool

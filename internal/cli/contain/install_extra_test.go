@@ -1275,6 +1275,53 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 			},
 		},
 		{
+			name: "credential guard daemon reload restores backups first",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				original := map[string]string{
+					env.guardPathUnit:    "[Path]\nPathChanged=/original\n",
+					env.guardServiceUnit: "[Service]\nExecStart=/bin/true\n",
+					env.guardScriptPath:  "#!/bin/sh\nexit 0\n",
+				}
+				for path, body := range original {
+					if err := os.MkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte(body), modeUnitFile); err != nil {
+						t.Fatal(err)
+					}
+				}
+				step := stepWriteCredentialGuard()
+				if changed, err := step.apply(context.Background(), env); err != nil || !changed {
+					t.Fatalf("apply = (%t, %v), want changed success", changed, err)
+				}
+				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
+				err := step.undo(context.Background(), env)
+				for path, want := range original {
+					got, readErr := env.readFile(path)
+					if readErr != nil || string(got) != want {
+						t.Fatalf("restored %s = %q, %v; want %q", path, got, readErr, want)
+					}
+				}
+				return err
+			},
+		},
+		{
+			name: "rollback expiry timer disable",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryTimerPath)
+				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
+				return stepInstallNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "rollback expiry service stop",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryServicePath)
+				runner.on(argvFor(testSystemctl, "stop", unit), "access denied", 1, nil)
+				return stepInstallNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
 			name: "remove system unit daemon reload",
 			run: func(env *installEnv, runner *fakeRunner) error {
 				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
@@ -1293,6 +1340,54 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 			run: func(env *installEnv, runner *fakeRunner) error {
 				unit := filepath.Base(env.nftPersistUnitPath)
 				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove expiry timer disable",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryTimerPath)
+				runner.on(argvFor(testSystemctl, "disable", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove expiry timer stop",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryTimerPath)
+				runner.on(argvFor(testSystemctl, "stop", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove expiry service disable",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryServicePath)
+				runner.on(argvFor(testSystemctl, "disable", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove expiry service stop",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryServicePath)
+				runner.on(argvFor(testSystemctl, "stop", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "expiry timer active-state command failure",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryTimerPath)
+				runner.on(argvFor(testSystemctl, "is-active", unit), "connection refused", 1, errors.New("connection refused"))
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "expiry timer remains active",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftExpiryTimerPath)
+				runner.on(argvFor(testSystemctl, "is-active", unit), "active\n", 0, nil)
 				return actionRemoveNFTRules().undo(context.Background(), env)
 			},
 		},

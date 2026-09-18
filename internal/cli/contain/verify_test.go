@@ -1357,36 +1357,50 @@ func TestVerifyNFTPersistence_RequiresEveryManagedDirective(t *testing.T) {
 	const rulesPath = "/managed/50-pipelock-containment.nft"
 	current := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}
 	tests := []struct {
-		name string
-		old  string
-		new  string
+		name      string
+		old       string
+		new       string
+		directive string
 	}{
-		{name: "default dependencies", old: "DefaultDependencies=no", new: "DefaultDependencies=yes"},
-		{name: "after", old: "After=local-fs.target", new: "After=network.target"},
-		{name: "before", old: "Before=network-pre.target", new: "Before=network.target"},
-		{name: "wants", old: "Wants=network-pre.target", new: "Wants=network.target"},
-		{name: "condition", old: "ConditionPathExists=" + rulesPath, new: "ConditionPathExists=/other/rules.nft"},
-		{name: "service type", old: "Type=oneshot", new: "Type=simple"},
-		{name: "exec start", old: "ExecStart=" + defaultPipelockTarget + " contain reload-nft-rules", new: "ExecStart=/bin/true"},
-		{name: "remain after exit", old: "RemainAfterExit=yes", new: "RemainAfterExit=no"},
-		{name: "install target", old: "WantedBy=multi-user.target", new: "WantedBy=default.target"},
+		{name: "default dependencies", old: "DefaultDependencies=no", new: "DefaultDependencies=yes", directive: "DefaultDependencies"},
+		{name: "after", old: "After=local-fs.target", new: "After=network.target", directive: "After"},
+		{name: "before", old: "Before=network-pre.target", new: "Before=network.target", directive: "Before"},
+		{name: "wants", old: "Wants=network-pre.target", new: "Wants=network.target", directive: "Wants"},
+		{name: "condition", old: "ConditionPathExists=" + rulesPath, new: "ConditionPathExists=/other/rules.nft", directive: "ConditionPathExists"},
+		{name: "service type", old: "Type=oneshot", new: "Type=simple", directive: "Type"},
+		{name: "exec start", old: "ExecStart=" + defaultPipelockTarget + " contain reload-nft-rules", new: "ExecStart=/bin/true", directive: "ExecStart"},
+		{name: "remain after exit", old: "RemainAfterExit=yes", new: "RemainAfterExit=no", directive: "RemainAfterExit"},
+		{name: "install target", old: "WantedBy=multi-user.target", new: "WantedBy=default.target", directive: "WantedBy"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			body := strings.Replace(renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget), tc.old, tc.new, 1)
+			canonical := renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)
 			env := makeProbeEnv(t, func(env *probeEnv) {
 				env.operatorUser = ""
 				env.nftRulesPath = rulesPath
 				env.nftPersistUnitPath = "/managed/pipelock-containment-nft.service"
 				env.readFile = func(path string) ([]byte, error) {
 					if path == env.nftPersistUnitPath {
-						return []byte(body), nil
+						return []byte(canonical), nil
 					}
 					return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 				}
 			})
-			if err := verifyNFTPersistence(env, current); err == nil {
-				t.Fatal("verification accepted an altered managed directive")
+			if err := verifyNFTPersistence(env, current); err != nil {
+				t.Fatalf("canonical persistence unit failed verification: %v", err)
+			}
+			body := strings.Replace(canonical, tc.old, tc.new, 1)
+			if body == canonical {
+				t.Fatalf("fixture mutation did not alter %q", tc.old)
+			}
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte(body), nil
+				}
+				return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+			}
+			if err := verifyNFTPersistence(env, current); err == nil || !strings.Contains(err.Error(), tc.directive) {
+				t.Fatalf("altered %s error = %v, want named directive", tc.directive, err)
 			}
 		})
 	}

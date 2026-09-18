@@ -812,6 +812,39 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 		}
 	})
 
+	for _, tc := range []struct {
+		name      string
+		old       string
+		new       string
+		directive string
+	}{
+		{name: "persistence condition missing", old: "ConditionPathExists=/managed/pipelock.nft", new: "", directive: "ConditionPathExists"},
+		{name: "persistence exec reset", old: "ExecStart=" + defaultPipelockTarget + " contain reload-nft-rules", new: "ExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\nExecStart=", directive: "ExecStart"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const rulesPath = "/managed/pipelock.nft"
+			canonical := renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)
+			body := strings.Replace(canonical, tc.old, tc.new, 1)
+			if body == canonical {
+				t.Fatalf("fixture mutation did not alter %q", tc.old)
+			}
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.operatorUser = ""
+				env.nftPersistUnitPath = "/managed/pipelock-nft.service"
+				env.nftRulesPath = rulesPath
+				env.readFile = func(path string) ([]byte, error) {
+					if path == env.nftPersistUnitPath {
+						return []byte(body), nil
+					}
+					return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+				}
+			})
+			if err := verifyNFTPersistence(env, containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}); err == nil || !strings.Contains(err.Error(), tc.directive) {
+				t.Fatalf("incomplete persistence evidence error = %v, want %q", err, tc.directive)
+			}
+		})
+	}
+
 	t.Run("persisted rules unreadable", func(t *testing.T) {
 		const rulesPath = "/managed/pipelock.nft"
 		env := makeProbeEnv(t, func(env *probeEnv) {

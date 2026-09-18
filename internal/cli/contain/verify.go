@@ -1744,18 +1744,26 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
-	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") ||
-		!unitHasExactEntry(body, "Unit", "After", "local-fs.target") ||
-		!unitHasExactEntry(body, "Unit", "Before", "network-pre.target") ||
-		!unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
-		return fmt.Errorf("%s does not contain the managed nft boot ordering", env.nftPersistUnitPath)
+	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") {
+		return fmt.Errorf("%s missing exact DefaultDependencies=no", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "After", "local-fs.target") {
+		return fmt.Errorf("%s missing exact After=local-fs.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Before", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Before=network-pre.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Wants=network-pre.target", env.nftPersistUnitPath)
 	}
 	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
 		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
-	if !unitHasExactEntry(body, "Service", "Type", "oneshot") ||
-		!unitHasExactEntry(body, "Service", "RemainAfterExit", "yes") {
-		return fmt.Errorf("%s does not contain the managed nft service contract", env.nftPersistUnitPath)
+	if !unitHasExactEntry(body, "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Service", "RemainAfterExit", "yes") {
+		return fmt.Errorf("%s missing exact RemainAfterExit=yes", env.nftPersistUnitPath)
 	}
 	if !unitHasExactEntry(body, "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
 		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)

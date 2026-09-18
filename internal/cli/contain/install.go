@@ -426,13 +426,16 @@ func stepWriteCredentialGuard() step {
 			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
 				return fmt.Errorf("disable credential guard %s: %w", unit, err)
 			}
-			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return fmt.Errorf("systemctl daemon-reload after disabling credential guard: %w", err)
-			}
 			for _, path := range []string{env.guardPathUnit, env.guardServiceUnit, env.guardScriptPath} {
 				if err := restoreBackup(env, path); err != nil {
 					return err
 				}
+			}
+			// Restore files before reloading so either manager outcome leaves the
+			// on-disk guard in its pre-install state. A failed reload is still
+			// returned; systemd may retain stale unit contents until it recovers.
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err)
 			}
 			return nil
 		},
@@ -1903,6 +1906,13 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
 		return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
 	}
+	// Capture every state rollback must restore before changing any rules or
+	// unit. In particular, a service-unit write can succeed while the timer
+	// write fails; rollback must then preserve a previously enabled timer.
+	if err := captureNFTUnitFilePreState(env); err != nil {
+		return false, err
+	}
+	captureNFTPreState(ctx, env)
 
 	rulesChanged := false
 	if !rulesMatch {
@@ -1926,7 +1936,6 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		return persistUnitChanged || expiryUnitChanged, err
 	}
 	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
-	captureNFTPreState(ctx, env)
 	if changed || !tableLoaded || liveRulesDrifted {
 		// Validate before loading.
 		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
@@ -1990,13 +1999,13 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	if err := restoreBackup(env, env.nftRulesPath); err != nil {
 		return err
 	}
-	if err := restoreBackup(env, env.nftPersistUnitPath); err != nil {
+	if err := restoreNFTUnitBackup(env, env.nftPersistUnitPath, env.prevNFTPersistUnitExisted); err != nil {
 		return err
 	}
-	if err := restoreBackup(env, env.nftExpiryTimerPath); err != nil {
+	if err := restoreNFTUnitBackup(env, env.nftExpiryTimerPath, env.prevNFTExpiryTimerExisted); err != nil {
 		return err
 	}
-	if err := restoreBackup(env, env.nftExpiryServicePath); err != nil {
+	if err := restoreNFTUnitBackup(env, env.nftExpiryServicePath, env.prevNFTExpiryServiceExisted); err != nil {
 		return err
 	}
 	if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
@@ -2049,6 +2058,39 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 			env.prevNFTExpiryTimerStateKnown = true
 		}
 	}
+}
+
+func captureNFTUnitFilePreState(env *installEnv) error {
+	if env.prevNFTUnitFilesStateKnown {
+		return nil
+	}
+	for _, unit := range []struct {
+		path   string
+		exists *bool
+	}{
+		{env.nftPersistUnitPath, &env.prevNFTPersistUnitExisted},
+		{env.nftExpiryServicePath, &env.prevNFTExpiryServiceExisted},
+		{env.nftExpiryTimerPath, &env.prevNFTExpiryTimerExisted},
+	} {
+		_, err := env.lstat(unit.path)
+		switch {
+		case err == nil:
+			*unit.exists = true
+		case errors.Is(err, os.ErrNotExist):
+			*unit.exists = false
+		default:
+			return fmt.Errorf("stat %s before updating containment units: %w", unit.path, err)
+		}
+	}
+	env.prevNFTUnitFilesStateKnown = true
+	return nil
+}
+
+func restoreNFTUnitBackup(env *installEnv, path string, existed bool) error {
+	if existed {
+		return restoreBackupIfPresent(env, path)
+	}
+	return restoreBackup(env, path)
 }
 
 func restorePreviousNFTState(ctx context.Context, env *installEnv) error {

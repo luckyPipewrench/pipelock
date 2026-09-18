@@ -12,6 +12,7 @@ import type { AuditPacket } from "../src/types.js";
 const require = createRequire(import.meta.url);
 const addFormats = require("ajv-formats") as (ajv: Ajv2020) => void;
 const anchorBundleSchemaURL = new URL("../../../../anchor-bundle/v1.json", import.meta.url);
+const anchorBundleExampleURL = new URL("../../../../anchor-bundle/example.json", import.meta.url);
 
 function example(): AuditPacket {
   return JSON.parse(readFileSync("../../audit-packet/example.json", "utf8")) as AuditPacket;
@@ -21,11 +22,40 @@ test("sdk audit-packet example passes schema and structural checks", () => {
   assert.deepEqual(validateAuditPacket(example()), []);
 });
 
-test("anchor bundle v1 schema compiles with AJV strict mode", () => {
+function anchorBundleValidator() {
   const schema = JSON.parse(readFileSync(anchorBundleSchemaURL, "utf8")) as object;
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   addFormats(ajv);
-  assert.doesNotThrow(() => ajv.compile(schema));
+  return ajv.compile(schema);
+}
+
+test("anchor bundle v1 schema compiles with AJV strict mode", () => {
+  assert.doesNotThrow(() => anchorBundleValidator());
+});
+
+// Compiling is not validating. Declaring the conditionally-required property so
+// AJV strict can resolve it must not change which bundles the schema accepts,
+// so the committed rekor-backed example has to stay valid and a rekor bundle
+// missing its rekor block has to stay invalid. Without the second case this
+// test would pass for a schema that had stopped enforcing the conditional.
+test("anchor bundle v1 schema still enforces the rekor conditional", () => {
+  const validate = anchorBundleValidator();
+  const rekorExample = JSON.parse(readFileSync(anchorBundleExampleURL, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(rekorExample.backend, "rekor", "example must exercise the rekor branch");
+  assert.equal(validate(rekorExample), true, JSON.stringify(validate.errors));
+
+  const withoutRekor = JSON.parse(JSON.stringify(rekorExample)) as {
+    proof: Record<string, unknown>;
+  };
+  delete withoutRekor.proof.rekor;
+  assert.equal(
+    validate(withoutRekor),
+    false,
+    "a rekor bundle without proof.rekor must be rejected",
+  );
 });
 
 for (const field of [

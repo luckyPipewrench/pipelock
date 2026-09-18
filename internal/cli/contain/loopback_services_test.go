@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,25 +52,27 @@ func TestRenderNFTRulesWithLoopbackServicesGolden(t *testing.T) {
 	one := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
 		loopbackTestService(9200),
 	})
-	wantOneLine := "\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept\n"
-	if !strings.Contains(one, wantOneLine) {
-		t.Fatalf("one declared service: missing line %q in:\n%s", wantOneLine, one)
+	wantOnePair := "\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept\n"
+	if !strings.Contains(one, wantOnePair) {
+		t.Fatalf("one declared service: missing complete pair %q in:\n%s", wantOnePair, one)
 	}
-	if idx := strings.Index(one, wantOneLine); idx == -1 || !strings.Contains(one[:idx], "dport 8888 accept") {
-		t.Fatalf("declared loopback accept must render after the implicit proxy-port allow:\n%s", one)
+	if idx := strings.Index(one, wantOnePair); idx == -1 || !strings.Contains(one[:idx], "dport 8888 accept") {
+		t.Fatalf("declared loopback pair must render after the implicit proxy-port allow:\n%s", one)
 	}
-	if idx := strings.Index(one, wantOneLine); idx == -1 || !strings.Contains(one[idx:], "udp dport 53") {
-		t.Fatalf("declared loopback accept must render before the DNS drops:\n%s", one)
+	if idx := strings.Index(one, wantOnePair); idx == -1 || !strings.Contains(one[idx:], "udp dport 53") {
+		t.Fatalf("declared loopback pair must render before the DNS drops:\n%s", one)
 	}
 
 	two := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
 		loopbackTestService(9200),
 		loopbackTestService(9201),
 	})
-	wantTwoLines := "\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept\n" +
-		"\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9201 accept\n"
-	if !strings.Contains(two, wantTwoLines) {
-		t.Fatalf("two declared services: missing contiguous lines in:\n%s", two)
+	wantTwoPairs := wantOnePair +
+		"\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9201 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp sport 9201 ct state established ct direction reply accept\n"
+	if !strings.Contains(two, wantTwoPairs) {
+		t.Fatalf("two declared services: missing contiguous pairs in:\n%s", two)
 	}
 }
 
@@ -79,31 +83,43 @@ func TestRenderNFTRulesWithLoopbackServicesIPv6(t *testing.T) {
 	svc := loopbackTestService(9200)
 	svc.Host = "::1"
 	body := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{svc})
-	want := "\t        meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept\n"
+	want := "\t        meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip6 daddr ::1 tcp sport 9200 ct state established ct direction reply accept\n"
 	if !strings.Contains(body, want) {
-		t.Fatalf("missing ipv6 declared accept line in:\n%s", body)
+		t.Fatalf("missing ipv6 declared pair in:\n%s", body)
 	}
 }
 
-func loopbackServiceRuleLine(agentUID, port int, handle int) string {
-	return `meta skuid ` + itoa(agentUID) + ` ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
+func loopbackServiceRuleLine(port int, handle int) string {
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
 }
 
-// legacyManagedBlockWithLoopbackServices renders a managed block carrying N
-// declared loopback service accepts between the implicit proxy allow and the
-// DNS drops, with sequential handles starting at first.
-func legacyManagedBlockWithLoopbackServices(first int, ports []int) (string, int) {
+func loopbackServiceReplyRuleLine(port int, handle int) string {
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
+}
+
+// numericNftStateListing mirrors the normalized connection-state spelling
+// emitted by `nft -n -a list chain`: rules are rendered with named state and
+// direction, but the live listing presents their numeric values.
+func numericNftStateListing(listing string) string {
+	return strings.NewReplacer(
+		"ct state established", "ct state 0x2",
+		"ct direction reply", "ct direction 1",
+	).Replace(listing)
+}
+
+func managedBlockWithLoopbackServicePairs(first int, ports []int) (string, int) {
 	handle := first
-	lines := []string{
-		`meta skuid 1000 accept # handle ` + itoa(handle),
-	}
+	lines := []string{`meta skuid 1000 accept # handle ` + itoa(handle)}
 	handle++
 	lines = append(lines, `meta skuid 967 accept # handle `+itoa(handle))
 	handle++
 	lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle `+itoa(handle))
 	handle++
 	for _, port := range ports {
-		lines = append(lines, loopbackServiceRuleLine(966, port, handle))
+		lines = append(lines, loopbackServiceRuleLine(port, handle))
+		handle++
+		lines = append(lines, loopbackServiceReplyRuleLine(port, handle))
 		handle++
 	}
 	lines = append(lines,
@@ -117,6 +133,34 @@ func legacyManagedBlockWithLoopbackServices(first int, ports []int) (string, int
 	return strings.Join(lines, "\n"), handle + 1
 }
 
+// legacyManagedBlockWithLoopbackServices renders a managed block carrying N
+// declared loopback service accepts between the implicit proxy allow and the
+// DNS drops, with sequential handles starting at first.
+func legacyManagedBlockWithLoopbackServices(first int, ports []int) string {
+	handle := first
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(handle),
+	}
+	handle++
+	lines = append(lines, `meta skuid 967 accept # handle `+itoa(handle))
+	handle++
+	lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle `+itoa(handle))
+	handle++
+	for _, port := range ports {
+		lines = append(lines, loopbackServiceRuleLine(port, handle))
+		handle++
+	}
+	lines = append(lines,
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle `+itoa(handle))
+	handle++
+	lines = append(lines,
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle `+itoa(handle))
+	handle++
+	lines = append(lines,
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle `+itoa(handle))
+	return strings.Join(lines, "\n")
+}
+
 // TestReloadRecognizesBlockWithDeclaredLoopbackServices proves reload
 // recognizes and REPLACES (not appends alongside) a managed block that
 // carries declared loopback service accepts, in both the legacy six-rule
@@ -125,7 +169,7 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 	t.Parallel()
 
 	t.Run("legacy six-rule block still recognized", func(t *testing.T) {
-		block, _ := legacyManagedBlockWithLoopbackServices(20, nil)
+		block := legacyManagedBlockWithLoopbackServices(20, nil)
 		live := strings.Join([]string{
 			`table inet pipelock_containment {`,
 			`  chain output_filter { type filter hook output priority filter; policy accept;`,
@@ -140,7 +184,7 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 	})
 
 	t.Run("block with two declared loopback services recognized as one block", func(t *testing.T) {
-		block, _ := legacyManagedBlockWithLoopbackServices(20, []int{9200, 9201})
+		block, _ := managedBlockWithLoopbackServicePairs(20, []int{9200, 9201})
 		live := strings.Join([]string{
 			`table inet pipelock_containment {`,
 			`  chain output_filter { type filter hook output priority filter; policy accept;`,
@@ -149,10 +193,10 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 			`}`,
 		}, "\n")
 		handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-		if len(handles) != 8 {
-			t.Fatalf("expanded block: got %d handles, want 8 (6 base + 2 declared): %v", len(handles), handles)
+		if len(handles) != 10 {
+			t.Fatalf("expanded block: got %d handles, want 10 (6 base + 2 pairs): %v", len(handles), handles)
 		}
-		for _, want := range []int{20, 21, 22, 23, 24, 25, 26, 27} {
+		for _, want := range []int{20, 21, 22, 23, 24, 25, 26, 27, 28, 29} {
 			found := false
 			for _, h := range handles {
 				if h == want {
@@ -167,9 +211,9 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 	})
 
 	t.Run("foreign standalone rule between two expanded blocks is preserved", func(t *testing.T) {
-		block1, next := legacyManagedBlockWithLoopbackServices(20, []int{9200})
+		block1, next := managedBlockWithLoopbackServicePairs(20, []int{9200})
 		foreign := `meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle ` + itoa(next)
-		block2, _ := legacyManagedBlockWithLoopbackServices(next+1, []int{9200, 9201})
+		block2, _ := managedBlockWithLoopbackServicePairs(next+1, []int{9200, 9201})
 		live := strings.Join([]string{
 			`table inet pipelock_containment {`,
 			`  chain output_filter { type filter hook output priority filter; policy accept;`,
@@ -185,13 +229,13 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 				t.Fatalf("foreign standalone rule handle %d was deleted alongside a managed block", next)
 			}
 		}
-		if len(handles) != 7+8 {
-			t.Fatalf("got %d handles across two blocks, want %d: %v", len(handles), 7+8, handles)
+		if len(handles) != 8+10 {
+			t.Fatalf("got %d handles across two blocks, want %d: %v", len(handles), 8+10, handles)
 		}
 	})
 
 	t.Run("reload replaces rather than appends when declared services are present", func(t *testing.T) {
-		block, _ := legacyManagedBlockWithLoopbackServices(20, []int{9200})
+		block, _ := managedBlockWithLoopbackServicePairs(20, []int{9200})
 		live := strings.Join([]string{
 			`table inet pipelock_containment {`,
 			`  chain output_filter { type filter hook output priority filter; policy accept;`,
@@ -204,16 +248,197 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 			loopbackTestService(9201),
 		})
 		script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-		for _, handle := range []int{20, 21, 22, 23, 24, 25} {
+		for _, handle := range []int{20, 21, 22, 23, 24, 25, 26} {
 			want := "delete rule inet pipelock_containment output_filter handle " + itoa(handle)
 			if !strings.Contains(script, want) {
 				t.Fatalf("reload script missing delete for handle %d:\n%s", handle, script)
 			}
 		}
-		if strings.Count(script, "dport 9200 accept") != 1 {
-			t.Fatalf("reload should load exactly one fresh dport 9200 accept, not append alongside the old one:\n%s", script)
+		if strings.Count(script, "dport 9200 accept") != 1 || strings.Count(script, "sport 9200 ct state established ct direction reply accept") != 1 {
+			t.Fatalf("reload should load exactly one fresh declared pair, not append alongside the old pair:\n%s", script)
 		}
 	})
+}
+
+// TestReloadRecognizesNumericPairedBlocks reproduces the live nft listing
+// form. The reconciler must collapse every managed copy, including paired
+// blocks whose conntrack values nft prints numerically, while leaving
+// unrelated rules in the shared chain alone.
+func TestReloadRecognizesNumericPairedBlocks(t *testing.T) {
+	t.Parallel()
+
+	first, next := managedBlockWithLoopbackServicePairs(20, []int{9200})
+	second, next := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	third, _ := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	foreignHandles := []int{10, 11, 12, 13}
+	live := numericNftStateListing(strings.Join([]string{
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 10`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 11`,
+		`meta skuid 966 oifname "tailscale0" ip saddr 100.64.0.1 tcp sport 8642 ct state established ct direction reply accept # handle 12`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 9077 accept # handle 13`,
+		first,
+		second,
+		third,
+	}, "\n"))
+
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) != 24 {
+		t.Fatalf("numeric paired listing: got %d managed handles, want 24 across three blocks: %v", len(handles), handles)
+	}
+	for _, foreign := range foreignHandles {
+		for _, handle := range handles {
+			if handle == foreign {
+				t.Fatalf("numeric paired listing deleted foreign handle %d", foreign)
+			}
+		}
+	}
+}
+
+// applyNFTDeletionsForTest removes each handle named by a "delete rule ... handle N"
+// command from a numeric nft listing, returning the surviving lines. It exists so a
+// reload fake models the transaction the kernel actually performs: deletions first,
+// then the canonical body. A fake that skips this cannot tell a reconciliation that
+// removed stale rules from one that merely appended new ones.
+func applyNFTDeletionsForTest(live, deletions string) ([]string, error) {
+	deleted := map[int]bool{}
+	for _, line := range strings.Split(deletions, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		match := nftDeleteHandlePatternForTest.FindStringSubmatch(line)
+		if match == nil {
+			return nil, fmt.Errorf("unrecognized reload command %q", line)
+		}
+		handle, err := strconv.Atoi(match[1])
+		if err != nil {
+			return nil, fmt.Errorf("delete command %q has a non-numeric handle: %w", line, err)
+		}
+		deleted[handle] = true
+	}
+	survivors := make([]string, 0)
+	for _, rule := range nftRulesWithHandles(live) {
+		if !deleted[rule.handle] {
+			survivors = append(survivors, rule.line+" # handle "+itoa(rule.handle))
+		}
+	}
+	return survivors, nil
+}
+
+var nftDeleteHandlePatternForTest = regexp.MustCompile(`^delete rule inet \S+ \S+ handle ([0-9]+)$`)
+
+func nftListingFromRulesBodyForTest(rules string, firstHandle int) string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "meta ") {
+			continue
+		}
+		lines = append(lines, line+" # handle "+itoa(firstHandle))
+		firstHandle++
+	}
+	return numericNftStateListing(strings.Join(lines, "\n"))
+}
+
+// TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads models the
+// kernel result of each reload transaction. A forward-only migration block and
+// three numeric paired copies converge to one paired block; later reloads are
+// genuine no-ops, and foreign rules are still present.
+func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T) {
+	t.Parallel()
+	const (
+		rulesPath  = "/managed/50-pipelock-containment.nft"
+		configPath = "/etc/pipelock/pipelock.yaml"
+	)
+	svc := loopbackTestService(9200)
+	persisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{svc})
+	legacy := legacyManagedBlockWithLoopbackServices(20, []int{9200})
+	first, next := managedBlockWithLoopbackServicePairs(27, []int{9200})
+	second, next := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	third, _ := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	foreign := []string{
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 10`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 11`,
+		`meta skuid 966 oifname "tailscale0" ip saddr 100.64.0.1 tcp sport 8642 ct state established ct direction reply accept # handle 12`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 9077 accept # handle 13`,
+	}
+	live := numericNftStateListing(strings.Join(append(foreign, legacy, first, second, third), "\n"))
+	var reports []string
+	var reloadScript string
+	env := &nftReloadEnv{
+		nftPath:    "nft",
+		rulesPath:  rulesPath,
+		configPath: configPath,
+		table:      defaultNFTTable,
+		chain:      defaultNFTChain,
+		now:        func() time.Time { return time.Unix(1_800_000_000, 0) },
+		report: func(message string) {
+			reports = append(reports, message)
+		},
+		readFile: func(path string) ([]byte, error) {
+			switch path {
+			case rulesPath:
+				return []byte(persisted), nil
+			case configPath:
+				return []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")), nil
+			default:
+				return nil, fmt.Errorf("unexpected read %q", path)
+			}
+		},
+		writeFile: func(path string, data []byte, _ os.FileMode) error {
+			if path == rulesPath+".reload" {
+				reloadScript = string(data)
+			}
+			return nil
+		},
+		removeFile: func(string) error { return nil },
+		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+			switch strings.Join(args, " ") {
+			case "-n -a list chain inet pipelock_containment output_filter":
+				return live, 0, nil
+			case "-c -f /managed/50-pipelock-containment.nft.reload":
+				return "", 0, nil
+			case "-f /managed/50-pipelock-containment.nft.reload":
+				bodyStart := strings.Index(reloadScript, "# Pipelock containment ruleset")
+				if bodyStart < 0 {
+					return "", 1, errors.New("reload script omitted canonical rules body")
+				}
+				// Apply the script's deletions to the live listing before adding the
+				// canonical body, so a script that omits a deletion leaves the stale
+				// rule behind and fails the assertions below. A fake that discards
+				// deletions passes whether or not reconciliation removes anything.
+				survivors, err := applyNFTDeletionsForTest(live, reloadScript[:bodyStart])
+				if err != nil {
+					return "", 1, err
+				}
+				live = strings.Join(append(survivors, nftListingFromRulesBodyForTest(reloadScript[bodyStart:], 100)), "\n")
+				return "", 0, nil
+			default:
+				return "", 1, fmt.Errorf("unexpected nft command %q", strings.Join(args, " "))
+			}
+		},
+	}
+
+	for reload := 0; reload < 3; reload++ {
+		if err := reloadNFTRules(context.Background(), env); err != nil {
+			t.Fatalf("reload %d: %v", reload+1, err)
+		}
+	}
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) != 8 {
+		t.Fatalf("after repeated reloads, got %d managed rules, want one paired block of 8: %v", len(handles), handles)
+	}
+	for _, line := range foreign {
+		// nft lists an established-reply rule in its numeric form, which is what a
+		// live chain and therefore the reconciler actually see.
+		want := numericNftStateListing(line)
+		if !strings.Contains(live, want) {
+			t.Fatalf("foreign rule was not preserved: %q\nlive:\n%s", want, live)
+		}
+	}
+	if len(reports) != 3 || !strings.Contains(reports[0], "removed 31 managed rule(s)") || reports[1] != "containment nft rules already reconciled, no change" || reports[2] != "containment nft rules already reconciled, no change" {
+		t.Fatalf("reports = %v, want one reconciliation followed by two no-op reports", reports)
+	}
 }
 
 // TestVerifyDeclaredLoopbackServiceMatchers is the direct-function proof for
@@ -224,6 +449,7 @@ func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	t.Parallel()
 	lines := []string{
 		"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept",
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`,
 		"meta skuid 966 counter drop",
 	}
 	if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
@@ -235,6 +461,9 @@ func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "::1", 9200) {
 		t.Fatal("a different declared host must not match")
 	}
+	if !chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
+		t.Fatal("a complete declared pair before the catch-all drop must be recognized")
+	}
 
 	afterDrop := []string{
 		"meta skuid 966 counter drop",
@@ -242,6 +471,53 @@ func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	}
 	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(afterDrop, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("an accept appearing AFTER the catch-all drop is unreachable and must not count")
+	}
+	if chainLinesHaveDeclaredLoopbackReplyBeforeDrop([]string{"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept", "meta skuid 966 counter drop"}, loopbackTestAgentUID, "127.0.0.1", 9200) {
+		t.Fatal("a missing reply half must not be accepted as a complete declared pair")
+	}
+}
+
+// TestDeclaredLoopbackPairProblemNamesChainState ensures verification does not
+// call a present first pair "missing" when later copies or ordering defects
+// reveal a failed reconciliation.
+func TestDeclaredLoopbackPairProblemNamesChainState(t *testing.T) {
+	t.Parallel()
+	block, _ := managedBlockWithLoopbackServicePairs(20, []int{9200})
+	base := strings.Split(numericNftStateListing(block), "\n")
+	svc := loopbackTestService(9200)
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name:  "missing",
+			lines: append([]string(nil), base[:4]...),
+			want:  "missing",
+		},
+		{
+			name:  "duplicated",
+			lines: append(append([]string(nil), base...), base...),
+			want:  "duplicated",
+		},
+		{
+			name: "misordered",
+			lines: func() []string {
+				lines := append([]string(nil), base...)
+				lines[3], lines[4] = lines[4], lines[3]
+				return lines
+			}(),
+			want: "misordered",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			problem := declaredLoopbackPairProblem(tc.lines, loopbackTestAgentUID, svc)
+			if !strings.Contains(problem, "forward/reply pair is "+tc.want) {
+				t.Fatalf("problem = %q, want %q", problem, tc.want)
+			}
+		})
 	}
 }
 
@@ -620,7 +896,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 
 	t.Run("too few rules to even hold operator+proxy accepts", func(t *testing.T) {
 		rules := []nftRuleWithHandle{{line: "meta skuid 1000 accept", handle: 1}}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -631,7 +907,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -642,7 +918,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 counter drop", handle: 3},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -654,7 +930,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 			{line: `meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`, handle: 4},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0 (tail incomplete)", got)
 		}
 	})
@@ -687,9 +963,10 @@ func TestReloadRecognizesBlockWithIPv6DeclaredLoopbackService(t *testing.T) {
 		`meta skuid 967 accept # handle 21`,
 		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 22`,
 		`meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept # handle 23`,
-		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 24`,
-		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 25`,
-		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 26`,
+		`meta skuid 966 oifname "lo" ip6 daddr ::1 tcp sport 9200 ct state established ct direction reply accept # handle 24`,
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 25`,
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 26`,
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 27`,
 	}, "\n")
 	live := strings.Join([]string{
 		`table inet pipelock_containment {`,
@@ -700,13 +977,13 @@ func TestReloadRecognizesBlockWithIPv6DeclaredLoopbackService(t *testing.T) {
 	}, "\n")
 
 	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-	if len(handles) != 7 {
-		t.Fatalf("got %d handles, want 7 (6 base + 1 declared ::1 service): %v", len(handles), handles)
+	if len(handles) != 8 {
+		t.Fatalf("got %d handles, want 8 (6 base + 1 declared pair): %v", len(handles), handles)
 	}
 
 	newRules := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{ipv6Service})
 	script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26} {
+	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26, 27} {
 		want := "delete rule inet pipelock_containment output_filter handle " + itoa(handle)
 		if !strings.Contains(script, want) {
 			t.Fatalf("reload script missing delete for handle %d (block not recognized, would append a second block):\n%s", handle, script)
@@ -752,6 +1029,47 @@ func TestDoctorSurfacesMissingDeclaredLoopbackService(t *testing.T) {
 	}
 	if !strings.Contains(res.detail, "declared loopback service 127.0.0.1:9200") || !strings.Contains(res.detail, "owner=search-team") {
 		t.Fatalf("doctor detail = %q, want it to name the missing declared service and its owner", res.detail)
+	}
+}
+
+func TestProbeNFTContainmentRequiresDeclaredLoopbackReplyRule(t *testing.T) {
+	t.Parallel()
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	configBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"" + expiresAt + "\"\n"
+	forward := "meta skuid 987 ip daddr 127.0.0.1 tcp dport 9200 accept"
+	reply := `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`
+	liveWithoutReply := strings.Replace(goodNFTContainmentOutput,
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
+		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n\t\t"+forward, 1)
+	if !strings.Contains(liveWithoutReply, forward) || strings.Contains(liveWithoutReply, reply) {
+		t.Fatal("reply-rule mutation must retain the declared forward rule and remove only its reply half")
+	}
+
+	base := makeProbeEnv(t, func(e *probeEnv) {
+		e.lookupUser = containTestLookup
+		e.nftRulesPath = ""
+		e.nftPersistUnitPath = ""
+		e.readFile = func(path string) ([]byte, error) {
+			if path == e.configPath {
+				return []byte(configBody), nil
+			}
+			return nil, fmt.Errorf("unexpected read %q", path)
+		}
+		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return liveWithoutReply, 0, nil
+		}
+	})
+	status, detail := probeNFTContainment(context.Background(), base)
+	if status != statusFail || !strings.Contains(detail, "forward/reply pair is missing") || !strings.Contains(detail, "pipelock contain reload-nft-rules") {
+		t.Fatalf("missing reply rule status=%q detail=%q, want fail naming the missing pair and reconciliation command", status, detail)
+	}
+
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return strings.Replace(liveWithoutReply, forward, forward+"\n\t\t"+reply, 1), 0, nil
+	}
+	status, detail = probeNFTContainment(context.Background(), base)
+	if status != statusPass {
+		t.Fatalf("complete declared pair must pass verification: status=%q detail=%q", status, detail)
 	}
 }
 
@@ -880,13 +1198,15 @@ func newNFTReloadTestFixture(t *testing.T, live, configBody, persistedRules stri
 
 const nftReloadTestLiveWithOneService = `table inet pipelock_containment {
   chain output_filter { type filter hook output priority filter; policy accept;
+    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 10
     meta skuid 1000 accept # handle 20
     meta skuid 967 accept # handle 21
     meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 22
     meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept # handle 23
-    meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 24
-    meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 25
-    meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 26
+    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept # handle 24
+    meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 25
+    meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 26
+    meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 27
   }
 }
 `
@@ -931,7 +1251,14 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 		t.Fatalf("newly-declared service was not loaded:\n%s", fx.appliedBody())
 	}
 	persisted, ok := fx.persisted()
-	if !ok || !strings.Contains(persisted, "ip daddr 127.0.0.1 tcp dport 9200 accept") {
+	wantPersisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
+	if !ok || persisted != wantPersisted {
+		t.Fatalf("persisted rules file must exactly match the declared-service render: ok=%v\nwant:\n%s\ngot:\n%s", ok, wantPersisted, persisted)
+	}
+	if !strings.HasSuffix(fx.appliedBody(), persisted) {
+		t.Fatalf("live reload script must load the exact persisted declared-service render:\n%s", fx.appliedBody())
+	}
+	if !strings.Contains(persisted, "ip daddr 127.0.0.1 tcp dport 9200 accept") {
 		t.Fatalf("persisted rules file was not updated to carry the newly-declared service: %q", persisted)
 	}
 	if len(fx.warnings) != 0 {
@@ -951,20 +1278,23 @@ func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
 	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
-	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26} {
+	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26, 27} {
 		if !fx.deleteHandle(handle) {
 			t.Fatalf("expected delete for old handle %d (including the revoked service's accept) in:\n%s", handle, fx.appliedBody())
 		}
 	}
-	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
-		t.Fatalf("revoked service's accept must not be reloaded:\n%s", fx.appliedBody())
+	if strings.Contains(fx.appliedBody(), "dport 9200 accept") || strings.Contains(fx.appliedBody(), "sport 9200 ct state established ct direction reply accept") {
+		t.Fatalf("revoked service's complete pair must not be reloaded:\n%s", fx.appliedBody())
+	}
+	if fx.deleteHandle(10) {
+		t.Fatalf("reload removed foreign non-paired reply handle 10:\n%s", fx.appliedBody())
 	}
 	persisted, ok := fx.persisted()
 	if !ok {
 		t.Fatal("persisted rules file was not rewritten after revocation")
 	}
-	if strings.Contains(persisted, "dport 9200 accept") {
-		t.Fatalf("persisted rules file still carries the revoked service: %q", persisted)
+	if strings.Contains(persisted, "dport 9200 accept") || strings.Contains(persisted, "sport 9200 ct state established ct direction reply accept") {
+		t.Fatalf("persisted rules file still carries the revoked service pair: %q", persisted)
 	}
 }
 
@@ -980,12 +1310,12 @@ func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
 	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
-	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
-		t.Fatalf("expired service's accept must not be reloaded:\n%s", fx.appliedBody())
+	if strings.Contains(fx.appliedBody(), "dport 9200 accept") || strings.Contains(fx.appliedBody(), "sport 9200 ct state established ct direction reply accept") {
+		t.Fatalf("expired service's complete pair must not be reloaded:\n%s", fx.appliedBody())
 	}
 	persisted, ok := fx.persisted()
-	if !ok || strings.Contains(persisted, "dport 9200 accept") {
-		t.Fatalf("persisted rules file still carries the expired service: ok=%v %q", ok, persisted)
+	if !ok || strings.Contains(persisted, "dport 9200 accept") || strings.Contains(persisted, "sport 9200 ct state established ct direction reply accept") {
+		t.Fatalf("persisted rules file still carries the expired service pair: ok=%v %q", ok, persisted)
 	}
 	if len(fx.warnings) != 1 {
 		t.Fatalf("expected exactly one warning naming the dropped entry, got %v", fx.warnings)
@@ -1874,7 +2204,7 @@ func TestProbeNFTContainmentPassesWithNoDeclarationAndCanonicalChain(t *testing.
 // had, in the path the first fix did not touch.
 func TestContainmentDropCounterRefusesUnusableLoopbackPolicy(t *testing.T) {
 	t.Parallel()
-	body, _ := legacyManagedBlockWithLoopbackServices(1, nil)
+	body := legacyManagedBlockWithLoopbackServices(1, nil)
 	chainText := "table inet " + defaultNFTTable + " {\n\tchain " + defaultNFTChain +
 		" {\n\t\ttype filter hook output priority filter; policy accept;\n" + body + "\n\t}\n}"
 	uids := containmentUIDs{
@@ -2007,4 +2337,176 @@ func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 			t.Fatalf("an ordinary rollback must complete: %v", err)
 		}
 	})
+}
+
+// TestReloadRemovesPartiallyPairedManagedBlock pins the recovery path for a
+// managed block whose pairs are incomplete: one declared service has its
+// forward allow but no reply. Neither the paired matcher nor the legacy
+// contiguous-forward matcher recognizes that shape on its own, and a block
+// nothing recognizes is a block nothing deletes. The forward allow for a
+// service the operator has since revoked would then stay in the chain while
+// reload appends the replacement block, so the revoked service stays
+// reachable. Partial states like this are reachable after an interrupted
+// transaction, so the reconciler has to recover from one rather than assume
+// it only ever sees blocks it wrote.
+func TestReloadRemovesPartiallyPairedManagedBlock(t *testing.T) {
+	t.Parallel()
+
+	const revokedPort = 9300
+	handle := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(handle),
+		`meta skuid 967 accept # handle ` + itoa(handle+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(handle+2),
+		loopbackServiceRuleLine(9200, handle+3),
+		loopbackServiceReplyRuleLine(9200, handle+4),
+		// The revoked service keeps its forward allow but lost its reply.
+		loopbackServiceRuleLine(revokedPort, handle+5),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+6),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+7),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(handle+8),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) == 0 {
+		t.Fatalf("a partially paired managed block was not recognized, so reload would delete nothing and leave the revoked service on port %d reachable\nlive:\n%s", revokedPort, live)
+	}
+	for _, want := range []int{handle + 5} {
+		found := false
+		for _, got := range handles {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("handle %d (the revoked service's orphaned forward allow) was not scheduled for deletion: %v", want, handles)
+		}
+	}
+}
+
+// TestPartialBlockRecoveryLeavesUndeclaredReplyAlone is the safety half of
+// TestReloadRemovesPartiallyPairedManagedBlock. Recovering a partial block
+// must not become a licence to absorb any agent loopback reply that happens to
+// sit inside the block's span: an operator's hand-written reply rule for a
+// service the block never declared is theirs, and deleting it would break a
+// service they deliberately allowed while reporting a successful reconcile.
+func TestPartialBlockRecoveryLeavesUndeclaredReplyAlone(t *testing.T) {
+	t.Parallel()
+
+	const undeclaredPort = 8789
+	handle := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(handle),
+		`meta skuid 967 accept # handle ` + itoa(handle+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(handle+2),
+		loopbackServiceRuleLine(9200, handle+3),
+		// A reply for a port this block never declared a forward for.
+		loopbackServiceReplyRuleLine(undeclaredPort, handle+4),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+5),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+6),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(handle+7),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	for _, got := range legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID) {
+		if got == handle+4 {
+			t.Fatalf("handle %d is an operator reply rule for undeclared port %d and must not be scheduled for deletion", handle+4, undeclaredPort)
+		}
+	}
+}
+
+// TestReloadRemovesManagedForwardAroundUndeclaredReply covers the case where a
+// partially paired block ALSO contains an operator reply rule the block never
+// declared. Recovery must delete the managed rules and leave that reply alone.
+// Treating the block as one contiguous span cannot do both: extending the span
+// deletes the operator's rule, and stopping at it abandons the managed rules,
+// which leaves a revoked service's forward allow reachable. Selecting managed
+// handles individually is what satisfies both.
+func TestReloadRemovesManagedForwardAroundUndeclaredReply(t *testing.T) {
+	t.Parallel()
+
+	const revokedPort, undeclaredPort = 9300, 8789
+	h := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(h),
+		`meta skuid 967 accept # handle ` + itoa(h+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(h+2),
+		loopbackServiceRuleLine(revokedPort, h+3),
+		// Operator's own reply rule for a port this block never declared.
+		loopbackServiceReplyRuleLine(undeclaredPort, h+4),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(h+5),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(h+6),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(h+7),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	got := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	selected := map[int]bool{}
+	for _, handle := range got {
+		selected[handle] = true
+	}
+
+	if !selected[h+3] {
+		t.Fatalf("the revoked service's forward allow (handle %d) was not selected for deletion, so it survives reload and stays reachable: %v", h+3, got)
+	}
+	if selected[h+4] {
+		t.Fatalf("the operator's undeclared reply rule (handle %d) must never be deleted: %v", h+4, got)
+	}
+	for _, want := range []int{h, h + 1, h + 2, h + 5, h + 6, h + 7} {
+		if !selected[want] {
+			t.Fatalf("managed handle %d was not selected for deletion: %v", want, got)
+		}
+	}
+}
+
+// TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain pins the honesty
+// of the reload report for the case that changes the most while looking like it
+// changed nothing: a chain that carries only operator rules and no managed block.
+// Nothing is deleted and the persisted file already matches, so every signal the
+// reporter used to read says "no change" while the kernel gains the entire
+// managed block. An operator told their reconciliation did nothing has no reason
+// to check what it actually did.
+func TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		fileChanged  bool
+		removed      int
+		missingChain bool
+		applied      bool
+		want         string
+	}{
+		{
+			name:    "applied into a chain that had no managed block",
+			applied: true,
+			want:    "containment nft rules reconciled: loaded managed rules into a chain that carried none",
+		},
+		{
+			name:    "genuine no-op reports no change",
+			applied: false,
+			want:    "containment nft rules already reconciled, no change",
+		},
+		{
+			name:    "removals are still named",
+			applied: true, removed: 3,
+			want: "containment nft rules reconciled: removed 3 managed rule(s)",
+		},
+		{
+			name:         "a missing chain keeps its own wording",
+			applied:      true,
+			missingChain: true,
+			want:         "containment nft rules reconciled: loaded managed rules into a missing chain",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nftReloadOutcome(tc.fileChanged, tc.removed, tc.missingChain, tc.applied)
+			if got != tc.want {
+				t.Fatalf("nftReloadOutcome(%t,%d,%t,%t) = %q, want %q",
+					tc.fileChanged, tc.removed, tc.missingChain, tc.applied, got, tc.want)
+			}
+		})
+	}
 }

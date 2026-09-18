@@ -322,6 +322,9 @@ func installSteps(opts installOpts) []step {
 		stepEnableSystemUnit(),
 		stepExportPipelockCA(),
 		stepWriteCombinedCABundle(),
+		// Browsers do not consume the CA environment exported by plk-launch.
+		// Establish their per-user trust before containment can report ready.
+		stepEstablishBrowserCATrust(),
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
 		stepWriteCredentialGuard(),
@@ -2168,7 +2171,7 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 		return false
 	}
 	for _, svc := range loopbackServices {
-		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, agentUID, svc.Host, svc.Port) {
+		if !chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines, agentUID, svc.Host, svc.Port) {
 			return false
 		}
 	}
@@ -2506,18 +2509,17 @@ func operatorUIDFromEnv(env *installEnv) (int, error) {
 	return uid, nil
 }
 
-// nftLoopbackAcceptLine renders one extra agent-reachable loopback accept.
-// A ::1 declared service uses "ip6 daddr" and is recognized by
-// lineHasAgentLoopbackAllowAnyPortAnyHost (reload) and
-// lineHasAgentLoopbackAllowForHost (verify), the dual-stack siblings of the
-// IPv4-only lineAgentProxyLoopbackAllowUID that only the specific-proxy-port
-// drift check still uses.
-func nftLoopbackAcceptLine(agentUID int, host string, port int) string {
+// nftLoopbackAcceptLines renders the complete forward/reply pair for one
+// declared agent-reachable loopback service. A service that shares the agent
+// UID needs its SYN-ACK to pass the OUTPUT chain too. The reply rule is narrow:
+// loopback only, the declared destination, source port, established state, and
+// reply direction.
+func nftLoopbackAcceptLines(agentUID int, host string, port int) string {
 	daddrKeyword := "ip daddr"
 	if host == "::1" {
 		daddrKeyword = "ip6 daddr"
 	}
-	return fmt.Sprintf("\t        meta skuid %d %s %s tcp dport %d accept\n", agentUID, daddrKeyword, host, port)
+	return fmt.Sprintf("\t        meta skuid %d %s %s tcp dport %d accept\n\t        meta skuid %d oifname \"lo\" %s %s tcp sport %d ct state established ct direction reply accept\n", agentUID, daddrKeyword, host, port, agentUID, daddrKeyword, host, port)
 }
 
 // nftRuleOptions carries renderNFTRules' inputs once the addition of declared
@@ -2557,7 +2559,7 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 func renderNFTRulesWithServices(opts nftRuleOptions) string {
 	var loopback strings.Builder
 	for _, svc := range opts.LoopbackServices {
-		loopback.WriteString(nftLoopbackAcceptLine(opts.AgentUID, svc.Host, svc.Port))
+		loopback.WriteString(nftLoopbackAcceptLines(opts.AgentUID, svc.Host, svc.Port))
 	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d

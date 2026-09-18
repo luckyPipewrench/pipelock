@@ -134,6 +134,11 @@ type probeEnv struct {
 	wrapperDir           string
 	toolWrappers         []string
 	caBundlePath         string
+	caExportPath         string
+	agentHome            string
+	platformFamily       string
+	lookPath             func(string) (string, error)
+	browserCATrust       func(context.Context, *probeEnv) (string, string)
 	launchPath           string
 	nftTable             string
 	nftChain             string
@@ -195,6 +200,9 @@ func defaultProbeEnv() *probeEnv {
 		wrapperDir:           defaultWrapperDir,
 		toolWrappers:         append([]string(nil), defaultToolWrappers...),
 		caBundlePath:         defaultCABundlePath,
+		caExportPath:         defaultCAExportPath,
+		platformFamily:       platform.family,
+		lookPath:             exec.LookPath,
 		launchPath:           defaultLaunchScript,
 		nftTable:             defaultNFTTable,
 		nftChain:             defaultNFTChain,
@@ -358,6 +366,7 @@ func allProbes() []probe {
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
+		{probeBrowserCATrustNum, probeBrowserCATrust, "contained agent NSS database trusts the Pipelock CA", probeBrowserCATrustState},
 	}
 }
 
@@ -371,13 +380,24 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	// Preserve workspace_access as published probe 15. The new private-temp probe
-	// is 16; insert the conditional workspace result before it so configured
-	// output remains numerically ordered without renumbering the existing result.
+	// Preserve workspace_access as published probe 15. Insert it before the
+	// private-temp probe so configured output remains numerically ordered
+	// without renumbering published results, including the browser-CA probe
+	// that follows private-temp.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		privateTmp := probes[len(probes)-1]
-		probes[len(probes)-1] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
-		probes = append(probes, privateTmp)
+		out := make([]probe, 0, len(probes)+1)
+		inserted := false
+		for _, p := range probes {
+			if p.name == "private_tmp_isolation" && !inserted {
+				out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+				inserted = true
+			}
+			out = append(out, p)
+		}
+		if !inserted {
+			out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+		}
+		return out
 	}
 	return probes
 }
@@ -1565,8 +1585,8 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
 	}
 	for _, svc := range loopbackServices {
-		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
-			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) accept rule is missing or appears after the agent catch-all drop", svc.Host, svc.Port, svc.Owner)
+		if problem := declaredLoopbackPairProblem(lines, current.agentUID, svc); problem != "" {
+			return statusFail, problem
 		}
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
@@ -1993,6 +2013,79 @@ func chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines []string, agentUID int,
 	})
 }
 
+func chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines []string, agentUID int, host string, port int) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
+		return lineHasAgentLoopbackReplyForHost(line, agentUID, host, port)
+	})
+}
+
+func chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines []string, agentUID int, host string, port int) bool {
+	return chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, agentUID, host, port) &&
+		chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines, agentUID, host, port)
+}
+
+type declaredLoopbackPairState string
+
+const (
+	declaredLoopbackPairValid      declaredLoopbackPairState = ""
+	declaredLoopbackPairMissing    declaredLoopbackPairState = "missing"
+	declaredLoopbackPairDuplicated declaredLoopbackPairState = "duplicated"
+	declaredLoopbackPairMisordered declaredLoopbackPairState = "misordered"
+)
+
+// declaredLoopbackPairStateForChain classifies the whole chain rather than
+// stopping at its first catch-all drop. A first valid pair followed by an
+// appended duplicate is still a reconciliation failure: the later copy is
+// unreachable, but it proves reload no longer recognizes its own state.
+func declaredLoopbackPairStateForChain(lines []string, agentUID int, host string, port int) declaredLoopbackPairState {
+	forwardIndexes := make([]int, 0, 1)
+	replyIndexes := make([]int, 0, 1)
+	catchAllIndex := -1
+	for i, line := range lines {
+		if lineHasAgentLoopbackAllowForHost(line, agentUID, host, port) {
+			forwardIndexes = append(forwardIndexes, i)
+		}
+		if lineHasAgentLoopbackReplyForHost(line, agentUID, host, port) {
+			replyIndexes = append(replyIndexes, i)
+		}
+		if catchAllIndex < 0 && lineHasDeclaredLoopbackPairCatchAllDrop(line, agentUID) {
+			catchAllIndex = i
+		}
+	}
+	if len(forwardIndexes) == 0 || len(replyIndexes) == 0 {
+		return declaredLoopbackPairMissing
+	}
+	if len(forwardIndexes) != 1 || len(replyIndexes) != 1 {
+		return declaredLoopbackPairDuplicated
+	}
+	if forwardIndexes[0]+1 != replyIndexes[0] || catchAllIndex < 0 || replyIndexes[0] > catchAllIndex {
+		return declaredLoopbackPairMisordered
+	}
+	return declaredLoopbackPairValid
+}
+
+// lineHasDeclaredLoopbackPairCatchAllDrop accepts the fully rendered
+// catch-all and the bare historical fixture form. It intentionally excludes
+// DNS drops: they do not make a TCP loopback reply unreachable.
+func lineHasDeclaredLoopbackPairCatchAllDrop(line string, agentUID int) bool {
+	if lineHasManagedCatchAllDrop(line, agentUID) {
+		return true
+	}
+	fields := nftLineFields(line)
+	if len(fields) < 4 || fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) || fields[3] != "drop" {
+		return false
+	}
+	return nftRuleTailIsCommentOnly(fields[4:])
+}
+
+func declaredLoopbackPairProblem(lines []string, agentUID int, svc config.ContainmentLoopbackService) string {
+	state := declaredLoopbackPairStateForChain(lines, agentUID, svc.Host, svc.Port)
+	if state == declaredLoopbackPairValid {
+		return ""
+	}
+	return fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) forward/reply pair is %s; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner, state)
+}
+
 // lineHasAgentLoopbackAllowForHost matches an agent-owned loopback accept for
 // an arbitrary loopback host (127.0.0.1 or ::1) and port. lineHasAgentProxyLoopbackAllow
 // stays IPv4-only and proxy-port-specific because every existing caller only
@@ -2017,11 +2110,51 @@ func lineHasAgentLoopbackAllowForHost(line string, agentUID int, host string, po
 	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
+// lineHasAgentLoopbackReplyForHost matches the exact managed reply half of a
+// declared loopback-service pair. Keep this distinct from the broader legacy
+// established-reply recognizer so verification and reconciliation never claim
+// an unrelated hand-written reply rule as a declared service.
+func lineHasAgentLoopbackReplyForHost(line string, agentUID int, host string, port int) bool {
+	fields := nftLineFields(line)
+	daddrKeyword := []string{"ip", "daddr"}
+	if host == "::1" {
+		daddrKeyword = []string{"ip6", "daddr"}
+	}
+	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, daddrKeyword...)
+	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state")
+	if len(fields) < len(want)+5 {
+		return false
+	}
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	tail := fields[len(want):]
+	if !nftEstablishedState(tail[0]) || tail[1] != "ct" || tail[2] != "direction" || !nftReplyDirection(tail[3]) || tail[4] != "accept" {
+		return false
+	}
+	return nftRuleTailIsCommentOnly(tail[5:])
+}
+
+// nftEstablishedState and nftReplyDirection accept both the named literals in
+// the rendered rules and nft's numeric spelling in `nft -n -a list chain`.
+// Reconciliation and verification consume the latter, so accepting only the
+// source spelling causes an already-installed paired block to be appended.
+func nftEstablishedState(value string) bool {
+	return value == "established" || value == "0x2"
+}
+
+func nftReplyDirection(value string) bool {
+	return value == "reply" || value == "1"
+}
+
 // declaredLoopbackServiceAllows reports whether the line is an agent-owned
 // accept matching ANY of the declared loopback services, regardless of order.
 func declaredLoopbackServiceAllows(line string, agentUID int, declared []config.ContainmentLoopbackService) bool {
 	for _, svc := range declared {
-		if lineHasAgentLoopbackAllowForHost(line, agentUID, svc.Host, svc.Port) {
+		if lineHasAgentLoopbackAllowForHost(line, agentUID, svc.Host, svc.Port) ||
+			lineHasAgentLoopbackReplyForHost(line, agentUID, svc.Host, svc.Port) {
 			return true
 		}
 	}

@@ -126,7 +126,7 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 2. Lay down `/etc/pipelock/` and `/var/lib/pipelock/` with strict ownership and permissions, copy `pipelock.yaml`, and set proxy ownership on the config/data roots. Agent-readable config artifacts stay traversable under `/etc/pipelock`; proxy-owned runtime state stays private under `/var/lib/pipelock`.
 3. Copy the pipelock binary into a system path the agent user cannot replace, then compute and pin its SHA-256 at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
 4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
-5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
+5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA, then add the Pipelock CA to the contained agent's per-user NSS database for Chromium-family browser trust. This requires `certutil` (`libnss3-tools` on Debian/Ubuntu, `mozilla-nss-tools` on SUSE, `nss` on Arch, or `nss-tools` on Red Hat-family distributions); installation fails rather than reporting ready when browser trust cannot be established.
 6. Install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
 7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
 8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
@@ -300,10 +300,11 @@ duplicate, or proxy-port-colliding entry at config load time, so `pipelock
 check` and `contain install` both fail closed on it rather than silently
 dropping the exception.
 
-`contain install` renders each declared entry into the same managed nftables
-block as the implicit proxy-port allow. `contain reload-nft-rules` -- the
-same command the boot-time persistence unit runs on every boot -- re-reads
-the managed config and re-renders that block from the CURRENT declared set
+`contain install` renders each declared entry as a forward allow and a narrow
+established-reply allow in the same managed nftables block as the implicit
+proxy-port allow. The reply path is limited to `lo`, the declared loopback
+address and source port, and reply-direction traffic. `contain reload-nft-rules`
+re-reads the managed config and re-renders that block from the CURRENT declared set
 every time it runs, not from whatever it last loaded: an entry an operator
 removes, or one whose `expires_at` has passed, is dropped from the live
 chain and from the persisted rules file at the next reconciliation, without
@@ -320,6 +321,8 @@ extra service) and logs a warning naming the config path and why (a missing
 managed config names `pipelock contain install` as the recovery command; an
 unreadable or malformed one names re-running reconciliation once it is
 fixed).
+
+The boot-time persistence unit runs the same reconciliation command on every boot.
 
 `contain install` also enables a privileged containment expiry timer. Its
 oneshot service runs the same `contain reload-nft-rules` command, so a

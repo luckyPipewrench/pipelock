@@ -415,7 +415,7 @@ const (
 	// bytes change response enforcement and therefore the canonical policy.
 	// Re-bumped for polite and list-prefixed disclosure directives and for
 	// sentence-bounded persistence lead-ins.
-	goldenHashDefaults = "0889ac265952bd45d12e849a5eae675006179ce24023c1ad92c7ae82affc204a"
+	goldenHashDefaults = "3c780a26f8a28400068e34e830d854206e9fd73503f65172654afb73cf5c0595"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -636,7 +636,7 @@ const (
 	// no-config CLI path and no real deployment.
 	// Re-bumped alongside goldenHashDefaults for directive-intent response patterns.
 	// Re-bumped alongside goldenHashDefaults for the directive-boundary fixes.
-	goldenHashRichConfig = "e6b737f17d0df0950d4402ec2695e8eece62b0ea9394eb768f786e9c7d38bb83"
+	goldenHashRichConfig = "8368dd037923341ffab86a6d38ba6e2a7e5bb72ed07234bb221a22df8441c36a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1205,8 +1205,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "25a267061508fb6036e2759f6c71e853448a9e5d8973a2373517e85d2dd9a552"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "ae1ff304f4ba8829ddd9f6ab16699d2f1a505b005e1c064a99d39b2328f081ea"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "baad22505dd8e4fbb1e52266786acef2a054257ac7cfcf1c29988cf7c329b2ad"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "bdb76c10592ba29d4049c29c6e11360e0b79daf7161f92ccbd18d6ee7fab6820"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

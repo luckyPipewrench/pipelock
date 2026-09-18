@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +20,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -1331,6 +1334,630 @@ func appendCanonicalJSON(buf *bytes.Buffer, v any) error {
 		buf.Write(data)
 	}
 	return nil
+}
+
+// twoCapsulesSameKey emits two DISTINCT, independently-valid posture capsules
+// signed by the SAME key, so a mismatched-pairing test isolates the capsule
+// DIGEST check from signer-key mismatch (a different bug this test must not
+// accidentally exercise instead).
+func twoCapsulesSameKey(t *testing.T, evidence posturepkg.EvidenceBundle) (capsuleAPath, capsuleBPath, pubKeyPath string, priv ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgData, err := yaml.Marshal(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, cfgData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cliutil.LoadConfigOrDefault(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsuleA, err := posturepkg.Emit(cfg, posturepkg.Options{SigningKey: priv, EvidenceBundle: &evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A tiny expiration-window difference guarantees distinct capsule bytes
+	// (hence a distinct hash) even if GeneratedAt granularity collides.
+	capsuleB, err := posturepkg.Emit(cfg, posturepkg.Options{SigningKey: priv, EvidenceBundle: &evidence, ExpirationDays: posturepkg.DefaultExpirationDays + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathA, err := posturepkg.WriteProofJSON(filepath.Join(t.TempDir(), "a"), capsuleA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathB, err := posturepkg.WriteProofJSON(filepath.Join(t.TempDir(), "b"), capsuleB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathA == pathB {
+		t.Fatalf("test setup bug: same path for both capsules")
+	}
+	hashA, err := workspacediff.HashFileSHA256(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, err := workspacediff.HashFileSHA256(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashA == hashB {
+		t.Fatalf("test setup bug: both capsules hashed identically")
+	}
+	pubKeyPath = filepath.Join(t.TempDir(), "pub.key")
+	if err := os.WriteFile(pubKeyPath, []byte(signing.EncodePublicKey(pub)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return pathA, pathB, pubKeyPath, priv
+}
+
+// TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected is H1's CLI
+// surface proof: a workspace change statement genuinely signed and bound to
+// ONE capsule, verified against a DIFFERENT capsule (SAME signer key, so this
+// isolates the digest-binding check from an unrelated signer-key mismatch)
+// via the same shipped `posture verify` command, must be rejected. Before
+// this flag existed, no shipped command checked the pairing at all.
+func TestPostureVerify_WorkspaceStatement_MismatchedCapsuleRejected(t *testing.T) {
+	capsuleAPath, capsuleBPath, pubKeyPath, priv := twoCapsulesSameKey(t, perfectEvidence())
+
+	capsuleAHash, err := workspacediff.HashFileSHA256(capsuleAPath)
+	if err != nil {
+		t.Fatalf("hash capsule A: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleAHash, priv)
+	if err != nil {
+		t.Fatalf("sign statement for capsule A: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", capsuleBPath, // WRONG capsule for this statement, same signer key.
+		"--key", pubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected posture verify to reject a statement bound to a different capsule")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+}
+
+func TestPostureVerify_WorkspaceStatement_JSONBindingFailureReportsUnbound(t *testing.T) {
+	capsuleAPath, capsuleBPath, pubKeyPath, priv := twoCapsulesSameKey(t, perfectEvidence())
+
+	capsuleAHash, err := workspacediff.HashFileSHA256(capsuleAPath)
+	if err != nil {
+		t.Fatalf("hash capsule A: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleAHash, priv)
+	if err != nil {
+		t.Fatalf("sign statement for capsule A: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", capsuleBPath,
+		"--key", pubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+		"--json",
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected posture verify to reject a statement bound to a different capsule")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+
+	var out struct {
+		WorkspaceStatement *struct {
+			Bound  bool   `json:"bound"`
+			Reason string `json:"reason"`
+		} `json:"workspace_statement"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, stdout.String())
+	}
+	if out.WorkspaceStatement == nil || out.WorkspaceStatement.Bound {
+		t.Fatalf("workspace_statement = %+v, want bound=false", out.WorkspaceStatement)
+	}
+	if out.WorkspaceStatement.Reason == "" {
+		t.Fatalf("workspace_statement.reason missing from output:\n%s", stdout.String())
+	}
+}
+
+// TestPostureVerify_WorkspaceStatement_MatchedPairPasses is the positive
+// control for the same surface: the SAME capsule the statement is bound to.
+// TestPostureVerify_WorkspaceStatement_JSONModeStaysValidJSON is M7: before
+// the fix, "  Workspace change statement: signature valid..." was printed
+// as a bare prose line even under --json, corrupting stdout so it no longer
+// parses as one JSON document. The binding outcome must live INSIDE the
+// JSON result instead.
+func TestPostureVerify_WorkspaceStatement_JSONModeStaysValidJSON(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute(): %v", err)
+	}
+
+	// The whole of stdout must parse as ONE JSON document: any stray prose
+	// line (before or after) breaks this.
+	var out struct {
+		Verified           bool `json:"verified"`
+		Passed             bool `json:"passed"`
+		WorkspaceStatement *struct {
+			Bound bool `json:"bound"`
+		} `json:"workspace_statement"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, stdout.String())
+	}
+	if !out.Verified || !out.Passed {
+		t.Fatalf("expected a passing verified result, got %+v", out)
+	}
+	if out.WorkspaceStatement == nil || !out.WorkspaceStatement.Bound {
+		t.Fatalf("expected workspace_statement.bound=true in the JSON result, got %+v", out.WorkspaceStatement)
+	}
+}
+
+func TestPostureVerify_WorkspaceStatement_MatchedPairPasses(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute(): %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Workspace change statement: signature valid and bound to this capsule") {
+		t.Fatalf("expected the binding confirmation line, got:\n%s", stdout.String())
+	}
+}
+
+func TestPostureVerify_WorkspaceStatementRejectsEmptyEvidence(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(strconv.FormatBool(jsonOutput), func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+			if err != nil {
+				t.Fatalf("hash capsule: %v", err)
+			}
+			signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+			if err != nil {
+				t.Fatalf("sign statement: %v", err)
+			}
+			signed.Statements = nil
+			stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+			data, err := json.Marshal(signed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout bytes.Buffer
+			cmd := rootCmd()
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath, "--policy", testVerifyPolicyNone, "--workspace-statement", stmtPath}
+			if jsonOutput {
+				args = append(args, "--json")
+			}
+			cmd.SetArgs(args)
+			err = cmd.Execute()
+			assertExitCode(t, err, exitVerifyIntegrity)
+			if !strings.Contains(err.Error(), "at least one workspace statement") {
+				t.Fatalf("error = %v, want empty-evidence rejection", err)
+			}
+		})
+	}
+}
+
+func TestPostureVerify_WorkspaceStatementRejectsOversizedInput(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	if err := os.WriteFile(stmtPath, bytes.Repeat([]byte("x"), maxWorkspaceStatementBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath, "--policy", testVerifyPolicyNone, "--workspace-statement", stmtPath})
+	err := cmd.Execute()
+	assertExitCode(t, err, exitVerifyIntegrity)
+	if !strings.Contains(err.Error(), "workspace change statement exceeds") {
+		t.Fatalf("error = %v, want size rejection", err)
+	}
+}
+
+func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
+	tests := []struct {
+		name                 string
+		statement            func(*testing.T) workspacediff.Statement
+		wantPassed           bool
+		wantBoundaryCheck    workspacediff.BoundaryCheck
+		wantIncompleteReason string
+	}{
+		{
+			name:              "complete statement passes",
+			statement:         completeWorkspaceStatement,
+			wantPassed:        true,
+			wantBoundaryCheck: workspacediff.BoundaryCheckMountID,
+		},
+		{
+			name:                 "device-only statement fails as partial evidence",
+			statement:            deviceOnlyWorkspaceStatement,
+			wantPassed:           false,
+			wantBoundaryCheck:    workspacediff.BoundaryCheckDeviceOnly,
+			wantIncompleteReason: "mount boundary check unavailable",
+		},
+		{
+			name:                 "budget-exhausted statement fails as partial evidence",
+			statement:            budgetExhaustedWorkspaceStatement,
+			wantPassed:           false,
+			wantBoundaryCheck:    workspacediff.BoundaryCheckMountID,
+			wantIncompleteReason: "snapshot budget exceeded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			stmtPath := writeWorkspaceStatementForVerify(t, fix, tt.statement(t))
+
+			var jsonOutput bytes.Buffer
+			jsonCmd := rootCmd()
+			jsonCmd.SetOut(&jsonOutput)
+			jsonCmd.SetErr(&bytes.Buffer{})
+			jsonCmd.SetArgs([]string{
+				"posture", "verify",
+				"--proof", fix.ProofPath,
+				"--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone,
+				"--workspace-statement", stmtPath,
+				"--json",
+			})
+			err := jsonCmd.Execute()
+			if tt.wantPassed {
+				if err != nil {
+					t.Fatalf("JSON verification: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected incomplete workspace statement to fail verification")
+				}
+				assertExitCode(t, err, exitVerifyPolicyFail)
+			}
+
+			var out struct {
+				Verified           bool   `json:"verified"`
+				Passed             bool   `json:"passed"`
+				Error              string `json:"error"`
+				WorkspaceStatement struct {
+					Bound            bool   `json:"bound"`
+					Complete         *bool  `json:"complete"`
+					BoundaryCheck    string `json:"boundary_check"`
+					IncompleteReason string `json:"incomplete_reason"`
+				} `json:"workspace_statement"`
+			}
+			if err := json.Unmarshal(jsonOutput.Bytes(), &out); err != nil {
+				t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, jsonOutput.String())
+			}
+			if out.Passed != tt.wantPassed {
+				t.Errorf("passed = %v, want %v\noutput:\n%s", out.Passed, tt.wantPassed, jsonOutput.String())
+			}
+			if !out.Verified {
+				t.Errorf("verified = false, want true\noutput:\n%s", jsonOutput.String())
+			}
+			if !out.WorkspaceStatement.Bound {
+				t.Fatalf("workspace_statement.bound = false, want true\noutput:\n%s", jsonOutput.String())
+			}
+			if out.WorkspaceStatement.Complete == nil || *out.WorkspaceStatement.Complete != tt.wantPassed {
+				t.Errorf("workspace_statement.complete = %v, want %v", out.WorkspaceStatement.Complete, tt.wantPassed)
+			}
+			if out.WorkspaceStatement.BoundaryCheck != string(tt.wantBoundaryCheck) {
+				t.Errorf("workspace_statement.boundary_check = %q, want %q", out.WorkspaceStatement.BoundaryCheck, tt.wantBoundaryCheck)
+			}
+			if tt.wantIncompleteReason == "" {
+				if out.WorkspaceStatement.IncompleteReason != "" {
+					t.Errorf("workspace_statement.incomplete_reason = %q, want empty for complete evidence", out.WorkspaceStatement.IncompleteReason)
+				}
+			} else if !strings.Contains(out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason) {
+				t.Errorf("workspace_statement.incomplete_reason = %q, want it to contain %q", out.WorkspaceStatement.IncompleteReason, tt.wantIncompleteReason)
+			}
+			if !tt.wantPassed && !strings.Contains(out.Error, "incomplete") {
+				t.Errorf("error = %q, want it to name incomplete evidence", out.Error)
+			}
+
+			var textOutput bytes.Buffer
+			textCmd := rootCmd()
+			textCmd.SetOut(&textOutput)
+			textCmd.SetErr(&bytes.Buffer{})
+			textCmd.SetArgs([]string{
+				"posture", "verify",
+				"--proof", fix.ProofPath,
+				"--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone,
+				"--workspace-statement", stmtPath,
+			})
+			err = textCmd.Execute()
+			if tt.wantPassed {
+				if err != nil {
+					t.Fatalf("text verification: %v", err)
+				}
+			} else {
+				assertExitCode(t, err, exitVerifyPolicyFail)
+			}
+			if !strings.Contains(textOutput.String(), "boundary check: "+string(tt.wantBoundaryCheck)) {
+				t.Errorf("text output does not name boundary check %q:\n%s", tt.wantBoundaryCheck, textOutput.String())
+			}
+			if tt.wantIncompleteReason == "" {
+				if strings.Contains(textOutput.String(), "Workspace change statement: incomplete:") {
+					t.Errorf("text output reports an incomplete reason for complete evidence:\n%s", textOutput.String())
+				}
+			} else if !strings.Contains(textOutput.String(), tt.wantIncompleteReason) {
+				t.Errorf("text output does not name incomplete reason %q:\n%s", tt.wantIncompleteReason, textOutput.String())
+			}
+		})
+	}
+}
+
+func completeWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("produce complete workspace statement: %v", err)
+	}
+	return statement
+}
+
+func deviceOnlyWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckDeviceOnly},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("produce device-only workspace statement: %v", err)
+	}
+	return statement
+}
+
+func budgetExhaustedWorkspaceStatement(t *testing.T) workspacediff.Statement {
+	t.Helper()
+	const budgetReason = "exceeded max entry cap (1 entries)"
+	statement, err := workspacediff.Diff(
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1024, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID, BudgetExceeded: true, BudgetReason: budgetReason},
+		workspacediff.Manifest{Root: "/granted", CapBytes: 1024, Entries: map[string]workspacediff.Entry{}, BoundaryCheck: workspacediff.BoundaryCheckMountID, BudgetExceeded: true, BudgetReason: budgetReason},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("produce budget-exhausted workspace statement: %v", err)
+	}
+	if !statement.Incomplete {
+		t.Fatalf("test setup: expected budget-exhausted statement to be incomplete, got %+v", statement)
+	}
+	return statement
+}
+
+func writeWorkspaceStatementForVerify(t *testing.T, fix testVerifyFixture, statement workspacediff.Statement) string {
+	t.Helper()
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{statement}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign workspace statement: %v", err)
+	}
+	path, err := workspacediff.WriteJSON(t.TempDir(), signed)
+	if err != nil {
+		t.Fatalf("write workspace statement: %v", err)
+	}
+	return path
+}
+
+// TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected proves the
+// binding check hashes the ACTUAL capsule FILE bytes, not just the parsed
+// struct: after the statement is bound and signed, the capsule file on disk
+// is overwritten (e.g. corrupted, replaced) and verification must fail even
+// though the statement's own signature is untouched.
+func TestPostureVerify_WorkspaceStatement_TamperedCapsuleRejected(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stmtPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the capsule file's bytes after binding: append trailing
+	// whitespace so the digest changes while the JSON still parses fine
+	// (proving the check compares BYTES, not just "does it still parse the
+	// same struct").
+	original, err := os.ReadFile(filepath.Clean(fix.ProofPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fix.ProofPath, append(original, '\n', ' '), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected rejection of a tampered capsule file")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+	if !errors.Is(err, workspacediff.ErrCapsuleDigestMismatch) {
+		t.Fatalf("error = %v, want capsule digest mismatch", err)
+	}
+}
+
+// A signed statement carrying a field this build does not know about is
+// refused rather than silently dropped. A permissive parse would verify the
+// signature over bytes that include the field and then hand consumers a struct
+// without it, so the artifact would mean one thing on the wire and another in
+// memory.
+func TestPostureVerify_WorkspaceStatement_UnknownFieldRejected(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	capsuleHash, err := workspacediff.HashFileSHA256(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("hash capsule: %v", err)
+	}
+	signed, err := workspacediff.Sign([]workspacediff.Statement{{Root: "/granted"}}, capsuleHash, fix.PrivateKey)
+	if err != nil {
+		t.Fatalf("sign statement: %v", err)
+	}
+	data, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(data, &asMap); err != nil {
+		t.Fatal(err)
+	}
+	asMap["unrecognized_future_field"] = "value"
+	withUnknown, err := json.Marshal(asMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmtPath := filepath.Join(t.TempDir(), "workspace-change-statement.json")
+	if err := os.WriteFile(stmtPath, withUnknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--workspace-statement", stmtPath,
+	})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected rejection of a statement carrying an unknown field")
+	}
+	if !errors.Is(err, contract.ErrUnknownField) {
+		t.Fatalf("error = %v, want unknown-field rejection", err)
+	}
+	// The refusal has to reach the operator as an integrity failure, not some
+	// other exit class: a caller that scripts on the exit code would otherwise
+	// treat a rejected artifact as an ordinary error.
+	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
 func assertExitCode(t *testing.T, err error, wantCode int) {

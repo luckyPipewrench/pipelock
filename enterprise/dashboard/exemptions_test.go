@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -394,6 +395,7 @@ func TestExemptions_ResponseSizeAndUnscannableRemainActiveWhenResponseScanningDi
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	expires := time.Now().UTC().Add(config.MaxUnscannablePassthroughHorizon - 24*time.Hour).Format(time.DateOnly)
 	body := []byte(`mode: balanced
 response_scanning:
   enabled: false
@@ -406,8 +408,7 @@ response_scanning:
       content_types:
         - application/octet-stream
       reason: trusted binary mirror
-      expires: 2099-01-01
-`)
+      expires: ` + expires + "\n")
 	if err := os.WriteFile(configPath, body, 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}

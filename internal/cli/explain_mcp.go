@@ -138,7 +138,10 @@ Examples:
 				return cliutil.ExitCodeError(cliutil.ExitConfig, errMCPExplainParse)
 			}
 			if !report.Allowed {
-				return cliutil.ExitCodeError(cliutil.ExitSecurity, errExplainBlocked)
+				// A blocked MCP response is not a blocked URL. main prints this
+				// sentinel on stderr, so reusing errExplainBlocked told an
+				// operator diagnosing a response body that a url was blocked.
+				return cliutil.ExitCodeError(cliutil.ExitSecurity, errExplainResponseBlocked)
 			}
 			return nil
 		},

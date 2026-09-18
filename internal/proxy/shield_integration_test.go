@@ -128,7 +128,7 @@ func TestProxy_ApplyShield_Disabled(t *testing.T) {
 
 	body := []byte("<html><head></head><body>test</body></html>")
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
-	if blocked {
+	if blocked != nil {
 		t.Error("should not block when disabled")
 	}
 	if summary != nil {
@@ -148,7 +148,7 @@ func TestProxy_ApplyShield_ExemptDomain(t *testing.T) {
 
 	body := []byte("<html><head></head><body>chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef</body></html>")
 	result, summary, blocked := p.applyShield(body, "text/html", "hcaptcha.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
-	if blocked {
+	if blocked != nil {
 		t.Error("should not block exempt domain")
 	}
 	if summary != nil {
@@ -174,7 +174,7 @@ func TestProxy_ApplyShield_OversizeBlock(t *testing.T) {
 		body[i] = 'A'
 	}
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
-	if !blocked {
+	if blocked == nil {
 		t.Error("should block oversize with block action")
 	}
 	if summary != nil {
@@ -200,7 +200,7 @@ func TestProxy_ApplyShield_OversizeWarn(t *testing.T) {
 		body[i] = 'A'
 	}
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
-	if blocked {
+	if blocked != nil {
 		t.Error("warn should not block")
 	}
 	if summary != nil {
@@ -249,7 +249,7 @@ func TestProxy_ApplyShield_NonShieldableContentBypassesOversize(t *testing.T) {
 			copy(body, tc.bodyHead)
 
 			result, summary, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch, "act1")
-			if blocked {
+			if blocked != nil {
 				t.Fatalf("%s: non-shieldable media must not be blocked as shield_oversize", tc.contentType)
 			}
 			if summary != nil {
@@ -296,7 +296,7 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 			}
 
 			result, summary, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch, "act1")
-			if !blocked {
+			if blocked == nil {
 				t.Fatalf("%s: shieldable content over MaxShieldBytes must still block (fail-closed invariant)", tc.contentType)
 			}
 			if summary != nil {
@@ -321,7 +321,7 @@ func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 	tail := strings.Repeat("TAIL", 80)
 	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script>` + tail + `</body></html>`)
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
-	if blocked {
+	if blocked != nil {
 		t.Error("scan_head should not block")
 	}
 	if result == nil {
@@ -366,7 +366,7 @@ func TestProxy_ApplyShield_SizeExemptUsesBoundedWholeBody(t *testing.T) {
 	}
 
 	result, summary, blocked := p.applyShield(body, "text/html", "docs.vendor.example", nil, cfg, audit.LogContext{}, "127.0.0.1", "req-size-exempt", TransportForward, "parent-action")
-	if blocked {
+	if blocked != nil {
 		t.Fatal("bounded size-exempt response was blocked by the smaller shield ceiling")
 	}
 	if strings.Contains(string(result), "tracker.vendor.example") {
@@ -457,7 +457,7 @@ func TestProxy_ApplyShield_RecordsCappedAdaptiveSignals(t *testing.T) {
 		`</body></html>`)
 	actx := newHTTPAuditContext(context.Background(), p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: "https://example.com/page", ClientIP: "127.0.0.1", RequestID: "req-shield", Agent: "agent-a"})
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req-shield", TransportFetch, "parent-action")
-	if blocked {
+	if blocked != nil {
 		t.Fatal("shield rewrite should not block")
 	}
 	if summary == nil {
@@ -496,7 +496,7 @@ func TestProxy_ApplyShield_ExemptAdaptiveDomainSkipsSignals(t *testing.T) {
 		`</body></html>`)
 	actx := newHTTPAuditContext(context.Background(), p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: "https://example.com/page", ClientIP: "127.0.0.1", RequestID: "req-shield", Agent: "agent-a"})
 	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req-shield", TransportFetch, "parent-action")
-	if blocked {
+	if blocked != nil {
 		t.Fatal("shield rewrite should not block")
 	}
 	if summary == nil {

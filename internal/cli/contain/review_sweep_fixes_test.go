@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 type failingWriter struct{ err error }
@@ -31,9 +34,9 @@ func TestRunContainRun_RefusesWhenContractCannotBeWritten(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 			posture = true
-			return "/unused", nil
+			return postureEmission{path: "/unused"}, nil
 		},
 	}
 	sentinel := errors.New("stdout closed")

@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 var testNow = time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -285,7 +288,9 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 				launched = true
 				return nil
 			},
-			emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+			emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+				return postureEmission{path: "/unused"}, nil
+			},
 		}
 		err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 		if err == nil || !strings.Contains(err.Error(), "expired") {
@@ -307,9 +312,9 @@ func TestRunContainRun_RefusesExpiredGrant(t *testing.T) {
 				launched = true
 				return nil
 			},
-			emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+			emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 				posture = true
-				return "/unused", nil
+				return postureEmission{path: "/unused"}, nil
 			},
 		}
 		err := runContainRun(context.Background(), nil, &buf, io.Discard, runEnv, containRunOptions{dryRun: true}, []string{"claude"})

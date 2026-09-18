@@ -55,6 +55,27 @@ linters:
       - path: internal/cli/diag/doctor_test\.go
         linters: [gosec]
         text: "G302"
+      # Workspace-change tests make a directory unreadable to prove the
+      # snapshot records it, then restore traversal for TempDir cleanup; they
+      # also read capsule files they just wrote in their own temporary directory,
+      # and one writes a deliberately world-readable file so the assertion can
+      # prove WriteJSON tightens an existing file rather than leaving it alone.
+      - path: internal/cli/contain/workspacediff/workspacediff_test\.go
+        linters: [gosec]
+        text: "G302|G304|G306"
+      # Workspace statement tests read the posture capsule they just emitted
+      # into their own temporary output directory to verify its binding.
+      - path: internal/cli/contain/workspace_statement_test\.go
+        linters: [gosec]
+        text: "G304"
+
+      # statIDs converts the raw stat fields to uint64 because their widths
+      # differ across the platforms this file builds for: st_dev is int32 on
+      # darwin and uint64 on linux. The linter only ever analyses the linux
+      # definitions, so it reports the conversions as redundant; removing them
+      # makes the darwin build fail to compile.
+      - path: internal/cli/contain/workspacediff/ids_unix\.go
+        linters: [unconvert]
       # CLI stream routing is proved by re-executing this test binary and
       # reading the child's real stdout and stderr, because a test that installs
       # its own writers is exactly what hid the routing bug it exists to catch.

@@ -1244,7 +1244,7 @@ func TestScanRequestBody_EmbeddedSigV4URLNeedsNoCoreSuppression(t *testing.T) {
 		Methods:      []string{http.MethodPost},
 		Reason:       "attachment registration",
 		Owner:        "platform",
-		Expires:      "2099-12-31",
+		Expires:      temporaryExpiryDate(config.MaxRequestBodySigV4CredentialRouteHorizon),
 	}
 
 	for _, tc := range []struct {

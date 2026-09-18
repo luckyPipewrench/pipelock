@@ -8,6 +8,7 @@ package licenseservice
 
 import (
 	"testing"
+	"time"
 )
 
 // setRequiredConfigEnv sets all required env vars for LoadConfig tests.
@@ -41,6 +42,45 @@ func TestLoadConfig_AllRequired(t *testing.T) {
 	}
 	if cfg.DBPath != defaultDBPath {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, defaultDBPath)
+	}
+	if cfg.ProviderSuccessWindow != defaultProviderSuccessWindow {
+		t.Errorf("ProviderSuccessWindow = %s, want %s", cfg.ProviderSuccessWindow, defaultProviderSuccessWindow)
+	}
+}
+
+func TestLoadConfig_ProviderSuccessWindow(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default", want: defaultProviderSuccessWindow},
+		{name: "custom", value: "5m", want: 5 * time.Minute},
+		{name: "zero rejected", value: "0", wantErr: true},
+		{name: "negative rejected", value: "-1m", wantErr: true},
+		// The other rejections all parse and then fail the positivity check,
+		// so none of them reaches the parse error path.
+		{name: "malformed rejected", value: "not-a-duration", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredConfigEnv(t)
+			// Always set it, including to empty for the default case. Leaving
+			// it alone lets a value inherited from the developer's shell drive
+			// envOrDefault, so the default case would pass or fail depending
+			// on where it ran. t.Setenv restores the prior value afterwards.
+			t.Setenv("PROVIDER_SUCCESS_WINDOW", tt.value)
+
+			cfg, err := LoadConfig()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("LoadConfig() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if err == nil && cfg.ProviderSuccessWindow != tt.want {
+				t.Errorf("ProviderSuccessWindow = %s, want %s", cfg.ProviderSuccessWindow, tt.want)
+			}
+		})
 	}
 }
 
@@ -89,22 +129,11 @@ func TestLoadConfig_InvalidFoundingCap(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_InvalidDeadline(t *testing.T) {
-	setRequiredConfigEnv(t)
-	t.Setenv("FOUNDING_PRO_DEADLINE", "not-a-date")
-
-	_, err := LoadConfig()
-	if err == nil {
-		t.Error("expected error for invalid deadline, got nil")
-	}
-}
-
 func TestLoadConfig_CustomValues(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("DB_PATH", "/tmp/custom.db")
 	t.Setenv("FOUNDING_PRO_CAP", "100")
-	t.Setenv("FOUNDING_PRO_DEADLINE", "2027-01-01")
 
 	cfg, err := LoadConfig()
 	if err != nil {

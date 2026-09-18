@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,6 +180,58 @@ func TestReloader_InvalidConfig(t *testing.T) {
 		t.Fatalf("expected no config for invalid file, got mode=%s", cfg.Mode)
 	case <-time.After(500 * time.Millisecond):
 		// Expected: no config emitted for invalid file
+	}
+}
+
+// TestReloader_RejectsPublicSuffixPassthroughAndRetainsActiveConfig proves a
+// rejected passthrough wildcard cannot replace the configuration the runtime
+// already accepted, while still reporting a usable failure through Reloads.
+func TestReloader_RejectsPublicSuffixPassthroughAndRetainsActiveConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	const exactHost = "mybucket.s3.amazonaws.com"
+	if err := os.WriteFile(path, []byte("tls_interception:\n  passthrough_domains:\n    - "+exactHost+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReloader(path)
+	defer r.Close()
+	r.tryReload(ReloadTriggerFile)
+	active := <-r.Changes()
+	if got := active.TLSInterception.PassthroughDomains; len(got) != 1 || got[0] != exactHost {
+		t.Fatalf("initial active passthrough domains = %v, want [%q]", got, exactHost)
+	}
+	select {
+	case event := <-r.Reloads():
+		if event.Err != nil || event.Config != active {
+			t.Fatalf("initial reload event = %+v, want the active config", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the initial reload event")
+	}
+
+	if err := os.WriteFile(path, []byte("tls_interception:\n  passthrough_domains:\n    - '*.s3.amazonaws.com'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.tryReload(ReloadTriggerFile)
+
+	select {
+	case event := <-r.Reloads():
+		if event.Config != nil || event.Err == nil {
+			t.Fatalf("rejected passthrough reload event = %+v, want an error with no config", event)
+		}
+		if !strings.Contains(event.Err.Error(), "tls_interception.passthrough_domains") {
+			t.Fatalf("rejected passthrough reload error %q does not name tls_interception.passthrough_domains", event.Err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the rejected passthrough reload event")
+	}
+	if got := active.TLSInterception.PassthroughDomains; len(got) != 1 || got[0] != exactHost {
+		t.Fatalf("rejected reload changed the active passthrough domains to %v, want [%q]", got, exactHost)
+	}
+	select {
+	case cfg := <-r.Changes():
+		t.Fatalf("rejected passthrough reload replaced the active config: %+v", cfg.TLSInterception.PassthroughDomains)
+	default:
 	}
 }
 

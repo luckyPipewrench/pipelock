@@ -96,6 +96,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	var rec session.Recorder
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
+		if rec == nil {
+			return session.ErrCapacity
+		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
@@ -216,7 +219,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			Baseline:                tools.NewToolBaseline(),
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
-			NewToolAction:           toolCfg.NewToolAction,
+			NewToolAdmission:        toolCfg.NewToolAdmission,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

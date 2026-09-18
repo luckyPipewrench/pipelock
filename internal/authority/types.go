@@ -79,6 +79,8 @@ const (
 	ReasonActorMismatch       Reason = "actor_mismatch"
 	ReasonActionMismatch      Reason = "action_mismatch"
 	ReasonDestinationMismatch Reason = "destination_mismatch"
+	ReasonNotYetValid         Reason = "not_yet_valid"
+	ReasonLifetimeExceeded    Reason = "lifetime_exceeded"
 	ReasonExpired             Reason = "expired"
 	ReasonRevoked             Reason = "revoked"
 	ReasonMalformedReference  Reason = "malformed_reference"

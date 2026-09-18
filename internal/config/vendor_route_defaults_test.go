@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -115,18 +116,18 @@ func TestVendorRouteDefaultsReachAYAMLBackedConfig(t *testing.T) {
 
 // TestYAMLExplicitShippedRoutesKeepTheirGovernance is the provenance case that
 // route-value comparison could not see. An operator may write all five shipped
-// routes in YAML with their OWN lifecycle metadata, including a past expiry.
-// ApplyDefaults leaves that list alone because it is not nil, so those entries
-// are operator-owned and must keep their advisories. Treating them as inherited
-// silences the expiry warning on an exemption that has already lapsed.
+// routes in YAML with their OWN lifecycle metadata. ApplyDefaults leaves that
+// list alone because it is not nil, so those entries are operator-owned and
+// must keep their governance fields.
 func TestYAMLExplicitShippedRoutesKeepTheirGovernance(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pipelock.yaml")
+	expires := time.Now().UTC().Add(config.MaxPathEntropyExclusionHorizon - 24*time.Hour).Format("2006-01-02")
 
 	var b strings.Builder
 	b.WriteString("mode: balanced\nfetch_proxy:\n  monitoring:\n    path_entropy_exclusions:\n")
 	for _, def := range config.Defaults().FetchProxy.Monitoring.PathEntropyExclusions {
-		fmt.Fprintf(&b, "      - host: %q\n        path_prefix: %q\n        reason: \"operator copy\"\n        owner: \"ops\"\n        expires: \"2020-01-01\"\n", def.Host, def.PathPrefix)
+		fmt.Fprintf(&b, "      - host: %q\n        path_prefix: %q\n        reason: \"operator copy\"\n        owner: \"ops\"\n        expires: %q\n", def.Host, def.PathPrefix, expires)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -153,7 +154,7 @@ func TestYAMLExplicitShippedRoutesKeepTheirGovernance(t *testing.T) {
 			PathPrefix: defaults[i].PathPrefix,
 			Reason:     "operator copy",
 			Owner:      "ops",
-			Expires:    "2020-01-01",
+			Expires:    expires,
 		}
 		if e != want {
 			t.Fatalf("entry %d round-tripped as %+v, want %+v", i, e, want)

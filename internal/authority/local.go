@@ -20,7 +20,10 @@ import (
 
 const (
 	localReferencePrefix = "plauth1"
-	localSchemaVersion   = 1
+	// localSchemaVersion is 2 because a signed not_before became REQUIRED.
+	// Version 1 grants omit it, so accepting them under the same number would
+	// silently redefine what version 1 means to any issuer built against it.
+	localSchemaVersion = 2
 	// localCanonJCSRFC8785NFC is the existing AARP canonicalization profile.
 	// It is explicit in newly issued references so verifiers do not infer a
 	// signing scheme from an implementation detail.
@@ -28,6 +31,13 @@ const (
 	// MaxReferenceBytes bounds authority references accepted from every
 	// transport and by the local verifier.
 	MaxReferenceBytes = 16 << 10
+	// maxGrantLifetime bounds the replay window of a signed action grant.
+	// Five minutes is a Pipelock product decision, taken from the closest
+	// published analogue: draft-oauth-transactiontokens-bcp-01 section 3.3,
+	// an active IETF Internet-Draft rather than a published BCP, which says a
+	// transaction token SHOULD live less than five minutes. This limit is
+	// inclusive, so a grant of exactly five minutes is accepted.
+	maxGrantLifetime = 5 * time.Minute
 )
 
 var errMalformedReference = errors.New("malformed local authority reference")
@@ -42,7 +52,7 @@ type LocalConfig struct {
 }
 
 // LocalVerifier verifies compact Ed25519 references against an in-memory key
-// set. Legacy schema-1 references that omit canon use byte-exact RFC 8785 JCS.
+// set. References that omit canon use byte-exact RFC 8785 JCS.
 // References with canon "jcs-rfc8785-nfc" use the AARP NFC profile. Both forms
 // compare verified authority strings byte-for-byte; verification never changes
 // an actor, action, or destination before matching. It performs no I/O.
@@ -109,7 +119,7 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 		return Result{Decision: DecisionDeny, Reason: ReasonInvalidSignature}
 	}
 
-	expiresAt, err := validateGrant(parsed.payload)
+	notBefore, expiresAt, err := validateGrant(parsed.payload)
 	if err != nil {
 		return Result{Decision: DecisionDeny, Reason: ReasonMalformedReference}
 	}
@@ -127,7 +137,16 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 		verified.Reason = ReasonRevoked
 		return verified
 	}
-	if !v.now().Before(expiresAt) {
+	if expiresAt.Sub(notBefore) > maxGrantLifetime {
+		verified.Reason = ReasonLifetimeExceeded
+		return verified
+	}
+	now := v.now()
+	if now.Before(notBefore) {
+		verified.Reason = ReasonNotYetValid
+		return verified
+	}
+	if !now.Before(expiresAt) {
 		verified.Reason = ReasonExpired
 		return verified
 	}
@@ -157,6 +176,7 @@ type localGrant struct {
 	Actor         string `json:"actor"`
 	Action        string `json:"action"`
 	Destination   string `json:"destination"`
+	NotBefore     string `json:"not_before"`
 	ExpiresAt     string `json:"expires_at"`
 }
 
@@ -230,12 +250,12 @@ func validateNFCGrantStrings(grant map[string]any) error {
 	// profile uses exact field names so an alias cannot escape validation.
 	for field := range grant {
 		switch field {
-		case "schema_version", "canon", "issuer", "reference", "actor", "action", "destination", "expires_at":
+		case "schema_version", "canon", "issuer", "reference", "actor", "action", "destination", "not_before", "expires_at":
 		default:
 			return errMalformedReference
 		}
 	}
-	for _, field := range []string{"canon", "issuer", "reference", "actor", "action", "destination", "expires_at"} {
+	for _, field := range []string{"canon", "issuer", "reference", "actor", "action", "destination", "not_before", "expires_at"} {
 		value, present := grant[field]
 		if !present {
 			continue
@@ -248,18 +268,25 @@ func validateNFCGrantStrings(grant map[string]any) error {
 	return nil
 }
 
-func validateGrant(grant localGrant) (time.Time, error) {
+func validateGrant(grant localGrant) (time.Time, time.Time, error) {
 	if grant.SchemaVersion != localSchemaVersion ||
 		strings.TrimSpace(grant.Issuer) == "" ||
 		strings.TrimSpace(grant.Reference) == "" ||
-		grant.Actor == "" || grant.Action == "" || grant.Destination == "" || grant.ExpiresAt == "" {
-		return time.Time{}, errMalformedReference
+		grant.Actor == "" || grant.Action == "" || grant.Destination == "" || grant.NotBefore == "" || grant.ExpiresAt == "" {
+		return time.Time{}, time.Time{}, errMalformedReference
+	}
+	notBefore, err := time.Parse(time.RFC3339Nano, grant.NotBefore)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: not before: %w", errMalformedReference, err)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, grant.ExpiresAt)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%w: expiry: %w", errMalformedReference, err)
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: expiry: %w", errMalformedReference, err)
 	}
-	return expiresAt, nil
+	if !expiresAt.After(notBefore) {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: expiry must follow not before", errMalformedReference)
+	}
+	return notBefore, expiresAt, nil
 }
 
 func contextResult(ctx context.Context) (Result, bool) {

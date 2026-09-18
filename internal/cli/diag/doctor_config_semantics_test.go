@@ -540,7 +540,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 					Param:   "query",
 					Reason:  "structured query",
 					Owner:   "platform-security",
-					Expires: "2099-12-31",
+					Expires: temporaryQueryEntropyExpiryDate(),
 				}}
 			},
 			wantWarn: 0,
@@ -619,7 +619,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 					Param:   "query",
 					Reason:  "structured query",
 					Owner:   "platform-security",
-					Expires: "2099-12-31",
+					Expires: temporaryQueryEntropyExpiryDate(),
 				}}
 			},
 			wantWarn:         1,
@@ -637,7 +637,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 					Param:   "query",
 					Reason:  "structured query",
 					Owner:   "platform-security",
-					Expires: "2099-12-31",
+					Expires: temporaryQueryEntropyExpiryDate(),
 				}}
 			},
 			wantWarn:         1,

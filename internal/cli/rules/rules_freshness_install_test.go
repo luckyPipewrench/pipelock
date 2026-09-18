@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 )
@@ -858,7 +859,12 @@ func TestFreshnessStagingAllowsEqualAndNewerV2Candidates(t *testing.T) {
 				installed := []byte(v2NamedInstallBundleYAML("third-party-rules", "2026.08.0", domrules.TierCommunity, 8, "test-signer"))
 				writeInstalledBundleForFreshnessTest(t, rulesDir, "third-party-rules", installed)
 				writeInstalledLockForFreshnessTest(t, rulesDir, "third-party-rules", installed)
-				candidateData := []byte(v2NamedInstallBundleYAML("third-party-rules", version.version, domrules.TierCommunity, version.monotonic, "test-signer"))
+				// An equal candidate means the same signed bytes. Regenerating
+				// its clock-derived expiry can correctly trigger republish denial.
+				candidateData := installed
+				if !version.wantSkip {
+					candidateData = []byte(v2NamedInstallBundleYAML("third-party-rules", version.version, domrules.TierCommunity, version.monotonic, "test-signer"))
+				}
 				candidate, err := domrules.ParseBundle(candidateData)
 				if err != nil {
 					t.Fatalf("parse candidate: %v", err)
@@ -953,7 +959,7 @@ func remoteFreshnessCandidate(name string, format int, monotonic uint64) (*domru
 			Tier:             domrules.TierCommunity,
 			MonotonicVersion: monotonic,
 			PublishedAt:      "2026-08-27T00:00:00Z",
-			ExpiresAt:        "2030-01-01T00:00:00Z",
+			ExpiresAt:        time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339),
 			KeyID:            signer,
 		}, &domrules.LockFile{
 			InstalledVersion:  "2026.08.0",
@@ -1033,10 +1039,10 @@ min_pipelock: "1.0.0"
 tier: %s
 monotonic_version: %d
 published_at: "2026-08-27T00:00:00Z"
-expires_at: "2030-01-01T00:00:00Z"
+expires_at: %q
 key_id: %q
 rules: []
-`, name, version, tier, monotonic, fingerprint)
+`, name, version, tier, monotonic, time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339), fingerprint)
 }
 
 func v1InstallBundleYAML(version string) string {

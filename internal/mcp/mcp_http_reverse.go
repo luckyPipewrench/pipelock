@@ -563,6 +563,7 @@ func RunHTTPListenerProxy(
 		setupState := false
 		stateBound := false
 		principalBound := false
+		sessionCapacityDenied := false
 		setClientState := func(state *mcpListenerClientState) {
 			clientState = state
 			clientStateKey = state.key
@@ -589,8 +590,12 @@ func RunHTTPListenerProxy(
 		// keyed by client-controlled routing data; it goes to the unbound
 		// stateless path below instead.
 		if statefulControls && !requireStateToken && !stateBound && listenerPrincipal.key == "" {
-			setClientState(listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")))
-			stateBound = true
+			if state := listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")); state != nil {
+				setClientState(state)
+				stateBound = true
+			} else {
+				sessionCapacityDenied = true
+			}
 		}
 		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
 			if state, ok := listenerClients.stateForToken(listenerSessionToken); ok {
@@ -605,9 +610,13 @@ func RunHTTPListenerProxy(
 			// cannot obtain a required state partition is rejected below instead of
 			// forwarding without its baseline, chain matcher, taint, CEE, and tool
 			// freezer controls.
-			clientState = listenerClients.newUnboundState()
-			clientStateKey = clientState.key
-			defer listenerClients.discardUnboundState(clientState)
+			if state := listenerClients.newUnboundState(); state != nil {
+				clientState = state
+				clientStateKey = state.key
+				defer listenerClients.discardUnboundState(state)
+			} else {
+				sessionCapacityDenied = true
+			}
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
 		principalStateAdmissionDenied := statefulControls && listenerPrincipal.key != "" && !stateBound
@@ -659,6 +668,18 @@ func RunHTTPListenerProxy(
 				blockreason.SetRecordedReceipt(w.Header(), actionID)
 			}
 			info.SetHeaders(w.Header())
+		}
+		if sessionCapacityDenied {
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason: blockreason.DataBudget, headerSeverity: blockreason.SeverityCritical,
+				retry: blockreason.RetryTransient, layer: "session_capacity",
+				pattern: session.ErrCapacity.Error(), target: "mcp:listener-session",
+				receiptSeverity: config.SeverityHigh,
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(upstreamErrorResponse(nil, session.ErrCapacity))
+			return
 		}
 		rejectMissingListenerState := func(id json.RawMessage) {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -2316,7 +2337,7 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 			DriftRemediation:        toolCfg.DriftRemediation,
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
-			NewToolAction:           toolCfg.NewToolAction,
+			NewToolAdmission:        toolCfg.NewToolAdmission,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

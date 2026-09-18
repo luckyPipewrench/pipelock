@@ -63,6 +63,20 @@ func TestUnitHasExactEntryRejectsSubstringLookalikes(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "duplicate persistence condition",
+			body:    "[Unit]\nConditionPathExists=" + rulesPath + "\nConditionPathExists=" + rulesPath + "\n",
+			section: "Unit",
+			key:     "ConditionPathExists",
+			value:   rulesPath,
+		},
+		{
+			name:    "resetting persistence exec",
+			body:    "[Service]\nExecStart=" + execValue + "\nExecStart=\n",
+			section: "Service",
+			key:     "ExecStart",
+			value:   execValue,
+		},
+		{
 			name:    "suffixed exec subcommand",
 			body:    "[Service]\nExecStart=" + execValue + "-extra\n",
 			section: "Service",
@@ -153,16 +167,16 @@ func TestLegacyManagedBlockDeletedAfterProxyPortChange(t *testing.T) {
 // TestLegacyManagedBlockMatchRejectsNonPortLoopbackAllow keeps the widened
 // loopback match from accepting a rule whose destination port is not a port.
 func TestLegacyManagedBlockMatchRejectsNonPortLoopbackAllow(t *testing.T) {
-	if lineHasAgentProxyLoopbackAllowAnyPort(`meta skuid 966 ip daddr 127.0.0.1 tcp dport http accept`, 966) {
+	if lineHasAgentLoopbackAllowAnyPortAnyHost(`meta skuid 966 ip daddr 127.0.0.1 tcp dport http accept`, 966) {
 		t.Fatal("non-numeric dport matched the managed loopback allow")
 	}
-	if lineHasAgentProxyLoopbackAllowAnyPort(`meta skuid 966 ip daddr 127.0.0.1 tcp dport 0 accept`, 966) {
+	if lineHasAgentLoopbackAllowAnyPortAnyHost(`meta skuid 966 ip daddr 127.0.0.1 tcp dport 0 accept`, 966) {
 		t.Fatal("port zero matched the managed loopback allow")
 	}
-	if lineHasAgentProxyLoopbackAllowAnyPort(`meta skuid 966 ip daddr 127.0.0.2 tcp dport 8888 accept`, 966) {
+	if lineHasAgentLoopbackAllowAnyPortAnyHost(`meta skuid 966 ip daddr 127.0.0.2 tcp dport 8888 accept`, 966) {
 		t.Fatal("non-loopback destination matched the managed loopback allow")
 	}
-	if !lineHasAgentProxyLoopbackAllowAnyPort(`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept`, 966) {
+	if !lineHasAgentLoopbackAllowAnyPortAnyHost(`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept`, 966) {
 		t.Fatal("canonical loopback allow did not match")
 	}
 }

@@ -1270,7 +1270,7 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "canonical rules and exec start point at managed rules",
 			unitBody: func(rulesPath string) string {
-				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
+				return renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)
 			},
 			wantStatus: statusPass,
 			wantDetail: "persistence unit",
@@ -1278,7 +1278,7 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "exec start points elsewhere",
 			unitBody: func(rulesPath string) string {
-				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain other-rules\n"
+				return strings.Replace(renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget), "ExecStart="+defaultPipelockTarget+" contain reload-nft-rules", "ExecStart="+defaultPipelockTarget+" contain other-rules", 1)
 			},
 			wantStatus: statusFail,
 			wantDetail: "missing ExecStart",
@@ -1286,7 +1286,7 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "rules path outside exec start does not satisfy check",
 			unitBody: func(rulesPath string) string {
-				return "[Unit]\nConditionPathExists=/other/rules.nft\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
+				return strings.Replace(renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget), "ConditionPathExists="+rulesPath, "ConditionPathExists=/other/rules.nft", 1)
 			},
 			wantStatus: statusFail,
 			wantDetail: "missing ConditionPathExists",
@@ -1294,7 +1294,7 @@ func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 		{
 			name: "stale persisted rules fail despite canonical live rules and matching unit",
 			unitBody: func(rulesPath string) string {
-				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + defaultPipelockTarget + " contain reload-nft-rules\n"
+				return renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)
 			},
 			rulesBody: func() string {
 				return `# Pipelock containment ruleset (managed by pipelock contain install).
@@ -1353,6 +1353,59 @@ table inet pipelock_containment {
 	}
 }
 
+func TestVerifyNFTPersistence_RequiresEveryManagedDirective(t *testing.T) {
+	const rulesPath = "/managed/50-pipelock-containment.nft"
+	current := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}
+	tests := []struct {
+		name      string
+		old       string
+		new       string
+		directive string
+	}{
+		{name: "default dependencies", old: "DefaultDependencies=no", new: "DefaultDependencies=yes", directive: "DefaultDependencies"},
+		{name: "after", old: "After=local-fs.target", new: "After=network.target", directive: "After"},
+		{name: "before", old: "Before=network-pre.target", new: "Before=network.target", directive: "Before"},
+		{name: "wants", old: "Wants=network-pre.target", new: "Wants=network.target", directive: "Wants"},
+		{name: "condition", old: "ConditionPathExists=" + rulesPath, new: "ConditionPathExists=/other/rules.nft", directive: "ConditionPathExists"},
+		{name: "service type", old: "Type=oneshot", new: "Type=simple", directive: "Type"},
+		{name: "exec start", old: "ExecStart=" + defaultPipelockTarget + " contain reload-nft-rules", new: "ExecStart=/bin/true", directive: "ExecStart"},
+		{name: "remain after exit", old: "RemainAfterExit=yes", new: "RemainAfterExit=no", directive: "RemainAfterExit"},
+		{name: "install target", old: "WantedBy=multi-user.target", new: "WantedBy=default.target", directive: "WantedBy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical := renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)
+			env := makeProbeEnv(t, func(env *probeEnv) {
+				env.operatorUser = ""
+				env.nftRulesPath = rulesPath
+				env.nftPersistUnitPath = "/managed/pipelock-containment-nft.service"
+				env.readFile = func(path string) ([]byte, error) {
+					if path == env.nftPersistUnitPath {
+						return []byte(canonical), nil
+					}
+					return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+				}
+			})
+			if err := verifyNFTPersistence(env, current); err != nil {
+				t.Fatalf("canonical persistence unit failed verification: %v", err)
+			}
+			body := strings.Replace(canonical, tc.old, tc.new, 1)
+			if body == canonical {
+				t.Fatalf("fixture mutation did not alter %q", tc.old)
+			}
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.nftPersistUnitPath {
+					return []byte(body), nil
+				}
+				return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
+			}
+			if err := verifyNFTPersistence(env, current); err == nil || !strings.Contains(err.Error(), tc.directive) {
+				t.Fatalf("altered %s error = %v, want named directive", tc.directive, err)
+			}
+		})
+	}
+}
+
 func TestProbeNFTContainment_RejectsPersistedOperatorUIDDrift(t *testing.T) {
 	tmp := t.TempDir()
 	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
@@ -1360,7 +1413,7 @@ func TestProbeNFTContainment_RejectsPersistedOperatorUIDDrift(t *testing.T) {
 	if err := os.WriteFile(rulesPath, []byte(renderNFTRules(98, 988, 987, 8888, testTable, testChain)), 0o600); err != nil {
 		t.Fatalf("write persisted rules: %v", err)
 	}
-	if err := os.WriteFile(unitPath, []byte("[Unit]\nConditionPathExists="+rulesPath+"\n[Service]\nExecStart="+defaultPipelockTarget+" contain reload-nft-rules\n"), 0o600); err != nil {
+	if err := os.WriteFile(unitPath, []byte(renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)), 0o600); err != nil {
 		t.Fatalf("write persistence unit: %v", err)
 	}
 	env := makeProbeEnv(t, func(e *probeEnv) {
@@ -2521,7 +2574,7 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	}
 
 	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort, nil) {
 		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
 	}
 }
@@ -4095,6 +4148,12 @@ func TestDefaultProbeEnv(t *testing.T) {
 	}
 	if env.nftPersistUnitPath != defaultNFTPersistUnitPath {
 		t.Errorf("nftPersistUnitPath: got %q, want %q", env.nftPersistUnitPath, defaultNFTPersistUnitPath)
+	}
+	if env.nftExpiryServicePath != defaultNFTExpiryServicePath {
+		t.Errorf("nftExpiryServicePath: got %q, want %q", env.nftExpiryServicePath, defaultNFTExpiryServicePath)
+	}
+	if env.nftExpiryTimerPath != defaultNFTExpiryTimerPath {
+		t.Errorf("nftExpiryTimerPath: got %q, want %q", env.nftExpiryTimerPath, defaultNFTExpiryTimerPath)
 	}
 	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil || env.readFile == nil {
 		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v readFile=%v",

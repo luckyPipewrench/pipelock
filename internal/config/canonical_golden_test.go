@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Golden-file canonical-hash stability fixtures. These pin the current
@@ -410,7 +411,15 @@ const (
 	// on upgrade, and a conductor strict-mode reload will see it. That
 	// visibility is the intended behavior, not a side effect - an operator's
 	// detection posture changed and the hash is what says so.
-	goldenHashDefaults = "39dd3b732d536f828bd52e7cb3de708f968cd9b302401dbe653a9cd0494cc720"
+	// Re-bumped for directive-intent response patterns. The narrowed detector
+	// bytes change response enforcement and therefore the canonical policy.
+	// Re-bumped for polite and list-prefixed disclosure directives and for
+	// sentence-bounded persistence lead-ins.
+	// Re-bumped for clause-level response-directive coverage.
+	// Re-bumped for transition-prefixed response directives.
+	// Re-bumped for polite and recipient-first directive coverage.
+	// Re-bumped for explicitly marked directive transitions.
+	goldenHashDefaults = "cbca1d1e7e5730870bdc311be3e0fca59b4e68b87d7907cbe37cb925c8a69ca9"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -629,7 +638,13 @@ const (
 	// now materializes them. Before that fix the defaults hash moved and this
 	// one did not, which is exactly the shape of a default that reaches the
 	// no-config CLI path and no real deployment.
-	goldenHashRichConfig = "d9b0a68777fdcd716d4d0e23caa6ca149f04de6e0614a59428422c59817f2455"
+	// Re-bumped alongside goldenHashDefaults for directive-intent response patterns.
+	// Re-bumped alongside goldenHashDefaults for the directive-boundary fixes.
+	// Re-bumped alongside goldenHashDefaults for clause-level response directives.
+	// Re-bumped alongside goldenHashDefaults for transition-prefixed directives.
+	// Re-bumped alongside goldenHashDefaults for polite and recipient-first directives.
+	// Re-bumped alongside goldenHashDefaults for explicitly marked transitions.
+	goldenHashRichConfig = "3174d057644fff75966a53bf7e8b237174f2618d8fb0157dd07c1d67d8d3b467"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1188,6 +1203,29 @@ func TestCanonicalPolicyHash_GoldenRichConfig(t *testing.T) {
 	}
 }
 
+// TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden pins the legacy
+// JSON key and warn|block representation used for the renamed
+// new_tool_admission operator vocabulary. Alias-equality tests alone cannot
+// catch a coordinated mapping change, so these fixed digests pin both values.
+func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
+	tests := []struct {
+		name      string
+		admission string
+		wantHash  string
+	}{
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "d3fcfd6ac95cbf206039874dfc4e25e938e8894671dc2f8f7bc341c50f86f424"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7049ba45c892dafeb65e0d88b351911edeecc1c75d27e1a8fe279223ece759a6"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadGoldenConfig(t, "mcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n  new_tool_admission: "+tt.admission+"\n")
+			if got := cfg.computeCanonicalPolicyHash(); got != tt.wantHash {
+				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s", tt.wantHash, got)
+			}
+		})
+	}
+}
+
 // TestCanonicalPolicyHash_GoldenInvariantUnderAllowlistOrder verifies
 // that reversing every set-like slice (api_allowlist, internal,
 // trusted_domains) in the rich fixture produces the SAME hash. Proves
@@ -1236,14 +1274,27 @@ func TestCanonicalPolicyHash_ListenerDriftResetFileIsOperational(t *testing.T) {
 // binds them) and the deep-copy clone path. Entries are supplied unsorted and
 // differ in each sort key so the canonical comparator branches all run.
 func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
+	// Read the clock ONCE and derive the second date from the first. Two
+	// independent calls can straddle a UTC midnight and return the same day,
+	// which silently removes the distinct Expires value this sort test exists
+	// to exercise.
+	expires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
+	expiresAt, err := time.Parse(time.DateOnly, expires)
+	if err != nil {
+		t.Fatalf("parse generated expiry %q: %v", expires, err)
+	}
+	laterExpires := expiresAt.AddDate(0, 0, -1).Format(time.DateOnly)
+	if laterExpires == expires {
+		t.Fatalf("derived expiry %q equals %q; the sort test needs two distinct values", laterExpires, expires)
+	}
 	entries := []UnscannablePassthroughEntry{
-		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: "2099-02-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-09-09"},
+		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: expires},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: laterExpires},
 	}
 
 	withPT := Defaults()

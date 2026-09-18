@@ -786,3 +786,28 @@ func TestResolveRuntime_MCPScan_RespectsExplicitToolScanningDisable(t *testing.T
 		t.Error("explicit operator disable of tool scanning must be respected under RuntimeMCPScan")
 	}
 }
+
+func TestResolveRuntime_MCPScan_AutoEnablePreservesNewToolAdmission(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "withhold", in: NewToolWithhold, want: NewToolWithhold},
+		{name: "admit", in: NewToolAdmit, want: NewToolAdmit},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.MCPToolScanning = MCPToolScanning{NewToolAdmission: tt.in}
+
+			resolved, info := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeMCPScan})
+
+			if !info.MCPToolScanningAutoEnabled || !resolved.MCPToolScanning.Enabled {
+				t.Fatalf("tool scanning was not auto-enabled: %+v", info)
+			}
+			if got := resolved.MCPToolScanning.NewToolAdmission; got != tt.want {
+				t.Fatalf("NewToolAdmission = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

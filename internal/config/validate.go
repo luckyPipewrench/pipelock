@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -170,6 +171,16 @@ func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error
 	return nil
 }
 
+func validateUnscannablePassthroughExpiryHorizons(entries []UnscannablePassthroughEntry) error {
+	for i, entry := range entries {
+		field := fmt.Sprintf("response_scanning.unscannable_passthrough[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, entry.Expires, MaxUnscannablePassthroughHorizon); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 	if len(cfg.ContentEntropyWarnRoutes) == 0 {
 		return nil
@@ -237,12 +248,8 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		expires, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if expires.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
+			return err
 		}
 
 		slices.Sort(entry.ContentTypes)
@@ -327,12 +334,8 @@ func validateRequestBodySigV4CredentialRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		expires, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if expires.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+			return err
 		}
 
 		slices.Sort(entry.ContentTypes)
@@ -434,14 +437,20 @@ func isTextualUnscannablePassthroughType(mediaType string) bool {
 	if strings.HasPrefix(mediaType, "text/") {
 		return true
 	}
+	// Every RFC 9239 section 6 JavaScript alias is refused here, not just
+	// the two spelled out below, so an opaque-download exception cannot
+	// admit the same content the browser shield already treats as
+	// JavaScript (internal/shield.mediaTypeToPipeline). Shared table:
+	// internal/media.JavaScriptMediaTypes.
+	if media.IsJavaScriptMediaType(mediaType) {
+		return true
+	}
 	switch mediaType {
 	case "application/json",
 		"application/ld+json",
 		"application/x-ndjson",
 		"application/xml",
 		"application/xhtml+xml",
-		"application/javascript",
-		"application/ecmascript",
 		"application/x-www-form-urlencoded",
 		"application/x-yaml",
 		"application/yaml",
@@ -573,6 +582,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	if err := c.validateMetricsListen(); err != nil {
+		return warnings, err
+	}
+	if err := c.validateContainmentLoopbackServices(); err != nil {
 		return warnings, err
 	}
 	if err := c.validateEmit(); err != nil {
@@ -1292,10 +1304,13 @@ func matcherParityError(raw, normalized string) error {
 // tls_interception.passthrough_domains SPLICES a matching host without
 // decrypting it, so "*.com" there turns body and response scanning off for
 // every .com destination. That is the same detector-off shape this repository
-// already breadth-checks on trusted_domains and the exempt lists, so it gets
-// the grant-list rule: a wildcard whose base is an ICANN public suffix is
-// refused, while a private-suffix base such as "*.s3.amazonaws.com" stays
-// accepted because an operator legitimately writes it.
+// already breadth-checks on trusted_domains and the exempt lists, but
+// passthrough gets a STRICTER rule than those: a wildcard whose base is ANY
+// public suffix is refused here, private-section entries such as
+// "*.s3.amazonaws.com" included, because splicing turns every detector off
+// for every unrelated tenant under that boundary. The ordinary grant lists
+// still accept a private-section wildcard, because they go on scanning what
+// they exempt. See passthroughWildcardBaseBreadthError.
 //
 // forward_proxy.redirect_websocket_hosts is NOT the same: a wide wildcard
 // routes more traffic INTO the /ws proxy, which still scans it, so breadth
@@ -1309,7 +1324,13 @@ func matcherParityError(raw, normalized string) error {
 // `pipelock check --config`, which names the field, index and value.
 func validateLiteralHostMatchList(label string, entries []string, judgeBreadth bool) error {
 	if judgeBreadth {
-		if err := ValidateHostGrantList(entries, label); err != nil {
+		// The only caller passing true is
+		// tls_interception.passthrough_domains, so this uses the stricter
+		// passthrough-only breadth rule (any public suffix, private section
+		// included) rather than the ordinary grant-list rule used by
+		// api_allowlist and the exempt/trusted lists. See
+		// passthroughWildcardBaseBreadthError for why the two differ.
+		if err := validatePassthroughHostGrantList(entries, label); err != nil {
 			return err
 		}
 	} else if err := ValidateHostMatchList(entries, label); err != nil {
@@ -1751,6 +1772,57 @@ func wildcardBaseBreadthError(base string) error {
 	return nil
 }
 
+// passthroughWildcardBaseBreadthError is wildcardBaseBreadthError's stricter
+// sibling for tls_interception.passthrough_domains ONLY. It refuses a
+// wildcard over ANY public-suffix boundary, ICANN section and PRIVATE section
+// alike, where wildcardBaseBreadthError accepts a private-section base such
+// as "*.github.io" or "*.s3.amazonaws.com".
+//
+// The two lists differ in what the wildcard actually turns off, and that
+// difference is why they get different rules rather than sharing one. An
+// ordinary grant list (api_allowlist, an exempt/trusted list) still scans
+// what it lets through; the breadth question there is only "how much may
+// reach the scanner." tls_interception.passthrough_domains is not a grant
+// onto a scanned path — it SPLICES the TLS connection without decrypting it,
+// so a matching host gets no body or response scanning at all. A wildcard
+// over a private-suffix boundary there does not merely widen who is exempt
+// from one detector; it turns off every detector for every unrelated tenant
+// under that boundary (every github.io project, every S3 bucket under that
+// suffix), which is the same fail-open shape the ICANN refusal already
+// exists to prevent and public-suffix status does not distinguish.
+func passthroughWildcardBaseBreadthError(base string) error {
+	if !strings.Contains(base, ".") {
+		return fmt.Errorf("wildcard must target a concrete domain like *.example.com, not the whole %q namespace", base)
+	}
+	if suffix, icann := publicsuffix.PublicSuffix(base); suffix == base {
+		section := "a registry-operated (ICANN) public suffix"
+		if !icann {
+			section = "a PRIVATE-section public suffix"
+		}
+		return fmt.Errorf("wildcard must not target %s %q: tls_interception.passthrough_domains splices the connection without decrypting it, so this would turn off body and response scanning for every unrelated tenant under that boundary, which is a stricter bar than an ordinary exemption list; list exact hosts such as mybucket.s3.amazonaws.com in tls_interception.passthrough_domains instead; if the host set is unbounded, no passthrough equivalent exists, so intercept the traffic with tls_interception and a trusted local CA or constrain it to a fixed host set", section, base)
+	}
+	return nil
+}
+
+// validatePassthroughHostGrantList is ValidateHostGrantList with the
+// passthrough-only breadth rule above instead of the shared one, for
+// tls_interception.passthrough_domains.
+func validatePassthroughHostGrantList(hosts []string, label string) error {
+	if err := ValidateHostMatchList(hosts, label); err != nil {
+		return err
+	}
+	for i, raw := range hosts {
+		normalized := NormalizeHostPattern(raw)
+		if !strings.HasPrefix(normalized, "*.") {
+			continue
+		}
+		if err := passthroughWildcardBaseBreadthError(normalized[2:]); err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", label, i, raw, err)
+		}
+	}
+	return nil
+}
+
 // validatePathEntropyExclusions rejects an entry that would widen the path
 // entropy exemption beyond one route. An empty host or an empty path prefix
 // makes the entry match everything, which is a host-wide (or global) exemption
@@ -1816,8 +1888,8 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if _, err := time.Parse("2006-01-02", expires); err != nil {
-				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxPathEntropyExclusionHorizon); err != nil {
+				return err
 			}
 		}
 
@@ -1866,8 +1938,8 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 		}
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if _, err := time.Parse("2006-01-02", expires); err != nil {
-				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
+				return err
 			}
 		}
 
@@ -2074,6 +2146,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
 		}
 	}
+	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
 	if err := validateAuthenticatedArtifacts(c.ResponseScanning.AuthenticatedArtifacts); err != nil {
 		return err
 	}
@@ -2184,7 +2259,23 @@ func (c *Config) validateMCPInputScanning() error {
 
 func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
-	// Validate MCP tool scanning config
+	if c.NewToolActionAliasWarning != "" && warnings != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "mcp_tool_scanning.new_tool_action",
+			Message: c.NewToolActionAliasWarning,
+		})
+	}
+	// Validate new-tool admission independently of whether scanning is enabled.
+	// Runtime MCP mode can enable an otherwise unset tool-scanning section, so
+	// accepting an invalid value while disabled would let it reach enforcement.
+	switch c.MCPToolScanning.NewToolAdmission {
+	case "", NewToolAdmit, NewToolWithhold:
+		// valid; "" is filled to admit by normalize when scanning is enabled
+	default:
+		return fmt.Errorf("invalid mcp_tool_scanning new_tool_admission %q: must be admit or withhold", c.MCPToolScanning.NewToolAdmission)
+	}
+
+	// Validate MCP tool scanning config.
 	if c.MCPToolScanning.Enabled {
 		switch c.MCPToolScanning.Action {
 		case ActionWarn, ActionBlock:
@@ -2192,22 +2283,16 @@ func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 		default:
 			return fmt.Errorf("invalid mcp_tool_scanning action %q: must be warn or block", c.MCPToolScanning.Action)
 		}
-		switch c.MCPToolScanning.NewToolAction {
-		case "", ActionWarn, ActionBlock:
-			// valid; "" is filled to warn by normalize
-		default:
-			return fmt.Errorf("invalid mcp_tool_scanning new_tool_action %q: must be warn or block", c.MCPToolScanning.NewToolAction)
-		}
 		// New-tool admission is evaluated only inside the drift-detection
 		// path, so this pair leaves the control inert. Warn rather than
 		// reject: refusing would turn an existing running configuration into
-		// a startup failure on upgrade, and an operator who set block has
+		// a startup failure on upgrade, and an operator who set withhold has
 		// asked for more checking, not for the process to stop. Silence is
 		// the one option that is wrong, because it reads as policy applied.
-		if c.MCPToolScanning.NewToolAction == ActionBlock && !c.MCPToolScanning.DetectDrift && warnings != nil {
+		if c.MCPToolScanning.NewToolAdmission == NewToolWithhold && !c.MCPToolScanning.DetectDrift && warnings != nil {
 			*warnings = append(*warnings, Warning{
-				Field:   "mcp_tool_scanning.new_tool_action",
-				Message: "new_tool_action: block has no effect while mcp_tool_scanning.detect_drift is false, because new-tool admission is only evaluated during drift detection; set detect_drift: true for it to apply",
+				Field:   "mcp_tool_scanning.new_tool_admission",
+				Message: "new_tool_admission: withhold has no effect while mcp_tool_scanning.detect_drift is false, because new-tool admission is only evaluated during drift detection; set detect_drift: true for it to apply",
 			})
 		}
 	}
@@ -3696,6 +3781,16 @@ func (c *Config) ValidateSuppressions() error {
 	return c.validateSuppress(nil)
 }
 
+// ValidateContainmentLoopbackServiceDeclarations validates the declared
+// loopback-service surface independently of the full config, for the same
+// reason ValidateSuppressions exists: a caller handing Reload an in-memory
+// config never passes through Load, so the whole-config validator that
+// normally catches a malformed, expired, or proxy-port-colliding declaration
+// never runs on that path.
+func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
+	return c.validateContainmentLoopbackServices()
+}
+
 // credentialAudienceDomainSubset reports whether every candidate domain is
 // contained by at least one compiled audience domain. Inputs have already
 // passed ValidateTrustedDomains, so only exact hosts and leading-wildcard
@@ -3782,6 +3877,21 @@ func (c *Config) validateKillSwitch() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateContainmentLoopbackServices() error {
+	if len(c.Containment.LoopbackServices) == 0 {
+		return nil
+	}
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	port, err := strconv.Atoi(proxyPort)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+	}
+	return ValidateContainmentLoopbackServices(c.Containment.LoopbackServices, port, time.Now())
 }
 
 func (c *Config) validateMetricsListen() error {
@@ -4568,12 +4678,90 @@ func normalizeReverseProxySubmitHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
-// MaxBestEffortConfigHorizon bounds how far ahead a configuration-sourced
-// best_effort_expiry may lie, measured from validation time. A best-effort
-// override trades kernel network isolation for cooperative proxy variables,
-// so one config edit must not be able to authorize that trade for a year.
-// Command-line durations are anchored per launch and keep their own bound.
-const MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
+// Expiry classification at validation time.
+//
+// | Field | Class | Maximum / reason |
+// | sandbox.best_effort_expiry | temporary | 30 days: cooperative proxy-only egress cannot replace kernel isolation for a release cycle. |
+// | response_scanning.unscannable_passthrough[].expires | temporary | 90 days: an opaque download needs a scanned or authenticated delivery path. |
+// | fetch_proxy.monitoring.path_entropy_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the narrow route or move to policy. |
+// | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
+// | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
+// | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |
+// | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |.
+const (
+	// MaxBestEffortConfigHorizon bounds a configuration-sourced cooperative
+	// egress override; command-line durations are anchored per launch.
+	MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
+
+	MaxUnscannablePassthroughHorizon          = 90 * 24 * time.Hour
+	MaxPathEntropyExclusionHorizon            = 180 * 24 * time.Hour
+	MaxQueryEntropyParamExclusionHorizon      = 180 * 24 * time.Hour
+	MaxRequestBodyEntropyWarnRouteHorizon     = 90 * 24 * time.Hour
+	MaxRequestBodySigV4CredentialRouteHorizon = 30 * 24 * time.Hour
+)
+
+func validateTemporaryExpiryDate(field, value string, maximum time.Duration) error {
+	expires, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return fmt.Errorf("%s %q must be YYYY-MM-DD: %w", field, value, err)
+	}
+	today := todayUTC()
+	if expires.Before(today) {
+		return fmt.Errorf("%s %q is already expired", field, value)
+	}
+	latest := today.Add(maximum)
+	if expires.After(latest) {
+		return fmt.Errorf("%s %q exceeds the maximum temporary horizon of %d days (latest allowed date %q); shorten it or, if the condition is permanent, use the documented durable mechanism instead", field, value, int(maximum.Hours()/24), latest.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// ValidateExpiryAuthorizations applies the expiry-specific validation that the
+// hot-reload activation boundary needs before it can preserve restart-only
+// settings. Startup uses Validate, but direct Reload callers bypass Load.
+func (c *Config) ValidateExpiryAuthorizations() error {
+	now := time.Now().UTC()
+	if c.Sandbox.BestEffort {
+		if err := validateBestEffortAuthorization("sandbox", c.Sandbox.BestEffortReason, c.Sandbox.BestEffortExpiry, now); err != nil {
+			return err
+		}
+	}
+	if err := c.validateAgentSandboxOverrides(now); err != nil {
+		return err
+	}
+	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	for i, entry := range c.FetchProxy.Monitoring.PathEntropyExclusions {
+		if expires := strings.TrimSpace(entry.Expires); expires != "" {
+			field := fmt.Sprintf("fetch_proxy.monitoring.path_entropy_exclusions[%d].expires", i)
+			if err := validateTemporaryExpiryDate(field, expires, MaxPathEntropyExclusionHorizon); err != nil {
+				return err
+			}
+		}
+	}
+	for i, entry := range c.FetchProxy.Monitoring.QueryEntropyParamExclusions {
+		if expires := strings.TrimSpace(entry.Expires); expires != "" {
+			field := fmt.Sprintf("fetch_proxy.monitoring.query_entropy_param_exclusions[%d].expires", i)
+			if err := validateTemporaryExpiryDate(field, expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
+				return err
+			}
+		}
+	}
+	for i, entry := range c.RequestBodyScanning.ContentEntropyWarnRoutes {
+		field := fmt.Sprintf("request_body_scanning.content_entropy_warn_routes[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
+			return err
+		}
+	}
+	for i, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
+		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // validateBestEffortAuthorization checks the reason and expiry that must
 // accompany a configuration-sourced best_effort override. field names the

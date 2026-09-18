@@ -2028,7 +2028,7 @@ func TestSessionManager_SweepMetrics_ToZeroSkipsGaugeIncrement(t *testing.T) {
 	// registers the label via the authoritative live-state source, rather than
 	// through the legacy transition-delta compatibility lane.
 	sess := sm.GetOrCreate("to-zero-client")
-	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, decide.EscalationParams{
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, nil, decide.EscalationParams{
 		Threshold: adaptiveCfg.EscalationThreshold,
 		Metrics:   m,
 		Session:   "to-zero-client",
@@ -2104,7 +2104,7 @@ func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
 
 	// Legacy/global HTTP lane: a real escalation emits its event counter and
 	// the state-derived gauge becomes 1.
-	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, nil, params)
 	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
 		t.Fatalf("global escalation gauge = %.0f, want 1", got)
 	}
@@ -2118,7 +2118,7 @@ func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
 	scope := adaptiveScopeForHost("metrics.vendor.example")
 	scopedSess := sm.GetOrCreate("adaptive-gauge-scoped-client")
 	scopedParams := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "adaptive-gauge-scoped-client"}
-	recordAdaptiveSignalForScope(scopedSess, scope, session.SignalBlock, adaptiveCfg, scopedParams)
+	recordAdaptiveSignalForScope(scopedSess, scope, session.SignalBlock, adaptiveCfg, nil, scopedParams)
 	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
 		t.Fatalf("scoped escalation gauge = %.0f, want 1", got)
 	}
@@ -2129,7 +2129,7 @@ func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
 
 	// Reload retains this manager and its live session state; reset then removes
 	// it. Neither path may depend on a paired historical gauge delta.
-	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, nil, params)
 	sm.UpdateConfig(cfg, adaptiveCfg, nil)
 	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
 		t.Fatalf("reload-preserved gauge = %.0f, want 1", got)
@@ -2186,7 +2186,7 @@ func TestSessionManager_CloseFencesRetainedRecorderGauge(t *testing.T) {
 	// continues from that retained state, but its transition must not revive a
 	// current-session gauge owned by the retired manager.
 	params := decide.EscalationParams{Threshold: 3, Metrics: m, Session: "retained-transport-client"}
-	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, params)
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, adaptiveCfg, nil, params)
 	if !sess.IsEscalated() {
 		t.Fatal("retained recorder did not preserve its enforcement state")
 	}

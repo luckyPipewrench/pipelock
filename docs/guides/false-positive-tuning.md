@@ -124,10 +124,10 @@ request_body_scanning:
       methods: [POST]
       reason: register attachment URL
       owner: platform team
-      expires: 2099-12-31
+      expires: 2026-10-15 # temporary credential-floor exception; 30-day maximum
 ```
 
-Deploy the supporting Pipelock version before adding this field to shared configuration. Older versions reject unknown fields instead of ignoring them.
+The expiry is temporary and may be no more than 30 days ahead. Shorten the exception, or move the credential handoff out of the request body for a permanent integration. Deploy the supporting Pipelock version before adding this field to shared configuration. Older versions reject unknown fields instead of ignoring them.
 
 ### Opaque content entropy
 

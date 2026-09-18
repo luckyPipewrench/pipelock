@@ -7,8 +7,18 @@
 package licenseservice
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestEntitlementDB_RecordPendingOneTimeTrialRefund_Nil(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.RecordPendingOneTimeTrialRefund(t.Context(), nil)
+	if err == nil || !strings.Contains(err.Error(), "eval order is nil") {
+		t.Fatalf("RecordPendingOneTimeTrialRefund(nil) error = %v, want eval order is nil", err)
+	}
+}
 
 func TestEntitlementDB_EvalOrderUpsertAndGet(t *testing.T) {
 	db := openTestDB(t)

@@ -993,18 +993,15 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	if err != nil {
 		return fmt.Errorf("load existing entitlement for order %s: %w", order.ID, err)
 	}
-	// One active trial per normalized email, mirroring the Enterprise Eval
-	// rule. The entitlement stores the NORMALIZED email (the eval precedent)
-	// so the count comparison and the stored identity share one canonical
-	// key; storing the raw order email would let a case variant of the same
-	// address bypass the check. The dedupe runs only for a FIRST processing
-	// of this order: a webhook replay of an already-processed order must
-	// stay idempotent rather than tripping over the entitlement it created
-	// itself. Fail closed on a normalization or count error: never mint on
-	// an unverifiable state. The count-then-write pair is serialized by
-	// processMu; the service runs as a single writer against its SQLite
-	// store, and a database-level constraint for multi-writer deployments is
-	// tracked separately.
+	// The trial slot table (active_trial_slots) is the SOLE eligibility
+	// authority for one-active-trial-per-email; it is consulted later, at the
+	// atomic claim inside handleActive's Upsert, not here. A pre-count against
+	// the entitlements table used to run in this spot, ahead of that claim,
+	// which gave the rule two independent mechanisms that could disagree (an
+	// entitlement whose CurrentPeriodEnd drifted after claim, for one). Only
+	// the atomic slot claim decides eligibility now, and its denial is
+	// audited identically (see the ErrActiveTrialExists handling in
+	// handleActiveDelivery).
 	customerEmail := order.Customer.Email
 	if tier == tierTrial || tier == tierEnterpriseTrial {
 		email, err := NormalizeEmail(order.Customer.Email)
@@ -1020,25 +1017,6 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 			err := fmt.Errorf("one-time trial order %s refused: pending refund", order.ID)
 			_ = h.ledger.LogError(order.ID, "one-time trial fulfillment refused: pending refund", err)
 			return err
-		}
-		if existing == nil {
-			active, err := h.db.CountActiveTierForEmail(ctx, tier, email, time.Now())
-			if err != nil {
-				return fmt.Errorf("count active %s for order %s: %w", tier, order.ID, err)
-			}
-			if active > 0 {
-				denial := fmt.Errorf("an active %s already exists for this email", tier)
-				if lerr := h.ledger.LogError(order.ID, tier+" denied", denial); lerr != nil {
-					h.log.Warn().Err(lerr).
-						Str("order_id", order.ID).
-						Msg("trial denial could not be recorded in the audit ledger")
-				}
-				h.log.Warn().
-					Str("order_id", order.ID).
-					Str("tier", tier).
-					Msg("trial order denied: an active trial already exists for this email")
-				return nil
-			}
 		}
 	}
 	if existing != nil && existing.BillingInterval == billingIntervalOneTime &&
@@ -1235,9 +1213,14 @@ func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.
-// If the cap is hit or the deadline has passed, the checkout is still honored
-// (customer paid the founding price). Logs a warning to archive the Polar
-// product so no further founding checkouts are possible.
+// If the cap is hit, the checkout is still honored (customer paid the founding
+// price). Logs a warning to archive the Polar product so no further founding
+// checkouts are possible.
+//
+// The cap is therefore advisory rather than a refusal: nothing here denies a
+// paid checkout, and archiving the Polar product is the control that actually
+// stops the next one. Do not turn this into a rejection without deciding that
+// separately.
 //
 // The reservation is atomic: the mutex serializes access, and the founding
 // count is read from the DB (not an in-memory cache) to prevent drift
@@ -1255,23 +1238,6 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 	}
 	if existing != nil && existing.FoundingReservedAt != nil {
 		return nil // already has a slot
-	}
-
-	now := time.Now()
-
-	if now.After(h.cfg.FoundingProDeadline) {
-		_ = h.ledger.Log(AuditEntry{
-			Event:          AuditFoundingCapHit,
-			SubscriptionID: ent.SubscriptionID,
-			CustomerEmail:  ent.CustomerEmail,
-			Detail:         "founding pro deadline passed, honoring paid checkout",
-		})
-		h.log.Warn().
-			Str("subscription_id", ent.SubscriptionID).
-			Msg("founding pro deadline passed, honoring paid checkout — archive Polar products")
-		// Fall through to reserve the founding slot. The customer paid the
-		// founding price, so they get founding. The real defense is archiving
-		// the Polar product so no new checkouts are possible.
 	}
 
 	// Read authoritative founding count from DB, not in-memory cache.

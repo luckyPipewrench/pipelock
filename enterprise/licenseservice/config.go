@@ -71,10 +71,6 @@ type Config struct {
 	// that will ever be issued. Slots never reopen (canceled/refunded still count).
 	FoundingProCap int
 
-	// FoundingProDeadline is the date after which no new Founding Pro
-	// subscriptions are accepted, regardless of remaining slots.
-	FoundingProDeadline time.Time
-
 	// ListenAddr is the address the HTTP server binds to.
 	ListenAddr string
 
@@ -95,6 +91,10 @@ type Config struct {
 	// a syntactically valid but retired pin presents at runtime as every
 	// subscription and order read failing.
 	PolarAPIVersion string
+
+	// ProviderSuccessWindow is the maximum age of a successful Polar API read
+	// before the readiness endpoint reports the service unavailable.
+	ProviderSuccessWindow time.Duration
 
 	// EvalProductIDs is the allowlist of Polar product IDs that fulfill the
 	// Enterprise Eval. An order only mints an eval token if its product ID is in
@@ -141,20 +141,20 @@ type OrderProductConfig struct {
 }
 
 const (
-	defaultListenAddr       = ":8080"
-	defaultFoundingProCap   = 50
-	defaultFoundingDeadline = "2026-06-30"
-	defaultDBPath           = "licenses.db"
-	defaultLedgerPath       = "audit.jsonl"
-	defaultFromEmail        = "licenses@mail.pipelab.org"
-	defaultPolarAPIBase     = "https://api.polar.sh"
+	defaultListenAddr     = ":8080"
+	defaultFoundingProCap = 50
+	defaultDBPath         = "licenses.db"
+	defaultLedgerPath     = "audit.jsonl"
+	defaultFromEmail      = "licenses@mail.pipelab.org"
+	defaultPolarAPIBase   = "https://api.polar.sh"
 	// defaultPolarAPIVersion is the dated Polar API contract this code was
 	// written against. Polar retires a version roughly nine months after
 	// release, at which point every request pinned to it returns 404. Nothing
 	// in this process can detect that in advance, so this constant must be
 	// re-pinned to a supported version before the pinned one is retired.
-	defaultPolarAPIVersion = "2026-04"
-	defaultEvalCurrency    = "usd"
+	defaultPolarAPIVersion       = "2026-04"
+	defaultEvalCurrency          = "usd"
+	defaultProviderSuccessWindow = 15 * time.Minute
 )
 
 // LoadConfig reads configuration from environment variables with sensible
@@ -179,6 +179,15 @@ func LoadConfig() (*Config, error) {
 		PolarAPIVersion:   envOrDefault("POLAR_API_VERSION", defaultPolarAPIVersion),
 	}
 
+	providerSuccessWindow, err := time.ParseDuration(envOrDefault("PROVIDER_SUCCESS_WINDOW", defaultProviderSuccessWindow.String()))
+	if err != nil {
+		return nil, fmt.Errorf("parse PROVIDER_SUCCESS_WINDOW: %w", err)
+	}
+	if providerSuccessWindow <= 0 {
+		return nil, fmt.Errorf("PROVIDER_SUCCESS_WINDOW must be positive, got %s", providerSuccessWindow)
+	}
+	cfg.ProviderSuccessWindow = providerSuccessWindow
+
 	// Parse founding pro cap.
 	capStr := envOrDefault("FOUNDING_PRO_CAP", strconv.Itoa(defaultFoundingProCap))
 	foundingCap, err := strconv.Atoi(capStr)
@@ -189,14 +198,6 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("FOUNDING_PRO_CAP must be non-negative, got %d", foundingCap)
 	}
 	cfg.FoundingProCap = foundingCap
-
-	// Parse founding pro deadline.
-	deadlineStr := envOrDefault("FOUNDING_PRO_DEADLINE", defaultFoundingDeadline)
-	deadline, err := time.Parse(time.DateOnly, deadlineStr)
-	if err != nil {
-		return nil, fmt.Errorf("parse FOUNDING_PRO_DEADLINE (use YYYY-MM-DD): %w", err)
-	}
-	cfg.FoundingProDeadline = deadline
 
 	// Parse Enterprise Eval fulfillment config. Eval selling is opt-in: with no
 	// product IDs configured, eval orders are never fulfilled.

@@ -520,7 +520,7 @@ func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt
 		Paths:        []string{"/artifacts/pkg.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
-		Expires:      "2099-12-31",
+		Expires:      temporaryExpiryDate(MaxUnscannablePassthroughHorizon),
 	}}
 
 	err := cfg.Validate()
@@ -531,6 +531,7 @@ func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt
 
 func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 	t.Parallel()
+	expires := temporaryExpiryDate(MaxUnscannablePassthroughHorizon)
 
 	tests := []struct {
 		name    string
@@ -545,17 +546,17 @@ func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 				ContentTypes: []string{"Application/Octet-Stream; charset=binary"},
 				Reason:       "opaque signed archive",
 				Added:        "2026-07-04",
-				Expires:      "2099-12-31",
+				Expires:      expires,
 			},
 		},
 		{
 			name:    "missing reason",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "url host",
-			entry:   UnscannablePassthroughEntry{Host: "https://downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "https://downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
@@ -570,22 +571,22 @@ func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 		},
 		{
 			name:    "bad path prefix",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31", PathPrefixes: []string{"artifacts/"}},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires, PathPrefixes: []string{"artifacts/"}},
 			wantErr: true,
 		},
 		{
 			name:    "path traversal",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/../private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/../private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "escaped path traversal",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/%252e%252e/private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/%252e%252e/private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 		{
 			name:    "non canonical path",
-			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts//private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts//private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: expires},
 			wantErr: true,
 		},
 	}
@@ -2093,7 +2094,7 @@ func TestValidate_QueryEntropyParamExclusions_ValidAndNormalizes(t *testing.T) {
 		Param:   "query",
 		Reason:  " structured query ",
 		Owner:   " platform-security ",
-		Expires: "2026-12-31",
+		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -2111,7 +2112,7 @@ func TestValidate_QueryEntropyParamExclusions_RejectsBadEntries(t *testing.T) {
 		Param:   "query",
 		Reason:  "structured query",
 		Owner:   "platform-security",
-		Expires: "2026-12-31",
+		Expires: temporaryExpiryDate(MaxQueryEntropyParamExclusionHorizon),
 	}
 	tests := []struct {
 		name string
@@ -4194,8 +4195,8 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	updated.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionBlock
 	updated.MCPToolScanning.Action = ActionWarn
-	old.MCPToolScanning.NewToolAction = ActionBlock
-	updated.MCPToolScanning.NewToolAction = ActionWarn
+	old.MCPToolScanning.NewToolAdmission = NewToolWithhold
+	updated.MCPToolScanning.NewToolAdmission = NewToolAdmit
 	old.MCPToolPolicy.Enabled = true
 	updated.MCPToolPolicy.Enabled = true
 	old.MCPToolPolicy.Action = ActionBlock
@@ -4249,7 +4250,7 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 		"mcp_input_scanning.action",
 		"mcp_input_scanning.on_parse_error",
 		"mcp_tool_scanning.action",
-		"mcp_tool_scanning.new_tool_action",
+		"mcp_tool_scanning.new_tool_admission",
 		"mcp_tool_policy.action",
 		"mcp_tool_policy.rules.deny-shell.action",
 		"mcp_binary_integrity.action",
@@ -5114,137 +5115,370 @@ func TestValidate_MCPToolScanningInvalidAction(t *testing.T) {
 	}
 }
 
-// --- MCPToolScanning.NewToolAction Tests ---
+// --- MCPToolScanning.NewToolAdmission Tests ---
 
-func TestApplyDefaults_MCPToolScanningNewToolActionDefaultsToWarn(t *testing.T) {
+func TestApplyDefaults_MCPToolScanningNewToolAdmissionDefaultsToAdmit(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = ActionWarn
-	cfg.MCPToolScanning.NewToolAction = "" // omitted; YAML null/blank decode to the same zero value
+	cfg.MCPToolScanning.NewToolAdmission = "" // omitted; YAML null/blank decode to the same zero value
 	cfg.ApplyDefaults()
 
-	if cfg.MCPToolScanning.NewToolAction != ActionWarn {
-		t.Errorf("expected NewToolAction=warn when enabled with no new_tool_action, got %q", cfg.MCPToolScanning.NewToolAction)
+	if cfg.MCPToolScanning.NewToolAdmission != NewToolAdmit {
+		t.Errorf("expected NewToolAdmission=admit when enabled with no new_tool_admission, got %q", cfg.MCPToolScanning.NewToolAdmission)
 	}
 }
 
-func TestValidate_MCPToolScanningNewToolActionExplicitWarn(t *testing.T) {
+// TestLoad_MCPToolScanningNewToolAdmission_Table drives the real load path -
+// strict decode, reconcileNewToolAdmissionAlias, ApplyDefaults, Validate -
+// for every spelling the operator can write: omitted, YAML null, both
+// deprecated new_tool_action values, both canonical new_tool_admission
+// values, and the both-set error. Loading actual YAML matters for the alias
+// rows: the deprecated spelling is canonicalized by the raw-YAML
+// reconciliation inside Load, so an in-memory table would re-implement the
+// mapping under test instead of executing it.
+func TestLoad_MCPToolScanningNewToolAdmission_Table(t *testing.T) {
+	tests := []struct {
+		name            string
+		admissionLine   string // canonical new_tool_admission YAML line; "" omits the key
+		actionLine      string // deprecated new_tool_action YAML line; "" omits the key
+		wantAdmission   string
+		wantErrContains []string // non-empty: Load must fail naming each substring
+		wantDeprecated  bool     // expect the one-time alias load warning
+	}{
+		{name: "omitted defaults to admit", wantAdmission: NewToolAdmit},
+		{name: "new admit", admissionLine: "  new_tool_admission: admit\n", wantAdmission: NewToolAdmit},
+		{name: "new withhold", admissionLine: "  new_tool_admission: withhold\n", wantAdmission: NewToolWithhold},
+		{name: "old warn canonicalizes to admit", actionLine: "  new_tool_action: warn\n", wantAdmission: NewToolAdmit, wantDeprecated: true},
+		{name: "old block canonicalizes to withhold", actionLine: "  new_tool_action: block\n", wantAdmission: NewToolWithhold, wantDeprecated: true},
+		{name: "old null is treated as omitted", actionLine: "  new_tool_action:\n", wantAdmission: NewToolAdmit},
+		{name: "old empty string is treated as omitted", actionLine: "  new_tool_action: \"\"\n", wantAdmission: NewToolAdmit},
+		{name: "new null is treated as omitted", admissionLine: "  new_tool_admission:\n", wantAdmission: NewToolAdmit},
+		{name: "new empty string and old block uses old alias", admissionLine: "  new_tool_admission: \"\"\n", actionLine: "  new_tool_action: block\n", wantAdmission: NewToolWithhold, wantDeprecated: true},
+		{name: "new spelling and empty old alias are allowed", admissionLine: "  new_tool_admission: withhold\n", actionLine: "  new_tool_action: \"\"\n", wantAdmission: NewToolWithhold},
+		{name: "both empty strings are treated as omitted", admissionLine: "  new_tool_admission: \"\"\n", actionLine: "  new_tool_action: \"\"\n", wantAdmission: NewToolAdmit},
+		{name: "both non-empty keys are an error naming both keys", admissionLine: "  new_tool_admission: withhold\n", actionLine: "  new_tool_action: block\n", wantErrContains: []string{"new_tool_admission", "new_tool_action"}},
+		{name: "invalid canonical value", admissionLine: "  new_tool_admission: banana\n", wantErrContains: []string{"must be admit or withhold"}},
+		{name: "invalid deprecated alias value", actionLine: "  new_tool_action: banana\n", wantErrContains: []string{"must be warn or block"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			yamlBody := "mode: balanced\nmcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n" +
+				tt.admissionLine + tt.actionLine
+			if err := os.WriteFile(path, []byte(yamlBody), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			cfg, err := Load(path)
+			if len(tt.wantErrContains) > 0 {
+				if err == nil {
+					t.Fatalf("Load succeeded with NewToolAdmission=%q, want error", cfg.MCPToolScanning.NewToolAdmission)
+				}
+				for _, want := range tt.wantErrContains {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not contain %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.MCPToolScanning.NewToolAdmission != tt.wantAdmission {
+				t.Errorf("NewToolAdmission = %q, want %q", cfg.MCPToolScanning.NewToolAdmission, tt.wantAdmission)
+			}
+			if cfg.MCPToolScanning.NewToolAction != "" {
+				t.Errorf("deprecated NewToolAction left set to %q after load, want cleared", cfg.MCPToolScanning.NewToolAction)
+			}
+			warnings, err := cfg.ValidateWithWarnings()
+			if err != nil {
+				t.Fatalf("ValidateWithWarnings: %v", err)
+			}
+			var deprecated bool
+			for _, w := range warnings {
+				if w.Field == "mcp_tool_scanning.new_tool_action" {
+					deprecated = true
+				}
+			}
+			if deprecated != tt.wantDeprecated {
+				t.Errorf("deprecation warning present = %v, want %v (warnings: %+v)", deprecated, tt.wantDeprecated, warnings)
+			}
+		})
+	}
+}
+
+func TestMarshal_MCPToolScanningRoundTripLoads(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = ActionWarn
-	cfg.MCPToolScanning.NewToolAction = ActionWarn
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("explicit new_tool_action=warn should validate, got: %v", err)
+	cfg.MCPToolScanning.DetectDrift = true
+	cfg.MCPToolScanning.NewToolAdmission = NewToolWithhold
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "new_tool_action:") {
+		t.Fatalf("serialized config contains empty deprecated alias:\n%s", data)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	roundTripped, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load marshaled config: %v", err)
+	}
+	if got, want := roundTripped.MCPToolScanning.NewToolAdmission, NewToolWithhold; got != want {
+		t.Errorf("NewToolAdmission = %q, want %q", got, want)
 	}
 }
 
-func TestValidate_MCPToolScanningNewToolActionExplicitBlock(t *testing.T) {
-	cfg := Defaults()
-	cfg.MCPToolScanning.Enabled = true
-	cfg.MCPToolScanning.Action = ActionWarn
-	cfg.MCPToolScanning.NewToolAction = ActionBlock
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("explicit new_tool_action=block should validate, got: %v", err)
-	}
-}
-
-// TestValidate_MCPToolScanningNewToolActionBlockWithoutDriftWarns pins the
+// TestValidate_MCPToolScanningNewToolAdmissionWithholdWithoutDriftWarns pins the
 // operability half of the setting: new-tool admission is only evaluated inside
-// the drift-detection path, so block without detect_drift is inert. Accepting
+// the drift-detection path, so withhold without detect_drift is inert. Accepting
 // it silently tells the operator a control is on when nothing changed, which is
 // the failure that gets a security setting trusted and then disbelieved.
-func TestValidate_MCPToolScanningNewToolActionBlockWithoutDriftWarns(t *testing.T) {
+func TestValidate_MCPToolScanningNewToolAdmissionWithholdWithoutDriftWarns(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = ActionWarn
 	cfg.MCPToolScanning.DetectDrift = false
-	cfg.MCPToolScanning.NewToolAction = ActionBlock
+	cfg.MCPToolScanning.NewToolAdmission = NewToolWithhold
 	warnings, err := cfg.ValidateWithWarnings()
 	if err != nil {
 		t.Fatalf("ValidateWithWarnings err = %v, want the pair accepted with a warning, not rejected", err)
 	}
 	var found bool
 	for _, w := range warnings {
-		if w.Field == "mcp_tool_scanning.new_tool_action" {
+		if w.Field == "mcp_tool_scanning.new_tool_admission" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("warnings = %+v, want one naming mcp_tool_scanning.new_tool_action", warnings)
+		t.Fatalf("warnings = %+v, want one naming mcp_tool_scanning.new_tool_admission", warnings)
 	}
 }
 
-// TestValidate_MCPToolScanningNewToolActionBlockWithDriftIsSilent is the
+// TestValidate_MCPToolScanningNewToolAdmissionWithholdWithDriftIsSilent is the
 // negative control: the same pair WITH drift detection is a working
 // configuration and must not warn, or the warning becomes noise operators
 // learn to ignore.
-func TestValidate_MCPToolScanningNewToolActionBlockWithDriftIsSilent(t *testing.T) {
+func TestValidate_MCPToolScanningNewToolAdmissionWithholdWithDriftIsSilent(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = ActionWarn
 	cfg.MCPToolScanning.DetectDrift = true
-	cfg.MCPToolScanning.NewToolAction = ActionBlock
+	cfg.MCPToolScanning.NewToolAdmission = NewToolWithhold
 	warnings, err := cfg.ValidateWithWarnings()
 	if err != nil {
 		t.Fatalf("ValidateWithWarnings err = %v, want success", err)
 	}
 	for _, w := range warnings {
-		if w.Field == "mcp_tool_scanning.new_tool_action" {
+		if w.Field == "mcp_tool_scanning.new_tool_admission" {
 			t.Fatalf("a working configuration warned: %+v", w)
 		}
 	}
 }
 
-func TestValidate_MCPToolScanningNewToolActionInvalid(t *testing.T) {
+func TestValidate_MCPToolScanningNewToolAdmissionInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = ActionWarn
-	cfg.MCPToolScanning.NewToolAction = testInvalid
+	cfg.MCPToolScanning.NewToolAdmission = testInvalid
 	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid new_tool_action")
+		t.Error("expected error for invalid new_tool_admission")
 	}
 }
 
-func TestValidate_MCPToolScanningNewToolActionDisabledSkipsValidation(t *testing.T) {
+func TestValidate_MCPToolScanningNewToolAdmissionDisabledRejectsInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = false
-	cfg.MCPToolScanning.NewToolAction = testInvalid
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("disabled tool scanning should skip new_tool_action validation, got: %v", err)
+	cfg.MCPToolScanning.NewToolAdmission = testInvalid
+	if err := cfg.Validate(); err == nil {
+		t.Error("disabled tool scanning must reject invalid new_tool_admission before runtime can auto-enable it")
 	}
 }
 
-func TestReload_MCPToolScanningNewToolActionDowngradeWarning(t *testing.T) {
+func TestReload_MCPToolScanningNewToolAdmissionDowngradeWarning(t *testing.T) {
 	old := Defaults()
 	old.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionWarn
-	old.MCPToolScanning.NewToolAction = ActionBlock
+	old.MCPToolScanning.NewToolAdmission = NewToolWithhold
 
 	updated := Defaults()
 	updated.MCPToolScanning.Enabled = true
 	updated.MCPToolScanning.Action = ActionWarn
-	updated.MCPToolScanning.NewToolAction = ActionWarn
+	updated.MCPToolScanning.NewToolAdmission = NewToolAdmit
 
 	warnings := ValidateReload(old, updated)
-	if !hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_action") {
-		t.Errorf("expected a new_tool_action downgrade warning, got: %+v", warnings)
+	if !hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_admission") {
+		t.Errorf("expected a new_tool_admission downgrade warning, got: %+v", warnings)
 	}
 }
 
-func TestReload_MCPToolScanningNewToolActionNoChangeNoWarning(t *testing.T) {
+func TestReload_MCPToolScanningNewToolAdmissionNoChangeNoWarning(t *testing.T) {
 	old := Defaults()
 	old.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionWarn
-	old.MCPToolScanning.NewToolAction = ActionBlock
+	old.MCPToolScanning.NewToolAdmission = NewToolWithhold
 
 	updated := Defaults()
 	updated.MCPToolScanning.Enabled = true
 	updated.MCPToolScanning.Action = ActionWarn
-	updated.MCPToolScanning.NewToolAction = ActionBlock
+	updated.MCPToolScanning.NewToolAdmission = NewToolWithhold
 
 	warnings := ValidateReload(old, updated)
-	if hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_action") {
-		t.Errorf("expected no new_tool_action warning when unchanged, got: %+v", warnings)
+	if hasReloadWarning(warnings, "mcp_tool_scanning.new_tool_admission") {
+		t.Errorf("expected no new_tool_admission warning when unchanged, got: %+v", warnings)
+	}
+}
+
+// TestLoad_NewToolAdmissionAliasDeprecationWarning proves the old spelling
+// still loads, canonicalizes to the equivalent new spelling, and surfaces a
+// one-time deprecation warning naming the new key.
+func TestLoad_NewToolAdmissionAliasDeprecationWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yamlBody := `mode: balanced
+mcp_tool_scanning:
+  enabled: true
+  action: warn
+  detect_drift: true
+  new_tool_action: block
+`
+	if err := os.WriteFile(path, []byte(yamlBody), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MCPToolScanning.NewToolAdmission != NewToolWithhold {
+		t.Errorf("NewToolAdmission = %q, want %q", cfg.MCPToolScanning.NewToolAdmission, NewToolWithhold)
+	}
+	if cfg.MCPToolScanning.NewToolAction != "" {
+		t.Errorf("deprecated NewToolAction field left set to %q, want cleared after reconciliation", cfg.MCPToolScanning.NewToolAction)
+	}
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings: %v", err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w.Message, "new_tool_admission") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want one naming new_tool_admission as the replacement", warnings)
+	}
+}
+
+// TestCanonicalPolicyHash_NewToolAdmissionAliasIdentical is the hash-identity
+// proof: for BOTH alias mappings, a config written with the deprecated
+// new_tool_action spelling and an otherwise-identical config written with
+// the canonical new_tool_admission spelling must produce byte-identical
+// CanonicalPolicyHash values, because they express the same effective
+// policy. If a renamed key changed ph for an unchanged policy, every fleet
+// follower pinned to a policy hash would see a spurious drift on a purely
+// cosmetic config rewrite.
+func TestCanonicalPolicyHash_NewToolAdmissionAliasIdentical(t *testing.T) {
+	pairs := []struct {
+		name       string
+		oldLine    string
+		newLine    string
+		wantEffect string
+	}{
+		{name: "old warn equals new admit", oldLine: "  new_tool_action: warn\n", newLine: "  new_tool_admission: admit\n", wantEffect: NewToolAdmit},
+		{name: "old block equals new withhold", oldLine: "  new_tool_action: block\n", newLine: "  new_tool_admission: withhold\n", wantEffect: NewToolWithhold},
+	}
+	for _, pair := range pairs {
+		t.Run(pair.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldPath := filepath.Join(dir, "old-spelling.yaml")
+			newPath := filepath.Join(dir, "new-spelling.yaml")
+			base := "mode: balanced\nmcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n"
+			if err := os.WriteFile(oldPath, []byte(base+pair.oldLine), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if err := os.WriteFile(newPath, []byte(base+pair.newLine), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			oldCfg, err := Load(oldPath)
+			if err != nil {
+				t.Fatalf("Load(old spelling): %v", err)
+			}
+			newCfg, err := Load(newPath)
+			if err != nil {
+				t.Fatalf("Load(new spelling): %v", err)
+			}
+			if oldCfg.MCPToolScanning.NewToolAdmission != pair.wantEffect {
+				t.Fatalf("old spelling resolved NewToolAdmission = %q, want %q", oldCfg.MCPToolScanning.NewToolAdmission, pair.wantEffect)
+			}
+			if newCfg.MCPToolScanning.NewToolAdmission != pair.wantEffect {
+				t.Fatalf("new spelling resolved NewToolAdmission = %q, want %q", newCfg.MCPToolScanning.NewToolAdmission, pair.wantEffect)
+			}
+			oldHash := oldCfg.CanonicalPolicyHash()
+			newHash := newCfg.CanonicalPolicyHash()
+			if oldHash != newHash {
+				t.Errorf("CanonicalPolicyHash differs between spellings: old-spelling=%s new-spelling=%s", oldHash, newHash)
+			}
+		})
+	}
+}
+
+// TestReload_NewToolAdmissionOldToNewSpellingSameEffectivePolicy proves the
+// realistic upgrade path: a deployment running the deprecated
+// new_tool_action spelling hot-reloads an otherwise-identical config
+// rewritten to new_tool_admission. Nothing about the effective policy moved,
+// so the reload must report no mcp_tool_scanning change and the canonical
+// policy hash must be unchanged - a spelling change is not a policy change.
+func TestReload_NewToolAdmissionOldToNewSpellingSameEffectivePolicy(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old-spelling.yaml")
+	newPath := filepath.Join(dir, "new-spelling.yaml")
+	oldBody := `mode: balanced
+mcp_tool_scanning:
+  enabled: true
+  action: warn
+  detect_drift: true
+  new_tool_action: block
+`
+	newBody := `mode: balanced
+mcp_tool_scanning:
+  enabled: true
+  action: warn
+  detect_drift: true
+  new_tool_admission: withhold
+`
+	if err := os.WriteFile(oldPath, []byte(oldBody), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte(newBody), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	oldCfg, err := Load(oldPath)
+	if err != nil {
+		t.Fatalf("Load(old spelling): %v", err)
+	}
+	newCfg, err := Load(newPath)
+	if err != nil {
+		t.Fatalf("Load(new spelling): %v", err)
+	}
+	if oldCfg.MCPToolScanning.NewToolAdmission != NewToolWithhold || newCfg.MCPToolScanning.NewToolAdmission != NewToolWithhold {
+		t.Fatalf("resolved admission differs: old=%q new=%q, both want %q",
+			oldCfg.MCPToolScanning.NewToolAdmission, newCfg.MCPToolScanning.NewToolAdmission, NewToolWithhold)
+	}
+	for _, w := range ValidateReload(oldCfg, newCfg) {
+		if strings.Contains(w.Field, "mcp_tool_scanning") {
+			t.Errorf("spelling-only reload reported %q as a policy change: %+v", w.Field, w)
+		}
+	}
+	if oldCfg.CanonicalPolicyHash() != newCfg.CanonicalPolicyHash() {
+		t.Errorf("canonical policy hash moved on a spelling-only reload: old=%s new=%s",
+			oldCfg.CanonicalPolicyHash(), newCfg.CanonicalPolicyHash())
 	}
 }
 

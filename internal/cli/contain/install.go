@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -119,8 +120,9 @@ Exit codes:
 // because the install + verify code both compare against it and goconst
 // flags repeated string literals.
 const (
-	systemctlActive  = "active"
-	systemctlEnabled = "enabled"
+	systemctlActive   = "active"
+	systemctlInactive = "inactive"
+	systemctlEnabled  = "enabled"
 )
 
 // runInstall is the runtime entry point. Separated from installCmd so tests
@@ -421,12 +423,19 @@ func stepWriteCredentialGuard() step {
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.guardPathUnit)
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable credential guard %s: %w", unit, err)
+			}
 			for _, path := range []string{env.guardPathUnit, env.guardServiceUnit, env.guardScriptPath} {
 				if err := restoreBackup(env, path); err != nil {
 					return err
 				}
+			}
+			// Restore files before reloading so either manager outcome leaves the
+			// on-disk guard in its pre-install state. A failed reload is still
+			// returned; systemd may retain stale unit contents until it recovers.
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err)
 			}
 			return nil
 		},
@@ -1170,6 +1179,31 @@ func managedPipelockConfigPath(env *installEnv) string {
 	return filepath.Join(env.configDir, "pipelock.yaml")
 }
 
+// declaredContainmentLoopbackServices reads the already-promoted managed
+// config's containment.loopback_services, the outbound-exception sibling of
+// containment.metrics_exposure, so contain install can render the declared
+// exceptions into the SAME managed nft block as the implicit proxy-port
+// allow. A missing managed config (a first install ordering issue this
+// function is never reached at, or a test env with no staged config) is
+// treated as no declared exceptions rather than a hard error, matching the
+// pre-existing behavior of installs that never declared any loopback
+// service. Any other read/parse/validation failure fails install closed:
+// contain install must never load an nft ruleset it cannot account for.
+func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, error) {
+	data, err := env.readFile(managedPipelockConfigPath(env))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+	}
+	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+	}
+	return declared, nil
+}
+
 // bytesEqual compares two byte slices without dragging in the bytes
 // import for one call site. Equivalent to bytes.Equal.
 func bytesEqual(a, b []byte) bool {
@@ -1608,17 +1642,27 @@ func stepEnableSystemUnit() step {
 			if !preStateKnown {
 				// Explicit rollback command path: no apply pre-state exists,
 				// so remove the containment-managed system service.
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
-				_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", "pipelock"); err != nil {
+					return fmt.Errorf("disable pipelock for rollback: %w", err)
+				}
+				if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+					return fmt.Errorf("systemctl daemon-reload after rollback: %w", err)
+				}
 				return nil
 			}
 			if !wasEnabled {
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "pipelock")
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "pipelock"); err != nil {
+					return fmt.Errorf("restore disabled pipelock state: %w", err)
+				}
 			}
 			if !wasActive {
-				_, _, _ = env.runCmd(ctx, "systemctl", "stop", "pipelock")
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", "pipelock"); err != nil {
+					return fmt.Errorf("restore inactive pipelock state: %w", err)
+				}
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after restoring pipelock state: %w", err)
+			}
 			return nil
 		},
 	}
@@ -1723,125 +1767,269 @@ func stepWriteCombinedCABundle() step {
 
 func stepInstallNFTRules() step {
 	return step{
-		name: "install-nft-rules",
-		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via pipelock-containment-nft.service",
-		apply: func(ctx context.Context, env *installEnv) (bool, error) {
-			// Check nft version before generating rules. The containment
-			// ruleset requires "meta skuid" (available since nftables 0.4),
-			// "counter log prefix ... drop" inline syntax (0.6+), and nft
-			// check mode (-c/--check, 0.8+). Hosts below that fail at load
-			// time with a cryptic parse error. Detect early and fail with a
-			// clear minimum-version message.
-			if err := checkNFTVersion(ctx, env); err != nil {
-				return false, err
-			}
-			operatorUID, err := operatorUIDFromEnv(env)
-			if err != nil {
-				return false, err
-			}
-			proxyUID, agentUID, err := resolveUIDs(env)
-			if err != nil {
-				return false, err
-			}
-			body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, env.nftTableOrDefault(), env.nftChainOrDefault())
-
-			rulesMatch := false
-			if existing, err := env.readFile(env.nftRulesPath); err == nil {
-				existingBody := string(existing)
-				rulesMatch = existingBody == body
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
-			}
-			tableLoaded := false
-			liveChainAttributed := false
-			liveRulesDrifted := false
-			liveRulesManaged := false
-			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); code == 0 {
-				tableLoaded = true
-				if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
-					liveChainAttributed = true
-				}
-				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
-				liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
-			}
-			if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
-				return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
-			}
-
-			rulesChanged := false
-			if !rulesMatch {
-				if err := env.mkdirAll(filepath.Dir(env.nftRulesPath), modeDirReadable); err != nil {
-					return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftRulesPath), err)
-				}
-				if err := env.chmod(filepath.Dir(env.nftRulesPath), modeDirReadable); err != nil {
-					return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftRulesPath), err)
-				}
-				if err := backupAndWrite(env, env.nftRulesPath, []byte(body), modeNFTFile); err != nil {
-					return false, err
-				}
-				rulesChanged = true
-			}
-			unitChanged, err := ensureNFTPersistUnit(env)
-			if err != nil {
-				return false, err
-			}
-			if !rulesChanged && !unitChanged && tableLoaded && !liveRulesDrifted {
-				return false, nil
-			}
-			// Validate before loading.
-			if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
-				return false, fmt.Errorf("nft validation failed: %w", err)
-			}
-			if !tableLoaded || rulesChanged || liveRulesDrifted {
-				captureNFTPreState(ctx, env)
-			}
-			reloadedManagedChain := false
-			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
-					return false, err
-				}
-				reloadedManagedChain = true
-			}
-			if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
-				if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
-					return false, fmt.Errorf("nft load failed: %w", err)
-				}
-			}
-			captureNFTPreState(ctx, env)
-			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return false, fmt.Errorf("systemctl daemon-reload: %w", err)
-			}
-			if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-				return false, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
-			}
-			return true, nil
-		},
-		undo: func(ctx context.Context, env *installEnv) error {
-			// Restore any previous live table captured during this install
-			// attempt before deleting the newly installed table. If no
-			// previous table existed, drop the table created by this step.
-			if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
-				if err := restorePreviousNFTState(ctx, env); err != nil {
-					return err
-				}
-			} else {
-				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
-			}
-			if err := restoreBackup(env, env.nftRulesPath); err != nil {
-				return err
-			}
-			if err := restoreBackup(env, env.nftPersistUnitPath); err != nil {
-				return err
-			}
-			if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
-				if err := runOrErr(ctx, env, "systemctl", "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-					return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
-				}
-			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
-			return nil
-		},
+		name:  "install-nft-rules",
+		desc:  "write + load /etc/nftables.d/50-pipelock-containment.nft + persist and expiry reconciliation units",
+		apply: stepInstallNFTRulesApplyLocked,
+		undo:  stepInstallNFTRulesUndo,
 	}
+}
+
+// stepInstallNFTRulesApplyLocked wraps stepInstallNFTRulesApply in the
+// exclusive reconcile lock shared with `contain reload-nft-rules` (see
+// withContainmentReconcileLock): this step snapshots the just-promoted
+// managed config's declared loopback services, applies the kernel
+// transaction, and persists the rules file, and a concurrent boot-time or
+// operator reload must not interleave with any of that.
+func stepInstallNFTRulesApplyLocked(ctx context.Context, env *installEnv) (bool, error) {
+	// The reconcile lock lives beside the nft rules file (see
+	// containmentReconcileLockPathFor), so on a clean host -- or an older
+	// install predating /etc/nftables.d -- that directory does not exist
+	// yet the FIRST time this step ever runs. withContainmentReconcileLock's
+	// O_CREAT open cannot create the lock file's PARENT directory, only the
+	// file itself, so acquiring the lock before the directory exists fails
+	// ENOENT and install stops before applying a single rule -- and the
+	// prescribed recovery ("rerun install") would hit the identical
+	// failure, since install is what just failed. Ensure the directory
+	// exists and is safe to use BEFORE ever touching the lock.
+	if err := ensureNFTRulesDirSafe(env); err != nil {
+		return false, err
+	}
+	if env.reconcileLockPath == "" {
+		// A test env that never set a lock path is not exercising locking;
+		// production always sets defaultContainmentReconcileLockPath.
+		return stepInstallNFTRulesApply(ctx, env)
+	}
+	lockFn := env.lockFn
+	if lockFn == nil {
+		lockFn = withContainmentReconcileLock
+	}
+	var changed bool
+	err := lockFn(env.reconcileLockPath, func() error {
+		var applyErr error
+		changed, applyErr = stepInstallNFTRulesApply(ctx, env)
+		return applyErr
+	})
+	return changed, err
+}
+
+// ensureNFTRulesDirSafe securely creates the nft rules directory (and, by
+// extension, the directory the reconcile lock lives in -- they are the
+// same directory) BEFORE the reconcile lock is ever acquired there.
+// ensureSafeDirectory (osops.go, shared with every other privileged-write
+// path in this package) walks and lstats each path component and refuses a
+// symlink anywhere in the ancestry or at the target itself, so this cannot
+// be redirected into an attacker- or accident-controlled location. The
+// directory is created 0o755, root-owned (mkdirAll/chmod run as this
+// process, which for `contain install` is always root) -- the identical
+// mode the later rules-write step already uses, and deliberately NOT
+// chowned to pipelock-proxy: only root and the proxy account's own
+// membership needs read access to the rules file, and the lock file this
+// directory now also holds must stay outside the proxy-writable data
+// directory (see withContainmentReconcileLock's doc comment for why).
+// stepInstallNFTRulesApply's own mkdir/chmod of the same directory becomes
+// an idempotent no-op once this has already run.
+func ensureNFTRulesDirSafe(env *installEnv) error {
+	dir := filepath.Dir(env.nftRulesPath)
+	if err := ensureSafeDirectory(env, dir); err != nil {
+		return fmt.Errorf("nft rules directory %s: %w", dir, err)
+	}
+	// Create the directory only when it is absent, and set the mode only on
+	// the directory this call created. A no-op reinstall must not widen a
+	// directory an operator or distribution deliberately keeps stricter than
+	// 0755: this helper runs before the rules-unchanged early return, so an
+	// unconditional chmod here would rewrite the mode on every reinstall.
+	if _, err := env.stat(dir); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if err := env.mkdirAll(dir, modeDirReadable); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := env.chmod(dir, modeDirReadable); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	return nil
+}
+
+func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error) {
+	// Check nft version before generating rules. The containment
+	// ruleset requires "meta skuid" (available since nftables 0.4),
+	// "counter log prefix ... drop" inline syntax (0.6+), and nft
+	// check mode (-c/--check, 0.8+). Hosts below that fail at load
+	// time with a cryptic parse error. Detect early and fail with a
+	// clear minimum-version message.
+	if err := checkNFTVersion(ctx, env); err != nil {
+		return false, err
+	}
+	operatorUID, err := operatorUIDFromEnv(env)
+	if err != nil {
+		return false, err
+	}
+	proxyUID, agentUID, err := resolveUIDs(env)
+	if err != nil {
+		return false, err
+	}
+	loopbackServices, err := declaredContainmentLoopbackServices(env, env.proxyPort)
+	if err != nil {
+		return false, err
+	}
+	body := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID:      operatorUID,
+		ProxyUID:         proxyUID,
+		AgentUID:         agentUID,
+		ProxyPort:        env.proxyPort,
+		Table:            env.nftTableOrDefault(),
+		Chain:            env.nftChainOrDefault(),
+		LoopbackServices: loopbackServices,
+	})
+
+	rulesMatch := false
+	if existing, err := env.readFile(env.nftRulesPath); err == nil {
+		existingBody := string(existing)
+		rulesMatch = existingBody == body
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
+	}
+	tableLoaded := false
+	liveChainAttributed := false
+	liveRulesDrifted := false
+	liveRulesManaged := false
+	if out, code, _ := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault()); code == 0 {
+		tableLoaded = true
+		if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
+			liveChainAttributed = true
+		}
+		liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort, loopbackServices)
+		liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
+	}
+	if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
+		return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
+	}
+	// Capture every state rollback must restore before changing any rules or
+	// unit. In particular, a service-unit write can succeed while the timer
+	// write fails; rollback must then preserve a previously enabled timer.
+	if err := captureNFTUnitFilePreState(env); err != nil {
+		return false, err
+	}
+	captureNFTPreState(ctx, env)
+
+	rulesChanged := false
+	if !rulesMatch {
+		// No mkdir or chmod here. ensureNFTRulesDirSafe already ran, before
+		// the reconcile lock and before either path into this function, and
+		// it deliberately sets the mode ONLY on a directory it created. An
+		// unconditional chmod here rewrote that mode on every rules change,
+		// so an operator who hardened the rules directory had it widened
+		// again the next time the rules body moved.
+		if err := backupAndWrite(env, env.nftRulesPath, []byte(body), modeNFTFile); err != nil {
+			return false, err
+		}
+		rulesChanged = true
+	}
+	persistUnitChanged, err := ensureNFTPersistUnit(env)
+	if err != nil {
+		return false, err
+	}
+	expiryUnitChanged, err := ensureNFTExpiryUnits(env)
+	if err != nil {
+		return persistUnitChanged || expiryUnitChanged, err
+	}
+	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
+	if changed || !tableLoaded || liveRulesDrifted {
+		// Validate before loading.
+		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
+			return changed, fmt.Errorf("nft validation failed: %w", err)
+		}
+		reloadedManagedChain := false
+		if tableLoaded && (rulesChanged || liveRulesDrifted) {
+			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
+				return changed, err
+			}
+			reloadedManagedChain = true
+		}
+		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
+			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
+				return changed, fmt.Errorf("nft load failed: %w", err)
+			}
+		}
+	}
+	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+		return changed, fmt.Errorf("systemctl daemon-reload: %w", err)
+	}
+	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
+		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
+	}
+	if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	}
+	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
+	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
+	return changed || !tableLoaded || liveRulesDrifted || timerReconciled || persistReconciled, nil
+}
+
+func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
+	// Stop the timer before restoring its unit files so a scheduled expiry
+	// cannot race this rollback, then stop a service invocation already in
+	// flight. The prior timer state is restored below after daemon-reload.
+	if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	}
+	if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(env.nftExpiryServicePath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryServicePath), err)
+	}
+	// Restore any previous live table captured during this install
+	// attempt before deleting the newly installed table. If no
+	// previous table existed, drop the table created by this step.
+	if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
+		if err := restorePreviousNFTState(ctx, env); err != nil {
+			return err
+		}
+	} else {
+		// Report a failed drop. Every other branch of this rollback returns
+		// its error; discarding this one meant an install that failed on a
+		// host with no prior table could report a clean rollback while the
+		// table this step created was still loaded in the kernel.
+		if _, code, err := env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault()); err != nil {
+			return fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err)
+		} else if code != 0 {
+			return fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code)
+		}
+	}
+	if err := restoreBackup(env, env.nftRulesPath); err != nil {
+		return err
+	}
+	if err := restoreNFTUnitBackup(env, env.nftPersistUnitPath, env.prevNFTPersistUnitExisted); err != nil {
+		return err
+	}
+	if err := restoreNFTUnitBackup(env, env.nftExpiryTimerPath, env.prevNFTExpiryTimerExisted); err != nil {
+		return err
+	}
+	if err := restoreNFTUnitBackup(env, env.nftExpiryServicePath, env.prevNFTExpiryServiceExisted); err != nil {
+		return err
+	}
+	if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
+		if err := runSystemctlCleanupUnit(ctx, env, "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
+			return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
+		}
+	}
+	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err)
+	}
+	if env.prevNFTExpiryTimerStateKnown {
+		timer := filepath.Base(env.nftExpiryTimerPath)
+		if env.prevNFTExpiryTimerEnabled {
+			if err := runOrErr(ctx, env, "systemctl", "enable", timer); err != nil {
+				return fmt.Errorf("restore %s enabled state: %w", timer, err)
+			}
+		}
+		if env.prevNFTExpiryTimerActive {
+			if err := runOrErr(ctx, env, "systemctl", "start", timer); err != nil {
+				return fmt.Errorf("restore %s active state: %w", timer, err)
+			}
+		}
+	}
+	return nil
 }
 
 func captureNFTPreState(ctx context.Context, env *installEnv) {
@@ -1861,6 +2049,48 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 			env.prevNFTPersistStateKnown = true
 		}
 	}
+	if !env.prevNFTExpiryTimerStateKnown {
+		enabledOut, _, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
+		activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.nftExpiryTimerPath))
+		if enabledErr == nil && activeErr == nil {
+			env.prevNFTExpiryTimerEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			env.prevNFTExpiryTimerActive = strings.TrimSpace(activeOut) == systemctlActive
+			env.prevNFTExpiryTimerStateKnown = true
+		}
+	}
+}
+
+func captureNFTUnitFilePreState(env *installEnv) error {
+	if env.prevNFTUnitFilesStateKnown {
+		return nil
+	}
+	for _, unit := range []struct {
+		path   string
+		exists *bool
+	}{
+		{env.nftPersistUnitPath, &env.prevNFTPersistUnitExisted},
+		{env.nftExpiryServicePath, &env.prevNFTExpiryServiceExisted},
+		{env.nftExpiryTimerPath, &env.prevNFTExpiryTimerExisted},
+	} {
+		_, err := env.lstat(unit.path)
+		switch {
+		case err == nil:
+			*unit.exists = true
+		case errors.Is(err, os.ErrNotExist):
+			*unit.exists = false
+		default:
+			return fmt.Errorf("stat %s before updating containment units: %w", unit.path, err)
+		}
+	}
+	env.prevNFTUnitFilesStateKnown = true
+	return nil
+}
+
+func restoreNFTUnitBackup(env *installEnv, path string, existed bool) error {
+	if existed {
+		return restoreBackupIfPresent(env, path)
+	}
+	return restoreBackup(env, path)
 }
 
 func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
@@ -1923,24 +2153,31 @@ func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
 	return false
 }
 
-func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService) bool {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return false
 	}
-	return nftChainLinesHaveManagedOutputBaseChain(lines) &&
-		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
-		chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
-		chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&
-		chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") &&
-		chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") &&
-		!chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
-			operatorUID:   operatorUID,
-			operatorKnown: true,
-			proxyUID:      proxyUID,
-			agentUID:      agentUID,
-		}, proxyPort)
+	if !nftChainLinesHaveManagedOutputBaseChain(lines) ||
+		!chainLinesHaveSkuidAcceptForUID(lines, operatorUID) ||
+		!chainLinesHaveSkuidAcceptForUID(lines, proxyUID) ||
+		!chainLinesHaveAgentCatchAllDrop(lines, agentUID) ||
+		!chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, agentUID, proxyPort) ||
+		!chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "udp") ||
+		!chainLinesHaveAgentDNSDropBeforeCatchAll(lines, agentUID, "tcp") {
+		return false
+	}
+	for _, svc := range loopbackServices {
+		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, agentUID, svc.Host, svc.Port) {
+			return false
+		}
+	}
+	return !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{
+		operatorUID:   operatorUID,
+		operatorKnown: true,
+		proxyUID:      proxyUID,
+		agentUID:      agentUID,
+	}, proxyPort, loopbackServices)
 }
 
 func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
@@ -2009,27 +2246,57 @@ func nftRulesIncludeLine(path string) string {
 }
 
 func ensureNFTPersistUnit(env *installEnv) (bool, error) {
-	if err := env.mkdirAll(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
+	return ensureContainmentUnit(env, env.nftPersistUnitPath, renderNFTPersistUnit(env))
+}
+
+func ensureNFTExpiryUnits(env *installEnv) (bool, error) {
+	serviceChanged, err := ensureContainmentUnit(env, env.nftExpiryServicePath, renderNFTExpiryService(env))
+	if err != nil {
+		return serviceChanged, err
 	}
-	if err := env.chmod(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
+	timerChanged, err := ensureContainmentUnit(env, env.nftExpiryTimerPath, renderNFTExpiryTimer(env))
+	return serviceChanged || timerChanged, err
+}
+
+func ensureContainmentUnit(env *installEnv, path, body string) (bool, error) {
+	if err := env.mkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	body := renderNFTPersistUnit(env)
-	if existing, err := env.readFile(env.nftPersistUnitPath); err == nil && string(existing) == body {
-		if err := env.chmod(env.nftPersistUnitPath, modeUnitFile); err != nil {
-			return false, fmt.Errorf("chmod %s: %w", env.nftPersistUnitPath, err)
+	if err := env.chmod(filepath.Dir(path), modeDirReadable); err != nil {
+		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(path), err)
+	}
+	if existing, err := env.readFile(path); err == nil && string(existing) == body {
+		if err := env.chmod(path, modeUnitFile); err != nil {
+			return false, fmt.Errorf("chmod %s: %w", path, err)
 		}
 		return false, nil
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read %s: %w", env.nftPersistUnitPath, err)
+		return false, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := backupAndWrite(env, env.nftPersistUnitPath, []byte(body), modeUnitFile); err != nil {
+	if err := backupAndWrite(env, path, []byte(body), modeUnitFile); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
+// renderNFTPersistUnit renders the boot-time reconciliation unit. Its
+// ExecStart is `contain reload-nft-rules`, which now takes an exclusive
+// lock (withContainmentReconcileLock) before touching the managed config,
+// the kernel, or the persisted rules file. If that lock cannot be acquired
+// safely -- lock path refused as a symlink/FIFO/foreign-owned file, or its
+// parent directory is unwritable -- reload-nft-rules exits non-zero WITHOUT
+// loading anything: this unit fails, systemd marks it failed (Type=oneshot
+// means a non-zero exit is a failure, not a "ran once and forgot"), and
+// because the containment nftables table is not persistent across reboots
+// on its own (only this unit loads it), the previous boot's containment is
+// NOT re-loaded this boot -- the host comes up with no containment rule for
+// the agent at all. The recovery is the same in every such refusal: rerun
+// `pipelock contain install` as root, which re-derives the rules file, the
+// lock file, and this unit from scratch. Every lock-refusal error text
+// (see withContainmentReconcileLock, containmentReconcileLockRecovery)
+// already names that command; this comment is the operator-facing summary
+// for someone reading `systemctl status pipelock-containment-nft.service`
+// or this unit file directly.
 func renderNFTPersistUnit(env *installEnv) string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -2043,11 +2310,48 @@ func renderNFTPersistUnit(env *installEnv) string {
 		"",
 		"[Service]",
 		"Type=oneshot",
+		"# If this fails (including a refused reconcile lock -- see",
+		"# `pipelock contain reload-nft-rules` and its lock error text),",
+		"# containment from the previous boot is NOT re-loaded and the agent",
+		"# has no containment rule at all until an operator reruns",
+		"# `pipelock contain install` as root.",
 		"ExecStart=" + env.pipelockTarget + " contain reload-nft-rules",
 		"RemainAfterExit=yes",
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderNFTExpiryService(env *installEnv) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Pipelock containment loopback expiry reconciliation",
+		"Documentation=https://github.com/luckyPipewrench/pipelock",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"TimeoutStartSec=" + containmentExpiryServiceTimeout,
+		"ExecStart=" + env.pipelockTarget + " contain reload-nft-rules",
+		"",
+	}, "\n")
+}
+
+func renderNFTExpiryTimer(env *installEnv) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Reconcile Pipelock containment loopback expiries",
+		"Documentation=https://github.com/luckyPipewrench/pipelock",
+		"",
+		"[Timer]",
+		"OnCalendar=" + containmentExpiryTimerCalendar,
+		"Persistent=true",
+		"AccuracySec=" + containmentExpiryTimerAccuracy,
+		"Unit=" + filepath.Base(env.nftExpiryServicePath),
+		"",
+		"[Install]",
+		"WantedBy=timers.target",
 		"",
 	}, "\n")
 }
@@ -2202,9 +2506,59 @@ func operatorUIDFromEnv(env *installEnv) (int, error) {
 	return uid, nil
 }
 
+// nftLoopbackAcceptLine renders one extra agent-reachable loopback accept.
+// A ::1 declared service uses "ip6 daddr" and is recognized by
+// lineHasAgentLoopbackAllowAnyPortAnyHost (reload) and
+// lineHasAgentLoopbackAllowForHost (verify), the dual-stack siblings of the
+// IPv4-only lineAgentProxyLoopbackAllowUID that only the specific-proxy-port
+// drift check still uses.
+func nftLoopbackAcceptLine(agentUID int, host string, port int) string {
+	daddrKeyword := "ip daddr"
+	if host == "::1" {
+		daddrKeyword = "ip6 daddr"
+	}
+	return fmt.Sprintf("\t        meta skuid %d %s %s tcp dport %d accept\n", agentUID, daddrKeyword, host, port)
+}
+
+// nftRuleOptions carries renderNFTRules' inputs once the addition of declared
+// loopback services would otherwise push the parameter count past six.
+type nftRuleOptions struct {
+	OperatorUID      int
+	ProxyUID         int
+	AgentUID         int
+	ProxyPort        int
+	Table            string
+	Chain            string
+	LoopbackServices []config.ContainmentLoopbackService
+}
+
 // renderNFTRules emits the table definition. Matches the runbook one-to-one
-// with concrete UIDs interpolated.
+// with concrete UIDs interpolated. Declared loopback services (the outbound
+// sibling of containment.metrics_exposure) render as additional agent-owned
+// loopback accepts inside the SAME managed block, immediately after the
+// implicit proxy-port allow and before the DNS drops, so a reload that
+// recognizes and replaces the managed block replaces these too instead of
+// leaving them as a hand-inserted carve-out.
 func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain string) string {
+	return renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: operatorUID,
+		ProxyUID:    proxyUID,
+		AgentUID:    agentUID,
+		ProxyPort:   proxyPort,
+		Table:       table,
+		Chain:       chain,
+	})
+}
+
+// renderNFTRulesWithServices is renderNFTRules plus declared
+// containment.loopback_services exceptions rendered into the same managed
+// block, immediately after the implicit proxy-port allow and before the DNS
+// drops.
+func renderNFTRulesWithServices(opts nftRuleOptions) string {
+	var loopback strings.Builder
+	for _, svc := range opts.LoopbackServices {
+		loopback.WriteString(nftLoopbackAcceptLine(opts.AgentUID, svc.Host, svc.Port))
+	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d
 	table inet %s {
@@ -2215,27 +2569,44 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 	        meta skuid %d accept
 
 	        meta skuid %d ip daddr 127.0.0.1 tcp dport %d accept
-	        meta skuid %d udp dport 53 counter log prefix "%s " drop
+%s	        meta skuid %d udp dport 53 counter log prefix "%s " drop
 	        meta skuid %d tcp dport 53 counter log prefix "%s " drop
 	        meta skuid %d counter log prefix "%s " drop
 	    }
 	}
-	`, operatorUID, proxyUID, agentUID, proxyPort, table, chain,
-		operatorUID, proxyUID, agentUID, proxyPort,
-		agentUID, nftLogPrefix(EgressClassDirectDNS),
-		agentUID, nftLogPrefix(EgressClassDirectDNS),
-		agentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
+	`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain,
+		opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort,
+		loopback.String(),
+		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
+		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
+		opts.AgentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
 }
 
 // RenderNFTRules returns the canonical Pipelock containment nftables ruleset for
-// the given uids and proxy port, using the default table/chain names. It is the
-// single source of truth for the owner-match egress rule, exported so a
-// deployment that establishes containment WITHOUT `pipelock contain install`
-// (for example a per-visitor microVM boot entrypoint that has no systemd) loads
-// the IDENTICAL proven rule instead of a drift-prone hand-copied one. The
-// returned text is suitable for `nft -f -`.
+// the given uids and proxy port, using the default table/chain names, and no
+// declared loopback services. It is the single source of truth for the
+// owner-match egress rule, exported so a deployment that establishes
+// containment WITHOUT `pipelock contain install` (for example a per-visitor
+// microVM boot entrypoint that has no systemd) loads the IDENTICAL proven rule
+// instead of a drift-prone hand-copied one. The returned text is suitable for
+// `nft -f -`.
 func RenderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int) string {
 	return renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+}
+
+// RenderNFTRulesWithLoopbackServices is RenderNFTRules plus declared
+// containment.loopback_services exceptions, for a caller (contain install,
+// contain verify) that has resolved the managed config's declared set.
+func RenderNFTRulesWithLoopbackServices(operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService) string {
+	return renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID:      operatorUID,
+		ProxyUID:         proxyUID,
+		AgentUID:         agentUID,
+		ProxyPort:        proxyPort,
+		Table:            defaultNFTTable,
+		Chain:            defaultNFTChain,
+		LoopbackServices: loopbackServices,
+	})
 }
 
 // ---------------------------------------------------------------------------

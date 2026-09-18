@@ -1,6 +1,6 @@
-# `pipelock contain` — host containment lifecycle
+# `pipelock contain`, host containment lifecycle
 
-`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-level (nftables owner-match) containment model on a single Linux host. It splits one workstation into three roles — the operator account, `pipelock-proxy`, and `pipelock-agent` — and uses nftables owner-match rules to force processes running as the contained agent user through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
+`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-level (nftables owner-match) containment model on a single Linux host. It splits one workstation into three roles, the operator account, `pipelock-proxy`, and `pipelock-agent`, and uses nftables owner-match rules to force processes running as the contained agent user through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
 
 The subcommands are:
 
@@ -25,11 +25,11 @@ Each mutating subcommand accepts `--dry-run` to print the planned actions withou
 
 Single-user containment can't enforce egress at the kernel: the same user who runs the agent can also stop the proxy, edit the config, replace the binary, or rewrite the sudoers entry. Three users solve that:
 
-- **`operator`** — the human. Owns the install. Reaches the internet directly.
-- **`pipelock-proxy`** — runs `pipelock` itself. Owns the config, the CA bundle, the binary-integrity pin. The agent user cannot read its state directory.
-- **`pipelock-agent`** — runs the AI agent process. Cannot reach the internet directly: nftables owner-match denies its outbound TCP except to loopback. All egress goes through `pipelock-proxy` on 127.0.0.1.
+- **`operator`**, the human. Owns the install. Reaches the internet directly.
+- **`pipelock-proxy`**, runs `pipelock` itself. Owns the config, the CA bundle, the binary-integrity pin. The agent user cannot read its state directory.
+- **`pipelock-agent`**, runs the AI agent process. Cannot reach the internet directly: nftables owner-match denies its outbound TCP except to loopback. All egress goes through `pipelock-proxy` on 127.0.0.1.
 
-The agent runs with reduced capabilities (no privileged ports, no raw sockets, no NET_ADMIN). Traffic owned by the agent UID cannot bypass the proxy: the kernel owner-match refuses to forward those packets anywhere else. The rule keys on the socket owner (UID), so keeping host setuid/sudo policy tight is still an operator responsibility — a setuid or file-capability helper reachable by the agent could egress under a different UID (see "Remaining operator responsibilities"). This is why a signed posture capsule grades `kernel_observed` (the boundary was kernel-refused at attestation time) rather than an airtight continuous `kernel_enforced`, which is reserved for a future eBPF/LSM kernel-gate.
+The agent runs with reduced capabilities (no privileged ports, no raw sockets, no NET_ADMIN). Traffic owned by the agent UID cannot bypass the proxy: the kernel owner-match refuses to forward those packets anywhere else. The rule keys on the socket owner (UID), so keeping host setuid/sudo policy tight is still an operator responsibility, a setuid or file-capability helper reachable by the agent could egress under a different UID (see "Remaining operator responsibilities"). This is why a signed posture capsule grades `kernel_observed` (the boundary was kernel-refused at attestation time) rather than an airtight continuous `kernel_enforced`, which is reserved for a future eBPF/LSM kernel-gate.
 
 ## `pipelock contain run`
 
@@ -72,12 +72,31 @@ Flags:
 | `--port` | `8888` | Loopback proxy port to verify before launch. |
 | `--posture-output` | `/var/lib/pipelock/contain/posture` | Directory where the signed posture capsule is written. |
 | `--dry-run` | off | Run preflight and print the session contract, then exit without emitting a posture capsule or launching. |
+| `--workspace-diff-cap-bytes` | `10485760` (10 MiB) | Per-file content-digest cap for the workspace change statement below. Files at or under the cap get a sha256 digest; larger files are recorded oversize with no digest. |
+
+### Workspace change statement
+
+The posture capsule proves what the agent was *allowed* to do. It does not say what the agent actually changed on disk. `contain run` closes that gap with a second, independent artifact: a signed **workspace change statement**, written next to the posture capsule as `workspace-change-statement.json`.
+
+Before launch, `contain run` records a manifest of every granted workspace (the same grants shown in the session contract): each path's kind (file/dir/symlink/other), size, modification time, and a sha256 content digest for regular files at or under `--workspace-diff-cap-bytes`. The digest is read through a symlink-safe, identity-checked open, so a path swapped for a symlink or a different file between listing and reading is refused rather than silently hashed. Symlinks themselves are recorded by their target string and are never followed. When the kernel supplies mount IDs, any entry on a different mount than the granted root, file or directory, is recorded as unreadable/excluded with a reason and is never hashed or descended into. When mount IDs are unavailable, the statement records `boundary_check: "device-only"`, uses `st_dev` as a weaker fallback, and is incomplete with an explicit reason because same-device bind mounts cannot be excluded reliably. The walk also stops at a local entry-count and total-path-bytes budget (`internal/cli/contain/workspacediff.DefaultBudget`, currently 200,000 entries or 64 MiB of path bytes, a Pipelock operational default, not a standard) so a pathological tree cannot make evidence collection itself unbounded.
+
+After the launched tool exits, whether it exited cleanly, crashed, or was refused, `contain run` takes the same manifest again and diffs the two, naming every path added, removed, or modified, plus an unreadable/excluded count. A path that is unreadable, mount-excluded, or identity-changed in either snapshot is excluded from added/removed/modified along with its entire subtree, a directory that merely became unreadable mid-session is never reported as if its still-present contents had been removed. Whenever any such exclusion exists, or a snapshot's walk budget was exceeded, or the granted workspace root itself disappeared during the session, the statement sets `incomplete: true` and names the reason, instead of reporting an empty, misleadingly-clean diff.
+
+The signing key (`flight_recorder.signing_key_path`) is resolved once before launch, then that exact key signs both the posture capsule and the statement after launch. An operator rotating the signing key while the agent runs cannot change which key signs either artifact for that session. If the key cannot be loaded before launch, `contain run` says so up front (before starting the agent) and never attempts the statement afterward.
+
+The statement binds itself to this exact session by carrying the sha256 digest of this run's posture capsule BYTES (`posture_capsule_sha256`). **This binding is checked only by `pipelock posture verify --workspace-statement <path>`, not by the statement's own signature.** A statement's signature alone proves only that the statement is authentic; it verifies just as well when paired with a capsule from an unrelated session. `--workspace-statement` additionally re-hashes the exact capsule file bytes at `--proof` and rejects the pair if that hash does not equal the statement's declared binding, so a mismatched capsule/statement pair, or a capsule file that was altered after the statement was bound to it, is caught rather than accepted as coherent evidence. An incomplete statement is authentic evidence of a partial observation, not a passing verification: the command reports its signed boundary-check mode and incomplete reason, then fails.
+
+This is evidence, not backup: the statement carries paths, sizes, timestamps, and digests, never file content. There is no snapshot store, no restore path, no dedup, and no retention policy, Pipelock does not keep copies of what changed, only a signed record that it changed. A statement failure (for example, a missing signing key) does not fail the session or block the launch; the posture capsule and the launch outcome stand on their own. Every outcome is also printed as a single stable line an operator script can key on without parsing prose: `workspace_change_statement=written path=<path> boundary_check=<mode>`, `workspace_change_statement=incomplete reason="<why>" path=<path> boundary_check=<mode>`, or `workspace_change_statement=unavailable reason="<why>"`.
+
+If there are no granted workspaces, no statement is written and no outcome line is printed.
+
+Mount-boundary detection and the TOCTOU identity re-check rely on POSIX device/inode numbers and are available only where Go exposes them (Linux, and other unix targets); `contain run` itself is Linux-only today (see `containRunSupported`), so this is not a gap in current deployments.
 
 Exit codes:
 
-- **0** — preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
-- **1** — containment was broken, posture emission failed, or the launched agent exited non-zero.
-- **2** — usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
+- **0**, preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
+- **1**, containment was broken, posture emission failed, or the launched agent exited non-zero.
+- **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
 
 Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.
 
@@ -123,9 +142,9 @@ On systemd 253 or newer, newly installed `pipelock.service` units are `Type=noti
 
 Exit codes:
 
-- **0** — all steps applied (or already in place).
-- **1** — a step failed; earlier applied steps were rolled back.
-- **2** — precondition error: not root, missing executable, bad `--config`.
+- **0**, all steps applied (or already in place).
+- **1**, a step failed; earlier applied steps were rolled back.
+- **2**, precondition error: not root, missing executable, bad `--config`.
 
 ### Post-install output
 
@@ -173,9 +192,9 @@ Flags:
 
 Exit codes:
 
-- **0** — upgrade completed and all verification probes passed.
-- **1** — upgrade failed; previous state was restored.
-- **2** — precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).
+- **0**, upgrade completed and all verification probes passed.
+- **1**, upgrade failed; previous state was restored.
+- **2**, precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).
 
 ## `pipelock contain verify`
 
@@ -241,6 +260,108 @@ Replace the documentation addresses with addresses assigned to the host and scra
 
 The proxy also refuses to dial its configured metrics address and port. An `ssrf.ip_allowlist`, trusted domain, or grant cannot reopen this path through the agent's permitted proxy connection.
 
+### Declared loopback services
+
+The contained agent can reach exactly one loopback destination by default: the
+proxy port. An operator who needs the agent to reach a second local TCP
+service (for example a local search index) declares it in the managed config
+instead of hand-editing the nftables rules. Declaring it is the ONLY
+supported path: a hand-inserted loopback accept adjacent to the managed
+block is not tolerated forever. Reload's block matcher recognizes an
+agent-owned loopback accept immediately following the managed proxy-port
+allow as PART of the managed block (this is what lets it grow the block to
+hold declared entries across reloads without leaving a stale one-off allow
+behind), so a hand-inserted rule in that position is absorbed into -- and
+then removed by -- the next `contain reload-nft-rules`, the same way a
+genuinely removed declared entry is removed. Reload emits no warning of its
+own when it removes one. `contain verify` flags
+it as an unexpected verdict in the meantime, because it does not match any
+declared entry. Declare the service instead of hand-editing the rules; that
+is the trap `containment.loopback_services` exists to close.
+
+```yaml
+containment:
+  loopback_services:
+    - host: 127.0.0.1
+      port: 9200
+      owner: search-team
+      reason: agent needs a local search index for retrieval
+      expires_at: 2026-12-01T00:00:00Z
+```
+
+Each entry carries the same required-and-bounded lifecycle as
+`containment.metrics_exposure`: `host` must be a loopback literal (`127.0.0.1`
+or `::1` -- not a hostname, wildcard, or CIDR), `port` is a single TCP port
+between 1 and 65535 and must not equal the agent-accessible proxy port (that
+allow is implicit), and `owner`, `reason`, and `expires_at` (RFC3339, must
+remain in the future) are all required so a reviewer can tell who accepted
+the exception, why, and when it ends. Pipelock rejects a malformed, expired,
+duplicate, or proxy-port-colliding entry at config load time, so `pipelock
+check` and `contain install` both fail closed on it rather than silently
+dropping the exception.
+
+`contain install` renders each declared entry into the same managed nftables
+block as the implicit proxy-port allow. `contain reload-nft-rules` -- the
+same command the boot-time persistence unit runs on every boot -- re-reads
+the managed config and re-renders that block from the CURRENT declared set
+every time it runs, not from whatever it last loaded: an entry an operator
+removes, or one whose `expires_at` has passed, is dropped from the live
+chain and from the persisted rules file at the next reconciliation, without
+needing a fresh `contain install`. **Every add, remove, or expiry of a
+`containment.loopback_services` entry needs a reconciliation pass to reach
+the kernel.** Run `pipelock contain reload-nft-rules` as root after editing
+the managed config; the boot-time unit reruns it automatically on the next
+boot, and `contain install` reruns it too if that is the change you are
+already making. If the managed config is missing, unreadable, or the
+declared set as a whole is malformed or contains an expired entry,
+reconciliation fails closed: it renders the managed block with ZERO
+declared loopback services (the agent stays contained and only loses the
+extra service) and logs a warning naming the config path and why (a missing
+managed config names `pipelock contain install` as the recovery command; an
+unreadable or malformed one names re-running reconciliation once it is
+fixed).
+
+`contain install` also enables a privileged containment expiry timer. Its
+oneshot service runs the same `contain reload-nft-rules` command, so a
+declared loopback permission is removed on the **next successful
+reconciliation** after its expiry. That is normally within the timer unit's
+declared calendar cadence plus its declared accuracy slack; it is not a
+promise that access ends at the declared instant. `Persistent=true` catches
+a calendar firing missed while the timer was inactive, but does not make that
+bound exact. The service start timeout makes a blocked invocation visible in
+`systemctl status`; it does not resolve a blocked reconciliation lock.
+
+`contain verify` requires the expiry timer and service to have the managed
+linkage and command, the timer to be enabled, and the service not to be
+masked. If it reports a masked unit, unmask that unit and rerun `pipelock
+contain install` as root.
+
+Reconciliation itself is guarded by an exclusive lock, so `contain install`
+and `contain reload-nft-rules` never interleave on the same managed config
+and nft state. That lock file lives beside the persisted rules file under
+`/etc/nftables.d/`, a root-owned directory -- never under the
+pipelock-proxy-owned data directory -- and reconciliation refuses to trust
+anything at the lock path that is not a plain file owned by root or itself
+(a symlink or a named pipe placed there is rejected outright, not followed
+or blocked on). If the lock cannot be safely acquired, reconciliation fails
+with a hard error naming the lock path and `pipelock contain install` as
+the recovery. On the boot-time unit specifically, that means the containment
+rule from the previous boot is NOT re-loaded and the agent has no
+containment rule at all until an operator reruns `pipelock contain
+install` as root -- `systemctl status pipelock-containment-nft.service`
+shows the failure.
+
+`contain verify` checks the declared set against the live chain in both
+directions: an agent-owned loopback accept for a port that is neither the
+proxy port nor a declared entry fails as an unexpected verdict before the
+agent's catch-all drop, and a declared entry with no matching live accept
+fails by name (`host:port`, with its `owner`), so a declaration that never
+made it into the loaded ruleset is visible instead of silently assumed. When
+the declared set itself cannot be read or validated, the FAIL detail also
+names the unusable entry (host:port, owner, and the expiry or parse failure)
+and the remedy -- remove or re-approve the entry, then run `pipelock contain
+reload-nft-rules` -- instead of only the generic unexpected-verdict message.
+
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking
 rules, or an unreadable managed DROP counter is reported as not enforced rather
@@ -264,11 +385,11 @@ probe-specific rule.
 
 ## Runtime contract
 
-The containment boundary is security-correct, but a tool that ignores the proxy environment looks *broken* — it dies with a generic network error and no hint that the firewall is the cause. To close that gap, `install` provisions a complete, proxy-correct runtime contract for the contained agent so common tooling works out of the box and stays routed through Pipelock.
+The containment boundary is security-correct, but a tool that ignores the proxy environment looks *broken*, it dies with a generic network error and no hint that the firewall is the cause. To close that gap, `install` provisions a complete, proxy-correct runtime contract for the contained agent so common tooling works out of the box and stays routed through Pipelock.
 
 The contract has four parts:
 
-`plk-launch` builds this environment with `env -i` — it starts from an empty environment and rebuilds only the identity block, the matrix below, the posture-proof binding, and the agent PATH. This is deliberate: `plk-launch` runs after `sudo`, which leaves operator variables standing (`DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`, `SUDO_*`), and plain `env` would pass every one of them through to the contained agent. `env -i` closes that leak, and it uses the same environment set as the `contain run` Go launcher so the two launch paths cannot drift (verify probe 14 fails if the launcher reverts to plain `env`). The tradeoff is that ambient niceties like `TERM`/`LANG` are not forwarded either; this already matched the `contain run` path, so it is not a new regression there.
+`plk-launch` builds this environment with `env -i`, it starts from an empty environment and rebuilds only the identity block, the matrix below, the posture-proof binding, and the agent PATH. This is deliberate: `plk-launch` runs after `sudo`, which leaves operator variables standing (`DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`, `SUDO_*`), and plain `env` would pass every one of them through to the contained agent. `env -i` closes that leak, and it uses the same environment set as the `contain run` Go launcher so the two launch paths cannot drift (verify probe 14 fails if the launcher reverts to plain `env`). The tradeoff is that ambient niceties like `TERM`/`LANG` are not forwarded either; this already matched the `contain run` path, so it is not a new regression there.
 
 1. **Full environment matrix.** `plk-launch` (and the login-shell script below) export the complete proxy + CA set, because different ecosystems read different variables:
 
@@ -316,15 +437,15 @@ Checks:
 | 2 | `curl_through_proxy` | `curl` reaches an allowed host through the proxy (explicit `--proxy`/`--cacert`). |
 | 3 | `python_through_proxy` | `python` reaches an allowed host via the `pipelock-python` wrapper. |
 | 4 | `node_through_proxy` | node's `fetch()` reaches an allowed host via the `pipelock-node` wrapper + undici shim. |
-| 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
+| 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error, no hang, no bypass. |
 | 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the positively attributed managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 | 7 | `managed_chain_structure` | The live managed nftables chain can be read and has the installed structure. This is a qualified structural result only; check 6 observes packet enforcement. |
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 
 ```text
-  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at managed nftables DROP (curl exit 7, counter 12 -> 13); proxy-unaware tools fail here
-          ↳ [proxy-compat] a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=http://127.0.0.1:8888
+  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent, direct egress blocked at managed nftables DROP (curl exit 7, counter 12 -> 13); proxy-unaware tools fail here
+          ↳ [proxy-compat] a tool that 'can't reach the internet' is ignoring the proxy, NOT broken, run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=http://127.0.0.1:8888
 ```
 
 Flags:
@@ -371,7 +492,7 @@ By default the command reads `/var/lib/pipelock/contain/egress-events.jsonl`; pa
 
 ## `pipelock contain rollback`
 
-Idempotently undoes `install`. Safe to re-run on a partial install — every step checks state before mutating.
+Idempotently undoes `install`. Safe to re-run on a partial install, every step checks state before mutating.
 
 ```bash
 sudo pipelock contain rollback
@@ -450,7 +571,7 @@ Lists every recorded workspace grant so "what can the agent reach today, and why
 pipelock contain list-workspaces
 ```
 
-Prints a table of path, mode, owner, creation time, expiry, and status (`active`, `expired`, `legacy`, or `invalid-expiry`). An `expired` grant still has its ACLs on disk — clear them with `revoke-workspace`.
+Prints a table of path, mode, owner, creation time, expiry, and status (`active`, `expired`, `legacy`, or `invalid-expiry`). An `expired` grant still has its ACLs on disk, clear them with `revoke-workspace`.
 
 Flags:
 
@@ -498,21 +619,21 @@ Flags:
 
 ## Containment conformance artifact
 
-The two direct-egress probes — probe 8 (`cc_agent_egress_denied`) and probe 9 (`operator_egress_reachable`) — are also packaged as a publishable conformance artifact under `sdk/conformance/testdata/containment/`. The artifact proves the egress-denied test is *real*: it ships a deliberately-leaky fixture in which the agent's direct-egress canary succeeds (containment broken), and the gate **must** fail on it.
+The two direct-egress probes, probe 8 (`cc_agent_egress_denied`) and probe 9 (`operator_egress_reachable`), are also packaged as a publishable conformance artifact under `sdk/conformance/testdata/containment/`. The artifact proves the egress-denied test is *real*: it ships a deliberately-leaky fixture in which the agent's direct-egress canary succeeds (containment broken), and the gate **must** fail on it.
 
 The probes run against a canned command-runner built from external JSON fixtures, with no real network, sudo, curl, or nftables. Each fixture is a pair:
 
-- `<name>.probe.json` — the canned `(command → stdout, exit_code)` inputs.
-- `<name>.expect.json` — the expected per-probe status and aggregate exit code.
+- `<name>.probe.json`, the canned `(command → stdout, exit_code)` inputs.
+- `<name>.expect.json`, the expected per-probe status and aggregate exit code.
 
-Probe 8's DROP-counter evidence can come from either of two mutually exclusive fixture inputs. `drop_counter_reads` pre-bakes the raw before/after counter values probe 8 reads; it can express a corroborating counter delta (or its absence) but cannot express a *structural* problem in the chain itself. `nft_chain_text` (with `agent_uid` and `proxy_uid`, and optionally `operator_uid`/`proxy_port`) instead supplies the literal `nft -n -a list chain ...` output text and routes it through the SAME chain-text recognizer `pipelock contain verify` (probe 3) uses in production — `agentUIDBareAcceptBeforeDrop` and `chainLinesHaveUnsafeVerdictBeforeAgentDrop` — so a fixture can prove a structural containment hole that no counter-value pair could represent.
+Probe 8's DROP-counter evidence can come from either of two mutually exclusive fixture inputs. `drop_counter_reads` pre-bakes the raw before/after counter values probe 8 reads; it can express a corroborating counter delta (or its absence) but cannot express a *structural* problem in the chain itself. `nft_chain_text` (with `agent_uid` and `proxy_uid`, and optionally `operator_uid`/`proxy_port`) instead supplies the literal `nft -n -a list chain ...` output text and routes it through the SAME chain-text recognizer `pipelock contain verify` (probe 3) uses in production, `agentUIDBareAcceptBeforeDrop` and `chainLinesHaveUnsafeVerdictBeforeAgentDrop`, so a fixture can prove a structural containment hole that no counter-value pair could represent.
 
 | Fixture | Input | Probe 8 | Overall exit | Role |
 |---|---|---|---|---|
-| `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
-| `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT a leaked canary |
-| `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail** — gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP, a distinct production outcome from a leaked canary (same status, different detail and root cause) |
-| `dial-completed-then-failed` | `drop_counter_reads` | `fail` (dial completed before curl failed) | 1 | **must-fail** — gate must DETECT a canary whose TCP connect completed even though curl then failed; the dial-completion timer, not the counter, is the load-bearing signal |
+| `pass-all` | `drop_counter_reads` | `pass` (egress blocked) | 0 | clean baseline, gate must PASS |
+| `leaky-egress` | `drop_counter_reads` | `fail` (egress leaked) | 1 | **must-fail**, gate must DETECT a leaked canary |
+| `agent-accept-before-drop` | `nft_chain_text` | `fail` (structural hole) | 1 | **must-fail**, gate must DETECT a bare agent-UID accept rule ahead of the managed catch-all DROP, a distinct production outcome from a leaked canary (same status, different detail and root cause) |
+| `dial-completed-then-failed` | `drop_counter_reads` | `fail` (dial completed before curl failed) | 1 | **must-fail**, gate must DETECT a canary whose TCP connect completed even though curl then failed; the dial-completion timer, not the counter, is the load-bearing signal |
 
 The fixture schema, including the mutual-exclusion rule between `drop_counter_reads` and `nft_chain_text` and the compatibility guarantee for existing fixtures, is documented in `sdk/conformance/testdata/containment/README.md`. Run the artifact two ways:
 

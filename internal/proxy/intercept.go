@@ -174,7 +174,7 @@ func interceptRecordFinding(ic *InterceptContext, sig session.SignalType, scanne
 	if ic.Config != nil {
 		policyHash = ic.Config.CanonicalPolicyHash()
 	}
-	recordAdaptiveSignalForScope(rec, interceptAdaptiveScope(ic), sig, &ic.Config.AdaptiveEnforcement, decide.EscalationParams{
+	recordAdaptiveSignalForScope(rec, interceptAdaptiveScope(ic), sig, &ic.Config.AdaptiveEnforcement, &ic.Config.Airlock, decide.EscalationParams{
 		Threshold:     ic.Config.AdaptiveEnforcement.EscalationThreshold,
 		Logger:        ic.Logger,
 		Metrics:       m,
@@ -528,11 +528,40 @@ func newInterceptHandler(
 	upstream http.RoundTripper,
 ) http.Handler {
 	target := net.JoinHostPort(ic.TargetHost, ic.TargetPort)
+	// Initialize the shared budget before taking request-local context copies.
+	_ = interceptSizeExemptScanBudget(ic)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestContext := *ic
+		ic := &requestContext
 		reqStart := time.Now()
 
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
+		if ic.Recorder == nil {
+			sm := ic.SessionMgr
+			if ic.Proxy != nil {
+				sm = ic.Proxy.sessionMgrPtr.Load()
+			}
+			if sm != nil {
+				sess := sm.GetOrCreate(sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth))
+				if sess == nil {
+					capacityCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{
+						Method: r.Method, TargetURL: target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent,
+					})
+					ic.Logger.LogBlocked(capacityCtx, sessionCapacityLayer, session.ErrCapacity.Error())
+					ic.Metrics.RecordTLSRequestBlocked(sessionCapacityLayer)
+					_ = interceptEmitReceipt(ic, receipt.EmitOpts{
+						ActionID: actionID, Verdict: config.ActionBlock,
+						Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
+						Transport: "intercept", Method: r.Method, Target: target,
+						RequestID: ic.RequestID, Agent: ic.Agent,
+					})
+					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				ic.Recorder = sess
+			}
+		}
 
 		// URL reconstruction: origin-form to absolute. Do this before
 		// inbound envelope verification so signatures that cover
@@ -1526,6 +1555,17 @@ func newInterceptHandler(
 			// session. ic.Recorder is the raw per-agent recorder and does not
 			// necessarily receive CEE signals for self-declared agent names.
 			if ceeBlockAll {
+				if ceeRec == nil {
+					ic.Logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
+					ic.Metrics.RecordTLSRequestBlocked(sessionCapacityLayer)
+					_ = interceptEmitReceipt(ic, receipt.EmitOpts{
+						ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+						Pattern: session.ErrCapacity.Error(), Transport: "intercept",
+						Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+					})
+					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+					return
+				}
 				level := recEscalationLevel(ceeRec)
 				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
@@ -2168,17 +2208,19 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		if ic.Proxy != nil {
-			shieldBodyLen := len(respBody)
-			var shieldBlocked bool
+			var shieldBlocked *shieldBlockResult
 			var shieldSummary *receipt.ShieldSummary
-			shieldMaxBytes := shieldMaxBytesForResponse(ic.Config, ic.TargetHost, TransportConnect)
 			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
-			if shieldBlocked {
-				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
+			if shieldBlocked != nil {
+				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
+				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldBlocked.info.Layer,
+					Pattern: shieldBlocked.reason, Transport: "intercept", Method: r.Method,
+					Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+				})
 				writeBlockedError(w,
-					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-					"blocked: "+shieldOversizeBlockReason(ic.TargetHost, shieldBodyLen, shieldMaxBytes), http.StatusForbidden)
-				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "shield_oversize")
+					shieldBlocked.info, "blocked: "+shieldBlocked.reason, shieldBlocked.status)
+				emitBlockedPostRoundTripOutcome(shieldBlocked.status, shieldBlocked.info.Layer)
 				return
 			}
 			// If shield modified the body, update Content-Length to prevent

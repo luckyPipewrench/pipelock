@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
@@ -127,13 +129,13 @@ func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 	var launched []string
 	var postureConfig, postureOutput string
 	runEnv := containRunEnv{
-		probe: env,
+		probe:      env,
+		loadConfig: func(f string) (*config.Config, error) { postureConfig = f; return config.Defaults(), nil },
 		launch: func(_ context.Context, _ *probeEnv, args []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			launched = append([]string(nil), args...)
 			return nil
 		},
-		emitPosture: func(configFile, outputDir string, probe *probeEnv, postureArgs []string) (string, error) {
-			postureConfig = configFile
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, probe *probeEnv, postureArgs []string) (postureEmission, error) {
 			postureOutput = outputDir
 			if probe != env {
 				t.Fatal("posture emitter did not receive probe env")
@@ -141,7 +143,7 @@ func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 			if got, want := strings.Join(postureArgs, " "), "claude --help"; got != want {
 				t.Fatalf("posture args = %q, want %q", got, want)
 			}
-			return outputDir + "/proof.json", nil
+			return postureEmission{path: outputDir + "/proof.json"}, nil
 		},
 	}
 	var out bytes.Buffer
@@ -172,12 +174,13 @@ func TestRunContainRun_RelativePostureOutputExportsAbsoluteProofPath(t *testing.
 	wantProof := filepath.Join(cwd, opts.postureOutput, posturepkg.ProofFilename)
 	var launchProof string
 	runEnv := containRunEnv{
-		probe: env,
+		probe:      env,
+		loadConfig: func(string) (*config.Config, error) { return config.Defaults(), nil },
 		launch: func(_ context.Context, probe *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
 			launchProof = probe.postureProofPath
 			return nil
 		},
-		emitPosture: func(_ string, outputDir string, probe *probeEnv, postureArgs []string) (string, error) {
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, probe *probeEnv, postureArgs []string) (postureEmission, error) {
 			if outputDir != opts.postureOutput {
 				t.Fatalf("posture output = %q, want %q", outputDir, opts.postureOutput)
 			}
@@ -206,7 +209,7 @@ func TestRunContainRun_RelativePostureOutputExportsAbsoluteProofPath(t *testing.
 			if !foundName {
 				t.Fatalf("launch env vars missing %s: %v", posturebinding.RuntimeProofEnv, launch.EnvVars)
 			}
-			return filepath.Join(outputDir, posturepkg.ProofFilename), nil
+			return postureEmission{path: filepath.Join(outputDir, posturepkg.ProofFilename)}, nil
 		},
 	}
 	var stderr bytes.Buffer
@@ -231,8 +234,10 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 		{
 			name: "missing probe",
 			env: containRunEnv{
-				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+					return postureEmission{path: "/unused"}, nil
+				},
 			},
 			args: []string{"claude"},
 			want: "preflight environment is missing",
@@ -240,8 +245,10 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 		{
 			name: "missing launcher",
 			env: containRunEnv{
-				probe:       allPassEnv(t),
-				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+				probe: allPassEnv(t),
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+					return postureEmission{path: "/unused"}, nil
+				},
 			},
 			args: []string{"claude"},
 			want: "launcher is unavailable",
@@ -258,9 +265,11 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 		{
 			name: "missing args",
 			env: containRunEnv{
-				probe:       allPassEnv(t),
-				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+				probe:  allPassEnv(t),
+				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+					return postureEmission{path: "/unused"}, nil
+				},
 			},
 			want: "usage: pipelock contain run",
 		},
@@ -297,7 +306,9 @@ func TestRunContainRun_FailsClosedBeforeLaunchWhenPreflightFails(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+			return postureEmission{path: "/unused"}, nil
+		},
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 	if err == nil || !strings.Contains(err.Error(), "cc_agent_egress_denied") {
@@ -317,9 +328,11 @@ func TestRunContainRun_FailsClosedWhenAgentCanSudoBackOut(t *testing.T) {
 		return defaultRunForAllPass(name, args)
 	}
 	runEnv := containRunEnv{
-		probe:       env,
-		launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+		probe:  env,
+		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+			return postureEmission{path: "/unused"}, nil
+		},
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 	if err == nil || !strings.Contains(err.Error(), containRunPrivilegeProbe) {
@@ -330,13 +343,14 @@ func TestRunContainRun_FailsClosedWhenAgentCanSudoBackOut(t *testing.T) {
 func TestRunContainRun_PostureFailureStopsLaunch(t *testing.T) {
 	var launched bool
 	runEnv := containRunEnv{
-		probe: allPassEnv(t),
+		probe:      allPassEnv(t),
+		loadConfig: func(string) (*config.Config, error) { return config.Defaults(), nil },
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
-			return "", errors.New("signing key missing")
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+			return postureEmission{}, errors.New("signing key missing")
 		},
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
@@ -353,9 +367,9 @@ func TestRunContainRun_UnregisteredToolStopsBeforePosture(t *testing.T) {
 	runEnv := containRunEnv{
 		probe:  allPassEnv(t),
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 			posture = true
-			return "/unused", nil
+			return postureEmission{path: "/unused"}, nil
 		},
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"notregistered"})
@@ -426,9 +440,11 @@ func equalGIDs(a, b []uint32) bool {
 
 func TestRunContainRun_RejectsInvalidToolName(t *testing.T) {
 	runEnv := containRunEnv{
-		probe:       allPassEnv(t),
-		launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
+		probe:  allPassEnv(t),
+		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+		emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
+			return postureEmission{path: "/unused"}, nil
+		},
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"../claude"})
 	if err == nil || !strings.Contains(err.Error(), "invalid tool name") {
@@ -528,19 +544,27 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 
 	outDir := filepath.Join(dir, "posture")
 	env := allPassEnv(t)
-	path, err := emitContainRunPosture(cfgPath, outDir, env, []string{"claude", "--help"})
+	cfgLoaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	emission, err := emitContainRunPosture(cfgLoaded, nil, outDir, env, []string{"claude", "--help"})
 	if err != nil {
 		t.Fatalf("emitContainRunPosture: %v", err)
 	}
-	if path != filepath.Join(outDir, "proof.json") {
-		t.Fatalf("proof path = %q, want %q", path, filepath.Join(outDir, "proof.json"))
+	if emission.path != filepath.Join(outDir, "proof.json") {
+		t.Fatalf("proof path = %q, want %q", emission.path, filepath.Join(outDir, "proof.json"))
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := os.ReadFile(filepath.Clean(emission.path))
 	if err != nil {
 		t.Fatalf("read proof: %v", err)
 	}
 	if !bytes.Contains(data, []byte(`"signature"`)) {
 		t.Fatalf("proof missing signature: %s", data)
+	}
+	sum := sha256.Sum256(data)
+	if got, want := emission.capsuleSHA256, hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("capsule hash = %q, want hash of written proof %q", got, want)
 	}
 	var capsule posturepkg.Capsule
 	if err := json.Unmarshal(data, &capsule); err != nil {
@@ -672,7 +696,11 @@ func TestEmitContainRunPosture_EmitFailure(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, err := emitContainRunPosture(cfgPath, t.TempDir(), allPassEnv(t), []string{"claude"})
+	cfgLoaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	_, err = emitContainRunPosture(cfgLoaded, nil, t.TempDir(), allPassEnv(t), []string{"claude"})
 	if err == nil {
 		t.Fatal("expected posture emit error")
 	}
@@ -701,21 +729,15 @@ func TestEmitContainRunPosture_WriteFailure(t *testing.T) {
 		t.Fatalf("write output file: %v", err)
 	}
 
-	_, err = emitContainRunPosture(cfgPath, outputPath, allPassEnv(t), []string{"claude"})
+	cfgLoaded, loadErr := config.Load(cfgPath)
+	if loadErr != nil {
+		t.Fatalf("config.Load: %v", loadErr)
+	}
+	_, err = emitContainRunPosture(cfgLoaded, nil, outputPath, allPassEnv(t), []string{"claude"})
 	if err == nil {
 		t.Fatal("expected proof write error")
 	}
 	if !strings.Contains(err.Error(), "create output directory") {
 		t.Fatalf("error = %v, want output directory context", err)
-	}
-}
-
-func TestEmitContainRunPosture_LoadFailure(t *testing.T) {
-	_, err := emitContainRunPosture(filepath.Join(t.TempDir(), "missing.yaml"), t.TempDir(), allPassEnv(t), []string{"claude"})
-	if err == nil {
-		t.Fatal("expected config load error")
-	}
-	if !strings.Contains(err.Error(), "loading config") {
-		t.Fatalf("error = %v, want config load context", err)
 	}
 }

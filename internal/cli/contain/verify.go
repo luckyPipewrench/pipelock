@@ -29,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
@@ -126,30 +127,32 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port               int
-	operatorUser       string
-	proxyUserName      string
-	agentUserName      string
-	wrapperDir         string
-	toolWrappers       []string
-	caBundlePath       string
-	launchPath         string
-	nftTable           string
-	nftChain           string
-	nftRulesPath       string
-	nftMainPath        string
-	nftPersistUnitPath string
-	nftPath            string
-	serviceName        string
-	readinessTimeout   time.Duration
-	curlPath           string
-	pinPath            string
-	wrapperInvPath     string
-	toolsListPath      string
-	configPath         string
-	workspaceInvPath   string
-	workspacePaths     []string
-	workspaceGrants    []workspaceGrant
+	port                 int
+	operatorUser         string
+	proxyUserName        string
+	agentUserName        string
+	wrapperDir           string
+	toolWrappers         []string
+	caBundlePath         string
+	launchPath           string
+	nftTable             string
+	nftChain             string
+	nftRulesPath         string
+	nftMainPath          string
+	nftPersistUnitPath   string
+	nftExpiryServicePath string
+	nftExpiryTimerPath   string
+	nftPath              string
+	serviceName          string
+	readinessTimeout     time.Duration
+	curlPath             string
+	pinPath              string
+	wrapperInvPath       string
+	toolsListPath        string
+	configPath           string
+	workspaceInvPath     string
+	workspacePaths       []string
+	workspaceGrants      []workspaceGrant
 	// workspaceInvErr records a recorded-inventory read that failed for any
 	// reason other than absence. The workspace probe fails on it so a permission
 	// or parse error cannot make verify pass with the grant set silently empty.
@@ -185,40 +188,42 @@ type probeEnv struct {
 func defaultProbeEnv() *probeEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &probeEnv{
-		port:               defaultProxyPort,
-		operatorUser:       os.Getenv("SUDO_USER"),
-		proxyUserName:      defaultProxyUser,
-		agentUserName:      defaultAgentUser,
-		wrapperDir:         defaultWrapperDir,
-		toolWrappers:       append([]string(nil), defaultToolWrappers...),
-		caBundlePath:       defaultCABundlePath,
-		launchPath:         defaultLaunchScript,
-		nftTable:           defaultNFTTable,
-		nftChain:           defaultNFTChain,
-		nftRulesPath:       defaultNFTRulesPath,
-		nftPersistUnitPath: defaultNFTPersistUnitPath,
-		nftPath:            platform.nftPath,
-		serviceName:        defaultServiceName,
-		curlPath:           platform.curlPath,
-		pinPath:            defaultIntegrityPin,
-		wrapperInvPath:     defaultWrapperInvPath,
-		toolsListPath:      defaultToolsListPath,
-		workspaceInvPath:   defaultWorkspaceInvPath,
-		configPath:         filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		pipelockTarget:     defaultPipelockTarget,
-		verifyRunningImage: true,
-		now:                time.Now,
-		runCmd:             realRunCommand,
-		dropCounter:        readContainmentDropCounter,
-		dialCtx:            realDial,
-		wait:               waitForReadiness,
-		lookupUser:         user.Lookup,
-		groupIDs:           realGroupIDs,
-		stat:               os.Stat,
-		readFile:           os.ReadFile,
-		readLink:           os.Readlink,
-		selfPath:           os.Executable,
-		hashFile:           sha256HexOfFile,
+		port:                 defaultProxyPort,
+		operatorUser:         os.Getenv("SUDO_USER"),
+		proxyUserName:        defaultProxyUser,
+		agentUserName:        defaultAgentUser,
+		wrapperDir:           defaultWrapperDir,
+		toolWrappers:         append([]string(nil), defaultToolWrappers...),
+		caBundlePath:         defaultCABundlePath,
+		launchPath:           defaultLaunchScript,
+		nftTable:             defaultNFTTable,
+		nftChain:             defaultNFTChain,
+		nftRulesPath:         defaultNFTRulesPath,
+		nftPersistUnitPath:   defaultNFTPersistUnitPath,
+		nftExpiryServicePath: defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:   defaultNFTExpiryTimerPath,
+		nftPath:              platform.nftPath,
+		serviceName:          defaultServiceName,
+		curlPath:             platform.curlPath,
+		pinPath:              defaultIntegrityPin,
+		wrapperInvPath:       defaultWrapperInvPath,
+		toolsListPath:        defaultToolsListPath,
+		workspaceInvPath:     defaultWorkspaceInvPath,
+		configPath:           filepath.Join(defaultConfigDir, "pipelock.yaml"),
+		pipelockTarget:       defaultPipelockTarget,
+		verifyRunningImage:   true,
+		now:                  time.Now,
+		runCmd:               realRunCommand,
+		dropCounter:          readContainmentDropCounter,
+		dialCtx:              realDial,
+		wait:                 waitForReadiness,
+		lookupUser:           user.Lookup,
+		groupIDs:             realGroupIDs,
+		stat:                 os.Stat,
+		readFile:             os.ReadFile,
+		readLink:             os.Readlink,
+		selfPath:             os.Executable,
+		hashFile:             sha256HexOfFile,
 	}
 }
 
@@ -1547,22 +1552,73 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
+	// A managed config this probe cannot read or honor fails the probe
+	// outright. Reporting it only alongside an unsafe verdict left the
+	// canonical case silent: once reload has already reconciled to zero
+	// services the chain looks exactly like a host that declared nothing,
+	// so an unreadable, malformed, or expired declaration returned PASS
+	// while verify had no idea what it was meant to be proving. A
+	// containment probe that cannot read the policy has not verified the
+	// policy, whatever the chain happens to look like.
+	loopbackServices, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	if loopbackUnusable {
+		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
+	}
+	for _, svc := range loopbackServices {
+		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
+			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) accept rule is missing or appears after the agent catch-all drop", svc.Host, svc.Port, svc.Owner)
+		}
+	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port, loopbackServices) {
 		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
 		if err := verifyNFTPersistence(env, current); err != nil {
 			return statusFail, err.Error()
 		}
+		if env.nftExpiryTimerPath != "" || env.nftExpiryServicePath != "" {
+			status, detail := probeContainmentExpiryTimer(ctx, env)
+			if status != statusPass {
+				return status, detail
+			}
+		}
 	}
-	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, proxy-only loopback allow, direct-DNS drops, and persistence unit",
-		env.nftTable, env.nftChain, current.agentUID)
+	// Say what the chain actually allows. Reporting "proxy-only loopback
+	// allow" while declared services are present described the opposite of
+	// the state just verified, on the one line an operator reads to learn
+	// what the boundary permits.
+	loopbackSummary := "proxy-only loopback allow"
+	if len(loopbackServices) > 0 {
+		loopbackSummary = fmt.Sprintf("proxy loopback allow plus %d declared loopback service(s)", len(loopbackServices))
+	}
+	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
+		env.nftTable, env.nftChain, current.agentUID, loopbackSummary)
+}
+
+// probeContainmentExpiryTimer verifies the privileged reconciliation timer
+// separately from the nftables-chain probe. A host whose timer is disabled,
+// masked, or pointed at the wrong service otherwise keeps a declared
+// loopback accept past expiry without any visible failure.
+func probeContainmentExpiryTimer(ctx context.Context, env *probeEnv) (string, string) {
+	if env.nftPersistUnitPath == "" {
+		return statusSkip, "containment persistence unit path is not configured"
+	}
+	if _, err := env.readFile(env.nftPersistUnitPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusSkip, "containment is not installed"
+		}
+		return statusFail, fmt.Sprintf("read nftables persistence unit %s: %v", env.nftPersistUnitPath, err)
+	}
+	if err := verifyNFTExpiryTimer(ctx, env); err != nil {
+		return statusFail, err.Error()
+	}
+	return statusPass, "containment loopback expiry reconciliation timer is installed and enabled"
 }
 
 type containmentUIDs struct {
@@ -1688,11 +1744,32 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
+	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") {
+		return fmt.Errorf("%s missing exact DefaultDependencies=no", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "After", "local-fs.target") {
+		return fmt.Errorf("%s missing exact After=local-fs.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Before", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Before=network-pre.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Wants=network-pre.target", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
 		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
+	if !unitHasExactEntry(body, "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Service", "RemainAfterExit", "yes") {
+		return fmt.Errorf("%s missing exact RemainAfterExit=yes", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
 		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Install", "WantedBy", "multi-user.target") {
+		return fmt.Errorf("%s missing WantedBy=multi-user.target", env.nftPersistUnitPath)
 	}
 	rules, err := env.readFile(env.nftRulesPath)
 	if err != nil {
@@ -1714,33 +1791,116 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 			return fmt.Errorf("nftables rules file operator uid %d does not match current %s uid %d", current.operatorUID, env.operatorUser, operatorUID)
 		}
 	}
-	want := renderNFTRules(operatorUID, current.proxyUID, current.agentUID, env.port, env.nftTable, env.nftChain)
+	loopbackServices, _, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	want := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID:      operatorUID,
+		ProxyUID:         current.proxyUID,
+		AgentUID:         current.agentUID,
+		ProxyPort:        env.port,
+		Table:            env.nftTable,
+		Chain:            env.nftChain,
+		LoopbackServices: loopbackServices,
+	})
 	if string(rules) != want {
 		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
 	}
 	return nil
 }
 
-// unitHasExactEntry reports whether the systemd unit body carries key=value
-// verbatim inside the named section. Substring matching accepted a commented
-// entry, a suffixed path, an unintended executable whose path merely contained
-// the managed target, and extra trailing arguments, so every one of those
-// tampered units verified as healthy. The managed unit is rendered by
-// renderNFTPersistUnit, so an exact section-scoped entry is the whole contract.
+func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
+	timerBody, err := env.readFile(env.nftExpiryTimerPath)
+	if err != nil {
+		return fmt.Errorf("read containment expiry timer %s: %w", env.nftExpiryTimerPath, err)
+	}
+	if !unitHasExactEntry(string(timerBody), "Timer", "Unit", filepath.Base(env.nftExpiryServicePath)) {
+		return fmt.Errorf("%s missing exact Unit linkage to %s", env.nftExpiryTimerPath, filepath.Base(env.nftExpiryServicePath))
+	}
+	if !unitHasExactEntry(string(timerBody), "Timer", "OnCalendar", containmentExpiryTimerCalendar) ||
+		!unitHasExactEntry(string(timerBody), "Timer", "Persistent", "true") ||
+		!unitHasExactEntry(string(timerBody), "Timer", "AccuracySec", containmentExpiryTimerAccuracy) {
+		return fmt.Errorf("%s does not contain the managed expiry schedule", env.nftExpiryTimerPath)
+	}
+	if !unitHasExactEntry(string(timerBody), "Install", "WantedBy", "timers.target") {
+		return fmt.Errorf("%s missing WantedBy=timers.target", env.nftExpiryTimerPath)
+	}
+
+	serviceBody, err := env.readFile(env.nftExpiryServicePath)
+	if err != nil {
+		return fmt.Errorf("read containment expiry service %s: %w", env.nftExpiryServicePath, err)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "TimeoutStartSec", containmentExpiryServiceTimeout) {
+		return fmt.Errorf("%s missing exact TimeoutStartSec for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
+		return fmt.Errorf("%s missing exact ExecStart for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+
+	timerUnit := filepath.Base(env.nftExpiryTimerPath)
+	timerState, code, err := env.runCmd(ctx, "systemctl", "is-enabled", timerUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
+	}
+	timerState = strings.TrimSpace(timerState)
+	if timerState == "masked" {
+		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", timerUnit)
+	}
+	if code != 0 || timerState != systemctlEnabled {
+		return fmt.Errorf("%s is not enabled (%s); rerun `pipelock contain install`", timerUnit, oneLine(timerState))
+	}
+	activeState, activeCode, err := env.runCmd(ctx, "systemctl", "is-active", timerUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
+	}
+	activeState = strings.TrimSpace(activeState)
+	if activeCode != 0 || activeState != systemctlActive {
+		return fmt.Errorf("%s is not active (%s); rerun `pipelock contain install`", timerUnit, oneLine(activeState))
+	}
+
+	serviceUnit := filepath.Base(env.nftExpiryServicePath)
+	serviceState, serviceCode, err := env.runCmd(ctx, "systemctl", "is-enabled", serviceUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", serviceUnit, err)
+	}
+	serviceState = strings.TrimSpace(serviceState)
+	if serviceState == "masked" {
+		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", serviceUnit)
+	}
+	if serviceCode != 0 || serviceState != "static" {
+		return fmt.Errorf("systemctl is-enabled %s exit=%d: %s", serviceUnit, serviceCode, oneLine(serviceState))
+	}
+	return nil
+}
+
+// unitHasExactEntry reports whether a systemd unit has exactly one assignment
+// for key in section and that assignment has value. List-valued directives
+// such as OnCalendar and ExecStart accumulate across repeated assignments,
+// while a later single-valued assignment overrides the managed value. Both
+// shapes must fail verification rather than accepting the first match.
 func unitHasExactEntry(body, section, key, value string) bool {
 	current := ""
+	entries := 0
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			current = strings.TrimSpace(line[1 : len(line)-1])
 			continue
 		}
-		if current != section || line != key+"="+value {
+		if current != section || line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
-		return true
+		actualKey, actualValue, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(actualKey) != key {
+			continue
+		}
+		entries++
+		if strings.TrimSpace(actualValue) != value {
+			return false
+		}
 	}
-	return false
+	return entries == 1
 }
 
 func probeNFTExecutable(env *probeEnv) string {
@@ -1787,20 +1947,30 @@ func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
 	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
-// lineHasAgentProxyLoopbackAllowAnyPort recognizes the managed loopback allow
-// regardless of which proxy port it names. Reconciliation matches the legacy
-// block so it can delete it, and pinning that match to the CURRENT port left a
-// previous-port block in place after an operator changed the proxy port. Its
+// lineHasAgentLoopbackAllowAnyPortAnyHost recognizes the managed agent-owned
+// loopback allow regardless of which port it names, on EITHER "ip daddr
+// 127.0.0.1" or "ip6 daddr ::1". Reconciliation matches the legacy block so
+// it can delete it, and pinning that match to the CURRENT proxy port left a
+// previous-port block in place after an operator changed the proxy port; its
 // catch-all DROP then sat ahead of the freshly appended canonical rules and
-// dropped the agent's traffic to the new port.
-func lineHasAgentProxyLoopbackAllowAnyPort(line string, agentUID int) bool {
+// dropped the agent's traffic to the new port. The dual-stack match exists
+// for the same reason on the other axis: reload's variable-length
+// managed-block scan (managedNFTBlockLength) must recognize a declared ::1
+// loopback service the same way it recognizes the implicit IPv4 proxy-port
+// allow, or a managed block that carries one looks unrecognized, and the
+// next reload appends a second block behind the old one instead of
+// replacing it -- the exact trap declaring loopback services exists to
+// close.
+func lineHasAgentLoopbackAllowAnyPortAnyHost(line string, agentUID int) bool {
 	fields := nftLineFields(line)
 	const wantLen = 10
 	if len(fields) < wantLen {
 		return false
 	}
+	daddrKeyword, host := fields[3], fields[5]
+	validHostPair := (daddrKeyword == "ip" && host == "127.0.0.1") || (daddrKeyword == "ip6" && host == "::1")
 	if fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
-		fields[3] != "ip" || fields[4] != "daddr" || fields[5] != "127.0.0.1" ||
+		fields[4] != "daddr" || !validHostPair ||
 		fields[6] != "tcp" || fields[7] != "dport" || !isTCPPort(fields[8]) || fields[9] != "accept" {
 		return false
 	}
@@ -1813,13 +1983,61 @@ func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, prot
 	})
 }
 
-func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int) bool {
+// chainLinesHaveDeclaredLoopbackAllowBeforeDrop is the declared-loopback-service
+// sibling of chainLinesHaveAgentProxyLoopbackAllowBeforeDrop: it matches an
+// agent-owned accept for the DECLARED host:port instead of the implicit
+// proxy port.
+func chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines []string, agentUID int, host string, port int) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
+		return lineHasAgentLoopbackAllowForHost(line, agentUID, host, port)
+	})
+}
+
+// lineHasAgentLoopbackAllowForHost matches an agent-owned loopback accept for
+// an arbitrary loopback host (127.0.0.1 or ::1) and port. lineHasAgentProxyLoopbackAllow
+// stays IPv4-only and proxy-port-specific because every existing caller only
+// ever needs that one case; this is the general form declared loopback
+// services need.
+func lineHasAgentLoopbackAllowForHost(line string, agentUID int, host string, port int) bool {
+	fields := nftLineFields(line)
+	daddrKeyword := []string{"ip", "daddr"}
+	if host == "::1" {
+		daddrKeyword = []string{"ip6", "daddr"}
+	}
+	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID)}, daddrKeyword...)
+	want = append(want, host, "tcp", "dport", strconv.Itoa(port), "accept")
+	if len(fields) < len(want) {
+		return false
+	}
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	return nftRuleTailIsCommentOnly(fields[len(want):])
+}
+
+// declaredLoopbackServiceAllows reports whether the line is an agent-owned
+// accept matching ANY of the declared loopback services, regardless of order.
+func declaredLoopbackServiceAllows(line string, agentUID int, declared []config.ContainmentLoopbackService) bool {
+	for _, svc := range declared {
+		if lineHasAgentLoopbackAllowForHost(line, agentUID, svc.Host, svc.Port) {
+			return true
+		}
+	}
+	return false
+}
+
+func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int, declaredLoopbackServices []config.ContainmentLoopbackService) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, uids.agentUID, func(line string) bool {
 		// Before the agent catch-all drop, only the managed operator/proxy
-		// accepts, the agent's proxy loopback allow, and DNS drops are safe.
-		// Any other terminal/control-flow verdict can bypass containment under
-		// the base-chain "policy accept" default or intercept the direct canary
-		// before it reaches the counter used for attribution.
+		// accepts, the agent's proxy loopback allow, any DECLARED loopback
+		// service allow, and DNS drops are safe. Any other terminal/control-flow
+		// verdict can bypass containment under the base-chain "policy accept"
+		// default or intercept the direct canary before it reaches the counter
+		// used for attribution. An agent-owned loopback accept that is NOT the
+		// proxy port and NOT in declaredLoopbackServices is exactly the
+		// undeclared hand-inserted carve-out this check exists to catch.
 		if !lineHasAnyToken(line, "accept", "drop", "reject", "return", "jump", "goto", "queue") {
 			return false
 		}
@@ -1830,6 +2048,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 			return false
 		}
 		if lineHasAgentProxyLoopbackAllow(line, uids.agentUID, proxyPort) {
+			return false
+		}
+		if declaredLoopbackServiceAllows(line, uids.agentUID, declaredLoopbackServices) {
 			return false
 		}
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
@@ -1846,6 +2067,55 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		}
 		return true
 	})
+}
+
+// declaredContainmentLoopbackServicesForVerify reads containment.loopback_services
+// from the managed config verify already reads for probeManagedConfigMetrics
+// (env.configPath). ANY failure to read, parse, or validate the managed
+// config -- missing, unreadable without root, malformed YAML, or an
+// unusable declared entry -- is treated as an empty declared set rather than
+// surfaced as a probe error. That is deliberately safe rather than strict:
+// declaredContainmentLoopbackServicesForVerify only WIDENS what
+// chainLinesHaveUnsafeVerdictBeforeAgentDrop tolerates, so returning an empty
+// set on any failure can only make the surrounding probe MORE strict (an
+// undeclared loopback accept it can no longer explain still fails), never
+// less; it can never turn a real containment hole into a pass. The tradeoff
+// is that a config that declares a real exception but is temporarily
+// unreadable will see its own declared service reported as an unsafe verdict
+// until the config is readable again -- a false alarm in the safe direction,
+// not a missed one.
+// declaredContainmentLoopbackServicesForVerify additionally returns a
+// non-empty problem string whenever it falls back to an empty declared set
+// because the managed config could not be read/parsed or a declared entry
+// is malformed/expired -- not when the managed config is simply absent or
+// genuinely declares nothing. Callers surface this alongside the generic
+// "unexpected verdict" FAIL so an operator sees WHY a real declared service
+// (host:port, owner, expiry) is being treated as undeclared, instead of only
+// the class of the resulting nftables mismatch.
+// The bool reports whether the managed config EXISTS and declares something
+// this probe cannot honor, which is the only one of these states that is the
+// operator's own unusable declaration rather than a host that has not got one
+// yet. A missing or unreadable config is not that: it is indistinguishable
+// from a host that never declared a service, and failing the probe on it
+// would refuse every host without a managed config at this path.
+func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string, bool) {
+	data, err := env.readFile(env.configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// A genuinely absent managed config is a known, explainable
+			// state -- distinct from an unreadable one -- so name it rather
+			// than reporting no problem at all: an operator who expects a
+			// declared service reachable needs to know verify found no
+			// managed config to read it from.
+			return nil, fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath), false
+		}
+		return nil, fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err), false
+	}
+	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
+	if err != nil {
+		return nil, fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err), true
+	}
+	return declared, "", false
 }
 
 // containmentBypassDetailPrefix is the single wording for a definite agent-UID
@@ -2604,7 +2874,8 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 	if code != 0 {
 		return 0, fmt.Errorf("list nft chain exit=%d: %s", code, oneLine(out))
 	}
-	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port)
+	loopbackServices, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	return containmentDropCounterFromChainText(out, env.nftChain, current, env.port, loopbackServices, loopbackProblem, loopbackUnusable)
 }
 
 // containmentDropCounterFromChainText is the single recognizer behind probe
@@ -2612,7 +2883,7 @@ func readContainmentDropCounter(ctx context.Context, env *probeEnv) (uint64, err
 // output; the published conformance fixtures feed it fixture chain text. One
 // function, not two copies, so the artifact that exists to prove the egress
 // test is real can never drift from what `contain verify` actually checks.
-func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int) (uint64, error) {
+func containmentDropCounterFromChainText(out, chainName string, uids containmentUIDs, port int, declaredLoopbackServices []config.ContainmentLoopbackService, loopbackProblem string, loopbackUnusable bool) (uint64, error) {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
 		return 0, err
@@ -2623,7 +2894,20 @@ func containmentDropCounterFromChainText(out, chainName string, uids containment
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, uids.agentUID); ok {
 		return 0, &containmentBypassError{rule: rule}
 	}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, port) {
+	// Same refusal probeNFTContainment makes, for the same reason. A
+	// declaration this host cannot honor makes the direct-canary
+	// attribution below unsafe even when the chain is canonical, because
+	// the count is then being read against a policy nobody could verify.
+	// Surfacing the problem only alongside an unsafe verdict, as the
+	// branch below once did alone, left exactly this path reporting a
+	// clean count for an unusable policy.
+	if loopbackUnusable {
+		return 0, fmt.Errorf("chain %s: containment.loopback_services cannot be honored, so direct-canary attribution is unsafe: %s", chainName, loopbackProblem)
+	}
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, port, declaredLoopbackServices) {
+		if loopbackProblem != "" {
+			return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe: %s", chainName, loopbackProblem)
+		}
 		return 0, fmt.Errorf("chain %s has an unexpected verdict before managed catch-all DROP; direct-canary attribution is unsafe", chainName)
 	}
 	return managedContainmentDropPacketCountFromLines(lines, chainName, uids.agentUID)

@@ -673,11 +673,11 @@ func newToolUpstream(t *testing.T) *httptest.Server {
 // TestHTTPListenerWithholdsNewToolUnderBlock is the HTTP reverse
 // listener transport-parity case for new-tool admission: a scan-clean tool NAME absent
 // from the established upstream drift baseline is withheld under
-// new_tool_action=block, exactly like a withheld changed definition.
+// new_tool_admission=withhold, exactly like a withheld changed definition.
 func TestHTTPListenerWithholdsNewToolUnderBlock(t *testing.T) {
 	upstream := newToolUpstream(t)
 	cfg := rugPullToolCfg()
-	cfg.NewToolAction = config.ActionBlock
+	cfg.NewToolAdmission = config.NewToolWithhold
 
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
@@ -711,11 +711,11 @@ func TestHTTPListenerWithholdsNewToolUnderBlock(t *testing.T) {
 }
 
 // TestHTTPListenerAdmitsNewToolByDefault confirms the default (unset
-// new_tool_action, equivalent to warn) preserves the previous behavior on the
+// new_tool_admission, equivalent to admit) preserves the previous behavior on the
 // HTTP reverse listener: the new tool is admitted, not blocked.
 func TestHTTPListenerAdmitsNewToolByDefault(t *testing.T) {
 	upstream := newToolUpstream(t)
-	cfg := rugPullToolCfg() // NewToolAction left unset
+	cfg := rugPullToolCfg() // NewToolAdmission left unset
 
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
@@ -807,17 +807,20 @@ func newToolCallableUpstream(t *testing.T) (srv *httptest.Server, snapshot func(
 	}
 }
 
-// TestHTTPListenerWarnActionForwardsWithheldNewTool pins what new_tool_action
+// TestHTTPListenerWarnActionForwardsWithheldNewTool pins what new_tool_admission
 // does and does not promise when action is warn, which is the configuration
 // pair no other test covers.
 //
-// new_tool_action governs DRIFT BASELINE ADMISSION, not the response verdict.
+// new_tool_admission governs DRIFT BASELINE ADMISSION, not the response verdict.
 // Under action=warn it therefore withholds the newly-visible name from the
 // baseline and reports it on every later tools/list, while the response itself
 // is still forwarded and the agent can call the tool. That is the documented
-// contract, and it is easy to misread as an enforcement promise because the
-// value is spelled "block" exactly like the response-denying action next to it.
-// Pinning it here means a change of that contract has to be deliberate: this
+// contract. Before this field was renamed from new_tool_action to
+// new_tool_admission, it was easy to misread as an enforcement promise
+// because its value was spelled "block" exactly like the response-denying
+// action next to it; new_tool_admission's admit|withhold vocabulary exists
+// so the two controls no longer share a word. Pinning it here means a
+// change of that contract has to be deliberate: this
 // test fails if the verdict is ever raised without updating the documented
 // behavior alongside it.
 //
@@ -828,7 +831,7 @@ func TestHTTPListenerWarnActionForwardsWithheldNewTool(t *testing.T) {
 	upstream, upstreamCallSnapshot := newToolCallableUpstream(t)
 	cfg := rugPullToolCfg()
 	cfg.Action = config.ActionWarn
-	cfg.NewToolAction = config.ActionBlock
+	cfg.NewToolAdmission = config.NewToolWithhold
 
 	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, testScannerForHTTP(t), &InputScanConfig{
 		Enabled:      true,
@@ -843,7 +846,7 @@ func TestHTTPListenerWarnActionForwardsWithheldNewTool(t *testing.T) {
 
 	second := rugPullPost(t, baseURL, "", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	if strings.Contains(second, `"error"`) {
-		t.Fatalf("action=warn returned an error response; new_tool_action must not raise the verdict: %s", second)
+		t.Fatalf("action=warn returned an error response; new_tool_admission must not raise the verdict: %s", second)
 	}
 	if !strings.Contains(second, "mirror_workspace") {
 		t.Fatalf("second tools/list = %s, want the new tool forwarded under action=warn", second)

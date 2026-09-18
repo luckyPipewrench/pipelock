@@ -6,6 +6,7 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
@@ -39,9 +42,9 @@ func TestRunContainRun_InventoryFailureStopsBeforePreflight(t *testing.T) {
 					launches++
 					return nil
 				},
-				emitPosture: func(string, string, *probeEnv, []string) (string, error) {
+				emitPosture: func(*config.Config, ed25519.PrivateKey, string, *probeEnv, []string) (postureEmission, error) {
 					postureCalls++
-					return "proof.json", nil
+					return postureEmission{path: "proof.json"}, nil
 				},
 			}
 			var out bytes.Buffer

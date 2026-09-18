@@ -8,6 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 This runbook covers the technical path for issuing and installing an Enterprise
 license that grants the `fleet` feature.
 
+## License service probes
+
+The license service keeps `GET /health` as unconditional liveness, while `GET /ready` reports whether a Polar provider read has succeeded within `PROVIDER_SUCCESS_WINDOW` (default `15m`). Point readiness probes at `/ready` and liveness probes at `/health` so a provider outage removes the pod from service without restarting it.
+
 ## Feature Mapping
 
 The license service maps commercial tiers to runtime feature flags in

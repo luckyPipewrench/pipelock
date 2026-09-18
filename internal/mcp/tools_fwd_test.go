@@ -627,11 +627,11 @@ func TestForwardScanned_SessionBinding_CapturesBaseline(t *testing.T) {
 // transport-parity case for new-tool admission (fwdScanned wraps the same
 // ForwardScannedResponse path proxy.go, proxy_sandbox.go, proxy_ws.go, and
 // mcp_http_forward.go all use). A scan-clean tool NAME absent from the
-// established baseline is withheld under new_tool_action=block.
+// established baseline is withheld under new_tool_admission=withhold.
 func TestForwardScanned_NewToolWithheldUnderBlock(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	baseline := tools.NewToolBaseline()
-	toolCfg := &tools.ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	toolCfg := &tools.ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line1 := string(makeToolsResponse(`[{"name":"calc","description":"Calculate numbers"}]`)) + "\n"
 	var out1, log1 strings.Builder

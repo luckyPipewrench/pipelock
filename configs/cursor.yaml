@@ -389,7 +389,7 @@ mcp_tool_scanning:
   enabled: true
   action: block
   detect_drift: true
-  new_tool_action: block
+  new_tool_admission: withhold
 
 mcp_data_class_labels:
   enabled: false

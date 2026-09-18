@@ -69,6 +69,9 @@ func RunWSProxy(
 	var rec session.Recorder
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
+		if rec == nil {
+			return session.ErrCapacity
+		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
@@ -90,12 +93,12 @@ func RunWSProxy(
 	// concurrent WS sessions can't contaminate each other's drift state.
 	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if toolCfg != nil {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
-			NewToolAction:           toolCfg.NewToolAction,
+			NewToolAdmission:        toolCfg.NewToolAdmission,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,

@@ -27,13 +27,22 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	oldCfg := &Config{
 		FetchProxy:    FetchProxy{Listen: "127.0.0.1:18080", TimeoutSeconds: 12},
 		MetricsListen: "192.0.2.20:19090",
-		Containment: ContainmentConfig{MetricsExposure: &ContainmentMetricsExposure{
-			AllowFullMetrics:   true,
-			AllowedSourceCIDRs: []string{"192.0.2.42/32"},
-			Owner:              "observability",
-			Reason:             "Prometheus scrape",
-			ExpiresAt:          "2099-01-01T00:00:00Z",
-		}},
+		Containment: ContainmentConfig{
+			MetricsExposure: &ContainmentMetricsExposure{
+				AllowFullMetrics:   true,
+				AllowedSourceCIDRs: []string{"192.0.2.42/32"},
+				Owner:              "observability",
+				Reason:             "Prometheus scrape",
+				ExpiresAt:          "2099-01-01T00:00:00Z",
+			},
+			LoopbackServices: []ContainmentLoopbackService{{
+				Host:      "127.0.0.1",
+				Port:      9200,
+				Owner:     "search-team",
+				Reason:    "local index",
+				ExpiresAt: "2099-01-01T00:00:00Z",
+			}},
+		},
 		Internal:             []string{"10.0.0.0/8"},
 		TrustedDomains:       []string{"trusted.example"},
 		Suppress:             []SuppressEntry{{Rule: "body_dlp", Path: "api.example/*", Reason: "fixture"}},
@@ -127,6 +136,11 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	}
 	if newCfg.Containment.MetricsExposure.AllowedSourceCIDRs[0] == oldCfg.Containment.MetricsExposure.AllowedSourceCIDRs[0] {
 		t.Fatal("Containment.MetricsExposure.AllowedSourceCIDRs aliases old config")
+	}
+
+	oldCfg.Containment.LoopbackServices[0].Owner = "mutated"
+	if newCfg.Containment.LoopbackServices[0].Owner == oldCfg.Containment.LoopbackServices[0].Owner {
+		t.Fatal("Containment.LoopbackServices aliases old config")
 	}
 }
 

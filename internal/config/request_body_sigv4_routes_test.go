@@ -15,7 +15,7 @@ func validSigV4CredentialRouteConfig() *Config {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.SigV4CredentialRoutes = []RequestBodySigV4CredentialRoute{{
 		Host: "API.VENDOR.EXAMPLE.", Path: "/v1/graphql", ContentTypes: []string{"application/json; charset=utf-8"},
-		Methods: []string{"post"}, Reason: "register attachment URL", Owner: "platform", Expires: "2099-12-31",
+		Methods: []string{"post"}, Reason: "register attachment URL", Owner: "platform", Expires: temporaryExpiryDate(MaxRequestBodySigV4CredentialRouteHorizon),
 	}}
 	return cfg
 }
@@ -42,8 +42,7 @@ request_body_scanning:
       methods: [POST]
       reason: register attachment URL
       owner: platform
-      expires: 2099-12-31
-`
+      expires: ` + temporaryExpiryDate(MaxRequestBodySigV4CredentialRouteHorizon) + "\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

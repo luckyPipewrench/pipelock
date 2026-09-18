@@ -218,10 +218,10 @@ func TestAnchorBundleV1SchemaTypesEveryPropertiesNode(t *testing.T) {
 
 	// Calibrate the walk so a silent miss (or a schema-shape change) is caught: the
 	// five object definitions (root, checkpoint, proof, rekor_proof,
-	// rekor_inclusion_proof) plus the seven conditional subschemas that carry
-	// "properties" total twelve nodes.
-	if checked != 12 {
-		t.Fatalf("walked %d nodes carrying \"properties\", want 12; the walk missed nodes or the schema shape changed", checked)
+	// rekor_inclusion_proof) plus the eight conditional subschemas that carry
+	// "properties" total thirteen nodes.
+	if checked != 13 {
+		t.Fatalf("walked %d nodes carrying \"properties\", want 13; the walk missed nodes or the schema shape changed", checked)
 	}
 }
 

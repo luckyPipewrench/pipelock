@@ -866,11 +866,14 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 
 // ceeRecordSignals fires adaptive enforcement signals for CEE findings.
 // Called after ceeAdmit when session profiling is active.
-func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, threshold float64, logger *audit.Logger, m *metrics.Metrics, clientIP, requestID string) {
-	if sm == nil || (!result.EntropyHit && !result.FragmentHit) {
-		return
+func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, threshold float64, logger *audit.Logger, m *metrics.Metrics, clientIP, requestID string) *SessionState {
+	if sm == nil {
+		return nil
 	}
 	sess := sm.GetOrCreate(sessionKey)
+	if sess == nil {
+		return nil
+	}
 	ep := decide.EscalationParams{
 		Threshold: threshold,
 		Logger:    logger,
@@ -887,6 +890,7 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
 		decide.RecordSignal(sess, session.SignalFragmentDLP, ep)
 	}
+	return sess
 }
 
 // ceeSignalParams groups the inputs for ceeRecordSignalsAndBlockAll. A struct
@@ -911,7 +915,9 @@ func ceeRecordSignalsAndBlockAll(p ceeSignalParams) (session.Recorder, bool) {
 	if p.Sessions == nil || p.AdaptiveCfg == nil || !p.AdaptiveCfg.Enabled {
 		return nil, false
 	}
-	ceeRecordSignals(p.Result, p.Sessions, p.SessionKey, p.AdaptiveCfg.EscalationThreshold, p.Logger, p.Metrics, p.ClientIP, p.RequestID)
-	rec := p.Sessions.GetOrCreate(p.SessionKey)
+	rec := ceeRecordSignals(p.Result, p.Sessions, p.SessionKey, p.AdaptiveCfg.EscalationThreshold, p.Logger, p.Metrics, p.ClientIP, p.RequestID)
+	if rec == nil {
+		return nil, true
+	}
 	return rec, decide.UpgradeAction("", rec.EscalationLevel(), p.AdaptiveCfg) == config.ActionBlock
 }

@@ -193,6 +193,26 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.LicenseCRLMaxAge = ""
 	view.LicenseCRLMaxAgeResolved = 0
 	view.LicenseCRLMaxAgeError = ""
+	// A deprecated-alias notice records how the operator spelled an
+	// unchanged effective policy (new_tool_action vs new_tool_admission),
+	// not the policy itself; it must never make two equivalent configs hash
+	// differently.
+	view.NewToolActionAliasWarning = ""
+	// The canonical view deliberately serializes the pre-rename spelling -
+	// JSON key "NewToolAction" (pinned by the field's json tag) with
+	// warn|block values - so hashes are stable across the
+	// mcp_tool_scanning.new_tool_action -> new_tool_admission rename and no
+	// deployment's receipt policy hash moves on upgrade. The mapping is
+	// applied to the VIEW copy only; the loaded config keeps the
+	// admit|withhold vocabulary everywhere else. Empty stays empty: an
+	// omitted new_tool_admission hashed as "" before the rename and still
+	// must.
+	switch view.MCPToolScanning.NewToolAdmission {
+	case NewToolAdmit:
+		view.MCPToolScanning.NewToolAdmission = ActionWarn
+	case NewToolWithhold:
+		view.MCPToolScanning.NewToolAdmission = ActionBlock
+	}
 	view.LicensePublicKey = ""
 	view.LicenseExpiresAt = 0
 	view.LicenseIssuedAt = 0

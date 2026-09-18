@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,29 +20,49 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain/workspacediff"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
 	defaultContainConfigPath = "/etc/pipelock/pipelock.yaml"
 	defaultContainPostureDir = "/var/lib/pipelock/contain/posture"
 	containRunPrivilegeProbe = "agent_privilege_escape_denied"
+
+	// defaultWorkspaceDiffCapBytes is the per-file content-digest cap for the
+	// post-session workspace change statement. A regular file at or
+	// under this size gets a sha256 digest; a larger one is recorded as
+	// oversize with no digest, never partially hashed. This is evidence, not
+	// backup: no file content is ever stored.
+	defaultWorkspaceDiffCapBytes = 10 * 1024 * 1024
 )
 
 type containRunOptions struct {
-	configFile    string
-	port          int
-	postureOutput string
-	dryRun        bool
+	configFile            string
+	port                  int
+	postureOutput         string
+	dryRun                bool
+	workspaceDiffCapBytes int64
 }
 
 type containRunEnv struct {
 	probe       *probeEnv
 	launch      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
-	emitPosture func(configFile, outputDir string, env *probeEnv, args []string) (string, error)
+	emitPosture func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error)
+	// loadConfig loads the ONE config snapshot reused for both posture
+	// capsule emission and workspace-statement signing key resolution (H2).
+	// Defaults to config.Load; overridable in tests that stub emitPosture
+	// and never intend to touch a real config file on disk.
+	loadConfig func(configFile string) (*config.Config, error)
+}
+
+type postureEmission struct {
+	path          string
+	capsuleSHA256 string
 }
 
 func defaultContainRunEnv() containRunEnv {
@@ -49,14 +70,16 @@ func defaultContainRunEnv() containRunEnv {
 		probe:       defaultProbeEnv(),
 		launch:      launchContainedAgent,
 		emitPosture: emitContainRunPosture,
+		loadConfig:  func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
 	}
 }
 
 func runCmd() *cobra.Command {
 	opts := containRunOptions{
-		configFile:    defaultContainConfigPath,
-		port:          defaultProxyPort,
-		postureOutput: defaultContainPostureDir,
+		configFile:            defaultContainConfigPath,
+		port:                  defaultProxyPort,
+		postureOutput:         defaultContainPostureDir,
+		workspaceDiffCapBytes: defaultWorkspaceDiffCapBytes,
 	}
 
 	cmd := &cobra.Command{
@@ -98,6 +121,7 @@ Pipelock does not read or store agent secrets.`,
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "pipelock listen port to probe on loopback")
 	cmd.Flags().StringVar(&opts.postureOutput, "posture-output", opts.postureOutput, "directory for the signed contain-run posture capsule")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "run preflight and print the session contract, then exit without emitting a posture capsule or launching")
+	cmd.Flags().Int64Var(&opts.workspaceDiffCapBytes, "workspace-diff-cap-bytes", opts.workspaceDiffCapBytes, "per-file content-digest cap for the post-session workspace change statement; larger files are recorded oversize with no digest")
 
 	return cmd
 }
@@ -188,18 +212,206 @@ func runContainRun(
 	if opts.dryRun {
 		return nil
 	}
-	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
+	// Session-start manifest of every granted workspace, taken before the
+	// posture capsule is emitted and before launch, so it reflects the
+	// workspace exactly as granted at the moment this session begins. A
+	// failure here must not abort the launch: docs/contain-cli.md promises
+	// the workspace change statement never blocks launch on its own
+	// (the same contract the missing-signing-key path already honors), so
+	// this warns and proceeds with the statement unavailable for this
+	// session rather than refusing containment the operator otherwise
+	// qualifies for.
+	beforeSnapshots, snapErr := snapshotWorkspaces(grants, opts.workspaceDiffCapBytes)
+	if snapErr != nil {
+		beforeSnapshots = nil
+		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", snapErr)
+		_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, snapErr.Error())
+	}
+
+	// Resolve the workspace-statement signing key BEFORE launch, from the
+	// SAME config read the posture capsule about to be emitted uses, and
+	// reuse this exact key after launch. Loading it again after the agent
+	// exits would let an operator's mid-session key rotation sign the
+	// statement with a key the posture capsule launched under was never
+	// bound to. A failure here is reported once, up front, rather than
+	// silently discovered after the agent has already run.
+	// Load config ONCE here and reuse this exact snapshot for both the
+	// posture capsule emission below and the workspace-statement signing key
+	// resolution: loading it twice would let an operator's key rotation
+	// between the two loads sign the statement with a key the capsule this
+	// session launched under was never bound to (H2).
+	if env.loadConfig == nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("internal: containRunEnv.loadConfig is not set"))
+	}
+	runCfg, runCfgErr := env.loadConfig(opts.configFile)
+	if runCfgErr != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
+	}
+
+	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(runCfg)
+	if len(grants) > 0 && workspaceSigningKeyErr != nil {
+		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", workspaceSigningKeyErr)
+		_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, workspaceSigningKeyErr.Error())
+	}
+
+	// Thread the SAME already-loaded private key into posture emission
+	// (posturepkg.Options.SigningKey) whenever it resolved successfully, so
+	// the capsule never triggers a SECOND, independent read of the signing
+	// key file: that second read is exactly the race H2 closed for the
+	// config snapshot but left open for the key itself, since
+	// posturepkg.Emit would otherwise call its own resolveSigningKey against
+	// cfg.FlightRecorder.SigningKeyPath a second time. When the key failed
+	// to load above, pass nil and let Emit attempt its own resolution (the
+	// existing missing-key fallback path, unchanged).
+	var capsuleSigningKey ed25519.PrivateKey
+	if workspaceSigningKeyErr == nil {
+		capsuleSigningKey = workspaceSigningKey
+	}
+	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
 	}
-	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posturePath)
+	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posture.path)
 	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)
 	_, _ = fmt.Fprintf(stdout, "pipelock contain run: launching %s as %s\n", tool, env.probe.agentUserName)
 
-	if err := env.launch(ctx, env.probe, args, stdin, stdout, stderr); err != nil {
-		return err
+	launchErr := env.launch(ctx, env.probe, args, stdin, stdout, stderr)
+
+	// Session-end workspace change statement, bound to the posture capsule
+	// this exact session emitted, regardless of whether the launched tool
+	// exited cleanly: a crashed or refused launch still gets an honest
+	// statement of what the workspace looked like, rather than none at all.
+	// Skipped entirely (no line at all) when there were no granted
+	// workspaces; already-reported-unavailable when the key could not be
+	// loaded before launch.
+	if len(beforeSnapshots) > 0 && workspaceSigningKeyErr == nil {
+		stmtPath, incomplete, incompleteReason, boundaryCheck, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posture.path, posture.capsuleSHA256, workspaceSigningKey)
+		switch {
+		case stmtErr != nil:
+			_, _ = fmt.Fprintf(stderr, "pipelock contain run: workspace change statement failed: %v\n", stmtErr)
+			_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, stmtErr.Error())
+		case incomplete:
+			// The statement was signed and written successfully, but its
+			// CONTENT says the diff could not fully observe the workspace
+			// (a budget cap or an unreadable/mount-excluded path). That is
+			// never a [PASS]: an operator scanning for [PASS]/[FAIL] lines
+			// must not read a partial observation as a clean result (M5).
+			_, _ = fmt.Fprintf(stdout, "  [WARN] signed workspace change statement is INCOMPLETE: %s\n", stmtPath)
+			_, _ = fmt.Fprintf(stdout, "%s reason=%q path=%s boundary_check=%s\n", workspaceStatementIncompleteLine, incompleteReason, stmtPath, boundaryCheck)
+		default:
+			_, _ = fmt.Fprintf(stdout, "  [PASS] signed workspace change statement: %s\n", stmtPath)
+			_, _ = fmt.Fprintf(stdout, "%s path=%s boundary_check=%s\n", workspaceStatementWrittenLine, stmtPath, boundaryCheck)
+		}
+	}
+
+	if launchErr != nil {
+		return launchErr
 	}
 	return nil
+}
+
+// workspaceStatementUnavailableLine and workspaceStatementWrittenLine are a
+// stable, single-line, grep-able outcome contract for the workspace change
+// statement, independent of the surrounding human-readable prose, so an
+// operator script can key on "did this session's evidence get written"
+// without parsing free text.
+const (
+	workspaceStatementUnavailableLine = "workspace_change_statement=unavailable"
+	workspaceStatementWrittenLine     = "workspace_change_statement=written"
+	workspaceStatementIncompleteLine  = "workspace_change_statement=incomplete"
+)
+
+// resolveWorkspaceStatementSigningKey loads the SAME signing key the posture
+// capsule uses (flight_recorder.signing_key_path from configFile), read once
+// before launch so a key rotation during the launched session cannot change
+// which key ends up signing the statement.
+func resolveWorkspaceStatementSigningKey(cfg *config.Config) (ed25519.PrivateKey, error) {
+	keyPath := filepath.Clean(cfg.FlightRecorder.SigningKeyPath)
+	if keyPath == "." || cfg.FlightRecorder.SigningKeyPath == "" {
+		return nil, errors.New("flight_recorder.signing_key_path is required to sign the workspace change statement")
+	}
+	privKey, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load signing key: %w", err)
+	}
+	return privKey, nil
+}
+
+// snapshotWorkspaces records the current state of every granted workspace
+// path, keyed by path, using the SAME grant list the session contract and
+// the expiry gate already derived from.
+func snapshotWorkspaces(grants []workspaceGrant, capBytes int64) (map[string]workspacediff.Manifest, error) {
+	out := make(map[string]workspacediff.Manifest, len(grants))
+	for _, g := range grants {
+		if _, ok := out[g.Path]; ok {
+			continue
+		}
+		m, err := workspacediff.Snapshot(g.Path, capBytes, workspacediff.DefaultBudget())
+		if err != nil {
+			return nil, fmt.Errorf("snapshot %s: %w", g.Path, err)
+		}
+		out[g.Path] = m
+	}
+	return out, nil
+}
+
+// emitContainRunWorkspaceStatement diffs each granted workspace against its
+// session-start snapshot and signs the result with privKey (resolved BEFORE
+// launch by the caller), bound to this session via the posture capsule's own
+// sha256 digest.
+func emitContainRunWorkspaceStatement(
+	opts containRunOptions,
+	env *probeEnv,
+	before map[string]workspacediff.Manifest,
+	grants []workspaceGrant,
+	posturePath string,
+	capsuleSHA256 string,
+	privKey ed25519.PrivateKey,
+) (path string, incomplete bool, incompleteReason string, boundaryCheck workspacediff.BoundaryCheck, err error) {
+	statements := make([]workspacediff.Statement, 0, len(grants))
+	seen := make(map[string]struct{}, len(grants))
+	now := containRunNow(env)
+	var incompleteReasons []string
+	for _, g := range grants {
+		if _, ok := seen[g.Path]; ok {
+			continue
+		}
+		seen[g.Path] = struct{}{}
+		beforeSnap, ok := before[g.Path]
+		if !ok {
+			return "", false, "", "", fmt.Errorf("missing session-start snapshot for %s", g.Path)
+		}
+		afterSnap, snapErr := workspacediff.Snapshot(g.Path, opts.workspaceDiffCapBytes, workspacediff.DefaultBudget())
+		if snapErr != nil {
+			return "", false, "", "", fmt.Errorf("snapshot %s at session end: %w", g.Path, snapErr)
+		}
+		st, diffErr := workspacediff.Diff(beforeSnap, afterSnap, now)
+		if diffErr != nil {
+			return "", false, "", "", fmt.Errorf("diff %s: %w", g.Path, diffErr)
+		}
+		if st.BoundaryCheck == workspacediff.BoundaryCheckDeviceOnly {
+			boundaryCheck = workspacediff.BoundaryCheckDeviceOnly
+		} else if boundaryCheck == "" {
+			boundaryCheck = workspacediff.BoundaryCheckMountID
+		}
+		if st.Incomplete {
+			incompleteReasons = append(incompleteReasons, fmt.Sprintf("%s: %s", g.Path, st.IncompleteReason))
+		}
+		statements = append(statements, st)
+	}
+
+	signed, err := workspacediff.Sign(statements, capsuleSHA256, privKey)
+	if err != nil {
+		return "", false, "", "", err
+	}
+	path, err = workspacediff.WriteJSON(filepath.Dir(posturePath), signed)
+	if err != nil {
+		return "", false, "", "", err
+	}
+	if len(incompleteReasons) > 0 {
+		return path, true, strings.Join(incompleteReasons, "; "), boundaryCheck, nil
+	}
+	return path, false, "", boundaryCheck, nil
 }
 
 // containRunNow returns the probe environment's clock, defaulting to time.Now
@@ -452,31 +664,29 @@ func parseAgentGIDs(ids []string, primary uint32) ([]uint32, error) {
 	return out, nil
 }
 
-func emitContainRunPosture(configFile, outputDir string, env *probeEnv, args []string) (string, error) {
-	cfg, err := config.Load(filepath.Clean(configFile))
-	if err != nil {
-		return "", fmt.Errorf("loading config: %w", err)
-	}
+func emitContainRunPosture(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error) {
 	launchEvidence, err := containRunLaunchEvidence(env, args)
 	if err != nil {
-		return "", fmt.Errorf("build launch evidence: %w", err)
+		return postureEmission{}, fmt.Errorf("build launch evidence: %w", err)
 	}
 	containmentEvidence, err := containRunContainmentEvidence(env, launchEvidence.TargetUID)
 	if err != nil {
-		return "", fmt.Errorf("build containment evidence: %w", err)
+		return postureEmission{}, fmt.Errorf("build containment evidence: %w", err)
 	}
 	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{
 		ContainLaunch: &launchEvidence,
 		Containment:   &containmentEvidence,
+		SigningKey:    privKey,
 	})
 	if err != nil {
-		return "", err
+		return postureEmission{}, err
 	}
-	path, err := posturepkg.WriteProofJSON(outputDir, capsule)
+	path, capsuleBytes, err := posturepkg.WriteProofJSONWithBytes(outputDir, capsule)
 	if err != nil {
-		return "", err
+		return postureEmission{}, err
 	}
-	return path, nil
+	sum := sha256.Sum256(capsuleBytes)
+	return postureEmission{path: path, capsuleSHA256: hex.EncodeToString(sum[:])}, nil
 }
 
 func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainLaunchEvidence, error) {

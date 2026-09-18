@@ -64,13 +64,13 @@ func TestScanTools_NewToolAfterBaseline_WarnDefault(t *testing.T) {
 }
 
 // TestScanTools_NewToolAfterBaseline_Block covers the fix: with
-// new_tool_action=block, a name absent from an established baseline is
+// new_tool_admission=withhold, a name absent from an established baseline is
 // withheld (never promoted) and reported as drift with the new-tool cue,
 // exactly like a withheld changed definition under action=block.
 func TestScanTools_NewToolAfterBaseline_Block(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
 	if r := ScanTools(line1, sc, cfg); !r.Clean {
@@ -127,6 +127,22 @@ func TestScanTools_NewToolAfterBaseline_Block(t *testing.T) {
 	}
 }
 
+func TestScanTools_NewToolAfterBaseline_UnknownAdmissionWithholds(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "banana"}
+
+	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
+	if r := ScanTools(line1, sc, cfg); !r.Clean {
+		t.Fatalf("first tools/list should establish the baseline cleanly, got %+v", r)
+	}
+
+	line2 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`)
+	if r := ScanTools(line2, sc, cfg); r.Clean {
+		t.Fatalf("unknown new-tool admission must withhold rather than admit, got %+v", r)
+	}
+}
+
 // TestScanTools_NewToolAfterBaseline_BlockThenReset covers admission after an
 // authorized operator re-baseline: ResetDriftState clears the drift baseline,
 // so the next tools/list re-establishes it and the previously withheld tool
@@ -134,7 +150,7 @@ func TestScanTools_NewToolAfterBaseline_Block(t *testing.T) {
 func TestScanTools_NewToolAfterBaseline_BlockThenReset(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
 	ScanTools(line1, sc, cfg)
@@ -157,11 +173,11 @@ func TestScanTools_NewToolAfterBaseline_BlockThenReset(t *testing.T) {
 // TestScanTools_NewToolAfterBaseline_FirstSightingNeverFlags confirms nothing
 // changes before a baseline exists: the very first tools/list a listener
 // receives establishes the baseline for every name in it, even with
-// new_tool_action=block, matching the pre-existing first-sighting contract.
+// new_tool_admission=withhold, matching the pre-existing first-sighting contract.
 func TestScanTools_NewToolAfterBaseline_FirstSightingNeverFlags(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`)
 	r := ScanTools(line1, sc, cfg)
@@ -182,7 +198,7 @@ func TestScanTools_NewToolAfterBaseline_FirstSightingNeverFlags(t *testing.T) {
 func TestScanTools_NewToolAfterBaseline_ComposesWithCapacity(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line1 := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
 	ScanTools(line1, sc, cfg)
@@ -309,11 +325,11 @@ func TestToolBaseline_EvaluateDefinition_NewToolMatrix(t *testing.T) {
 // valid tools/list establishes the drift baseline even when it carries no
 // tools. Without this, an upstream could bootstrap with an empty inventory
 // and then introduce a new name that read as another initial inventory,
-// bypassing new_tool_action: block without the operator re-baseline.
+// bypassing new_tool_admission: withhold without the operator re-baseline.
 func TestScanTools_EmptyFirstInventoryEstablishesBaseline(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	cfg := &ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	cfg := &ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	empty := makeToolsResponse(`[]`)
 	if r := ScanTools(empty, sc, cfg); !r.Clean {
@@ -452,7 +468,7 @@ func TestLogToolObservations_RendersNewToolCue(t *testing.T) {
 		{ToolName: "old", DriftAccepted: true, DriftDetail: "description changed (12 chars)"},
 	}})
 	out := buf.String()
-	if !strings.Contains(out, `tool "later": new-tool admitted under new_tool_action warn`) {
+	if !strings.Contains(out, `tool "later": new-tool admitted under new_tool_admission admit`) {
 		t.Fatalf("observation log must render the new-tool cue, got:\n%s", out)
 	}
 	if !strings.Contains(out, `tool "old": definition-drift accepted, no risk cue introduced`) {
@@ -467,7 +483,7 @@ func TestLogToolObservations_RendersNewToolCue(t *testing.T) {
 func TestScanTools_DetectDriftOffDoesNotEstablishBaseline(t *testing.T) {
 	sc := testScanner(t)
 	baseline := NewToolBaseline()
-	scanOnly := &ToolScanConfig{Action: "block", DetectDrift: false, Baseline: baseline, NewToolAction: "block"}
+	scanOnly := &ToolScanConfig{Action: "block", DetectDrift: false, Baseline: baseline, NewToolAdmission: "withhold"}
 
 	line := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."}]`)
 	if r := ScanTools(line, sc, scanOnly); !r.Clean {
@@ -479,7 +495,7 @@ func TestScanTools_DetectDriftOffDoesNotEstablishBaseline(t *testing.T) {
 
 	// Detection is enabled later. The inventory it first sees is the
 	// baseline, so nothing in it is a post-baseline new name.
-	withDrift := &ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAction: "block"}
+	withDrift := &ToolScanConfig{Action: "block", DetectDrift: true, Baseline: baseline, NewToolAdmission: "withhold"}
 	if r := ScanTools(line, sc, withDrift); !r.Clean {
 		t.Fatalf("enabling drift detection must not retroactively block the existing inventory, got %+v", r)
 	}
@@ -666,7 +682,7 @@ func TestScanTools_ConcurrentFirstInventoriesDoNotDenyEachOther(t *testing.T) {
 	line := makeToolsResponse(`[{"name":"alpha","description":"Alpha tool."},{"name":"beta","description":"Beta tool."}]`)
 	for attempt := 0; attempt < 200; attempt++ {
 		baseline := NewToolBaseline()
-		cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, DriftBaseline: baseline, NewToolAction: "block"}
+		cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, DriftBaseline: baseline, NewToolAdmission: "withhold"}
 		start := make(chan struct{})
 		results := make(chan ToolScanResult, 2)
 		for i := 0; i < 2; i++ {

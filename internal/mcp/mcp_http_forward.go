@@ -156,6 +156,9 @@ func RunHTTPProxy(
 	var rec session.Recorder
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(invocationKey)
+		if rec == nil {
+			return session.ErrCapacity
+		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
@@ -167,14 +170,12 @@ func RunHTTPProxy(
 	// this invocation.
 	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && (toolCfg.Action != "" ||
-		toolCfg.BindingUnknownAction != "" ||
-		toolCfg.BindingNoBaselineAction != "") {
+	if toolCfg != nil {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
 			Action:                  toolCfg.Action,
 			DetectDrift:             toolCfg.DetectDrift,
-			NewToolAction:           toolCfg.NewToolAction,
+			NewToolAdmission:        toolCfg.NewToolAdmission,
 			ExtraPoison:             toolCfg.ExtraPoison,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,

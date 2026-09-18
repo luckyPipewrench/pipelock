@@ -152,8 +152,8 @@ fetch_proxy:
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
-| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
-| `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
+| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
+| `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply. Optional `expires` is temporary and capped at 180 days |
 
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
@@ -188,10 +188,10 @@ fetch_proxy:
         path_prefix: /document/d/      # literal prefix of the normalized path
         reason: service-issued document identifier
         owner: platform
-        expires: 2027-01-01            # optional, YYYY-MM-DD
+        expires: 2026-12-15            # optional; within the 180-day temporary window
 ```
 
-An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. Editing any of them does not change the policy hash a receipt carries. Nothing revokes an entry when its `expires` date passes; `pipelock doctor` reports the expired, unowned, unexplained and inert entries so a standing exemption gets revisited instead of quietly outliving its reason.
+An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. When supplied, `expires` is a temporary incident control and may be at most 180 days ahead; shorten it, or use an exact `request_policy` route for a permanent governed path. Editing governance metadata does not change the policy hash a receipt carries.
 
 **Shipped defaults.** Five document-sharing routes ship enabled, because an ordinary Google Docs, Sheets, Slides, Forms or Drive link carries an opaque service-issued file ID by construction and was otherwise blocked on a fresh install:
 
@@ -224,13 +224,15 @@ fetch_proxy:
         param: query
         reason: structured search grammar can contain dense operators
         owner: platform-security
-        expires: 2026-12-31
+        expires: 2026-12-15            # optional; within the 180-day temporary window
 ```
 
 The endpoint-parameter matcher is intentionally strict: empty `scheme` defaults
 to `https`, `host` is an exact DNS hostname without a port or wildcard, `path`
 must match the URL's canonical escaped path exactly, and the raw query string
 must contain exactly one key with the same unescaped spelling as `param`.
+
+An optional `expires` here is a temporary incident control and may be at most 180 days ahead. Shorten it when the endpoint is repaired; if the parameter contract is permanent, govern the endpoint with an exact `request_policy` route instead.
 
 **Query entropy exclusions** skip only the query-string entropy gate for specific
 hosts. They are broader than endpoint-parameter exclusions and should be reserved
@@ -327,6 +329,8 @@ Enables TLS MITM on CONNECT tunnels, allowing pipelock to decrypt, scan, and re-
 
 Requires a CA certificate trusted by the agent. Generate one with `pipelock tls init` and install it with `pipelock tls install-ca`.
 
+**Upgrade note:** a config that previously loaded with a private-suffix wildcard in `tls_interception.passthrough_domains` (for example `*.github.io` or `*.s3.amazonaws.com`) now refuses to load. Replace the wildcard with its exact hosts (for example `mybucket.s3.amazonaws.com`); if the required host set is unbounded, no passthrough equivalent exists, so intercept the traffic with `tls_interception` and a trusted local CA or constrain it to a fixed host set. A JavaScript alias other than `text/javascript`/`application/javascript`/`application/ecmascript` in `response_scanning.unscannable_passthrough[].content_types` also now refuses to load; both changes are fail-closed, and neither affects `exempt_domains`, `trusted_domains`, or any other grant list.
+
 ```yaml
 tls_interception:
   enabled: false
@@ -344,7 +348,7 @@ tls_interception:
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
 | `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
 | `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
-| `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over a public suffix such as `*.com` is also refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every destination under the suffix. A wildcard over a private boundary such as `*.s3.amazonaws.com` stays accepted. |
+| `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over ANY public suffix, ICANN-operated (`*.com`, `*.co.uk`) or private-section (`*.github.io`, `*.s3.amazonaws.com`), is refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every unrelated tenant under the suffix; this is stricter than the public-suffix rule for an ordinary exempt/trusted domain list, which still accepts a private-section wildcard because that list still scans what it exempts. An exact host under a private suffix (`mybucket.s3.amazonaws.com` with no wildcard) or a wildcard one label below it (`*.myorg.github.io`) is unaffected. |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
 | `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
@@ -426,7 +430,7 @@ request_body_scanning:
       methods: [POST]                  # optional; omit to match every HTTP method
       reason: encrypted customer archives
       owner: storage team
-      expires: 2099-12-31
+      expires: 2026-12-15              # temporary route warning; 90-day maximum
   trusted_hosts:                       # optional destinations where injection-shaped request text and fully redacted critical DLP follow `action` instead of hard blocking
     - api.vendor.example
   sigv4_credential_routes:             # optional exact HTTPS body routes that carry presigned URLs
@@ -436,7 +440,7 @@ request_body_scanning:
       methods: [POST]
       reason: register attachment URL
       owner: platform team
-      expires: 2099-12-31
+      expires: 2026-10-15              # credential-floor exception; 30-day maximum
 ```
 
 | Field | Default | Description |
@@ -455,8 +459,8 @@ request_body_scanning:
 | `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
-| `content_entropy_warn_routes` | `[]` | Exact, expiring HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry; methods are optional. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
-| `sigv4_credential_routes` | `[]` | Exact, expiring HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
+| `content_entropy_warn_routes` | `[]` | Exact, temporary HTTPS routes where request-body entropy findings warn instead of block. Each entry requires one exact host and canonical non-root path, one or more non-text content types, a reason, owner, and expiry no more than 90 days ahead; methods are optional. Shorten the exception, or use a permanent scanned upload design instead. Other findings retain their configured actions; size and redirect limits remain fail-closed. |
+| `sigv4_credential_routes` | `[]` | Exact, temporary HTTPS request-body routes allowed to carry a structurally valid AWS SigV4 presigned URL. Each entry requires one exact host and canonical non-root path, one or more methods and content types, a reason, owner, and expiry no more than 30 days ahead. Shorten the exception, or move the credential handoff out of the request body for a permanent integration. Only the access-key ID inside a complete presigned URL is exempted; bare keys, malformed URLs, extra credentials, headers, and every out-of-route destination still hit the immutable DLP floor. |
 | `trusted_hosts` | `[]` | Destinations where two request-side hard blocks fall back to `action`: injection-shaped text found in a request body, and a critical credential finding that redaction fully rewrote. Every request-side scan still runs, other findings keep their configured actions, and `response_scanning.exempt_domains` never affects request-side decisions. Supports `*.example.com` wildcards. |
 
 **Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
@@ -997,7 +1001,7 @@ response_scanning:
       content_types: ["application/octet-stream"]
       reason: "opaque signed archive"
       added: "2026-07-04"
-      expires: "2099-12-31"
+      expires: "2026-12-15" # temporary opaque download; 90-day maximum
   authenticated_artifacts:      # exact signed rules artifacts verified by the proxy
     - host: "pipelab.org"
       path: "/rules/pipelock-community/bundle.yaml"
@@ -1020,7 +1024,7 @@ response_scanning:
 | `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses use the larger bounded whole-buffer scan ceiling instead of failing the normal scan cap. Browser Shield also uses that bounded ceiling for whole-body rewriting. |
 | `size_exempt_scan_max_bytes` | `67108864` | Maximum bytes read into memory for one over-cap response from a `size_exempt_domains` host before the existing response scanners run. Exceeding this ceiling blocks fail-closed with no upstream bytes delivered. |
 | `size_exempt_scan_max_inflight_bytes` | `268435456` | Per-proxy-instance memory reservation budget for concurrent over-cap size-exempt scans. If a scan cannot reserve its ceiling immediately, the response blocks fail-closed instead of waiting. |
-| `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. |
+| `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The `expires` date may be no more than 90 days ahead; shorten it, or use a scanned delivery path or authenticated artifact for a permanent need. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. Every RFC 9239 JavaScript media type and alias (`text/javascript`, `application/javascript`, `application/ecmascript`, `application/x-javascript`, `application/x-ecmascript`, `text/ecmascript`, and the rest of the section-6 list) is refused as a `content_types` entry, matching what the browser shield already treats as JavaScript, so an opaque-download exception cannot admit an equivalent script response under a less common alias. |
 | `authenticated_artifacts` | `[]` | Exact official signed rules artifacts which the forward proxy and decrypted CONNECT interceptor buffer and verify before bypassing only response prompt-injection matching. Each entry requires exact `host`, canonical non-root `path`, and signed `bundle_name`; no wildcard, prefix, query, userinfo, or non-default port matches. The proxy fetches the sidecar signature without forwarding caller credentials, refuses every redirect, verifies an embedded official Ed25519 key and the bundle identity, then records an audit event and artifact-labelled allow receipt. Any mismatch, redirect, oversized body, invalid signer/signature, or wrong bundle name blocks before upstream bytes reach the client. Request DLP, authority, SSRF, budgets, Browser Shield, and media policy remain active. Upgrade binaries before adding this field: older binaries reject unknown config fields. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. A server that is omitted, missing, or does not match an entry is treated as `untrusted` and blocks response-injection findings. A malformed entry is not a fallback: an unknown trust value, an invalid server name, or a duplicate entry fails config validation, so the configuration does not load. `reasoning` permits warn-and-forward only when `response_scanning.action` is `warn`; a stricter section action still applies. |
 | `patterns` | 33 built-in | Injection and state/control poisoning patterns |
@@ -1132,7 +1136,7 @@ mcp_tool_scanning:
   enabled: true
   action: warn
   detect_drift: true
-  new_tool_action: warn
+  new_tool_admission: admit
 ```
 
 | Field | Default | Description |
@@ -1140,7 +1144,7 @@ mcp_tool_scanning:
 | `enabled` | `false` | Enable tool description scanning |
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
-| `new_tool_action` | `"warn"` | warn or block. Governs a tool NAME absent from an already-established drift baseline, as distinct from a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. |
+| `new_tool_admission` | `"admit"` | admit or withhold. Governs baseline ADMISSION of a tool NAME absent from an already-established drift baseline, as distinct from the response VERDICT on a changed definition of an already-known name (`action` governs that). Never affects the first valid `tools/list` inventory, an empty one included, which establishes the baseline for every name in it; a failed or malformed response establishes nothing. See "New tool admission" below. Deprecated alias: `new_tool_action` (`warn`/`block`), which canonicalizes to `admit`/`withhold`; an empty value on either key is treated as absent, and only two non-empty keys are a config error. |
 | `listener_drift_reset_file` | `""` | One-shot signed reset-delegation control-file path for the HTTP reverse listener's upstream drift baseline |
 | `listener_drift_reset_authority_public_key_file` | `""` | Exported `mcp-reset-authority` public key used to verify listener reset delegations |
 | `listener_drift_reset_target` | `""` | Stable listener identity that a reset delegation must name |
@@ -1208,8 +1212,8 @@ checks above, add a wholly NEW tool whose description carries the same
 outbound-destination or agent-directive behavior, and it becomes the
 approved baseline the moment it is scanned clean.
 
-`new_tool_action` closes that promotion path independently of `action`. Set it
-to `block` to withhold a newly-visible name from the baseline instead of
+`new_tool_admission` closes that promotion path independently of `action`. Set
+it to `withhold` to withhold a newly-visible name from the baseline instead of
 promoting it:
 
 ```yaml
@@ -1217,10 +1221,10 @@ mcp_tool_scanning:
   enabled: true
   action: block
   detect_drift: true
-  new_tool_action: block
+  new_tool_admission: withhold
 ```
 
-With `new_tool_action: block`, a tool name absent from the established
+With `new_tool_admission: withhold`, a tool name absent from the established
 baseline is reported as drift (cue `new-tool`) and withheld — not promoted
 — exactly the way a changed definition is withheld under `action: block`.
 It is reported again on every later `tools/list` until an authorized
@@ -1239,26 +1243,35 @@ both first inventories: each contributes its names, neither reads the other's
 names as new, and the baseline is established when the last of them finishes.
 A name that first appears after that point is withheld under `block`.
 
-`new_tool_action` governs baseline admission, not the response verdict, and
-the two are spelled with the same words. Read the pair together: whether the
-`tools/list` response carrying a new tool is delivered to the agent is decided
-by `action` alone. Under `action: block` the response is refused, so the agent
-never sees the new tool. Under `action: warn` the response is still forwarded
-and the agent can call the new tool; what `new_tool_action: block` buys there
-is that the name never becomes approved, so it is reported on every later
-`tools/list` instead of being trusted after one sighting. Session binding is
-not a second line of defense for this, because a forwarded response commits
-its tool names into the binding inventory. Set `action: block` if a new tool
-must not reach the agent at all.
+`new_tool_admission` governs baseline admission, not the response verdict.
+The vocabulary is deliberately different from `action`'s `warn`/`block` so the
+two controls can never be misread as the same knob. Read the pair together:
+whether the `tools/list` response carrying a new tool is delivered to the
+agent is decided by `action` alone. Under `action: block` the response is
+refused, so the agent never sees the new tool. Under `action: warn` the
+response is still forwarded and the agent can call the new tool; what
+`new_tool_admission: withhold` buys there is that the name never becomes
+approved, so it is reported on every later `tools/list` instead of being
+trusted after one sighting. Session binding is not a second line of defense
+for this, because a forwarded response commits its tool names into the
+binding inventory. Set `action: block` if a new tool must not reach the
+agent at all.
 
-The default (`warn`, including the omitted/unset value) preserves the
+The default (`admit`, including the omitted/unset value) preserves the
 behavior every existing deployment already had: a new tool is still
 admitted, and its arrival is recorded only as a non-blocking observation
 (never a `DriftDetected` match), so an upstream vendor that legitimately
 adds tools between releases does not need an operator response. Choosing
-`block` is a deliberate posture change for deployments that want every new
-tool name to require the same operator sign-off a changed definition
+`withhold` is a deliberate posture change for deployments that want every
+new tool name to require the same operator sign-off a changed definition
 already requires.
+
+The deprecated `new_tool_action` alias (`warn`/`block`) still loads and
+canonicalizes to the equivalent `new_tool_admission` value (`warn` ->
+`admit`, `block` -> `withhold`), emitting a one-time load warning naming the
+replacement. An empty value on either key is treated as absent. Setting both
+`new_tool_admission` and `new_tool_action` is a load error only when both
+values are non-empty; the error names both keys.
 
 With `action: block`, a confirmed upstream update that Pipelock blocked needs
 an operator re-baseline. Configure a signed one-shot control-file path, the
@@ -1681,6 +1694,24 @@ containment:
 `allowed_source_cidrs` lists the only sources that may read `/metrics`. Use exact CIDRs for the scraper hosts. Wildcard source ranges, wildcard binds, and hostname binds are rejected. `owner`, `reason`, and `expires_at` make the exception reviewable during an incident. The expiry is RFC3339 and the listener stops serving remote metrics when it passes. `/stats` remains loopback-only.
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
+
+### Declared loopback services (containment)
+
+The contained agent's only implicit loopback destination is the proxy port. `containment.loopback_services` declares any additional loopback TCP service the agent may reach, with the same reviewable lifecycle as `containment.metrics_exposure`:
+
+```yaml
+containment:
+  loopback_services:
+    - host: 127.0.0.1
+      port: 9200
+      owner: search-team
+      reason: agent needs a local search index for retrieval
+      expires_at: 2026-12-01T00:00:00Z
+```
+
+`host` must be a loopback literal, `127.0.0.1` or `::1`; a hostname, wildcard, or CIDR is rejected. `port` is a single TCP port (1-65535) distinct from the proxy port -- the proxy allow is implicit and does not need a declared entry. `owner`, `reason`, and `expires_at` (RFC3339, must remain in the future) are required, and an expired, malformed, duplicate, or proxy-port-colliding entry fails config validation, so `pipelock check` and `contain install` both fail closed rather than loading a ruleset that does not match the declaration.
+
+**Every add, remove, or expiry of an entry needs a reconciliation pass to reach the kernel: run `pipelock contain reload-nft-rules` as root after editing this list.** Editing the config alone is not enough -- the managed nftables chain and the persisted rules file only change on the next reconciliation, which is what that command (and the boot-time unit that runs it automatically on every boot) does. If the managed config is missing or unreadable, or the declared set as a whole contains a malformed or expired entry, reconciliation fails closed to zero declared loopback services and logs the config path and why (naming `pipelock contain install` as the recovery command for a missing config); it does not fail the reload. See "Declared loopback services" under `contain-cli.md` for how `contain install`, `contain reload-nft-rules`, and `contain verify` each honor this list.
 
 ## Kill Switch
 
@@ -3738,7 +3769,6 @@ reverse_proxy:
     port: 443
     reason: "submission endpoint"
     added: "2026-05-26"
-    expires: "2099-12-31"
   max_body_bytes: 1048576
   request_timeout_seconds: 10
 ```
@@ -3748,7 +3778,7 @@ reverse_proxy:
 | `profile` | `""` | Empty keeps generic reverse-proxy behavior. `submit` enables the constrained submission gate. |
 | `allowed_methods` | `["POST"]` | HTTP methods allowed by the submit listener. Values must be known methods (the standard verbs plus the safe body-bearing `QUERY` method). |
 | `allowed_paths` | required | Exact canonical paths allowed by the submit listener. Entries must start with `/`; encoded dot, slash, backslash, semicolon path parameters, and non-canonical request paths are rejected. |
-| `trusted_upstream` | required | Auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required; expired `expires` dates fail config load. |
+| `trusted_upstream` | required | Durable, auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required. Optional `expires` has no maximum because this is reviewed rather than churned through an expiry; an expired date still fails config load. There is no automatic review or last-used signal today, so operators must review these entries through their normal configuration review. |
 | `max_body_bytes` | required | Positive listener body cap. The effective cap is the smaller of this value and `request_body_scanning.max_body_bytes`. |
 | `request_timeout_seconds` | required | Positive total request timeout for the submit listener, including scanning and upstream forwarding. |
 

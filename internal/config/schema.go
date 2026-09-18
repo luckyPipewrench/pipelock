@@ -37,6 +37,15 @@ var (
 	MergeAgentProfileFunc func(base *Config, profile *AgentProfile) (*Config, error)
 )
 
+// New-tool admission constants for mcp_tool_scanning.new_tool_admission.
+// Distinct from the Action* verdict constants below: admission governs
+// whether a newly-visible tool NAME is trusted into the drift baseline,
+// not what happens to a scanned response.
+const (
+	NewToolAdmit    = "admit"
+	NewToolWithhold = "withhold"
+)
+
 // Action constants for scanner and policy responses.
 const (
 	ActionBlock    = "block"
@@ -529,6 +538,14 @@ type Config struct {
 	// DefaultCRLMaxAge (never to "no freshness check").
 	LicenseCRLMaxAgeError string `yaml:"-" json:"-"`
 
+	// NewToolActionAliasWarning records a one-time load-time notice when a
+	// config used the deprecated mcp_tool_scanning.new_tool_action alias
+	// instead of new_tool_admission. Set by reconcileNewToolAdmissionAlias,
+	// surfaced by validateMCPToolScanning, and excluded from the canonical
+	// policy hash since it describes how the operator spelled an unchanged
+	// effective policy, not the policy itself.
+	NewToolActionAliasWarning string `yaml:"-" json:"-"`
+
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
 	rawBytes []byte `yaml:"-"`
@@ -653,22 +670,36 @@ type MCPToolScanning struct {
 	Enabled     bool   `yaml:"enabled"`
 	Action      string `yaml:"action"`       // warn, block
 	DetectDrift bool   `yaml:"detect_drift"` // rug pull detection
-	// NewToolAction governs admission of a tool NAME that was absent from an
-	// already-established drift baseline, as distinct from a
-	// changed definition of an already-known name, which Action already
-	// governs. Omitted, YAML null/blank, and explicit "warn" preserve
-	// pre-existing behavior: a new tool is still admitted into the baseline
-	// on first sighting, reported only as a non-blocking observation. This
-	// keeps every existing deployment's posture unchanged by default,
-	// because a malicious upstream evading drift by adding a brand-new tool
-	// name (rather than editing an approved one) is a newly-identified gap,
-	// not something any current config already assumed was covered.
-	// Explicit "block" withholds a newly-visible name from the baseline
-	// instead of promoting it, and reports it as drift on every later
-	// tools/list until an authorized operator re-baseline
-	// (listener_drift_reset_file) admits it. It never affects the very first
-	// tools/list a listener ever receives, which establishes the baseline.
-	NewToolAction string `yaml:"new_tool_action"` // warn, block
+	// NewToolAdmission governs baseline ADMISSION of a tool NAME that was
+	// absent from an already-established drift baseline, as distinct from
+	// the response VERDICT on a changed definition of an already-known name,
+	// which Action already governs. Omitted, YAML null/blank, and explicit
+	// "admit" preserve pre-existing behavior: a new tool is still admitted
+	// into the baseline on first sighting, reported only as a non-blocking
+	// observation. This keeps every existing deployment's posture unchanged
+	// by default, because a malicious upstream evading drift by adding a
+	// brand-new tool name (rather than editing an approved one) is a
+	// newly-identified gap, not something any current config already
+	// assumed was covered. Explicit "withhold" withholds a newly-visible
+	// name from the baseline instead of promoting it, and reports it as
+	// drift on every later tools/list until an authorized operator
+	// re-baseline (listener_drift_reset_file) admits it. It never affects
+	// the very first tools/list a listener ever receives, which establishes
+	// the baseline.
+	// json:"NewToolAction" pins the canonical JSON key to the pre-rename
+	// spelling so policySemanticView can keep CanonicalPolicyHash stable
+	// across the new_tool_action -> new_tool_admission rename; the value
+	// vocabulary is mapped back to warn|block on the canonical view copy
+	// only (see policySemanticView).
+	NewToolAdmission string `yaml:"new_tool_admission" json:"NewToolAction"` // admit, withhold
+	// NewToolAction is a deprecated alias for NewToolAdmission using the
+	// older warn|block spelling (warn -> admit, block -> withhold), kept so
+	// existing configs keep parsing under strict YAML decoding. Reconciled
+	// into NewToolAdmission by reconcileNewToolAdmissionAlias during Load,
+	// which also zeroes this field afterward; do not read it directly.
+	// Setting both new_tool_admission and new_tool_action is a config error.
+	// json:"-" keeps the alias out of the canonical hash entirely.
+	NewToolAction string `yaml:"new_tool_action,omitempty" json:"-"` // deprecated alias: warn, block
 	// json:"-" because this is an operator control-file location, not
 	// request-time policy: it changes how an authorized operator re-baselines
 	// state, not what Pipelock decides for a scanned request. The file carries

@@ -113,6 +113,13 @@ findings() {
 	done
 }
 
+# Every file argument is terminated with --. A tracked path may begin with a
+# hyphen, and `grep -nE "$pattern" "-clock.go"` parses it as options: grep then
+# prints NOTHING and exits 0, so a literal in that file is invisible and the
+# guard reports clean. sed fails outright on the same input. Verified by
+# reproduction, and it is the same question as the NUL-delimited read above --
+# what forms can a path take -- answered one form at a time.
+#
 # An inline marker with a non-empty reason clears a line outright, so a
 # verified one-off never has to reach the inventory. An empty marker clears
 # nothing: that would make it a silent mute rather than a stated claim.
@@ -121,9 +128,9 @@ emit() {
 	while IFS= read -r hit; do
 		[ -n "$hit" ] || continue
 		line="${hit%%:*}"
-		text="$(sed -n "${line}p" "$file")"
+		text="$(sed -n "${line}p" -- "$file")"
 		above=""
-		[ "$line" -gt 1 ] && above="$(sed -n "$((line - 1))p" "$file")"
+		[ "$line" -gt 1 ] && above="$(sed -n "$((line - 1))p" -- "$file")"
 		if printf '%s\n%s\n' "$text" "$above" \
 			| grep -qE "${MARKER}[[:space:]]*[^[:space:]]"; then
 			continue
@@ -152,7 +159,7 @@ emit() {
 				[ -n "$field" ] && [ -n "$found" ] || continue
 				printf '%s\t%s\t%s\n' "$file" "$field" "$found"
 			done
-	done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
+	done < <(grep -nE "$pattern" -- "$file" 2>/dev/null || true)
 }
 
 # comm compares byte-wise in the C collation, so both sides must be sorted that

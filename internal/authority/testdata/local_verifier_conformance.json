@@ -80,6 +80,18 @@
       "want_reason": "revoked"
     },
     {
+      "name": "schema version 1 is refused on purpose",
+      "request": {
+        "actor": "workload:test-agent",
+        "action": "records.read",
+        "destination": "https://api.service.example/v1/records",
+        "authority_ref": "plauth1.eyJhY3Rpb24iOiJyZWNvcmRzLnJlYWQiLCJhY3RvciI6Indvcmtsb2FkOnRlc3QtYWdlbnQiLCJkZXN0aW5hdGlvbiI6Imh0dHBzOi8vYXBpLnNlcnZpY2UuZXhhbXBsZS92MS9yZWNvcmRzIiwiZXhwaXJlc19hdCI6IjIwMzAtMDEtMDFUMDA6MDU6MDBaIiwiaXNzdWVyIjoiaXNzdWVyLnRlc3QiLCJyZWZlcmVuY2UiOiJncmFudC1sZWdhY3ktdjEiLCJzY2hlbWFfdmVyc2lvbiI6MX0.rwWU3ZU0c_913KIfrLr53zV9atGwwJhrbQEnecQQ9m_VX64WjsAN9N0VvEQWylUtLV1s3saODwgcwq_kwvq-CQ"
+      },
+      "context": "active",
+      "want_decision": "deny",
+      "want_reason": "malformed_reference"
+    },
+    {
       "name": "malformed input",
       "request": {
         "actor": "workload:test-agent",

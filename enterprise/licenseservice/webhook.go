@@ -1213,9 +1213,14 @@ func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.
-// If the cap is hit or the deadline has passed, the checkout is still honored
-// (customer paid the founding price). Logs a warning to archive the Polar
-// product so no further founding checkouts are possible.
+// If the cap is hit, the checkout is still honored (customer paid the founding
+// price). Logs a warning to archive the Polar product so no further founding
+// checkouts are possible.
+//
+// The cap is therefore advisory rather than a refusal: nothing here denies a
+// paid checkout, and archiving the Polar product is the control that actually
+// stops the next one. Do not turn this into a rejection without deciding that
+// separately.
 //
 // The reservation is atomic: the mutex serializes access, and the founding
 // count is read from the DB (not an in-memory cache) to prevent drift
@@ -1233,23 +1238,6 @@ func (h *WebhookHandler) checkFoundingCap(ctx context.Context, ent *Entitlement)
 	}
 	if existing != nil && existing.FoundingReservedAt != nil {
 		return nil // already has a slot
-	}
-
-	now := time.Now()
-
-	if now.After(h.cfg.FoundingProDeadline) {
-		_ = h.ledger.Log(AuditEntry{
-			Event:          AuditFoundingCapHit,
-			SubscriptionID: ent.SubscriptionID,
-			CustomerEmail:  ent.CustomerEmail,
-			Detail:         "founding pro deadline passed, honoring paid checkout",
-		})
-		h.log.Warn().
-			Str("subscription_id", ent.SubscriptionID).
-			Msg("founding pro deadline passed, honoring paid checkout — archive Polar products")
-		// Fall through to reserve the founding slot. The customer paid the
-		// founding price, so they get founding. The real defense is archiving
-		// the Polar product so no new checkouts are possible.
 	}
 
 	// Read authoritative founding count from DB, not in-memory cache.

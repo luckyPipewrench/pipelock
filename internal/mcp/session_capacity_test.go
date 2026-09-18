@@ -58,7 +58,9 @@ func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
 				case "stdio":
 					err = RunProxy(ctx, input, io.Discard, io.Discard, []string{missing}, opts)
 				case "sandbox":
-					err = RunProxyWithSandbox(ctx, exec.CommandContext(ctx, missing), input, io.Discard, io.Discard, opts)
+					command := exec.CommandContext(ctx, "./missing-mcp-server")
+					command.Dir = filepath.Dir(missing)
+					err = RunProxyWithSandbox(ctx, command, input, io.Discard, io.Discard, opts)
 				case "http":
 					err = RunHTTPProxy(ctx, input, io.Discard, io.Discard, "http://api.vendor.example/mcp", nil, opts)
 				case "websocket":

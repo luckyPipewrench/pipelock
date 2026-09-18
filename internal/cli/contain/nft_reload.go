@@ -43,6 +43,11 @@ type nftReloadEnv struct {
 	// journal -- rather than returning an error that would abort the reload
 	// and leave the agent's egress boundary un-reconciled at all.
 	warn func(string)
+	// report records the successful reconciliation outcome. It is deliberately
+	// separate from warn: a manual reload that made no change is still useful
+	// evidence, while warnings describe a safe degradation in the declared
+	// loopback-service set.
+	report func(string)
 	// lockFn wraps the config-snapshot -> kernel-apply -> persist critical
 	// section in an exclusive lock, shared with `contain install`'s own nft
 	// step, so the two can never interleave on the same managed config and
@@ -103,7 +108,11 @@ func reloadNFTRulesCmd() *cobra.Command {
 			if err := requireNFTReloadPrivilege("reload-nft-rules"); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			if err := reloadNFTRules(cmd.Context(), newNFTReloadEnv()); err != nil {
+			env := newNFTReloadEnv()
+			env.report = func(message string) {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), message)
+			}
+			if err := reloadNFTRules(cmd.Context(), env); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 			}
 			return nil
@@ -222,6 +231,13 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	} else if code != 0 {
 		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
 	}
+	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
+		if env.report != nil {
+			env.report(nftReloadOutcome(false, 0, false))
+		}
+		return nil
+	}
+	managedHandles := legacyManagedNFTRuleBlockHandles(out, header.operatorUID, header.proxyUID, header.agentUID)
 	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
@@ -240,7 +256,91 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
+	if env.report != nil {
+		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == ""))
+	}
 	return nil
+}
+
+func nftReloadOutcome(fileChanged bool, removedRules int, loadedMissingChain bool) string {
+	if !fileChanged && removedRules == 0 && !loadedMissingChain {
+		return "containment nft rules already reconciled, no change"
+	}
+	if loadedMissingChain {
+		return "containment nft rules reconciled: loaded managed rules into a missing chain"
+	}
+	changes := make([]string, 0, 2)
+	if removedRules > 0 {
+		changes = append(changes, fmt.Sprintf("removed %d managed rule(s)", removedRules))
+	}
+	if fileChanged {
+		changes = append(changes, "updated persisted rules")
+	}
+	return "containment nft rules reconciled: " + strings.Join(changes, "; ")
+}
+
+// liveManagedNFTBlockMatchesRules identifies the genuine no-op case without
+// trusting textual equality. `nft -n -a` adds handles and counters and prints
+// established/reply numerically, while the persisted source uses the named
+// state. Foreign rules are deliberately excluded from this comparison.
+func liveManagedNFTBlockMatchesRules(live, rulesBody string, operatorUID, proxyUID, agentUID int) bool {
+	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
+	want := managedNFTLinesFromRulesBody(rulesBody)
+	if len(handles) == 0 || len(handles) != len(want) {
+		return false
+	}
+	managed := make(map[int]struct{}, len(handles))
+	for _, handle := range handles {
+		managed[handle] = struct{}{}
+	}
+	got := make([]string, 0, len(handles))
+	for _, rule := range nftRulesWithHandles(live) {
+		if _, ok := managed[rule.handle]; ok {
+			got = append(got, canonicalManagedNFTLine(rule.line))
+		}
+	}
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func managedNFTLinesFromRulesBody(rulesBody string) []string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(rulesBody, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "meta ") {
+			lines = append(lines, canonicalManagedNFTLine(line))
+		}
+	}
+	return lines
+}
+
+func canonicalManagedNFTLine(line string) string {
+	fields := nftLineFields(line)
+	canonical := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "counter" && i+4 < len(fields) && fields[i+1] == "packets" && isNonNegativeInteger(fields[i+2]) && fields[i+3] == "bytes" && isNonNegativeInteger(fields[i+4]) {
+			canonical = append(canonical, fields[i])
+			i += 4
+			continue
+		}
+		if fields[i] == "0x2" && i > 0 && fields[i-1] == "state" {
+			canonical = append(canonical, "established")
+			continue
+		}
+		if fields[i] == "1" && i > 0 && fields[i-1] == "direction" {
+			canonical = append(canonical, "reply")
+			continue
+		}
+		canonical = append(canonical, fields[i])
+	}
+	return strings.Join(canonical, " ")
 }
 
 // reconcileDeclaredContainmentLoopbackServicesForReload resolves the

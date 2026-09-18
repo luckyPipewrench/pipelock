@@ -1565,11 +1565,8 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
 	}
 	for _, svc := range loopbackServices {
-		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
-			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) forward accept rule is missing or appears after the agent catch-all drop; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner)
-		}
-		if !chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
-			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) established reply accept rule is missing or appears after the agent catch-all drop; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner)
+		if problem := declaredLoopbackPairProblem(lines, current.agentUID, svc); problem != "" {
+			return statusFail, problem
 		}
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
@@ -2007,6 +2004,68 @@ func chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines []string, agentUID int, 
 		chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines, agentUID, host, port)
 }
 
+type declaredLoopbackPairState string
+
+const (
+	declaredLoopbackPairValid      declaredLoopbackPairState = ""
+	declaredLoopbackPairMissing    declaredLoopbackPairState = "missing"
+	declaredLoopbackPairDuplicated declaredLoopbackPairState = "duplicated"
+	declaredLoopbackPairMisordered declaredLoopbackPairState = "misordered"
+)
+
+// declaredLoopbackPairStateForChain classifies the whole chain rather than
+// stopping at its first catch-all drop. A first valid pair followed by an
+// appended duplicate is still a reconciliation failure: the later copy is
+// unreachable, but it proves reload no longer recognizes its own state.
+func declaredLoopbackPairStateForChain(lines []string, agentUID int, host string, port int) declaredLoopbackPairState {
+	forwardIndexes := make([]int, 0, 1)
+	replyIndexes := make([]int, 0, 1)
+	catchAllIndex := -1
+	for i, line := range lines {
+		if lineHasAgentLoopbackAllowForHost(line, agentUID, host, port) {
+			forwardIndexes = append(forwardIndexes, i)
+		}
+		if lineHasAgentLoopbackReplyForHost(line, agentUID, host, port) {
+			replyIndexes = append(replyIndexes, i)
+		}
+		if catchAllIndex < 0 && lineHasDeclaredLoopbackPairCatchAllDrop(line, agentUID) {
+			catchAllIndex = i
+		}
+	}
+	if len(forwardIndexes) == 0 || len(replyIndexes) == 0 {
+		return declaredLoopbackPairMissing
+	}
+	if len(forwardIndexes) != 1 || len(replyIndexes) != 1 {
+		return declaredLoopbackPairDuplicated
+	}
+	if forwardIndexes[0]+1 != replyIndexes[0] || catchAllIndex < 0 || replyIndexes[0] > catchAllIndex {
+		return declaredLoopbackPairMisordered
+	}
+	return declaredLoopbackPairValid
+}
+
+// lineHasDeclaredLoopbackPairCatchAllDrop accepts the fully rendered
+// catch-all and the bare historical fixture form. It intentionally excludes
+// DNS drops: they do not make a TCP loopback reply unreachable.
+func lineHasDeclaredLoopbackPairCatchAllDrop(line string, agentUID int) bool {
+	if lineHasManagedCatchAllDrop(line, agentUID) {
+		return true
+	}
+	fields := nftLineFields(line)
+	if len(fields) < 4 || fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) || fields[3] != "drop" {
+		return false
+	}
+	return nftRuleTailIsCommentOnly(fields[4:])
+}
+
+func declaredLoopbackPairProblem(lines []string, agentUID int, svc config.ContainmentLoopbackService) string {
+	state := declaredLoopbackPairStateForChain(lines, agentUID, svc.Host, svc.Port)
+	if state == declaredLoopbackPairValid {
+		return ""
+	}
+	return fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) forward/reply pair is %s; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner, state)
+}
+
 // lineHasAgentLoopbackAllowForHost matches an agent-owned loopback accept for
 // an arbitrary loopback host (127.0.0.1 or ::1) and port. lineHasAgentProxyLoopbackAllow
 // stays IPv4-only and proxy-port-specific because every existing caller only
@@ -2042,8 +2101,8 @@ func lineHasAgentLoopbackReplyForHost(line string, agentUID int, host string, po
 		daddrKeyword = []string{"ip6", "daddr"}
 	}
 	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, daddrKeyword...)
-	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state", "established", "ct", "direction", "reply", "accept")
-	if len(fields) < len(want) {
+	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state")
+	if len(fields) < len(want)+5 {
 		return false
 	}
 	for i, field := range want {
@@ -2051,7 +2110,23 @@ func lineHasAgentLoopbackReplyForHost(line string, agentUID int, host string, po
 			return false
 		}
 	}
-	return nftRuleTailIsCommentOnly(fields[len(want):])
+	tail := fields[len(want):]
+	if !nftEstablishedState(tail[0]) || tail[1] != "ct" || tail[2] != "direction" || !nftReplyDirection(tail[3]) || tail[4] != "accept" {
+		return false
+	}
+	return nftRuleTailIsCommentOnly(tail[5:])
+}
+
+// nftEstablishedState and nftReplyDirection accept both the named literals in
+// the rendered rules and nft's numeric spelling in `nft -n -a list chain`.
+// Reconciliation and verification consume the latter, so accepting only the
+// source spelling causes an already-installed paired block to be appended.
+func nftEstablishedState(value string) bool {
+	return value == "established" || value == "0x2"
+}
+
+func nftReplyDirection(value string) bool {
+	return value == "reply" || value == "1"
 }
 
 // declaredLoopbackServiceAllows reports whether the line is an agent-owned

@@ -96,6 +96,16 @@ func loopbackServiceReplyRuleLine(agentUID, port int, handle int) string {
 	return `meta skuid ` + itoa(agentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
 }
 
+// numericNftStateListing mirrors the normalized connection-state spelling
+// emitted by `nft -n -a list chain`: rules are rendered with named state and
+// direction, but the live listing presents their numeric values.
+func numericNftStateListing(listing string) string {
+	return strings.NewReplacer(
+		"ct state established", "ct state 0x2",
+		"ct direction reply", "ct direction 1",
+	).Replace(listing)
+}
+
 func managedBlockWithLoopbackServicePairs(first int, ports []int) (string, int) {
 	handle := first
 	lines := []string{`meta skuid 1000 accept # handle ` + itoa(handle)}
@@ -248,6 +258,143 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 	})
 }
 
+// TestReloadRecognizesNumericPairedBlocks reproduces the live nft listing
+// form. The reconciler must collapse every managed copy, including paired
+// blocks whose conntrack values nft prints numerically, while leaving
+// unrelated rules in the shared chain alone.
+func TestReloadRecognizesNumericPairedBlocks(t *testing.T) {
+	t.Parallel()
+
+	first, next := managedBlockWithLoopbackServicePairs(20, []int{9200})
+	second, next := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	third, _ := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	foreignHandles := []int{10, 11, 12, 13}
+	live := numericNftStateListing(strings.Join([]string{
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 10`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 11`,
+		`meta skuid 966 oifname "tailscale0" ip saddr 100.64.0.1 tcp sport 8642 ct state established ct direction reply accept # handle 12`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 9077 accept # handle 13`,
+		first,
+		second,
+		third,
+	}, "\n"))
+
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) != 24 {
+		t.Fatalf("numeric paired listing: got %d managed handles, want 24 across three blocks: %v", len(handles), handles)
+	}
+	for _, foreign := range foreignHandles {
+		for _, handle := range handles {
+			if handle == foreign {
+				t.Fatalf("numeric paired listing deleted foreign handle %d", foreign)
+			}
+		}
+	}
+}
+
+func nftListingFromRulesBodyForTest(rules string, firstHandle int) string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "meta ") {
+			continue
+		}
+		lines = append(lines, line+" # handle "+itoa(firstHandle))
+		firstHandle++
+	}
+	return numericNftStateListing(strings.Join(lines, "\n"))
+}
+
+// TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads models the
+// kernel result of each reload transaction. A forward-only migration block and
+// three numeric paired copies converge to one paired block; later reloads are
+// genuine no-ops, and foreign rules are still present.
+func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T) {
+	t.Parallel()
+	const (
+		rulesPath  = "/managed/50-pipelock-containment.nft"
+		configPath = "/etc/pipelock/pipelock.yaml"
+	)
+	svc := loopbackTestService(9200)
+	persisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{svc})
+	legacy := legacyManagedBlockWithLoopbackServices(20, []int{9200})
+	first, next := managedBlockWithLoopbackServicePairs(27, []int{9200})
+	second, next := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	third, _ := managedBlockWithLoopbackServicePairs(next, []int{9200})
+	foreign := []string{
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 10`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 11`,
+		`meta skuid 966 oifname "tailscale0" ip saddr 100.64.0.1 tcp sport 8642 ct state established ct direction reply accept # handle 12`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 9077 accept # handle 13`,
+	}
+	live := numericNftStateListing(strings.Join(append(foreign, legacy, first, second, third), "\n"))
+	var reports []string
+	var reloadScript string
+	env := &nftReloadEnv{
+		nftPath:    "nft",
+		rulesPath:  rulesPath,
+		configPath: configPath,
+		table:      defaultNFTTable,
+		chain:      defaultNFTChain,
+		now:        func() time.Time { return time.Unix(1_800_000_000, 0) },
+		report: func(message string) {
+			reports = append(reports, message)
+		},
+		readFile: func(path string) ([]byte, error) {
+			switch path {
+			case rulesPath:
+				return []byte(persisted), nil
+			case configPath:
+				return []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")), nil
+			default:
+				return nil, fmt.Errorf("unexpected read %q", path)
+			}
+		},
+		writeFile: func(path string, data []byte, _ os.FileMode) error {
+			if path == rulesPath+".reload" {
+				reloadScript = string(data)
+			}
+			return nil
+		},
+		removeFile: func(string) error { return nil },
+		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+			switch strings.Join(args, " ") {
+			case "-n -a list chain inet pipelock_containment output_filter":
+				return live, 0, nil
+			case "-c -f /managed/50-pipelock-containment.nft.reload":
+				return "", 0, nil
+			case "-f /managed/50-pipelock-containment.nft.reload":
+				bodyStart := strings.Index(reloadScript, "# Pipelock containment ruleset")
+				if bodyStart < 0 {
+					return "", 1, errors.New("reload script omitted canonical rules body")
+				}
+				live = strings.Join(append(foreign, nftListingFromRulesBodyForTest(reloadScript[bodyStart:], 100)), "\n")
+				return "", 0, nil
+			default:
+				return "", 1, fmt.Errorf("unexpected nft command %q", strings.Join(args, " "))
+			}
+		},
+	}
+
+	for reload := 0; reload < 3; reload++ {
+		if err := reloadNFTRules(context.Background(), env); err != nil {
+			t.Fatalf("reload %d: %v", reload+1, err)
+		}
+	}
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) != 8 {
+		t.Fatalf("after repeated reloads, got %d managed rules, want one paired block of 8: %v", len(handles), handles)
+	}
+	for _, line := range foreign {
+		if !strings.Contains(live, line) {
+			t.Fatalf("foreign rule was not preserved: %q\nlive:\n%s", line, live)
+		}
+	}
+	if len(reports) != 3 || !strings.Contains(reports[0], "removed 31 managed rule(s)") || reports[1] != "containment nft rules already reconciled, no change" || reports[2] != "containment nft rules already reconciled, no change" {
+		t.Fatalf("reports = %v, want one reconciliation followed by two no-op reports", reports)
+	}
+}
+
 // TestVerifyDeclaredLoopbackServiceMatchers is the direct-function proof for
 // the two verify-side matchers: an accept for a declared host:port is
 // recognized before the drop, and lineHasAgentLoopbackAllowForHost does not
@@ -281,6 +428,50 @@ func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	}
 	if chainLinesHaveDeclaredLoopbackReplyBeforeDrop([]string{"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept", "meta skuid 966 counter drop"}, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("a missing reply half must not be accepted as a complete declared pair")
+	}
+}
+
+// TestDeclaredLoopbackPairProblemNamesChainState ensures verification does not
+// call a present first pair "missing" when later copies or ordering defects
+// reveal a failed reconciliation.
+func TestDeclaredLoopbackPairProblemNamesChainState(t *testing.T) {
+	t.Parallel()
+	block, _ := managedBlockWithLoopbackServicePairs(20, []int{9200})
+	base := strings.Split(numericNftStateListing(block), "\n")
+	svc := loopbackTestService(9200)
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name:  "missing",
+			lines: append([]string(nil), base[:4]...),
+			want:  "missing",
+		},
+		{
+			name:  "duplicated",
+			lines: append(append([]string(nil), base...), base...),
+			want:  "duplicated",
+		},
+		{
+			name: "misordered",
+			lines: func() []string {
+				lines := append([]string(nil), base...)
+				lines[3], lines[4] = lines[4], lines[3]
+				return lines
+			}(),
+			want: "misordered",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			problem := declaredLoopbackPairProblem(tc.lines, loopbackTestAgentUID, svc)
+			if !strings.Contains(problem, "forward/reply pair is "+tc.want) {
+				t.Fatalf("problem = %q, want %q", problem, tc.want)
+			}
+		})
 	}
 }
 
@@ -823,8 +1014,8 @@ func TestProbeNFTContainmentRequiresDeclaredLoopbackReplyRule(t *testing.T) {
 		}
 	})
 	status, detail := probeNFTContainment(context.Background(), base)
-	if status != statusFail || !strings.Contains(detail, "established reply accept rule") || !strings.Contains(detail, "pipelock contain reload-nft-rules") {
-		t.Fatalf("missing reply rule status=%q detail=%q, want fail naming the reply half and reconciliation command", status, detail)
+	if status != statusFail || !strings.Contains(detail, "forward/reply pair is missing") || !strings.Contains(detail, "pipelock contain reload-nft-rules") {
+		t.Fatalf("missing reply rule status=%q detail=%q, want fail naming the missing pair and reconciliation command", status, detail)
 	}
 
 	base.runCmd = func(context.Context, string, ...string) (string, int, error) {

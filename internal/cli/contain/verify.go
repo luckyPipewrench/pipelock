@@ -1566,7 +1566,10 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	for _, svc := range loopbackServices {
 		if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
-			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) accept rule is missing or appears after the agent catch-all drop", svc.Host, svc.Port, svc.Owner)
+			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) forward accept rule is missing or appears after the agent catch-all drop; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner)
+		}
+		if !chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines, current.agentUID, svc.Host, svc.Port) {
+			return statusFail, fmt.Sprintf("chain present but declared loopback service %s:%d (owner=%s) established reply accept rule is missing or appears after the agent catch-all drop; run pipelock contain reload-nft-rules as root", svc.Host, svc.Port, svc.Owner)
 		}
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
@@ -1993,6 +1996,17 @@ func chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines []string, agentUID int,
 	})
 }
 
+func chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines []string, agentUID int, host string, port int) bool {
+	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
+		return lineHasAgentLoopbackReplyForHost(line, agentUID, host, port)
+	})
+}
+
+func chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines []string, agentUID int, host string, port int) bool {
+	return chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, agentUID, host, port) &&
+		chainLinesHaveDeclaredLoopbackReplyBeforeDrop(lines, agentUID, host, port)
+}
+
 // lineHasAgentLoopbackAllowForHost matches an agent-owned loopback accept for
 // an arbitrary loopback host (127.0.0.1 or ::1) and port. lineHasAgentProxyLoopbackAllow
 // stays IPv4-only and proxy-port-specific because every existing caller only
@@ -2017,11 +2031,35 @@ func lineHasAgentLoopbackAllowForHost(line string, agentUID int, host string, po
 	return nftRuleTailIsCommentOnly(fields[len(want):])
 }
 
+// lineHasAgentLoopbackReplyForHost matches the exact managed reply half of a
+// declared loopback-service pair. Keep this distinct from the broader legacy
+// established-reply recognizer so verification and reconciliation never claim
+// an unrelated hand-written reply rule as a declared service.
+func lineHasAgentLoopbackReplyForHost(line string, agentUID int, host string, port int) bool {
+	fields := nftLineFields(line)
+	daddrKeyword := []string{"ip", "daddr"}
+	if host == "::1" {
+		daddrKeyword = []string{"ip6", "daddr"}
+	}
+	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, daddrKeyword...)
+	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state", "established", "ct", "direction", "reply", "accept")
+	if len(fields) < len(want) {
+		return false
+	}
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	return nftRuleTailIsCommentOnly(fields[len(want):])
+}
+
 // declaredLoopbackServiceAllows reports whether the line is an agent-owned
 // accept matching ANY of the declared loopback services, regardless of order.
 func declaredLoopbackServiceAllows(line string, agentUID int, declared []config.ContainmentLoopbackService) bool {
 	for _, svc := range declared {
-		if lineHasAgentLoopbackAllowForHost(line, agentUID, svc.Host, svc.Port) {
+		if lineHasAgentLoopbackAllowForHost(line, agentUID, svc.Host, svc.Port) ||
+			lineHasAgentLoopbackReplyForHost(line, agentUID, svc.Host, svc.Port) {
 			return true
 		}
 	}

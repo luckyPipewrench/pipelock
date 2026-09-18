@@ -326,14 +326,12 @@ func legacyManagedNFTRuleBlockHandles(live string, operatorUID, proxyUID, agentU
 
 // managedNFTBlockLength returns the length of the managed rule block starting
 // at rules[i], or 0 if no managed block starts there. The block is:
-// operator accept, proxy accept, one-or-more agent loopback allows (the
-// implicit proxy-port allow plus any declared containment.loopback_services
-// exceptions, in any number), DNS udp/53 drop, DNS tcp/53 drop, catch-all
-// drop. Recognizing a variable number of loopback allows (rather than the
-// fixed six-rule legacy shape) is what lets reload replace a block that
-// carries declared loopback services instead of leaving them untouched as an
-// unrecognized carve-out and appending a second managed block behind the old
-// catch-all drop.
+// operator accept, proxy accept, the implicit agent proxy-loopback allow,
+// zero or more complete declared-service forward/reply pairs, DNS udp/53 drop,
+// DNS tcp/53 drop, and catch-all drop. The reply matcher is exact so reload
+// removes both halves of a declared service without absorbing unrelated
+// hand-written reply rules. A contiguous-forward legacy block remains
+// recognizable only to migrate rules rendered before reply pairs existed.
 func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, agentUID int) int {
 	if i+2 >= len(rules) {
 		return 0
@@ -342,14 +340,20 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 		!lineHasTerminalSkuidVerdict(rules[i+1].line, proxyUID, "accept") {
 		return 0
 	}
-	loopbackCount := 0
-	for j := i + 2; j < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[j].line, agentUID); j++ {
-		loopbackCount++
-	}
-	if loopbackCount == 0 {
+	loopbackStart := i + 2
+	if !lineHasAgentLoopbackAllowAnyPortAnyHost(rules[loopbackStart].line, agentUID) {
 		return 0
 	}
-	tailStart := i + 2 + loopbackCount
+
+	// The first allow is the implicit proxy port. Every additional service in a
+	// current block must be the complete forward/reply pair rendered together.
+	tailStart := loopbackStart + 1
+	for tailStart < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[tailStart].line, agentUID) {
+		if tailStart+1 >= len(rules) || !lineHasAgentLoopbackReplyForForwardLine(rules[tailStart].line, rules[tailStart+1].line, agentUID) {
+			return legacyManagedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID)
+		}
+		tailStart += 2
+	}
 	if tailStart+2 >= len(rules) {
 		return 0
 	}
@@ -358,7 +362,43 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
 		return 0
 	}
-	return 2 + loopbackCount + 3
+	return tailStart + 3 - i
+}
+
+// legacyManagedNFTBlockLength recognizes the contiguous-forward format that
+// earlier releases wrote. It is a migration-only path: current declared
+// services must use complete pairs, while a block with no reply rules at all
+// has to be removed before the repaired block can take effect ahead of its
+// historical catch-all drop.
+func legacyManagedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, agentUID int) int {
+	if i+2 >= len(rules) ||
+		!lineHasTerminalSkuidVerdict(rules[i].line, operatorUID, "accept") ||
+		!lineHasTerminalSkuidVerdict(rules[i+1].line, proxyUID, "accept") {
+		return 0
+	}
+	tailStart := i + 2
+	for tailStart < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[tailStart].line, agentUID) {
+		tailStart++
+	}
+	if tailStart == i+2 || tailStart+2 >= len(rules) ||
+		!lineHasManagedDNSDrop(rules[tailStart].line, agentUID, "udp") ||
+		!lineHasManagedDNSDrop(rules[tailStart+1].line, agentUID, "tcp") ||
+		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
+		return 0
+	}
+	return tailStart + 3 - i
+}
+
+func lineHasAgentLoopbackReplyForForwardLine(forward, reply string, agentUID int) bool {
+	fields := nftLineFields(forward)
+	if !lineHasAgentLoopbackAllowAnyPortAnyHost(forward, agentUID) {
+		return false
+	}
+	port, err := strconv.Atoi(fields[8])
+	if err != nil {
+		return false
+	}
+	return lineHasAgentLoopbackReplyForHost(reply, agentUID, fields[5], port)
 }
 
 func nftRulesWithHandles(live string) []nftRuleWithHandle {

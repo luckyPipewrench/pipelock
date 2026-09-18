@@ -20,7 +20,10 @@ import (
 
 const (
 	localReferencePrefix = "plauth1"
-	localSchemaVersion   = 1
+	// localSchemaVersion is 2 because a signed not_before became REQUIRED.
+	// Version 1 grants omit it, so accepting them under the same number would
+	// silently redefine what version 1 means to any issuer built against it.
+	localSchemaVersion = 2
 	// localCanonJCSRFC8785NFC is the existing AARP canonicalization profile.
 	// It is explicit in newly issued references so verifiers do not infer a
 	// signing scheme from an implementation detail.
@@ -28,9 +31,12 @@ const (
 	// MaxReferenceBytes bounds authority references accepted from every
 	// transport and by the local verifier.
 	MaxReferenceBytes = 16 << 10
-	// maxGrantLifetime bounds the replay window of a signed action grant. The
-	// IETF OAuth Transaction Tokens BCP recommends transaction-token lifetimes
-	// below five minutes.
+	// maxGrantLifetime bounds the replay window of a signed action grant.
+	// Five minutes is a Pipelock product decision, taken from the closest
+	// published analogue: draft-oauth-transactiontokens-bcp-01 section 3.3,
+	// an active IETF Internet-Draft rather than a published BCP, which says a
+	// transaction token SHOULD live less than five minutes. This limit is
+	// inclusive, so a grant of exactly five minutes is accepted.
 	maxGrantLifetime = 5 * time.Minute
 )
 
@@ -46,7 +52,7 @@ type LocalConfig struct {
 }
 
 // LocalVerifier verifies compact Ed25519 references against an in-memory key
-// set. Legacy schema-1 references that omit canon use byte-exact RFC 8785 JCS.
+// set. References that omit canon use byte-exact RFC 8785 JCS.
 // References with canon "jcs-rfc8785-nfc" use the AARP NFC profile. Both forms
 // compare verified authority strings byte-for-byte; verification never changes
 // an actor, action, or destination before matching. It performs no I/O.

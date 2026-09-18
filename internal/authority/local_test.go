@@ -216,8 +216,8 @@ func TestParseLocalReferenceRejectsMalformedInputs(t *testing.T) {
 	validReference := signTestGrant(t, validGrant)
 	validParts := strings.Split(validReference, ".")
 
-	duplicatePayload := []byte(`{"schema_version":1,"schema_version":1}`)
-	unknownPayload := []byte(`{"schema_version":1,"issuer":"issuer.test","reference":"grant-valid","actor":"workload:test-agent","action":"records.read","destination":"https://api.service.example/v1/records","not_before":"2030-01-01T00:00:00Z","expires_at":"2030-01-01T00:05:00Z","extra":true}`)
+	duplicatePayload := []byte(`{"schema_version":2,"schema_version":2}`)
+	unknownPayload := []byte(`{"schema_version":2,"issuer":"issuer.test","reference":"grant-valid","actor":"workload:test-agent","action":"records.read","destination":"https://api.service.example/v1/records","not_before":"2030-01-01T00:00:00Z","expires_at":"2030-01-01T00:05:00Z","extra":true}`)
 	nonCanonicalPayload := bytes.ReplaceAll(mustPayloadBytes(t, validParts[1]), []byte(`":"`), []byte(`": "`))
 
 	tests := []struct {
@@ -292,7 +292,7 @@ func TestLocalVerifierNamedCanonNFCAndExactIdentityMatching(t *testing.T) {
 	t.Parallel()
 	// Fixed UTF-8 bytes keep the positive case independent of the verifier's
 	// canonicalizer. All member names are ASCII and the sole number is integral.
-	const payload = `{"action":"records.read","actor":"workload:médiator","canon":"jcs-rfc8785-nfc","destination":"https://api.service.example/v1/records?active=true&filter=<active>&limit=10","expires_at":"2030-01-01T00:05:00Z","issuer":"issuer.test","not_before":"2030-01-01T00:00:00Z","reference":"grant-nfc","schema_version":1}`
+	const payload = `{"action":"records.read","actor":"workload:médiator","canon":"jcs-rfc8785-nfc","destination":"https://api.service.example/v1/records?active=true&filter=<active>&limit=10","expires_at":"2030-01-01T00:05:00Z","issuer":"issuer.test","not_before":"2030-01-01T00:00:00Z","reference":"grant-nfc","schema_version":2}`
 	fixture := loadConformanceFixture(t)
 	publicKey := mustDecodePublicKey(t, fixture.PublicKey)
 	grant := localGrant{
@@ -494,7 +494,7 @@ func TestLocalVerifierRejectsMalformedSignedGrantAndCancellation(t *testing.T) {
 		mutate func(*localGrant)
 		want   Reason
 	}{
-		{name: "schema", mutate: func(grant *localGrant) { grant.SchemaVersion = 2 }, want: ReasonMalformedReference},
+		{name: "schema", mutate: func(grant *localGrant) { grant.SchemaVersion = 1 }, want: ReasonMalformedReference},
 		{name: "issuer", mutate: func(grant *localGrant) { grant.Issuer = " " }, want: ReasonUntrustedIssuer},
 		{name: "reference", mutate: func(grant *localGrant) { grant.Reference = "" }, want: ReasonMalformedReference},
 		{name: "actor", mutate: func(grant *localGrant) { grant.Actor = "" }, want: ReasonMalformedReference},
@@ -599,6 +599,47 @@ func TestLocalVerifierEnforcesGrantValidityWindow(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("not before widened after signing", func(t *testing.T) {
+		// The cases above mutate the grant BEFORE signing, so they prove the
+		// window is validated. They cannot prove the window is COVERED by the
+		// signature. Widen not_before on the wire while keeping the original
+		// signature, which is how an attacker would lengthen a leaked grant.
+		parts := strings.Split(signTestGrant(t, base), ".")
+		if len(parts) != 3 {
+			t.Fatalf("reference parts=%d, want 3", len(parts))
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		var object map[string]any
+		if err := json.Unmarshal(payload, &object); err != nil {
+			t.Fatalf("decode payload object: %v", err)
+		}
+		widened := now.Add(-maxGrantLifetime).Format(time.RFC3339Nano)
+		if object["not_before"] == widened {
+			t.Fatal("widened not_before equals the signed value, so the case proves nothing")
+		}
+		object["not_before"] = widened
+		canonical, err := jcs.Marshal(object)
+		if err != nil {
+			t.Fatalf("canonicalize tampered payload: %v", err)
+		}
+		if bytes.Equal(canonical, payload) {
+			t.Fatal("tampered payload is byte-identical to the signed payload")
+		}
+		parts[1] = base64.RawURLEncoding.EncodeToString(canonical)
+		got := verifier.Verify(context.Background(), Request{
+			Actor:        base.Actor,
+			Action:       base.Action,
+			Destination:  base.Destination,
+			AuthorityRef: strings.Join(parts, "."),
+		})
+		if got.Decision != DecisionDeny || got.Reason != ReasonInvalidSignature {
+			t.Fatalf("widened not_before Verify()=%s/%s, want deny/%s", got.Decision, got.Reason, ReasonInvalidSignature)
+		}
+	})
 }
 
 func loadConformanceFixture(t *testing.T) conformanceFixture {

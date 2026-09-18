@@ -288,6 +288,12 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir configDir: %v", err)
 	}
+	// Rollback removes these units before asking systemd to confirm they are
+	// inactive. A fresh fake host has no active expiry units unless a test
+	// overrides this state to exercise an error or activity path.
+	for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
+		runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
+	}
 
 	return env, runner, out
 }
@@ -1319,6 +1325,9 @@ func TestStepInstallNFTRules_SkipsWhenLoaded(t *testing.T) {
 	writeNFTPersistUnitFixture(t, env)
 	// Make the exact-chain nft query succeed with a healthy live chain.
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), body, 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -1353,6 +1362,9 @@ func TestStepInstallNFTRules_SkipsWhenLoadedForRootOperator(t *testing.T) {
 	}
 	writeNFTPersistUnitFixture(t, env)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), body, 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)

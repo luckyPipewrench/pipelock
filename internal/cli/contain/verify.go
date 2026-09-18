@@ -1813,11 +1813,20 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 	if err != nil {
 		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
 	}
-	if code != 0 {
-		if strings.TrimSpace(timerState) == "masked" {
-			return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", timerUnit)
-		}
+	timerState = strings.TrimSpace(timerState)
+	if timerState == "masked" {
+		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", timerUnit)
+	}
+	if code != 0 || timerState != systemctlEnabled {
 		return fmt.Errorf("%s is not enabled (%s); rerun `pipelock contain install`", timerUnit, oneLine(timerState))
+	}
+	activeState, activeCode, err := env.runCmd(ctx, "systemctl", "is-active", timerUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
+	}
+	activeState = strings.TrimSpace(activeState)
+	if activeCode != 0 || activeState != systemctlActive {
+		return fmt.Errorf("%s is not active (%s); rerun `pipelock contain install`", timerUnit, oneLine(activeState))
 	}
 
 	serviceUnit := filepath.Base(env.nftExpiryServicePath)
@@ -1825,35 +1834,43 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 	if err != nil {
 		return fmt.Errorf("systemctl unavailable while checking %s: %w", serviceUnit, err)
 	}
-	if strings.TrimSpace(serviceState) == "masked" {
+	serviceState = strings.TrimSpace(serviceState)
+	if serviceState == "masked" {
 		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", serviceUnit)
 	}
-	if serviceCode != 0 {
+	if serviceCode != 0 || serviceState != "static" {
 		return fmt.Errorf("systemctl is-enabled %s exit=%d: %s", serviceUnit, serviceCode, oneLine(serviceState))
 	}
 	return nil
 }
 
-// unitHasExactEntry reports whether the systemd unit body carries key=value
-// verbatim inside the named section. Substring matching accepted a commented
-// entry, a suffixed path, an unintended executable whose path merely contained
-// the managed target, and extra trailing arguments, so every one of those
-// tampered units verified as healthy. The managed unit is rendered by
-// renderNFTPersistUnit, so an exact section-scoped entry is the whole contract.
+// unitHasExactEntry reports whether a systemd unit has exactly one assignment
+// for key in section and that assignment has value. List-valued directives
+// such as OnCalendar and ExecStart accumulate across repeated assignments,
+// while a later single-valued assignment overrides the managed value. Both
+// shapes must fail verification rather than accepting the first match.
 func unitHasExactEntry(body, section, key, value string) bool {
 	current := ""
+	entries := 0
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			current = strings.TrimSpace(line[1 : len(line)-1])
 			continue
 		}
-		if current != section || line != key+"="+value {
+		if current != section || line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
-		return true
+		actualKey, actualValue, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(actualKey) != key {
+			continue
+		}
+		entries++
+		if strings.TrimSpace(actualValue) != value {
+			return false
+		}
 	}
-	return false
+	return entries == 1
 }
 
 func probeNFTExecutable(env *probeEnv) string {

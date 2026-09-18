@@ -120,8 +120,9 @@ Exit codes:
 // because the install + verify code both compare against it and goconst
 // flags repeated string literals.
 const (
-	systemctlActive  = "active"
-	systemctlEnabled = "enabled"
+	systemctlActive   = "active"
+	systemctlInactive = "inactive"
+	systemctlEnabled  = "enabled"
 )
 
 // runInstall is the runtime entry point. Separated from installCmd so tests
@@ -1911,42 +1912,49 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		return persistUnitChanged || expiryUnitChanged, err
 	}
 	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
-	if !changed && tableLoaded && !liveRulesDrifted {
-		return false, nil
-	}
-	// Validate before loading.
-	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
-		return changed, fmt.Errorf("nft validation failed: %w", err)
-	}
-	if !tableLoaded || rulesChanged || liveRulesDrifted {
-		captureNFTPreState(ctx, env)
-	}
-	reloadedManagedChain := false
-	if tableLoaded && (rulesChanged || liveRulesDrifted) {
-		if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
-			return changed, err
-		}
-		reloadedManagedChain = true
-	}
-	if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
-		if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
-			return changed, fmt.Errorf("nft load failed: %w", err)
-		}
-	}
 	captureNFTPreState(ctx, env)
+	if changed || !tableLoaded || liveRulesDrifted {
+		// Validate before loading.
+		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
+			return changed, fmt.Errorf("nft validation failed: %w", err)
+		}
+		reloadedManagedChain := false
+		if tableLoaded && (rulesChanged || liveRulesDrifted) {
+			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
+				return changed, err
+			}
+			reloadedManagedChain = true
+		}
+		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
+			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
+				return changed, fmt.Errorf("nft load failed: %w", err)
+			}
+		}
+	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 		return changed, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
 		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
 	}
-	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+	if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
 		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
 	}
-	return changed || !tableLoaded || liveRulesDrifted, nil
+	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
+	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
+	return changed || !tableLoaded || liveRulesDrifted || timerReconciled || persistReconciled, nil
 }
 
 func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
+	// Stop the timer before restoring its unit files so a scheduled expiry
+	// cannot race this rollback, then stop a service invocation already in
+	// flight. The prior timer state is restored below after daemon-reload.
+	if err := runOrErr(ctx, env, "systemctl", "disable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	}
+	if err := runOrErr(ctx, env, "systemctl", "stop", filepath.Base(env.nftExpiryServicePath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryServicePath), err)
+	}
 	// Restore any previous live table captured during this install
 	// attempt before deleting the newly installed table. If no
 	// previous table existed, drop the table created by this step.
@@ -1982,12 +1990,22 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 			return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
 		}
 	}
-	if env.prevNFTExpiryTimerStateKnown && !env.prevNFTExpiryTimerEnabled {
-		if err := runOrErr(ctx, env, "systemctl", "disable", filepath.Base(env.nftExpiryTimerPath)); err != nil {
-			return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err)
+	}
+	if env.prevNFTExpiryTimerStateKnown {
+		timer := filepath.Base(env.nftExpiryTimerPath)
+		if env.prevNFTExpiryTimerEnabled {
+			if err := runOrErr(ctx, env, "systemctl", "enable", timer); err != nil {
+				return fmt.Errorf("restore %s enabled state: %w", timer, err)
+			}
+		}
+		if env.prevNFTExpiryTimerActive {
+			if err := runOrErr(ctx, env, "systemctl", "start", timer); err != nil {
+				return fmt.Errorf("restore %s active state: %w", timer, err)
+			}
 		}
 	}
-	_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
 	return nil
 }
 
@@ -2009,9 +2027,11 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 		}
 	}
 	if !env.prevNFTExpiryTimerStateKnown {
-		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
-		if err == nil {
-			env.prevNFTExpiryTimerEnabled = code == 0
+		enabledOut, _, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
+		activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.nftExpiryTimerPath))
+		if enabledErr == nil && activeErr == nil {
+			env.prevNFTExpiryTimerEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			env.prevNFTExpiryTimerActive = strings.TrimSpace(activeOut) == systemctlActive
 			env.prevNFTExpiryTimerStateKnown = true
 		}
 	}

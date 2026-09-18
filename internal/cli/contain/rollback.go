@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -326,11 +327,20 @@ func actionRemoveNFTRules() step {
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.nftPersistUnitPath)
 			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			expiryUnits := []string{}
 			if env.nftExpiryTimerPath != "" {
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", filepath.Base(env.nftExpiryTimerPath))
+				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryTimerPath))
 			}
 			if env.nftExpiryServicePath != "" {
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", filepath.Base(env.nftExpiryServicePath))
+				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryServicePath))
+			}
+			for _, expiryUnit := range expiryUnits {
+				if err := runOrErr(ctx, env, "systemctl", "stop", expiryUnit); err != nil {
+					return fmt.Errorf("stop expiry unit %s: %w", expiryUnit, err)
+				}
+				if err := runOrErr(ctx, env, "systemctl", "disable", expiryUnit); err != nil {
+					return fmt.Errorf("disable expiry unit %s: %w", expiryUnit, err)
+				}
 			}
 			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := env.removeFile(env.nftRulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -353,7 +363,18 @@ func actionRemoveNFTRules() step {
 				}
 				_ = env.removeFile(env.nftExpiryServicePath + ".bak")
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after removing expiry units: %w", err)
+			}
+			for _, expiryUnit := range expiryUnits {
+				state, _, err := env.runCmd(ctx, "systemctl", "is-active", expiryUnit)
+				if err != nil {
+					return fmt.Errorf("systemctl is-active %s after removal: %w", expiryUnit, err)
+				}
+				if strings.TrimSpace(state) != systemctlInactive {
+					return fmt.Errorf("expiry unit %s remains active after removal: %s", expiryUnit, oneLine(state))
+				}
+			}
 			if env.nftMainPath != "" {
 				return restoreOrRemoveNFTMainInclude(env)
 			}

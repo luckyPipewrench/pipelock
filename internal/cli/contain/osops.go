@@ -122,6 +122,7 @@ type installEnv struct {
 	prevNFTPersistEnabled        bool
 	prevNFTPersistStateKnown     bool
 	prevNFTExpiryTimerEnabled    bool
+	prevNFTExpiryTimerActive     bool
 	prevNFTExpiryTimerStateKnown bool
 	preflightBinaryHash          string
 	archivedBackups              map[string][]string

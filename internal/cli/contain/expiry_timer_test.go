@@ -52,9 +52,14 @@ func TestEnsureNFTExpiryUnitsFreshRerunAndRepair(t *testing.T) {
 		t.Fatal("matching rerun rewrote expiry units")
 	}
 
-	const altered = "[Service]\nExecStart=/wrong/binary\n"
-	if err := os.WriteFile(env.nftExpiryServicePath, []byte(altered), modeUnitFile); err != nil {
-		t.Fatalf("alter service: %v", err)
+	altered := map[string]string{
+		env.nftExpiryServicePath: "[Service]\nExecStart=/wrong/binary\n",
+		env.nftExpiryTimerPath:   "[Timer]\nOnCalendar=never\n",
+	}
+	for path, body := range altered {
+		if err := os.WriteFile(path, []byte(body), modeUnitFile); err != nil {
+			t.Fatalf("alter %s: %v", path, err)
+		}
 	}
 	changed, err = ensureNFTExpiryUnits(env)
 	if err != nil {
@@ -63,12 +68,27 @@ func TestEnsureNFTExpiryUnitsFreshRerunAndRepair(t *testing.T) {
 	if !changed {
 		t.Fatal("repair reported no change")
 	}
-	backup, err := os.ReadFile(env.nftExpiryServicePath + ".bak")
-	if err != nil {
-		t.Fatalf("read repair backup: %v", err)
-	}
-	if string(backup) != altered {
-		t.Fatalf("backup = %q, want altered service", backup)
+	for _, unit := range []struct {
+		path string
+		want string
+	}{
+		{env.nftExpiryServicePath, renderNFTExpiryService(env)},
+		{env.nftExpiryTimerPath, renderNFTExpiryTimer(env)},
+	} {
+		got, err := os.ReadFile(unit.path)
+		if err != nil {
+			t.Fatalf("read repaired %s: %v", unit.path, err)
+		}
+		if string(got) != unit.want {
+			t.Fatalf("repaired %s = %q, want %q", unit.path, got, unit.want)
+		}
+		backup, err := os.ReadFile(unit.path + ".bak")
+		if err != nil {
+			t.Fatalf("read repair backup for %s: %v", unit.path, err)
+		}
+		if string(backup) != altered[unit.path] {
+			t.Fatalf("backup for %s = %q, want %q", unit.path, backup, altered[unit.path])
+		}
 	}
 }
 
@@ -246,12 +266,123 @@ func TestStepInstallNFTRulesUndoReportsDisabledExpiryTimerRestoreFailure(t *test
 	env.prevNFTExpiryTimerStateKnown = true
 	env.prevNFTExpiryTimerEnabled = false
 	timer := filepath.Base(env.nftExpiryTimerPath)
-	runner.on(argvFor(testSystemctl, "disable", timer), "disable denied", 1, nil)
+	runner.on(argvFor(testSystemctl, "disable", "--now", timer), "disable denied", 1, nil)
 
 	err := stepInstallNFTRules().undo(context.Background(), env)
-	if err == nil || !strings.Contains(err.Error(), "restore "+timer+" disabled state") || !strings.Contains(err.Error(), "disable denied") {
-		t.Fatalf("undo error = %v, want disabled timer restore failure", err)
+	if err == nil || !strings.Contains(err.Error(), "stop "+timer+" for rollback") || !strings.Contains(err.Error(), "disable denied") {
+		t.Fatalf("undo error = %v, want timer stop failure", err)
 	}
+}
+
+func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
+	states := []struct {
+		name    string
+		enabled bool
+		active  bool
+	}{
+		{name: "disabled inactive"},
+		{name: "disabled active", active: true},
+		{name: "enabled inactive", enabled: true},
+		{name: "enabled active", enabled: true, active: true},
+	}
+
+	for _, tc := range states {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.prevNFTExpiryTimerStateKnown = true
+			env.prevNFTExpiryTimerEnabled = tc.enabled
+			env.prevNFTExpiryTimerActive = tc.active
+			originalTimer := "[Timer]\nOnCalendar=hourly\n"
+			originalService := "[Service]\nExecStart=/bin/true\n"
+			if err := os.WriteFile(env.nftExpiryTimerPath+".bak", []byte(originalTimer), modeUnitFile); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(env.nftExpiryServicePath+".bak", []byte(originalService), modeUnitFile); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := stepInstallNFTRules().undo(context.Background(), env); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				"disable --now " + filepath.Base(env.nftExpiryTimerPath),
+				"stop " + filepath.Base(env.nftExpiryServicePath),
+			} {
+				if !runnerCalled(runner, testSystemctl, want) {
+					t.Fatalf("rollback did not run %q: %+v", want, runner.calls)
+				}
+			}
+			timer := filepath.Base(env.nftExpiryTimerPath)
+			if got := runnerCalled(runner, testSystemctl, "enable "+timer); got != tc.enabled {
+				t.Errorf("enable restored = %v, want %v: %+v", got, tc.enabled, runner.calls)
+			}
+			if got := runnerCalled(runner, testSystemctl, "start "+timer); got != tc.active {
+				t.Errorf("start restored = %v, want %v: %+v", got, tc.active, runner.calls)
+			}
+			got, err := os.ReadFile(env.nftExpiryTimerPath)
+			if err != nil || string(got) != originalTimer {
+				t.Fatalf("restored timer = %q, %v; want %q", got, err, originalTimer)
+			}
+		})
+	}
+}
+
+func TestStepInstallNFTRulesReconcilesStoppedExpiryTimerOnMatchingRerun(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	body := renderNFTRules(1000, 988, 987, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), modeDirReadable); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), modeNFTFile); err != nil {
+		t.Fatal(err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	timerEnabled := false
+	timerActive := false
+	timer := filepath.Base(env.nftExpiryTimerPath)
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name == testNFT && strings.Join(args, " ") == "-n -a list chain inet "+defaultNFTTable+" "+defaultNFTChain {
+			return body, 0, nil
+		}
+		if name != testSystemctl {
+			return "", 0, nil
+		}
+		switch strings.Join(args, " ") {
+		case "is-enabled " + filepath.Base(env.nftPersistUnitPath):
+			return "enabled\n", 0, nil
+		case "is-enabled " + timer:
+			if timerEnabled {
+				return "enabled\n", 0, nil
+			}
+			return "disabled\n", 1, nil
+		case "is-active " + timer:
+			if timerActive {
+				return "active\n", 0, nil
+			}
+			return "inactive\n", 3, nil
+		case "enable --now " + timer:
+			timerEnabled = true
+			timerActive = true
+		}
+		return "", 0, nil
+	}
+
+	applied, err := stepInstallNFTRules().apply(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied || !timerEnabled || !timerActive {
+		t.Fatalf("matching rerun = applied:%v enabled:%v active:%v, want all true", applied, timerEnabled, timerActive)
+	}
+}
+
+func runnerCalled(runner *fakeRunner, name, args string) bool {
+	for _, call := range runner.calls {
+		if call.name == name && strings.Join(call.args, " ") == args {
+			return true
+		}
+	}
+	return false
 }
 
 func TestActionRemoveNFTRulesReportsExpiryUnitRemovalFailures(t *testing.T) {
@@ -314,6 +445,7 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 		name         string
 		mutate       func(t *testing.T, env *probeEnv)
 		timerReply   expiryTimerReply
+		timerActive  expiryTimerReply
 		serviceReply expiryTimerReply
 		wantStatus   string
 		wantDetail   string
@@ -369,6 +501,29 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			serviceReply: expiryTimerReply{out: "static\n"},
 			wantStatus:   statusFail,
 			wantDetail:   "not enabled",
+		},
+		{
+			name:         "runtime-only enabled timer fails",
+			timerReply:   expiryTimerReply{out: "enabled-runtime\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			wantStatus:   statusFail,
+			wantDetail:   "not enabled",
+		},
+		{
+			name:         "inactive timer fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			timerActive:  expiryTimerReply{out: "inactive\n", code: 3},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			wantStatus:   statusFail,
+			wantDetail:   "not active",
+		},
+		{
+			name:         "timer activity query failure does not skip",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			timerActive:  expiryTimerReply{err: errors.New("systemctl missing")},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			wantStatus:   statusFail,
+			wantDetail:   "systemctl unavailable",
 		},
 		{
 			name:         "masked timer names unmask repair",
@@ -428,6 +583,60 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			wantDetail: "missing exact ExecStart",
 		},
 		{
+			name:         "appended timer calendar fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body, err := os.ReadFile(env.nftExpiryTimerPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "Persistent=true", "Persistent=true\nOnCalendar=weekly", 1))
+				if err := os.WriteFile(env.nftExpiryTimerPath, body, modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "does not contain the managed expiry schedule",
+		},
+		{
+			name:         "appended service exec start fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body, err := os.ReadFile(env.nftExpiryServicePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "Type=oneshot", "Type=oneshot\nExecStart=/bin/true", 1))
+				if err := os.WriteFile(env.nftExpiryServicePath, body, modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "missing exact ExecStart",
+		},
+		{
+			name:         "resetting timer calendar fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body, err := os.ReadFile(env.nftExpiryTimerPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "Persistent=true", "Persistent=true\nOnCalendar=", 1))
+				if err := os.WriteFile(env.nftExpiryTimerPath, body, modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "does not contain the managed expiry schedule",
+		},
+		{
 			name:         "timer linked to another service fails",
 			timerReply:   expiryTimerReply{out: "enabled\n"},
 			serviceReply: expiryTimerReply{out: "static\n"},
@@ -474,11 +683,21 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			wantStatus:   statusFail,
 			wantDetail:   "systemctl is-enabled",
 		},
+		{
+			name:         "runtime-only enabled expiry service fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "enabled-runtime\n"},
+			wantStatus:   statusFail,
+			wantDetail:   "systemctl is-enabled",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			env := newExpiryProbeEnv(t, tc.timerReply, tc.serviceReply)
+			if tc.timerActive.out == "" && tc.timerActive.err == nil {
+				tc.timerActive.out = "active\n"
+			}
+			env := newExpiryProbeEnv(t, tc.timerReply, tc.timerActive, tc.serviceReply)
 			if tc.mutate != nil {
 				tc.mutate(t, env)
 			}
@@ -504,7 +723,11 @@ func TestStepInstallNFTRulesRollsBackExpiryUnitsAfterEnableFailure(t *testing.T)
 			if failedUnit == "timer" {
 				unit = env.nftExpiryTimerPath
 			}
-			runner.on(argvFor(testSystemctl, "enable", filepath.Base(unit)), "permission denied", 1, nil)
+			if failedUnit == "timer" {
+				runner.on(argvFor(testSystemctl, "enable", "--now", filepath.Base(unit)), "permission denied", 1, nil)
+			} else {
+				runner.on(argvFor(testSystemctl, "enable", filepath.Base(unit)), "permission denied", 1, nil)
+			}
 
 			s := stepInstallNFTRules()
 			applied, err := s.apply(context.Background(), env)
@@ -563,6 +786,9 @@ func TestProbeNFTContainmentRequiresEnabledExpiryTimer(t *testing.T) {
 					return "static\n", 0, nil
 				}
 			}
+			if name == testSystemctl && len(args) == 2 && args[0] == "is-active" && args[1] == filepath.Base(timerPath) {
+				return "inactive\n", 3, nil
+			}
 			return "", -1, errors.New("unexpected command")
 		}
 	})
@@ -583,6 +809,14 @@ func TestActionRemoveNFTRulesStopsAndRemovesExpiryUnits(t *testing.T) {
 		}
 	}
 
+	for _, path := range []string{env.nftExpiryServicePath, env.nftExpiryTimerPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s must exist before rollback: %v", path, err)
+		}
+	}
+	for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
+		runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
+	}
 	if err := actionRemoveNFTRules().undo(context.Background(), env); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
@@ -594,7 +828,7 @@ func TestActionRemoveNFTRulesStopsAndRemovesExpiryUnits(t *testing.T) {
 	for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
 		found := false
 		for _, call := range runner.calls {
-			if call.name == testSystemctl && strings.Join(call.args, " ") == "disable --now "+unit {
+			if call.name == testSystemctl && strings.Join(call.args, " ") == "stop "+unit {
 				found = true
 			}
 		}
@@ -604,7 +838,7 @@ func TestActionRemoveNFTRulesStopsAndRemovesExpiryUnits(t *testing.T) {
 	}
 }
 
-func newExpiryProbeEnv(t *testing.T, timerReply, serviceReply expiryTimerReply) *probeEnv {
+func newExpiryProbeEnv(t *testing.T, timerReply, timerActiveReply, serviceReply expiryTimerReply) *probeEnv {
 	t.Helper()
 	tmp := t.TempDir()
 	env := makeProbeEnv(t)
@@ -623,7 +857,13 @@ func newExpiryProbeEnv(t *testing.T, timerReply, serviceReply expiryTimerReply) 
 		t.Fatal(err)
 	}
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name != testSystemctl || len(args) != 2 || args[0] != "is-enabled" {
+		if name != testSystemctl || len(args) != 2 {
+			return "", -1, errors.New("unexpected command")
+		}
+		if args[0] == "is-active" && args[1] == filepath.Base(env.nftExpiryTimerPath) {
+			return timerActiveReply.out, timerActiveReply.code, timerActiveReply.err
+		}
+		if args[0] != "is-enabled" {
 			return "", -1, errors.New("unexpected command")
 		}
 		switch args[1] {

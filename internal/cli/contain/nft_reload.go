@@ -262,6 +262,65 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	return nil
 }
 
+// partialManagedNFTBlockLength recovers a managed block whose declared-service
+// rules are neither complete pairs nor the all-forward legacy shape: one
+// service has a forward allow with no reply, or the two halves were separated.
+// Such a block is reachable after an interrupted reconciliation, and until it
+// is recognized nothing deletes it, so reload appends a replacement block and
+// leaves the old forward allows in the chain. A forward allow for a service
+// the operator has REVOKED would survive that way, which is the failure
+// direction this exists to close.
+//
+// It stays narrow on purpose. A reply accept is absorbed only when the block
+// already carries a forward allow for that exact host and port, so an
+// operator's hand-written reply rule for a service this block never declared
+// is left alone, exactly as the strict pair matcher leaves it alone.
+func partialManagedNFTBlockLength(rules []nftRuleWithHandle, i, loopbackStart, agentUID int) int {
+	declared := map[string]bool{}
+	tailStart := loopbackStart + 1
+	for tailStart < len(rules) {
+		line := rules[tailStart].line
+		if lineHasAgentLoopbackAllowAnyPortAnyHost(line, agentUID) {
+			fields := nftLineFields(line)
+			declared[fields[5]+"/"+fields[8]] = true
+			tailStart++
+			continue
+		}
+		if key, ok := agentLoopbackReplyHostPortKey(line, agentUID); ok && declared[key] {
+			tailStart++
+			continue
+		}
+		break
+	}
+	if tailStart == loopbackStart+1 || tailStart+2 >= len(rules) {
+		return 0
+	}
+	if !lineHasManagedDNSDrop(rules[tailStart].line, agentUID, "udp") ||
+		!lineHasManagedDNSDrop(rules[tailStart+1].line, agentUID, "tcp") ||
+		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
+		return 0
+	}
+	return tailStart + 3 - i
+}
+
+// agentLoopbackReplyHostPortKey reports the host/port a reply accept answers
+// for, so a caller can require that the same block declared its forward.
+func agentLoopbackReplyHostPortKey(line string, agentUID int) (string, bool) {
+	fields := nftLineFields(line)
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		for _, field := range fields {
+			port, err := strconv.Atoi(field)
+			if err != nil || !isTCPPort(field) {
+				continue
+			}
+			if lineHasAgentLoopbackReplyForHost(line, agentUID, host, port) {
+				return host + "/" + field, true
+			}
+		}
+	}
+	return "", false
+}
+
 func nftReloadOutcome(fileChanged bool, removedRules int, loadedMissingChain bool) string {
 	if !fileChanged && removedRules == 0 && !loadedMissingChain {
 		return "containment nft rules already reconciled, no change"
@@ -450,7 +509,10 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 	tailStart := loopbackStart + 1
 	for tailStart < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[tailStart].line, agentUID) {
 		if tailStart+1 >= len(rules) || !lineHasAgentLoopbackReplyForForwardLine(rules[tailStart].line, rules[tailStart+1].line, agentUID) {
-			return legacyManagedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID)
+			if length := legacyManagedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID); length > 0 {
+				return length
+			}
+			return partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
 		}
 		tailStart += 2
 	}

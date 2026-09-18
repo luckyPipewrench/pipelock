@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -88,12 +90,12 @@ func TestRenderNFTRulesWithLoopbackServicesIPv6(t *testing.T) {
 	}
 }
 
-func loopbackServiceRuleLine(agentUID, port int, handle int) string {
-	return `meta skuid ` + itoa(agentUID) + ` ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
+func loopbackServiceRuleLine(port int, handle int) string {
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
 }
 
-func loopbackServiceReplyRuleLine(agentUID, port int, handle int) string {
-	return `meta skuid ` + itoa(agentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
+func loopbackServiceReplyRuleLine(port int, handle int) string {
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
 }
 
 // numericNftStateListing mirrors the normalized connection-state spelling
@@ -115,9 +117,9 @@ func managedBlockWithLoopbackServicePairs(first int, ports []int) (string, int) 
 	lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle `+itoa(handle))
 	handle++
 	for _, port := range ports {
-		lines = append(lines, loopbackServiceRuleLine(966, port, handle))
+		lines = append(lines, loopbackServiceRuleLine(port, handle))
 		handle++
-		lines = append(lines, loopbackServiceReplyRuleLine(966, port, handle))
+		lines = append(lines, loopbackServiceReplyRuleLine(port, handle))
 		handle++
 	}
 	lines = append(lines,
@@ -145,7 +147,7 @@ func legacyManagedBlockWithLoopbackServices(first int, ports []int) string {
 	lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle `+itoa(handle))
 	handle++
 	for _, port := range ports {
-		lines = append(lines, loopbackServiceRuleLine(966, port, handle))
+		lines = append(lines, loopbackServiceRuleLine(port, handle))
 		handle++
 	}
 	lines = append(lines,
@@ -292,6 +294,39 @@ func TestReloadRecognizesNumericPairedBlocks(t *testing.T) {
 	}
 }
 
+// applyNFTDeletionsForTest removes each handle named by a "delete rule ... handle N"
+// command from a numeric nft listing, returning the surviving lines. It exists so a
+// reload fake models the transaction the kernel actually performs: deletions first,
+// then the canonical body. A fake that skips this cannot tell a reconciliation that
+// removed stale rules from one that merely appended new ones.
+func applyNFTDeletionsForTest(live, deletions string) ([]string, error) {
+	deleted := map[int]bool{}
+	for _, line := range strings.Split(deletions, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		match := nftDeleteHandlePatternForTest.FindStringSubmatch(line)
+		if match == nil {
+			return nil, fmt.Errorf("unrecognized reload command %q", line)
+		}
+		handle, err := strconv.Atoi(match[1])
+		if err != nil {
+			return nil, fmt.Errorf("delete command %q has a non-numeric handle: %w", line, err)
+		}
+		deleted[handle] = true
+	}
+	survivors := make([]string, 0)
+	for _, rule := range nftRulesWithHandles(live) {
+		if !deleted[rule.handle] {
+			survivors = append(survivors, rule.line+" # handle "+itoa(rule.handle))
+		}
+	}
+	return survivors, nil
+}
+
+var nftDeleteHandlePatternForTest = regexp.MustCompile(`^delete rule inet \S+ \S+ handle ([0-9]+)$`)
+
 func nftListingFromRulesBodyForTest(rules string, firstHandle int) string {
 	lines := make([]string, 0)
 	for _, line := range strings.Split(rules, "\n") {
@@ -368,7 +403,15 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 				if bodyStart < 0 {
 					return "", 1, errors.New("reload script omitted canonical rules body")
 				}
-				live = strings.Join(append(foreign, nftListingFromRulesBodyForTest(reloadScript[bodyStart:], 100)), "\n")
+				// Apply the script's deletions to the live listing before adding the
+				// canonical body, so a script that omits a deletion leaves the stale
+				// rule behind and fails the assertions below. A fake that discards
+				// deletions passes whether or not reconciliation removes anything.
+				survivors, err := applyNFTDeletionsForTest(live, reloadScript[:bodyStart])
+				if err != nil {
+					return "", 1, err
+				}
+				live = strings.Join(append(survivors, nftListingFromRulesBodyForTest(reloadScript[bodyStart:], 100)), "\n")
 				return "", 0, nil
 			default:
 				return "", 1, fmt.Errorf("unexpected nft command %q", strings.Join(args, " "))
@@ -386,8 +429,11 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 		t.Fatalf("after repeated reloads, got %d managed rules, want one paired block of 8: %v", len(handles), handles)
 	}
 	for _, line := range foreign {
-		if !strings.Contains(live, line) {
-			t.Fatalf("foreign rule was not preserved: %q\nlive:\n%s", line, live)
+		// nft lists an established-reply rule in its numeric form, which is what a
+		// live chain and therefore the reconciler actually see.
+		want := numericNftStateListing(line)
+		if !strings.Contains(live, want) {
+			t.Fatalf("foreign rule was not preserved: %q\nlive:\n%s", want, live)
 		}
 	}
 	if len(reports) != 3 || !strings.Contains(reports[0], "removed 31 managed rule(s)") || reports[1] != "containment nft rules already reconciled, no change" || reports[2] != "containment nft rules already reconciled, no change" {
@@ -2291,4 +2337,82 @@ func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 			t.Fatalf("an ordinary rollback must complete: %v", err)
 		}
 	})
+}
+
+// TestReloadRemovesPartiallyPairedManagedBlock pins the recovery path for a
+// managed block whose pairs are incomplete: one declared service has its
+// forward allow but no reply. Neither the paired matcher nor the legacy
+// contiguous-forward matcher recognizes that shape on its own, and a block
+// nothing recognizes is a block nothing deletes. The forward allow for a
+// service the operator has since revoked would then stay in the chain while
+// reload appends the replacement block, so the revoked service stays
+// reachable. Partial states like this are reachable after an interrupted
+// transaction, so the reconciler has to recover from one rather than assume
+// it only ever sees blocks it wrote.
+func TestReloadRemovesPartiallyPairedManagedBlock(t *testing.T) {
+	t.Parallel()
+
+	const revokedPort = 9300
+	handle := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(handle),
+		`meta skuid 967 accept # handle ` + itoa(handle+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(handle+2),
+		loopbackServiceRuleLine(9200, handle+3),
+		loopbackServiceReplyRuleLine(9200, handle+4),
+		// The revoked service keeps its forward allow but lost its reply.
+		loopbackServiceRuleLine(revokedPort, handle+5),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+6),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+7),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(handle+8),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	if len(handles) == 0 {
+		t.Fatalf("a partially paired managed block was not recognized, so reload would delete nothing and leave the revoked service on port %d reachable\nlive:\n%s", revokedPort, live)
+	}
+	for _, want := range []int{handle + 5} {
+		found := false
+		for _, got := range handles {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("handle %d (the revoked service's orphaned forward allow) was not scheduled for deletion: %v", want, handles)
+		}
+	}
+}
+
+// TestPartialBlockRecoveryLeavesUndeclaredReplyAlone is the safety half of
+// TestReloadRemovesPartiallyPairedManagedBlock. Recovering a partial block
+// must not become a licence to absorb any agent loopback reply that happens to
+// sit inside the block's span: an operator's hand-written reply rule for a
+// service the block never declared is theirs, and deleting it would break a
+// service they deliberately allowed while reporting a successful reconcile.
+func TestPartialBlockRecoveryLeavesUndeclaredReplyAlone(t *testing.T) {
+	t.Parallel()
+
+	const undeclaredPort = 8789
+	handle := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(handle),
+		`meta skuid 967 accept # handle ` + itoa(handle+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(handle+2),
+		loopbackServiceRuleLine(9200, handle+3),
+		// A reply for a port this block never declared a forward for.
+		loopbackServiceReplyRuleLine(undeclaredPort, handle+4),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+5),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(handle+6),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(handle+7),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	for _, got := range legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID) {
+		if got == handle+4 {
+			t.Fatalf("handle %d is an operator reply rule for undeclared port %d and must not be scheduled for deletion", handle+4, undeclaredPort)
+		}
+	}
 }

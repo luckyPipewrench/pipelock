@@ -246,6 +246,15 @@ func namespaceDialTimedOut(ctx context.Context, err error) bool {
 	return errors.As(err, &networkErr) && networkErr.Timeout()
 }
 
+// namespaceAssertNewSourcePortRejected checks that a NEW flow bound to the
+// declared service's source port does not get through. It is a no-leak check
+// and NOT proof that the reply rule's state match is what stops it: the drop
+// here is over-determined, because the forward allow cannot match this packet's
+// destination port and the return path is barred by its destination address
+// regardless. Removing "ct state established ct direction reply" from the
+// rendered rule leaves this assertion passing, verified by neutralization.
+// The state match itself is pinned by the render and reload golden tests in
+// loopback_services_test.go, which do fail when it is removed.
 func namespaceAssertNewSourcePortRejected(t *testing.T, host string, servicePort int) {
 	t.Helper()
 	target := namespaceListener(t, "tcp4", host)

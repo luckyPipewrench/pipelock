@@ -56,6 +56,9 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config, bundleYAML
 		exposure.AllowedSourceCIDRs = append([]string(nil), oldCfg.Containment.MetricsExposure.AllowedSourceCIDRs...)
 		newCfg.Containment.MetricsExposure = &exposure
 	}
+	if oldCfg.Containment.LoopbackServices != nil {
+		newCfg.Containment.LoopbackServices = append([]ContainmentLoopbackService(nil), oldCfg.Containment.LoopbackServices...)
+	}
 	newCfg.MCPWSListener = oldCfg.MCPWSListener
 	newCfg.ReverseProxy = oldCfg.ReverseProxy
 	newCfg.ScanAPI = oldCfg.ScanAPI

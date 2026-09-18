@@ -584,6 +584,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMetricsListen(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateContainmentLoopbackServices(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err
 	}
@@ -3778,6 +3781,16 @@ func (c *Config) ValidateSuppressions() error {
 	return c.validateSuppress(nil)
 }
 
+// ValidateContainmentLoopbackServiceDeclarations validates the declared
+// loopback-service surface independently of the full config, for the same
+// reason ValidateSuppressions exists: a caller handing Reload an in-memory
+// config never passes through Load, so the whole-config validator that
+// normally catches a malformed, expired, or proxy-port-colliding declaration
+// never runs on that path.
+func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
+	return c.validateContainmentLoopbackServices()
+}
+
 // credentialAudienceDomainSubset reports whether every candidate domain is
 // contained by at least one compiled audience domain. Inputs have already
 // passed ValidateTrustedDomains, so only exact hosts and leading-wildcard
@@ -3864,6 +3877,21 @@ func (c *Config) validateKillSwitch() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateContainmentLoopbackServices() error {
+	if len(c.Containment.LoopbackServices) == 0 {
+		return nil
+	}
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	port, err := strconv.Atoi(proxyPort)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+	}
+	return ValidateContainmentLoopbackServices(c.Containment.LoopbackServices, port, time.Now())
 }
 
 func (c *Config) validateMetricsListen() error {

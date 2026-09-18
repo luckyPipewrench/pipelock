@@ -2521,7 +2521,7 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	}
 
 	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort, nil) {
 		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
 	}
 }

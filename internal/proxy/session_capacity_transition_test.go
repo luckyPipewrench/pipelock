@@ -202,7 +202,10 @@ func TestShieldSignalEvidenceRequiresRecorder(t *testing.T) {
 			actx := newHTTPAuditContext(t.Context(), p.logger, httpAuditEvent{
 				Method: http.MethodGet, TargetURL: upstream.String(), ClientIP: airlockAdmissionClient, RequestID: "req-shield-capacity",
 			})
-			p.recordShieldIntervention(summary, cfg, upstream.Hostname(), actx, airlockAdmissionClient, "req-shield-capacity", TransportForward, "")
+			allowed := p.recordShieldIntervention(summary, cfg, upstream.Hostname(), actx, airlockAdmissionClient, "req-shield-capacity", TransportForward, "")
+			if allowed == full {
+				t.Fatalf("shield admission=%t, full=%t", allowed, full)
+			}
 			want := 1
 			if full {
 				want = 0

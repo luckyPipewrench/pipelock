@@ -3466,19 +3466,33 @@ func (p *Proxy) airlockSessionForIdentity(agent, clientIP string, auth envelope.
 	return sm.SessionByKey(responseTaintSessionKey(agent, clientIP, auth))
 }
 
+// shieldBlockResult carries the actual refusal through each response transport.
+// Capacity failures must not be presented as an oversized-body policy denial.
+type shieldBlockResult struct {
+	info   blockreason.Info
+	status int
+	reason string
+}
+
+func shieldCapacityBlock() *shieldBlockResult {
+	return &shieldBlockResult{
+		info:   blockInfoFor(blockreason.DataBudget, sessionCapacityLayer),
+		status: http.StatusServiceUnavailable, reason: session.ErrCapacity.Error(),
+	}
+}
+
 // applyShield runs Browser Shield rewriting on a response body when enabled
-// and the hostname is not exempt. Returns the possibly rewritten body, an
-// optional rewrite summary, and a blocked flag. When blocked is true, the
-// caller must return 403 to the client.
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool) {
+// and the hostname is not exempt. A nonnil block result prevents delivery and
+// supplies the transport's status, reason, and receipt classification.
+func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, *shieldBlockResult) {
 	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
-		return body, nil, false
+		return body, nil, nil
 	}
 
 	// Exempt domains: skip shield entirely.
 	if isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains) {
 		p.metrics.RecordShieldSkipped("exempt_domain")
-		return body, nil, false
+		return body, nil, nil
 	}
 
 	// Content-type gate: skip shield entirely for non-shieldable media
@@ -3496,7 +3510,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	}
 	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
-		return body, nil, false
+		return body, nil, nil
 	}
 
 	// Max shield bytes: enforce oversize action. A size-exempt response already
@@ -3516,15 +3530,20 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 				summary.BodyBytes = len(body)
 				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
-				p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID)
+				if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
+					return nil, summary, shieldCapacityBlock()
+				}
 			}
-			return append(head, body[shieldMaxBytes:]...), summary, false
+			return append(head, body[shieldMaxBytes:]...), summary, nil
 		case config.ShieldOversizeWarn:
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
-			return body, nil, false
+			return body, nil, nil
 		default: // block: fail-closed, return 403
 			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes))
-			return nil, nil, true
+			return nil, nil, &shieldBlockResult{
+				info:   blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
+				status: http.StatusForbidden, reason: shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes),
+			}
 		}
 	}
 
@@ -3532,9 +3551,11 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if summary != nil {
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
-		p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID)
+		if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
+			return nil, summary, shieldCapacityBlock()
+		}
 	}
-	return rewritten, summary, false
+	return rewritten, summary, nil
 }
 
 // runShieldPipelineResult applies Browser Shield and returns an optional
@@ -3744,9 +3765,11 @@ func shieldPipelineLabel(pipeline shield.PipelineType) string {
 	}
 }
 
-func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *config.Config, hostname string, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) {
+// recordShieldIntervention refuses delivery when enabled adaptive recording
+// cannot obtain a session. A disabled or absent store does not require one.
+func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *config.Config, hostname string, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) bool {
 	if summary == nil {
-		return
+		return true
 	}
 	signals := 0
 	if cfg != nil && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
@@ -3764,7 +3787,10 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			sess = sm.GetOrCreate(sessionKey)
 			if sess == nil {
-				p.logger.LogAnomaly(actx, sessionCapacityLayer, session.ErrCapacity.Error(), 0)
+				summary.AdaptiveSignalsRecorded = 0
+				summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+				p.logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
+				return false
 			}
 		}
 		if sess == nil {
@@ -3798,7 +3824,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	})
 
 	if signals == 0 {
-		return
+		return true
 	}
 	for i := 0; i < signals; i++ {
 		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
@@ -3810,6 +3836,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 			RequestID: requestID,
 		})
 	}
+	return true
 }
 
 func shieldReceiptTarget(target string) string {
@@ -5831,16 +5858,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
-	shieldBodyLen := len(body)
-	shieldMaxBytes := shieldMaxBytesForResponse(cfg, shieldHost, TransportFetch)
 	body, shieldSummary, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
-	if shieldBlocked {
-		reason := shieldOversizeBlockReason(shieldHost, shieldBodyLen, shieldMaxBytes)
-		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
+	if shieldBlocked != nil {
+		reason := shieldBlocked.reason
+		p.metrics.RecordBlocked(shieldHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
-			Layer:     "shield_oversize",
+			Layer:     shieldBlocked.info.Layer,
 			Pattern:   reason,
 			Transport: "fetch",
 			Method:    http.MethodGet,
@@ -5849,14 +5874,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-			http.StatusForbidden, FetchResponse{
+			shieldBlocked.info,
+			shieldBlocked.status, FetchResponse{
 				URL: displayURL, Agent: agent, Blocked: true,
 				BlockReason: reason,
 			})
-		outcomeStatus = strconv.Itoa(http.StatusForbidden)
+		outcomeStatus = strconv.Itoa(shieldBlocked.status)
 		outcomeBytes = int64(len(body))
-		outcomeReason = "shield_oversize"
+		outcomeReason = shieldBlocked.info.Layer
 		return
 	}
 

@@ -2208,17 +2208,19 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		if ic.Proxy != nil {
-			shieldBodyLen := len(respBody)
-			var shieldBlocked bool
+			var shieldBlocked *shieldBlockResult
 			var shieldSummary *receipt.ShieldSummary
-			shieldMaxBytes := shieldMaxBytesForResponse(ic.Config, ic.TargetHost, TransportConnect)
 			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
-			if shieldBlocked {
-				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
+			if shieldBlocked != nil {
+				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
+				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
+					ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldBlocked.info.Layer,
+					Pattern: shieldBlocked.reason, Transport: "intercept", Method: r.Method,
+					Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+				})
 				writeBlockedError(w,
-					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-					"blocked: "+shieldOversizeBlockReason(ic.TargetHost, shieldBodyLen, shieldMaxBytes), http.StatusForbidden)
-				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "shield_oversize")
+					shieldBlocked.info, "blocked: "+shieldBlocked.reason, shieldBlocked.status)
+				emitBlockedPostRoundTripOutcome(shieldBlocked.status, shieldBlocked.info.Layer)
 				return
 			}
 			// If shield modified the body, update Content-Length to prevent

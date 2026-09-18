@@ -2739,19 +2739,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Browser Shield on forward proxy responses. Use post-redirect host
 		// so exempt_domains checks match the actual response origin.
-		shieldBodyLen := len(respBody)
-		var shieldBlocked bool
+		var shieldBlocked *shieldBlockResult
 		var shieldSummary *receipt.ShieldSummary
-		shieldMaxBytes := shieldMaxBytesForResponse(cfg, fwdRespHost, TransportForward)
 		respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
-		if shieldBlocked {
-			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
+		if shieldBlocked != nil {
+			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
+			emitForwardReceipt(receipt.EmitOpts{
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldBlocked.info.Layer,
+				Pattern: shieldBlocked.reason, Transport: TransportForward, Method: r.Method,
+				Target: targetURL, RequestID: requestID, Agent: agent,
+			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
-				"blocked: "+shieldOversizeBlockReason(fwdRespHost, shieldBodyLen, shieldMaxBytes), http.StatusForbidden)
-			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+				shieldBlocked.info, "blocked: "+shieldBlocked.reason, shieldBlocked.status)
+			outcomeStatus = strconv.Itoa(shieldBlocked.status)
 			outcomeBytes = int64(len(respBody))
-			outcomeReason = "shield_oversize"
+			outcomeReason = shieldBlocked.info.Layer
 			return
 		}
 		if shieldSummary != nil {

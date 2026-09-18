@@ -258,11 +258,34 @@ func BenchmarkScanResponse_Large(b *testing.B) {
 				content = base
 			}
 
+			// Assert the outcome ONCE, before the timer, on a separate scanner so
+			// the timed loop's state is untouched. Without this the clean and
+			// injection cases differ only by which builder produced the input,
+			// so a reversed or broken enforcement result would still yield
+			// clean-looking numbers and the "Injection" cases would silently be
+			// measuring the clean path.
+			verifyBenchResponseOutcome(b, content, tc.hasMatch)
+
 			b.ResetTimer()
 			for b.Loop() {
 				s.ScanResponse(context.Background(), content)
 			}
 		})
+	}
+}
+
+// verifyBenchResponseOutcome fails the benchmark when the fixture stopped
+// exercising the path its name claims.
+func verifyBenchResponseOutcome(b *testing.B, content string, wantMatch bool) {
+	b.Helper()
+	check := MustNew(benchResponseConfig())
+	defer check.Close()
+	result := check.ScanResponse(context.Background(), content)
+	if result.Failed() {
+		b.Fatalf("fixture produced a scan error rather than a verdict: %s", result.ScanError)
+	}
+	if got := len(result.Matches) > 0; got != wantMatch {
+		b.Fatalf("fixture match = %v, want %v; the benchmark is measuring the wrong path", got, wantMatch)
 	}
 }
 

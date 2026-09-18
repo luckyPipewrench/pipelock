@@ -326,6 +326,12 @@ func actionRemoveNFTRules() step {
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.nftPersistUnitPath)
 			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			if env.nftExpiryTimerPath != "" {
+				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", filepath.Base(env.nftExpiryTimerPath))
+			}
+			if env.nftExpiryServicePath != "" {
+				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", filepath.Base(env.nftExpiryServicePath))
+			}
 			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := env.removeFile(env.nftRulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", env.nftRulesPath, err)
@@ -335,6 +341,18 @@ func actionRemoveNFTRules() step {
 				return fmt.Errorf("remove %s: %w", env.nftPersistUnitPath, err)
 			}
 			_ = env.removeFile(env.nftPersistUnitPath + ".bak")
+			if env.nftExpiryTimerPath != "" {
+				if err := env.removeFile(env.nftExpiryTimerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove %s: %w", env.nftExpiryTimerPath, err)
+				}
+				_ = env.removeFile(env.nftExpiryTimerPath + ".bak")
+			}
+			if env.nftExpiryServicePath != "" {
+				if err := env.removeFile(env.nftExpiryServicePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove %s: %w", env.nftExpiryServicePath, err)
+				}
+				_ = env.removeFile(env.nftExpiryServicePath + ".bak")
+			}
 			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
 			if env.nftMainPath != "" {
 				return restoreOrRemoveNFTMainInclude(env)

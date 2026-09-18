@@ -4096,6 +4096,12 @@ func TestDefaultProbeEnv(t *testing.T) {
 	if env.nftPersistUnitPath != defaultNFTPersistUnitPath {
 		t.Errorf("nftPersistUnitPath: got %q, want %q", env.nftPersistUnitPath, defaultNFTPersistUnitPath)
 	}
+	if env.nftExpiryServicePath != defaultNFTExpiryServicePath {
+		t.Errorf("nftExpiryServicePath: got %q, want %q", env.nftExpiryServicePath, defaultNFTExpiryServicePath)
+	}
+	if env.nftExpiryTimerPath != defaultNFTExpiryTimerPath {
+		t.Errorf("nftExpiryTimerPath: got %q, want %q", env.nftExpiryTimerPath, defaultNFTExpiryTimerPath)
+	}
 	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil || env.readFile == nil {
 		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v readFile=%v",
 			env.runCmd != nil, env.dialCtx != nil, env.lookupUser != nil, env.readFile != nil)

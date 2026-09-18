@@ -479,6 +479,7 @@ type Proxy struct {
 	reloadSerialMu       sync.Mutex   // serializes staging by concurrent Reload calls
 	reloadMu             sync.RWMutex // serializes publication and coherent request-time runtime snapshots
 	ceeAdmissionLocked   func()       // test hook: called while a CEE admission owns reloadMu.RLock
+	connectCEEReady      func()       // test hook: between CONNECT's CEE snapshot and signal recording
 	reloadLocked         func()       // test hook: called after Reload owns reloadMu.Lock
 	approver             *hitl.Approver
 	a2aCardBaseline      *mcp.CardBaseline // Agent Card drift detection across requests
@@ -3335,7 +3336,7 @@ func triggerScopedAirlockOnEscalation(sess *SessionState, scope, escalatedTo str
 			Score:    sess.ScopedThreatScore(scope),
 		})
 		if ep.Logger != nil {
-			ep.Logger.LogAirlockEnter(ep.Session, to, "adaptive_"+escalatedTo, ep.ClientIP, ep.RequestID)
+			ep.Logger.LogAirlockEnterForScope(ep.Session, scope, to, "adaptive_"+escalatedTo, ep.ClientIP, ep.RequestID)
 		}
 		if ep.Metrics != nil {
 			ep.Metrics.RecordAirlockTransition(from, to, "adaptive")
@@ -4785,6 +4786,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
 		if sess == nil {
+			log.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
+			p.metrics.RecordBlocked(parsed.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
+			emitFetchReceipt(receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
+				Pattern: session.ErrCapacity.Error(), Transport: TransportFetch,
+				Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
+			})
 			writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error()})
 			return
@@ -4938,6 +4946,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		info, status := sr.blockResponse()
+		if sr.capacityDenied {
+			log.LogBlocked(actx, sessionCapacityLayer, sr.Detail)
+			p.metrics.RecordBlocked(parsed.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
+		}
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
@@ -5278,6 +5290,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// rotated self-declared agent names cannot dodge adaptive session deny.
 		if ceeBlockAll {
 			if ceeRec == nil {
+				log.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
+				p.metrics.RecordBlocked(parsed.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
 				emitFetchReceipt(receipt.EmitOpts{
 					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
 					Pattern: session.ErrCapacity.Error(), Transport: TransportFetch,

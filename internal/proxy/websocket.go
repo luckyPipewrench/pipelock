@@ -425,6 +425,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		info, status := sr.blockResponse()
+		if sr.capacityDenied {
+			log.LogBlocked(actx, sessionCapacityLayer, sr.Detail)
+			p.metrics.RecordWSBlocked()
+		}
 		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
@@ -465,6 +469,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var headerSR SessionResult
 	// Budget admission check: enforce request count and domain limits.
 	if err := resolved.Budget.CheckAdmission(strings.ToLower(parsed.Hostname())); err != nil {
 		reason := err.Error()
@@ -534,7 +539,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.
-		headerSR := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		headerSR = p.recordSessionActivityWithUserAgent(sessionActivityOptions{
 			ClientIP:   clientIP,
 			Agent:      agent,
 			Hostname:   parsed.Hostname(),
@@ -558,11 +563,15 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		captureHeaderDLP(action, reason)
 		if !wsHeaderBlocked && headerSR.Blocked {
+			info, status := headerSR.blockResponse()
+			if headerSR.capacityDenied {
+				log.LogBlocked(actx, sessionCapacityLayer, headerSR.Detail)
+			}
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
-				Layer:     "session_profiling",
+				Layer:     info.Layer,
 				Pattern:   headerSR.Detail,
 				Transport: TransportWS,
 				Method:    "WS",
@@ -570,9 +579,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeBlockedError(w,
-				blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
-				headerSR.Detail, http.StatusForbidden)
+			writeBlockedError(w, info, headerSR.Detail, status)
 			return
 		}
 		if wsHeaderBlocked {
@@ -813,6 +820,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sess := sm.GetOrCreate(sessionKey)
 		if sess == nil {
 			info := blockInfoFor(blockreason.DataBudget, sessionCapacityLayer)
+			log.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
@@ -834,7 +842,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Airlock admission check: deny new WebSocket connections to sessions
 	// already in hard/drain tier. Existing connections are torn down via
 	// RegisterCancel; this blocks new ones from being established.
-	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
+	wsAirlockSessions := retainAirlockSessions(nil, sr.recorder, headerSR.recorder, wsRec, p.airlockSessionForIdentity(agent, clientIP, id.Auth))
+	for _, wsSess := range wsAirlockSessions {
 		tier := airlockTierForScope(wsSess, wsScope)
 		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
@@ -1056,7 +1065,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
 
-	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
+	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(agent, clientIP, id.Auth))
+	for _, wsSess := range wsAirlockSessions {
 		// Register airlock cancel for WebSocket connections. When the session
 		// escalates to hard/drain, closing both ends terminates the relay.
 		wsSess.AirlockForScope(wsScope).RegisterCancel(func() {
@@ -1559,7 +1569,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 
 	if ceeBlockAll {
 		if ceeRec == nil {
-			r.denySessionCapacity()
+			r.denySessionCapacity(audit.DirectionClientToServer)
 			return true
 		}
 		level := recEscalationLevel(ceeRec)
@@ -2680,8 +2690,13 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	return msg, false
 }
 
-func (r *wsRelay) denySessionCapacity() {
+func (r *wsRelay) denySessionCapacity(direction string) {
 	r.terminalOnce.Do(func() {
+		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{
+			Target: r.targetURL, Direction: direction, Scanner: sessionCapacityLayer,
+			Reason: session.ErrCapacity.Error(), ClientIP: r.clientIP, RequestID: r.requestID,
+			Agent: r.agent, AgentAuth: string(r.actorAuth),
+		})
 		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
 			Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
@@ -2704,7 +2719,7 @@ func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
 	}
 	rec := sm.GetOrCreate(r.taintSessionKey)
 	if rec == nil {
-		r.denySessionCapacity()
+		r.denySessionCapacity(audit.DirectionServerToClient)
 		return false
 	}
 	risk := rec.RiskSnapshot()

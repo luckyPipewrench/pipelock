@@ -126,7 +126,7 @@ func TestAirlockResponseSignalUsesFinalOrigin(t *testing.T) {
 			listenConfig := net.ListenConfig{}
 			listener, err := listenConfig.Listen(t.Context(), "tcp4", "127.0.0.2:0")
 			if err != nil {
-				t.Fatalf("listen on second loopback origin: %v", err)
+				t.Skipf("second loopback origin unavailable on this host: %v", err)
 			}
 			final.Listener = listener
 			final.Start()
@@ -181,7 +181,7 @@ func TestAirlockCleanRecoveryUsesFinalOrigin(t *testing.T) {
 				listenConfig := net.ListenConfig{}
 				listener, err := listenConfig.Listen(t.Context(), "tcp4", "127.0.0.2:0")
 				if err != nil {
-					t.Fatal(err)
+					t.Skipf("second loopback origin unavailable on this host: %v", err)
 				}
 				final.Listener = listener
 				final.Start()

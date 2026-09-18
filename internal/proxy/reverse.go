@@ -1164,6 +1164,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 		if sessionResult.Blocked {
 			info, status := sessionResult.blockResponse()
+			if sessionResult.capacityDenied {
+				rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), sessionCapacityLayer, sessionResult.Detail)
+			}
 			rp.metrics.RecordReverseProxyRequest(r.Method, strconv.Itoa(status))
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, info.Layer)
 			emitReverseReceipt(receipt.EmitOpts{
@@ -1236,6 +1239,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, actorAuth))
 			if sess == nil {
+				rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), sessionCapacityLayer, session.ErrCapacity.Error())
 				emitReverseReceipt(receipt.EmitOpts{
 					ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
 					Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
@@ -1359,6 +1363,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			}
 			if ceeBlockAll {
 				if ceeRec == nil {
+					rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), sessionCapacityLayer, session.ErrCapacity.Error())
 					emitReverseReceipt(receipt.EmitOpts{
 						ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
 						Pattern: session.ErrCapacity.Error(), Transport: TransportReverse,

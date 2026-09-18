@@ -545,6 +545,10 @@ func newInterceptHandler(
 			if sm != nil {
 				sess := sm.GetOrCreate(sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth))
 				if sess == nil {
+					capacityCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{
+						Method: r.Method, TargetURL: target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent,
+					})
+					ic.Logger.LogBlocked(capacityCtx, sessionCapacityLayer, session.ErrCapacity.Error())
 					ic.Metrics.RecordTLSRequestBlocked(sessionCapacityLayer)
 					_ = interceptEmitReceipt(ic, receipt.EmitOpts{
 						ActionID: actionID, Verdict: config.ActionBlock,
@@ -1552,6 +1556,7 @@ func newInterceptHandler(
 			// necessarily receive CEE signals for self-declared agent names.
 			if ceeBlockAll {
 				if ceeRec == nil {
+					ic.Logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
 					ic.Metrics.RecordTLSRequestBlocked(sessionCapacityLayer)
 					_ = interceptEmitReceipt(ic, receipt.EmitOpts{
 						ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,

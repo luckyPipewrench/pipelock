@@ -44,6 +44,11 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 
 # 3. Generate a config and start the forward proxy
 pipelock generate config --preset balanced -o pipelock.yaml
+# balanced presets ship forward_proxy.idle_timeout_seconds: 120; Grok SSE
+# idle defaults to 600s and xAI recommends proxy idle timeouts ≥ 10 minutes.
+# Raise it before starting the proxy (edit pipelock.yaml):
+#   forward_proxy:
+#     idle_timeout_seconds: 600
 pipelock run --config pipelock.yaml &
 
 # 4. Point Grok Build at Pipelock (CLI honors these env vars)
@@ -74,27 +79,34 @@ Grok  <-->  pipelock mcp proxy  <-->  MCP Server
 
 ### Adding a wrapped stdio server
 
-Everything after `--` is the upstream MCP command (same shape as Codex):
+Everything after `--` is the upstream MCP command (same shape as Codex). Resolve the installed binary once — Homebrew on Apple Silicon typically lands at `/opt/homebrew/bin/pipelock`, not `/usr/local/bin`:
 
 ```bash
-# Wrap a filesystem server (absolute binary + config — Grok user-scope persists cwd-independently)
+PIPELOCK="$(command -v pipelock)"
+test -n "$PIPELOCK" || { echo "pipelock not on PATH"; exit 1; }
+# Persist absolute paths: Grok user-scope MCP does not depend on later cwd.
+CONFIG="/home/you/pipelock.yaml"
+
+# Wrap a filesystem server
 grok mcp add filesystem \
-  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
+  -- "$PIPELOCK" mcp proxy --config "$CONFIG" \
   -- npx -y @modelcontextprotocol/server-filesystem /home/you/projects
 
 # Wrap a database server
 grok mcp add postgres \
-  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
+  -- "$PIPELOCK" mcp proxy --config "$CONFIG" \
   -- npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb
 ```
 
-Prefer an **absolute** path to both `pipelock` and `--config` so the wrap does not depend on Grok's later working directory.
+Prefer an **absolute** path to both `pipelock` (from `command -v`) and `--config` so the wrap does not depend on Grok's later working directory.
 
 ### Or edit `~/.grok/config.toml` directly
 
 ```toml
+# command must be the absolute path from `command -v pipelock`
+# (e.g. /opt/homebrew/bin/pipelock or /usr/local/bin/pipelock)
 [mcp_servers.filesystem]
-command = "/usr/local/bin/pipelock"
+command = "/absolute/path/to/pipelock"
 args = [
   "mcp", "proxy",
   "--config", "/home/you/pipelock.yaml",
@@ -130,9 +142,9 @@ grok mcp add --transport http api https://mcp.example.com/mcp \
   --header "Authorization: Bearer ${API_TOKEN}"
 ```
 
-**What is and is not auto-wrapped:** Pipelock does not rewrite Grok's `[mcp_servers.*]` `url` / `headers` entries. A native `url=` remote stays a direct Grok→server HTTP path unless you replace it with a stdio wrap.
+**What is and is not auto-wrapped:** Pipelock does not rewrite Grok's `[mcp_servers.*]` `url` / `headers` entries. A native `url=` remote **bypasses `pipelock mcp proxy`** and therefore skips MCP-layer JSON-RPC scanning (tool args/results/definitions). If `HTTPS_PROXY` / `HTTP_PROXY` are set, that HTTP connection may still traverse Pipelock's **forward proxy**; without TLS interception, CONNECT bodies stay opaque (hostname-level controls only). Replace the entry with a stdio wrap when you need MCP JSON-RPC scanning.
 
-For remotes that need static auth headers, follow Continue/Hermes honesty: do **not** put secrets on the process command line (`/proc/<pid>/cmdline` is world-readable). Store one `Header-Name: value` per line in a private `0600` file and wrap via `--header-file` + `--upstream`:
+For remotes that need static auth headers, follow Continue/Hermes honesty: do **not** put secrets on the process command line (argument lists may be visible to other local users via `/proc/<pid>/cmdline`, depending on kernel `hidepid` settings). Store one `Header-Name: value` per line in a private `0600` file and wrap via `--header-file` + `--upstream`:
 
 ```bash
 # Private header file (0600); one Header-Name: value per line
@@ -141,8 +153,9 @@ umask 077
 printf 'Authorization: Bearer %s\n' "$API_TOKEN" > ~/.config/pipelock/wrap-headers/grok-api.headers
 chmod 600 ~/.config/pipelock/wrap-headers/grok-api.headers
 
+# Reuse PIPELOCK/CONFIG from above (or re-run command -v / set CONFIG)
 grok mcp add api-wrapped \
-  -- /usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml \
+  -- "$PIPELOCK" mcp proxy --config "$CONFIG" \
   --header-file "$HOME/.config/pipelock/wrap-headers/grok-api.headers" \
   --upstream https://mcp.example.com/mcp
 ```
@@ -151,7 +164,7 @@ Equivalent TOML:
 
 ```toml
 [mcp_servers.api-wrapped]
-command = "/usr/local/bin/pipelock"
+command = "/absolute/path/to/pipelock"
 args = [
   "mcp", "proxy",
   "--config", "/home/you/pipelock.yaml",
@@ -253,7 +266,7 @@ Start with `balanced` to see what gets flagged, then move to a blocking preset o
 npx -y @modelcontextprotocol/server-filesystem /tmp
 
 # Then wrap (use absolute binary + config, same as persisted grok mcp entries)
-/usr/local/bin/pipelock mcp proxy --config /home/you/pipelock.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+"$PIPELOCK" mcp proxy --config "$CONFIG" -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
 grok mcp doctor filesystem
 ```

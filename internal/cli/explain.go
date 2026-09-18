@@ -193,6 +193,7 @@ Examples:
 	// per-server suppress knob (the stdio MCP equivalent of a URL verdict).
 	cmd.AddCommand(explainEventCmd())
 	cmd.AddCommand(explainMCPResponseCmd())
+	cmd.AddCommand(explainResponseCmd())
 
 	return cmd
 }

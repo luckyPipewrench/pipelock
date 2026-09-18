@@ -896,7 +896,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 
 	t.Run("too few rules to even hold operator+proxy accepts", func(t *testing.T) {
 		rules := []nftRuleWithHandle{{line: "meta skuid 1000 accept", handle: 1}}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -907,7 +907,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -918,7 +918,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 counter drop", handle: 3},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -930,7 +930,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 			{line: `meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`, handle: 4},
 		}
-		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0 (tail incomplete)", got)
 		}
 	})
@@ -2413,6 +2413,50 @@ func TestPartialBlockRecoveryLeavesUndeclaredReplyAlone(t *testing.T) {
 	for _, got := range legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID) {
 		if got == handle+4 {
 			t.Fatalf("handle %d is an operator reply rule for undeclared port %d and must not be scheduled for deletion", handle+4, undeclaredPort)
+		}
+	}
+}
+
+// TestReloadRemovesManagedForwardAroundUndeclaredReply covers the case where a
+// partially paired block ALSO contains an operator reply rule the block never
+// declared. Recovery must delete the managed rules and leave that reply alone.
+// Treating the block as one contiguous span cannot do both: extending the span
+// deletes the operator's rule, and stopping at it abandons the managed rules,
+// which leaves a revoked service's forward allow reachable. Selecting managed
+// handles individually is what satisfies both.
+func TestReloadRemovesManagedForwardAroundUndeclaredReply(t *testing.T) {
+	t.Parallel()
+
+	const revokedPort, undeclaredPort = 9300, 8789
+	h := 20
+	lines := []string{
+		`meta skuid 1000 accept # handle ` + itoa(h),
+		`meta skuid 967 accept # handle ` + itoa(h+1),
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle ` + itoa(h+2),
+		loopbackServiceRuleLine(revokedPort, h+3),
+		// Operator's own reply rule for a port this block never declared.
+		loopbackServiceReplyRuleLine(undeclaredPort, h+4),
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(h+5),
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle ` + itoa(h+6),
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle ` + itoa(h+7),
+	}
+	live := numericNftStateListing(strings.Join(lines, "\n"))
+
+	got := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	selected := map[int]bool{}
+	for _, handle := range got {
+		selected[handle] = true
+	}
+
+	if !selected[h+3] {
+		t.Fatalf("the revoked service's forward allow (handle %d) was not selected for deletion, so it survives reload and stays reachable: %v", h+3, got)
+	}
+	if selected[h+4] {
+		t.Fatalf("the operator's undeclared reply rule (handle %d) must never be deleted: %v", h+4, got)
+	}
+	for _, want := range []int{h, h + 1, h + 2, h + 5, h + 6, h + 7} {
+		if !selected[want] {
+			t.Fatalf("managed handle %d was not selected for deletion: %v", want, got)
 		}
 	}
 }

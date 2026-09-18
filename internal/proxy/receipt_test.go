@@ -1710,6 +1710,7 @@ func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
 	cfg.BrowserShield.Enabled = true
 	cfg.BrowserShield.MaxShieldBytes = 16
 	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	cfg.FlightRecorder.RequireReceipts = true
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
@@ -1728,6 +1729,7 @@ func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	wantReason := shieldOversizeBlockReason(upstreamURL.Hostname(), len(body), cfg.BrowserShield.MaxShieldBytes)
+	wantOutcome := receiptOutcomePattern("403", int64(len(body)), "shield_oversize")
 
 	handler := p.buildHandler(p.buildMux())
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/oversize", nil)
@@ -1749,7 +1751,7 @@ func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 
-	var found bool
+	var found, foundOutcome bool
 	for _, entry := range readAllEntries(t, dir) {
 		if entry.Type != receiptEntryType {
 			continue
@@ -1771,9 +1773,18 @@ func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 		}
+		if recorded.ActionRecord.Layer == receiptOutcomeLayer {
+			foundOutcome = true
+			if recorded.ActionRecord.Pattern != wantOutcome {
+				t.Errorf("fetch outcome = %q, want %q", recorded.ActionRecord.Pattern, wantOutcome)
+			}
+		}
 	}
 	if !found {
 		t.Fatal("no block receipt with layer=shield_oversize found")
+	}
+	if !foundOutcome {
+		t.Fatal("fetch shield refusal omitted its terminal outcome")
 	}
 }
 

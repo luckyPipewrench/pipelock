@@ -67,10 +67,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 	cfg.BrowserShield.MaxShieldBytes = 16
 	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
 	cfg.ForwardProxy.Enabled = true
-	// The forward path records its evidence through the deferred outcome
-	// receipt, which only emits when receipts are required. The fetch path
-	// emits its block receipt unconditionally; that asymmetry is pre-existing
-	// and is noted as adjacent work, not changed here.
+	// Required receipts include the terminal outcome as well as the block decision.
 	cfg.FlightRecorder.RequireReceipts = true
 	cfg.ApplyDefaults()
 
@@ -87,7 +84,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	wantReason := shieldOversizeBlockReason(upstreamURL.Hostname(), len(body), cfg.BrowserShield.MaxShieldBytes)
-	wantOutcomePattern := receiptOutcomePattern(strconv.Itoa(http.StatusForbidden), 0, "shield_oversize")
+	wantOutcomePattern := receiptOutcomePattern(strconv.Itoa(http.StatusForbidden), int64(len(body)), "shield_oversize")
 
 	proxySrv := newIPv4Server(t, p.buildHandler(p.buildMux()))
 	t.Cleanup(proxySrv.Close)
@@ -140,16 +137,9 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		if err != nil {
 			t.Fatalf("unmarshal receipt: %v", err)
 		}
-		// The forward transport records a terminal OUTCOME receipt rather than
-		// the fetch path's block receipt, so match its exact composed pattern.
+		// Match the terminal outcome's exact status, upstream size, and reason.
 		// A substring match on "shield_oversize" alone would pass on any
 		// receipt that merely mentions the layer, which proves nothing.
-		//
-		// Note what this pins down: the outcome receipt carries the SHORT
-		// reason only. The detailed text naming the cap and its remedies goes
-		// to the client but never into the evidence chain, so an auditor
-		// reading receipts cannot see which limit fired. Recorded as adjacent
-		// work rather than widened into this change.
 		if recorded.ActionRecord.Pattern == wantOutcomePattern {
 			if err := receipt.VerifyV1BytesWithKey(entry.RawDetail, trustedKey); err != nil {
 				t.Fatalf("receipt authenticity verification failed: %v", err)

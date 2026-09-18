@@ -32,6 +32,7 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 		for _, full := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/full=%t", transport, full), func(t *testing.T) {
 				cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+				cfg.FlightRecorder.RequireReceipts = true
 				cfg.SessionProfiling.MaxSessions = 1
 				cfg.Taint.Enabled = false
 				cfg.ResponseScanning.Enabled = false
@@ -44,6 +45,7 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 				}
 				var owner atomic.Pointer[Proxy]
 				var calls atomic.Int32
+				const upstreamBody = `<html><head></head><body>capacity shield control<script>navigator.sendBeacon("/collect", "x")</script></body></html>`
 				_, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 					calls.Add(1)
 					if full {
@@ -53,7 +55,7 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 						owner.Load().sessionMgrPtr.Store(manager)
 					}
 					w.Header().Set("Content-Type", "text/html")
-					_, _ = fmt.Fprint(w, `<html><head></head><body>capacity shield control<script>navigator.sendBeacon("/collect", "x")</script></body></html>`)
+					_, _ = fmt.Fprint(w, upstreamBody)
 				})
 				owner.Store(p)
 				var logBuffer bytes.Buffer
@@ -109,8 +111,20 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 					if !strings.Contains(logBuffer.String(), `"scanner":"session_capacity"`) {
 						t.Fatalf("shield capacity missing from audit: %s", logBuffer.String())
 					}
-					denied := false
+					denied, outcomeRecorded := false, false
+					wantBytes := int64(len(upstreamBody))
+					if transport == "intercept" {
+						// Intercepted blocked outcomes retain their unknown-byte contract.
+						wantBytes = -1
+					}
+					wantOutcome := receiptOutcomePattern("503", wantBytes, sessionCapacityLayer)
 					for _, got := range extractReceiptsFromDir(t, receiptDir) {
+						if got.ActionRecord.Layer == receiptOutcomeLayer {
+							outcomeRecorded = true
+							if got.ActionRecord.Pattern != wantOutcome {
+								t.Errorf("capacity outcome = %q, want %q", got.ActionRecord.Pattern, wantOutcome)
+							}
+						}
 						if got.ActionRecord.Verdict == config.ActionBlock && got.ActionRecord.Layer == sessionCapacityLayer {
 							denied = true
 						}
@@ -120,6 +134,9 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 					}
 					if !denied {
 						t.Fatal("shield capacity missing from receipts")
+					}
+					if !outcomeRecorded {
+						t.Fatal("shield capacity missing its terminal outcome")
 					}
 				} else {
 					recorded := original.SessionByKey(airlockAdmissionClient)

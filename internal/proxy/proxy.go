@@ -5858,6 +5858,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
+	shieldBodyBytes := int64(len(body))
 	body, shieldSummary, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -5880,7 +5881,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				BlockReason: reason,
 			})
 		outcomeStatus = strconv.Itoa(shieldBlocked.status)
-		outcomeBytes = int64(len(body))
+		outcomeBytes = shieldBodyBytes
 		outcomeReason = shieldBlocked.info.Layer
 		return
 	}

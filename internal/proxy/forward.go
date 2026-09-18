@@ -2739,6 +2739,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Browser Shield on forward proxy responses. Use post-redirect host
 		// so exempt_domains checks match the actual response origin.
+		shieldBodyBytes := int64(len(respBody))
 		var shieldBlocked *shieldBlockResult
 		var shieldSummary *receipt.ShieldSummary
 		respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
@@ -2752,7 +2753,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				shieldBlocked.info, "blocked: "+shieldBlocked.reason, shieldBlocked.status)
 			outcomeStatus = strconv.Itoa(shieldBlocked.status)
-			outcomeBytes = int64(len(respBody))
+			outcomeBytes = shieldBodyBytes
 			outcomeReason = shieldBlocked.info.Layer
 			return
 		}

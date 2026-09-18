@@ -1034,6 +1034,34 @@ func TestResponsePatterns_MemoryPersistenceDirectiveRegexParity(t *testing.T) {
 	}
 }
 
+func TestResponsePatterns_LocalizedSystemPromptDisclosureRegexParity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		regex string
+	}{
+		{name: "Spanish System Prompt Disclosure", regex: config.SpanishSystemPromptDisclosureRegex},
+		{name: "Cross-Lingual System Prompt Disclosure", regex: config.CrossLingualSystemPromptDisclosureRegex},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			surfaces := map[string]string{
+				"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, tc.name),
+				"balanced yaml":  yamlResponsePatternRegex(t, "../../configs/balanced.yaml", tc.name),
+				"strict yaml":    yamlResponsePatternRegex(t, "../../configs/strict.yaml", tc.name),
+			}
+			for surface, got := range surfaces {
+				t.Run(surface, func(t *testing.T) {
+					if got != tc.regex {
+						t.Errorf("regex drifted from the config constant")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestCore_ResponsePatterns_MarkdownLinkCredentialExfiltrationRegexParity(t *testing.T) {
 	t.Parallel()
 

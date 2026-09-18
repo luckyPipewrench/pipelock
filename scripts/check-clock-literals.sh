@@ -113,7 +113,12 @@ findings() {
 	done
 }
 
-# Every file argument is terminated with --. A tracked path may begin with a
+# Every file argument is terminated with --, and every pattern is passed with
+# -e. Both halves are the same defect: an argument built from a variable that a
+# command may read as an option instead of as data. The paths are the half a
+# reviewer demonstrated; the patterns are internal constants today and cost one
+# flag to put beyond reach, which is cheaper than finding out later.
+# A tracked path may begin with a
 # hyphen, and `grep -nE "$pattern" "-clock.go"` parses it as options: grep then
 # prints NOTHING and exits 0, so a literal in that file is invisible and the
 # guard reports clean. sed fails outright on the same input. Verified by
@@ -132,7 +137,7 @@ emit() {
 		above=""
 		[ "$line" -gt 1 ] && above="$(sed -n "$((line - 1))p" -- "$file")"
 		if printf '%s\n%s\n' "$text" "$above" \
-			| grep -qE "${MARKER}[[:space:]]*[^[:space:]]"; then
+			| grep -qE -e "${MARKER}[[:space:]]*[^[:space:]]"; then
 			continue
 		fi
 		# One record per MATCHING FIELD on the line, not per date on the
@@ -145,7 +150,7 @@ emit() {
 		# "no longer present". A guard that loses findings quietly is worse
 		# than one that never ran, so every stage tolerates a non-match.
 		printf '%s' "$text" \
-			| { grep -oE "${pattern}[T0-9:Z.+-]*" || true; } \
+			| { grep -oE -e "${pattern}[T0-9:Z.+-]*" || true; } \
 			| while IFS= read -r match; do
 				[ -n "$match" ] || continue
 				# The FIELD belongs in the identity. With only file and
@@ -154,12 +159,12 @@ emit() {
 				# identical, so the new occurrence is invisible. The
 				# field name is the first run of letters in the match;
 				# the date follows it.
-				field="$(printf '%s' "$match" | { grep -oE '[A-Za-z_]+' || true; } | head -1)"
-				found="$(printf '%s' "$match" | { grep -oE "${date_literal}[T0-9:Z.+-]*" || true; } | head -1)"
+				field="$(printf '%s' "$match" | { grep -oE -e '[A-Za-z_]+' || true; } | head -1)"
+				found="$(printf '%s' "$match" | { grep -oE -e "${date_literal}[T0-9:Z.+-]*" || true; } | head -1)"
 				[ -n "$field" ] && [ -n "$found" ] || continue
 				printf '%s\t%s\t%s\n' "$file" "$field" "$found"
 			done
-	done < <(grep -nE "$pattern" -- "$file" 2>/dev/null || true)
+	done < <(grep -nE -e "$pattern" -- "$file" 2>/dev/null || true)
 }
 
 # comm compares byte-wise in the C collation, so both sides must be sorted that

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -293,7 +294,9 @@ func actionRemoveSystemUnit() step {
 				return fmt.Errorf("remove %s: %w", env.systemUnitPath, err)
 			}
 			_ = env.removeFile(env.systemUnitPath + ".bak")
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after removing %s: %w", env.systemUnitPath, err)
+			}
 			return nil
 		},
 	}
@@ -306,11 +309,9 @@ func actionDisablePipelockService() step {
 		name: "disable-pipelock-service",
 		desc: "systemctl disable --now pipelock.service",
 		undo: func(ctx context.Context, env *installEnv) error {
-			out, code, _ := env.runCmd(ctx, "systemctl", "list-unit-files", "pipelock.service", "--no-legend")
-			if code != 0 || out == "" {
-				return nil
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", "pipelock"); err != nil {
+				return fmt.Errorf("disable pipelock service: %w", err)
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
 			return nil
 		},
 	}
@@ -325,7 +326,24 @@ func actionRemoveNFTRules() step {
 		desc: "drop pipelock_containment table and remove Pipelock nft persistence unit",
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.nftPersistUnitPath)
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable nft persistence unit %s: %w", unit, err)
+			}
+			expiryUnits := []string{}
+			if env.nftExpiryTimerPath != "" {
+				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryTimerPath))
+			}
+			if env.nftExpiryServicePath != "" {
+				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryServicePath))
+			}
+			for _, expiryUnit := range expiryUnits {
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", expiryUnit); err != nil {
+					return fmt.Errorf("stop expiry unit %s: %w", expiryUnit, err)
+				}
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", expiryUnit); err != nil {
+					return fmt.Errorf("disable expiry unit %s: %w", expiryUnit, err)
+				}
+			}
 			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := env.removeFile(env.nftRulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", env.nftRulesPath, err)
@@ -335,7 +353,30 @@ func actionRemoveNFTRules() step {
 				return fmt.Errorf("remove %s: %w", env.nftPersistUnitPath, err)
 			}
 			_ = env.removeFile(env.nftPersistUnitPath + ".bak")
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if env.nftExpiryTimerPath != "" {
+				if err := env.removeFile(env.nftExpiryTimerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove %s: %w", env.nftExpiryTimerPath, err)
+				}
+				_ = env.removeFile(env.nftExpiryTimerPath + ".bak")
+			}
+			if env.nftExpiryServicePath != "" {
+				if err := env.removeFile(env.nftExpiryServicePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove %s: %w", env.nftExpiryServicePath, err)
+				}
+				_ = env.removeFile(env.nftExpiryServicePath + ".bak")
+			}
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after removing expiry units: %w", err)
+			}
+			for _, expiryUnit := range expiryUnits {
+				state, _, err := env.runCmd(ctx, "systemctl", "is-active", expiryUnit)
+				if err != nil {
+					return fmt.Errorf("systemctl is-active %s after removal: %w", expiryUnit, err)
+				}
+				if strings.TrimSpace(state) != systemctlInactive {
+					return fmt.Errorf("expiry unit %s remains active after removal: %s", expiryUnit, oneLine(state))
+				}
+			}
 			if env.nftMainPath != "" {
 				return restoreOrRemoveNFTMainInclude(env)
 			}

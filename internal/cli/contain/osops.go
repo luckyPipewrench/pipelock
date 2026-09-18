@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -74,17 +75,19 @@ type installEnv struct {
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
-	operatorUser       string
-	proxyUserName      string
-	agentUserName      string
-	configDir          string
-	dataDir            string
-	wrapperDir         string
-	systemUnitPath     string
-	nftRulesPath       string
-	nftMainPath        string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
-	nftPersistUnitPath string
-	reconcileLockPath  string
+	operatorUser         string
+	proxyUserName        string
+	agentUserName        string
+	configDir            string
+	dataDir              string
+	wrapperDir           string
+	systemUnitPath       string
+	nftRulesPath         string
+	nftMainPath          string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
+	nftPersistUnitPath   string
+	nftExpiryServicePath string
+	nftExpiryTimerPath   string
+	reconcileLockPath    string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared
 	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
@@ -115,15 +118,22 @@ type installEnv struct {
 	curlPath           string
 	proxyPort          int
 
-	prevNFTTableDump         string
-	prevNFTTableStateKnown   bool
-	prevNFTPersistEnabled    bool
-	prevNFTPersistStateKnown bool
-	preflightBinaryHash      string
-	archivedBackups          map[string][]string
-	serviceBinaryChanged     bool
-	serviceConfigChanged     bool
-	serviceUnitChanged       bool
+	prevNFTTableDump             string
+	prevNFTTableStateKnown       bool
+	prevNFTPersistEnabled        bool
+	prevNFTPersistStateKnown     bool
+	prevNFTPersistUnitExisted    bool
+	prevNFTExpiryTimerEnabled    bool
+	prevNFTExpiryTimerActive     bool
+	prevNFTExpiryTimerStateKnown bool
+	prevNFTExpiryServiceExisted  bool
+	prevNFTExpiryTimerExisted    bool
+	prevNFTUnitFilesStateKnown   bool
+	preflightBinaryHash          string
+	archivedBackups              map[string][]string
+	serviceBinaryChanged         bool
+	serviceConfigChanged         bool
+	serviceUnitChanged           bool
 	// systemdVersion is the running systemd major version read from
 	// `systemctl --version` before the unit is rendered. Zero means unknown,
 	// which renders the legacy simple unit because that shape loads everywhere.
@@ -143,35 +153,37 @@ type installEnv struct {
 func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
-		runCmd:             realRunCommand,
-		dialCtx:            realDial,
-		wait:               waitForReadiness,
-		stat:               os.Stat,
-		lstat:              os.Lstat,
-		readFile:           os.ReadFile,
-		writeFile:          writeFileAtomic,
-		removeFile:         os.Remove,
-		mkdirAll:           os.MkdirAll,
-		chown:              os.Chown,
-		lchown:             os.Lchown,
-		rename:             os.Rename,
-		chmod:              os.Chmod,
-		symlink:            os.Symlink,
-		lookupUser:         user.Lookup,
-		selfPath:           os.Executable,
-		hashFile:           sha256HexOfFile,
-		out:                out,
-		errOut:             os.Stderr,
-		now:                time.Now,
-		operatorUser:       os.Getenv("SUDO_USER"),
-		proxyUserName:      defaultProxyUser,
-		agentUserName:      defaultAgentUser,
-		configDir:          defaultConfigDir,
-		dataDir:            defaultDataDir,
-		wrapperDir:         defaultWrapperDir,
-		systemUnitPath:     defaultSystemUnitPath,
-		nftRulesPath:       defaultNFTRulesPath,
-		nftPersistUnitPath: defaultNFTPersistUnitPath,
+		runCmd:               realRunCommand,
+		dialCtx:              realDial,
+		wait:                 waitForReadiness,
+		stat:                 os.Stat,
+		lstat:                os.Lstat,
+		readFile:             os.ReadFile,
+		writeFile:            writeFileAtomic,
+		removeFile:           os.Remove,
+		mkdirAll:             os.MkdirAll,
+		chown:                os.Chown,
+		lchown:               os.Lchown,
+		rename:               os.Rename,
+		chmod:                os.Chmod,
+		symlink:              os.Symlink,
+		lookupUser:           user.Lookup,
+		selfPath:             os.Executable,
+		hashFile:             sha256HexOfFile,
+		out:                  out,
+		errOut:               os.Stderr,
+		now:                  time.Now,
+		operatorUser:         os.Getenv("SUDO_USER"),
+		proxyUserName:        defaultProxyUser,
+		agentUserName:        defaultAgentUser,
+		configDir:            defaultConfigDir,
+		dataDir:              defaultDataDir,
+		wrapperDir:           defaultWrapperDir,
+		systemUnitPath:       defaultSystemUnitPath,
+		nftRulesPath:         defaultNFTRulesPath,
+		nftPersistUnitPath:   defaultNFTPersistUnitPath,
+		nftExpiryServicePath: defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:   defaultNFTExpiryTimerPath,
 		// The reconcile lock lives beside the nft rules file under
 		// /etc/nftables.d/, a directory only root writes, NOT under
 		// dataDir: dataDir is recursively chowned to pipelock-proxy by
@@ -212,11 +224,16 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 // so the two subsystems agree on filesystem layout. Names are picked to
 // avoid collision with verify.go constants.
 const (
-	defaultConfigDir          = "/etc/pipelock"
-	defaultDataDir            = "/var/lib/pipelock"
-	defaultSystemUnitPath     = "/etc/systemd/system/pipelock.service"
-	defaultNFTRulesPath       = "/etc/nftables.d/50-pipelock-containment.nft"
-	defaultNFTPersistUnitPath = "/etc/systemd/system/pipelock-containment-nft.service"
+	defaultConfigDir                = "/etc/pipelock"
+	defaultDataDir                  = "/var/lib/pipelock"
+	defaultSystemUnitPath           = "/etc/systemd/system/pipelock.service"
+	defaultNFTRulesPath             = "/etc/nftables.d/50-pipelock-containment.nft"
+	defaultNFTPersistUnitPath       = "/etc/systemd/system/pipelock-containment-nft.service"
+	defaultNFTExpiryServicePath     = "/etc/systemd/system/pipelock-containment-expiry.service"
+	defaultNFTExpiryTimerPath       = "/etc/systemd/system/pipelock-containment-expiry.timer"
+	containmentExpiryTimerCalendar  = "hourly"
+	containmentExpiryTimerAccuracy  = "1m"
+	containmentExpiryServiceTimeout = "90"
 	// defaultNFTMainConfigPath is the distro nft service config that
 	// pre-portability installs appended a managed `include` line to. New
 	// installs persist via defaultNFTPersistUnitPath and never touch this
@@ -698,6 +715,39 @@ func runOrErr(ctx context.Context, env *installEnv, name string, args ...string)
 		return fmt.Errorf("%s exited %d: %s", name, code, truncateForErr(out))
 	}
 	return nil
+}
+
+// runSystemctlCleanupUnit runs a unit stop/disable action during rollback or
+// uninstall. A unit that was never installed, or was removed before cleanup,
+// is already in the desired state. Every other systemctl failure remains an
+// error: treating a permissions or manager-communication failure as success
+// would leave the cleanup contract unverifiable.
+func runSystemctlCleanupUnit(ctx context.Context, env *installEnv, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("systemctl cleanup requires a unit name")
+	}
+	out, code, err := env.runCmd(ctx, "systemctl", args...)
+	if err != nil {
+		return fmt.Errorf("exec systemctl %s: %w", strings.Join(args, " "), err)
+	}
+	if code == 0 || systemctlReportsUnitAbsent(out, args[len(args)-1]) {
+		return nil
+	}
+	return fmt.Errorf("systemctl %s exited %d: %s", strings.Join(args, " "), code, truncateForErr(out))
+}
+
+// systemctlReportsUnitAbsent recognizes only an absence diagnostic tied to
+// the requested unit. In particular, a generic "not found" from a failed
+// manager connection is not an absent unit and must still abort cleanup.
+func systemctlReportsUnitAbsent(out, unit string) bool {
+	message := strings.ToLower(out)
+	if !strings.Contains(message, strings.ToLower(unit)) {
+		return false
+	}
+	return strings.Contains(message, "not loaded") ||
+		strings.Contains(message, "not found") ||
+		strings.Contains(message, "absent") ||
+		strings.Contains(message, "does not exist")
 }
 
 // truncateForErr trims long subprocess output to a single readable line for

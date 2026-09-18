@@ -127,30 +127,32 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port               int
-	operatorUser       string
-	proxyUserName      string
-	agentUserName      string
-	wrapperDir         string
-	toolWrappers       []string
-	caBundlePath       string
-	launchPath         string
-	nftTable           string
-	nftChain           string
-	nftRulesPath       string
-	nftMainPath        string
-	nftPersistUnitPath string
-	nftPath            string
-	serviceName        string
-	readinessTimeout   time.Duration
-	curlPath           string
-	pinPath            string
-	wrapperInvPath     string
-	toolsListPath      string
-	configPath         string
-	workspaceInvPath   string
-	workspacePaths     []string
-	workspaceGrants    []workspaceGrant
+	port                 int
+	operatorUser         string
+	proxyUserName        string
+	agentUserName        string
+	wrapperDir           string
+	toolWrappers         []string
+	caBundlePath         string
+	launchPath           string
+	nftTable             string
+	nftChain             string
+	nftRulesPath         string
+	nftMainPath          string
+	nftPersistUnitPath   string
+	nftExpiryServicePath string
+	nftExpiryTimerPath   string
+	nftPath              string
+	serviceName          string
+	readinessTimeout     time.Duration
+	curlPath             string
+	pinPath              string
+	wrapperInvPath       string
+	toolsListPath        string
+	configPath           string
+	workspaceInvPath     string
+	workspacePaths       []string
+	workspaceGrants      []workspaceGrant
 	// workspaceInvErr records a recorded-inventory read that failed for any
 	// reason other than absence. The workspace probe fails on it so a permission
 	// or parse error cannot make verify pass with the grant set silently empty.
@@ -186,40 +188,42 @@ type probeEnv struct {
 func defaultProbeEnv() *probeEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &probeEnv{
-		port:               defaultProxyPort,
-		operatorUser:       os.Getenv("SUDO_USER"),
-		proxyUserName:      defaultProxyUser,
-		agentUserName:      defaultAgentUser,
-		wrapperDir:         defaultWrapperDir,
-		toolWrappers:       append([]string(nil), defaultToolWrappers...),
-		caBundlePath:       defaultCABundlePath,
-		launchPath:         defaultLaunchScript,
-		nftTable:           defaultNFTTable,
-		nftChain:           defaultNFTChain,
-		nftRulesPath:       defaultNFTRulesPath,
-		nftPersistUnitPath: defaultNFTPersistUnitPath,
-		nftPath:            platform.nftPath,
-		serviceName:        defaultServiceName,
-		curlPath:           platform.curlPath,
-		pinPath:            defaultIntegrityPin,
-		wrapperInvPath:     defaultWrapperInvPath,
-		toolsListPath:      defaultToolsListPath,
-		workspaceInvPath:   defaultWorkspaceInvPath,
-		configPath:         filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		pipelockTarget:     defaultPipelockTarget,
-		verifyRunningImage: true,
-		now:                time.Now,
-		runCmd:             realRunCommand,
-		dropCounter:        readContainmentDropCounter,
-		dialCtx:            realDial,
-		wait:               waitForReadiness,
-		lookupUser:         user.Lookup,
-		groupIDs:           realGroupIDs,
-		stat:               os.Stat,
-		readFile:           os.ReadFile,
-		readLink:           os.Readlink,
-		selfPath:           os.Executable,
-		hashFile:           sha256HexOfFile,
+		port:                 defaultProxyPort,
+		operatorUser:         os.Getenv("SUDO_USER"),
+		proxyUserName:        defaultProxyUser,
+		agentUserName:        defaultAgentUser,
+		wrapperDir:           defaultWrapperDir,
+		toolWrappers:         append([]string(nil), defaultToolWrappers...),
+		caBundlePath:         defaultCABundlePath,
+		launchPath:           defaultLaunchScript,
+		nftTable:             defaultNFTTable,
+		nftChain:             defaultNFTChain,
+		nftRulesPath:         defaultNFTRulesPath,
+		nftPersistUnitPath:   defaultNFTPersistUnitPath,
+		nftExpiryServicePath: defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:   defaultNFTExpiryTimerPath,
+		nftPath:              platform.nftPath,
+		serviceName:          defaultServiceName,
+		curlPath:             platform.curlPath,
+		pinPath:              defaultIntegrityPin,
+		wrapperInvPath:       defaultWrapperInvPath,
+		toolsListPath:        defaultToolsListPath,
+		workspaceInvPath:     defaultWorkspaceInvPath,
+		configPath:           filepath.Join(defaultConfigDir, "pipelock.yaml"),
+		pipelockTarget:       defaultPipelockTarget,
+		verifyRunningImage:   true,
+		now:                  time.Now,
+		runCmd:               realRunCommand,
+		dropCounter:          readContainmentDropCounter,
+		dialCtx:              realDial,
+		wait:                 waitForReadiness,
+		lookupUser:           user.Lookup,
+		groupIDs:             realGroupIDs,
+		stat:                 os.Stat,
+		readFile:             os.ReadFile,
+		readLink:             os.Readlink,
+		selfPath:             os.Executable,
+		hashFile:             sha256HexOfFile,
 	}
 }
 
@@ -1578,6 +1582,12 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		if err := verifyNFTPersistence(env, current); err != nil {
 			return statusFail, err.Error()
 		}
+		if env.nftExpiryTimerPath != "" || env.nftExpiryServicePath != "" {
+			status, detail := probeContainmentExpiryTimer(ctx, env)
+			if status != statusPass {
+				return status, detail
+			}
+		}
 	}
 	// Say what the chain actually allows. Reporting "proxy-only loopback
 	// allow" while declared services are present described the opposite of
@@ -1589,6 +1599,26 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
 		env.nftTable, env.nftChain, current.agentUID, loopbackSummary)
+}
+
+// probeContainmentExpiryTimer verifies the privileged reconciliation timer
+// separately from the nftables-chain probe. A host whose timer is disabled,
+// masked, or pointed at the wrong service otherwise keeps a declared
+// loopback accept past expiry without any visible failure.
+func probeContainmentExpiryTimer(ctx context.Context, env *probeEnv) (string, string) {
+	if env.nftPersistUnitPath == "" {
+		return statusSkip, "containment persistence unit path is not configured"
+	}
+	if _, err := env.readFile(env.nftPersistUnitPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusSkip, "containment is not installed"
+		}
+		return statusFail, fmt.Sprintf("read nftables persistence unit %s: %v", env.nftPersistUnitPath, err)
+	}
+	if err := verifyNFTExpiryTimer(ctx, env); err != nil {
+		return statusFail, err.Error()
+	}
+	return statusPass, "containment loopback expiry reconciliation timer is installed and enabled"
 }
 
 type containmentUIDs struct {
@@ -1714,11 +1744,32 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
+	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") {
+		return fmt.Errorf("%s missing exact DefaultDependencies=no", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "After", "local-fs.target") {
+		return fmt.Errorf("%s missing exact After=local-fs.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Before", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Before=network-pre.target", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
+		return fmt.Errorf("%s missing exact Wants=network-pre.target", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
 		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
+	if !unitHasExactEntry(body, "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Service", "RemainAfterExit", "yes") {
+		return fmt.Errorf("%s missing exact RemainAfterExit=yes", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
 		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Install", "WantedBy", "multi-user.target") {
+		return fmt.Errorf("%s missing WantedBy=multi-user.target", env.nftPersistUnitPath)
 	}
 	rules, err := env.readFile(env.nftRulesPath)
 	if err != nil {
@@ -1756,26 +1807,100 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 	return nil
 }
 
-// unitHasExactEntry reports whether the systemd unit body carries key=value
-// verbatim inside the named section. Substring matching accepted a commented
-// entry, a suffixed path, an unintended executable whose path merely contained
-// the managed target, and extra trailing arguments, so every one of those
-// tampered units verified as healthy. The managed unit is rendered by
-// renderNFTPersistUnit, so an exact section-scoped entry is the whole contract.
+func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
+	timerBody, err := env.readFile(env.nftExpiryTimerPath)
+	if err != nil {
+		return fmt.Errorf("read containment expiry timer %s: %w", env.nftExpiryTimerPath, err)
+	}
+	if !unitHasExactEntry(string(timerBody), "Timer", "Unit", filepath.Base(env.nftExpiryServicePath)) {
+		return fmt.Errorf("%s missing exact Unit linkage to %s", env.nftExpiryTimerPath, filepath.Base(env.nftExpiryServicePath))
+	}
+	if !unitHasExactEntry(string(timerBody), "Timer", "OnCalendar", containmentExpiryTimerCalendar) ||
+		!unitHasExactEntry(string(timerBody), "Timer", "Persistent", "true") ||
+		!unitHasExactEntry(string(timerBody), "Timer", "AccuracySec", containmentExpiryTimerAccuracy) {
+		return fmt.Errorf("%s does not contain the managed expiry schedule", env.nftExpiryTimerPath)
+	}
+	if !unitHasExactEntry(string(timerBody), "Install", "WantedBy", "timers.target") {
+		return fmt.Errorf("%s missing WantedBy=timers.target", env.nftExpiryTimerPath)
+	}
+
+	serviceBody, err := env.readFile(env.nftExpiryServicePath)
+	if err != nil {
+		return fmt.Errorf("read containment expiry service %s: %w", env.nftExpiryServicePath, err)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "TimeoutStartSec", containmentExpiryServiceTimeout) {
+		return fmt.Errorf("%s missing exact TimeoutStartSec for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
+		return fmt.Errorf("%s missing exact ExecStart for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+
+	timerUnit := filepath.Base(env.nftExpiryTimerPath)
+	timerState, code, err := env.runCmd(ctx, "systemctl", "is-enabled", timerUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
+	}
+	timerState = strings.TrimSpace(timerState)
+	if timerState == "masked" {
+		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", timerUnit)
+	}
+	if code != 0 || timerState != systemctlEnabled {
+		return fmt.Errorf("%s is not enabled (%s); rerun `pipelock contain install`", timerUnit, oneLine(timerState))
+	}
+	activeState, activeCode, err := env.runCmd(ctx, "systemctl", "is-active", timerUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", timerUnit, err)
+	}
+	activeState = strings.TrimSpace(activeState)
+	if activeCode != 0 || activeState != systemctlActive {
+		return fmt.Errorf("%s is not active (%s); rerun `pipelock contain install`", timerUnit, oneLine(activeState))
+	}
+
+	serviceUnit := filepath.Base(env.nftExpiryServicePath)
+	serviceState, serviceCode, err := env.runCmd(ctx, "systemctl", "is-enabled", serviceUnit)
+	if err != nil {
+		return fmt.Errorf("systemctl unavailable while checking %s: %w", serviceUnit, err)
+	}
+	serviceState = strings.TrimSpace(serviceState)
+	if serviceState == "masked" {
+		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", serviceUnit)
+	}
+	if serviceCode != 0 || serviceState != "static" {
+		return fmt.Errorf("systemctl is-enabled %s exit=%d: %s", serviceUnit, serviceCode, oneLine(serviceState))
+	}
+	return nil
+}
+
+// unitHasExactEntry reports whether a systemd unit has exactly one assignment
+// for key in section and that assignment has value. List-valued directives
+// such as OnCalendar and ExecStart accumulate across repeated assignments,
+// while a later single-valued assignment overrides the managed value. Both
+// shapes must fail verification rather than accepting the first match.
 func unitHasExactEntry(body, section, key, value string) bool {
 	current := ""
+	entries := 0
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			current = strings.TrimSpace(line[1 : len(line)-1])
 			continue
 		}
-		if current != section || line != key+"="+value {
+		if current != section || line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
-		return true
+		actualKey, actualValue, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(actualKey) != key {
+			continue
+		}
+		entries++
+		if strings.TrimSpace(actualValue) != value {
+			return false
+		}
 	}
-	return false
+	return entries == 1
 }
 
 func probeNFTExecutable(env *probeEnv) string {

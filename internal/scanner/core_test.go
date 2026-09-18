@@ -1015,6 +1015,11 @@ func TestResponsePatterns_MemoryPersistenceDirectiveRegexParity(t *testing.T) {
 	t.Parallel()
 
 	const patternName = "Memory Persistence Directive"
+	for _, def := range coreResponsePatternDefs() {
+		if def.name == patternName {
+			t.Fatalf("%q must remain configurable rather than joining the immutable core floor", patternName)
+		}
+	}
 	surfaces := map[string]string{
 		"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternName),
 		"balanced yaml":  yamlResponsePatternRegex(t, "../../configs/balanced.yaml", patternName),

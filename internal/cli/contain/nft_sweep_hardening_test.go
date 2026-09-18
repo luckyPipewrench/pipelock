@@ -63,6 +63,20 @@ func TestUnitHasExactEntryRejectsSubstringLookalikes(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "duplicate persistence condition",
+			body:    "[Unit]\nConditionPathExists=" + rulesPath + "\nConditionPathExists=" + rulesPath + "\n",
+			section: "Unit",
+			key:     "ConditionPathExists",
+			value:   rulesPath,
+		},
+		{
+			name:    "resetting persistence exec",
+			body:    "[Service]\nExecStart=" + execValue + "\nExecStart=\n",
+			section: "Service",
+			key:     "ExecStart",
+			value:   execValue,
+		},
+		{
 			name:    "suffixed exec subcommand",
 			body:    "[Service]\nExecStart=" + execValue + "-extra\n",
 			section: "Service",

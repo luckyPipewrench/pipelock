@@ -120,8 +120,9 @@ Exit codes:
 // because the install + verify code both compare against it and goconst
 // flags repeated string literals.
 const (
-	systemctlActive  = "active"
-	systemctlEnabled = "enabled"
+	systemctlActive   = "active"
+	systemctlInactive = "inactive"
+	systemctlEnabled  = "enabled"
 )
 
 // runInstall is the runtime entry point. Separated from installCmd so tests
@@ -422,12 +423,19 @@ func stepWriteCredentialGuard() step {
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.guardPathUnit)
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable credential guard %s: %w", unit, err)
+			}
 			for _, path := range []string{env.guardPathUnit, env.guardServiceUnit, env.guardScriptPath} {
 				if err := restoreBackup(env, path); err != nil {
 					return err
 				}
+			}
+			// Restore files before reloading so either manager outcome leaves the
+			// on-disk guard in its pre-install state. A failed reload is still
+			// returned; systemd may retain stale unit contents until it recovers.
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err)
 			}
 			return nil
 		},
@@ -1634,17 +1642,27 @@ func stepEnableSystemUnit() step {
 			if !preStateKnown {
 				// Explicit rollback command path: no apply pre-state exists,
 				// so remove the containment-managed system service.
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
-				_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", "pipelock"); err != nil {
+					return fmt.Errorf("disable pipelock for rollback: %w", err)
+				}
+				if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+					return fmt.Errorf("systemctl daemon-reload after rollback: %w", err)
+				}
 				return nil
 			}
 			if !wasEnabled {
-				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "pipelock")
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "pipelock"); err != nil {
+					return fmt.Errorf("restore disabled pipelock state: %w", err)
+				}
 			}
 			if !wasActive {
-				_, _, _ = env.runCmd(ctx, "systemctl", "stop", "pipelock")
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", "pipelock"); err != nil {
+					return fmt.Errorf("restore inactive pipelock state: %w", err)
+				}
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after restoring pipelock state: %w", err)
+			}
 			return nil
 		},
 	}
@@ -1750,7 +1768,7 @@ func stepWriteCombinedCABundle() step {
 func stepInstallNFTRules() step {
 	return step{
 		name:  "install-nft-rules",
-		desc:  "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via pipelock-containment-nft.service",
+		desc:  "write + load /etc/nftables.d/50-pipelock-containment.nft + persist and expiry reconciliation units",
 		apply: stepInstallNFTRulesApplyLocked,
 		undo:  stepInstallNFTRulesUndo,
 	}
@@ -1888,6 +1906,13 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
 		return false, fmt.Errorf("existing nft chain inet %s %s is not attributable to Pipelock; refusing to replace it", env.nftTableOrDefault(), env.nftChainOrDefault())
 	}
+	// Capture every state rollback must restore before changing any rules or
+	// unit. In particular, a service-unit write can succeed while the timer
+	// write fails; rollback must then preserve a previously enabled timer.
+	if err := captureNFTUnitFilePreState(env); err != nil {
+		return false, err
+	}
+	captureNFTPreState(ctx, env)
 
 	rulesChanged := false
 	if !rulesMatch {
@@ -1902,43 +1927,57 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		rulesChanged = true
 	}
-	unitChanged, err := ensureNFTPersistUnit(env)
+	persistUnitChanged, err := ensureNFTPersistUnit(env)
 	if err != nil {
 		return false, err
 	}
-	if !rulesChanged && !unitChanged && tableLoaded && !liveRulesDrifted {
-		return false, nil
+	expiryUnitChanged, err := ensureNFTExpiryUnits(env)
+	if err != nil {
+		return persistUnitChanged || expiryUnitChanged, err
 	}
-	// Validate before loading.
-	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
-		return false, fmt.Errorf("nft validation failed: %w", err)
-	}
-	if !tableLoaded || rulesChanged || liveRulesDrifted {
-		captureNFTPreState(ctx, env)
-	}
-	reloadedManagedChain := false
-	if tableLoaded && (rulesChanged || liveRulesDrifted) {
-		if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
-			return false, err
+	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
+	if changed || !tableLoaded || liveRulesDrifted {
+		// Validate before loading.
+		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
+			return changed, fmt.Errorf("nft validation failed: %w", err)
 		}
-		reloadedManagedChain = true
-	}
-	if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
-		if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
-			return false, fmt.Errorf("nft load failed: %w", err)
+		reloadedManagedChain := false
+		if tableLoaded && (rulesChanged || liveRulesDrifted) {
+			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
+				return changed, err
+			}
+			reloadedManagedChain = true
+		}
+		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
+			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
+				return changed, fmt.Errorf("nft load failed: %w", err)
+			}
 		}
 	}
-	captureNFTPreState(ctx, env)
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-		return false, fmt.Errorf("systemctl daemon-reload: %w", err)
+		return changed, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-		return false, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
+		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
 	}
-	return true, nil
+	if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	}
+	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
+	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
+	return changed || !tableLoaded || liveRulesDrifted || timerReconciled || persistReconciled, nil
 }
 
 func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
+	// Stop the timer before restoring its unit files so a scheduled expiry
+	// cannot race this rollback, then stop a service invocation already in
+	// flight. The prior timer state is restored below after daemon-reload.
+	if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	}
+	if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(env.nftExpiryServicePath)); err != nil {
+		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryServicePath), err)
+	}
 	// Restore any previous live table captured during this install
 	// attempt before deleting the newly installed table. If no
 	// previous table existed, drop the table created by this step.
@@ -1960,15 +1999,36 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	if err := restoreBackup(env, env.nftRulesPath); err != nil {
 		return err
 	}
-	if err := restoreBackup(env, env.nftPersistUnitPath); err != nil {
+	if err := restoreNFTUnitBackup(env, env.nftPersistUnitPath, env.prevNFTPersistUnitExisted); err != nil {
+		return err
+	}
+	if err := restoreNFTUnitBackup(env, env.nftExpiryTimerPath, env.prevNFTExpiryTimerExisted); err != nil {
+		return err
+	}
+	if err := restoreNFTUnitBackup(env, env.nftExpiryServicePath, env.prevNFTExpiryServiceExisted); err != nil {
 		return err
 	}
 	if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
-		if err := runOrErr(ctx, env, "systemctl", "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
+		if err := runSystemctlCleanupUnit(ctx, env, "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
 			return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
 		}
 	}
-	_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err)
+	}
+	if env.prevNFTExpiryTimerStateKnown {
+		timer := filepath.Base(env.nftExpiryTimerPath)
+		if env.prevNFTExpiryTimerEnabled {
+			if err := runOrErr(ctx, env, "systemctl", "enable", timer); err != nil {
+				return fmt.Errorf("restore %s enabled state: %w", timer, err)
+			}
+		}
+		if env.prevNFTExpiryTimerActive {
+			if err := runOrErr(ctx, env, "systemctl", "start", timer); err != nil {
+				return fmt.Errorf("restore %s active state: %w", timer, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -1989,6 +2049,48 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 			env.prevNFTPersistStateKnown = true
 		}
 	}
+	if !env.prevNFTExpiryTimerStateKnown {
+		enabledOut, _, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
+		activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.nftExpiryTimerPath))
+		if enabledErr == nil && activeErr == nil {
+			env.prevNFTExpiryTimerEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			env.prevNFTExpiryTimerActive = strings.TrimSpace(activeOut) == systemctlActive
+			env.prevNFTExpiryTimerStateKnown = true
+		}
+	}
+}
+
+func captureNFTUnitFilePreState(env *installEnv) error {
+	if env.prevNFTUnitFilesStateKnown {
+		return nil
+	}
+	for _, unit := range []struct {
+		path   string
+		exists *bool
+	}{
+		{env.nftPersistUnitPath, &env.prevNFTPersistUnitExisted},
+		{env.nftExpiryServicePath, &env.prevNFTExpiryServiceExisted},
+		{env.nftExpiryTimerPath, &env.prevNFTExpiryTimerExisted},
+	} {
+		_, err := env.lstat(unit.path)
+		switch {
+		case err == nil:
+			*unit.exists = true
+		case errors.Is(err, os.ErrNotExist):
+			*unit.exists = false
+		default:
+			return fmt.Errorf("stat %s before updating containment units: %w", unit.path, err)
+		}
+	}
+	env.prevNFTUnitFilesStateKnown = true
+	return nil
+}
+
+func restoreNFTUnitBackup(env *installEnv, path string, existed bool) error {
+	if existed {
+		return restoreBackupIfPresent(env, path)
+	}
+	return restoreBackup(env, path)
 }
 
 func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
@@ -2144,22 +2246,34 @@ func nftRulesIncludeLine(path string) string {
 }
 
 func ensureNFTPersistUnit(env *installEnv) (bool, error) {
-	if err := env.mkdirAll(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
+	return ensureContainmentUnit(env, env.nftPersistUnitPath, renderNFTPersistUnit(env))
+}
+
+func ensureNFTExpiryUnits(env *installEnv) (bool, error) {
+	serviceChanged, err := ensureContainmentUnit(env, env.nftExpiryServicePath, renderNFTExpiryService(env))
+	if err != nil {
+		return serviceChanged, err
 	}
-	if err := env.chmod(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
+	timerChanged, err := ensureContainmentUnit(env, env.nftExpiryTimerPath, renderNFTExpiryTimer(env))
+	return serviceChanged || timerChanged, err
+}
+
+func ensureContainmentUnit(env *installEnv, path, body string) (bool, error) {
+	if err := env.mkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	body := renderNFTPersistUnit(env)
-	if existing, err := env.readFile(env.nftPersistUnitPath); err == nil && string(existing) == body {
-		if err := env.chmod(env.nftPersistUnitPath, modeUnitFile); err != nil {
-			return false, fmt.Errorf("chmod %s: %w", env.nftPersistUnitPath, err)
+	if err := env.chmod(filepath.Dir(path), modeDirReadable); err != nil {
+		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(path), err)
+	}
+	if existing, err := env.readFile(path); err == nil && string(existing) == body {
+		if err := env.chmod(path, modeUnitFile); err != nil {
+			return false, fmt.Errorf("chmod %s: %w", path, err)
 		}
 		return false, nil
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read %s: %w", env.nftPersistUnitPath, err)
+		return false, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := backupAndWrite(env, env.nftPersistUnitPath, []byte(body), modeUnitFile); err != nil {
+	if err := backupAndWrite(env, path, []byte(body), modeUnitFile); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -2206,6 +2320,38 @@ func renderNFTPersistUnit(env *installEnv) string {
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderNFTExpiryService(env *installEnv) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Pipelock containment loopback expiry reconciliation",
+		"Documentation=https://github.com/luckyPipewrench/pipelock",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"TimeoutStartSec=" + containmentExpiryServiceTimeout,
+		"ExecStart=" + env.pipelockTarget + " contain reload-nft-rules",
+		"",
+	}, "\n")
+}
+
+func renderNFTExpiryTimer(env *installEnv) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Reconcile Pipelock containment loopback expiries",
+		"Documentation=https://github.com/luckyPipewrench/pipelock",
+		"",
+		"[Timer]",
+		"OnCalendar=" + containmentExpiryTimerCalendar,
+		"Persistent=true",
+		"AccuracySec=" + containmentExpiryTimerAccuracy,
+		"Unit=" + filepath.Base(env.nftExpiryServicePath),
+		"",
+		"[Install]",
+		"WantedBy=timers.target",
 		"",
 	}, "\n")
 }

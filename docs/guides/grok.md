@@ -260,10 +260,14 @@ Start with `balanced` to see what gets flagged, then move to a blocking preset o
 ### MCP server listed but not connecting
 
 ```bash
+PIPELOCK="$(command -v pipelock)"
+test -n "$PIPELOCK" || { echo "pipelock not on PATH"; exit 1; }
+CONFIG="/home/you/pipelock.yaml"
+
 # Upstream alone
 npx -y @modelcontextprotocol/server-filesystem /tmp
 
-# Then wrap (use absolute binary + config, same as persisted grok mcp entries)
+# Then wrap (absolute binary + config — same as persisted grok mcp entries)
 "$PIPELOCK" mcp proxy --config "$CONFIG" -- npx -y @modelcontextprotocol/server-filesystem /tmp
 
 grok mcp doctor filesystem

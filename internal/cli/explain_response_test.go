@@ -832,3 +832,39 @@ func TestBuildResponseExplainReportEscapesBundleSourcedText(t *testing.T) {
 		t.Errorf("pattern name = %q, want the escaped form of the configured name", name)
 	}
 }
+
+// blockingReader never returns from Read until the test releases it. Wrapped in
+// io.NopCloser it satisfies io.Closer while Close does nothing, which is the
+// reader shape that turned the cancellation path into a hang.
+type blockingReader struct{ release chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+// TestReadExplainResponseBodyDoesNotHangOnUncloseableReader pins the regression
+// the previous round introduced. Closing a reader whose Close is a no-op unblocks
+// nothing, so waiting unconditionally for the read goroutine meant cancellation
+// could never be reported.
+func TestReadExplainResponseBodyDoesNotHangOnUncloseableReader(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := readExplainResponseBody(ctx, io.NopCloser(blockingReader{release: release}), 1<<20)
+		done <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled read error = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancellation hung on a reader whose Close does nothing")
+	}
+}

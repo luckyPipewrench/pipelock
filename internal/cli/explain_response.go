@@ -272,8 +272,19 @@ func readExplainResponseBody(ctx context.Context, r io.Reader, limit int) ([]byt
 	select {
 	case <-ctx.Done():
 		if closer, ok := r.(io.Closer); ok {
+			// Close, then take the result only if it is already there. Waiting
+			// unconditionally hangs forever on a reader whose Close does
+			// nothing: io.NopCloser around a blocking reader satisfies
+			// io.Closer and unblocks nothing, so the previous wait meant the
+			// command could not report cancellation at all. A goroutine still
+			// parked in the read is the unavoidable part, because io.Reader has
+			// no cancellation contract; the buffered channel is what lets it
+			// finish its send later instead of blocking forever.
 			_ = closer.Close()
-			<-done
+			select {
+			case <-done:
+			default:
+			}
 		}
 		return nil, ctx.Err()
 	case res := <-done:

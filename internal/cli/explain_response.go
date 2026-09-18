@@ -143,10 +143,14 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	report := newResponseExplainReport(cfg, cfgLabel, body)
 	bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
 	for _, e := range bundleResult.Errors {
-		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
+		// Bundle-sourced text reaches a terminal exactly like the scan error
+		// does, so it gets the same escaping. Escaping one of these and not its
+		// siblings was the gap this closes.
+		report.Notes = append(report.Notes, escapeExplainEventTerminalControls(
+			fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason)))
 	}
 	for _, w := range bundleResult.Warnings {
-		report.Notes = append(report.Notes, "rule bundle warning: "+w)
+		report.Notes = append(report.Notes, escapeExplainEventTerminalControls("rule bundle warning: "+w))
 	}
 	cfg.Internal = nil
 	sc, err := scanner.New(cfg)
@@ -184,13 +188,13 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	for _, match := range result.Matches {
 		span := match.Span()
 		report.Matches = append(report.Matches, responseExplainMatch{
-			PatternName:   match.PatternName,
+			PatternName:   escapeExplainEventTerminalControls(match.PatternName),
 			Position:      match.Position,
 			Length:        span.ByteEnd - span.ByteStart,
 			View:          span.ViewLabel,
 			MatchSHA256:   sha256Hex([]byte(match.MatchText)),
-			Bundle:        match.Bundle,
-			BundleVersion: match.BundleVersion,
+			Bundle:        escapeExplainEventTerminalControls(match.Bundle),
+			BundleVersion: escapeExplainEventTerminalControls(match.BundleVersion),
 		})
 	}
 	return report, nil
@@ -239,10 +243,15 @@ func clampExplainResponseLimit(n int64) int {
 // readExplainResponseBody reads stdin under the command's context. io.ReadAll on
 // a terminal or a pipe nobody closes blocks forever, so without the select below
 // cancellation is only observed AFTER the read returns, which is exactly when it
-// no longer matters. The read continues in its goroutine after a cancellation
-// because an io.Reader cannot be interrupted portably; the buffered channel lets
-// that goroutine finish its send and exit rather than leaking on a blocked send,
-// and the command is on its way out.
+// no longer matters.
+//
+// On cancellation the reader is CLOSED when it can be, which unblocks the
+// in-flight read, and the goroutine is then waited for. The buffered channel
+// only stops that goroutine blocking on its send; it does NOT stop it blocking
+// inside the read, so it is not what bounds the goroutine and this comment no
+// longer claims it is. A reader that cannot be closed and never returns leaves
+// one goroutine parked for the remaining life of the process, which is stated
+// here rather than implied to be handled.
 func readExplainResponseBody(ctx context.Context, r io.Reader, limit int) ([]byte, error) {
 	if limit <= 0 {
 		limit = explainFileReadLimitBytes
@@ -262,6 +271,10 @@ func readExplainResponseBody(ctx context.Context, r io.Reader, limit int) ([]byt
 	var body []byte
 	select {
 	case <-ctx.Done():
+		if closer, ok := r.(io.Closer); ok {
+			_ = closer.Close()
+			<-done
+		}
 		return nil, ctx.Err()
 	case res := <-done:
 		body = res.body

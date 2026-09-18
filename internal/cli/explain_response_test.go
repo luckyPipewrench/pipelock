@@ -71,8 +71,27 @@ func TestExplainResponseCmdReportsBlockAndKeepsPayloadOutOfJSON(t *testing.T) {
 	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitSecurity {
 		t.Fatalf("exit code = %d, want %d", got, cliutil.ExitSecurity)
 	}
-	if !strings.Contains(out.String(), `"pattern_name"`) || !strings.Contains(out.String(), `"match_sha256"`) {
-		t.Fatalf("output omitted match diagnostics: %s", out.String())
+	// Substring checks for two field names pass on malformed JSON and on a
+	// report missing every other field, so decode the contract and assert it.
+	var decoded responseExplainReport
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("blocked report is not valid JSON: %v\n%s", err, out.String())
+	}
+	if decoded.Allowed {
+		t.Fatalf("blocked report decoded as allowed: %+v", decoded)
+	}
+	if decoded.Action != config.ActionBlock {
+		t.Errorf("action = %q, want %q", decoded.Action, config.ActionBlock)
+	}
+	if decoded.BodySHA256 == "" {
+		t.Error("body_sha256 missing from the blocked report")
+	}
+	if len(decoded.Matches) == 0 {
+		t.Fatalf("blocked report carried no match: %+v", decoded)
+	}
+	m := decoded.Matches[0]
+	if m.PatternName == "" || m.MatchSHA256 == "" || m.View == "" || m.Length <= 0 || m.Position < 0 {
+		t.Errorf("incomplete match in decoded report: %+v", m)
 	}
 	if strings.Contains(out.String(), payload) {
 		t.Fatalf("JSON output echoed attacker-controlled payload: %s", out.String())
@@ -427,6 +446,12 @@ func TestBuildResponseExplainReportNotesSuppressWithoutURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildResponseExplainReport: %v", err)
 	}
+	// The note is the explanation; this is the outcome. Checking only the note
+	// would still pass if a regression applied the destination-scoped suppress
+	// entry and dropped the match.
+	if report.Allowed || report.Error != "" || len(report.Matches) == 0 {
+		t.Fatalf("URL-less scan applied destination suppression: %+v", report)
+	}
 	if !notesContain(report, "suppress entries were not applied") {
 		t.Fatalf("notes omitted suppress limitation: %v", report.Notes)
 	}
@@ -768,5 +793,42 @@ func TestEmitResponseExplainReportPropagatesWriteFailure(t *testing.T) {
 		if err := emitResponseExplainReport(cmd, full, false, nil); !errors.Is(err, wantErr) {
 			t.Errorf("write failure after %d successful writes = %v, want it propagated", n, err)
 		}
+	}
+}
+
+// TestBuildResponseExplainReportEscapesBundleSourcedText pins the class, not the
+// instance. The scan error was escaped first and its siblings were not: pattern
+// names, bundle labels and rule-bundle notes all reach the same terminal, and
+// all of them come from configuration or an installed bundle rather than from
+// the product.
+func TestBuildResponseExplainReportEscapesBundleSourcedText(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	// Bundle and BundleVersion are deliberately left empty: the rules merge
+	// strips any configured pattern that carries a bundle label, so setting them
+	// would delete this fixture before the scan and the test would prove
+	// nothing. They receive the same escaping helper as the name.
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{
+		Name:  "Hostile\u0007Name\u0007Here",
+		Regex: "trigger-the-hostile-pattern",
+	})
+
+	report, err := buildResponseExplainReport(context.Background(), cfg, "(test)", []byte("trigger-the-hostile-pattern"))
+	if err != nil {
+		t.Fatalf("buildResponseExplainReport: %v", err)
+	}
+	if len(report.Matches) == 0 {
+		t.Fatalf("hostile pattern did not match, so the escaping path was never exercised: %+v", report)
+	}
+
+	name := report.Matches[0].PatternName
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			t.Errorf("pattern name carries an unescaped control rune %q: %q", r, name)
+		}
+	}
+	if !strings.Contains(name, "Hostile") {
+		t.Errorf("pattern name = %q, want the escaped form of the configured name", name)
 	}
 }

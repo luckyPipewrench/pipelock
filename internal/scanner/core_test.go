@@ -1022,9 +1022,11 @@ func TestResponsePatterns_MemoryPersistenceDirectiveRegexParity(t *testing.T) {
 		}
 	}
 	surfaces := map[string]string{
-		"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternName),
-		"balanced yaml":  yamlResponsePatternRegex(t, "../../configs/balanced.yaml", patternName),
-		"strict yaml":    yamlResponsePatternRegex(t, "../../configs/strict.yaml", patternName),
+		"balanced yaml": yamlResponsePatternRegex(t, "../../configs/balanced.yaml", patternName),
+		"strict yaml":   yamlResponsePatternRegex(t, "../../configs/strict.yaml", patternName),
+	}
+	if got := responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternName); got != config.MemoryPersistenceEffectiveRegex {
+		t.Error("default memory-persistence regex drifted from the effective config regex")
 	}
 	for surface, got := range surfaces {
 		t.Run(surface, func(t *testing.T) {
@@ -1074,9 +1076,15 @@ func TestResponsePatterns_LocalizedSystemPromptDisclosureRegexParity(t *testing.
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			surfaces := map[string]string{
-				"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, tc.name),
-				"balanced yaml":  yamlResponsePatternRegex(t, "../../configs/balanced.yaml", tc.name),
-				"strict yaml":    yamlResponsePatternRegex(t, "../../configs/strict.yaml", tc.name),
+				"balanced yaml": yamlResponsePatternRegex(t, "../../configs/balanced.yaml", tc.name),
+				"strict yaml":   yamlResponsePatternRegex(t, "../../configs/strict.yaml", tc.name),
+			}
+			if tc.name == "Spanish System Prompt Disclosure" {
+				if got := responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, tc.name); got != config.SpanishSystemPromptDisclosureEffectiveRegex {
+					t.Error("default Spanish disclosure regex drifted from the effective config regex")
+				}
+			} else if got := responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, tc.name); got != tc.regex {
+				t.Error("default localized disclosure regex drifted from the config constant")
 			}
 			for surface, got := range surfaces {
 				t.Run(surface, func(t *testing.T) {
@@ -1086,6 +1094,39 @@ func TestResponsePatterns_LocalizedSystemPromptDisclosureRegexParity(t *testing.
 				})
 			}
 		})
+	}
+}
+
+func TestResponsePatterns_DirectiveClauseRegexParity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		regex string
+	}{
+		{name: "Memory Persistence Clause", regex: config.MemoryPersistenceClauseRegex},
+		{name: "System Prompt Extraction Clause", regex: config.SystemPromptDisclosureClauseRegex},
+		{name: "Spanish System Prompt Disclosure Clause", regex: config.SpanishSystemPromptDisclosureClauseRegex},
+		{name: "Silent Credential Handling Clause", regex: config.SilentCredentialHandlingClauseRegex},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, path := range []string{"../../configs/balanced.yaml", "../../configs/strict.yaml"} {
+				if got := yamlResponsePatternRegex(t, path, tc.name); got != tc.regex {
+					t.Errorf("%s drifted from the config constant", path)
+				}
+			}
+		})
+	}
+}
+
+func TestResponsePatterns_SilentCredentialHandlingRegexParity(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"../../configs/balanced.yaml", "../../configs/strict.yaml"} {
+		if got := yamlResponsePatternRegex(t, path, "Silent Credential Handling"); got != config.SilentCredentialHandlingRegex {
+			t.Errorf("%s drifted from config.SilentCredentialHandlingRegex", path)
+		}
 	}
 }
 

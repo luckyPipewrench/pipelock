@@ -131,7 +131,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 		},
 		{
 			name:  "System Prompt Disclosure",
-			regex: config.SystemPromptDisclosureRegex,
+			regex: config.SystemPromptDisclosureEffectiveRegex,
 		},
 		{
 			name:  "Credential Path Directive",

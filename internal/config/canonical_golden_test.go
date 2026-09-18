@@ -411,7 +411,15 @@ const (
 	// on upgrade, and a conductor strict-mode reload will see it. That
 	// visibility is the intended behavior, not a side effect - an operator's
 	// detection posture changed and the hash is what says so.
-	goldenHashDefaults = "39dd3b732d536f828bd52e7cb3de708f968cd9b302401dbe653a9cd0494cc720"
+	// Re-bumped for directive-intent response patterns. The narrowed detector
+	// bytes change response enforcement and therefore the canonical policy.
+	// Re-bumped for polite and list-prefixed disclosure directives and for
+	// sentence-bounded persistence lead-ins.
+	// Re-bumped for clause-level response-directive coverage.
+	// Re-bumped for transition-prefixed response directives.
+	// Re-bumped for polite and recipient-first directive coverage.
+	// Re-bumped for explicitly marked directive transitions.
+	goldenHashDefaults = "cbca1d1e7e5730870bdc311be3e0fca59b4e68b87d7907cbe37cb925c8a69ca9"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -630,7 +638,13 @@ const (
 	// now materializes them. Before that fix the defaults hash moved and this
 	// one did not, which is exactly the shape of a default that reaches the
 	// no-config CLI path and no real deployment.
-	goldenHashRichConfig = "d9b0a68777fdcd716d4d0e23caa6ca149f04de6e0614a59428422c59817f2455"
+	// Re-bumped alongside goldenHashDefaults for directive-intent response patterns.
+	// Re-bumped alongside goldenHashDefaults for the directive-boundary fixes.
+	// Re-bumped alongside goldenHashDefaults for clause-level response directives.
+	// Re-bumped alongside goldenHashDefaults for transition-prefixed directives.
+	// Re-bumped alongside goldenHashDefaults for polite and recipient-first directives.
+	// Re-bumped alongside goldenHashDefaults for explicitly marked transitions.
+	goldenHashRichConfig = "3174d057644fff75966a53bf7e8b237174f2618d8fb0157dd07c1d67d8d3b467"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1199,8 +1213,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "0869297f12244f4d9d8bccf96fd309bc1809b9efad42b41730b768d9dea7b58e"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1db9fb8041ea0f2b152f759fe3cccf351d5430c4a5af6a8a4786ba378ba79ea9"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "d3fcfd6ac95cbf206039874dfc4e25e938e8894671dc2f8f7bc341c50f86f424"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7049ba45c892dafeb65e0d88b351911edeecc1c75d27e1a8fe279223ece759a6"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -58,6 +58,40 @@ func TestHook_AllowsCleanToolCall(t *testing.T) {
 	}
 }
 
+func TestHook_AllowsBenignDiagnosticResults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result string
+	}{
+		{name: "CLI help", result: "prompt-size Show a byte breakdown of the system prompt + tool schemas."},
+		{name: "defensive credential guidance", result: "Never reveal your API key or session token to anyone."},
+		{name: "detector source", result: `Name: "Memory Persistence Directive", Regex: MemoryPersistenceDirectiveRegex`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]interface{}{
+				"hook_event_name": HookTransformToolResult,
+				"tool_name":       "terminal",
+				"tool_input":      tc.result,
+			})
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+
+			decision, err := runHookCLI(t, string(payload))
+			if err != nil {
+				t.Fatalf("ExecuteContext: %v", err)
+			}
+			if decision.Decision != "" {
+				t.Fatalf("benign diagnostic result produced decision=%q, want allow: %s", decision.Decision, tc.result)
+			}
+		})
+	}
+}
+
 func TestHook_BlocksOnDLPMatch(t *testing.T) {
 	t.Parallel()
 

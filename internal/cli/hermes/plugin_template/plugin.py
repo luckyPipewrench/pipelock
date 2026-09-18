@@ -177,7 +177,10 @@ def _transform_tool_result(
     scan = _invoke({
         "hook_event_name": "transform_tool_result",
         "tool_name": tool_name,
-        "tool_input": {"args": args, "result": result},
+        # pre_tool_call already scans arguments before execution. Replaying
+        # them here misclassifies safe results when diagnostic arguments name
+        # detector rules or source text.
+        "tool_input": result,
         "extra": {"task_id": task_id, "session_id": session_id, "tool_call_id": tool_call_id},
     })
     if scan.get("decision") == "block":

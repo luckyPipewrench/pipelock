@@ -210,13 +210,14 @@ func TestParseLocalReferenceRejectsMalformedInputs(t *testing.T) {
 		Actor:         "workload:test-agent",
 		Action:        "records.read",
 		Destination:   "https://api.service.example/v1/records",
+		NotBefore:     "2030-01-01T00:00:00Z",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	validReference := signTestGrant(t, validGrant)
 	validParts := strings.Split(validReference, ".")
 
-	duplicatePayload := []byte(`{"schema_version":1,"schema_version":1}`)
-	unknownPayload := []byte(`{"schema_version":1,"issuer":"issuer.test","reference":"grant-valid","actor":"workload:test-agent","action":"records.read","destination":"https://api.service.example/v1/records","expires_at":"2030-01-01T00:05:00Z","extra":true}`)
+	duplicatePayload := []byte(`{"schema_version":2,"schema_version":2}`)
+	unknownPayload := []byte(`{"schema_version":2,"issuer":"issuer.test","reference":"grant-valid","actor":"workload:test-agent","action":"records.read","destination":"https://api.service.example/v1/records","not_before":"2030-01-01T00:00:00Z","expires_at":"2030-01-01T00:05:00Z","extra":true}`)
 	nonCanonicalPayload := bytes.ReplaceAll(mustPayloadBytes(t, validParts[1]), []byte(`":"`), []byte(`": "`))
 
 	tests := []struct {
@@ -260,6 +261,7 @@ func TestLocalVerifierAcceptsJCSStringEscaping(t *testing.T) {
 		Actor:         "workload:test-agent",
 		Action:        "records.read",
 		Destination:   "https://api.service.example/v1/records?active=true&filter=<active>&limit=10",
+		NotBefore:     "2030-01-01T00:00:00Z",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	request := Request{
@@ -290,7 +292,7 @@ func TestLocalVerifierNamedCanonNFCAndExactIdentityMatching(t *testing.T) {
 	t.Parallel()
 	// Fixed UTF-8 bytes keep the positive case independent of the verifier's
 	// canonicalizer. All member names are ASCII and the sole number is integral.
-	const payload = `{"action":"records.read","actor":"workload:médiator","canon":"jcs-rfc8785-nfc","destination":"https://api.service.example/v1/records?active=true&filter=<active>&limit=10","expires_at":"2030-01-01T00:05:00Z","issuer":"issuer.test","reference":"grant-nfc","schema_version":1}`
+	const payload = `{"action":"records.read","actor":"workload:médiator","canon":"jcs-rfc8785-nfc","destination":"https://api.service.example/v1/records?active=true&filter=<active>&limit=10","expires_at":"2030-01-01T00:05:00Z","issuer":"issuer.test","not_before":"2030-01-01T00:00:00Z","reference":"grant-nfc","schema_version":2}`
 	fixture := loadConformanceFixture(t)
 	publicKey := mustDecodePublicKey(t, fixture.PublicKey)
 	grant := localGrant{
@@ -301,6 +303,7 @@ func TestLocalVerifierNamedCanonNFCAndExactIdentityMatching(t *testing.T) {
 		Actor:         "workload:médiator",
 		Action:        "records.read",
 		Destination:   "https://api.service.example/v1/records?active=true&filter=<active>&limit=10",
+		NotBefore:     "2030-01-01T00:00:00Z",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	request := Request{
@@ -351,6 +354,7 @@ func TestLocalVerifierRejectsUnknownAndNonCanonicalNamedCanon(t *testing.T) {
 		Actor:         "workload:médiator",
 		Action:        "records.read",
 		Destination:   "https://api.service.example/v1/records",
+		NotBefore:     "2030-01-01T00:00:00Z",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	raw, err := json.Marshal(grant)
@@ -376,7 +380,7 @@ func TestLocalVerifierRejectsUnknownAndNonCanonicalNamedCanon(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"issuer", "reference", "actor", "action", "destination", "expires_at"} {
+	for _, field := range []string{"issuer", "reference", "actor", "action", "destination", "not_before", "expires_at"} {
 		t.Run("named field alias "+field, func(t *testing.T) {
 			payload, err := jcs.Canonicalize(bytes.Replace(namedPayload, []byte(`"`+field+`":`), []byte(`"`+strings.ToUpper(field)+`":`), 1))
 			if err != nil {
@@ -408,7 +412,7 @@ func TestLocalVerifierRejectsUnknownAndNonCanonicalNamedCanon(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := validateGrant(parsed.payload); err == nil {
+		if _, _, err := validateGrant(parsed.payload); err == nil {
 			t.Fatal("grant without an actor accepted")
 		}
 	})
@@ -480,6 +484,7 @@ func TestLocalVerifierRejectsMalformedSignedGrantAndCancellation(t *testing.T) {
 		Actor:         "workload:test-agent",
 		Action:        "records.read",
 		Destination:   "https://api.service.example/v1/records",
+		NotBefore:     "2030-01-01T00:00:00Z",
 		ExpiresAt:     "2030-01-01T00:05:00Z",
 	}
 	request := Request{Actor: base.Actor, Action: base.Action, Destination: base.Destination}
@@ -489,14 +494,17 @@ func TestLocalVerifierRejectsMalformedSignedGrantAndCancellation(t *testing.T) {
 		mutate func(*localGrant)
 		want   Reason
 	}{
-		{name: "schema", mutate: func(grant *localGrant) { grant.SchemaVersion = 2 }, want: ReasonMalformedReference},
+		{name: "schema", mutate: func(grant *localGrant) { grant.SchemaVersion = 1 }, want: ReasonMalformedReference},
 		{name: "issuer", mutate: func(grant *localGrant) { grant.Issuer = " " }, want: ReasonUntrustedIssuer},
 		{name: "reference", mutate: func(grant *localGrant) { grant.Reference = "" }, want: ReasonMalformedReference},
 		{name: "actor", mutate: func(grant *localGrant) { grant.Actor = "" }, want: ReasonMalformedReference},
 		{name: "action", mutate: func(grant *localGrant) { grant.Action = "" }, want: ReasonMalformedReference},
 		{name: "destination", mutate: func(grant *localGrant) { grant.Destination = "" }, want: ReasonMalformedReference},
+		{name: "not before missing", mutate: func(grant *localGrant) { grant.NotBefore = "" }, want: ReasonMalformedReference},
+		{name: "not before invalid", mutate: func(grant *localGrant) { grant.NotBefore = "tomorrow" }, want: ReasonMalformedReference},
 		{name: "expiry missing", mutate: func(grant *localGrant) { grant.ExpiresAt = "" }, want: ReasonMalformedReference},
 		{name: "expiry invalid", mutate: func(grant *localGrant) { grant.ExpiresAt = "tomorrow" }, want: ReasonMalformedReference},
+		{name: "inverted window", mutate: func(grant *localGrant) { grant.ExpiresAt = grant.NotBefore }, want: ReasonMalformedReference},
 	}
 	for _, test := range tests {
 		test := test
@@ -520,6 +528,118 @@ func TestLocalVerifierRejectsMalformedSignedGrantAndCancellation(t *testing.T) {
 	if got.Decision != DecisionIndeterminate || got.Reason != ReasonCanceled {
 		t.Fatalf("canceled Verify()=%s/%s, want indeterminate/%s", got.Decision, got.Reason, ReasonCanceled)
 	}
+}
+
+func TestLocalVerifierEnforcesGrantValidityWindow(t *testing.T) {
+	t.Parallel()
+	fixture := loadConformanceFixture(t)
+	now := mustParseTime(t, fixture.Now)
+	verifier, err := NewLocalVerifier(LocalConfig{
+		TrustedIssuers: map[string]ed25519.PublicKey{fixture.Issuer: mustDecodePublicKey(t, fixture.PublicKey)},
+		Clock:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+	base := localGrant{
+		SchemaVersion: localSchemaVersion,
+		Issuer:        fixture.Issuer,
+		Reference:     "grant-validity-window",
+		Actor:         "workload:test-agent",
+		Action:        "records.read",
+		Destination:   "https://api.service.example/v1/records",
+		NotBefore:     now.Format(time.RFC3339Nano),
+		ExpiresAt:     now.Add(maxGrantLifetime).Format(time.RFC3339Nano),
+	}
+	tests := []struct {
+		name     string
+		mutate   func(*localGrant)
+		decision Decision
+		reason   Reason
+	}{
+		{
+			name:     "unmodified grant at maximum lifetime",
+			decision: DecisionAllow,
+			reason:   ReasonMatched,
+		},
+		{
+			name: "not before is in the future",
+			mutate: func(grant *localGrant) {
+				notBefore := now.Add(time.Nanosecond)
+				grant.NotBefore = notBefore.Format(time.RFC3339Nano)
+				grant.ExpiresAt = notBefore.Add(maxGrantLifetime).Format(time.RFC3339Nano)
+			},
+			decision: DecisionDeny,
+			reason:   ReasonNotYetValid,
+		},
+		{
+			name: "lifetime exceeds maximum by one nanosecond",
+			mutate: func(grant *localGrant) {
+				grant.ExpiresAt = now.Add(maxGrantLifetime + time.Nanosecond).Format(time.RFC3339Nano)
+			},
+			decision: DecisionDeny,
+			reason:   ReasonLifetimeExceeded,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			grant := base
+			if test.mutate != nil {
+				test.mutate(&grant)
+			}
+			got := verifier.Verify(context.Background(), Request{
+				Actor:        grant.Actor,
+				Action:       grant.Action,
+				Destination:  grant.Destination,
+				AuthorityRef: signTestGrant(t, grant),
+			})
+			if got.Decision != test.decision || got.Reason != test.reason {
+				t.Fatalf("Verify()=%s/%s, want %s/%s", got.Decision, got.Reason, test.decision, test.reason)
+			}
+		})
+	}
+
+	t.Run("not before widened after signing", func(t *testing.T) {
+		// The cases above mutate the grant BEFORE signing, so they prove the
+		// window is validated. They cannot prove the window is COVERED by the
+		// signature. Widen not_before on the wire while keeping the original
+		// signature, which is how an attacker would lengthen a leaked grant.
+		parts := strings.Split(signTestGrant(t, base), ".")
+		if len(parts) != 3 {
+			t.Fatalf("reference parts=%d, want 3", len(parts))
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		var object map[string]any
+		if err := json.Unmarshal(payload, &object); err != nil {
+			t.Fatalf("decode payload object: %v", err)
+		}
+		widened := now.Add(-maxGrantLifetime).Format(time.RFC3339Nano)
+		if object["not_before"] == widened {
+			t.Fatal("widened not_before equals the signed value, so the case proves nothing")
+		}
+		object["not_before"] = widened
+		canonical, err := jcs.Marshal(object)
+		if err != nil {
+			t.Fatalf("canonicalize tampered payload: %v", err)
+		}
+		if bytes.Equal(canonical, payload) {
+			t.Fatal("tampered payload is byte-identical to the signed payload")
+		}
+		parts[1] = base64.RawURLEncoding.EncodeToString(canonical)
+		got := verifier.Verify(context.Background(), Request{
+			Actor:        base.Actor,
+			Action:       base.Action,
+			Destination:  base.Destination,
+			AuthorityRef: strings.Join(parts, "."),
+		})
+		if got.Decision != DecisionDeny || got.Reason != ReasonInvalidSignature {
+			t.Fatalf("widened not_before Verify()=%s/%s, want deny/%s", got.Decision, got.Reason, ReasonInvalidSignature)
+		}
+	})
 }
 
 func loadConformanceFixture(t *testing.T) conformanceFixture {
@@ -581,6 +701,7 @@ func signTestNamedCanonGrant(t *testing.T, grant localGrant) string {
 	grant.Actor = norm.NFC.String(grant.Actor)
 	grant.Action = norm.NFC.String(grant.Action)
 	grant.Destination = norm.NFC.String(grant.Destination)
+	grant.NotBefore = norm.NFC.String(grant.NotBefore)
 	grant.ExpiresAt = norm.NFC.String(grant.ExpiresAt)
 	payload, err := json.Marshal(grant)
 	if err != nil {

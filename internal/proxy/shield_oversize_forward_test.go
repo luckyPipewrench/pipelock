@@ -140,7 +140,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		// Match the terminal outcome's exact status, upstream size, and reason.
 		// A substring match on "shield_oversize" alone would pass on any
 		// receipt that merely mentions the layer, which proves nothing.
-		if recorded.ActionRecord.Pattern == wantOutcomePattern {
+		if recorded.ActionRecord.Layer == receiptOutcomeLayer && recorded.ActionRecord.Pattern == wantOutcomePattern {
 			if err := receipt.VerifyV1BytesWithKey(entry.RawDetail, trustedKey); err != nil {
 				t.Fatalf("receipt authenticity verification failed: %v", err)
 			}

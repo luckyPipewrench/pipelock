@@ -14,10 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -42,7 +44,9 @@ func TestBuildResponseExplainReportNamesMatchWithoutEchoingPayload(t *testing.T)
 		t.Fatalf("incomplete match diagnostic: %+v", match)
 	}
 	var out bytes.Buffer
-	printResponseExplainReport(&out, report)
+	if err := printResponseExplainReport(&out, report); err != nil {
+		t.Fatalf("print report: %v", err)
+	}
 	if strings.Contains(out.String(), payload) {
 		t.Fatalf("explain response echoed attacker-controlled payload: %s", out.String())
 	}
@@ -187,7 +191,9 @@ func TestBuildResponseExplainReportScanErrorIsNotAllowed(t *testing.T) {
 		t.Fatalf("scan error carried matches: %+v", report.Matches)
 	}
 	var out bytes.Buffer
-	printResponseExplainReport(&out, report)
+	if err := printResponseExplainReport(&out, report); err != nil {
+		t.Fatalf("print report: %v", err)
+	}
 	got := out.String()
 	if !strings.HasPrefix(got, "ERROR\n") {
 		t.Fatalf("human output = %q, want ERROR first line", got)
@@ -271,12 +277,12 @@ func TestReadExplainResponseBodyFailsClosedOverCap(t *testing.T) {
 	const limit = 16
 	// Exactly the cap must succeed. Without this the limit+1 rejection below
 	// would still pass for an off-by-one that refused a body the runtime scans.
-	exact, err := readExplainResponseBody(bytes.NewReader(bytes.Repeat([]byte{'a'}, limit)), limit)
+	exact, err := readExplainResponseBody(context.Background(), bytes.NewReader(bytes.Repeat([]byte{'a'}, limit)), limit)
 	if err != nil || len(exact) != limit {
 		t.Fatalf("exact-cap read = %d bytes, err=%v; want %d and no error", len(exact), err, limit)
 	}
 
-	body, err := readExplainResponseBody(bytes.NewReader(bytes.Repeat([]byte{'a'}, limit+1)), limit)
+	body, err := readExplainResponseBody(context.Background(), bytes.NewReader(bytes.Repeat([]byte{'a'}, limit+1)), limit)
 	if err == nil {
 		t.Fatalf("over-cap read succeeded: %d bytes", len(body))
 	}
@@ -355,7 +361,9 @@ func TestBuildResponseExplainReportDisabledWarnBlocksCoreHits(t *testing.T) {
 		t.Fatalf("notes omitted disabled-scanning warning: %v", report.Notes)
 	}
 	var out bytes.Buffer
-	printResponseExplainReport(&out, report)
+	if err := printResponseExplainReport(&out, report); err != nil {
+		t.Fatalf("print report: %v", err)
+	}
 	if !strings.HasPrefix(out.String(), "BLOCKED\n") {
 		t.Fatalf("human output = %q, want BLOCKED", out.String())
 	}
@@ -375,7 +383,9 @@ func TestBuildResponseExplainReportWarnIsAllowedWithMatches(t *testing.T) {
 		t.Fatalf("warn report omitted runtime-forward note: %v", report.Notes)
 	}
 	var out bytes.Buffer
-	printResponseExplainReport(&out, report)
+	if err := printResponseExplainReport(&out, report); err != nil {
+		t.Fatalf("print report: %v", err)
+	}
 	if !strings.HasPrefix(out.String(), "ALLOWED\n") {
 		t.Fatalf("warn human output = %q, want ALLOWED", out.String())
 	}
@@ -525,7 +535,7 @@ func TestExplainResponseReadLimitFallsBackWhenNoCeilingConfigured(t *testing.T) 
 // layer down, and covers the read-error path. A caller passing a non-positive
 // limit must still get a bounded read, not an unbounded one.
 func TestReadExplainResponseBodyRejectsNonPositiveLimit(t *testing.T) {
-	body, err := readExplainResponseBody(strings.NewReader("clean body"), 0)
+	body, err := readExplainResponseBody(context.Background(), strings.NewReader("clean body"), 0)
 	if err != nil {
 		t.Fatalf("zero limit read: %v", err)
 	}
@@ -534,7 +544,7 @@ func TestReadExplainResponseBodyRejectsNonPositiveLimit(t *testing.T) {
 	}
 
 	wantErr := errors.New("stdin went away")
-	if _, err := readExplainResponseBody(failingReader{err: wantErr}, 16); !errors.Is(err, wantErr) {
+	if _, err := readExplainResponseBody(context.Background(), failingReader{err: wantErr}, 16); !errors.Is(err, wantErr) {
 		t.Errorf("read error = %v, want %v", err, wantErr)
 	}
 }
@@ -616,11 +626,122 @@ func TestBuildResponseExplainReportEscapesScanError(t *testing.T) {
 		t.Fatalf("build report: %v", err)
 	}
 	if report.Error == "" {
-		t.Skip("this fixture no longer produces a scan error; the escaping path needs another input")
+		// Not a skip. A guard that opts out when its fixture stops misbehaving
+		// passes vacuously for exactly the regression it exists to catch.
+		t.Fatalf("fixture produced no scan error, so the escaping path was never exercised: %+v", report)
 	}
 	for _, r := range report.Error {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			t.Fatalf("scan error carries an unescaped control rune %q: %q", r, report.Error)
+		}
+	}
+}
+
+// TestReadExplainResponseBodyObservesCancellation pins the Major finding. The
+// scan was made context-aware before the read was, so the command still hung on
+// a pipe nobody closes: cancellation was observed only after io.ReadAll
+// returned, which is precisely when it no longer helps.
+func TestReadExplainResponseBodyObservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := readExplainResponseBody(ctx, pr, 1<<20)
+		done <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled read error = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled read did not return; the stdin read ignores cancellation")
+	}
+}
+
+// TestEmitResponseExplainReportCarriesTheCause pins the classification. The
+// sentinel used to be chosen by substring-matching the RENDERED error, and
+// report.Error can hold scanner text an image-metadata failure shapes from the
+// body, so that text could pick the exit code.
+func TestEmitResponseExplainReportCarriesTheCause(t *testing.T) {
+	scanErrorLookingLikeOversize := responseExplainReport{
+		Action: config.ActionBlock,
+		Error:  "image metadata inspection failed: exceeds explain read cap",
+	}
+
+	cmd := explainResponseCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := emitResponseExplainReport(cmd, scanErrorLookingLikeOversize, false, nil)
+	if errors.Is(err, errExplainResponseTooLarge) {
+		t.Fatalf("scanner text chose the oversize sentinel: %v", err)
+	}
+	if !errors.Is(err, errExplainResponseScan) {
+		t.Fatalf("cause = %v, want the scan sentinel", err)
+	}
+
+	oversize := responseExplainReport{Action: config.ActionBlock, Error: "response body exceeds explain read cap of 16 bytes"}
+	if err := emitResponseExplainReport(cmd, oversize, false, errExplainResponseTooLarge); !errors.Is(err, errExplainResponseTooLarge) {
+		t.Fatalf("declared oversize cause = %v, want the oversize sentinel", err)
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
+
+// writerFailingAfter succeeds for n writes and then fails, so a test can reach
+// the later write sites rather than only the first one.
+type writerFailingAfter struct {
+	n   int
+	err error
+}
+
+func (w *writerFailingAfter) Write(p []byte) (int, error) {
+	if w.n <= 0 {
+		return 0, w.err
+	}
+	w.n--
+	return len(p), nil
+}
+
+// TestEmitResponseExplainReportPropagatesWriteFailure pins the Minor finding.
+// The JSON branch already propagated its encode error while the human branch
+// dropped every write error, so a failing writer returned success with partial
+// or absent output.
+func TestEmitResponseExplainReportPropagatesWriteFailure(t *testing.T) {
+	wantErr := errors.New("disk went away")
+	cmd := explainResponseCmd()
+	cmd.SetOut(failingWriter{err: wantErr})
+
+	allowed := responseExplainReport{Allowed: true, Action: config.ActionWarn}
+	if err := emitResponseExplainReport(cmd, allowed, false, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("human-output write failure = %v, want it propagated", err)
+	}
+
+	// Proving the FIRST write propagates does not prove a failure partway
+	// through does, and a partial report is the case the finding was about.
+	// Walk the failure across every write site in a report that exercises all
+	// of them: verdict, header, a match, an error line and a note.
+	full := responseExplainReport{
+		Action:  config.ActionBlock,
+		Error:   "scan failed",
+		Matches: []responseExplainMatch{{PatternName: "Prompt Injection", View: "for_matching", Length: 4, MatchSHA256: "abc"}},
+		Notes:   []string{"a note"},
+	}
+	// Five write sites for this report: verdict, header, one match, the error
+	// line and one note. At n == 5 every write succeeds, so the scan sentinel is
+	// the correct result there and is not part of this loop.
+	for n := 0; n < 5; n++ {
+		w := &writerFailingAfter{n: n, err: wantErr}
+		cmd := explainResponseCmd()
+		cmd.SetOut(w)
+		if err := emitResponseExplainReport(cmd, full, false, nil); !errors.Is(err, wantErr) {
+			t.Errorf("write failure after %d successful writes = %v, want it propagated", n, err)
 		}
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -90,13 +89,13 @@ Example:
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 			limit := explainResponseReadLimit(cfg)
-			body, err := readExplainResponseBody(cmd.InOrStdin(), limit)
+			body, err := readExplainResponseBody(cmd.Context(), cmd.InOrStdin(), limit)
 			if err != nil {
 				if errors.Is(err, errExplainResponseTooLarge) {
 					report := newResponseExplainReport(cfg, cfgLabel, nil)
 					report.Allowed = false
 					report.Error = fmt.Sprintf("response body exceeds explain read cap of %d bytes", limit)
-					return emitResponseExplainReport(cmd, report, jsonOutput)
+					return emitResponseExplainReport(cmd, report, jsonOutput, errExplainResponseTooLarge)
 				}
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read response body from stdin: %w", err))
 			}
@@ -104,7 +103,7 @@ Example:
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			return emitResponseExplainReport(cmd, report, jsonOutput)
+			return emitResponseExplainReport(cmd, report, jsonOutput, nil)
 		},
 	}
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
@@ -237,16 +236,38 @@ func clampExplainResponseLimit(n int64) int {
 	return int(n)
 }
 
-func readExplainResponseBody(r io.Reader, limit int) ([]byte, error) {
+// readExplainResponseBody reads stdin under the command's context. io.ReadAll on
+// a terminal or a pipe nobody closes blocks forever, so without the select below
+// cancellation is only observed AFTER the read returns, which is exactly when it
+// no longer matters. The read continues in its goroutine after a cancellation
+// because an io.Reader cannot be interrupted portably; the buffered channel lets
+// that goroutine finish its send and exit rather than leaking on a blocked send,
+// and the command is on its way out.
+func readExplainResponseBody(ctx context.Context, r io.Reader, limit int) ([]byte, error) {
 	if limit <= 0 {
 		limit = explainFileReadLimitBytes
 	}
 	if limit > explainResponseMaxReadBytes {
 		limit = explainResponseMaxReadBytes
 	}
-	body, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
-	if err != nil {
-		return nil, err
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		body, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
+		done <- readResult{body: body, err: err}
+	}()
+	var body []byte
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-done:
+		body = res.body
+		if res.err != nil {
+			return nil, res.err
+		}
 	}
 	if len(body) > limit {
 		return nil, errExplainResponseTooLarge
@@ -254,21 +275,29 @@ func readExplainResponseBody(r io.Reader, limit int) ([]byte, error) {
 	return body, nil
 }
 
-func emitResponseExplainReport(cmd *cobra.Command, report responseExplainReport, jsonOutput bool) error {
+func emitResponseExplainReport(cmd *cobra.Command, report responseExplainReport, jsonOutput bool, cause error) error {
 	if jsonOutput {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(report); err != nil {
 			return fmt.Errorf("encode response explain report JSON: %w", err)
 		}
-	} else {
-		printResponseExplainReport(cmd.OutOrStdout(), report)
+	} else if err := printResponseExplainReport(cmd.OutOrStdout(), report); err != nil {
+		// The JSON branch already propagates its encode error. A silent failure
+		// here returned success with partial or absent output, so an operator
+		// piping this into a file saw an empty result and a zero exit.
+		return fmt.Errorf("write response explain report: %w", err)
 	}
 	if report.Error != "" {
-		if strings.Contains(report.Error, "exceeds explain read cap") {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, errExplainResponseTooLarge)
+		// The cause is carried from the caller that KNEW it, never re-derived by
+		// matching the rendered message. report.Error can hold scanner text that
+		// an image-metadata failure shapes from the body, so a substring check
+		// here would let that text choose the sentinel and mislead anything
+		// scripting the exit code.
+		if cause == nil {
+			cause = errExplainResponseScan
 		}
-		return cliutil.ExitCodeError(cliutil.ExitConfig, errExplainResponseScan)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, cause)
 	}
 	if !report.Allowed {
 		return cliutil.ExitCodeError(cliutil.ExitSecurity, errExplainResponseBlocked)
@@ -281,23 +310,38 @@ func sha256Hex(value []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func printResponseExplainReport(w io.Writer, report responseExplainReport) {
+// printResponseExplainReport returns the first write error rather than dropping
+// it. A partial report that exits zero is worse than a loud failure: the
+// operator reads the lines that made it out and takes the missing ones as absent
+// findings.
+func printResponseExplainReport(w io.Writer, report responseExplainReport) error {
+	verdict := "BLOCKED"
 	switch {
 	case report.Error != "":
-		_, _ = fmt.Fprintln(w, "ERROR")
+		verdict = "ERROR"
 	case report.Allowed:
-		_, _ = fmt.Fprintln(w, "ALLOWED")
-	default:
-		_, _ = fmt.Fprintln(w, "BLOCKED")
+		verdict = "ALLOWED"
 	}
-	_, _ = fmt.Fprintf(w, "Action: %s\nBody SHA-256: %s\n", report.Action, report.BodySHA256)
+	if _, err := fmt.Fprintln(w, verdict); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Action: %s\nBody SHA-256: %s\n", report.Action, report.BodySHA256); err != nil {
+		return err
+	}
 	for _, match := range report.Matches {
-		_, _ = fmt.Fprintf(w, "Pattern: %s\nView: %s\nPosition: %d\nLength: %d\nMatch SHA-256: %s\n", match.PatternName, match.View, match.Position, match.Length, match.MatchSHA256)
+		if _, err := fmt.Fprintf(w, "Pattern: %s\nView: %s\nPosition: %d\nLength: %d\nMatch SHA-256: %s\n", match.PatternName, match.View, match.Position, match.Length, match.MatchSHA256); err != nil {
+			return err
+		}
 	}
 	if report.Error != "" {
-		_, _ = fmt.Fprintf(w, "Error: %s\n", report.Error)
+		if _, err := fmt.Fprintf(w, "Error: %s\n", report.Error); err != nil {
+			return err
+		}
 	}
 	for _, note := range report.Notes {
-		_, _ = fmt.Fprintf(w, "Note: %s\n", note)
+		if _, err := fmt.Fprintf(w, "Note: %s\n", note); err != nil {
+			return err
+		}
 	}
+	return nil
 }

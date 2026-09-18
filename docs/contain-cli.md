@@ -321,6 +321,21 @@ managed config names `pipelock contain install` as the recovery command; an
 unreadable or malformed one names re-running reconciliation once it is
 fixed).
 
+`contain install` also enables a privileged containment expiry timer. Its
+oneshot service runs the same `contain reload-nft-rules` command, so a
+declared loopback permission is removed on the **next successful
+reconciliation** after its expiry. That is normally within the timer unit's
+declared calendar cadence plus its declared accuracy slack; it is not a
+promise that access ends at the declared instant. `Persistent=true` catches
+a calendar firing missed while the timer was inactive, but does not make that
+bound exact. The service start timeout makes a blocked invocation visible in
+`systemctl status`; it does not resolve a blocked reconciliation lock.
+
+`contain verify` requires the expiry timer and service to have the managed
+linkage and command, the timer to be enabled, and the service not to be
+masked. If it reports a masked unit, unmask that unit and rerun `pipelock
+contain install` as root.
+
 Reconciliation itself is guarded by an exclusive lock, so `contain install`
 and `contain reload-nft-rules` never interleave on the same managed config
 and nft state. That lock file lives beside the persisted rules file under

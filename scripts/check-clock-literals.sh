@@ -71,9 +71,9 @@ quote='["'"'"']?'
 
 mode="${1:-check}"
 
-# A finding is identified by file plus the literal itself, never by line
-# number, so moving code around does not churn the inventory while changing a
-# date still shows up as new.
+# A finding is identified by file, the clock-read FIELD, and the literal itself,
+# never by line number, so moving code around does not churn the inventory while
+# changing a date, or moving one between fields, still shows up as new.
 #
 # Multiplicity is part of the identity. Collapsing with `sort -u` made a new
 # pinned literal invisible whenever it duplicated a date already recorded for
@@ -132,10 +132,18 @@ emit() {
 		# than one that never ran, so every stage tolerates a non-match.
 		printf '%s' "$text" \
 			| { grep -oE "${pattern}[T0-9:Z.+-]*" || true; } \
-			| { grep -oE "${date_literal}[T0-9:Z.+-]*" || true; } \
-			| while IFS= read -r found; do
-				[ -n "$found" ] || continue
-				printf '%s\t%s\n' "$file" "$found"
+			| while IFS= read -r match; do
+				[ -n "$match" ] || continue
+				# The FIELD belongs in the identity. With only file and
+				# date, deleting a recorded Expires and adding the same
+				# date to ExpiresAt in that file leaves the multiset
+				# identical, so the new occurrence is invisible. The
+				# field name is the first run of letters in the match;
+				# the date follows it.
+				field="$(printf '%s' "$match" | { grep -oE '[A-Za-z_]+' || true; } | head -1)"
+				found="$(printf '%s' "$match" | { grep -oE "${date_literal}[T0-9:Z.+-]*" || true; } | head -1)"
+				[ -n "$field" ] && [ -n "$found" ] || continue
+				printf '%s\t%s\t%s\n' "$file" "$field" "$found"
 			done
 	done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
 }
@@ -192,6 +200,35 @@ above it, and the guard will leave it alone:
     clock-literal-ok: paired with the injected 2098 clock below
 EOF
 	exit 1
+fi
+
+# BASELINE GROWTH IS REPORTED, LOUDLY, AND NEVER BLOCKS.
+#
+# The inventory is a tracked file, so anyone can make a red check green by
+# adding the new literal to it. That is not hypothetical: this guard's own
+# author ran --update twice on the day it landed, once legitimately, because
+# merging main brought in fourteen literals from another pull request. Refusing
+# additions outright would have blocked that correct work, so the guard does not
+# refuse them.
+#
+# What it does instead is make growth impossible to miss. Every addition already
+# appears in the diff; this prints the count so a reviewer reads it as a claim
+# needing justification rather than as noise at the bottom of a file. The trust
+# boundary is review, and this states that plainly instead of implying the check
+# enforces something it does not.
+main_baseline="$(git show "origin/main:$BASELINE" 2>/dev/null || true)"
+if [ -n "$main_baseline" ]; then
+	main_count="$(printf '%s\n' "$main_baseline" | awk '!/^#/ && NF' | wc -l | tr -d ' ')"
+	here_count="$(printf '%s\n' "$recorded" | awk 'NF' | wc -l | tr -d ' ')"
+	if [ "$here_count" -gt "$main_count" ]; then
+		printf 'clock-literals: NOTE this branch ADDS %d baseline entr(ies) (%d -> %d).\n' \
+			"$((here_count - main_count))" "$main_count" "$here_count"
+		printf '  Each one records a pinned date this branch is accepting rather than fixing.\n'
+		printf '  Justify them in the pull request, or compute the value instead.\n'
+		LC_ALL=C comm -13 \
+			<(printf '%s\n' "$main_baseline" | awk '!/^#/ && NF' | LC_ALL=C sort) \
+			<(printf '%s\n' "$recorded") 2>/dev/null | sed 's/^/    + /' || true
+	fi
 fi
 
 # A cleared entry is reported, never failed. Leaving it in the file is untidy

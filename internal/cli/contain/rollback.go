@@ -294,7 +294,9 @@ func actionRemoveSystemUnit() step {
 				return fmt.Errorf("remove %s: %w", env.systemUnitPath, err)
 			}
 			_ = env.removeFile(env.systemUnitPath + ".bak")
-			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return fmt.Errorf("systemctl daemon-reload after removing %s: %w", env.systemUnitPath, err)
+			}
 			return nil
 		},
 	}
@@ -307,11 +309,9 @@ func actionDisablePipelockService() step {
 		name: "disable-pipelock-service",
 		desc: "systemctl disable --now pipelock.service",
 		undo: func(ctx context.Context, env *installEnv) error {
-			out, code, _ := env.runCmd(ctx, "systemctl", "list-unit-files", "pipelock.service", "--no-legend")
-			if code != 0 || out == "" {
-				return nil
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", "pipelock"); err != nil {
+				return fmt.Errorf("disable pipelock service: %w", err)
 			}
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
 			return nil
 		},
 	}
@@ -326,7 +326,9 @@ func actionRemoveNFTRules() step {
 		desc: "drop pipelock_containment table and remove Pipelock nft persistence unit",
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.nftPersistUnitPath)
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable nft persistence unit %s: %w", unit, err)
+			}
 			expiryUnits := []string{}
 			if env.nftExpiryTimerPath != "" {
 				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryTimerPath))
@@ -335,10 +337,10 @@ func actionRemoveNFTRules() step {
 				expiryUnits = append(expiryUnits, filepath.Base(env.nftExpiryServicePath))
 			}
 			for _, expiryUnit := range expiryUnits {
-				if err := runOrErr(ctx, env, "systemctl", "stop", expiryUnit); err != nil {
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", expiryUnit); err != nil {
 					return fmt.Errorf("stop expiry unit %s: %w", expiryUnit, err)
 				}
-				if err := runOrErr(ctx, env, "systemctl", "disable", expiryUnit); err != nil {
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", expiryUnit); err != nil {
 					return fmt.Errorf("disable expiry unit %s: %w", expiryUnit, err)
 				}
 			}

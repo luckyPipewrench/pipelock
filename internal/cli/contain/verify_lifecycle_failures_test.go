@@ -819,7 +819,7 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.nftRulesPath = rulesPath
 			env.readFile = func(path string) ([]byte, error) {
 				if path == env.nftPersistUnitPath {
-					return []byte("[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + env.pipelockTarget + " contain reload-nft-rules\n"), nil
+					return []byte(renderTestNFTPersistUnit(rulesPath, env.pipelockTarget)), nil
 				}
 				return nil, os.ErrPermission
 			}
@@ -838,7 +838,7 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.nftRulesPath = rulesPath
 			env.readFile = func(path string) ([]byte, error) {
 				if path == env.nftPersistUnitPath {
-					return []byte("[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + env.pipelockTarget + " contain reload-nft-rules\n"), nil
+					return []byte(renderTestNFTPersistUnit(rulesPath, env.pipelockTarget)), nil
 				}
 				return []byte("table inet pipelock_containment {}\n"), nil
 			}
@@ -859,7 +859,7 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.lookupUser = func(string) (*user.User, error) { return nil, user.UnknownUserError("ghost") }
 			env.readFile = func(path string) ([]byte, error) {
 				if path == env.nftPersistUnitPath {
-					return []byte("[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + env.pipelockTarget + " contain reload-nft-rules\n"), nil
+					return []byte(renderTestNFTPersistUnit(rulesPath, env.pipelockTarget)), nil
 				}
 				return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 			}
@@ -882,7 +882,7 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			}
 			env.readFile = func(path string) ([]byte, error) {
 				if path == env.nftPersistUnitPath {
-					return []byte("[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=" + env.pipelockTarget + " contain reload-nft-rules\n"), nil
+					return []byte(renderTestNFTPersistUnit(rulesPath, env.pipelockTarget)), nil
 				}
 				return []byte(renderNFTRules(987, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 			}

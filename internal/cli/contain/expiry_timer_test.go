@@ -575,12 +575,53 @@ func TestProbeContainmentExpiryTimer(t *testing.T) {
 			serviceReply: expiryTimerReply{out: "static\n"},
 			mutate: func(t *testing.T, env *probeEnv) {
 				t.Helper()
-				if err := os.WriteFile(env.nftExpiryServicePath, []byte("[Service]\nExecStart=/wrong/binary\n"), modeUnitFile); err != nil {
+				body, err := os.ReadFile(env.nftExpiryServicePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "ExecStart="+env.pipelockTarget+" contain reload-nft-rules", "ExecStart=/wrong/binary", 1))
+				if err := os.WriteFile(env.nftExpiryServicePath, body, modeUnitFile); err != nil {
 					t.Fatal(err)
 				}
 			},
 			wantStatus: statusFail,
 			wantDetail: "missing exact ExecStart",
+		},
+		{
+			name:         "altered service type fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body, err := os.ReadFile(env.nftExpiryServicePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "Type=oneshot", "Type=simple", 1))
+				if err := os.WriteFile(env.nftExpiryServicePath, body, modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "missing exact Type=oneshot",
+		},
+		{
+			name:         "altered service timeout fails",
+			timerReply:   expiryTimerReply{out: "enabled\n"},
+			serviceReply: expiryTimerReply{out: "static\n"},
+			mutate: func(t *testing.T, env *probeEnv) {
+				t.Helper()
+				body, err := os.ReadFile(env.nftExpiryServicePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = []byte(strings.Replace(string(body), "TimeoutStartSec="+containmentExpiryServiceTimeout, "TimeoutStartSec=infinity", 1))
+				if err := os.WriteFile(env.nftExpiryServicePath, body, modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: statusFail,
+			wantDetail: "missing exact TimeoutStartSec",
 		},
 		{
 			name:         "appended timer calendar fails",
@@ -746,6 +787,59 @@ func TestStepInstallNFTRulesRollsBackExpiryUnitsAfterEnableFailure(t *testing.T)
 	}
 }
 
+func TestStepInstallNFTRulesUndo_ToleratesPartialAndMissingUnits(t *testing.T) {
+	tests := []struct {
+		name                 string
+		missingTimer         bool
+		missingService       bool
+		missingPersistence   bool
+		persistStateWasKnown bool
+	}{
+		{name: "partial install with missing timer", missingTimer: true},
+		{
+			name:                 "all managed units missing",
+			missingTimer:         true,
+			missingService:       true,
+			missingPersistence:   true,
+			persistStateWasKnown: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.prevNFTPersistStateKnown = tc.persistStateWasKnown
+			env.prevNFTPersistEnabled = false
+			for _, missing := range []struct {
+				ok   bool
+				args []string
+			}{
+				{tc.missingTimer, []string{"disable", "--now", filepath.Base(env.nftExpiryTimerPath)}},
+				{tc.missingService, []string{"stop", filepath.Base(env.nftExpiryServicePath)}},
+				{tc.missingPersistence, []string{"disable", filepath.Base(env.nftPersistUnitPath)}},
+			} {
+				if !missing.ok {
+					continue
+				}
+				unit := missing.args[len(missing.args)-1]
+				runner.on(argvFor(testSystemctl, missing.args...), "Failed to operate on unit: Unit "+unit+" not loaded.\n", 1, nil)
+			}
+			if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
+				t.Fatalf("undo with missing unit: %v", err)
+			}
+			sawDelete := false
+			for _, call := range runner.calls {
+				if call.name == testNFT && strings.Join(call.args, " ") == "delete table inet "+env.nftTableOrDefault() {
+					sawDelete = true
+					break
+				}
+			}
+			if !sawDelete {
+				t.Fatalf("undo stopped before removing its table: %v", runner.calls)
+			}
+		})
+	}
+}
+
 func TestProbeNFTContainmentRequiresEnabledExpiryTimer(t *testing.T) {
 	tmp := t.TempDir()
 	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
@@ -755,7 +849,7 @@ func TestProbeNFTContainmentRequiresEnabledExpiryTimer(t *testing.T) {
 	if err := os.WriteFile(rulesPath, []byte(renderNFTRules(1000, 988, 987, 8888, testTable, testChain)), modeUnitFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(persistPath, []byte("[Unit]\nConditionPathExists="+rulesPath+"\n[Service]\nExecStart="+defaultPipelockTarget+" contain reload-nft-rules\n"), modeUnitFile); err != nil {
+	if err := os.WriteFile(persistPath, []byte(renderTestNFTPersistUnit(rulesPath, defaultPipelockTarget)), modeUnitFile); err != nil {
 		t.Fatal(err)
 	}
 	installEnv := &installEnv{pipelockTarget: defaultPipelockTarget, nftExpiryServicePath: servicePath}
@@ -835,6 +929,66 @@ func TestActionRemoveNFTRulesStopsAndRemovesExpiryUnits(t *testing.T) {
 		if !found {
 			t.Errorf("uninstall did not stop %s: %+v", unit, runner.calls)
 		}
+	}
+}
+
+func TestActionRemoveNFTRules_ToleratesPartialAndMissingUnits(t *testing.T) {
+	tests := []struct {
+		name           string
+		writeExpiry    bool
+		missingPersist bool
+		missingTimer   bool
+		missingService bool
+	}{
+		{name: "partial install without expiry unit files", writeExpiry: false, missingTimer: true, missingService: true},
+		{name: "all managed units missing from systemd", writeExpiry: true, missingPersist: true, missingTimer: true, missingService: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			for _, path := range []string{env.nftRulesPath, env.nftPersistUnitPath} {
+				if err := os.MkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("managed"), modeUnitFile); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.writeExpiry {
+				for _, path := range []string{env.nftExpiryTimerPath, env.nftExpiryServicePath} {
+					if err := os.WriteFile(path, []byte("managed"), modeUnitFile); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for _, missing := range []struct {
+				ok   bool
+				args []string
+			}{
+				{tc.missingPersist, []string{"disable", "--now", filepath.Base(env.nftPersistUnitPath)}},
+				{tc.missingTimer, []string{"stop", filepath.Base(env.nftExpiryTimerPath)}},
+				{tc.missingTimer, []string{"disable", filepath.Base(env.nftExpiryTimerPath)}},
+				{tc.missingService, []string{"stop", filepath.Base(env.nftExpiryServicePath)}},
+				{tc.missingService, []string{"disable", filepath.Base(env.nftExpiryServicePath)}},
+			} {
+				if !missing.ok {
+					continue
+				}
+				unit := missing.args[len(missing.args)-1]
+				runner.on(argvFor(testSystemctl, missing.args...), "Unit "+unit+" not found.\n", 1, nil)
+			}
+			for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
+				runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
+			}
+			if err := actionRemoveNFTRules().undo(context.Background(), env); err != nil {
+				t.Fatalf("uninstall with missing unit: %v", err)
+			}
+			for _, path := range []string{env.nftRulesPath, env.nftPersistUnitPath, env.nftExpiryTimerPath, env.nftExpiryServicePath} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("%s remains after uninstall: %v", path, err)
+				}
+			}
+		})
 	}
 }
 

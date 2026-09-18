@@ -127,6 +127,13 @@ func argvFor(name string, args ...string) string {
 	return name + " " + strings.Join(args, " ")
 }
 
+func renderTestNFTPersistUnit(rulesPath, pipelockTarget string) string {
+	return renderNFTPersistUnit(&installEnv{
+		nftRulesPath:   rulesPath,
+		pipelockTarget: pipelockTarget,
+	})
+}
+
 func managedChainReloadPath(env *installEnv) string {
 	return env.nftRulesPath + ".reload"
 }

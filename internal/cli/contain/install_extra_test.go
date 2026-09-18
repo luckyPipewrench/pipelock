@@ -1210,17 +1210,100 @@ func TestActionRemoveSystemUnit_RemovesAndReloads(t *testing.T) {
 
 func TestActionDisablePipelockService_SkipsWhenAbsent(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	// runCmd default returns ("", 0, nil) for unmatched calls, but we want
-	// list-unit-files to return code 0 with empty output (meaning unit not
-	// known). The default behavior already does that.
+	runner.on(argvFor(testSystemctl, "disable", "--now", "pipelock"), "Unit pipelock.service not found.\n", 1, nil)
 	a := actionDisablePipelockService()
 	if err := a.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	for _, c := range runner.calls {
-		if c.name == testSystemctl && containsArg(c.args, "disable") {
-			t.Errorf("disable called despite unit being absent: %v", c)
-		}
+	if !runnerSawSystemctl(runner, "disable", "--now", "pipelock") {
+		t.Fatalf("cleanup did not handle the absent service: %v", runner.calls)
+	}
+}
+
+func TestRunSystemctlCleanupUnit_OnlyToleratesNamedUnitAbsence(t *testing.T) {
+	const unit = "pipelock-containment-expiry.timer"
+	tests := []struct {
+		name    string
+		out     string
+		code    int
+		err     error
+		wantErr bool
+	}{
+		{name: "not loaded", out: "Unit " + unit + " not loaded.\n", code: 1},
+		{name: "not found", out: "Unit " + unit + " not found.\n", code: 1},
+		{name: "permission denied", out: "Failed to stop " + unit + ": Access denied.\n", code: 1, wantErr: true},
+		{name: "manager connection failure", out: "Unit " + unit + " not loaded.\n", code: -1, err: errors.New("connection refused"), wantErr: true},
+		{name: "generic not found", out: "Failed to connect to bus: not found.\n", code: 1, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			runner.on(argvFor(testSystemctl, "stop", unit), tc.out, tc.code, tc.err)
+			err := runSystemctlCleanupUnit(context.Background(), env, "stop", unit)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr = %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunSystemctlCleanupUnit_RejectsMissingArguments(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := runSystemctlCleanupUnit(context.Background(), env); err == nil {
+		t.Fatal("cleanup accepted an empty command")
+	}
+}
+
+func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*installEnv, *fakeRunner) error
+	}{
+		{
+			name: "credential guard disable",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.guardPathUnit)
+				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
+				return stepWriteCredentialGuard().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "credential guard daemon reload",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
+				return stepWriteCredentialGuard().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove system unit daemon reload",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
+				return actionRemoveSystemUnit().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "disable pipelock service",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				runner.on(argvFor(testSystemctl, "disable", "--now", "pipelock"), "access denied", 1, nil)
+				return actionDisablePipelockService().undo(context.Background(), env)
+			},
+		},
+		{
+			name: "remove nft persistence unit",
+			run: func(env *installEnv, runner *fakeRunner) error {
+				unit := filepath.Base(env.nftPersistUnitPath)
+				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
+				return actionRemoveNFTRules().undo(context.Background(), env)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			if err := tc.run(env, runner); err == nil {
+				t.Fatal("cleanup accepted a systemctl failure")
+			}
+		})
 	}
 }
 

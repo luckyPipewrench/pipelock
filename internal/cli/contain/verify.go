@@ -1744,11 +1744,24 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
+	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") ||
+		!unitHasExactEntry(body, "Unit", "After", "local-fs.target") ||
+		!unitHasExactEntry(body, "Unit", "Before", "network-pre.target") ||
+		!unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
+		return fmt.Errorf("%s does not contain the managed nft boot ordering", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
 		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
+	if !unitHasExactEntry(body, "Service", "Type", "oneshot") ||
+		!unitHasExactEntry(body, "Service", "RemainAfterExit", "yes") {
+		return fmt.Errorf("%s does not contain the managed nft service contract", env.nftPersistUnitPath)
+	}
 	if !unitHasExactEntry(body, "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
 		return fmt.Errorf("%s missing ExecStart for managed nft reloader", env.nftPersistUnitPath)
+	}
+	if !unitHasExactEntry(body, "Install", "WantedBy", "multi-user.target") {
+		return fmt.Errorf("%s missing WantedBy=multi-user.target", env.nftPersistUnitPath)
 	}
 	rules, err := env.readFile(env.nftRulesPath)
 	if err != nil {
@@ -1799,10 +1812,19 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 		!unitHasExactEntry(string(timerBody), "Timer", "AccuracySec", containmentExpiryTimerAccuracy) {
 		return fmt.Errorf("%s does not contain the managed expiry schedule", env.nftExpiryTimerPath)
 	}
+	if !unitHasExactEntry(string(timerBody), "Install", "WantedBy", "timers.target") {
+		return fmt.Errorf("%s missing WantedBy=timers.target", env.nftExpiryTimerPath)
+	}
 
 	serviceBody, err := env.readFile(env.nftExpiryServicePath)
 	if err != nil {
 		return fmt.Errorf("read containment expiry service %s: %w", env.nftExpiryServicePath, err)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "Type", "oneshot") {
+		return fmt.Errorf("%s missing exact Type=oneshot for containment expiry reconciliation", env.nftExpiryServicePath)
+	}
+	if !unitHasExactEntry(string(serviceBody), "Service", "TimeoutStartSec", containmentExpiryServiceTimeout) {
+		return fmt.Errorf("%s missing exact TimeoutStartSec for containment expiry reconciliation", env.nftExpiryServicePath)
 	}
 	if !unitHasExactEntry(string(serviceBody), "Service", "ExecStart", env.pipelockTarget+" contain reload-nft-rules") {
 		return fmt.Errorf("%s missing exact ExecStart for containment expiry reconciliation", env.nftExpiryServicePath)

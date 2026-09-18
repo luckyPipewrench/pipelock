@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -710,6 +711,39 @@ func runOrErr(ctx context.Context, env *installEnv, name string, args ...string)
 		return fmt.Errorf("%s exited %d: %s", name, code, truncateForErr(out))
 	}
 	return nil
+}
+
+// runSystemctlCleanupUnit runs a unit stop/disable action during rollback or
+// uninstall. A unit that was never installed, or was removed before cleanup,
+// is already in the desired state. Every other systemctl failure remains an
+// error: treating a permissions or manager-communication failure as success
+// would leave the cleanup contract unverifiable.
+func runSystemctlCleanupUnit(ctx context.Context, env *installEnv, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("systemctl cleanup requires a unit name")
+	}
+	out, code, err := env.runCmd(ctx, "systemctl", args...)
+	if err != nil {
+		return fmt.Errorf("exec systemctl %s: %w", strings.Join(args, " "), err)
+	}
+	if code == 0 || systemctlReportsUnitAbsent(out, args[len(args)-1]) {
+		return nil
+	}
+	return fmt.Errorf("systemctl %s exited %d: %s", strings.Join(args, " "), code, truncateForErr(out))
+}
+
+// systemctlReportsUnitAbsent recognizes only an absence diagnostic tied to
+// the requested unit. In particular, a generic "not found" from a failed
+// manager connection is not an absent unit and must still abort cleanup.
+func systemctlReportsUnitAbsent(out, unit string) bool {
+	message := strings.ToLower(out)
+	if !strings.Contains(message, strings.ToLower(unit)) {
+		return false
+	}
+	return strings.Contains(message, "not loaded") ||
+		strings.Contains(message, "not found") ||
+		strings.Contains(message, "absent") ||
+		strings.Contains(message, "does not exist")
 }
 
 // truncateForErr trims long subprocess output to a single readable line for

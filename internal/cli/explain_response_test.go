@@ -146,6 +146,31 @@ func TestBuildResponseExplainReportPositionIndexesViewNotRawStdin(t *testing.T) 
 	if !notesContain(report, "named scanner view") {
 		t.Fatalf("notes omitted view-vs-raw warning: %v", report.Notes)
 	}
+
+	// The checks above only EXCLUDE raw-stdin interpretations. Without a
+	// positive control a wrong scanner-view coordinate still passes them, so
+	// compare against the span the scanner itself retained.
+	baselineCfg := config.Defaults()
+	baselineCfg.ResponseScanning.Action = config.ActionBlock
+	sc, err := scanner.New(baselineCfg)
+	if err != nil {
+		t.Fatalf("scanner.New: %v", err)
+	}
+	defer sc.Close()
+	baseline := sc.ScanResponseBodyWithSuppress(t.Context(), body, "", nil)
+	if len(baseline.Matches) == 0 {
+		t.Fatal("baseline scan produced no match; the comparison below would be vacuous")
+	}
+	span := baseline.Matches[0].Span()
+	if match.Position != span.ByteStart {
+		t.Errorf("position = %d, want the scanner view's ByteStart %d", match.Position, span.ByteStart)
+	}
+	if want := span.ByteEnd - span.ByteStart; match.Length != want {
+		t.Errorf("length = %d, want the scanner view's span width %d", match.Length, want)
+	}
+	if match.View != span.ViewLabel {
+		t.Errorf("view = %q, want the scanner view label %q", match.View, span.ViewLabel)
+	}
 }
 
 func TestBuildResponseExplainReportNotesFetchHTMLDisagreement(t *testing.T) {

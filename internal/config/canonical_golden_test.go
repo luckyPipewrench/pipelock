@@ -411,7 +411,9 @@ const (
 	// on upgrade, and a conductor strict-mode reload will see it. That
 	// visibility is the intended behavior, not a side effect - an operator's
 	// detection posture changed and the hash is what says so.
-	goldenHashDefaults = "39dd3b732d536f828bd52e7cb3de708f968cd9b302401dbe653a9cd0494cc720"
+	// Re-bumped for directive-intent response patterns. The narrowed detector
+	// bytes change response enforcement and therefore the canonical policy.
+	goldenHashDefaults = "7cec802f20fb712f918d2caae002d75baab230a3f70e18a5ca831c9e2c75e1b8"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -630,7 +632,8 @@ const (
 	// now materializes them. Before that fix the defaults hash moved and this
 	// one did not, which is exactly the shape of a default that reaches the
 	// no-config CLI path and no real deployment.
-	goldenHashRichConfig = "d9b0a68777fdcd716d4d0e23caa6ca149f04de6e0614a59428422c59817f2455"
+	// Re-bumped alongside goldenHashDefaults for directive-intent response patterns.
+	goldenHashRichConfig = "c49d1523e0bcf271d572c4171e9dcf1a3c09b748c96c2aa6968dd1f399b9d78f"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1199,8 +1202,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "0869297f12244f4d9d8bccf96fd309bc1809b9efad42b41730b768d9dea7b58e"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1db9fb8041ea0f2b152f759fe3cccf351d5430c4a5af6a8a4786ba378ba79ea9"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "32b7267a7ad9474ce24b8e739b311eb16a1f6654a660ce12e193914bb8e9aa50"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "74c1aa8f598563cc93919f34880acb9e159ffb400216115b84736b9d76782798"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

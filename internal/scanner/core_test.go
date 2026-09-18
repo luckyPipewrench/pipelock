@@ -1011,6 +1011,24 @@ func TestResponsePatterns_NewInstructionsRegexParity(t *testing.T) {
 	}
 }
 
+func TestResponsePatterns_MemoryPersistenceDirectiveRegexParity(t *testing.T) {
+	t.Parallel()
+
+	const patternName = "Memory Persistence Directive"
+	surfaces := map[string]string{
+		"default config": responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, patternName),
+		"balanced yaml":  yamlResponsePatternRegex(t, "../../configs/balanced.yaml", patternName),
+		"strict yaml":    yamlResponsePatternRegex(t, "../../configs/strict.yaml", patternName),
+	}
+	for surface, got := range surfaces {
+		t.Run(surface, func(t *testing.T) {
+			if got != config.MemoryPersistenceDirectiveRegex {
+				t.Errorf("regex drifted from config.MemoryPersistenceDirectiveRegex")
+			}
+		})
+	}
+}
+
 func TestCore_ResponsePatterns_MarkdownLinkCredentialExfiltrationRegexParity(t *testing.T) {
 	t.Parallel()
 

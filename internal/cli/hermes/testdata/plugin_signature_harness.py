@@ -137,6 +137,20 @@ def main():
                 )
                 return 1
 
+    captured = []
+    mod._invoke = lambda payload: captured.append(payload) or {"decision": "allow"}
+    ctx.hooks["transform_tool_result"][0](
+        tool_name="terminal",
+        args={"command": "rg Memory Persistence Directive"},
+        result={"output": "safe diagnostic result"},
+    )
+    if captured[-1]["tool_input"] != {"output": "safe diagnostic result"}:
+        print(
+            "FAIL: transform_tool_result must scan only the returned result",
+            file=sys.stderr,
+        )
+        return 1
+
     print("OK: all hooks accept the Hermes kwarg contract")
     return 0
 

@@ -31,6 +31,16 @@ const NewInstructionsRegex = `(?i)(\b(system|developer|administrator|admin)\s*(m
 // value; preset YAML files are guarded by a parity test.
 const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^.!?]|\.\S){0,40}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b(?:[^\n.!?]|\.\S){0,40}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)|\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^\n.!?]|\.\S){0,30}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)(?:[^\n.!?]|\.\S){0,30}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH solicitation text, not a hardcoded credential
 
+// These response patterns require directive intent rather than matching prose
+// that merely describes a command, a detector, or defensive credential advice.
+const (
+	SystemPromptDisclosureRegex             = `(?is)(?:\bexfiltrate\b(?:[^.\n!?]|\.\S){0,80}\b(?:system\s+prompt|tool\s+definitions?|developer\s+instructions?)\b|\b(?:output|print|reveal|show|display|dump|return)\b\s+(?:me\s+)?(?:(?:your|the|my|our|complete|full|entire|all|raw|exact|original)\s+){0,4}(?:system\s+prompt|tool\s+definitions?|developer\s+instructions?)\b)`
+	SpanishSystemPromptDisclosureRegex      = `(?i)\b(?:muestra|revela|imprime|expone|dime)\b\s+(?:(?:el|la|tu|su|completo|completa)\s+){0,4}(?:prompt|mensaje)\s+(?:del\s+)?sistema\b`
+	CrossLingualSystemPromptDisclosureRegex = `(?i)\b(?:show|reveal|print|display|dump|muestra|revela|imprime|expone|dime)\b\s+(?:me\s+)?(?:(?:your|the|my|our|complete|full|entire|all|raw|exact|original|el|la|tu|su|completo|completa)\s+){0,4}(?:system\s+prompt|prompt\s+(?:del\s+)?sistema|mensaje\s+(?:del\s+)?sistema)\b`
+	MemoryPersistenceDirectiveRegex         = `(?is)(?:^|[.!?:]\s+|[\r\n]+)\s*(?:[-*]\s+)?(?:(?:please|you\s+(?:must|should|need\s+to))\s+)?(?:save|store|remember|retain|persist|record|cache)\b[^.!?]{0,40}\b(?:this|these|that|it|the)\b[^.!?]{0,60}\b(?:for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`
+	SilentCredentialHandlingRegex           = `(?is)\b(?:do not|don'?t|never)\s+(?:mention|display|show|tell|reveal|log|report)\b[^.!?]{0,100}\b(?:password|token|secret|credential|private[_ -]?key|api[_ -]?key)\b[^.!?]{0,60}\b(?:to\s+(?:the\s+)?(?:user|operator|requester)|in\s+(?:the\s+)?(?:output|response|reply|report|logs?)|during\s+(?:processing|execution))\b` // #nosec G101 -- detection regex: credential nouns to MATCH concealment directives, not a hardcoded credential
+)
+
 // AWSAccessIDRegex is the canonical AWS access-key/user/role/policy ID shape
 // used by both default config DLP and the immutable core scanner floor.
 const AWSAccessIDRegex = `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`
@@ -389,9 +399,9 @@ func Defaults() *Config {
 				{Name: "Markdown Link Credential Follow Exfiltration", Regex: MarkdownLinkCredentialFollowExfilRegex},
 				{Name: "Credential Path Directive", Regex: CredentialPathDirectiveRegex},
 				{Name: "Auth Material Requirement", Regex: AuthMaterialRequirementRegex},
-				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},
+				{Name: "Memory Persistence Directive", Regex: MemoryPersistenceDirectiveRegex},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},
-				{Name: "Silent Credential Handling", Regex: `(?is)\b(do not|don'?t|never)\s+(mention|display|show|tell|reveal|log|report)\b.{0,100}\b(password|token|secret|credential|private[_ -]?key|api[_ -]?key)\b`},
+				{Name: "Silent Credential Handling", Regex: SilentCredentialHandlingRegex},
 				// Covert action directives - instructions to perform actions
 				// secretly, silently, or without the user's knowledge.
 				{Name: "Covert Action Directive", Regex: `(?is)(secretly|silently|covertly|quietly|without\s+(?:the\s+user\s+)?(?:knowing|noticing|seeing))[,;:]?\s+.{0,40}\b(execut\w*|run|call|invoke|send|fetch|curl|wget|download|upload|post|exfiltrat\w*|leak|stream|transmit|relay|forward|smuggle)\b`},
@@ -399,9 +409,9 @@ func Defaults() *Config {
 				// Presence in tool output is a strong injection signal.
 				{Name: "Instruction Boundary", Regex: `(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>)`},
 				{Name: "Spanish Instruction Override", Regex: `(?i)\b(ignora|omite|olvida|desobedece|descarta)\b.{0,30}\b(las\s+)?(instrucciones|indicaciones|directivas|reglas)\b.{0,30}\b(anteriores|previas|precedentes|de\s+arriba)\b`},
-				{Name: "Spanish System Prompt Disclosure", Regex: `(?i)\b(muestra|revela|imprime|expone|dime)\b.{0,40}\b(prompt|mensaje)\s+(del\s+)?sistema\b`},
+				{Name: "Spanish System Prompt Disclosure", Regex: SpanishSystemPromptDisclosureRegex},
 				{Name: "Cross-Lingual Instruction Override", Regex: `(?i)\b(ignore|disregard|forget|abandon|ignora|omite|olvida|desobedece|descarta)\b.{0,40}\b(previous|prior|above|earlier|anteriores|previas|precedentes|de\s+arriba)\b.{0,40}\b(instructions?|instrucciones|indicaciones|directivas|reglas|prompts?|context|constraints?|policies|guardrails)\b`},
-				{Name: "Cross-Lingual System Prompt Disclosure", Regex: `(?i)\b(show|reveal|print|display|dump|muestra|revela|imprime|expone|dime)\b.{0,40}\b(system\s+prompt|prompt\s+(del\s+)?sistema|mensaje\s+(del\s+)?sistema)\b`},
+				{Name: "Cross-Lingual System Prompt Disclosure", Regex: CrossLingualSystemPromptDisclosureRegex},
 				// CJK injection patterns - Chinese, Japanese, Korean prompt
 				// injection phrases sourced from published attack research,
 				// jailbreak datasets, and security disclosures. Patterns use

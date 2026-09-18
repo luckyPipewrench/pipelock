@@ -859,7 +859,12 @@ func TestFreshnessStagingAllowsEqualAndNewerV2Candidates(t *testing.T) {
 				installed := []byte(v2NamedInstallBundleYAML("third-party-rules", "2026.08.0", domrules.TierCommunity, 8, "test-signer"))
 				writeInstalledBundleForFreshnessTest(t, rulesDir, "third-party-rules", installed)
 				writeInstalledLockForFreshnessTest(t, rulesDir, "third-party-rules", installed)
-				candidateData := []byte(v2NamedInstallBundleYAML("third-party-rules", version.version, domrules.TierCommunity, version.monotonic, "test-signer"))
+				// An equal candidate means the same signed bytes. Regenerating
+				// its clock-derived expiry can correctly trigger republish denial.
+				candidateData := installed
+				if !version.wantSkip {
+					candidateData = []byte(v2NamedInstallBundleYAML("third-party-rules", version.version, domrules.TierCommunity, version.monotonic, "test-signer"))
+				}
 				candidate, err := domrules.ParseBundle(candidateData)
 				if err != nil {
 					t.Fatalf("parse candidate: %v", err)

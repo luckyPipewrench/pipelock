@@ -311,6 +311,12 @@ func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincip
 	state.principal = true
 	if s.store != nil {
 		state.recorder = s.store.GetOrCreate(state.key)
+		if state.recorder == nil {
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			state.revoke()
+			return nil, false
+		}
 	}
 	s.touchLocked(state)
 	s.clients[state.key] = state
@@ -353,6 +359,12 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 	state := newMCPListenerClientState("", key)
 	if s.store != nil {
 		state.recorder = s.store.GetOrCreate(key)
+		if state.recorder == nil {
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			state.revoke()
+			return nil
+		}
 	}
 	s.touchLocked(state)
 	s.clients[key] = state
@@ -383,6 +395,10 @@ func (s *mcpListenerClientStates) newUnboundState() *mcpListenerClientState {
 	state := newMCPListenerTransientState()
 	if s.store != nil {
 		state.recorder = s.store.GetOrCreate(state.key)
+		if state.recorder == nil {
+			state.revoke()
+			return nil
+		}
 	}
 	return state
 }
@@ -498,6 +514,11 @@ func (s *mcpListenerClientStates) admitSetup(state *mcpListenerClientState) bool
 	}
 	if s.store != nil {
 		state.recorder = s.store.GetOrCreate(state.key)
+		if state.recorder == nil {
+			s.mu.Unlock()
+			s.revokeRemoved(removed)
+			return false
+		}
 	}
 	s.touchLocked(state)
 	s.clients[state.key] = state

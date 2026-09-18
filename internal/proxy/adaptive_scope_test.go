@@ -281,7 +281,7 @@ func TestAdaptiveScope_OverCapEscalationLatchesGlobalBlockAll(t *testing.T) {
 		ClientIP:  adaptiveSessionKeyLoopback,
 		RequestID: "req-over-cap",
 	}
-	recordAdaptiveSignalForScope(sess, adaptiveScopeForHost("over-cap.example"), session.SignalBlock, &cfg.AdaptiveEnforcement, ep)
+	recordAdaptiveSignalForScope(sess, adaptiveScopeForHost("over-cap.example"), session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
 
 	if !sess.BlockAll() {
 		t.Fatal("over-cap scoped escalation must latch global block_all")
@@ -332,8 +332,8 @@ func TestRecordAdaptiveSignalForScope_LatchesOnlyScopedBlockAll(t *testing.T) {
 		ClientIP:  adaptiveSessionKeyLoopback,
 		RequestID: "req-scoped-helper",
 	}
-	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, ep)
-	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, ep)
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
 
 	if sess.BlockAll() {
 		t.Fatal("scoped helper must not latch aggregate block_all")
@@ -348,11 +348,65 @@ func TestRecordAdaptiveSignalForScope_LatchesOnlyScopedBlockAll(t *testing.T) {
 	}
 }
 
+func TestRecordAdaptiveSignalForScope_TriggersConfiguredScopedAirlock(t *testing.T) {
+	cfg := adaptiveScopedAirlockConfig()
+	p, logger := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+
+	for _, requestID := range []string{"req-scoped-airlock-1", "req-scoped-airlock-2"} {
+		recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
+			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+			Logger:    logger,
+			Session:   adaptiveSessionKeyLoopback,
+			ClientIP:  adaptiveSessionKeyLoopback,
+			RequestID: requestID,
+		})
+	}
+
+	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierHard {
+		t.Fatalf("scoped helper airlock tier = %q, want hard", got)
+	}
+	if got := sess.AirlockForScope(adaptiveScopeForHost(adaptiveScopeSendHost)).Tier(); got != config.AirlockTierNone {
+		t.Fatalf("unrelated scope airlock tier = %q, want none", got)
+	}
+	trigger, source := sess.AirlockForScope(scope).EntryProvenance()
+	if trigger != airlockTriggerOnElevated || source != airlockSourceTriggers {
+		t.Fatalf("scoped helper airlock provenance = %q/%q, want %q/%q", trigger, source, airlockTriggerOnElevated, airlockSourceTriggers)
+	}
+}
+
+func TestTriggerScopedAirlockOnEscalation_SkipsInactiveConfiguration(t *testing.T) {
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Airlock
+	}{
+		{name: "nil configuration"},
+		{name: "disabled", cfg: &config.Airlock{}},
+		{name: "none trigger", cfg: &config.Airlock{Enabled: true, Triggers: config.AirlockTriggers{OnElevated: config.AirlockTierNone}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := &SessionState{}
+			_, _, _ = sess.RecordScopedSignal(scope, session.SignalBlock, 3)
+			before := sess.AirlockForScope(scope).Tier()
+			triggerScopedAirlockOnEscalation(sess, scope, session.EscalationLabel(1), tc.cfg, decide.EscalationParams{})
+			got := sess.AirlockForScope(scope).Tier()
+			if got != before {
+				t.Fatalf("inactive trigger changed airlock tier %q -> %q, want unchanged", before, got)
+			}
+			if got == config.AirlockTierSoft || got == config.AirlockTierHard || got == config.AirlockTierDrain {
+				t.Fatalf("inactive trigger entered active airlock tier %q", got)
+			}
+		})
+	}
+}
+
 func TestRecordAdaptiveSignalForScope_GlobalFallbackRecorder(t *testing.T) {
 	rec := &interceptMockRecorder{escalateOnNext: true}
 	ep := decide.EscalationParams{Threshold: 1.0}
 
-	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(adaptiveScopePollHost), session.SignalNearMiss, nil, ep)
+	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(adaptiveScopePollHost), session.SignalNearMiss, nil, nil, ep)
 
 	if len(rec.signals) != 1 || rec.signals[0] != session.SignalNearMiss {
 		t.Fatalf("global fallback recorder signals = %v, want [near_miss]", rec.signals)
@@ -396,7 +450,7 @@ func TestAdaptiveScope_HelperFallbackBranches(t *testing.T) {
 		ClientIP:  adaptiveSessionKeyLoopback,
 		RequestID: "req-helper-branches",
 	}
-	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, &cfg.AdaptiveEnforcement, ep)
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
 	if sess.ThreatScore() == 0 {
 		t.Fatal("empty-scope adaptive signal did not fall back to the global score")
 	}
@@ -513,7 +567,7 @@ func TestRecordCleanForAdaptiveScope_IneligibleCleanDoesNotRecover(t *testing.T)
 		CleanRequestsToDeescalate: 1,
 	}
 	sess := &SessionState{}
-	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, decide.EscalationParams{Threshold: 3})
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, nil, decide.EscalationParams{Threshold: 3})
 	if got := sess.EffectiveEscalationLevel(scope); got != 1 {
 		t.Fatalf("level after setup = %d, want elevated", got)
 	}
@@ -553,7 +607,7 @@ func TestRecordCleanForAdaptiveScope_CleanRecoveryObservable(t *testing.T) {
 		t.Fatalf("audit logger: %v", err)
 	}
 
-	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, decide.EscalationParams{
+	recordAdaptiveSignalForScope(sess, scope, session.SignalBlock, &cfg, nil, decide.EscalationParams{
 		Threshold: 3,
 		Metrics:   m,
 		Session:   sessionKey,

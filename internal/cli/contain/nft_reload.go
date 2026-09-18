@@ -233,7 +233,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
 		if env.report != nil {
-			env.report(nftReloadOutcome(false, 0, false))
+			env.report(nftReloadOutcome(false, 0, false, false))
 		}
 		return nil
 	}
@@ -257,7 +257,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
 	if env.report != nil {
-		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == ""))
+		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == "", true))
 	}
 	return nil
 }
@@ -331,8 +331,15 @@ func agentLoopbackReplyHostPortKey(line string, agentUID int) (string, bool) {
 	return "", false
 }
 
-func nftReloadOutcome(fileChanged bool, removedRules int, loadedMissingChain bool) string {
-	if !fileChanged && removedRules == 0 && !loadedMissingChain {
+// nftReloadOutcome describes what reconciliation did. appliedRules records
+// whether the canonical rules were actually loaded into the kernel, and it is
+// the only input that may report no change: a chain holding nothing but foreign
+// rules changes no file and removes no managed handle, yet gains the entire
+// managed block. Deriving "no change" from the other inputs reported an applied
+// reload as a no-op, which tells an operator their reconciliation did nothing
+// at the moment it did the most.
+func nftReloadOutcome(fileChanged bool, removedRules int, loadedMissingChain, appliedRules bool) string {
+	if !appliedRules {
 		return "containment nft rules already reconciled, no change"
 	}
 	if loadedMissingChain {
@@ -344,6 +351,9 @@ func nftReloadOutcome(fileChanged bool, removedRules int, loadedMissingChain boo
 	}
 	if fileChanged {
 		changes = append(changes, "updated persisted rules")
+	}
+	if len(changes) == 0 {
+		changes = append(changes, "loaded managed rules into a chain that carried none")
 	}
 	return "containment nft rules reconciled: " + strings.Join(changes, "; ")
 }

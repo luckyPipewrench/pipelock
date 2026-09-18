@@ -117,9 +117,13 @@
             ]
           },
           "then": {
+            "type": "object",
             "required": [
               "rekor"
-            ]
+            ],
+            "properties": {
+              "rekor": true
+            }
           },
           "else": {
             "not": {

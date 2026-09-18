@@ -4,8 +4,14 @@
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { createRequire } from "node:module";
 import { validateAuditPacket } from "../src/schema.js";
 import type { AuditPacket } from "../src/types.js";
+
+const require = createRequire(import.meta.url);
+const addFormats = require("ajv-formats") as (ajv: Ajv2020) => void;
+const anchorBundleSchemaURL = new URL("../../../../anchor-bundle/v1.json", import.meta.url);
 
 function example(): AuditPacket {
   return JSON.parse(readFileSync("../../audit-packet/example.json", "utf8")) as AuditPacket;
@@ -13,6 +19,13 @@ function example(): AuditPacket {
 
 test("sdk audit-packet example passes schema and structural checks", () => {
   assert.deepEqual(validateAuditPacket(example()), []);
+});
+
+test("anchor bundle v1 schema compiles with AJV strict mode", () => {
+  const schema = JSON.parse(readFileSync(anchorBundleSchemaURL, "utf8")) as object;
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  assert.doesNotThrow(() => ajv.compile(schema));
 });
 
 for (const field of [

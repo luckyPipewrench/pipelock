@@ -272,6 +272,11 @@ type Scanner struct {
 	responseVowelFoldPreFilter *responsePreFilter // keyword candidate gate for vowel-fold pass
 	responseAction             string
 	responseEnabled            bool
+	// coreObserveExceptions are the operator's declared, expiring per-host
+	// observe entries for a single immutable core response pattern. They are
+	// populated regardless of response_scanning.enabled, because the core
+	// floor they modify also runs regardless of it.
+	coreObserveExceptions []config.CoreObserveException
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
@@ -613,6 +618,14 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		return nil, fmt.Errorf("build known-secret window index (reduce canary_tokens or dlp.secrets_file entries, or disable dlp.scan_env and remove oversized environment values): %w", err)
 	}
 	s.knownSecretWindows = knownSecretWindows
+
+	// Declared core-floor observe exceptions are read OUTSIDE the
+	// response_scanning.enabled branch on purpose: the core response floor runs
+	// even when response scanning is disabled, so an exception that only loaded
+	// with the optional layer would silently stop applying.
+	if len(cfg.ResponseScanning.CoreObserveExceptions) > 0 {
+		s.coreObserveExceptions = append([]config.CoreObserveException(nil), cfg.ResponseScanning.CoreObserveExceptions...)
+	}
 
 	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {

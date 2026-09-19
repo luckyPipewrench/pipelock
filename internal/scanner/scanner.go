@@ -276,13 +276,13 @@ type Scanner struct {
 	// observe entries for a single immutable core response pattern. They are
 	// populated regardless of response_scanning.enabled, because the core
 	// floor they modify also runs regardless of it.
-	coreObserveExceptions []config.CoreObserveException
-	subdomainExclusions        []string // domains excluded from subdomain entropy checks
-	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
-	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
-	pathEntropyExclusions      []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
-	scanNestedURLs             bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
-	nestedURLResolveBudget     time.Duration          // shared deadline for all nested lookups in one request
+	coreObserveExceptions  []config.CoreObserveException
+	subdomainExclusions    []string // domains excluded from subdomain entropy checks
+	queryExclusions        []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
+	queryParamExclusions   map[queryEntropyParamExclusionKey]struct{}
+	pathEntropyExclusions  []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
+	scanNestedURLs         bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
+	nestedURLResolveBudget time.Duration          // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.

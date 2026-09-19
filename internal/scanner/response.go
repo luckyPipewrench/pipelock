@@ -26,8 +26,8 @@ type ResponseScanResult struct {
 	// ScanError records why scanning could not complete. It is deliberately
 	// separate from Matches: an incomplete scan must fail closed, but it is not
 	// evidence that response content matched a prompt-injection pattern.
-	ScanError          string
-	SuppressedMatches  []ResponseMatch `json:"-"`
+	ScanError         string
+	SuppressedMatches []ResponseMatch `json:"-"`
 	// ObservedCoreMatches carries core-floor findings that an operator's
 	// declared exception downgraded from block to observe. They are findings,
 	// not misses: the scan ran and matched, and every one of these is emitted
@@ -35,7 +35,7 @@ type ResponseScanResult struct {
 	// ordinary suppression. A non-empty slice here with Clean true means the
 	// operator accepted this exact risk on this exact host in writing.
 	ObservedCoreMatches []ObservedCoreMatch `json:"-"`
-	TransformedContent string          // set for strip and ask actions
+	TransformedContent  string              // set for strip and ask actions
 
 	// StegoDetected fires when the raw response carries combining-mark density
 	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching

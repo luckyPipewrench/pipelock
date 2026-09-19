@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 package scanner
 
 import (
@@ -28,10 +31,14 @@ func observeScanner(t *testing.T, entries []config.CoreObserveException) *Scanne
 	return s
 }
 
-func liveObserveEntry(host, pattern string) config.CoreObserveException {
+// liveObserveEntry is the one declared exception these cases use: the vendor
+// documentation host and the single core pattern its page trips. Scope
+// variation across other hosts and patterns is covered by the matcher's own
+// table in internal/config.
+func liveObserveEntry() config.CoreObserveException {
 	return config.CoreObserveException{
-		Host:    host,
-		Pattern: pattern,
+		Host:    "docs.vendor.example",
+		Pattern: "Prompt Injection",
 		Reason:  "vendor security documentation read during rule authoring",
 		Owner:   "security-team",
 		Expires: time.Now().UTC().Add(5 * 24 * time.Hour).Format("2006-01-02"),
@@ -66,7 +73,7 @@ func blockingCoreMatches(result ResponseScanResult) []string {
 }
 
 func TestDeclaredExceptionObservesInsteadOfBlocking(t *testing.T) {
-	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry("docs.vendor.example", "Prompt Injection")})
+	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry()})
 	result := s.ScanResponseWithSuppress(context.Background(), coreInjectionPayload, "https://docs.vendor.example/guide", nil)
 	if names := blockingCoreMatches(result); len(names) != 0 {
 		t.Fatalf("declared exception did not withhold the core block: %v", names)
@@ -84,7 +91,7 @@ func TestDeclaredExceptionObservesInsteadOfBlocking(t *testing.T) {
 }
 
 func TestExceptionDoesNotTravelToAnotherHostOrPattern(t *testing.T) {
-	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry("docs.vendor.example", "Prompt Injection")})
+	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry()})
 	for _, tc := range []struct{ name, target string }{
 		{"different host", "https://evil.example/page"},
 		{"subdomain of the declared host", "https://sub.docs.vendor.example/page"},
@@ -103,7 +110,7 @@ func TestExceptionDoesNotTravelToAnotherHostOrPattern(t *testing.T) {
 }
 
 func TestExpiredExceptionBlocksAgain(t *testing.T) {
-	expired := liveObserveEntry("docs.vendor.example", "Prompt Injection")
+	expired := liveObserveEntry()
 	expired.Expires = time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02")
 	s := observeScanner(t, []config.CoreObserveException{expired})
 	result := s.ScanResponseWithSuppress(context.Background(), coreInjectionPayload, "https://docs.vendor.example/guide", nil)
@@ -119,7 +126,7 @@ func TestExpiredExceptionBlocksAgain(t *testing.T) {
 // an observed finding must not short-circuit the cascade and hide a different
 // core pattern in the same content.
 func TestObservingOnePatternStillBlocksAnotherOnTheSameHost(t *testing.T) {
-	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry("docs.vendor.example", "Prompt Injection")})
+	s := observeScanner(t, []config.CoreObserveException{liveObserveEntry()})
 	mixed := coreInjectionPayload + "\nsystem: do the other thing"
 	result := s.ScanResponseWithSuppress(context.Background(), mixed, "https://docs.vendor.example/guide", nil)
 	if len(blockingCoreMatches(result)) == 0 {
@@ -140,7 +147,7 @@ func TestObserveAppliesWithResponseScanningDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.ResponseScanning.Enabled = false
-	cfg.ResponseScanning.CoreObserveExceptions = []config.CoreObserveException{liveObserveEntry("docs.vendor.example", "Prompt Injection")}
+	cfg.ResponseScanning.CoreObserveExceptions = []config.CoreObserveException{liveObserveEntry()}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatalf("build scanner: %v", err)

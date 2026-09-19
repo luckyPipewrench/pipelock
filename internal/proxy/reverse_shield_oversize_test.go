@@ -754,6 +754,10 @@ func TestReverseProxy_ShieldRunsForGenericMIMEWhenResponseScanningDisabled(t *te
 }
 
 func TestReverseProxy_ShieldExemptHostPassesLargeResponseWhenResponseScanningDisabled(t *testing.T) {
+	// Formerly streamed a body larger than the scan ceiling because the
+	// optional layer was off and the host was shield-exempt. The core floor
+	// still requires a scan, so the scan ceiling applies and this oversize
+	// body is blocked.
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
 	cfg.BrowserShield.Enabled = true
@@ -773,11 +777,36 @@ func TestReverseProxy_ShieldExemptHostPassesLargeResponseWhenResponseScanningDis
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("oversize shield-exempt body must hit the scan ceiling, got status %d body=%q", resp.StatusCode, string(body))
+	}
+}
+
+func TestReverseProxy_ShieldExemptHostPassesUnderCapResponseWhenResponseScanningDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	page := oversizeShieldPage(oversizeShieldTestCap)
+	proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, func(cfg *config.Config, upstreamURL *url.URL) {
+		cfg.BrowserShield.ExemptDomains = []string{upstreamURL.Hostname()}
+	}, nil)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("shield-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
+		t.Fatalf("under-cap shield-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	if string(body) != page {
-		t.Fatal("shield-exempt response was modified or truncated")
+		t.Fatal("under-cap shield-exempt response was modified or truncated")
 	}
 }
 

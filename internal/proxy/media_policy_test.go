@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -898,36 +897,65 @@ func TestReverseProxy_MediaPolicyBlocksCompressedSpoofWhenScanningDisabled(t *te
 }
 
 func TestReverseProxy_MediaSniffPreservesShortChunkedStream(t *testing.T) {
+	// Formerly asserted TTFB through unbuffered passthrough when
+	// response_scanning.enabled=false. The core floor still has to inspect
+	// this JSON, so reverse buffers like forward and intercept. Headers wait
+	// for the complete body; the pin is that injection in that chunked body
+	// is still blocked.
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
 	cfg.BrowserShield.Enabled = false
-	release := make(chan struct{})
-	defer close(release)
-	firstChunkSent := make(chan struct{})
 
 	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
 		_, _ = w.Write([]byte("{\"event\":\"start\"}\n"))
-		w.(http.Flusher).Flush()
-		close(firstChunkSent)
-		<-release
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("{\"note\":\"" + corePayloadForFloor + "\"}\n"))
 	})
 
-	done := make(chan int, 1)
-	go func() {
-		resp := testGet(t, proxy.URL+"/stream")
-		defer func() { _ = resp.Body.Close() }()
-		done <- resp.StatusCode
-	}()
-	<-firstChunkSent
-	select {
-	case code := <-done:
-		if code != http.StatusOK {
-			t.Errorf("status = %d, want 200", code)
+	resp := testGet(t, proxy.URL+"/stream")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode == http.StatusOK && strings.Contains(string(body), corePayloadForFloor) {
+		t.Fatalf("core injection reached the client in a chunked JSON body with the optional layer off")
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected the core floor to block with 403, got %d body=%q", resp.StatusCode, string(body))
+	}
+}
+
+func TestReverseProxy_MediaSniffShortChunkedStreamCleanStillFlows(t *testing.T) {
+	const clean = "{\"event\":\"start\"}\n{\"note\":\"quarterly totals\"}\n"
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = false
+
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("{\"event\":\"start\"}\n"))
+		if flusher != nil {
+			flusher.Flush()
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("client did not receive headers after the upstream flushed a complete short chunk")
+		_, _ = w.Write([]byte("{\"note\":\"quarterly totals\"}\n"))
+	})
+
+	resp := testGet(t, proxy.URL+"/stream")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != clean {
+		t.Fatalf("ordinary chunked JSON was not served: status=%d body=%q", resp.StatusCode, string(body))
 	}
 }
 

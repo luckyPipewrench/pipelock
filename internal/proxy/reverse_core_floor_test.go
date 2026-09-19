@@ -6,6 +6,7 @@ package proxy
 import (
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -80,6 +81,57 @@ func TestReverseCoreFloorWithEmptyActionStillBlocks(t *testing.T) {
 // TestReverseCoreFloorStillServesCleanContentWhenDisabled is the positive
 // control: without it the cases above would pass against a reverse proxy that
 // blocked everything for an unrelated reason.
+func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = false
+
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+corePayloadForFloor+"\n\n")
+	})
+
+	resp, err := http.Get(proxy.URL + "/events")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Block mode closes the pipe on a finding, so ReadAll sees the stream
+	// end as unexpected EOF. The pin is that the injection event never
+	// reaches the client, matching TestReverseProxy_SSE_InjectionTerminatesStream.
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), corePayloadForFloor) {
+		t.Fatalf("core injection reached the client on an SSE stream with the optional layer off: %q", body)
+	}
+}
+
+func TestReverseCoreFloorStillServesCleanSSEWhenParentDisabled(t *testing.T) {
+	const clean = "data: quarterly totals\n\n"
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = false
+
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, clean)
+	})
+
+	resp, err := http.Get(proxy.URL + "/events")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != clean {
+		t.Fatalf("ordinary SSE was not served: status=%d body=%q", resp.StatusCode, string(body))
+	}
+}
+
 func TestReverseCoreFloorStillServesCleanContentWhenDisabled(t *testing.T) {
 	const clean = "the quarterly report is attached for review"
 

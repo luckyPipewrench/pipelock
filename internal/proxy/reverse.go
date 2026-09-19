@@ -2404,19 +2404,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 					resp.ContentLength = int64(len(body))
 				}
-				// NOTE: deliberately the raw flag, not sc.ResponseScanningEnabled().
-				// Making this generic-MIME path scan requires buffering the body,
-				// which breaks the short-chunked streaming contract that
-				// TestReverseProxy_MediaSniffPreservesShortChunkedStream pins.
-				// Closing this last instance is a streaming-behaviour decision,
-				// tracked separately rather than smuggled in with the guard swap.
-				if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
-					// Nothing downstream reads these bytes: with response
-					// scanning off the fall-through path returns at the
-					// short-circuit below, which labels the outcome
-					// "complete". Record the boundary-limited label here
-					// instead, so a body no scanner ever read is never
-					// reported as complete coverage.
+				// sc.ResponseScanningEnabled(), not the raw flag: generic MIME
+				// that sniffed as non-media is still text the core floor must
+				// inspect. The media branch already buffered these bytes, so
+				// scanning them does not add a new streaming tradeoff.
+				if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
+					// Nothing downstream reads these bytes: with the floor
+					// and the optional layer both off, the fall-through
+					// path would label the outcome "complete". Record the
+					// boundary-limited label here instead, so a body no
+					// scanner ever read is never reported as complete
+					// coverage.
 					rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 						strconv.Itoa(resp.StatusCode))
 					recordReverseOutcome(resp.StatusCode, resp.ContentLength, outcomeReason)

@@ -119,6 +119,11 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	// last-known-good pointer must never diverge from the running config.
 	s.conductorApplyMu.Lock()
 	defer s.conductorApplyMu.Unlock()
+	// Hold the reload lock across reload, durable activation, and any
+	// compensation. An operator reload therefore cannot land between a failed
+	// candidate and restoration of the exact pre-apply live configuration.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	// Re-check under the apply lock: teardownConductor runs concurrently (CRL
 	// watcher / expiry timer / reload) and sets conductorDown without taking
 	// this lock (taking it would deadlock the poller's own
@@ -136,6 +141,8 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	if cfg == nil {
 		return applycache.AppliedBundle{}, errors.New("runtime config unavailable")
 	}
+	previousCfg := s.proxy.CurrentConfig()
+	previousConsistency := s.conductorApplyConsistencyError()
 	boundary := applycache.Boundary{
 		Cache: cache,
 		Identity: applycache.Identity{
@@ -147,8 +154,25 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		Resolver:     opts.Resolver,
 		LocalVersion: cliutil.Version,
 		Reload: func(newCfg *config.Config) error {
-			return s.reloadConductorPolicyBundle(newCfg, bundle.Payload.ConfigYAML)
+			// A candidate must not serve while its durable activation is pending.
+			// This source is independent of the stale enforcer's cache-based tick.
+			s.setConductorApplyConsistency(applycache.ErrLivePolicyUncertain)
+			err := s.reloadConductorPolicyBundleLocked(newCfg, bundle.Payload.ConfigYAML)
+			if err != nil && s.proxy.CurrentConfig() == previousCfg {
+				s.setConductorApplyConsistency(previousConsistency)
+			}
+			return err
 		},
+		ReloadChanged: func() bool { return s.proxy.CurrentConfig() != previousCfg },
+		Restore: func() error {
+			// Restoring an already-uncertain runtime cannot establish agreement
+			// with the durable pointer. Only a successful apply may clear it.
+			if previousConsistency != nil {
+				return previousConsistency
+			}
+			return s.reloadLockedRestoringPriorPolicy(previousCfg.Clone())
+		},
+		Consistency: s.setConductorApplyConsistency,
 		// Close the in-flight apply window: teardownConductor sets conductorDown
 		// without taking conductorApplyMu (that would deadlock the poller's own
 		// apply -> reload -> teardown path), so a bundle already past the
@@ -175,6 +199,8 @@ func (s *Server) recoverActiveConductorPolicy() error {
 	}
 	s.conductorApplyMu.Lock()
 	defer s.conductorApplyMu.Unlock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	if s.conductorDown.Load() {
 		return applycache.ErrEntitlementLost
 	}
@@ -214,8 +240,9 @@ func (s *Server) recoverActiveConductorPolicy() error {
 		Resolver:     resolver,
 		LocalVersion: cliutil.Version,
 		Reload: func(newCfg *config.Config) error {
-			return s.reloadConductorPolicyBundle(newCfg, active.Bundle.Payload.ConfigYAML)
+			return s.reloadConductorPolicyBundleLocked(newCfg, active.Bundle.Payload.ConfigYAML)
 		},
+		Consistency:   s.setConductorApplyConsistency,
 		StillEntitled: func() bool { return !s.conductorDown.Load() },
 	}).RecoverActive()
 	if err != nil {
@@ -239,12 +266,83 @@ func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bun
 func (s *Server) reloadConductorPolicyBundle(newCfg *config.Config, bundleYAML string) error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
+	return s.reloadConductorPolicyBundleLocked(newCfg, bundleYAML)
+}
 
+// reloadConductorPolicyBundleLocked applies a verified bundle while reloadMu
+// is held by the caller. The apply boundary uses this form so it can restore
+// the previous live configuration without an operator reload interleaving.
+func (s *Server) reloadConductorPolicyBundleLocked(newCfg *config.Config, bundleYAML string) error {
 	oldCfg := s.proxy.CurrentConfig()
 	if err := preserveConductorBundleLocalRuntimeState(oldCfg, newCfg, bundleYAML); err != nil {
 		return err
 	}
 	return s.reloadLocked(newCfg)
+}
+
+const conductorApplyUncertainMessage = "conductor policy application outcome is uncertain; denying all traffic (fail-closed)"
+
+// reloadLockedRestoringPriorPolicy re-applies the exact pre-transaction
+// configuration after a failed Conductor activation. Only compensation uses
+// this path; ordinary operator and policy reloads retain their downgrade gate.
+// The caller holds conductorApplyMu and reloadMu throughout restoration.
+func (s *Server) reloadLockedRestoringPriorPolicy(newCfg *config.Config) error {
+	return s.reloadLockedWithPolicyRestore(newCfg, true)
+}
+
+func (s *Server) setConductorApplyConsistency(err error) {
+	if s == nil {
+		return
+	}
+	if err == nil {
+		// In particular, restoring local policy after a failed first apply must
+		// retain the no-bundle denial before the independent apply gate clears.
+		if enforcer, ok := s.conductorStale.(*applycache.StaleEnforcer); ok && enforcer != nil {
+			enforcer.CheckNow()
+		}
+		// Teardown may have engaged strict denial while the stale check was
+		// reading the cache. Keep the independent gate until restart in that
+		// case; a committed policy cannot restore a lost fleet entitlement.
+		if !s.conductorDown.Load() || !s.conductorStaleStrictDeny.Load() {
+			if s.killswitch != nil {
+				s.killswitch.SetConductorApplyFailure(false, "")
+			}
+			return
+		}
+	}
+	message := conductorApplyUncertainMessage
+	if s.killswitch != nil {
+		s.killswitch.SetConductorApplyFailure(true, message)
+	}
+}
+
+func (s *Server) conductorApplyConsistencyError() error {
+	if s == nil || s.killswitch == nil {
+		return nil
+	}
+	if s.killswitch.ConductorApplyFailure() {
+		return fmt.Errorf("%w: %s", applycache.ErrLivePolicyUncertain, conductorApplyUncertainMessage)
+	}
+	return nil
+}
+
+// conductorActiveSnapshot checks uncertainty and reads the durable pointer in
+// one apply-lock interval. A reporter must not read old consistency state and
+// then attach a pointer from an intervening transaction. TryLock also permits
+// reporting from a callback inside reload without recursively taking the lock.
+func (s *Server) conductorActiveSnapshot() (applycache.VerifiedBundle, error) {
+	if s == nil || !s.conductorApplyMu.TryLock() {
+		return applycache.VerifiedBundle{}, applycache.ErrLivePolicyUncertain
+	}
+	defer s.conductorApplyMu.Unlock()
+	if err := s.conductorApplyConsistencyError(); err != nil {
+		return applycache.VerifiedBundle{}, err
+	}
+	cache := s.applyCache()
+	if cache == nil {
+		return applycache.VerifiedBundle{}, applycache.ErrCacheRequired
+	}
+	return cache.Active()
 }
 
 func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*auditbatcher.Queue, *auditbatcher.Transport, error) {
@@ -403,7 +501,7 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver, Labels: labels})
 		return applyErr
 	})
-	reporter, err := newConductorPolicyStatusReporter(cfg, client, cache)
+	reporter, err := newConductorPolicyStatusReporter(cfg, client, cache, s.conductorActiveSnapshot)
 	if err != nil {
 		return nil, err
 	}

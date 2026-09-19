@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -20,6 +21,17 @@ import (
 type ConfigLoader func(path string) (*config.Config, error)
 
 type ReloadFunc func(*config.Config) error
+
+// RestoreFunc returns the live runtime to the policy that was effective before
+// a candidate reload. The runtime supplies it while holding its reload lock so
+// an operator reload cannot interleave with compensation.
+type RestoreFunc func() error
+
+// ConsistencyFunc receives nil once the runtime and durable active pointer are
+// known to agree. A non-nil error means neither a durable outcome nor rollback
+// could be established and the runtime must deny admission and omit any claim
+// that it knows which policy is live.
+type ConsistencyFunc func(error)
 
 type Boundary struct {
 	Cache        *Cache
@@ -32,7 +44,13 @@ type Boundary struct {
 	// reload so replacing the cache path cannot substitute another policy.
 	LoadConfig ConfigLoader
 	Reload     ReloadFunc
-	Now        func() time.Time
+	// ReloadChanged reports whether a failed reload published a live config.
+	// A caller that can fail after publication must provide this check so the
+	// boundary compensates rather than assuming every error left policy alone.
+	ReloadChanged func() bool
+	Restore       RestoreFunc
+	Consistency   ConsistencyFunc
+	Now           func() time.Time
 	// StillEntitled, when non-nil, is consulted immediately before the
 	// live-config Reload (the security-relevant commit point). It lets the
 	// caller abort an apply whose fleet entitlement was revoked/expired
@@ -53,6 +71,8 @@ type AppliedBundle struct {
 	VerifiedBundle
 	ReloadedConfigHash string
 }
+
+var ErrLivePolicyUncertain = errors.New("conductor policy apply outcome is uncertain")
 
 func (b Boundary) Apply(bundle conductor.PolicyBundle, opts ApplyOptions) (AppliedBundle, error) {
 	if b.Cache == nil {
@@ -84,15 +104,67 @@ func (b Boundary) Apply(bundle conductor.PolicyBundle, opts ApplyOptions) (Appli
 		return AppliedBundle{}, ErrEntitlementLost
 	}
 	if err := b.Reload(cfg); err != nil {
-		return AppliedBundle{}, fmt.Errorf("reloading verified conductor policy bundle config: %w", err)
+		reloadErr := fmt.Errorf("reloading verified conductor policy bundle config: %w", err)
+		if b.ReloadChanged != nil && b.ReloadChanged() {
+			return AppliedBundle{}, b.restoreOrDeny(reloadErr)
+		}
+		return AppliedBundle{}, reloadErr
 	}
 	if err := b.Cache.activate(verified); err != nil {
-		return AppliedBundle{}, fmt.Errorf("activating verified conductor policy bundle: %w", err)
+		activationErr := fmt.Errorf("activating verified conductor policy bundle: %w", err)
+		active, activeErr := b.Cache.Active()
+		if activeErr == nil && strings.EqualFold(active.BundleHash, verified.BundleHash) {
+			// The first activation may have renamed the pointer before fsync failed.
+			// A second successful write establishes the candidate durably; a second
+			// failure remains ambiguous and must fail closed below.
+			if retryErr := b.Cache.activate(verified); retryErr == nil {
+				b.markConsistent()
+				return AppliedBundle{VerifiedBundle: verified, ReloadedConfigHash: cfg.Hash()}, nil
+			} else {
+				activationErr = fmt.Errorf("%w; retrying active-pointer durability: %w", activationErr, retryErr)
+			}
+			return AppliedBundle{}, b.deny(activationErr)
+		}
+		if activeErr != nil && !errors.Is(activeErr, ErrNoValidBundle) {
+			return AppliedBundle{}, b.deny(fmt.Errorf("%w; reading durable active policy: %w", activationErr, activeErr))
+		}
+		if (activeErr == nil && !strings.EqualFold(active.BundleHash, verified.baseHash)) ||
+			(errors.Is(activeErr, ErrNoValidBundle) && verified.baseHash != "") {
+			return AppliedBundle{}, b.deny(fmt.Errorf("%w; prior active policy changed during apply", activationErr))
+		}
+		return AppliedBundle{}, b.restoreOrDeny(activationErr)
 	}
+	b.markConsistent()
 	return AppliedBundle{
 		VerifiedBundle:     verified,
 		ReloadedConfigHash: cfg.Hash(),
 	}, nil
+}
+
+func (b Boundary) restoreOrDeny(cause error) error {
+	if b.Restore != nil {
+		if err := b.Restore(); err == nil {
+			b.markConsistent()
+			return cause
+		} else {
+			cause = fmt.Errorf("%w; restoring prior live policy: %w", cause, err)
+		}
+	}
+	return b.deny(cause)
+}
+
+func (b Boundary) deny(cause error) error {
+	uncertain := fmt.Errorf("%w: %w", ErrLivePolicyUncertain, cause)
+	if b.Consistency != nil {
+		b.Consistency(uncertain)
+	}
+	return uncertain
+}
+
+func (b Boundary) markConsistent() {
+	if b.Consistency != nil {
+		b.Consistency(nil)
+	}
 }
 
 // RecoverActive re-verifies and reloads the durable active bundle into the
@@ -132,6 +204,7 @@ func (b Boundary) RecoverActive() (AppliedBundle, error) {
 	if err := b.Reload(cfg); err != nil {
 		return AppliedBundle{}, fmt.Errorf("reloading verified cached conductor policy bundle config: %w", err)
 	}
+	b.markConsistent()
 	return AppliedBundle{
 		VerifiedBundle:     active,
 		ReloadedConfigHash: cfg.Hash(),

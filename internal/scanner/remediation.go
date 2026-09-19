@@ -90,7 +90,7 @@ const (
 	adaptiveEnforcementOperatorKnob     = "Wait for the event's auto-recovery time, or inspect and reset only the affected identity session with the session operator commands after confirming the traffic is legitimate. Changing `adaptive_enforcement.levels` or thresholds affects every session and is broader."
 	mcpSessionBindingOperatorKnob       = "Refresh the MCP session only after verifying the server's current tool inventory. If inventory drift is intentionally non-blocking, change `mcp_session_binding.unknown_tool_action` (or `no_baseline_action` for a missing baseline) to `warn`; that applies to every matching inventory event."
 	sniMismatchOperatorKnob             = "Correct the CONNECT hostname or TLS client so the SNI name matches the requested authority. `forward_proxy.sni_verification: false` disables domain-fronting protection for every tunnel and is not a narrow remediation."
-	killSwitchOperatorKnob              = "Inspect and clear the active kill-switch source named by the event. Config, API, remote kill, stale bundle, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips`; Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
+	killSwitchOperatorKnob              = "Inspect and clear the active kill-switch source named by the event. Config, API, remote kill, stale bundle, unresolved policy application, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips` except during unresolved Conductor policy application, which requires successful policy recovery. Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
 	airlockOperatorKnob                 = "Inspect the affected session and wait for its configured `airlock.timers` recovery, or use the authenticated session operator command to lower/reset only that session after confirming the traffic is legitimate. Weakening global triggers or tiers is broader."
 	crossRequestEntropyOperatorKnob     = "For a verified high-entropy destination, add only that host to `cross_request_detection.entropy_budget.exempt_domains`, or raise `bits_per_window` if the session-wide volume is expected. Changing `action` to `warn` affects every entropy-budget finding."
 	crossRequestFragmentOperatorKnob    = "The fragment reassembly DLP path has no per-host or per-rule exemption. Correct the split secret-like payload; the only config relief is the broad `cross_request_detection.action: warn` (or disabling `fragment_reassembly`), which weakens this detector for every session."
@@ -424,6 +424,14 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// reason so hot-path blocks such as URL length do not allocate a lowercase
 	// copy that no branch will inspect.
 	switch label {
+	case AuditKillSwitch:
+		if reason == "conductor_apply_failure" {
+			return RemediationGuidance{
+				OperatorKnob: "Restore the failed policy-application prerequisite and retry a valid Conductor policy, or restart to re-verify cached policy. `kill_switch.allowlist_ips` doesn't exempt unresolved policy application.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		}
+		return GuidanceFor(label)
 	case AuditCrossRequestEntropy,
 		AuditResponseScan,
 		AuditMediaPolicy,

@@ -41,6 +41,7 @@ type conductorPolicyStatusReporter struct {
 	heartbeatEndpoint string
 	cfg               config.Conductor
 	cache             *applycache.Cache
+	activeSnapshot    func() (applycache.VerifiedBundle, error)
 	// markerPath is the follower's local enrollment marker, and identity is
 	// resolved from it lazily rather than once at construction.
 	//
@@ -78,7 +79,7 @@ type conductorHeartbeatConfig struct {
 	privateKey  ed25519.PrivateKey
 }
 
-func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTPDoer, cache *applycache.Cache) (*conductorPolicyStatusReporter, error) {
+func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTPDoer, cache *applycache.Cache, activeSnapshot ...func() (applycache.VerifiedBundle, error)) (*conductorPolicyStatusReporter, error) {
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil
 	}
@@ -101,6 +102,9 @@ func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTP
 		cfg:               cfg.Conductor,
 		cache:             cache,
 		markerPath:        markerPath,
+	}
+	if len(activeSnapshot) > 0 {
+		r.activeSnapshot = activeSnapshot[0]
 	}
 	// Resolve now when the marker already exists, so an already-enrolled follower
 	// behaves exactly as before and never pays a lookup on its first report.
@@ -323,14 +327,26 @@ func (r *conductorPolicyStatusReporter) buildAppliedState(ev policysync.StatusEv
 	if ev.AppliedBundle != nil {
 		applied.LastSuccessfulApplyAt = pollAt.UTC()
 	}
-	if r.cache != nil {
-		if active, err := r.cache.Active(); err == nil {
-			applied.ActiveBundleID = boundAppliedStateString(active.Bundle.BundleID)
-			applied.ActiveBundleVersion = active.Bundle.Version
-			applied.ActiveBundleHash = strings.ToLower(active.BundleHash)
-			applied.ActiveBundleMinPipelockVersion = boundAppliedStateString(active.Bundle.MinPipelockVersion)
-		}
+	var active applycache.VerifiedBundle
+	var activeErr error
+	if r.activeSnapshot != nil {
+		active, activeErr = r.activeSnapshot()
+	} else if r.cache != nil {
+		active, activeErr = r.cache.Active()
+	} else {
+		return applied
 	}
+	if activeErr != nil {
+		if errors.Is(activeErr, applycache.ErrLivePolicyUncertain) {
+			applied.LastApplyErrorCode = "apply_failed"
+			applied.LastApplyErrorMessage = sanitizeAppliedStateMessage(activeErr.Error())
+		}
+		return applied
+	}
+	applied.ActiveBundleID = boundAppliedStateString(active.Bundle.BundleID)
+	applied.ActiveBundleVersion = active.Bundle.Version
+	applied.ActiveBundleHash = strings.ToLower(active.BundleHash)
+	applied.ActiveBundleMinPipelockVersion = boundAppliedStateString(active.Bundle.MinPipelockVersion)
 	return applied
 }
 

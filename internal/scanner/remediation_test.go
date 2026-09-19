@@ -483,8 +483,18 @@ func TestRemediationHintsDoNotRecommendInertKnobs(t *testing.T) {
 
 	t.Run("kill switch distinguishes transport exemptions", func(t *testing.T) {
 		hint := OperatorHintForResult(AuditKillSwitch, "sentinel")
-		if !strings.Contains(hint, "kill_switch.allowlist_ips") || !strings.Contains(hint, "Raw/MCP") {
+		if !strings.Contains(hint, "kill_switch.allowlist_ips") || !strings.Contains(hint, "Raw/MCP") || !strings.Contains(hint, "except during unresolved") {
 			t.Fatalf("kill-switch hint = %q, want exact HTTP carve-out scope", hint)
+		}
+	})
+
+	t.Run("uncertain policy requires recovery instead of an IP exemption", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditKillSwitch, "conductor_apply_failure")
+		if !strings.Contains(hint, "retry a valid Conductor policy") || !strings.Contains(hint, "restart") || !strings.Contains(hint, "doesn't exempt") {
+			t.Fatalf("uncertain-policy hint = %q, want recovery and explicit exemption limits", hint)
+		}
+		if hint == OperatorHintForResult(AuditKillSwitch, "sentinel") {
+			t.Fatal("uncertain policy retained the emergency-control remedy")
 		}
 	})
 

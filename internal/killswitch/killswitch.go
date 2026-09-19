@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package killswitch implements an emergency deny-all controller for Pipelock.
-// Six activation sources (config, API, Conductor remote kill, Conductor stale
-// bundle, SIGUSR1, sentinel file) are OR-composed: any one being active engages
-// the kill switch and denies all requests.
+// Seven activation sources (config, API, Conductor remote kill, Conductor stale
+// bundle, uncertain Conductor apply, SIGUSR1, sentinel file) are OR-composed:
+// any active source engages the kill switch, subject to its exemptions.
 package killswitch
 
 import (
@@ -30,11 +30,11 @@ const EnvAPIToken = config.EnvKillSwitchAPIToken
 type Decision struct {
 	Active         bool
 	Message        string
-	Source         string // "config", "api", "conductor_remote", "conductor_stale", "signal", "sentinel"
+	Source         string // "config", "api", "conductor_remote", "conductor_stale", "conductor_apply_failure", "signal", "sentinel"
 	IsNotification bool   // MCP only: true if the message has no "id" field
 }
 
-// Controller manages the kill switch state across six activation sources.
+// Controller manages the kill switch state across seven activation sources.
 type Controller struct {
 	cfg          atomic.Pointer[runtime]
 	api          atomic.Bool
@@ -48,7 +48,12 @@ type Controller struct {
 	// remote-killed, and recovering from staleness must not lift an operator kill.
 	conductorStale    atomic.Bool
 	conductorStaleMsg atomic.Value
-	separatePort      atomic.Bool // true when API runs on a dedicated port (no main-port exemption)
+	// conductorApplyFailure remains active until a later Conductor transaction
+	// proves live and durable policy state agree. The stale enforcer must not
+	// own this source: its ordinary tick clears conductorStale from cache state.
+	conductorApplyFailure    atomic.Bool
+	conductorApplyFailureMsg atomic.Value
+	separatePort             atomic.Bool // true when API runs on a dedicated port (no main-port exemption)
 }
 
 // runtime holds the parsed config state for atomic swap on reload.
@@ -121,7 +126,8 @@ func (c *Controller) IsActive() bool {
 // belong to the upstream origin, not to pipelock's own endpoints.
 func (c *Controller) IsActiveForIP(clientIP string) Decision {
 	rt := c.cfg.Load()
-	if len(rt.allowlistNets) > 0 {
+	// Operator emergency exemptions require a known effective policy.
+	if !c.conductorApplyFailure.Load() && len(rt.allowlistNets) > 0 {
 		if ip := net.ParseIP(clientIP); ip != nil {
 			for _, ipNet := range rt.allowlistNets {
 				if ipNet.Contains(ip) {
@@ -160,9 +166,9 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	rt := c.cfg.Load()
 
 	// Proxied traffic gets no endpoint exemption: the request path belongs to
-	// the destination, not to pipelock. The IP allowlist is deliberately still
-	// honoured here, because it keys on the CLIENT address rather than on a
-	// path the client chooses.
+	// the destination, not to pipelock. Emergency IP exemptions still apply
+	// while policy is consistent, because they key on the CLIENT address
+	// rather than on a path the client chooses.
 	if isProxiedRequest(r) {
 		if d := c.allowlistExempt(rt, r); d != nil {
 			return *d
@@ -211,7 +217,7 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 // safe to honour for proxied traffic: a client cannot choose its own source IP
 // the way it chooses a request path.
 func (c *Controller) allowlistExempt(rt *runtime, r *http.Request) *Decision {
-	if len(rt.allowlistNets) == 0 {
+	if c.conductorApplyFailure.Load() || len(rt.allowlistNets) == 0 {
 		return nil
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -310,6 +316,20 @@ func (c *Controller) SetConductorStale(active bool, message string) {
 	c.conductorStale.Store(active)
 }
 
+// SetConductorApplyFailure controls the independent fail-closed source used
+// while a Conductor policy application cannot establish whether live policy and
+// durable active state agree.
+func (c *Controller) SetConductorApplyFailure(active bool, message string) {
+	c.conductorApplyFailureMsg.Store(message)
+	c.conductorApplyFailure.Store(active)
+}
+
+// ConductorApplyFailure reports the same uncertainty state used by admission.
+// Applied-policy reporting uses it instead of maintaining a second state copy.
+func (c *Controller) ConductorApplyFailure() bool {
+	return c.conductorApplyFailure.Load()
+}
+
 // SetSeparateAPIPort marks whether the kill switch API runs on a separate
 // listener. When true, IsActiveHTTP skips the /api/v1/* exemption on the
 // main port - the agent cannot reach the API to deactivate its own kill switch.
@@ -321,11 +341,12 @@ func (c *Controller) SetSeparateAPIPort(sep bool) {
 func (c *Controller) Sources() map[string]bool {
 	rt := c.cfg.Load()
 	sources := map[string]bool{
-		"config":           rt.cfgEnabled,
-		"api":              c.api.Load(),
-		"signal":           c.sigusr1.Load(),
-		"conductor_remote": c.conductor.Load(),
-		"conductor_stale":  c.conductorStale.Load(),
+		"config":                  rt.cfgEnabled,
+		"api":                     c.api.Load(),
+		"signal":                  c.sigusr1.Load(),
+		"conductor_remote":        c.conductor.Load(),
+		"conductor_stale":         c.conductorStale.Load(),
+		"conductor_apply_failure": c.conductorApplyFailure.Load(),
 	}
 	if rt.sentinelFile != "" {
 		_, err := os.Stat(rt.sentinelFile)
@@ -338,7 +359,7 @@ func (c *Controller) Sources() map[string]bool {
 
 // computeDecision evaluates activation sources in priority order.
 func (c *Controller) computeDecision(rt *runtime) Decision {
-	// Priority: config > api > conductor_remote > conductor_stale > signal > sentinel.
+	// Priority: config > api > conductor_remote > conductor_stale > conductor_apply_failure > signal > sentinel.
 	if rt.cfgEnabled {
 		return Decision{Active: true, Message: rt.message, Source: "config"}
 	}
@@ -358,6 +379,13 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 			msg = rt.message
 		}
 		return Decision{Active: true, Message: msg, Source: "conductor_stale"}
+	}
+	if c.conductorApplyFailure.Load() {
+		msg, _ := c.conductorApplyFailureMsg.Load().(string)
+		if msg == "" {
+			msg = rt.message
+		}
+		return Decision{Active: true, Message: msg, Source: "conductor_apply_failure"}
 	}
 	if c.sigusr1.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}

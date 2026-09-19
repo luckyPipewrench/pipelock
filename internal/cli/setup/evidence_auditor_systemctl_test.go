@@ -229,6 +229,7 @@ func TestEvidenceAuditorUserSystemdUnavailableWhenSystemctlMissing(t *testing.T)
 // from every named state word and must be reported as such rather than
 // falling through to the generic default case's message.
 func TestEvidenceAuditorUserSystemdUnavailableWhenProbeReturnsEmptyState(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
 		if op == systemctlUserRunning {
 			return &systemctlUserStateError{state: ""}
@@ -374,5 +375,46 @@ func TestEvidenceAuditorUserSystemdUnavailableDoesNotRetryMissingBinary(t *testi
 	}
 	if probes != 0 || waits != 0 {
 		t.Fatalf("probes=%d waits=%d, want 0 and 0", probes, waits)
+	}
+}
+
+func TestEvidenceAuditorWaitZeroDurationAndCancel(t *testing.T) {
+	if err := evidenceAuditorWait(context.Background(), 0); err != nil {
+		t.Fatalf("zero duration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := evidenceAuditorWait(ctx, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled wait error = %v, want context.Canceled", err)
+	}
+	if err := evidenceAuditorWait(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("short wait: %v", err)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableWaitCancel(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stub(t, &evidenceAuditorWait, func(ctx context.Context, _ time.Duration) error {
+		return ctx.Err()
+	})
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		return &systemctlUserStateError{state: "starting"}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(ctx)
+	if !unavailable {
+		t.Fatal("expected unavailable when wait is canceled")
+	}
+	if !strings.Contains(reason, "unusable") {
+		t.Fatalf("reason = %q, want unusable", reason)
+	}
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1 (cancel during the first wait, not another probe)", probes)
 	}
 }

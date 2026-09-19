@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The installer must be able to express only the two operations it needs, with
@@ -228,6 +229,7 @@ func TestEvidenceAuditorUserSystemdUnavailableWhenSystemctlMissing(t *testing.T)
 // from every named state word and must be reported as such rather than
 // falling through to the generic default case's message.
 func TestEvidenceAuditorUserSystemdUnavailableWhenProbeReturnsEmptyState(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
 		if op == systemctlUserRunning {
 			return &systemctlUserStateError{state: ""}
@@ -241,5 +243,178 @@ func TestEvidenceAuditorUserSystemdUnavailableWhenProbeReturnsEmptyState(t *test
 	}
 	if !strings.Contains(reason, "returned no result") {
 		t.Fatalf("reason = %q, want the no-result message", reason)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableRetriesStartingThenRunning(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		if probes == 1 {
+			return &systemctlUserStateError{state: "starting"}
+		}
+		return &systemctlUserStateError{state: "running"}
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if unavailable {
+		t.Fatalf("unavailable after starting then running: %s", reason)
+	}
+	if probes != 2 {
+		t.Fatalf("probes = %d, want 2", probes)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableRetriesInitializingThenDegraded(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		if probes == 1 {
+			return &systemctlUserStateError{state: "initializing"}
+		}
+		return &systemctlUserStateError{state: "degraded"}
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if unavailable {
+		t.Fatalf("unavailable after initializing then degraded: %s", reason)
+	}
+	if probes != 2 {
+		t.Fatalf("probes = %d, want 2", probes)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableGivesUpAfterStartingBudget(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		return &systemctlUserStateError{state: "starting"}
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if !unavailable {
+		t.Fatal("expected unavailable after the starting budget")
+	}
+	if !strings.Contains(reason, `"starting"`) {
+		t.Fatalf("reason = %q, want it to name starting", reason)
+	}
+	want := evidenceAuditorSystemdStartRetries + 1
+	if probes != want {
+		t.Fatalf("probes = %d, want %d", probes, want)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableDoesNotRetryOffline(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var waits int
+	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error {
+		waits++
+		return nil
+	})
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		return &systemctlUserStateError{state: "offline"}
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if !unavailable {
+		t.Fatal("expected unavailable for offline")
+	}
+	if !strings.Contains(reason, `"offline"`) {
+		t.Fatalf("reason = %q, want it to name offline", reason)
+	}
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1", probes)
+	}
+	if waits != 0 {
+		t.Fatalf("waits = %d, want 0", waits)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableDoesNotRetryMissingBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var waits int
+	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error {
+		waits++
+		return nil
+	})
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(context.Context, systemctlOp) error {
+		probes++
+		return &systemctlUserStateError{state: "starting"}
+	})
+
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(context.Background())
+	if !unavailable {
+		t.Fatal("expected unavailable with no systemctl in PATH")
+	}
+	if !strings.Contains(reason, "systemctl not found in PATH") {
+		t.Fatalf("reason = %q, want the missing-binary message", reason)
+	}
+	if probes != 0 || waits != 0 {
+		t.Fatalf("probes=%d waits=%d, want 0 and 0", probes, waits)
+	}
+}
+
+func TestEvidenceAuditorWaitZeroDurationAndCancel(t *testing.T) {
+	if err := evidenceAuditorWait(context.Background(), 0); err != nil {
+		t.Fatalf("zero duration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := evidenceAuditorWait(ctx, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled wait error = %v, want context.Canceled", err)
+	}
+	if err := evidenceAuditorWait(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("short wait: %v", err)
+	}
+}
+
+func TestEvidenceAuditorUserSystemdUnavailableWaitCancel(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	stub(t, &evidenceAuditorWait, func(ctx context.Context, _ time.Duration) error {
+		return ctx.Err()
+	})
+	var probes int
+	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
+		if op != systemctlUserRunning {
+			return nil
+		}
+		probes++
+		return &systemctlUserStateError{state: "starting"}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	unavailable, reason := evidenceAuditorUserSystemdUnavailable(ctx)
+	if !unavailable {
+		t.Fatal("expected unavailable when wait is canceled")
+	}
+	if !strings.Contains(reason, "unusable") {
+		t.Fatalf("reason = %q, want unusable", reason)
+	}
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1 (cancel during the first wait, not another probe)", probes)
 	}
 }

@@ -79,6 +79,73 @@ func TestActionRemoveAgentToolConfigs_RestoresPreExistingBackups(t *testing.T) {
 	}
 }
 
+func assertRestorePathPositiveControl(t *testing.T) {
+	t.Helper()
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.caExportPath), 0o750); err != nil {
+		t.Fatalf("mkdir CA export directory: %v", err)
+	}
+	if err := os.WriteFile(env.caExportPath, []byte("managed"), 0o600); err != nil {
+		t.Fatalf("write managed CA export: %v", err)
+	}
+	if err := os.WriteFile(env.caExportPath+".bak", []byte("previous"), 0o600); err != nil {
+		t.Fatalf("write prior CA export: %v", err)
+	}
+	if err := actionRestorePath("CA export", func(e *installEnv) string { return e.caExportPath }).undo(context.Background(), env); err != nil {
+		t.Fatalf("restore positive control: %v", err)
+	}
+	got, err := os.ReadFile(env.caExportPath)
+	if err != nil || string(got) != "previous" {
+		t.Fatalf("restored CA export = %q, %v; want prior export", got, err)
+	}
+}
+
+func TestActionRestorePathRestoresOrRemovesCAExports(t *testing.T) {
+	t.Run("positive control restores a previous export", func(t *testing.T) {
+		assertRestorePathPositiveControl(t)
+	})
+
+	t.Run("without a backup removes only the managed export", func(t *testing.T) {
+		assertRestorePathPositiveControl(t)
+		env, _, _ := newFakeEnv(t)
+		if err := os.MkdirAll(filepath.Dir(env.caExportPath), 0o750); err != nil {
+			t.Fatalf("mkdir CA export directory: %v", err)
+		}
+		if err := os.WriteFile(env.caExportPath, []byte("managed"), 0o600); err != nil {
+			t.Fatalf("write managed CA export: %v", err)
+		}
+		if err := actionRestorePath("CA export", func(e *installEnv) string { return e.caExportPath }).undo(context.Background(), env); err != nil {
+			t.Fatalf("remove newly-created CA export: %v", err)
+		}
+		if _, err := os.Stat(env.caExportPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("newly-created CA export remains after rollback: %v", err)
+		}
+	})
+
+	t.Run("rename failure is returned with the artifact label", func(t *testing.T) {
+		assertRestorePathPositiveControl(t)
+		env, _, _ := newFakeEnv(t)
+		if err := os.MkdirAll(filepath.Dir(env.caExportPath), 0o750); err != nil {
+			t.Fatalf("mkdir CA export directory: %v", err)
+		}
+		if err := os.WriteFile(env.caExportPath, []byte("managed"), 0o600); err != nil {
+			t.Fatalf("write managed CA export: %v", err)
+		}
+		if err := os.WriteFile(env.caExportPath+".bak", []byte("previous"), 0o600); err != nil {
+			t.Fatalf("write prior CA export: %v", err)
+		}
+		env.rename = func(string, string) error { return errors.New("rename denied") }
+
+		err := actionRestorePath("CA export", func(e *installEnv) string { return e.caExportPath }).undo(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "restore CA export") || !strings.Contains(err.Error(), "rename denied") {
+			t.Fatalf("rename failure = %v", err)
+		}
+		if _, backupErr := os.Stat(env.caExportPath + ".bak"); backupErr != nil {
+			t.Fatalf("rollback error discarded the recoverable backup: %v", backupErr)
+		}
+	})
+}
+
 func TestReadWrapperInventory_FallsBackToToolsList(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	writeTestToolsList(t, env, []toolsListEntry{

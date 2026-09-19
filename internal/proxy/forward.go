@@ -2336,6 +2336,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: fwdRespExempt,
+				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
+					recordObservedCoreResponseMatches(p.metrics, p.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportForward)
+				},
 				OnFinding: func(err error) {
 					// Track BOTH responsePromptHit (for receipt context)
 					// AND hasFinding (for adaptive-decay protection). The
@@ -2905,6 +2908,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
+			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
 			if !scanResult.Clean && !scanResult.Failed() {
 				responsePromptHit = true
 			}

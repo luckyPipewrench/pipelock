@@ -100,3 +100,10 @@ func (s *Server) initConductorStaleEnforcer(cfg *config.Config, _ *killswitch.Co
 	}
 	return nil
 }
+
+// recoverActiveConductorPolicy is a no-op in the Apache-only build because a
+// Conductor-enabled configuration has already been refused during startup.
+func (s *Server) recoverActiveConductorPolicy() error {
+	s.touchConductorCoreFields()
+	return nil
+}

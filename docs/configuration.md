@@ -1009,6 +1009,12 @@ response_scanning:
   mcp_servers:                  # MCP response trust classes; default is untrusted/block
     - server: "analysis-server"
       trust: "reasoning"        # reasoning permits warn when action is warn; untrusted => block
+  core_observe_exceptions:      # declared, expiring observe valve on the immutable floor.
+    - host: "docs.vendor.example"
+      pattern: "Prompt Injection"
+      reason: "vendor prompt-injection guide read during rule authoring"
+      owner: "security-team"
+      expires: "2026-10-10" # 30-day maximum; see the note below.
   patterns:
     - name: "Custom Injection"
       regex: 'override system prompt'
@@ -1027,6 +1033,7 @@ response_scanning:
 | `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The `expires` date may be no more than 90 days ahead; shorten it, or use a scanned delivery path or authenticated artifact for a permanent need. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. Every RFC 9239 JavaScript media type and alias (`text/javascript`, `application/javascript`, `application/ecmascript`, `application/x-javascript`, `application/x-ecmascript`, `text/ecmascript`, and the rest of the section-6 list) is refused as a `content_types` entry, matching what the browser shield already treats as JavaScript, so an opaque-download exception cannot admit an equivalent script response under a less common alias. |
 | `authenticated_artifacts` | `[]` | Exact official signed rules artifacts which the forward proxy and decrypted CONNECT interceptor buffer and verify before bypassing only response prompt-injection matching. Each entry requires exact `host`, canonical non-root `path`, and signed `bundle_name`; no wildcard, prefix, query, userinfo, or non-default port matches. The proxy fetches the sidecar signature without forwarding caller credentials, refuses every redirect, verifies an embedded official Ed25519 key and the bundle identity, then records an audit event and artifact-labelled allow receipt. Any mismatch, redirect, oversized body, invalid signer/signature, or wrong bundle name blocks before upstream bytes reach the client. Request DLP, authority, SSRF, budgets, Browser Shield, and media policy remain active. Upgrade binaries before adding this field: older binaries reject unknown config fields. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. A server that is omitted, missing, or does not match an entry is treated as `untrusted` and blocks response-injection findings. A malformed entry is not a fallback: an unknown trust value, an invalid server name, or a duplicate entry fails config validation, so the configuration does not load. `reasoning` permits warn-and-forward only when `response_scanning.action` is `warn`; a stricter section action still applies. |
+| `core_observe_exceptions` | `[]` | Declared, expiring per-host observe entries for ONE named core response pattern. The scan still runs and still matches; only the block is withheld, and the finding is recorded and emitted as evidence under the `core_observed` reason. Requires exact `host` (wildcards refused), a `pattern` naming one core pattern, `reason`, `owner`, and a non-expired `expires` no more than 30 days ahead. An expired or malformed entry blocks again without waiting for a reload. |
 | `patterns` | 33 built-in | Injection and state/control poisoning patterns |
 
 **Built-in patterns (33):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
@@ -1048,6 +1055,12 @@ mcp_tool_scanning:
 This compatibility fallback will become a startup/reload error in a future release; remove the disable to silence the warning.
 
 **Exempt domains:** Trusted response APIs can return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs, and only the response injection scan is skipped; this list never loosens a request-side control. To let a destination's request bodies follow the configured action instead of the request-side hard blocks, use `request_body_scanning.trusted_hosts`. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers`, and a reasoning-model MCP server can warn only when the enclosing response action is also `warn`.
+
+**Observing one core pattern on one host:** the core response patterns are the immutable floor, so `action: warn` does not reach them and `patterns[].exempt_domains` does not either. Before this valve the only configuration that let a blocked page through was `exempt_domains`, which stops injection scanning for the whole host. `core_observe_exceptions` is the narrow alternative: it names one host, one core pattern, why, who authorized it, and when it ends.
+
+Observing is not exempting. The pattern still runs on every normalization pass and the finding is still produced; Pipelock withholds only the block, records the finding, and emits it with the `core_observed` reason so it is distinguishable from an ordinary suppression in audit and metrics. Observing one pattern never masks another: if the same content also trips a second core pattern you did not declare, that one still blocks.
+
+Two limits worth knowing before you reach for it. A page often trips more than one pattern, so a real document may need several entries or may also need `suppress` for a configured (non-core) pattern, and you will discover that one refusal at a time. And the expiry is re-checked when the response is scanned, not only when the config loads, so a long-running proxy stops observing the day the entry expires.
 
 **MCP response trust classes:** MCP response scanning defaults to `untrusted`, which blocks response-injection findings even if the generic `response_scanning.action` is `warn`. This protects web-relay servers such as fetch/search/scraping tools. A trust class can tighten the enclosing `response_scanning.action`, but it cannot weaken it. To allow a reasoning-model MCP server to answer security-analysis questions that quote canonical jailbreak strings, set the enclosing action to `warn` and opt in by server name:
 
@@ -1674,6 +1687,11 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Metrics listener
 
+
+## Contained CA trust
+
+The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.
+
 Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
 
 Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
@@ -1712,6 +1730,10 @@ containment:
 `host` must be a loopback literal, `127.0.0.1` or `::1`; a hostname, wildcard, or CIDR is rejected. `port` is a single TCP port (1-65535) distinct from the proxy port -- the proxy allow is implicit and does not need a declared entry. `owner`, `reason`, and `expires_at` (RFC3339, must remain in the future) are required, and an expired, malformed, duplicate, or proxy-port-colliding entry fails config validation, so `pipelock check` and `contain install` both fail closed rather than loading a ruleset that does not match the declaration.
 
 `contain install` renders each declared entry as a forward allow and a narrow established-reply allow. The reply path is limited to `lo`, the declared loopback address and source port, and reply-direction traffic.
+
+This declaration is intentionally separate from a listener created by a contained tool itself. When `contain install` has established Pipelock's owned containment slice, a tool launched through `plk-*` or `contain run` may connect to a loopback listener on any kernel-assigned TCP port only when the receiving socket is also in that slice. The nftables output hook marks the initiating flow and the input hook requires the receiving socket's slice before accepting it. A listener outside the slice, including one under the same Unix account, remains unreachable; there is no wildcard port range or blanket loopback exception.
+
+The owned-slice anchor is created before nftables validation because nft resolves the cgroup path while loading rules. If the anchor or receiver gate is missing, unreadable, inactive, or unrecognized, Pipelock denies this dynamic path and `pipelock contain verify` names the failed control. Restore it with `sudo pipelock contain install`; editing `containment.loopback_services` cannot enable a dynamic listener.
 
 **Every add, remove, or expiry of an entry needs a reconciliation pass to reach the kernel: run `pipelock contain reload-nft-rules` as root after editing this list.** Editing the config alone is not enough -- the managed nftables chain and the persisted rules file only change on the next reconciliation, which is what that command (and the boot-time unit that runs it automatically on every boot) does. If the managed config is missing or unreadable, or the declared set as a whole contains a malformed or expired entry, reconciliation fails closed to zero declared loopback services and logs the config path and why (naming `pipelock contain install` as the recovery command for a missing config); it does not fail the reload. See "Declared loopback services" under `contain-cli.md` for how `contain install`, `contain reload-nft-rules`, and `contain verify` each honor this list.
 

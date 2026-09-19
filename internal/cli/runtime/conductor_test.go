@@ -1248,6 +1248,229 @@ func TestApplyConductorPolicyBundleFailsClosed(t *testing.T) {
 	}
 }
 
+// TestNewServerRejectsCachedPolicyWhenLocalVersionCannotVerifyItsMinimum
+// reproduces a process restart with a durable policy cache. A follower must not
+// rebuild its base policy and admit traffic merely because the cache's active
+// record is structurally intact: the restarted binary must establish that it
+// can still satisfy the cached policy's minimum before the listener can start.
+func TestNewServerRejectsCachedPolicyWhenLocalVersionCannotVerifyItsMinimum(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-restart-minimum", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.vendor.example",
+		"",
+	}, "\n"))
+	bundle.MinPipelockVersion = "1.0.0"
+	bundle = signRuntimePolicyBundle(t, signer, bundle)
+	if _, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()}); err != nil {
+		t.Fatalf("ApplyConductorPolicyBundle: %v", err)
+	}
+
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	before, err := cache.Active()
+	if err != nil {
+		t.Fatalf("cache.Active before restart: %v", err)
+	}
+	s.cleanup()
+
+	previousVersion := cliutil.Version
+	cliutil.Version = "0.0.0-dev.unknown"
+	t.Cleanup(func() { cliutil.Version = previousVersion })
+
+	restarted, err := NewServer(ServerOpts{ConfigFile: s.opts.ConfigFile, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if restarted != nil {
+		t.Cleanup(restarted.cleanup)
+	}
+	if !errors.Is(err, applycache.ErrUnsupportedMinVersion) {
+		t.Fatalf("NewServer with unverifiable cached policy minimum = %v, want ErrUnsupportedMinVersion", err)
+	}
+
+	after, err := cache.Active()
+	if err != nil {
+		t.Fatalf("cache.Active after rejected restart: %v", err)
+	}
+	if after.BundleHash != before.BundleHash || after.Bundle.Version != before.Bundle.Version {
+		t.Fatalf("active bundle after rejected restart = hash %q version %d, want preserved hash %q version %d", after.BundleHash, after.Bundle.Version, before.BundleHash, before.Bundle.Version)
+	}
+}
+
+func TestNewServerRecoversVerifiedCachedPolicyBeforeAdmission(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-restart-recovery", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.vendor.example",
+		"",
+	}, "\n"))
+	if _, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()}); err != nil {
+		t.Fatalf("ApplyConductorPolicyBundle: %v", err)
+	}
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	before, err := cache.Active()
+	if err != nil {
+		t.Fatalf("cache.Active before restart: %v", err)
+	}
+	s.cleanup()
+
+	restarted, err := NewServer(ServerOpts{ConfigFile: s.opts.ConfigFile, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatalf("NewServer with verified cached policy: %v", err)
+	}
+	t.Cleanup(restarted.cleanup)
+	if live := restarted.proxy.CurrentConfig(); live == nil || live.Mode != config.ModeStrict {
+		t.Fatalf("restarted live mode = %v, want strict cached policy", live)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https%3A%2F%2Funapproved.vendor.example", nil)
+	rec := httptest.NewRecorder()
+	restarted.proxy.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cached strict policy request status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	after, err := cache.Active()
+	if err != nil {
+		t.Fatalf("cache.Active after recovery: %v", err)
+	}
+	if after.BundleHash != before.BundleHash || after.Bundle.Version != before.Bundle.Version {
+		t.Fatalf("active bundle after recovery = hash %q version %d, want preserved hash %q version %d", after.BundleHash, after.Bundle.Version, before.BundleHash, before.Bundle.Version)
+	}
+}
+
+func TestNewServerRecoversExpiredCachedPolicyWithStaleAdmission(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		expiredAgo time.Duration
+		afterGrace string
+		wantStatus int
+	}{
+		{"within grace", time.Minute, config.ConductorStaleStrictDenyAll, http.StatusForbidden},
+		{"strict after grace", 4 * time.Minute, config.ConductorStaleStrictDenyAll, http.StatusServiceUnavailable},
+		{"continue after grace", 4 * time.Minute, config.ConductorStaleContinueLastKnownGood, http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, signer := newConductorApplyTestServer(t)
+			bundle := signedRuntimePolicyBundle(t, signer, "bundle-restart-stale", 1, "", "mode: strict\napi_allowlist:\n  - api.vendor.example\n")
+			bundle.ExpiresAt = time.Now().UTC().Add(-tt.expiredAgo)
+			bundle.NotBefore = bundle.ExpiresAt.Add(-2 * time.Minute)
+			bundle.CreatedAt = bundle.NotBefore
+			bundle = signRuntimePolicyBundle(t, signer, bundle)
+			cache, _ := s.conductorApply.(*applycache.Cache)
+			_, err := (applycache.Boundary{
+				Cache: cache, Identity: applycache.Identity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1"},
+				Resolver: signer.resolver(), LocalVersion: cliutil.Version,
+				Now:    func() time.Time { return bundle.NotBefore.Add(time.Second) },
+				Reload: func(cfg *config.Config) error { return s.reloadConductorPolicyBundle(cfg, bundle.Payload.ConfigYAML) },
+			}).Apply(bundle, applycache.ApplyOptions{})
+			if err != nil {
+				t.Fatalf("seed policy before expiry: %v", err)
+			}
+			s.cleanup()
+			data, err := os.ReadFile(s.opts.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const section = "conductor:\n"
+			if strings.Count(string(data), section) != 1 {
+				t.Fatal("fixture must contain one conductor section")
+			}
+			updated := strings.Replace(string(data), section, section+"  stale_policy:\n    grace_multiplier: 1\n    after_grace: "+tt.afterGrace+"\n", 1)
+			writePrivateTestFile(t, s.opts.ConfigFile, []byte(updated))
+			restarted, err := NewServer(ServerOpts{ConfigFile: s.opts.ConfigFile, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+			if err != nil {
+				t.Fatalf("restart with expired cached policy: %v", err)
+			}
+			t.Cleanup(restarted.cleanup)
+			if restarted.proxy.CurrentConfig().Mode != config.ModeStrict {
+				t.Fatal("restart did not restore strict policy")
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https%3A%2F%2Funapproved.vendor.example", nil)
+			rec := httptest.NewRecorder()
+			restarted.proxy.Handler().ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status before listener admission = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRecoverActiveConductorPolicySkipsDisabledConductor(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	if err := s.recoverActiveConductorPolicy(); err != nil {
+		t.Fatalf("recoverActiveConductorPolicy() with conductor disabled: %v", err)
+	}
+}
+
+func TestRecoverActiveConductorPolicyRefusesUnavailableState(t *testing.T) {
+	t.Run("nil runtime", func(t *testing.T) {
+		var s *Server
+		if err := s.recoverActiveConductorPolicy(); err == nil {
+			t.Fatal("nil runtime recovery succeeded")
+		}
+	})
+	t.Run("entitlement teardown", func(t *testing.T) {
+		s := &Server{}
+		s.conductorDown.Store(true)
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrEntitlementLost) {
+			t.Fatalf("recovery after teardown = %v, want ErrEntitlementLost", err)
+		}
+	})
+	t.Run("missing config", func(t *testing.T) {
+		if err := (&Server{}).recoverActiveConductorPolicy(); err == nil {
+			t.Fatal("recovery without runtime config succeeded")
+		}
+	})
+	t.Run("missing cache", func(t *testing.T) {
+		s := &Server{cfg: &config.Config{Conductor: config.Conductor{Enabled: true}}}
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrCacheRequired) {
+			t.Fatalf("recovery without cache = %v, want ErrCacheRequired", err)
+		}
+	})
+	t.Run("proxy config fallback still requires cache", func(t *testing.T) {
+		parent, _ := newConductorApplyTestServer(t)
+		s := &Server{proxy: parent.proxy}
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrCacheRequired) {
+			t.Fatalf("proxy config fallback = %v, want ErrCacheRequired", err)
+		}
+	})
+	for _, fault := range []string{"substituted config", "unreadable roster", "missing enforcer"} {
+		t.Run(fault, func(t *testing.T) {
+			s, signer := newConductorApplyTestServer(t)
+			bundle := signedRuntimePolicyBundle(t, signer, "bundle-recovery-state", 1, "", "mode: strict\napi_allowlist:\n  - api.vendor.example\n")
+			applied, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := s.currentConfig()
+			activePath := filepath.Join(cfg.Conductor.BundleCacheDir, "active.json")
+			before, err := os.ReadFile(filepath.Clean(activePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want string
+			switch fault {
+			case "substituted config":
+				writePrivateTestFile(t, applied.ConfigPath, []byte("mode: balanced\n"))
+				want = "cached config does not match"
+			case "unreadable roster":
+				writePrivateTestFile(t, cfg.Conductor.TrustRosterPath, []byte("{"))
+				want = "building conductor recovery trust resolver"
+			case "missing enforcer":
+				s.conductorStale = nil
+				want = "requires the stale-policy enforcer"
+			}
+			if err := s.recoverActiveConductorPolicy(); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("recovery with %s = %v, want %q", fault, err, want)
+			}
+			after, err := os.ReadFile(filepath.Clean(activePath))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed recovery replaced durable active state: %v", err)
+			}
+		})
+	}
+}
+
 type runtimePolicySigner struct {
 	id   string
 	pub  ed25519.PublicKey

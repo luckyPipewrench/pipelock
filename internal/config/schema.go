@@ -844,6 +844,29 @@ type ResponseScanning struct {
 	AuthenticatedArtifacts         []AuthenticatedArtifactEntry  `yaml:"authenticated_artifacts"`             // exact signed artifacts the proxy may release after its own verification
 	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
 	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
+	CoreObserveExceptions          []CoreObserveException        `yaml:"core_observe_exceptions"`             // declared, expiring per-host observe entries for one named core response pattern
+}
+
+// CoreObserveException declares that one exact host may OBSERVE, rather than
+// block on, one named immutable core response pattern.
+//
+// Observing never skips the scan. The pattern still runs on every
+// normalization pass, the finding is still recorded, and it is still emitted
+// as evidence with its own "core_observed" reason so an auditor can tell an
+// operator-declared floor observation from ordinary suppression. Only the
+// block is withheld, and only for the one pattern named here on the one host
+// named here.
+//
+// This is deliberately narrower than response_scanning.exempt_domains, which
+// stops scanning a host entirely. Every field below is required because a
+// relaxation of the immutable floor has to name who authorized it, why, and
+// when it ends.
+type CoreObserveException struct {
+	Host    string `yaml:"host"`    // exact host; wildcards refused
+	Pattern string `yaml:"pattern"` // exact core response pattern name
+	Reason  string `yaml:"reason"`  // required justification
+	Owner   string `yaml:"owner"`   // required accountable owner
+	Expires string `yaml:"expires"` // required future/present ISO date (YYYY-MM-DD)
 }
 
 // AuthenticatedArtifactEntry identifies one official signed rule artifact.

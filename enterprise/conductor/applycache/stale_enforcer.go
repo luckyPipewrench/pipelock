@@ -113,6 +113,13 @@ func isNilInterface(v any) bool {
 	}
 }
 
+// CheckNow applies the current stale-policy decision synchronously. Startup
+// calls it after restoring cached policy and before admitting requests; Run
+// continues evaluating the same policy on its ordinary interval.
+func (e *StaleEnforcer) CheckNow() {
+	e.evaluate()
+}
+
 // Run ticks on the check interval until ctx is cancelled, evaluating staleness
 // each tick. It evaluates once immediately on entry so a follower that starts
 // up already holding a stale bundle fails closed without waiting a full

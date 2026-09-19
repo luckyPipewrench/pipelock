@@ -171,11 +171,15 @@ class TestRaceTestShape(unittest.TestCase):
     def test_one_drifted_ci_race_job_fails_the_contract(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         first_producer = "test-oss-go125" if "  test-oss-go125:\n" in ci else "test-oss"
-        drifted = ci.replace(
-            'go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \\',
-            "go test -race -p=8 -parallel=8 -timeout=15m -count=1 -json \\",
+        original_job = job_block(ci, first_producer)
+        original_shape = 'go test -race -p="$package_parallelism" -parallel=2'
+        self.assertEqual(original_job.count(original_shape), 1)
+        drifted_job = original_job.replace(
+            original_shape,
+            "go test -race -p=8 -parallel=8",
             1,
         )
+        drifted = ci.replace(original_job, drifted_job, 1)
         self.assertIn(
             f"CI race jobs drifted from shared shape: ['{first_producer}']",
             ci_race_shape_errors(drifted),

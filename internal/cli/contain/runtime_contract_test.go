@@ -53,8 +53,8 @@ func TestRuntimeContractVars_CoversAllSurfaces(t *testing.T) {
 			t.Errorf("%s = %q, want CA bundle %q", name, m[name], env.caBundlePath)
 		}
 	}
-	if m["NODE_EXTRA_CA_CERTS"] != env.caExportPath {
-		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want node CA %q", m["NODE_EXTRA_CA_CERTS"], env.caExportPath)
+	if m["NODE_EXTRA_CA_CERTS"] != env.caBundlePath {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want CA bundle %q", m["NODE_EXTRA_CA_CERTS"], env.caBundlePath)
 	}
 	if want := "--require " + env.undiciShimPath; m["NODE_OPTIONS"] != want {
 		t.Errorf("NODE_OPTIONS = %q, want %q", m["NODE_OPTIONS"], want)

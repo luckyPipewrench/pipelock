@@ -62,7 +62,7 @@ pipelock contain run: session contract for claude
 
 Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch, so an expired grant prints `[expired]` and exits non-zero.
 
-If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true` in Pipelock's owned containment slice. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 Flags:
 
@@ -127,14 +127,14 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 3. Copy the pipelock binary into a system path the agent user cannot replace, then compute and pin its SHA-256 at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
 4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
 5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
-6. Install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
+6. Start Pipelock's owned containment-slice anchor, then install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
 7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
 8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
-9. Drop the `plk-launch` wrapper plus one wrapper per registered tool into `/usr/local/bin/`.
+9. Drop the `plk-launch` wrapper, the root-owned contained launcher, and one wrapper per registered tool into `/usr/local/bin/`.
 10. Drop the known-good `pipelock-curl` / `pipelock-python` / `pipelock-node` wrappers into `/usr/local/bin/`.
 11. Write the login-shell runtime contract to `/etc/profile.d/pipelock-contain.sh`.
 12. Write per-tool proxy + CA config (`git` / `npm` / `pip` / `cargo`) into the agent home.
-13. Write the wrapper inventory, then install the sudoers entry that lets the operator user invoke `plk-launch` as `pipelock-agent` without a password prompt.
+13. Write the wrapper inventory, then install the narrowly scoped sudoers entry that lets the operator invoke the root-owned contained launcher without a password prompt; it starts only the registered tool as `pipelock-agent` in the owned slice.
 
 On systemd 253 or newer, newly installed `pipelock.service` units are `Type=notify-reload`, so `sudo systemctl reload pipelock` sends SIGHUP and waits for the daemon to finish evaluating the config. Older systemd (Debian 12, RHEL 9 and Ubuntu 22.04 ship 252 or earlier) cannot load that unit type, so `contain install` renders the previous `Type=simple` unit there; its reload only confirms signal delivery, and the verdict is in the journal. The version that decides is the running manager's, read from PID 1, not the installed `systemctl` binary's, so a host that upgraded the systemd package without rebooting keeps the older unit until it reboots and `contain install` runs again. A version the installer cannot read gets the legacy unit too, because that shape loads on every systemd. On the notify-reload unit only, exit status 0 means evaluation finished, not that the candidate policy was applied; check `sudo systemctl status pipelock` for the `Status` line and `sudo journalctl -u pipelock` for the verdict. A rejected trust expansion leaves the active policy unchanged and requires `sudo systemctl restart pipelock` to take effect.
 
@@ -198,7 +198,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 15 fixed probes (numbered 1–14
+Verify normally makes no host changes. It walks 16 fixed probes (numbered 1–14
 and 16) plus the existing conditional workspace probe, numbered 15, when
 workspaces are configured. It prints pass / fail / skip / unknown per probe. Probe 16 temporarily creates and
 removes one canary in each host temporary directory; it requires root to start
@@ -226,6 +226,7 @@ pipelock contain verify
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 | 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |
+| 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 
@@ -278,6 +279,13 @@ own when it removes one. `contain verify` flags
 it as an unexpected verdict in the meantime, because it does not match any
 declared entry. Declare the service instead of hand-editing the rules; that
 is the trap `containment.loopback_services` exists to close.
+
+## Dynamic listeners owned by the contained runtime
+
+
+Some stock tools bind a loopback listener on a kernel-assigned TCP port and then connect back to it. Pipelock supports that path without an operator-declared port only when **both** the client and receiving socket belong to Pipelock's owned containment slice. The output hook marks a new loopback flow from that slice; the input hook admits the marked flow only when the receiving socket is in the same slice, and drops every other marked flow. This does not permit a contained process to reach unrelated loopback listeners, including services running under the same Unix account.
+
+`pipelock contain install` creates and starts the slice anchor before validating or loading nftables rules, because nft resolves the anchor when the rules load. The `plk-*` wrappers and `contain run` place launched tools in that slice. If the anchor unit is missing, unreadable, inactive, or no longer matches the installed receiver gate, the launcher refuses to start the tool and `pipelock contain verify` reports the failure. Restore the controlled path with `sudo pipelock contain install`; do not replace it with a port range or a blanket loopback allow.
 
 ```yaml
 containment:
@@ -398,7 +406,7 @@ The contract has four parts:
 
    - Proxy (upper- and lower-case): `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lowercase forms, all pointing at `http://127.0.0.1:<proxy-port>`.
    - `NO_PROXY` / `no_proxy` = `127.0.0.1,localhost,::1` (IPv6 loopback included so IPv6-first clients don't proxy a local dial).
-   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT` → the combined bundle; `NODE_EXTRA_CA_CERTS` → the Pipelock CA (node *appends* this to its built-in store).
+   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT`, and `NODE_EXTRA_CA_CERTS` → the combined bundle. Node appends it to its built-in store; using the shared bundle keeps all clients on the same rotated CA.
    - `NODE_OPTIONS=--require <undici-shim>` (see below).
 
 2. **node undici shim** (`/etc/pipelock/contain/undici-shim.cjs`). Node's built-in `fetch()` and undici-based clients ignore `HTTPS_PROXY` unless a global dispatcher is installed. The shim installs an undici `ProxyAgent` at startup. It is best-effort: if undici cannot be required, `http`/`https`-module traffic still honors the proxy env, so the shim degrades silently rather than breaking node.
@@ -603,7 +611,7 @@ Flags:
 
 ## `pipelock contain ca-refresh`
 
-Rebuilds `/etc/pipelock/combined-ca.pem` after the Pipelock CA has rotated, or after the system trust store has changed.
+Refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore and rebuilds `/etc/pipelock/combined-ca.pem` after a Pipelock CA rotation or a system trust-store change. `contain verify` compares the single export with that keystore CA by certificate material rather than by subject name, and fails rather than reporting readiness when they differ. This is not a live handshake: a proxy that has been running since before a rotation still holds the previous CA in memory, and only a restart makes the selected CA the served one.
 
 ```bash
 sudo pipelock contain ca-refresh

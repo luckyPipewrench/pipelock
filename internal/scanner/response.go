@@ -8,8 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -24,9 +26,16 @@ type ResponseScanResult struct {
 	// ScanError records why scanning could not complete. It is deliberately
 	// separate from Matches: an incomplete scan must fail closed, but it is not
 	// evidence that response content matched a prompt-injection pattern.
-	ScanError          string
-	SuppressedMatches  []ResponseMatch `json:"-"`
-	TransformedContent string          // set for strip and ask actions
+	ScanError         string
+	SuppressedMatches []ResponseMatch `json:"-"`
+	// ObservedCoreMatches carries core-floor findings that an operator's
+	// declared exception downgraded from block to observe. They are findings,
+	// not misses: the scan ran and matched, and every one of these is emitted
+	// as evidence under its own reason so it is distinguishable from an
+	// ordinary suppression. A non-empty slice here with Clean true means the
+	// operator accepted this exact risk on this exact host in writing.
+	ObservedCoreMatches []ObservedCoreMatch `json:"-"`
+	TransformedContent  string              // set for strip and ask actions
 
 	// StegoDetected fires when the raw response carries combining-mark density
 	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching
@@ -116,14 +125,47 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
+	var observedCoreMatches []ObservedCoreMatch
 	suppressedSeen := make(map[string]struct{})
+	observedSeen := make(map[string]struct{})
+	observeHost := coreObserveHostFromTarget(suppressTarget)
+	observeNow := time.Now().UTC()
 	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
-		if len(matches) == 0 || len(suppress) == 0 || suppressTarget == "" {
+		if len(matches) == 0 || suppressTarget == "" {
+			return matches
+		}
+		canSuppress := len(suppress) > 0
+		canObserve := len(s.coreObserveExceptions) > 0 && observeHost != ""
+		if !canSuppress && !canObserve {
 			return matches
 		}
 		kept := matches[:0]
 		for _, match := range matches {
-			if config.IsCoreResponsePatternName(match.PatternName) || !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
+			if config.IsCoreResponsePatternName(match.PatternName) {
+				// The immutable floor is never reachable by
+				// response_scanning.suppress. It yields only to a declared,
+				// unexpired, host-and-pattern-exact observe exception, and even
+				// then the finding is retained as evidence rather than dropped.
+				if canObserve {
+					if entry, ok := config.MatchCoreObserveException(s.coreObserveExceptions, observeHost, match.PatternName, observeNow); ok {
+						key := responseMatchLogicalKey(match)
+						if _, seen := observedSeen[key]; !seen {
+							observedSeen[key] = struct{}{}
+							observedCoreMatches = append(observedCoreMatches, ObservedCoreMatch{
+								Match:   match,
+								Host:    entry.Host,
+								Reason:  entry.Reason,
+								Owner:   entry.Owner,
+								Expires: entry.Expires,
+							})
+						}
+						continue
+					}
+				}
+				kept = append(kept, match)
+				continue
+			}
+			if !canSuppress || !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
 				kept = append(kept, match)
 			} else {
 				key := responseMatchLogicalKey(match)
@@ -148,6 +190,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	stegoDetected := stegoDensity >= normalize.ZalgoSuspiciousThreshold
 	defer func() {
 		out.SuppressedMatches = suppressedMatches
+		out.ObservedCoreMatches = observedCoreMatches
 		out.StegoDensity = stegoDensity
 		out.StegoDetected = stegoDetected
 	}()
@@ -803,4 +846,36 @@ func (s *Scanner) ResponseAction() string {
 		return config.ActionBlock
 	}
 	return s.responseAction
+}
+
+// ObservedCoreMatch is one core-floor finding withheld from blocking by a
+// declared operator exception, carried with the authorization that withheld it
+// so the evidence names who accepted the risk and until when.
+type ObservedCoreMatch struct {
+	Match   ResponseMatch
+	Host    string
+	Reason  string
+	Owner   string
+	Expires string
+}
+
+// coreObserveHostFromTarget extracts the host a core-observe exception is
+// matched against. Callers pass a full destination URL on every HTTP transport
+// and a bare host on some MCP paths, so both are accepted. Anything that
+// yields no host returns "", which means no exception can match and the floor
+// keeps blocking.
+func coreObserveHostFromTarget(target string) string {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	// A bare "host" or "host:port" never parses with a Hostname, so retry it
+	// as an authority rather than treating it as unmatched.
+	if parsed, err := url.Parse("//" + trimmed); err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	return ""
 }

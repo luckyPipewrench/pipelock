@@ -155,7 +155,7 @@ func TestLegacyManagedBlockDeletedAfterProxyPortChange(t *testing.T) {
 	}
 
 	body := renderNFTRules(1000, 967, 966, 9999, defaultNFTTable, defaultNFTChain)
-	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, 1000, 967, 966)
+	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, 1000, 967, 966, true)
 	for _, handle := range handles {
 		want := "delete rule inet " + defaultNFTTable + " " + defaultNFTChain + " handle " + strconv.Itoa(handle)
 		if !strings.Contains(script, want) {

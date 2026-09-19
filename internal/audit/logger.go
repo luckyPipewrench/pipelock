@@ -1529,6 +1529,55 @@ func (l *Logger) LogResponseScanSuppressed(ctx LogContext, patternName, surface,
 	}
 }
 
+// CoreObserveAuthorization carries the declared exception that withheld a
+// core-floor block, so the audit record names who accepted the risk and when
+// the acceptance ends rather than only that something was observed.
+type CoreObserveAuthorization struct {
+	Host    string
+	Reason  string
+	Owner   string
+	Expires string
+}
+
+// LogCoreResponseObserved records a core-floor finding that an operator's
+// declared exception downgraded from block to observe.
+//
+// It reuses the response_scan_suppressed event so existing SIEM routing and
+// severity mapping keep working, and separates itself by the core_observed
+// classification plus the authorization fields. Ordinary suppression cannot
+// reach the immutable floor at all, so those two cases must never look alike
+// in an audit trail: an auditor reading this needs the pattern, the host it
+// was allowed on, who authorized that, and the date it lapses.
+func (l *Logger) LogCoreResponseObserved(ctx LogContext, patternName, surface string, auth CoreObserveAuthorization) {
+	const scanner = scannerpkg.AuditResponseScan
+	technique := TechniqueForScanner(scanner)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
+
+	e := newLogEntry(l.zl.Warn(), EventResponseScanSuppressed).
+		optStr("method", ctx.method).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
+		optStr("client_ip", ctx.clientIP).
+		optStr("request_id", ctx.requestID).
+		str("scanner", scanner).
+		str("mode", "informational").
+		str("pattern", patternName).
+		str("surface", surface).
+		str("reason", "core_observed").
+		optStr("observe_host", auth.Host).
+		optStr("observe_owner", auth.Owner).
+		optStr("observe_expires", auth.Expires).
+		optStr("observe_reason", auth.Reason).
+		str("mitre_technique", technique).
+		agentField(ctx.agent, ctx.agentAuth)
+	e.msg("core response finding observed under a declared operator exception")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventResponseScanSuppressed), e.fields)
+	}
+}
+
 // TaintDecision bundles the per-event fields LogTaintDecision emits.
 // The accompanying LogContext on the call carries request-level
 // identifiers; TaintDecision carries the policy verdict and provenance.

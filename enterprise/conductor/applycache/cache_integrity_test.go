@@ -302,6 +302,32 @@ func TestActiveRejectsSymlinkConfig(t *testing.T) {
 	}
 }
 
+func TestActiveRejectsConfigThatDiffersFromSignedPayload(t *testing.T) {
+	cache, hash := storeValidActive(t)
+	configPath := filepath.Join(cache.configsDir, hash+configExt)
+	if err := os.WriteFile(configPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("replace cached config: %v", err)
+	}
+	if _, err := cache.Active(); !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("Active() with substituted config = %v, want ErrInvalidActiveRecord", err)
+	}
+}
+
+func TestActiveRejectsUnreadableConfigPayload(t *testing.T) {
+	cache, hash := storeValidActive(t)
+	configPath := filepath.Join(cache.configsDir, hash+configExt)
+	if err := os.Chmod(configPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
+	if _, err := os.ReadFile(filepath.Clean(configPath)); err == nil {
+		t.Skip("filesystem or effective identity permits reading mode-zero files")
+	}
+	if _, err := cache.Active(); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Active() with unreadable cached config = %v, want permission refusal", err)
+	}
+}
+
 // TestActivateRejectsMismatchedStagedBundle proves Activate refuses to point
 // the active record at a staged bundle whose identity disagrees with the
 // caller's verified bundle, even when the hash file exists.

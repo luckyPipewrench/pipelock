@@ -137,12 +137,16 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionPreserve("user-mode pipelock (operator decides whether to re-enable)"),
 		actionRemoveSystemUnit(),
 		actionDisablePipelockService(),
-		actionRemovePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
-		actionRemovePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
+		// main restores these rather than removing them (#1624): a rollback must
+		// not destroy operator trust state it did not create.
+		actionRestorePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
+		actionRestorePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
+		actionRemoveOwnedLoopbackAnchor(),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
+		actionRemoveWrapper("plk-contained-launch", "plk-contained-launch"),
 		actionRemoveWrapper("plk meta-wrapper", "plk"),
 		actionRemoveToolWrappers(),
 		actionRemoveUtilityWrappers(),
@@ -150,6 +154,30 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveAgentToolConfigs(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
+	}
+}
+
+func actionRemoveOwnedLoopbackAnchor() step {
+	return step{
+		name: "remove-owned-loopback-anchor",
+		desc: "remove the Pipelock-owned loopback cgroup anchor",
+		undo: func(ctx context.Context, env *installEnv) error {
+			if !env.ownedLoopback {
+				return nil
+			}
+			path := env.ownedLoopbackAnchorUnitPath
+			if path == "" {
+				return nil
+			}
+			unit := filepath.Base(path)
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable owned loopback anchor %s: %w", unit, err)
+			}
+			if err := restoreBackup(env, path); err != nil {
+				return fmt.Errorf("restore %s: %w", path, err)
+			}
+			return runOrErr(ctx, env, "systemctl", "daemon-reload")
+		},
 	}
 }
 
@@ -228,6 +256,22 @@ func actionRemovePath(desc string, pathFn func(*installEnv) string) step {
 			}
 			// Also drop the .bak if present.
 			_ = env.removeFile(path + ".bak")
+			return nil
+		},
+	}
+}
+
+// actionRestorePath reverses a backup-aware install write. It restores a
+// pre-install file when one exists and otherwise removes only the artifact the
+// installer created.
+func actionRestorePath(desc string, pathFn func(*installEnv) string) step {
+	return step{
+		name: "restore-" + desc,
+		desc: "restore or remove " + desc,
+		undo: func(_ context.Context, env *installEnv) error {
+			if err := restoreBackup(env, pathFn(env)); err != nil {
+				return fmt.Errorf("restore %s: %w", desc, err)
+			}
 			return nil
 		},
 	}

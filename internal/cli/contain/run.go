@@ -32,6 +32,7 @@ const (
 	defaultContainConfigPath = "/etc/pipelock/pipelock.yaml"
 	defaultContainPostureDir = "/var/lib/pipelock/contain/posture"
 	containRunPrivilegeProbe = "agent_privilege_escape_denied"
+	containRunToolProbe      = "requested_tool_registered"
 
 	// defaultWorkspaceDiffCapBytes is the per-file content-digest cap for the
 	// post-session workspace change statement. A regular file at or
@@ -569,6 +570,18 @@ func warnCustomPostureOutput(stderr io.Writer, postureOutput, posturePath string
 // tools.list entries it read for the registration check so the caller renders
 // the session contract from the SAME read the launch path relies on, never a
 // second, possibly-divergent read.
+
+// containRunOnlyProbes is the single declaration of the probe numbers that
+// `contain run` publishes and `contain verify` does not. Both the preflight
+// below and the collision test read it, so adding or renumbering a run-only
+// probe here is automatically covered instead of needing a second list kept in
+// step by hand. Published numbers are an operator- and dashboard-facing
+// identity: two different checks sharing one number cannot be told apart.
+var containRunOnlyProbes = map[int]probe{
+	17: {n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"},
+	18: {n: 18, name: containRunToolProbe, desc: "requested tool is registered in tools.list"},
+}
+
 func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) ([]toolsListEntry, error) {
 	for _, p := range probesForEnv(env) {
 		status, detail := p.fn(ctx, env)
@@ -579,19 +592,22 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 		}
 	}
 
-	// Numbered above the verify probe range (allProbes tops out at 15 after the
-	// private-temp canary; the conditional workspace_access probe is 16) so
-	// these run-only checks never collide with a verify probe
-	// number operators may key off.
+	// Published numbers are a contract operators and dashboards key off, so a
+	// run-only check must never reuse a verify probe number. This comment used
+	// to be the only thing holding that invariant and it did not hold it: a
+	// verify probe was added at 18 while this file had already published 18.
+	// TestContainRunProbeNumbersDoNotCollideWithVerify now fails when the two
+	// sets overlap, so a new probe on either side cannot silently take a number
+	// the other already publishes.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
-	writeTextLine(out, probe{n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
+	writeTextLine(out, containRunOnlyProbes[17], status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at %s: %s: %s", containRunPrivilegeProbe, status, detail))
 	}
 
 	entries, status, detail := probeRequestedToolRegistered(env, tool)
-	writeTextLine(out, probe{n: 18, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
+	writeTextLine(out, containRunOnlyProbes[18], status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))

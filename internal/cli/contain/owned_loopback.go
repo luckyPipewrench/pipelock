@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -37,11 +38,61 @@ func nftOwnedLoopbackInputChain() string {
 	return fmt.Sprintf("\n    chain %s {\n        type filter hook input priority filter; policy accept;\n\n        ct mark %s socket cgroupv2 level 1 \"%s\" accept\n        ct mark %s drop\n    }\n", ownedLoopbackInputChain, ownedLoopbackConntrackMark, ownedLoopbackSlice, ownedLoopbackConntrackMark)
 }
 
+// ownedLoopbackInputChainLooksManaged requires the receiver gate to be EXACTLY
+// the chain this package renders: the base-chain declaration, then the
+// cgroup-scoped accept, then the terminal drop, and nothing else.
+//
+// Substring checks are not sufficient here and the difference is a bypass
+// rather than a style point. nftables evaluates a chain in order, so a rule
+// added BEFORE the managed accept decides the packet first. A chain carrying an
+// extra `ct mark <mark> accept` with no cgroup predicate still contains all four
+// expected substrings, so a substring matcher reports it as managed while every
+// marked loopback flow reaches any socket on the host. That is the precise
+// boundary the owned-loopback design exists to enforce, and both install
+// validation and the containment probe read this one function.
 func ownedLoopbackInputChainLooksManaged(out string) bool {
-	return strings.Contains(out, "chain "+ownedLoopbackInputChain+" {") &&
-		strings.Contains(out, "type filter hook input priority filter; policy accept;") &&
-		strings.Contains(out, "ct mark "+ownedLoopbackConntrackMark+" socket cgroupv2 level 1 \""+ownedLoopbackSlice+"\" accept") &&
-		strings.Contains(out, "ct mark "+ownedLoopbackConntrackMark+" drop")
+	body, ok := ownedLoopbackInputChainBody(out)
+	if !ok {
+		return false
+	}
+	want := []string{
+		"type filter hook input priority filter; policy accept;",
+		"ct mark " + ownedLoopbackConntrackMark + " socket cgroupv2 level 1 \"" + ownedLoopbackSlice + "\" accept",
+		"ct mark " + ownedLoopbackConntrackMark + " drop",
+	}
+	if len(body) != len(want) {
+		return false
+	}
+	for i, line := range body {
+		if line != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ownedLoopbackInputChainBody returns the receiver chain's non-empty statement
+// lines, in order, or ok=false when the chain is absent or unterminated. An
+// unterminated chain is refused rather than matched on what was read so far,
+// because truncated output must never satisfy an exact-match check.
+func ownedLoopbackInputChainBody(out string) ([]string, bool) {
+	open := "chain " + ownedLoopbackInputChain + " {"
+	start := strings.Index(out, open)
+	if start < 0 {
+		return nil, false
+	}
+	rest := out[start+len(open):]
+	end := strings.Index(rest, "}")
+	if end < 0 {
+		return nil, false
+	}
+	var body []string
+	for _, line := range strings.Split(rest[:end], "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			body = append(body, trimmed)
+		}
+	}
+	return body, true
 }
 
 // ownedLoopbackRulesReferenceCurrentAnchor relies on nft's cgroup-v2
@@ -72,4 +123,38 @@ RestartSec=1
 [Install]
 WantedBy=multi-user.target
 `
+}
+
+// chainLinesHaveOwnedLoopbackOutputRules reports whether the live OUTPUT chain
+// carries the owned-loopback marking block for the agent. Install-time drift
+// detection needs this: the marking rules live in OUTPUT, and a live chain that
+// lost them looks unchanged to a comparison that only knows the legacy rules.
+func chainLinesHaveOwnedLoopbackOutputRules(lines []string, agentUID int) bool {
+	wantMark := "ct mark set " + ownedLoopbackConntrackMark
+	wantSlice := `socket cgroupv2 level 1 "` + ownedLoopbackSlice + `"`
+	marks := 0
+	for _, line := range lines {
+		if strings.Contains(line, fmt.Sprintf("skuid %d", agentUID)) &&
+			strings.Contains(line, wantSlice) &&
+			strings.Contains(line, wantMark) {
+			marks++
+		}
+	}
+	// One for IPv4, one for IPv6; fewer means the block is incomplete.
+	return marks >= 2
+}
+
+// ownedLoopbackAnchorState reports the unit's enabled and active state before
+// install changes it. Both reads are string comparisons rather than exit-code
+// checks: `systemctl is-enabled` exits 0 for `enabled-runtime`, which lives
+// under /run and does not survive a reboot, so treating a zero exit as
+// "enabled" would record a state the host will not have after restart.
+func ownedLoopbackAnchorState(ctx context.Context, env *installEnv, unit string) (enabled, active bool) {
+	if out, _, err := env.runCmd(ctx, "systemctl", "is-enabled", unit); err == nil {
+		enabled = strings.TrimSpace(out) == systemctlEnabled
+	}
+	if out, _, err := env.runCmd(ctx, "systemctl", "is-active", unit); err == nil {
+		active = strings.TrimSpace(out) == systemctlActive
+	}
+	return enabled, active
 }

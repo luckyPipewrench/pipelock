@@ -234,6 +234,15 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	} else if code != 0 {
 		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
 	}
+	// receiverChainLive records whether the receiver gate EXISTS IN THE KERNEL,
+	// which is the only thing that may decide whether the reload transaction
+	// deletes it. Deciding that from the canonical rules instead is a boot-time
+	// outage: after a reboot the ruleset is empty, the canonical file still
+	// describes the chain, and `nft delete chain` fails on a chain that is not
+	// there. That failure aborts the whole `nft -f` transaction, and since this
+	// unit is the only thing that loads containment at boot, the host comes up
+	// with no containment rule for the agent at all.
+	receiverChainLive := false
 	if env.ownedLoopback && out != "" {
 		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, ownedLoopbackInputChain)
 		if inputErr != nil {
@@ -242,6 +251,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
 			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing or unrecognized; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
 		}
+		receiverChainLive = true
 	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
 		if env.report != nil {
@@ -250,7 +260,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		return nil
 	}
 	managedHandles := legacyManagedNFTRuleBlockHandles(out, header.operatorUID, header.proxyUID, header.agentUID)
-	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID)
+	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID, receiverChainLive)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
 		return restoreOnFailure(fmt.Errorf("write nft managed chain reload file %s: %w", path, err))
@@ -483,10 +493,10 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // risk deleting an operator rule. Requiring the complete ordered six-rule
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
-func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int) string {
+func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
 	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
 	var script strings.Builder
-	if strings.Contains(rulesBody, "chain "+ownedLoopbackInputChain+" {") {
+	if receiverChainLive && strings.Contains(rulesBody, "chain "+ownedLoopbackInputChain+" {") {
 		// A dynamic loopback update must replace the receiver gate in the
 		// same nft transaction as the OUTPUT rules. Leaving the old input
 		// chain in place would duplicate base chains; omitting this deletion

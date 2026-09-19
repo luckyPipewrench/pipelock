@@ -309,6 +309,16 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	}
 	runner.on(argvFor(testSudoCmd, "-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"), testPEMCA(t), 0, nil)
 
+	// Owned loopback is enabled in the production default, so the fixture has
+	// to answer the anchor and receiver-chain queries the install path makes.
+	// Leaving it off here meant the end-to-end install test never exercised
+	// either path.
+	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain),
+		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault()), 0, nil)
+	anchorUnit := filepath.Base(env.ownedLoopbackAnchorUnitPath)
+	runner.on(argvFor(testSystemctl, "is-active", anchorUnit), systemctlActive+"\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", anchorUnit), systemctlEnabled+"\n", 0, nil)
+
 	return env, runner, out
 }
 

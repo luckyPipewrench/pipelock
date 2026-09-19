@@ -69,7 +69,7 @@ func TestOwnedLoopbackReloadReplacesReceiverGateInSameTransaction(t *testing.T) 
 		OperatorUID: 1000, ProxyUID: 967, AgentUID: 966, ProxyPort: 8888,
 		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
 	})
-	script := renderNFTManagedChainReloadScript("", body, defaultNFTTable, defaultNFTChain, 1000, 967, 966)
+	script := renderNFTManagedChainReloadScript("", body, defaultNFTTable, defaultNFTChain, 1000, 967, 966, true)
 	deleteAt := strings.Index(script, "delete chain inet "+defaultNFTTable+" "+ownedLoopbackInputChain)
 	inputAt := strings.Index(script, "chain "+ownedLoopbackInputChain+" {")
 	if deleteAt < 0 || inputAt < 0 || deleteAt > inputAt {
@@ -433,7 +433,7 @@ func TestEnsureOwnedLoopbackInputChainFailsClosedOnInterruptedMigration(t *testi
 				return outputOut, 0, nil
 			}
 
-			err := ensureOwnedLoopbackInputChain(context.Background(), env)
+			_, err := ensureOwnedLoopbackInputChain(context.Background(), env)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ensureOwnedLoopbackInputChain = %v; want %q", err, tc.wantErr)
 			}
@@ -458,7 +458,7 @@ func TestEnsureOwnedLoopbackInputChainAcceptsAManagedChain(t *testing.T) {
 		}
 		return "", 0, nil
 	}
-	if err := ensureOwnedLoopbackInputChain(context.Background(), env); err != nil {
+	if _, err := ensureOwnedLoopbackInputChain(context.Background(), env); err != nil {
 		t.Fatalf("a managed receiver chain was rejected: %v", err)
 	}
 }
@@ -497,7 +497,7 @@ func TestEnsureOwnedLoopbackInputChainCreatesTheReceiverGate(t *testing.T) {
 		}
 	}
 
-	if err := ensureOwnedLoopbackInputChain(context.Background(), env); err != nil {
+	if _, err := ensureOwnedLoopbackInputChain(context.Background(), env); err != nil {
 		t.Fatalf("creating the receiver gate: %v", err)
 	}
 	if !ownedLoopbackInputChainLooksManaged(staged) {
@@ -553,7 +553,7 @@ func TestEnsureOwnedLoopbackInputChainRefusesAnUnloadableGate(t *testing.T) {
 					return "chain output_filter { }", 0, nil
 				}
 			}
-			err := ensureOwnedLoopbackInputChain(context.Background(), env)
+			_, err := ensureOwnedLoopbackInputChain(context.Background(), env)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ensureOwnedLoopbackInputChain = %v; want %q", err, tc.wantErr)
 			}
@@ -618,7 +618,7 @@ func TestEnsureOwnedLoopbackInputChainSurfacesQueryFailures(t *testing.T) {
 				}
 				return "chain output_filter { }", tc.outputCode, tc.outputErr
 			}
-			err := ensureOwnedLoopbackInputChain(context.Background(), env)
+			_, err := ensureOwnedLoopbackInputChain(context.Background(), env)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ensureOwnedLoopbackInputChain = %v; want %q", err, tc.wantErr)
 			}
@@ -807,5 +807,302 @@ func TestRemoveOwnedLoopbackAnchorSurfacesFailures(t *testing.T) {
 				t.Fatalf("undo = %v; want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestReloadEmitsNoReceiverDeleteWhenTheKernelHasNoChain is the boot-outage
+// regression. The persistence unit runs `contain reload-nft-rules` at boot, and
+// after a reboot the nftables ruleset is empty while the canonical rules file
+// still describes the receiver chain. `nft delete chain` FAILS on a chain that
+// does not exist, and because `nft -f` is atomic that failure aborts the entire
+// transaction. This unit is the only thing that loads containment at boot, so
+// the host would come up with no containment rule for the agent at all.
+//
+// Deciding the delete from the canonical rules is what caused it; only the live
+// kernel state may decide it.
+func TestReloadEmitsNoReceiverDeleteWhenTheKernelHasNoChain(t *testing.T) {
+	t.Parallel()
+	canonical := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: 1000, ProxyUID: 967, AgentUID: 966, ProxyPort: 8888,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+	if !strings.Contains(canonical, "chain "+ownedLoopbackInputChain+" {") {
+		t.Fatal("canonical rules do not declare the receiver chain; this test would pass vacuously")
+	}
+
+	// Empty live state is the post-reboot kernel.
+	bootScript := renderNFTManagedChainReloadScript("", canonical, defaultNFTTable, defaultNFTChain, 1000, 967, 966, false)
+	if strings.Contains(bootScript, "delete chain inet "+defaultNFTTable+" "+ownedLoopbackInputChain) {
+		t.Fatalf("reload deletes a receiver chain the kernel does not have; the whole nft transaction would abort and leave the host uncontained:\n%s", bootScript)
+	}
+	if !strings.Contains(bootScript, "chain "+ownedLoopbackInputChain+" {") {
+		t.Fatalf("reload must still CREATE the receiver gate at boot:\n%s", bootScript)
+	}
+
+	// Positive control: when the chain really is live the delete must still be
+	// emitted, or the reload would duplicate a base chain.
+	liveScript := renderNFTManagedChainReloadScript("", canonical, defaultNFTTable, defaultNFTChain, 1000, 967, 966, true)
+	if !strings.Contains(liveScript, "delete chain inet "+defaultNFTTable+" "+ownedLoopbackInputChain) {
+		t.Fatalf("a live receiver chain must be replaced in the same transaction:\n%s", liveScript)
+	}
+}
+
+// TestReceiverChainMatcherRejectsExtraRules closes a bypass in the receiver
+// gate. nftables evaluates a chain in order, so a rule inserted BEFORE the
+// managed accept decides the packet first. The matcher previously tested four
+// substrings, which every one of the chains below still satisfies while the
+// boundary they are supposed to enforce is gone.
+func TestReceiverChainMatcherRejectsExtraRules(t *testing.T) {
+	t.Parallel()
+	managed := renderOwnedLoopbackInputChainTable(defaultNFTTable)
+
+	// Positive control first: the chain this package renders must be accepted,
+	// or every rejection below would pass for the wrong reason.
+	if !ownedLoopbackInputChainLooksManaged(managed) {
+		t.Fatalf("the rendered receiver chain is rejected by its own matcher:\n%s", managed)
+	}
+
+	accept := "ct mark " + ownedLoopbackConntrackMark + " socket cgroupv2 level 1 \"" + ownedLoopbackSlice + "\" accept"
+	drop := "ct mark " + ownedLoopbackConntrackMark + " drop"
+	decl := "type filter hook input priority filter; policy accept;"
+	chain := func(rules ...string) string {
+		return "table inet " + defaultNFTTable + " {\n    chain " + ownedLoopbackInputChain + " {\n        " +
+			strings.Join(rules, "\n        ") + "\n    }\n}\n"
+	}
+
+	for _, tc := range []struct {
+		name  string
+		chain string
+	}{
+		{
+			// The bypass. An unconditional accept ahead of the managed rule
+			// lets every marked flow reach any socket on the host.
+			name:  "unconditional accept before the managed accept",
+			chain: chain(decl, "ct mark "+ownedLoopbackConntrackMark+" accept", accept, drop),
+		},
+		{
+			// Order matters: a drop that never runs is not a drop.
+			name:  "accept and drop in the wrong order",
+			chain: chain(decl, drop, accept),
+		},
+		{
+			// A trailing accept after the drop is unreachable today, but it
+			// means the chain is not the one this package wrote.
+			name:  "extra rule after the terminal drop",
+			chain: chain(decl, accept, drop, "ct mark "+ownedLoopbackConntrackMark+" accept"),
+		},
+		{
+			// Without the terminal drop the gate accepts nothing and denies
+			// nothing: marked traffic falls through to the accept policy.
+			name:  "terminal drop removed",
+			chain: chain(decl, accept),
+		},
+		{
+			// Truncated output must never satisfy an exact match.
+			name:  "unterminated chain",
+			chain: "table inet " + defaultNFTTable + " {\n    chain " + ownedLoopbackInputChain + " {\n        " + decl + "\n        " + accept,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if ownedLoopbackInputChainLooksManaged(tc.chain) {
+				t.Fatalf("matcher accepted a receiver chain that is not the managed one:\n%s", tc.chain)
+			}
+		})
+	}
+}
+
+// TestContainedLaunchWrapperResolvesRootHelpersAbsolutely pins the privilege
+// boundary of the generated launcher. sudoers runs this script as root, so any
+// helper it resolves through PATH is chosen by the caller: on a host whose sudo
+// rule does not set secure_path, a fake `systemctl` earlier in PATH runs as root
+// before systemd-run drops privileges.
+func TestContainedLaunchWrapperResolvesRootHelpersAbsolutely(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopbackAnchorUnitPath = "/etc/systemd/system/pipelock-contained-anchor.service"
+	body := renderContainedLaunchWrapper(env)
+
+	if !strings.Contains(body, "PATH="+shellQuote(rootHelperPATH)) {
+		t.Fatalf("root wrapper does not pin PATH:\n%s", body)
+	}
+	for _, absolute := range []string{containIDPath, containSystemctlPath, "/usr/bin/systemd-run"} {
+		if !strings.Contains(body, absolute) {
+			t.Fatalf("root wrapper does not call %s by absolute path:\n%s", absolute, body)
+		}
+	}
+	// Every helper invocation must be absolute. A bare command at the start of
+	// a line or after a shell operator is the shape this test exists to catch.
+	for _, bare := range []string{"$(id ", "! systemctl ", "\nsystemctl ", "\nid "} {
+		if strings.Contains(body, bare) {
+			t.Fatalf("root wrapper invokes %q through PATH:\n%s", strings.TrimSpace(bare), body)
+		}
+	}
+}
+
+// TestOwnedLoopbackOutputRulesDetectedInLiveChain covers the drift predicate
+// that decides whether install must reload. The marking rules live in the
+// OUTPUT chain; a live chain that lost them reads as unchanged to a comparison
+// that only knows the legacy rules, so the installer would skip the reload and
+// never load them back.
+func TestOwnedLoopbackOutputRulesDetectedInLiveChain(t *testing.T) {
+	t.Parallel()
+	const agentUID = 966
+	mark := "ct mark set " + ownedLoopbackConntrackMark
+	slice := `socket cgroupv2 level 1 "` + ownedLoopbackSlice + `"`
+	v4 := "meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 " + slice + " ct state new " + mark + " accept"
+	v6 := "meta skuid 966 oifname \"lo\" ip6 daddr ::1 " + slice + " ct state new " + mark + " accept"
+
+	if !chainLinesHaveOwnedLoopbackOutputRules([]string{v4, v6}, agentUID) {
+		t.Fatal("a complete marking block was not detected")
+	}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{name: "no marking rules at all", lines: []string{"meta skuid 966 drop"}},
+		{name: "only the IPv4 half", lines: []string{v4}},
+		{name: "marking rules belong to another uid", lines: []string{
+			strings.ReplaceAll(v4, "skuid 966", "skuid 1000"),
+			strings.ReplaceAll(v6, "skuid 966", "skuid 1000"),
+		}},
+		{name: "mark set without the cgroup predicate", lines: []string{
+			strings.ReplaceAll(v4, slice, ""), strings.ReplaceAll(v6, slice, ""),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if chainLinesHaveOwnedLoopbackOutputRules(tc.lines, agentUID) {
+				t.Fatalf("incomplete marking block reported as present: %v", tc.lines)
+			}
+		})
+	}
+}
+
+// TestOwnedLoopbackInputChainBodyParsing covers the chain-body reader that the
+// exact matcher is built on, including the shapes where it must report failure
+// rather than return a partial body.
+func TestOwnedLoopbackInputChainBodyParsing(t *testing.T) {
+	t.Parallel()
+	body, ok := ownedLoopbackInputChainBody(renderOwnedLoopbackInputChainTable(defaultNFTTable))
+	if !ok || len(body) != 3 {
+		t.Fatalf("managed chain body = %v ok=%v; want three statements", body, ok)
+	}
+	if _, ok := ownedLoopbackInputChainBody("table inet x { chain other { } }"); ok {
+		t.Fatal("a table without the receiver chain reported a body")
+	}
+	if _, ok := ownedLoopbackInputChainBody("chain " + ownedLoopbackInputChain + " {\n  type filter hook input"); ok {
+		t.Fatal("an unterminated chain reported a body; truncated output must fail closed")
+	}
+}
+
+// TestReloadNFTManagedChainQueriesLiveReceiverChain covers the install-time
+// reload path's own live query. It exists separately from the boot path and had
+// the same canonical-vs-live defect.
+func TestReloadNFTManagedChainQueriesLiveReceiverChain(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopback = true
+	env.nftRulesPath = filepath.Join(t.TempDir(), "containment.nft")
+	canonical := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: 1000, ProxyUID: 967, AgentUID: 966, ProxyPort: 8888,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+
+	var loaded string
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != nftExecutable(env) {
+			return "", 0, nil
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, ownedLoopbackInputChain):
+			// The kernel has no receiver chain yet.
+			return "Error: No such file or directory", 1, nil
+		case strings.Contains(joined, "-f"):
+			if body, err := os.ReadFile(filepath.Clean(env.nftRulesPath + ".reload")); err == nil {
+				loaded = string(body)
+			}
+			return "", 0, nil
+		default:
+			return "chain output_filter { }", 0, nil
+		}
+	}
+
+	if err := reloadNFTManagedChain(context.Background(), env, canonical, 1000, 967, 966); err != nil {
+		t.Fatalf("reloadNFTManagedChain: %v", err)
+	}
+	if strings.Contains(loaded, "delete chain inet "+defaultNFTTable+" "+ownedLoopbackInputChain) {
+		t.Fatalf("install-time reload deletes a receiver chain the kernel does not have:\n%s", loaded)
+	}
+}
+
+// TestExpandEnvironmentFlagGatedOnSystemd254 pins the version gate. The flag
+// only exists from systemd 254, and this wrapper is invoked directly without
+// the preflight that rejects older systemd, so an unconditional flag makes
+// every contained launch fail before plk-launch starts.
+func TestExpandEnvironmentFlagGatedOnSystemd254(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	for _, tc := range []struct {
+		version int
+		want    bool
+	}{
+		{version: 0, want: false},   // detection did not run: omit rather than guess
+		{version: 253, want: false}, // older systemd rejects the flag outright
+		{version: 254, want: true},  // first release that accepts it
+		{version: 257, want: true},
+	} {
+		env.systemdVersion = tc.version
+		got := expandEnvironmentFlag(env) != ""
+		if got != tc.want {
+			t.Fatalf("systemd %d: emitted=%v want=%v", tc.version, got, tc.want)
+		}
+	}
+	if expandEnvironmentFlag(nil) != "" {
+		t.Fatal("a nil env must not emit the flag")
+	}
+}
+
+// TestOwnedLoopbackAnchorUndoPreservesAPreexistingAnchor pins the rollback
+// direction. An anchor that was already enabled and active before this install
+// belongs to the host, not to this install, so a rollback must leave it
+// running rather than tearing down containment the operator already had.
+func TestOwnedLoopbackAnchorUndoPreservesAPreexistingAnchor(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopback = true
+	path := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
+	env.ownedLoopbackAnchorUnitPath = path
+	if err := os.WriteFile(path, []byte(renderOwnedLoopbackAnchorUnit()), modeUnitFile); err != nil {
+		t.Fatalf("seed unit: %v", err)
+	}
+	unit := filepath.Base(path)
+
+	var disabled bool
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != "systemctl" || len(args) == 0 {
+			return "", 0, nil
+		}
+		switch args[0] {
+		case "is-enabled":
+			return systemctlEnabled + "\n", 0, nil
+		case "is-active":
+			return systemctlActive + "\n", 0, nil
+		case "disable":
+			disabled = true
+		}
+		return "", 0, nil
+	}
+
+	step := stepEnsureOwnedLoopbackAnchor()
+	if _, err := step.apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if disabled {
+		t.Fatalf("rollback disabled %s, which was already enabled and active before this install", unit)
 	}
 }

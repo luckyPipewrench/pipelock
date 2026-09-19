@@ -34,7 +34,7 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 	}, "\n")
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
 
-	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID)
+	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID, true)
 	for _, handle := range []int{20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35} {
 		want := "delete rule inet pipelock_containment output_filter handle "
 		if !strings.Contains(script, want+itoa(handle)) {

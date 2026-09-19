@@ -251,7 +251,7 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 		if len(handles) != 8 {
 			t.Fatalf("historical block: got %d handles, want 8: %v", len(handles), handles)
 		}
-		script := renderNFTManagedChainReloadScript(live, RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)}), defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+		script := renderNFTManagedChainReloadScript(live, RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)}), defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, true)
 		for _, handle := range handles {
 			if !strings.Contains(script, "handle "+itoa(handle)) {
 				t.Fatalf("reload did not delete historical handle %d:\n%s", handle, script)
@@ -296,7 +296,7 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 			loopbackTestService(9200),
 			loopbackTestService(9201),
 		})
-		script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+		script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, true)
 		for _, handle := range []int{20, 21, 22, 23, 24, 25, 26} {
 			want := "delete rule inet pipelock_containment output_filter handle " + itoa(handle)
 			if !strings.Contains(script, want) {
@@ -1037,7 +1037,7 @@ func TestReloadRecognizesBlockWithIPv6DeclaredLoopbackService(t *testing.T) {
 	}
 
 	newRules := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{ipv6Service})
-	script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+	script := renderNFTManagedChainReloadScript(live, newRules, defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, true)
 	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26, 27} {
 		want := "delete rule inet pipelock_containment output_filter handle " + itoa(handle)
 		if !strings.Contains(script, want) {

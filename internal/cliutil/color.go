@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"io/fs"
 	"os"
 	"strings"
 )
@@ -24,16 +25,25 @@ func UseColor() bool {
 // DetectRunContext determines whether the process runs on a host, in a
 // container, or in a Kubernetes pod.
 func DetectRunContext() string {
-	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+	return detectRunContext(os.Getenv("KUBERNETES_SERVICE_HOST"), os.DirFS("/"))
+}
+
+func detectRunContext(kubernetesHost string, root fs.FS) string {
+	if kubernetesHost != "" {
 		return RunContextPod
 	}
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		return RunContextContainer
+	// Runtime markers survive private cgroup namespaces, where PID 1's
+	// cgroup path is just "/" and carries no runtime name.
+	for _, marker := range []string{".dockerenv", "run/.containerenv"} {
+		if _, err := fs.Stat(root, marker); err == nil {
+			return RunContextContainer
+		}
 	}
-	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+	if data, err := fs.ReadFile(root, "proc/1/cgroup"); err == nil {
 		s := string(data)
 		if strings.Contains(s, "docker") || strings.Contains(s, "containerd") ||
-			strings.Contains(s, "kubepods") {
+			strings.Contains(s, "kubepods") || strings.Contains(s, "libpod") ||
+			strings.Contains(s, "podman") || strings.Contains(s, "cri-o") {
 			return RunContextContainer
 		}
 	}

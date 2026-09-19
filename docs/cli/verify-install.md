@@ -54,6 +54,8 @@ Containment checks:
 
 The containment probes are only meaningful inside a container, pod, or similar network boundary. On a normal host they are reported as not applicable, because the operator account is expected to retain direct network access. A blocked or unavailable public endpoint does not identify the local containment boundary, so it is reported as unknown and exits non-zero. Use `pipelock contain verify` for managed Linux host containment. Container and pod deployments need evidence from their own network-policy boundary.
 
+Runtime detection recognizes Docker's `/.dockerenv` and Podman's `/run/.containerenv`, including containers whose private cgroup namespace hides the runtime name. Available Docker, containerd, Kubernetes, and Podman cgroup paths provide a fallback; the Kubernetes service environment identifies a pod. These signals select which probes run. They don't prove isolation or turn an inconclusive connection result into a pass.
+
 ## Exit Codes
 
 The current container and pod probes cannot affirm containment. When all direct connections fail, the result is `unknown` with exit code `2`, even when network policy is correctly enforcing containment. This command does not ingest external policy evidence to turn that result into a pass.

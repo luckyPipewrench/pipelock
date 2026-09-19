@@ -85,10 +85,18 @@ func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
 
 	resp := testGet(t, proxy.URL+"/events")
 	defer func() { _ = resp.Body.Close() }()
-	// Block mode closes the pipe on a finding, so ReadAll sees the stream
-	// end as unexpected EOF. The pin is that the injection event never
-	// reaches the client, matching TestReverseProxy_SSE_InjectionTerminatesStream.
-	body, _ := io.ReadAll(resp.Body)
+
+	// The upstream answered 200 and the stream is terminated mid-flight, so
+	// asserting only "the payload is absent" would also be satisfied by an
+	// empty 5xx or a scanner I/O failure. Pin the status and the termination
+	// as well, so this can only pass because the floor blocked the event.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the stream to open with 200 before the floor terminates it, got %d", resp.StatusCode)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("expected the blocked stream to terminate the body read, got a clean EOF with body %q", body)
+	}
 	if strings.Contains(string(body), corePayloadForFloor) {
 		t.Fatalf("core injection reached the client on an SSE stream with the optional layer off: %q", body)
 	}
@@ -139,5 +147,30 @@ func TestReverseCoreFloorStillServesCleanContentWhenDisabled(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK || string(body) != clean {
 		t.Fatalf("clean content was not served: status=%d body=%q", resp.StatusCode, string(body))
+	}
+}
+
+// TestReverseCoreFloorBlocksSSEWithEmptyActions covers the SSE sibling of the
+// empty-action case. Operator YAML that disables the optional layer leaves the
+// actions empty, and an unrecognised action must not read as warn-and-forward
+// on the streaming path any more than it does on the buffered one.
+func TestReverseCoreFloorBlocksSSEWithEmptyActions(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.Action = ""
+	cfg.ResponseScanning.SSEStreaming.Action = ""
+
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+corePayloadForFloor+"\n\n")
+	})
+
+	resp := testGet(t, proxy.URL+"/events")
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), corePayloadForFloor) {
+		t.Fatalf("core injection reached the client on an SSE stream with both actions empty: %q", body)
 	}
 }

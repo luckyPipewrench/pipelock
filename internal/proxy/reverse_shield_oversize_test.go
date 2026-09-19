@@ -937,3 +937,56 @@ func TestReverseProxy_ShieldOversize_DoesNotBlockShieldIneligibleImage(t *testin
 		t.Fatal("oversize non-shieldable image was modified or truncated")
 	}
 }
+
+// oversizeShieldPageWithInjection builds an oversized shieldable page whose
+// body carries a core prompt-injection phrase. The phrase is what proves
+// whether the immutable floor inspected these bytes.
+func oversizeShieldPageWithInjection(minBytes int) string {
+	var b strings.Builder
+	b.WriteString("<html><body><p>" + corePayloadForFloor + "</p>")
+	for b.Len()+len(oversizeShieldTail) < minBytes {
+		b.WriteString("<p>filler paragraph for size</p>")
+	}
+	b.WriteString(oversizeShieldTail)
+	return b.String()
+}
+
+// TestReverseProxy_ShieldOversizeScanHeadStillRunsCoreFloor covers the branch
+// the block-mode cases never reach.
+//
+// shieldOnly decides whether Browser Shield is the ONLY consumer of the body,
+// and it was computed from the raw config flag. The core floor runs regardless
+// of that flag, so with the optional layer off an oversized shieldable
+// response was classified shield-only, took the scan_head branch, and returned
+// to the client without the floor ever inspecting it. Block mode hides this
+// because it refuses the body for an unrelated reason.
+func TestReverseProxy_ShieldOversizeScanHeadStillRunsCoreFloor(t *testing.T) {
+	for _, action := range []string{config.ShieldOversizeScanHead, config.ShieldOversizeWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+			cfg.BrowserShield.OversizeAction = action
+			page := oversizeShieldPageWithInjection(oversizeShieldTestCap * 2)
+
+			// Shield must be ACTIVE for this host, not exempt: shieldOnly is
+			// "Browser Shield is the only body consumer", so an exempt host
+			// makes it false and never reaches the branch under test.
+			proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, page)
+			}, nil, nil)
+
+			resp := testGet(t, proxySrv.URL+"/page")
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			if strings.Contains(string(body), corePayloadForFloor) {
+				t.Fatalf("core injection reached the client through the oversize shield path with action=%s (status %d)", action, resp.StatusCode)
+			}
+		})
+	}
+}

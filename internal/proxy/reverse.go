@@ -2717,7 +2717,13 @@ responseScanning:
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
 	maxBytes := responseBodyLimit
-	shieldOnly := !cfg.ResponseScanning.Enabled && shieldActiveForHost
+	// shieldOnly means Browser Shield is the ONLY consumer of this body, which
+	// decides whether to read to the shield ceiling instead of the scan limit.
+	// It has to ask the scanner, not the raw flag: the core floor runs whether
+	// or not the optional layer is enabled, so with the flag off an oversized
+	// shieldable body was classified shield-only, took the scan_head/warn
+	// branch, and returned to the client with the floor never inspecting it.
+	shieldOnly := !sc.ResponseScanningEnabled() && shieldActiveForHost
 	if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 		// Browser Shield is independent of response injection scanning. When it
 		// is the only body consumer, read to its own ceiling instead of applying

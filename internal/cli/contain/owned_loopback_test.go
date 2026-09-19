@@ -1435,3 +1435,57 @@ func TestReloadNFTManagedChainSurfacesReceiverQueryFailure(t *testing.T) {
 		t.Fatalf("reloadNFTManagedChain = %v; want the query failure surfaced", err)
 	}
 }
+
+// TestReceiverChainDeletionIsFlushedFirst pins the ORDER of the replacement
+// transaction. nftables refuses to delete a chain that still contains rules,
+// and the receiver gate always contains its accept and its terminal drop, so a
+// bare delete makes the `nft -c` preflight reject the whole transaction.
+//
+// On the install path that blocks every upgrade; on the boot path it means the
+// persistence unit fails and the host comes up with no containment at all.
+func TestReceiverChainDeletionIsFlushedFirst(t *testing.T) {
+	t.Parallel()
+	flush := "flush chain inet " + defaultNFTTable + " " + ownedLoopbackInputChain
+	del := "delete chain inet " + defaultNFTTable + " " + ownedLoopbackInputChain
+
+	assertFlushBeforeDelete := func(t *testing.T, label, script string) {
+		t.Helper()
+		flushAt := strings.Index(script, flush)
+		deleteAt := strings.Index(script, del)
+		if flushAt < 0 {
+			t.Fatalf("%s does not flush the receiver chain before deleting it:\n%s", label, script)
+		}
+		if deleteAt < 0 {
+			t.Fatalf("%s does not delete the receiver chain:\n%s", label, script)
+		}
+		if flushAt > deleteAt {
+			t.Fatalf("%s deletes the receiver chain before flushing it:\n%s", label, script)
+		}
+	}
+
+	// Reload path, with the chain live so the delete is emitted at all.
+	canonical := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: 1000, ProxyUID: 967, AgentUID: 966, ProxyPort: 8888,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+	assertFlushBeforeDelete(t, "reload script",
+		renderNFTManagedChainReloadScript("", canonical, defaultNFTTable, defaultNFTChain, 1000, 967, 966, true))
+
+	// Install-time replacement path.
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopback = true
+	env.nftRulesPath = filepath.Join(t.TempDir(), "containment.nft")
+	var staged string
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name == nftExecutable(env) && strings.Contains(strings.Join(args, " "), "-f") {
+			if body, err := os.ReadFile(filepath.Clean(env.nftRulesPath + ".owned-loopback-input-replace")); err == nil {
+				staged = string(body)
+			}
+		}
+		return "", 0, nil
+	}
+	if err := replaceOwnedLoopbackInputChain(context.Background(), env); err != nil {
+		t.Fatalf("replaceOwnedLoopbackInputChain: %v", err)
+	}
+	assertFlushBeforeDelete(t, "replacement transaction", staged)
+}

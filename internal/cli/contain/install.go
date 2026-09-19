@@ -2180,7 +2180,12 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 // checking the receiving socket.
 func replaceOwnedLoopbackInputChain(ctx context.Context, env *installEnv) error {
 	path := env.nftRulesPath + ".owned-loopback-input-replace"
-	body := "delete chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
+	// FLUSH before DELETE. nftables refuses to delete a chain that still
+	// contains rules, and the receiver gate always does, so a bare delete makes
+	// the `nft -c` preflight reject the whole replacement transaction and the
+	// upgrade cannot proceed.
+	body := "flush chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
+		"delete chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
 		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault())
 	if err := env.writeFile(path, []byte(body), modeConfigSecret); err != nil {
 		return fmt.Errorf("write owned loopback receiver chain replacement: %w", err)

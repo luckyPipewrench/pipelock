@@ -535,6 +535,11 @@ func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, ope
 		// chain in place would duplicate base chains; omitting this deletion
 		// would make a changed cgroup rule fail to load rather than silently
 		// widening it.
+		// Flush first: nftables refuses to delete a chain that still holds
+		// rules, and the receiver gate always does. A bare delete makes the
+		// `nft -c` preflight reject the transaction, which on the boot path
+		// means the host comes up with no containment at all.
+		_, _ = fmt.Fprintf(&script, "flush chain inet %s %s\n", table, ownedLoopbackInputChain)
 		_, _ = fmt.Fprintf(&script, "delete chain inet %s %s\n", table, ownedLoopbackInputChain)
 	}
 	for _, handle := range handles {

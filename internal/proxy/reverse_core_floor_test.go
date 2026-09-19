@@ -33,10 +33,7 @@ func TestReverseCoreFloorRunsWithResponseScanningDisabled(t *testing.T) {
 		_, _ = io.WriteString(w, corePayloadForFloor)
 	})
 
-	resp, err := http.Get(proxy.URL + "/doc")
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	resp := testGet(t, proxy.URL+"/doc")
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -67,10 +64,7 @@ func TestReverseCoreFloorWithEmptyActionStillBlocks(t *testing.T) {
 		_, _ = io.WriteString(w, corePayloadForFloor)
 	})
 
-	resp, err := http.Get(proxy.URL + "/doc")
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	resp := testGet(t, proxy.URL+"/doc")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusForbidden {
@@ -78,9 +72,6 @@ func TestReverseCoreFloorWithEmptyActionStillBlocks(t *testing.T) {
 	}
 }
 
-// TestReverseCoreFloorStillServesCleanContentWhenDisabled is the positive
-// control: without it the cases above would pass against a reverse proxy that
-// blocked everything for an unrelated reason.
 func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -92,10 +83,7 @@ func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
 		_, _ = io.WriteString(w, "data: "+corePayloadForFloor+"\n\n")
 	})
 
-	resp, err := http.Get(proxy.URL + "/events")
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	resp := testGet(t, proxy.URL+"/events")
 	defer func() { _ = resp.Body.Close() }()
 	// Block mode closes the pipe on a finding, so ReadAll sees the stream
 	// end as unexpected EOF. The pin is that the injection event never
@@ -118,10 +106,7 @@ func TestReverseCoreFloorStillServesCleanSSEWhenParentDisabled(t *testing.T) {
 		_, _ = io.WriteString(w, clean)
 	})
 
-	resp, err := http.Get(proxy.URL + "/events")
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	resp := testGet(t, proxy.URL+"/events")
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -133,6 +118,8 @@ func TestReverseCoreFloorStillServesCleanSSEWhenParentDisabled(t *testing.T) {
 }
 
 func TestReverseCoreFloorStillServesCleanContentWhenDisabled(t *testing.T) {
+	// Positive control: without it the cases above would pass against a
+	// reverse proxy that blocked everything for an unrelated reason.
 	const clean = "the quarterly report is attached for review"
 
 	cfg := config.Defaults()
@@ -144,10 +131,7 @@ func TestReverseCoreFloorStillServesCleanContentWhenDisabled(t *testing.T) {
 		_, _ = io.WriteString(w, clean)
 	})
 
-	resp, err := http.Get(proxy.URL + "/doc")
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
+	resp := testGet(t, proxy.URL+"/doc")
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

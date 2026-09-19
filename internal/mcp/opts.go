@@ -467,8 +467,26 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 				o.Metrics.RecordResponseSuppressedMatch(match.PatternName, "mcp_stdio", "suppressed")
 			}
 		},
+		OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
+			if o.AuditLogger != nil {
+				o.AuditLogger.LogCoreResponseObserved(mustMCPAuditContext(o.AuditLogger, "MCP", auditResource), observed.Match.PatternName, "mcp_stdio", audit.CoreObserveAuthorization{
+					Host:    observed.Host,
+					Reason:  observed.Reason,
+					Owner:   observed.Owner,
+					Expires: observed.Expires,
+				})
+			}
+			if o.Metrics != nil {
+				o.Metrics.RecordResponseSuppressedMatch(observed.Match.PatternName, "mcp_stdio", coreObservedEvidenceReason)
+			}
+		},
 	}
 }
+
+// coreObservedEvidenceReason labels MCP evidence for a declared core-floor
+// observation. It matches the proxy's ExemptReasonCoreObserved so one query
+// finds every observed floor finding across transports.
+const coreObservedEvidenceReason = "core_observed"
 
 func (o MCPProxyOpts) responseSuppress() []config.SuppressEntry {
 	if o.SuppressFn != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -750,18 +751,39 @@ func TestReloadRefusesWhenTheReceiverGateIsMissing(t *testing.T) {
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, nftReloadTestConfigWithService("2099-01-01T00:00:00Z"), persisted)
 	fx.env.ownedLoopback = true
 
+	// The fail-open state is a live OUTPUT chain that ALREADY MARKS loopback
+	// flows while its receiver gate is gone. A legacy chain with no marking
+	// rules is not that state and must be allowed to migrate, so the fixture
+	// has to carry the marks for this refusal to be the thing under test.
+	marks := "    meta skuid " + strconv.Itoa(loopbackTestAgentUID) + " oifname \"lo\" ip daddr 127.0.0.1 socket cgroupv2 level 1 \"" + ownedLoopbackSlice + "\" ct state new ct mark set " + ownedLoopbackConntrackMark + " accept # handle 90\n" +
+		"    meta skuid " + strconv.Itoa(loopbackTestAgentUID) + " oifname \"lo\" ip6 daddr ::1 socket cgroupv2 level 1 \"" + ownedLoopbackSlice + "\" ct state new ct mark set " + ownedLoopbackConntrackMark + " accept # handle 91\n"
+	// Insert INSIDE the output chain block, where the chain-line parser reads.
+	marker := "    meta skuid 1000 accept # handle 20\n"
+	if !strings.Contains(nftReloadTestLiveWithNoService, marker) {
+		t.Fatal("live fixture shape changed; the marking rules would land outside the chain")
+	}
+	markedOutput := strings.Replace(nftReloadTestLiveWithNoService, marker, marker+marks, 1)
+	// Prove the fixture models the fail-open state before relying on it.
+	if !nftOutputHasOwnedLoopbackMarks(markedOutput, loopbackTestAgentUID) {
+		t.Fatal("fixture does not present marked OUTPUT rules")
+	}
+
 	base := fx.env.runCmd
 	fx.env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
-		if strings.Contains(strings.Join(args, " "), ownedLoopbackInputChain) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, ownedLoopbackInputChain) {
 			// The receiver gate is gone: an interrupted migration, or someone
 			// flushed the table by hand.
 			return "Error: No such file or directory", 1, nil
+		}
+		if strings.Contains(joined, "list chain") {
+			return markedOutput, 0, nil
 		}
 		return base(ctx, name, args...)
 	}
 
 	err := reloadNFTRules(context.Background(), fx.env)
-	if err == nil || !strings.Contains(err.Error(), "missing while the managed output chain is present") {
+	if err == nil || !strings.Contains(err.Error(), "missing while the output chain already marks loopback flows") {
 		t.Fatalf("reloadNFTRules = %v; want a refusal naming the missing receiver gate", err)
 	}
 }
@@ -1294,5 +1316,122 @@ func TestDriftedReceiverChainIsReplacedNotRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(env.nftRulesPath + ".owned-loopback-input-replace"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("replacement transaction file was left behind: %v", err)
+	}
+}
+
+// TestReceiverChainMatcherAcceptsEquivalentPrioritySpelling pins that the
+// exact matcher does not reject the chain this package itself installs. nft
+// renders a base chain's priority as either its symbolic name or its numeric
+// value depending on version, so `priority filter` and `priority 0` describe
+// the same chain. Accepting only one spelling refuses a correctly installed
+// gate on any host whose nft prints the other, and install and reload then
+// decline with no operator action that clears it.
+func TestReceiverChainMatcherAcceptsEquivalentPrioritySpelling(t *testing.T) {
+	t.Parallel()
+	managed := renderOwnedLoopbackInputChainTable(defaultNFTTable)
+	if !ownedLoopbackInputChainLooksManaged(managed) {
+		t.Fatal("the rendered chain is rejected by its own matcher")
+	}
+
+	numeric := strings.ReplaceAll(managed, "priority filter;", "priority 0;")
+	if numeric == managed {
+		t.Fatal("fixture did not change the priority spelling; this test would pass vacuously")
+	}
+	if !ownedLoopbackInputChainLooksManaged(numeric) {
+		t.Fatalf("matcher rejected the numeric priority spelling nft also emits:\n%s", numeric)
+	}
+
+	// Normalising whitespace must not become a licence to accept a different
+	// chain: the rules themselves are still compared exactly.
+	tampered := strings.ReplaceAll(numeric,
+		"ct mark "+ownedLoopbackConntrackMark+" drop",
+		"ct mark "+ownedLoopbackConntrackMark+" accept")
+	if ownedLoopbackInputChainLooksManaged(tampered) {
+		t.Fatal("normalisation accepted a chain whose terminal drop was replaced by an accept")
+	}
+}
+
+// TestReplaceOwnedLoopbackInputChainFailurePaths covers the replacement's own
+// error branches. Replacement runs during an upgrade, so a failure here has to
+// surface: silently continuing would leave the previous release's receiver gate
+// in the kernel while the rest of the install moves to the new rules.
+func TestReplaceOwnedLoopbackInputChainFailurePaths(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		failOn  string
+		writeFn func(string, []byte, os.FileMode) error
+		wantErr string
+	}{
+		{
+			name:    "the transaction file cannot be written",
+			writeFn: func(string, []byte, os.FileMode) error { return errors.New("read-only filesystem") },
+			wantErr: "write owned loopback receiver chain replacement",
+		},
+		{
+			name:    "nft rejects the replacement",
+			failOn:  "-c",
+			wantErr: "validate owned loopback receiver chain replacement",
+		},
+		{
+			name:    "nft refuses to load the replacement",
+			failOn:  "load",
+			wantErr: "replace owned loopback receiver chain",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, _, _ := newFakeEnv(t)
+			env.ownedLoopback = true
+			env.nftRulesPath = filepath.Join(t.TempDir(), "containment.nft")
+			if tc.writeFn != nil {
+				env.writeFile = tc.writeFn
+			}
+			failOn := tc.failOn
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != nftExecutable(env) {
+					return "", 0, nil
+				}
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "-c -f") {
+					if failOn == "-c" {
+						return "syntax error", 1, nil
+					}
+					return "", 0, nil
+				}
+				if strings.Contains(joined, "-f") && failOn == "load" {
+					return "load refused", 1, nil
+				}
+				return "", 0, nil
+			}
+			err := replaceOwnedLoopbackInputChain(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("replaceOwnedLoopbackInputChain = %v; want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestReloadNFTManagedChainSurfacesReceiverQueryFailure covers the install-time
+// reload's receiver-chain query error. The query decides whether the
+// transaction deletes a kernel chain, so an unanswerable query must stop the
+// reload rather than be read as "the chain is absent".
+func TestReloadNFTManagedChainSurfacesReceiverQueryFailure(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopback = true
+	env.nftRulesPath = filepath.Join(t.TempDir(), "containment.nft")
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != nftExecutable(env) {
+			return "", 0, nil
+		}
+		if strings.Contains(strings.Join(args, " "), ownedLoopbackInputChain) {
+			return "", 0, errors.New("nft unavailable")
+		}
+		return "chain output_filter { }", 0, nil
+	}
+	err := reloadNFTManagedChain(context.Background(), env, "table inet t { }\n", 1000, 967, 966)
+	if err == nil || !strings.Contains(err.Error(), "list owned loopback receiver chain for reload") {
+		t.Fatalf("reloadNFTManagedChain = %v; want the query failure surfaced", err)
 	}
 }

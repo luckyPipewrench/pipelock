@@ -270,11 +270,20 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 			// every reload after an upgrade, including the boot-time one.
 			receiverChainLive = true
 		}
-		if out != "" && !receiverChainLive {
+		// Refuse ONLY when the live OUTPUT chain already carries owned-loopback
+		// marking rules while its receiver gate is gone. That host is already
+		// fail-open and silently repairing it would tell nobody.
+		//
+		// `out != ""` alone is not that state: it only proves a managed OUTPUT
+		// chain exists, and a LEGACY chain has no marking rules at all. Gating
+		// on mere existence blocked every legacy host from ever migrating to
+		// owned loopback, because the canonical transaction that installs both
+		// the marks and the gate could never run.
+		if nftOutputHasOwnedLoopbackMarks(out, header.agentUID) && !receiverChainLive {
 			// A managed OUTPUT chain marks flows; without its receiver gate the
 			// host is already fail-open, so this is reported rather than
 			// silently repaired.
-			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing while the managed output chain is present; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing while the output chain already marks loopback flows; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
 		}
 	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {

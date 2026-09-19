@@ -66,7 +66,7 @@ func ownedLoopbackInputChainLooksManaged(out string) bool {
 		return false
 	}
 	want := []string{
-		"type filter hook input priority filter; policy accept;",
+		normalizeNFTChainLine("type filter hook input priority filter; policy accept;"),
 		"ct mark " + ownedLoopbackConntrackMark + " socket cgroupv2 level 1 \"" + ownedLoopbackSlice + "\" accept",
 		"ct mark " + ownedLoopbackConntrackMark + " drop",
 	}
@@ -74,11 +74,27 @@ func ownedLoopbackInputChainLooksManaged(out string) bool {
 		return false
 	}
 	for i, line := range body {
-		if line != want[i] {
+		if normalizeNFTChainLine(line) != want[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// normalizeNFTChainLine collapses spellings nft treats as identical, so an
+// exact-match check does not reject the very chain this package installed.
+//
+// nft renders a base chain's priority as either its symbolic name or its
+// numeric value depending on version and invocation, so `priority filter` and
+// `priority 0` describe the same chain. A matcher that accepts only one of
+// them refuses a correctly installed gate on any host whose nft prints the
+// other, and both install and reload then decline to change dynamic loopback
+// rules with no operator action that can clear it.
+func normalizeNFTChainLine(line string) string {
+	normalized := strings.Join(strings.Fields(line), " ")
+	normalized = strings.ReplaceAll(normalized, "priority 0;", "priority filter;")
+	normalized = strings.ReplaceAll(normalized, "priority 0 ;", "priority filter;")
+	return normalized
 }
 
 // ownedLoopbackInputChainBody returns the receiver chain's non-empty statement
@@ -133,6 +149,15 @@ RestartSec=1
 [Install]
 WantedBy=multi-user.target
 `
+}
+
+// nftOutputHasOwnedLoopbackMarks reports whether raw nft output contains the
+// owned-loopback marking rules for the agent. It scans lines directly rather
+// than going through chain attribution: the question is only whether the
+// marking rules are present, and making it depend on a chain-declaration
+// parser adds a way to answer "no" for a reason unrelated to the marks.
+func nftOutputHasOwnedLoopbackMarks(out string, agentUID int) bool {
+	return chainLinesHaveOwnedLoopbackOutputRules(strings.Split(out, "\n"), agentUID)
 }
 
 // chainLinesHaveOwnedLoopbackOutputRules reports whether the live OUTPUT chain

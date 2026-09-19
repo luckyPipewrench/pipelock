@@ -310,29 +310,85 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 }
 
 // Regex patterns for extracting content from HTML hiding spots that
-// readability strips (comments, script bodies, style bodies). We scan
-// only these extracted fragments for injection, not the full HTML markup,
-// to avoid false positives on legitimate HTML tags and attributes.
+// readability strips (comments, non-executable data script bodies, style
+// bodies, hidden elements). We scan only these extracted fragments for
+// injection, not the full HTML markup, to avoid false positives on
+// legitimate HTML tags and attributes.
+//
+// Executable JavaScript script bodies are intentionally excluded from this
+// surface (AF-333 residual). Fetch returns readability text to the agent, so
+// minified JS/JSON bundles are not on the human-rendered or agent-visible
+// channel; scanning them blocked clean pages (~858KB HTML vs ~6.6KB rendered
+// text). Injection that only lives in executable JS is still covered when
+// readability fails: the follow-up scan runs on the raw HTML body. Data
+// scripts (application/json, ld+json, text/plain, …), comments, style, and
+// hidden elements remain on the hidden surface because they carry prose an
+// attacker can aim at the model while keeping the rendered page clean.
 var (
-	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
-	reScriptBody    = regexp.MustCompile(`(?si)<script[^>]*>(.*?)</script>`)
-	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
-	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
+	reHTMLComment = regexp.MustCompile(`(?s)<!--(.*?)-->`)
+	// Capture attribute blob separately so executable JS can be filtered out.
+	reScriptTag      = regexp.MustCompile(`(?si)<script(\s[^>]*)?>(.*?)</script>`)
+	reScriptTypeAttr = regexp.MustCompile(`(?i)\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	reStyleBody      = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
+	reHiddenElement  = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
 		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
 		`[^>]*>(.*?)</`)
 )
 
-// extractHiddenContent pulls text from HTML elements that readability
-// strips: comments, script bodies, and style bodies. Returns the
-// concatenated text from these hiding spots (empty if none found).
+// isExecutableJavaScriptMIME reports whether a <script type="..."> value is
+// executable JavaScript (including the empty/default type). Unknown types are
+// treated as data carriers (fail closed: still scanned).
+func isExecutableJavaScriptMIME(typeAttr string) bool {
+	t := strings.ToLower(strings.TrimSpace(typeAttr))
+	if t == "" {
+		return true
+	}
+	if i := strings.IndexByte(t, ';'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	switch t {
+	case "module",
+		"text/javascript",
+		"application/javascript",
+		"text/ecmascript",
+		"application/ecmascript",
+		"text/jscript",
+		"application/x-javascript":
+		return true
+	default:
+		return false
+	}
+}
+
+func scriptTypeAttribute(attrs string) string {
+	m := reScriptTypeAttr.FindStringSubmatch(attrs)
+	if m == nil {
+		return ""
+	}
+	for _, g := range m[1:] {
+		if g != "" {
+			return g
+		}
+	}
+	return ""
+}
+
+// extractHiddenContent pulls text from HTML elements that readability strips
+// and that can carry model-facing prose while keeping the rendered page clean:
+// comments, non-executable data script bodies, style bodies, and hidden
+// elements. Executable JavaScript bodies are omitted (see var block comment).
 func extractHiddenContent(html string) string {
 	var b strings.Builder
 	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {
 		b.WriteString(m[1])
 		b.WriteByte('\n')
 	}
-	for _, m := range reScriptBody.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
+	for _, m := range reScriptTag.FindAllStringSubmatch(html, -1) {
+		attrs, body := m[1], m[2]
+		if isExecutableJavaScriptMIME(scriptTypeAttribute(attrs)) {
+			continue
+		}
+		b.WriteString(body)
 		b.WriteByte('\n')
 	}
 	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {
@@ -5928,9 +5984,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
 
-	// Extract text from HTML hiding spots (comments, script/style bodies)
-	// that readability strips. Scan only those fragments for injection,
-	// not the full HTML markup, to avoid false positives on legitimate tags.
+	// Extract text from HTML hiding spots that readability strips (comments,
+	// non-executable data scripts, style, hidden elements). Scan only those
+	// fragments for injection, not the full HTML markup / executable JS
+	// bundles, to avoid false positives on legitimate tags and SPA payloads.
 	// Use the final response origin after redirects, not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
@@ -6001,7 +6058,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fail-closed: if hidden injection was detected in HTML comments/script/
+	// Fail-closed: if hidden injection was detected in comments/data-scripts/
 	// style/hidden elements but readability failed to strip them, block rather
 	// than delivering raw HTML with embedded injection. The pre-scan's
 	// TransformedContent cannot map back to the full HTML (it operates on

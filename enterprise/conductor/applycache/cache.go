@@ -83,8 +83,9 @@ type verifyOptions struct {
 	Now           func() time.Time
 	AllowRollback bool
 	// RecoverActive allows the durable active bundle's expiry to be handled by
-	// DecideStale. Network staging never sets it. Signature-key lifecycle and
-	// the bundle's not-before gate still use the current verification time.
+	// DecideStale. An expired durable bundle's validity window, including its
+	// not-before boundary, is checked at ExpiresAt. Network staging never sets
+	// this option. Signature-key lifecycle still uses the current time.
 	RecoverActive bool
 }
 

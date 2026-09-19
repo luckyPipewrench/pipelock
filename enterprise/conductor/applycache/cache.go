@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
 const (
@@ -668,20 +669,9 @@ func readBundleRecord(path string) (diskBundleRecord, error) {
 }
 
 func readJSONFile(path string, maxBytes int, dst any) error {
-	if err := validateRegularFile(path, maxBytes); err != nil {
-		return err
-	}
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	data, err := readCacheFile(path, maxBytes)
 	if err != nil {
 		return fmt.Errorf("%w: read JSON record: %w", ErrInvalidActiveRecord, err)
-	}
-	if len(data) > maxBytes {
-		return fmt.Errorf("%w: file_bytes>%d", conductor.ErrPayloadTooLarge, maxBytes)
 	}
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return fmt.Errorf("%w: decode JSON record: %w", ErrInvalidActiveRecord, err)
@@ -719,10 +709,7 @@ func validateRegularFile(path string, maxBytes int) error {
 // recovery and stale decisions must never treat a substituted policy file as
 // the cached signed policy.
 func validateConfigPayload(path, expected string) error {
-	if err := validateRegularFile(path, conductor.MaxConfigYAMLBytes); err != nil {
-		return err
-	}
-	contents, err := os.ReadFile(filepath.Clean(path))
+	contents, err := readCacheFile(path, conductor.MaxConfigYAMLBytes)
 	if err != nil {
 		return err
 	}
@@ -730,6 +717,24 @@ func validateConfigPayload(path, expected string) error {
 		return fmt.Errorf("%w: cached config does not match signed bundle payload", ErrInvalidActiveRecord)
 	}
 	return nil
+}
+
+// readCacheFile uses the shared secure reader for both policy and metadata.
+// Its descriptor identity and bounded read remain authoritative if the path
+// changes after the preliminary format/size check. The preliminary check keeps
+// the existing cache error classifications for stable invalid files.
+func readCacheFile(path string, maxBytes int) ([]byte, error) {
+	if err := validateRegularFile(path, maxBytes); err != nil {
+		return nil, err
+	}
+	data, err := securefile.Read(path, securefile.Options{
+		MaxBytes:      int64(maxBytes),
+		RejectSymlink: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading cache file: %w", ErrInvalidActiveRecord, err)
+	}
+	return data, nil
 }
 
 func validateHash(hash string) error {

@@ -7,6 +7,8 @@
 package applycache
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -24,9 +26,13 @@ type Boundary struct {
 	Identity     Identity
 	Resolver     conductor.SignatureKeyResolver
 	LocalVersion string
-	LoadConfig   ConfigLoader
-	Reload       ReloadFunc
-	Now          func() time.Time
+	// LoadConfig is a trusted compatibility hook. With no hook, configuration
+	// is parsed directly from the verified signed payload. A hook must return
+	// configuration loaded from those same bytes; its raw hash is checked before
+	// reload so replacing the cache path cannot substitute another policy.
+	LoadConfig ConfigLoader
+	Reload     ReloadFunc
+	Now        func() time.Time
 	// StillEntitled, when non-nil, is consulted immediately before the
 	// live-config Reload (the security-relevant commit point). It lets the
 	// caller abort an apply whose fleet entitlement was revoked/expired
@@ -55,10 +61,6 @@ func (b Boundary) Apply(bundle conductor.PolicyBundle, opts ApplyOptions) (Appli
 	if b.Reload == nil {
 		return AppliedBundle{}, errors.New("conductor apply boundary reload function required")
 	}
-	loadConfig := b.LoadConfig
-	if loadConfig == nil {
-		loadConfig = config.Load
-	}
 	verified, err := b.Cache.stageVerified(bundle, verifyOptions{
 		Identity:      b.Identity,
 		Resolver:      b.Resolver,
@@ -70,7 +72,7 @@ func (b Boundary) Apply(bundle conductor.PolicyBundle, opts ApplyOptions) (Appli
 	if err != nil {
 		return AppliedBundle{}, err
 	}
-	cfg, err := loadConfig(verified.ConfigPath)
+	cfg, err := b.loadVerifiedConfig(verified)
 	if err != nil {
 		return AppliedBundle{}, fmt.Errorf("loading verified conductor policy bundle config: %w", err)
 	}
@@ -107,10 +109,6 @@ func (b Boundary) RecoverActive() (AppliedBundle, error) {
 	if b.Reload == nil {
 		return AppliedBundle{}, errors.New("conductor apply boundary reload function required")
 	}
-	loadConfig := b.LoadConfig
-	if loadConfig == nil {
-		loadConfig = config.Load
-	}
 	active, err := b.Cache.Active()
 	if err != nil {
 		return AppliedBundle{}, err
@@ -124,7 +122,7 @@ func (b Boundary) RecoverActive() (AppliedBundle, error) {
 	}); err != nil {
 		return AppliedBundle{}, err
 	}
-	cfg, err := loadConfig(active.ConfigPath)
+	cfg, err := b.loadVerifiedConfig(active)
 	if err != nil {
 		return AppliedBundle{}, fmt.Errorf("loading verified cached conductor policy bundle config: %w", err)
 	}
@@ -138,4 +136,22 @@ func (b Boundary) RecoverActive() (AppliedBundle, error) {
 		VerifiedBundle:     active,
 		ReloadedConfigHash: cfg.Hash(),
 	}, nil
+}
+
+// loadVerifiedConfig keeps parsing bound to the bytes whose signature was
+// checked. Reopening ConfigPath would introduce a second, unverified input.
+func (b Boundary) loadVerifiedConfig(verified VerifiedBundle) (*config.Config, error) {
+	payload := []byte(verified.Bundle.Payload.ConfigYAML)
+	if b.LoadConfig == nil {
+		return config.LoadPolicyBundleBytes(payload)
+	}
+	cfg, err := b.LoadConfig(verified.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(payload)
+	if cfg == nil || cfg.Hash() != hex.EncodeToString(digest[:]) {
+		return nil, fmt.Errorf("%w: loaded config does not match signed bundle payload", ErrInvalidActiveRecord)
+	}
+	return cfg, nil
 }

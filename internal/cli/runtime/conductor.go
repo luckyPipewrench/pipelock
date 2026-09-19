@@ -146,7 +146,6 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		},
 		Resolver:     opts.Resolver,
 		LocalVersion: cliutil.Version,
-		LoadConfig:   config.Load,
 		Reload: func(newCfg *config.Config) error {
 			return s.reloadConductorPolicyBundle(newCfg, bundle.Payload.ConfigYAML)
 		},
@@ -168,6 +167,8 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 // admission. A cache record identifies the last policy installed, but only the
 // apply boundary can establish that this running binary still satisfies its
 // signature, audience, lifetime, and minimum-version requirements.
+// NewServer calls it synchronously before returning the Server; Start has not
+// launched the follower pollers or license/CRL watchers at this point.
 func (s *Server) recoverActiveConductorPolicy() error {
 	if s == nil {
 		return errors.New("nil runtime server")
@@ -212,7 +213,6 @@ func (s *Server) recoverActiveConductorPolicy() error {
 		},
 		Resolver:     resolver,
 		LocalVersion: cliutil.Version,
-		LoadConfig:   config.Load,
 		Reload: func(newCfg *config.Config) error {
 			return s.reloadConductorPolicyBundle(newCfg, active.Bundle.Payload.ConfigYAML)
 		},

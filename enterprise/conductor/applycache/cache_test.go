@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,6 +365,112 @@ func TestBoundaryRecoverActivePreservesStaleLifecycle(t *testing.T) {
 	}
 }
 
+// TestBoundaryRecoverActiveUsesVerifiedPayloadSnapshot replaces the cache after
+// Active has validated it, using signature resolution as a deterministic seam.
+func TestBoundaryRecoverActiveUsesVerifiedPayloadSnapshot(t *testing.T) {
+	for _, replacement := range []string{"regular", "symlink", "oversized"} {
+		t.Run(replacement, func(t *testing.T) {
+			key := newTestKey(t)
+			cache := openTestCache(t)
+			bundle := signedTestBundle(t, key, "bundle-recovery-snapshot", 1, "")
+			active, err := cache.storeVerified(bundle, testVerifyOptions(key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := testResolver(key)
+			replaced := false
+			var reloaded *config.Config
+			boundary := Boundary{
+				Cache: cache, Identity: testIdentity(), LocalVersion: "1.2.3",
+				Now: func() time.Time { return testNow },
+				Resolver: func(id string) (conductor.SignatureKey, error) {
+					if !replaced {
+						replaced = true
+						payload := "mode: balanced\n"
+						if replacement == "oversized" {
+							payload += "#" + strings.Repeat("x", conductor.MaxConfigYAMLBytes)
+						}
+						target := filepath.Join(t.TempDir(), "replacement.yaml")
+						if err := os.WriteFile(target, []byte(payload), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(active.ConfigPath); err != nil {
+							t.Fatal(err)
+						}
+						if replacement == "symlink" {
+							if err := os.Symlink(target, active.ConfigPath); err != nil {
+								t.Skipf("symlink unavailable: %v", err)
+							}
+						} else if err := os.Rename(target, active.ConfigPath); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return resolve(id)
+				},
+				Reload: func(cfg *config.Config) error { reloaded = cfg; return nil },
+			}
+			if _, err := boundary.RecoverActive(); err != nil {
+				t.Fatalf("RecoverActive: %v", err)
+			}
+			if !replaced || reloaded == nil {
+				t.Fatalf("recovery did not exercise replacement and reload: replaced=%v", replaced)
+			}
+			if reloaded.Mode != config.ModeStrict {
+				t.Fatalf("recovery loaded mode %q instead of signed strict policy", reloaded.Mode)
+			}
+			if len(reloaded.APIAllowlist) != 1 || reloaded.APIAllowlist[0] != "api.example.com" {
+				t.Fatalf("recovered allowlist = %v", reloaded.APIAllowlist)
+			}
+		})
+	}
+}
+
+// TestBoundaryCustomLoaderMustMatchSignedBytes keeps the existing loader hook
+// usable while refusing a different file snapshot before any live reload.
+func TestBoundaryCustomLoaderMustMatchSignedBytes(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		for _, substitute := range []bool{false, true} {
+			t.Run(fmt.Sprintf("recovery=%v/substitute=%v", recovery, substitute), func(t *testing.T) {
+				key := newTestKey(t)
+				cache := openTestCache(t)
+				bundle := signedTestBundle(t, key, "bundle-loader-snapshot", 1, "")
+				if recovery {
+					if _, err := cache.storeVerified(bundle, testVerifyOptions(key)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				reloads := 0
+				boundary := Boundary{
+					Cache: cache, Identity: testIdentity(), Resolver: testResolver(key),
+					LocalVersion: "1.2.3", Now: func() time.Time { return testNow },
+					LoadConfig: func(path string) (*config.Config, error) {
+						if substitute {
+							if err := os.WriteFile(filepath.Clean(path), []byte("mode: balanced\n"), 0o600); err != nil {
+								return nil, err
+							}
+						}
+						return config.Load(path)
+					},
+					Reload: func(*config.Config) error { reloads++; return nil },
+				}
+				var err error
+				if recovery {
+					_, err = boundary.RecoverActive()
+				} else {
+					_, err = boundary.Apply(bundle, ApplyOptions{})
+				}
+				if substitute {
+					if !errors.Is(err, ErrInvalidActiveRecord) || reloads != 0 {
+						t.Fatalf("substituted loader: err=%v reloads=%d", err, reloads)
+					}
+				} else if err != nil || reloads != 1 {
+					t.Fatalf("authentic loader: err=%v reloads=%d", err, reloads)
+				}
+			})
+		}
+	}
+}
+
 func TestBoundaryRecoverActiveFailurePaths(t *testing.T) {
 	key := newTestKey(t)
 	cache := openTestCache(t)
@@ -395,6 +502,9 @@ func TestBoundaryRecoverActiveFailurePaths(t *testing.T) {
 		{"load failure", func(b *Boundary) {
 			b.LoadConfig = func(string) (*config.Config, error) { return nil, loadFailure }
 		}, loadFailure},
+		{"nil loaded config", func(b *Boundary) {
+			b.LoadConfig = func(string) (*config.Config, error) { return nil, nil }
+		}, ErrInvalidActiveRecord},
 		{"reload failure", func(b *Boundary) { b.Reload = func(*config.Config) error { return reloadFailure } }, reloadFailure},
 		{"wrong audience", func(b *Boundary) { b.Identity.OrgID = "other-org" }, conductor.ErrAudienceMismatch},
 		{"not yet valid", func(b *Boundary) {

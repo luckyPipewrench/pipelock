@@ -246,9 +246,34 @@ func TestEvidenceAuditorUserSystemdUnavailableWhenProbeReturnsEmptyState(t *test
 	}
 }
 
+func recordAuditorWaits(t *testing.T, onWait func(context.Context, time.Duration) error) *[]time.Duration {
+	t.Helper()
+	var waits []time.Duration
+	stub(t, &evidenceAuditorWait, func(ctx context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		if onWait != nil {
+			return onWait(ctx, d)
+		}
+		return nil
+	})
+	return &waits
+}
+
+func assertAuditorWaitDurations(t *testing.T, waits []time.Duration, n int) {
+	t.Helper()
+	if len(waits) != n {
+		t.Fatalf("waits = %d, want %d", len(waits), n)
+	}
+	for i, d := range waits {
+		if d != evidenceAuditorSystemdStartWait {
+			t.Fatalf("wait[%d] = %s, want %s", i, d, evidenceAuditorSystemdStartWait)
+		}
+	}
+}
+
 func TestEvidenceAuditorUserSystemdUnavailableRetriesStartingThenRunning(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+	waits := recordAuditorWaits(t, nil)
 
 	var probes int
 	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
@@ -269,11 +294,12 @@ func TestEvidenceAuditorUserSystemdUnavailableRetriesStartingThenRunning(t *test
 	if probes != 2 {
 		t.Fatalf("probes = %d, want 2", probes)
 	}
+	assertAuditorWaitDurations(t, *waits, 1)
 }
 
 func TestEvidenceAuditorUserSystemdUnavailableRetriesInitializingThenDegraded(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+	waits := recordAuditorWaits(t, nil)
 
 	var probes int
 	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
@@ -294,11 +320,12 @@ func TestEvidenceAuditorUserSystemdUnavailableRetriesInitializingThenDegraded(t 
 	if probes != 2 {
 		t.Fatalf("probes = %d, want 2", probes)
 	}
+	assertAuditorWaitDurations(t, *waits, 1)
 }
 
 func TestEvidenceAuditorUserSystemdUnavailableGivesUpAfterStartingBudget(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	stub(t, &evidenceAuditorWait, func(context.Context, time.Duration) error { return nil })
+	waits := recordAuditorWaits(t, nil)
 
 	var probes int
 	stub(t, &evidenceAuditorSystemctl, func(_ context.Context, op systemctlOp) error {
@@ -320,6 +347,7 @@ func TestEvidenceAuditorUserSystemdUnavailableGivesUpAfterStartingBudget(t *test
 	if probes != want {
 		t.Fatalf("probes = %d, want %d", probes, want)
 	}
+	assertAuditorWaitDurations(t, *waits, evidenceAuditorSystemdStartRetries)
 }
 
 func TestEvidenceAuditorUserSystemdUnavailableDoesNotRetryOffline(t *testing.T) {
@@ -394,7 +422,9 @@ func TestEvidenceAuditorWaitZeroDurationAndCancel(t *testing.T) {
 
 func TestEvidenceAuditorUserSystemdUnavailableWaitCancel(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	stub(t, &evidenceAuditorWait, func(ctx context.Context, _ time.Duration) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waits := recordAuditorWaits(t, func(ctx context.Context, _ time.Duration) error {
 		return ctx.Err()
 	})
 	var probes int
@@ -405,8 +435,6 @@ func TestEvidenceAuditorUserSystemdUnavailableWaitCancel(t *testing.T) {
 		probes++
 		return &systemctlUserStateError{state: "starting"}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	unavailable, reason := evidenceAuditorUserSystemdUnavailable(ctx)
 	if !unavailable {
 		t.Fatal("expected unavailable when wait is canceled")
@@ -417,4 +445,5 @@ func TestEvidenceAuditorUserSystemdUnavailableWaitCancel(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("probes = %d, want 1 (cancel during the first wait, not another probe)", probes)
 	}
+	assertAuditorWaitDurations(t, *waits, 1)
 }

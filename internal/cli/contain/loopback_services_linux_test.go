@@ -299,10 +299,15 @@ func namespaceDialTimedOut(ctx context.Context, err error) bool {
 // proved nothing.
 func namespaceAssertNewSourcePortRejected(t *testing.T, host string, servicePort int, service net.Listener) {
 	t.Helper()
+	// Reserve the target port BEFORE releasing the declared one. Closing first
+	// lets this listener reuse the freed port, and a target on the declared
+	// destination port is admitted by the forward rule, so the case would pass
+	// without ever reaching the predicates it exists to exercise. The order is
+	// the guarantee that the two ports differ.
+	target := namespaceListener(t, "tcp4", host)
 	if err := service.Close(); err != nil {
 		t.Fatalf("close declared service listener to free port %d: %v", servicePort, err)
 	}
-	target := namespaceListener(t, "tcp4", host)
 	newCtx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
 	defer cancel()
 	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host), Port: servicePort}}

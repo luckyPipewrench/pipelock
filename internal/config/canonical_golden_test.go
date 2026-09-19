@@ -419,7 +419,11 @@ const (
 	// Re-bumped for transition-prefixed response directives.
 	// Re-bumped for polite and recipient-first directive coverage.
 	// Re-bumped for explicitly marked directive transitions.
-	goldenHashDefaults = "cbca1d1e7e5730870bdc311be3e0fca59b4e68b87d7907cbe37cb925c8a69ca9"
+	// Re-bumped for response_scanning.core_observe_exceptions: a declared
+	// per-host observe entry withholds a block on the immutable response
+	// floor, so two deployments differing only in their exceptions have
+	// genuinely different enforcement and their receipts must say so.
+	goldenHashDefaults = "3340180490f6a585b07cc6738745a642ac4c192d875c466bac702b51962ed64f"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -644,7 +648,11 @@ const (
 	// Re-bumped alongside goldenHashDefaults for transition-prefixed directives.
 	// Re-bumped alongside goldenHashDefaults for polite and recipient-first directives.
 	// Re-bumped alongside goldenHashDefaults for explicitly marked transitions.
-	goldenHashRichConfig = "3174d057644fff75966a53bf7e8b237174f2618d8fb0157dd07c1d67d8d3b467"
+	// Re-bumped for response_scanning.core_observe_exceptions: a declared
+	// per-host observe entry withholds a block on the immutable response
+	// floor, so two deployments differing only in their exceptions have
+	// genuinely different enforcement and their receipts must say so.
+	goldenHashRichConfig = "2d1f6d8bf5eaf43a94dd728f0518027b3d328deacbce77cc197f294723a750b6"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1213,8 +1221,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "d3fcfd6ac95cbf206039874dfc4e25e938e8894671dc2f8f7bc341c50f86f424"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7049ba45c892dafeb65e0d88b351911edeecc1c75d27e1a8fe279223ece759a6"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "ead286e781ad063c0284f3f573e045ff52433c8df7f467dc799aaf2cd88a6111"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7746034355b6cb97f027b670892cbd4a1392293e237200853db4bc1ad336f96b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

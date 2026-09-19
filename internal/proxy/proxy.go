@@ -5947,6 +5947,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
 			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
 			recordDroppedResponseScanMatches(p.metrics, log, actx, rawResult.SuppressedMatches, TransportFetch)
+			recordObservedCoreResponseMatches(p.metrics, log, actx, rawResult.ObservedCoreMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
 			blocked, _, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
@@ -6044,6 +6045,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		recordDroppedResponseScanMatches(p.metrics, log, actx, scanResult.SuppressedMatches, TransportFetch)
+		recordObservedCoreResponseMatches(p.metrics, log, actx, scanResult.ObservedCoreMatches, TransportFetch)
 		if !scanResult.Clean && !scanResult.Failed() {
 			responsePromptHit = true
 		}
@@ -6185,6 +6187,32 @@ func recordDroppedResponseScanMatches(m *metrics.Metrics, log *audit.Logger, act
 			log.LogResponseScanSuppressed(actx, match.PatternName, surface, "suppressed")
 		}
 		m.RecordResponseSuppressedMatch(match.PatternName, surface, "suppressed")
+	}
+}
+
+// ExemptReasonCoreObserved labels evidence for a core-floor finding that an
+// operator's declared exception downgraded from block to observe. It is
+// deliberately NOT ExemptReasonSuppress: ordinary suppression cannot reach the
+// immutable floor at all, so an auditor must be able to separate the two
+// without reading config.
+const ExemptReasonCoreObserved = "core_observed"
+
+// recordObservedCoreResponseMatches emits evidence for every core-floor finding
+// withheld from blocking by a declared exception. The scan ran and matched;
+// this is the record that it did, and that an operator accepted it. Like its
+// suppression sibling it is observational and tolerates nil dependencies.
+func recordObservedCoreResponseMatches(m *metrics.Metrics, log *audit.Logger, actx audit.LogContext, observed []scanner.ObservedCoreMatch, surface string) {
+	for _, entry := range observed {
+		if log != nil {
+			log.LogCoreResponseObserved(actx, entry.Match.PatternName, surface, audit.CoreObserveAuthorization{
+				Host:    entry.Host,
+				Reason:  entry.Reason,
+				Owner:   entry.Owner,
+				Expires: entry.Expires,
+			})
+		}
+		m.RecordResponseScanExempt(ExemptReasonCoreObserved, surface)
+		m.RecordResponseSuppressedMatch(entry.Match.PatternName, surface, ExemptReasonCoreObserved)
 	}
 }
 

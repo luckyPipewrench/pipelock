@@ -2610,6 +2610,9 @@ responseScanning:
 				Target:             resp.Request.URL.String(),
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: revRespExempt,
+				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
+					recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportReverse)
+				},
 				OnFinding: func(err error) {
 					sseResponsePromptHit = true
 					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
@@ -3008,6 +3011,7 @@ responseScanning:
 	responsePromptHit = !result.Clean
 	actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 	recordDroppedResponseScanMatches(rp.metrics, rp.logger, actx, result.SuppressedMatches, TransportReverse)
+	recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, result.ObservedCoreMatches, TransportReverse)
 
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
 	// Runs after suppression so the recorded action matches runtime.

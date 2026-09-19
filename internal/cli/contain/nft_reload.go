@@ -32,6 +32,7 @@ type nftReloadEnv struct {
 	reconcileLockPath string
 	table             string
 	chain             string
+	ownedLoopback     bool
 	runCmd            runCommand
 	readFile          func(string) ([]byte, error)
 	writeFile         func(string, []byte, os.FileMode) error
@@ -78,6 +79,7 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
 		table:             defaultNFTTable,
 		chain:             defaultNFTChain,
+		ownedLoopback:     true,
 		runCmd:            realRunCommand,
 		readFile:          os.ReadFile,
 		// writeFileAtomic (temp file + fsync + rename + directory fsync in
@@ -183,6 +185,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		Table:            env.table,
 		Chain:            env.chain,
 		LoopbackServices: loopbackServices,
+		OwnedLoopback:    env.ownedLoopback,
 	}))
 
 	// Persist the reconciled file FIRST, atomically, before touching the
@@ -231,6 +234,58 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	} else if code != 0 {
 		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
 	}
+	// receiverChainLive records whether the receiver gate EXISTS IN THE KERNEL,
+	// which is the only thing that may decide whether the reload transaction
+	// deletes it. Deciding that from the canonical rules instead is a boot-time
+	// outage: after a reboot the ruleset is empty, the canonical file still
+	// describes the chain, and `nft delete chain` fails on a chain that is not
+	// there. That failure aborts the whole `nft -f` transaction, and since this
+	// unit is the only thing that loads containment at boot, the host comes up
+	// with no containment rule for the agent at all.
+	receiverChainLive := false
+	if env.ownedLoopback {
+		// Query the receiver chain on its OWN, not only when the OUTPUT chain
+		// is present. The two can exist independently: a partially torn-down
+		// ruleset can hold the receiver chain with no OUTPUT chain, and gating
+		// this query on `out` would then record the chain as absent, skip the
+		// delete, and try to add a base chain that is already there.
+		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, ownedLoopbackInputChain)
+		if inputErr != nil {
+			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain: %w", inputErr))
+		}
+		switch {
+		case inputCode == 0 && ownedLoopbackInputChainLooksManaged(input):
+			receiverChainLive = true
+		case inputCode != 0 && strings.Contains(strings.ToLower(input), "no such file"):
+			// Genuinely absent. Nothing to delete; the canonical rules create it.
+			receiverChainLive = false
+		case inputCode != 0:
+			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input)))
+		default:
+			// Present under a name only this package creates, but not the
+			// contents this version writes. The reload rewrites the managed
+			// rules anyway and already deletes and recreates this chain in the
+			// same transaction when it is live, so treat it as live and let
+			// the canonical rules replace it. Refusing instead would wedge
+			// every reload after an upgrade, including the boot-time one.
+			receiverChainLive = true
+		}
+		// Refuse ONLY when the live OUTPUT chain already carries owned-loopback
+		// marking rules while its receiver gate is gone. That host is already
+		// fail-open and silently repairing it would tell nobody.
+		//
+		// `out != ""` alone is not that state: it only proves a managed OUTPUT
+		// chain exists, and a LEGACY chain has no marking rules at all. Gating
+		// on mere existence blocked every legacy host from ever migrating to
+		// owned loopback, because the canonical transaction that installs both
+		// the marks and the gate could never run.
+		if nftOutputHasOwnedLoopbackMarks(out, header.agentUID) && !receiverChainLive {
+			// A managed OUTPUT chain marks flows; without its receiver gate the
+			// host is already fail-open, so this is reported rather than
+			// silently repaired.
+			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing while the output chain already marks loopback flows; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+		}
+	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
 		if env.report != nil {
 			env.report(nftReloadOutcome(false, 0, false, false))
@@ -238,7 +293,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		return nil
 	}
 	managedHandles := legacyManagedNFTRuleBlockHandles(out, header.operatorUID, header.proxyUID, header.agentUID)
-	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID)
+	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID, receiverChainLive)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
 		return restoreOnFailure(fmt.Errorf("write nft managed chain reload file %s: %w", path, err))
@@ -471,9 +526,22 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // risk deleting an operator rule. Requiring the complete ordered six-rule
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
-func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int) string {
+func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
 	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
 	var script strings.Builder
+	if receiverChainLive && strings.Contains(rulesBody, "chain "+ownedLoopbackInputChain+" {") {
+		// A dynamic loopback update must replace the receiver gate in the
+		// same nft transaction as the OUTPUT rules. Leaving the old input
+		// chain in place would duplicate base chains; omitting this deletion
+		// would make a changed cgroup rule fail to load rather than silently
+		// widening it.
+		// Flush first: nftables refuses to delete a chain that still holds
+		// rules, and the receiver gate always does. A bare delete makes the
+		// `nft -c` preflight reject the transaction, which on the boot path
+		// means the host comes up with no containment at all.
+		_, _ = fmt.Fprintf(&script, "flush chain inet %s %s\n", table, ownedLoopbackInputChain)
+		_, _ = fmt.Fprintf(&script, "delete chain inet %s %s\n", table, ownedLoopbackInputChain)
+	}
 	for _, handle := range handles {
 		_, _ = fmt.Fprintf(&script, "delete rule inet %s %s handle %d\n", table, chain, handle)
 	}

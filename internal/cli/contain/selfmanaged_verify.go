@@ -70,7 +70,7 @@ func trustedNFTPath(statFn func(string) (fs.FileInfo, error)) (string, error) {
 
 func validateSelfManagedNFTRules(out string, operatorUID, proxyUID, agentUID, proxyPort int) error {
 	if !nftTableDumpDeclaresExpectedTable(out, defaultNFTTable) ||
-		!liveNFTContainmentMatches(out, defaultNFTChain, operatorUID, proxyUID, agentUID, proxyPort, nil) {
+		!liveNFTContainmentMatches(out, defaultNFTChain, operatorUID, proxyUID, agentUID, proxyPort, nil, false) {
 		return fmt.Errorf("live containment nft chain does not match the canonical owner-match boundary for operator uid %d, proxy uid %d, agent uid %d, and proxy port %d",
 			operatorUID, proxyUID, agentUID, proxyPort)
 	}

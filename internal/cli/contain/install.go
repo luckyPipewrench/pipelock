@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -322,6 +323,7 @@ func installSteps(opts installOpts) []step {
 		stepEnableSystemUnit(),
 		stepExportPipelockCA(),
 		stepWriteCombinedCABundle(),
+		stepEnsureOwnedLoopbackAnchor(),
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
 		stepWriteCredentialGuard(),
@@ -330,6 +332,7 @@ func installSteps(opts installOpts) []step {
 		// would fail on a missing module.
 		stepWriteUndiciShim(),
 		stepWriteLaunchWrapper(),
+		stepWriteContainedLaunchWrapper(),
 		stepWriteMetaWrapper(),
 		stepWriteToolWrappers(),
 		stepWriteUtilityWrappers(),
@@ -338,6 +341,171 @@ func installSteps(opts installOpts) []step {
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
 		stepWaitPipelockReady(),
+	}
+}
+
+// stepWriteContainedLaunchWrapper writes the root-owned boundary that places
+// interactive plk-* launches in the Pipelock-owned cgroup before it drops to
+// the agent identity. Keeping the placement outside plk-launch prevents an
+// agent process from selecting its own cgroup or bypassing the anchor check.
+func stepWriteContainedLaunchWrapper() step {
+	return step{
+		name: "write-plk-contained-launch",
+		desc: "write /usr/local/bin/plk-contained-launch (places agent tools in the owned cgroup)",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			path := filepath.Join(env.wrapperDir, "plk-contained-launch")
+			body := renderContainedLaunchWrapper(env)
+			if existing, err := env.readFile(path); err == nil && string(existing) == body {
+				_ = env.chmod(path, modeWrapperExec)
+				return false, nil
+			}
+			if err := backupAndWrite(env, path, []byte(body), modeWrapperExec); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		undo: func(_ context.Context, env *installEnv) error {
+			return restoreBackup(env, filepath.Join(env.wrapperDir, "plk-contained-launch"))
+		},
+	}
+}
+
+// expandEnvironmentFlag returns the --expand-environment=no flag only when the
+// installed systemd understands it (254 and newer). A zero version means
+// detection did not run, and the flag is omitted rather than guessed: omitting
+// it costs a shell expansion the launcher does not rely on, while emitting it
+// on an older systemd breaks every contained launch.
+func expandEnvironmentFlag(env *installEnv) string {
+	if env != nil && env.systemdVersion >= systemdExpandEnvironmentMinVersion {
+		return " --expand-environment=no"
+	}
+	return ""
+}
+
+// systemdExpandEnvironmentMinVersion is the first systemd release that accepts
+// systemd-run --expand-environment. It matches the private-temp probe's gate.
+const systemdExpandEnvironmentMinVersion = 254
+
+// Absolute helper paths and a pinned PATH for the root-executed contained
+// launcher. These are the standard locations on the Linux distributions
+// containment supports; the script is refused by its own root check if it is
+// ever invoked somewhere these do not exist, which fails closed.
+const (
+	rootHelperPATH       = "/usr/sbin:/usr/bin:/sbin:/bin"
+	containIDPath        = "/usr/bin/id"
+	containSystemctlPath = "/usr/bin/systemctl"
+)
+
+func renderContainedLaunchWrapper(env *installEnv) string {
+	anchor := filepath.Base(env.ownedLoopbackAnchorUnitPath)
+	launcher := filepath.Join(env.wrapperDir, "plk-launch")
+	return strings.Join([]string{
+		shebangBash(env),
+		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
+		"set -euo pipefail",
+		"",
+		// sudoers runs this script as ROOT, so every helper it invokes must be
+		// resolved from a path the caller cannot influence. A bare `systemctl`
+		// or `id` is looked up through PATH, and on a host whose sudo rule does
+		// not set secure_path the caller supplies that PATH: dropping a fake
+		// `systemctl` earlier in it executes arbitrary code as root, before
+		// systemd-run ever drops privileges. Pin PATH and call both helpers by
+		// absolute path so neither lookup is attacker-controlled.
+		`PATH=` + shellQuote(rootHelperPATH),
+		`export PATH`,
+		`if [[ "$(` + containIDPath + ` -u)" != "0" ]]; then`,
+		`    echo "plk-contained-launch: must run through the installed plk wrapper" >&2`,
+		`    exit 1`,
+		`fi`,
+		`if ! ` + containSystemctlPath + ` is-active --quiet ` + shellQuote(anchor) + `; then`,
+		`    echo "plk-contained-launch: the owned loopback cgroup anchor is inactive; run pipelock contain install" >&2`,
+		`    exit 1`,
+		`fi`,
+		// --expand-environment requires systemd 254. `contain run` rejects older
+		// systemd in its preflight, but this generated wrapper is invoked
+		// directly and never runs that preflight, so an unconditional flag here
+		// makes every plk-* launch fail on systemd 253 and earlier before
+		// plk-launch even starts. Emit it only where it is supported.
+		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --slice=` + shellQuote(ownedLoopbackSlice) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
+		"",
+	}, "\n")
+}
+
+// stepEnsureOwnedLoopbackAnchor creates a persistent, shallow cgroup before
+// nft sees a rule referring to it. nft resolves cgroup paths at rule-load
+// time; reversing this order would make a fresh install fail before the
+// ruleset can be safely validated.
+func stepEnsureOwnedLoopbackAnchor() step {
+	// Previous runtime state, captured by apply and restored by undo so a
+	// rollback returns the anchor to how it was found rather than always
+	// stopping it.
+	var ownedAnchorPrevEnabled, ownedAnchorPrevActive bool
+	return step{
+		name: "ensure-owned-loopback-anchor",
+		desc: "write and start the Pipelock-owned loopback cgroup anchor",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			if !env.ownedLoopback {
+				return false, nil
+			}
+			path := env.ownedLoopbackAnchorUnitPath
+			if path == "" {
+				return false, errors.New("owned loopback anchor unit path is not configured")
+			}
+			body := renderOwnedLoopbackAnchorUnit()
+			changed := false
+			// Capture the RUNTIME state before touching it. `changed` used to
+			// track only the unit file, so an install that found the file
+			// already correct still ran `enable --now` and then reported no
+			// change. runSteps omits a no-change step from the rollback chain,
+			// so a later failure left the anchor enabled and active on a host
+			// whose install was rolled back.
+			wasEnabled, wasActive := ownedLoopbackAnchorState(ctx, env, filepath.Base(path))
+			ownedAnchorPrevEnabled, ownedAnchorPrevActive = wasEnabled, wasActive
+			if existing, err := env.readFile(path); err != nil || string(existing) != body {
+				if err := backupAndWrite(env, path, []byte(body), modeUnitFile); err != nil {
+					return false, err
+				}
+				changed = true
+			}
+			if !wasEnabled || !wasActive {
+				changed = true
+			}
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return changed, fmt.Errorf("reload systemd for owned loopback anchor: %w", err)
+			}
+			unit := filepath.Base(path)
+			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", unit); err != nil {
+				return changed, fmt.Errorf("start owned loopback anchor %s: %w", unit, err)
+			}
+			state, code, err := env.runCmd(ctx, "systemctl", "is-active", unit)
+			if err != nil || code != 0 || strings.TrimSpace(state) != systemctlActive {
+				return changed, fmt.Errorf("owned loopback anchor %s is not active: %s", unit, oneLine(state))
+			}
+			return changed, nil
+		},
+		undo: func(ctx context.Context, env *installEnv) error {
+			path := env.ownedLoopbackAnchorUnitPath
+			if path == "" {
+				return nil
+			}
+			unit := filepath.Base(path)
+			// Restore what was found. Unconditionally disabling would tear down
+			// an anchor that predated this install and that a rolled-back host
+			// still needs.
+			if ownedAnchorPrevEnabled && ownedAnchorPrevActive {
+				if err := restoreBackup(env, path); err != nil {
+					return err
+				}
+				return runOrErr(ctx, env, "systemctl", "daemon-reload")
+			}
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("stop owned loopback anchor %s: %w", unit, err)
+			}
+			if err := restoreBackup(env, path); err != nil {
+				return err
+			}
+			return runOrErr(ctx, env, "systemctl", "daemon-reload")
+		},
 	}
 }
 
@@ -1698,28 +1866,49 @@ func stepExportPipelockCA() step {
 		desc: "export pipelock TLS-MITM CA to /etc/pipelock/ca.pem",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			wrote = false
-			if pathExists(env, env.caExportPath) {
-				return false, nil
-			}
-			// Run as pipelock-proxy so the CA lookup uses the running
-			// instance's data dir layout. The pipelock CLI writes the CA
-			// PEM to stdout via `tls show-ca` - there is no --output flag,
-			// so we capture stdout here and write the file in Go after a
-			// PEM-shape sanity check.
-			if err := exportPipelockCA(ctx, env); err != nil {
+			current, err := currentPipelockCA(ctx, env)
+			if err != nil {
 				return false, err
 			}
-			wrote = true
-			return true, nil
+			changed, err := backupAndWriteIfChanged(env, env.caExportPath, current, modeCAReadable)
+			if err != nil {
+				return false, fmt.Errorf("write current Pipelock CA export: %w", err)
+			}
+			// Everything below runs AFTER the file has already been mutated, so
+			// each failure must restore the previous export itself. Returning
+			// (false, err) here would leave the new bytes on disk and skip undo
+			// entirely, because runSteps only rolls back steps whose apply
+			// reported didApply. A failed install would then replace a good
+			// export with an unverified one -- the opposite of what this step
+			// exists to guarantee.
+			restore := func(cause error) (bool, error) {
+				if !changed {
+					return false, cause
+				}
+				if rerr := restoreBackup(env, env.caExportPath); rerr != nil {
+					return false, fmt.Errorf("%w (and restoring the previous export failed: %w; rerun `pipelock contain install` as root)", cause, rerr)
+				}
+				return false, cause
+			}
+			exported, err := env.readFile(env.caExportPath)
+			if err != nil {
+				return restore(fmt.Errorf("read exported Pipelock CA %s: %w", env.caExportPath, err))
+			}
+			verifiedCurrent, err := currentPipelockCA(ctx, env)
+			if err != nil {
+				return restore(fmt.Errorf("read current Pipelock CA after export: %w", err))
+			}
+			if !bytes.Equal(exported, verifiedCurrent) {
+				return restore(fmt.Errorf("exported Pipelock CA %s does not match the selected Pipelock CA", env.caExportPath))
+			}
+			wrote = changed
+			return changed, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
 			if !wrote {
 				return nil
 			}
-			if err := env.removeFile(env.caExportPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove %s: %w", env.caExportPath, err)
-			}
-			return nil
+			return restoreBackup(env, env.caExportPath)
 		},
 	}
 }
@@ -1882,6 +2071,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		Table:            env.nftTableOrDefault(),
 		Chain:            env.nftChainOrDefault(),
 		LoopbackServices: loopbackServices,
+		OwnedLoopback:    env.ownedLoopback,
 	})
 
 	rulesMatch := false
@@ -1900,7 +2090,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		if _, err := attributedNFTChainLines(out, env.nftChainOrDefault()); err == nil {
 			liveChainAttributed = true
 		}
-		liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort, loopbackServices)
+		liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort, loopbackServices, env.ownedLoopback)
 		liveRulesManaged = liveNFTContainmentLooksManaged(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 	}
 	if tableLoaded && liveChainAttributed && (!rulesMatch || liveRulesDrifted) && !liveRulesManaged {
@@ -1913,6 +2103,19 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		return false, err
 	}
 	captureNFTPreState(ctx, env)
+	// Track whether this call LOADED a receiver chain. ensureOwnedLoopbackInputChain
+	// can add a base chain to the kernel; if a later write or unit operation in
+	// this step then fails and the step reports no mutation, runSteps omits it
+	// from rollback and the new chain stays loaded on a host whose install was
+	// rolled back.
+	receiverChainCreated := false
+	if env.ownedLoopback && tableLoaded {
+		created, err := ensureOwnedLoopbackInputChain(ctx, env)
+		receiverChainCreated = created
+		if err != nil {
+			return created, err
+		}
+	}
 
 	rulesChanged := false
 	if !rulesMatch {
@@ -1935,7 +2138,9 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return persistUnitChanged || expiryUnitChanged, err
 	}
-	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
+	// receiverChainCreated is part of the mutation set: a loaded kernel chain is
+	// a change rollback must be able to undo, even when no file changed.
+	changed := rulesChanged || persistUnitChanged || expiryUnitChanged || receiverChainCreated
 	if changed || !tableLoaded || liveRulesDrifted {
 		// Validate before loading.
 		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
@@ -1966,6 +2171,94 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
 	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
 	return changed || !tableLoaded || liveRulesDrifted || timerReconciled || persistReconciled, nil
+}
+
+// replaceOwnedLoopbackInputChain deletes a stale or drifted receiver gate and
+// loads the canonical one in a SINGLE nft transaction, so the boundary is
+// never live without its receiver-side check. Doing it as two commands would
+// leave a window in which marked flows are accepted at OUTPUT with nothing
+// checking the receiving socket.
+func replaceOwnedLoopbackInputChain(ctx context.Context, env *installEnv) error {
+	path := env.nftRulesPath + ".owned-loopback-input-replace"
+	// FLUSH before DELETE. nftables refuses to delete a chain that still
+	// contains rules, and the receiver gate always does, so a bare delete makes
+	// the `nft -c` preflight reject the whole replacement transaction and the
+	// upgrade cannot proceed.
+	body := "flush chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
+		"delete chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
+		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault())
+	if err := env.writeFile(path, []byte(body), modeConfigSecret); err != nil {
+		return fmt.Errorf("write owned loopback receiver chain replacement: %w", err)
+	}
+	defer func() { _ = env.removeFile(path) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", path); err != nil {
+		return fmt.Errorf("validate owned loopback receiver chain replacement: %w", err)
+	}
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", path); err != nil {
+		return fmt.Errorf("replace owned loopback receiver chain: %w", err)
+	}
+	return nil
+}
+
+// ensureOwnedLoopbackInputChain establishes the receiver-side gate before an
+// existing containment table is migrated to dynamic loopback rules. A missing
+// receiver gate alongside marked OUTPUT traffic would be fail-open, so an
+// interrupted prior migration is refused instead of repaired in place.
+func ensureOwnedLoopbackInputChain(ctx context.Context, env *installEnv) (bool, error) {
+	out, code, err := env.runCmd(ctx, nftExecutable(env), "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain)
+	if err != nil {
+		return false, fmt.Errorf("list owned loopback receiver chain: %w", err)
+	}
+	if code == 0 {
+		if ownedLoopbackInputChainLooksManaged(out) {
+			// Already exactly the chain this package writes.
+			return false, nil
+		}
+		// The chain exists under a name only this package creates, but its
+		// contents are not what this version writes. That is what an UPGRADE
+		// looks like: a previous release's receiver gate, correct for its own
+		// version and stale for this one. Refusing here dead-ends the install
+		// with no operator action that can clear it, and an install that
+		// cannot proceed is an install that gets worked around.
+		//
+		// Replacing it is also the safe outcome for the other case this
+		// branch sees, a tampered chain: the canonical rules overwrite it
+		// either way. The danger the strict matcher exists to stop is
+		// ACCEPTING a chain that is not ours, which still cannot happen here.
+		// `contain verify` keeps reporting a mismatch so the operator learns
+		// the live chain had drifted.
+		if err := replaceOwnedLoopbackInputChain(ctx, env); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if !strings.Contains(strings.ToLower(out), "no such file") {
+		return false, fmt.Errorf("list owned loopback receiver chain exit=%d: %s", code, oneLine(out))
+	}
+	output, outputCode, outputErr := env.runCmd(ctx, nftExecutable(env), "-n", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
+	if outputErr != nil {
+		return false, fmt.Errorf("recheck containment output chain before adding owned receiver gate: %w", outputErr)
+	}
+	if outputCode != 0 {
+		return false, fmt.Errorf("recheck containment output chain before adding owned receiver gate exit=%d: %s", outputCode, oneLine(output))
+	}
+	if strings.Contains(output, "ct mark "+ownedLoopbackConntrackMark) {
+		return false, fmt.Errorf("owned loopback receiver chain %s is missing while dynamic OUTPUT rules are present; refusing a fail-open repair", ownedLoopbackInputChain)
+	}
+	path := env.nftRulesPath + ".owned-loopback-input"
+	body := renderOwnedLoopbackInputChainTable(env.nftTableOrDefault())
+	if err := env.writeFile(path, []byte(body), modeConfigSecret); err != nil {
+		return false, fmt.Errorf("write owned loopback receiver chain transaction: %w", err)
+	}
+	defer func() { _ = env.removeFile(path) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", path); err != nil {
+		return false, fmt.Errorf("validate owned loopback receiver chain: %w", err)
+	}
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", path); err != nil {
+		return false, fmt.Errorf("load owned loopback receiver chain: %w", err)
+	}
+	// The chain was loaded by THIS call, so rollback must be able to remove it.
+	return true, nil
 }
 
 func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
@@ -2126,7 +2419,19 @@ func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody strin
 	if code != 0 {
 		return fmt.Errorf("list nft managed chain for reload exit=%d: %s", code, oneLine(out))
 	}
-	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID)
+	// Ask the kernel whether the receiver gate is actually there. The reload
+	// transaction may only delete a chain that exists; deciding from the
+	// canonical rules instead makes the whole transaction fail whenever the two
+	// disagree, which is exactly the empty-ruleset state after a reboot.
+	receiverChainLive := false
+	if env.ownedLoopback {
+		input, inputCode, inputErr := env.runCmd(ctx, nftExecutable(env), "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain)
+		if inputErr != nil {
+			return fmt.Errorf("list owned loopback receiver chain for reload: %w", inputErr)
+		}
+		receiverChainLive = inputCode == 0 && ownedLoopbackInputChainLooksManaged(input)
+	}
+	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, receiverChainLive)
 	reloadPath := env.nftRulesPath + ".reload"
 	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)
@@ -2153,9 +2458,18 @@ func nftTableDumpDeclaresExpectedTable(dump, table string) bool {
 	return false
 }
 
-func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService) bool {
+func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int, loopbackServices []config.ContainmentLoopbackService, ownedLoopback bool) bool {
 	lines, err := attributedNFTChainLines(out, chainName)
 	if err != nil {
+		return false
+	}
+	// Owned-loopback adds MARKING rules to the OUTPUT chain. Drift detection
+	// has to look for them too: if it only compares the legacy rules, a live
+	// chain missing the marking block still reports "no drift", the installer
+	// skips the reload, and the OUTPUT rules are never loaded. The receiver
+	// chain alone does not save that state, because it gates flows that
+	// nothing is marking.
+	if ownedLoopback && !chainLinesHaveOwnedLoopbackOutputRules(lines, agentUID) {
 		return false
 	}
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) ||
@@ -2298,14 +2612,21 @@ func ensureContainmentUnit(env *installEnv, path, body string) (bool, error) {
 // for someone reading `systemctl status pipelock-containment-nft.service`
 // or this unit file directly.
 func renderNFTPersistUnit(env *installEnv) string {
+	after := "After=local-fs.target"
+	wants := "Wants=network-pre.target"
+	if env.ownedLoopback && env.ownedLoopbackAnchorUnitPath != "" {
+		anchor := filepath.Base(env.ownedLoopbackAnchorUnitPath)
+		after += " " + anchor
+		wants += " " + anchor
+	}
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=Pipelock containment nftables rules",
 		"Documentation=https://github.com/luckyPipewrench/pipelock",
 		"DefaultDependencies=no",
-		"After=local-fs.target",
+		after,
 		"Before=network-pre.target",
-		"Wants=network-pre.target",
+		wants,
 		"ConditionPathExists=" + env.nftRulesPath,
 		"",
 		"[Service]",
@@ -2530,6 +2851,7 @@ type nftRuleOptions struct {
 	Table            string
 	Chain            string
 	LoopbackServices []config.ContainmentLoopbackService
+	OwnedLoopback    bool
 }
 
 // renderNFTRules emits the table definition. Matches the runbook one-to-one
@@ -2559,6 +2881,11 @@ func renderNFTRulesWithServices(opts nftRuleOptions) string {
 	for _, svc := range opts.LoopbackServices {
 		loopback.WriteString(nftLoopbackAcceptLines(opts.AgentUID, svc.Host, svc.Port))
 	}
+	ownedOutput, ownedInput := "", ""
+	if opts.OwnedLoopback {
+		ownedOutput = nftOwnedLoopbackOutputRules(opts.AgentUID)
+		ownedInput = nftOwnedLoopbackInputChain()
+	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d
 	table inet %s {
@@ -2572,14 +2899,14 @@ func renderNFTRulesWithServices(opts nftRuleOptions) string {
 %s	        meta skuid %d udp dport 53 counter log prefix "%s " drop
 	        meta skuid %d tcp dport 53 counter log prefix "%s " drop
 	        meta skuid %d counter log prefix "%s " drop
-	    }
+	    }%s
 	}
 	`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain,
 		opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort,
-		loopback.String(),
+		loopback.String()+ownedOutput,
 		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
 		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),
-		opts.AgentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
+		opts.AgentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock), ownedInput)
 }
 
 // RenderNFTRules returns the canonical Pipelock containment nftables ruleset for
@@ -2787,7 +3114,7 @@ func renderMetaWrapper(env *installEnv) string {
 		`    echo "plk: missing or empty allow-list at $TOOLS_LIST (run pipelock contain install)" >&2`,
 		`    exit 4`,
 		`fi`,
-		"exec sudo -n -u " + env.agentUserName + " " + filepath.Join(env.wrapperDir, "plk-launch") + ` "$@"`,
+		"exec sudo -n " + filepath.Join(env.wrapperDir, "plk-contained-launch") + ` "$@"`,
 		"",
 	}, "\n")
 }
@@ -2884,7 +3211,7 @@ func renderToolWrapper(env *installEnv, tool string) string {
 	return strings.Join([]string{
 		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
-		"exec sudo -n -u " + env.agentUserName + " " + filepath.Join(env.wrapperDir, "plk-launch") + " " + tool + ` "$@"`,
+		"exec sudo -n " + filepath.Join(env.wrapperDir, "plk-contained-launch") + " " + tool + ` "$@"`,
 		"",
 	}, "\n")
 }
@@ -3007,9 +3334,9 @@ func stepInstallSudoers() step {
 // the operator can run plk-* wrappers without prompting, but the rule does
 // NOT grant general-purpose sudo to pipelock-agent.
 func renderSudoers(env *installEnv) string {
-	launcher := filepath.Join(env.wrapperDir, "plk-launch")
+	launcher := filepath.Join(env.wrapperDir, "plk-contained-launch")
 	return fmt.Sprintf(
-		"# Managed by `pipelock contain install`. Do not edit by hand.\n%s ALL=(%s) NOPASSWD: %s *\n",
-		env.operatorUser, env.agentUserName, launcher,
+		"# Managed by `pipelock contain install`. Do not edit by hand.\n%s ALL=(root) NOPASSWD: %s *\n",
+		env.operatorUser, launcher,
 	)
 }

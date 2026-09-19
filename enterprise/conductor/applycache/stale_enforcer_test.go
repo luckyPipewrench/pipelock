@@ -117,6 +117,21 @@ func TestStaleEnforcer_WithinGraceServes(t *testing.T) {
 	}
 }
 
+func TestStaleEnforcerCheckNowAppliesAdmissionBeforeReturning(t *testing.T) {
+	e, ks := newEnforcerAt(t, activeBundleSrc(t), strictPolicy(), testNow.Add(3*time.Hour))
+	e.CheckNow()
+	if active, reason := ks.state(); !active || reason == "" {
+		t.Fatalf("expired cache admission = active %t, reason %q; want immediate denial", active, reason)
+	}
+	// A restored fresh cache releases the same source without waiting for Run
+	// to start or its timer to fire.
+	e.now = func() time.Time { return testNow }
+	e.CheckNow()
+	if active, reason := ks.state(); active || reason != "" {
+		t.Fatalf("fresh cache admission = active %t, reason %q; want cleared", active, reason)
+	}
+}
+
 func TestStaleEnforcer_ExactlyAtExpiryEdgeServes(t *testing.T) {
 	// At exactly ExpiresAt (testNow+1h): DecideStale uses `!now.After(expiresAt)`
 	// so == expiry is still ACTIVE (serve). Boundary case.

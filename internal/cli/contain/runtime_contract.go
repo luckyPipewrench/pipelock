@@ -125,7 +125,6 @@ func profileScriptPathOrDefault(env *installEnv) string {
 func runtimeContractVars(env *installEnv) []contractVar {
 	proxy := proxyURLFor(env.proxyPort)
 	caBundle := env.caBundlePath
-	nodeCA := env.caExportPath
 	shim := undiciShimPathOrDefault(env)
 
 	return []contractVar{
@@ -148,8 +147,10 @@ func runtimeContractVars(env *installEnv) []contractVar {
 		// Environment config outranks an untrusted project .npmrc. A deliberate
 		// command-line --ignore-scripts=false still provides the operator escape hatch.
 		{"npm_config_ignore_scripts", "1"},
-		// node trusts an APPENDED CA file (not a replacement bundle).
-		{"NODE_EXTRA_CA_CERTS", nodeCA},
+		// Node appends this bundle to its built-in trust store. Use the same
+		// current, combined bundle as every sibling client so Node cannot trust
+		// a stale single-CA export after a CA rotation.
+		{"NODE_EXTRA_CA_CERTS", caBundle},
 		// Older node fetch()/undici ignores *_PROXY unless a global dispatcher
 		// is installed; the shim does that at startup when undici is available.
 		{"NODE_OPTIONS", "--require " + shim},

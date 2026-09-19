@@ -1687,6 +1687,11 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Metrics listener
 
+
+## Contained CA trust
+
+The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.
+
 Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
 
 Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
@@ -1725,6 +1730,10 @@ containment:
 `host` must be a loopback literal, `127.0.0.1` or `::1`; a hostname, wildcard, or CIDR is rejected. `port` is a single TCP port (1-65535) distinct from the proxy port -- the proxy allow is implicit and does not need a declared entry. `owner`, `reason`, and `expires_at` (RFC3339, must remain in the future) are required, and an expired, malformed, duplicate, or proxy-port-colliding entry fails config validation, so `pipelock check` and `contain install` both fail closed rather than loading a ruleset that does not match the declaration.
 
 `contain install` renders each declared entry as a forward allow and a narrow established-reply allow. The reply path is limited to `lo`, the declared loopback address and source port, and reply-direction traffic.
+
+This declaration is intentionally separate from a listener created by a contained tool itself. When `contain install` has established Pipelock's owned containment slice, a tool launched through `plk-*` or `contain run` may connect to a loopback listener on any kernel-assigned TCP port only when the receiving socket is also in that slice. The nftables output hook marks the initiating flow and the input hook requires the receiving socket's slice before accepting it. A listener outside the slice, including one under the same Unix account, remains unreachable; there is no wildcard port range or blanket loopback exception.
+
+The owned-slice anchor is created before nftables validation because nft resolves the cgroup path while loading rules. If the anchor or receiver gate is missing, unreadable, inactive, or unrecognized, Pipelock denies this dynamic path and `pipelock contain verify` names the failed control. Restore it with `sudo pipelock contain install`; editing `containment.loopback_services` cannot enable a dynamic listener.
 
 **Every add, remove, or expiry of an entry needs a reconciliation pass to reach the kernel: run `pipelock contain reload-nft-rules` as root after editing this list.** Editing the config alone is not enough -- the managed nftables chain and the persisted rules file only change on the next reconciliation, which is what that command (and the boot-time unit that runs it automatically on every boot) does. If the managed config is missing or unreadable, or the declared set as a whole contains a malformed or expired entry, reconciliation fails closed to zero declared loopback services and logs the config path and why (naming `pipelock contain install` as the recovery command for a missing config); it does not fail the reload. See "Declared loopback services" under `contain-cli.md` for how `contain install`, `contain reload-nft-rules`, and `contain verify` each honor this list.
 

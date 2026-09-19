@@ -197,7 +197,7 @@ jobs:
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-oss-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -206,6 +206,16 @@ jobs:
             exit "$summary_status"
           fi
           exit "$test_status"
+
+      - name: Upload coverage
+        # Enterprise profiles exclude Apache-only runtime stubs. Upload the
+        # existing OSS tests too so those exercised paths reach the same report.
+        # Upload failures remain telemetry failures; codecov/* gates coverage.
+        continue-on-error: true
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        with:
+          files: ./coverage-oss-${{ matrix.shard }}.out
+          fail_ci_if_error: false
 
   test-oss-go126:
     needs: [security-scan, changed-files]

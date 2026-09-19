@@ -32,6 +32,7 @@ const (
 	defaultContainConfigPath = "/etc/pipelock/pipelock.yaml"
 	defaultContainPostureDir = "/var/lib/pipelock/contain/posture"
 	containRunPrivilegeProbe = "agent_privilege_escape_denied"
+	containRunToolProbe      = "requested_tool_registered"
 
 	// defaultWorkspaceDiffCapBytes is the per-file content-digest cap for the
 	// post-session workspace change statement. A regular file at or
@@ -569,6 +570,18 @@ func warnCustomPostureOutput(stderr io.Writer, postureOutput, posturePath string
 // tools.list entries it read for the registration check so the caller renders
 // the session contract from the SAME read the launch path relies on, never a
 // second, possibly-divergent read.
+
+// containRunOnlyProbes is the single declaration of the probe numbers that
+// `contain run` publishes and `contain verify` does not. Both the preflight
+// below and the collision test read it, so adding or renumbering a run-only
+// probe here is automatically covered instead of needing a second list kept in
+// step by hand. Published numbers are an operator- and dashboard-facing
+// identity: two different checks sharing one number cannot be told apart.
+var containRunOnlyProbes = map[int]string{
+	17: containRunPrivilegeProbe,
+	18: containRunToolProbe,
+}
+
 func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) ([]toolsListEntry, error) {
 	for _, p := range probesForEnv(env) {
 		status, detail := p.fn(ctx, env)
@@ -587,14 +600,14 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 	// sets overlap, so a new probe on either side cannot silently take a number
 	// the other already publishes.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
-	writeTextLine(out, probe{n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
+	writeTextLine(out, probe{n: 17, name: containRunOnlyProbes[17], desc: "pipelock-agent cannot sudo back out"}, status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at %s: %s: %s", containRunPrivilegeProbe, status, detail))
 	}
 
 	entries, status, detail := probeRequestedToolRegistered(env, tool)
-	writeTextLine(out, probe{n: 18, name: "requested_tool_registered", desc: "requested tool is registered in tools.list"}, status, detail)
+	writeTextLine(out, probe{n: 18, name: containRunOnlyProbes[18], desc: "requested tool is registered in tools.list"}, status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))

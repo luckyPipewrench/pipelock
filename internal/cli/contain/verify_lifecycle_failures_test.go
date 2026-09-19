@@ -746,6 +746,14 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			probes[len(probes)-2].name != "private_tmp_isolation" || probes[len(probes)-2].n != 16 {
 			t.Fatalf("probes = %v", probes)
 		}
+		// Assert the CA probe by NAME and NUMBER. Checking only the shifted
+		// indexes of its neighbours would still pass if this probe were
+		// renamed, renumbered, or dropped entirely, which is the one outcome
+		// that matters for a security check.
+		last := probes[len(probes)-1]
+		if last.name != "pipelock_ca_export_current" || last.n != 19 {
+			t.Fatalf("last probe = %+v; want pipelock_ca_export_current published as 19", last)
+		}
 	})
 
 	t.Run("short digest remains readable", func(t *testing.T) {

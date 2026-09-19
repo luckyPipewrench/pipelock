@@ -725,7 +725,19 @@ func probeCurrentCAExport(ctx context.Context, env *probeEnv) (string, string) {
 	if err := validateSingleCAPEM(current); err != nil {
 		return statusFail, fmt.Sprintf("proxy returned an invalid current TLS CA: %v", err)
 	}
-	if !bytes.Equal(exported, current) {
+	// Compare DECODED certificate material. Byte-comparing the PEM would reject
+	// the same certificate re-encoded with different but equally valid line
+	// wrapping or headers, which is a false alarm on a security probe and the
+	// fastest way to get an operator to stop trusting it.
+	exportedDER, err := firstCertificateDER(exported)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode exported Pipelock CA %s: %v; run `pipelock contain ca-refresh`", env.caExportPath, err)
+	}
+	currentDER, err := firstCertificateDER(current)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode the selected Pipelock CA: %v", err)
+	}
+	if !bytes.Equal(exportedDER, currentDER) {
 		return statusFail, fmt.Sprintf("exported Pipelock CA %s does not match the selected Pipelock CA; run `pipelock contain ca-refresh`", env.caExportPath)
 	}
 	return statusPass, "exported Pipelock CA matches the selected Pipelock CA (compared by material, not subject name; not a live handshake)"
@@ -2859,7 +2871,7 @@ func wrappersForVerify(env *probeEnv) ([]string, error) {
 // Probe 5: ca_bundle_present
 // ---------------------------------------------------------------------------
 
-func probeCABundle(_ context.Context, env *probeEnv) (string, string) {
+func probeCABundle(ctx context.Context, env *probeEnv) (string, string) {
 	data, err := os.ReadFile(filepath.Clean(env.caBundlePath))
 	if err != nil {
 		return statusFail, fmt.Sprintf("read %s: %v", env.caBundlePath, err)
@@ -2875,7 +2887,61 @@ func probeCABundle(_ context.Context, env *probeEnv) (string, string) {
 	if pipelockCN == "" {
 		return statusFail, fmt.Sprintf("%s has %d cert(s); none match Pipelock", env.caBundlePath, count)
 	}
-	return statusPass, fmt.Sprintf("%d certs in bundle; pipelock CA CN=%s", count, pipelockCN)
+	// A subject common name is chosen by whoever mints the certificate, so two
+	// different Pipelock CAs carry the same one. This bundle is what every
+	// contained client actually trusts (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS and
+	// their siblings all point here), so matching a name would let a rotated-out
+	// CA keep passing verification while clients trust material the proxy no
+	// longer presents. Require the selected CA's own bytes to be in the bundle.
+	currentReader := env.currentCA
+	if currentReader == nil {
+		currentReader = currentCAForVerify
+	}
+	current, err := currentReader(ctx, env)
+	if err != nil {
+		return statusFail, fmt.Sprintf("read the selected Pipelock CA to check %s: %v; run `pipelock contain ca-refresh` after the proxy is healthy", env.caBundlePath, err)
+	}
+	currentDER, err := firstCertificateDER(current)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode the selected Pipelock CA: %v", err)
+	}
+	if !bundleContainsCertificate(data, currentDER) {
+		return statusFail, fmt.Sprintf("%s does not contain the selected Pipelock CA (it has %d cert(s), including CN=%s); run `pipelock contain ca-refresh`", env.caBundlePath, count, pipelockCN)
+	}
+	return statusPass, fmt.Sprintf("%d certs in bundle, including the selected Pipelock CA CN=%s (matched by certificate material, not subject name)", count, pipelockCN)
+}
+
+// firstCertificateDER returns the DER bytes of the first CERTIFICATE block in a
+// PEM input, so comparisons are on certificate material rather than on an
+// encoding that can differ while describing the same certificate.
+func firstCertificateDER(pemBytes []byte) ([]byte, error) {
+	rest := pemBytes
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("no CERTIFICATE block found")
+		}
+		if block.Type == "CERTIFICATE" {
+			return block.Bytes, nil
+		}
+	}
+}
+
+// bundleContainsCertificate reports whether a PEM bundle carries a certificate
+// with exactly the given DER bytes.
+func bundleContainsCertificate(bundle, wantDER []byte) bool {
+	rest := bundle
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return false
+		}
+		if block.Type == "CERTIFICATE" && bytes.Equal(block.Bytes, wantDER) {
+			return true
+		}
+	}
 }
 
 // scanPipelockCertCN walks a PEM blob and returns the total cert

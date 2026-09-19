@@ -1869,13 +1869,36 @@ func writeFakeWrapper(t *testing.T, path string, mode os.FileMode) {
 func TestProbeCABundle(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		env := makeProbeEnv(t)
-		writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA", "Some Other Root")
+		// The bundle must carry the SAME certificate the selected CA returns.
+		// Generating an independent one with a matching common name is the
+		// stale-bundle state this probe now rejects.
+		current := []byte(testPEMCA(t))
+		bundle := append(append([]byte{}, current...), makeFakeCertPEM(t, "Some Other Root")...)
+		if err := os.WriteFile(env.caBundlePath, bundle, 0o600); err != nil {
+			t.Fatalf("write bundle: %v", err)
+		}
+		env.currentCA = func(context.Context, *probeEnv) ([]byte, error) { return current, nil }
 		gotStatus, gotDetail := probeCABundle(context.Background(), env)
 		if gotStatus != statusPass {
 			t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
 		}
-		if !strings.Contains(gotDetail, "Pipelock Test CA") {
-			t.Fatalf("detail: got %q, want substring 'Pipelock Test CA'", gotDetail)
+		if !strings.Contains(gotDetail, "certificate material") {
+			t.Fatalf("detail: got %q, want it to say the match was on certificate material", gotDetail)
+		}
+	})
+
+	t.Run("bundle holds a different CA with the same common name", func(t *testing.T) {
+		// The exact failure this probe exists for: after a rotation the bundle
+		// still carries a Pipelock-named certificate, so a subject-name check
+		// reports agreement while every contained client trusts a CA the proxy
+		// no longer presents.
+		env := makeProbeEnv(t)
+		writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA", "Some Other Root")
+		current := []byte(testPEMCA(t))
+		env.currentCA = func(context.Context, *probeEnv) ([]byte, error) { return current, nil }
+		gotStatus, gotDetail := probeCABundle(context.Background(), env)
+		if gotStatus != statusFail || !strings.Contains(gotDetail, "does not contain the selected Pipelock CA") {
+			t.Fatalf("status=%q detail=%q; want a failure naming the missing selected CA", gotStatus, gotDetail)
 		}
 	})
 
@@ -3950,8 +3973,16 @@ func allPassEnv(t *testing.T) *probeEnv {
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}
-	writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA")
 	currentCA := []byte(testPEMCA(t))
+	// The combined bundle is what contained clients actually trust, so a
+	// healthy fixture has to carry the SAME certificate the selected CA
+	// returns, alongside an unrelated root the way a real merged bundle does.
+	// Generating an independent cert with a matching common name modelled a
+	// host whose clients trust a CA the proxy does not present.
+	bundle := append(append([]byte{}, currentCA...), makeFakeCertPEM(t, "Some Other Root")...)
+	if err := os.WriteFile(env.caBundlePath, bundle, 0o600); err != nil {
+		t.Fatalf("write CA bundle: %v", err)
+	}
 	if err := os.WriteFile(env.caExportPath, currentCA, 0o600); err != nil {
 		t.Fatalf("write CA export: %v", err)
 	}
@@ -4411,10 +4442,10 @@ func canonicalLaunchScript(port int, caBundle string) string {
 // literally rather than parsed, so adding a run probe without updating this list
 // is itself a failure.
 func TestContainRunProbeNumbersDoNotCollideWithVerify(t *testing.T) {
-	runOnly := map[int]string{
-		17: containRunPrivilegeProbe,
-		18: "requested_tool_registered",
-	}
+	// Read the production registry rather than restating it. A second copy here
+	// is exactly how a newly added run-only probe escapes the collision check:
+	// the list looks maintained and silently is not.
+	runOnly := containRunOnlyProbes
 	for _, p := range allProbes() {
 		if name, clash := runOnly[p.n]; clash {
 			t.Fatalf("verify probe %d (%s) reuses a number `contain run` already publishes for %s; pick an unused number", p.n, p.name, name)
@@ -4433,5 +4464,67 @@ func TestContainRunProbeNumbersDoNotCollideWithVerify(t *testing.T) {
 	guard := map[int]string{probes[0].n: "sentinel"}
 	if _, caught := guard[probes[0].n]; !caught {
 		t.Fatal("collision lookup does not detect a known-colliding number")
+	}
+}
+
+// TestCACertificateMaterialHelpers covers the decode-and-compare helpers the CA
+// probes are built on, including the decode-failure branches. A probe that
+// cannot decode its input must fail rather than fall through to a comparison of
+// whatever it managed to read.
+func TestCACertificateMaterialHelpers(t *testing.T) {
+	t.Parallel()
+	ca := []byte(testPEMCA(t))
+
+	der, err := firstCertificateDER(ca)
+	if err != nil || len(der) == 0 {
+		t.Fatalf("firstCertificateDER(valid) = %d bytes, %v", len(der), err)
+	}
+	// The same certificate re-encoded must decode to identical material; this
+	// is why the probes compare DER rather than PEM bytes.
+	reencoded := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	again, err := firstCertificateDER(reencoded)
+	if err != nil || !bytes.Equal(der, again) {
+		t.Fatalf("re-encoded certificate decoded differently: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{name: "not PEM at all", input: "this is not a certificate"},
+		{name: "PEM block of the wrong type", input: string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("x")}))},
+		{name: "empty input", input: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := firstCertificateDER([]byte(tc.input)); err == nil {
+				t.Fatalf("firstCertificateDER(%q) returned no error", tc.name)
+			}
+		})
+	}
+
+	if !bundleContainsCertificate(append(append([]byte{}, ca...), makeFakeCertPEM(t, "Other")...), der) {
+		t.Fatal("bundleContainsCertificate missed a certificate that is present")
+	}
+	if bundleContainsCertificate(makeFakeCertPEM(t, "Pipelock Test CA"), der) {
+		t.Fatal("bundleContainsCertificate matched a different certificate sharing a common name")
+	}
+}
+
+// TestProbeCurrentCAExportRejectsUndecodableInput pins the decode-failure
+// branches of the export probe itself.
+func TestProbeCurrentCAExportRejectsUndecodableInput(t *testing.T) {
+	t.Parallel()
+	env := makeProbeEnv(t)
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	env.currentCA = func(context.Context, *probeEnv) ([]byte, error) {
+		// Valid single-CA PEM by the shape check, but a different certificate.
+		return makeFakeCertPEM(t, "Pipelock Test CA"), nil
+	}
+	status, detail := probeCurrentCAExport(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, "does not match the selected Pipelock CA") {
+		t.Fatalf("status=%q detail=%q; want a material mismatch failure", status, detail)
 	}
 }

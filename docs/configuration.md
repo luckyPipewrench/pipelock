@@ -1674,6 +1674,7 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Metrics listener
 
+
 ## Contained CA trust
 
 The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.

@@ -596,7 +596,7 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 
 	t.Run("declared loopback accept is not unsafe", func(t *testing.T) {
 		lines := []string{
-			"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept",
+			`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
 			"meta skuid 966 counter drop",
 		}
 		declared := []config.ContainmentLoopbackService{loopbackTestService(9200)}
@@ -629,7 +629,7 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 
 	t.Run("declared ::1 loopback accept is not unsafe", func(t *testing.T) {
 		lines := []string{
-			"meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept",
+			`meta skuid 966 oifname "lo" ip6 daddr ::1 tcp dport 9200 accept`,
 			"meta skuid 966 counter drop",
 		}
 		svc := loopbackTestService(9200)
@@ -1091,8 +1091,8 @@ func TestProbeNFTContainmentRequiresDeclaredLoopbackReplyRule(t *testing.T) {
 	t.Parallel()
 	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	configBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"" + expiresAt + "\"\n"
-	forward := "meta skuid 987 ip daddr 127.0.0.1 tcp dport 9200 accept"
-	reply := `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`
+	forward := `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`
+	reply := `meta skuid 987 oifname "lo" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`
 	liveWithoutReply := strings.Replace(goodNFTContainmentOutput,
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n\t\t"+forward, 1)

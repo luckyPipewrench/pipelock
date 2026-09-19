@@ -422,7 +422,7 @@ func scriptTypeAttribute(attrs string) string {
 	for i < len(attrs) {
 		for i < len(attrs) {
 			c := attrs[i]
-			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' {
+			if isHTMLWhitespace(c) || c == '/' {
 				i++
 				continue
 			}
@@ -434,7 +434,7 @@ func scriptTypeAttribute(attrs string) string {
 		nameStart := i
 		for i < len(attrs) {
 			c := attrs[i]
-			if c == '=' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' || c == '"' || c == '\'' {
+			if c == '=' || isHTMLWhitespace(c) || c == '/' || c == '"' || c == '\'' {
 				break
 			}
 			i++
@@ -446,7 +446,7 @@ func scriptTypeAttribute(attrs string) string {
 		name := attrs[nameStart:i]
 		for i < len(attrs) {
 			c := attrs[i]
-			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			if isHTMLWhitespace(c) {
 				i++
 				continue
 			}
@@ -457,7 +457,7 @@ func scriptTypeAttribute(attrs string) string {
 			i++
 			for i < len(attrs) {
 				c := attrs[i]
-				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				if isHTMLWhitespace(c) {
 					i++
 					continue
 				}
@@ -481,7 +481,7 @@ func scriptTypeAttribute(attrs string) string {
 				vStart := i
 				for i < len(attrs) {
 					c := attrs[i]
-					if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' || c == '"' || c == '\'' {
+					if isHTMLWhitespace(c) || c == '/' || c == '"' || c == '\'' {
 						break
 					}
 					i++
@@ -496,20 +496,35 @@ func scriptTypeAttribute(attrs string) string {
 	return ""
 }
 
-// scriptTagNameBoundary reports whether b may follow the letters of a
-// "script" tag name in HTML (start or end tag).
-func scriptTagNameBoundary(b byte) bool {
+// isHTMLWhitespace reports whether b is HTML whitespace (ASCII space, tab,
+// LF, FF, CR). Form feed is included so tag scanning matches HTML5.
+func isHTMLWhitespace(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', '\r', '/', '>':
+	case ' ', '\t', '\n', '\f', '\r':
 		return true
 	default:
 		return false
 	}
 }
 
+// isHTMLTagNameStart reports whether b may begin an HTML tag name (ASCII
+// letter) or an end-tag slash. Non-tag '<' (comparisons, generics text) must
+// not enter skipHTMLTagEnd.
+func isHTMLTagNameStart(b byte) bool {
+	return b == '/' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+// scriptTagNameBoundary reports whether b may follow the letters of a
+// "script" tag name in HTML (start or end tag).
+func scriptTagNameBoundary(b byte) bool {
+	return isHTMLWhitespace(b) || b == '/' || b == '>'
+}
+
 // skipHTMLTagEnd starts at pos (byte after '<') and returns the index after
 // the closing '>' of that tag, respecting quoted attribute values. If no
-// closing '>' is found, returns len(html).
+// closing '>' is found, returns len(html). Callers must ensure the byte at
+// pos begins a real tag name (ASCII letter or '/') before invoking this;
+// otherwise a stray '<' (e.g. "1 < 2") can swallow a later real tag.
 func skipHTMLTagEnd(html string, pos int) int {
 	inQuote := byte(0)
 	for i := pos; i < len(html); i++ {
@@ -558,7 +573,12 @@ func findScriptStartAfter(html, lower string, from int) (elemStart, bodyStart in
 			continue
 		}
 		namePos := i + 1
-		if namePos < len(html) && html[namePos] == '/' {
+		if namePos >= len(html) || !isHTMLTagNameStart(html[namePos]) {
+			// Not a tag ('1 < 2', generics text, etc.): treat '<' as text.
+			i++
+			continue
+		}
+		if html[namePos] == '/' {
 			// End tag of something else — skip quote-aware.
 			i = skipHTMLTagEnd(html, namePos)
 			continue
@@ -605,7 +625,8 @@ func findScriptStartAfter(html, lower string, from int) (elemStart, bodyStart in
 // findScriptEndAfter finds the end of a script element's body (index of
 // '</script>') starting at bodyStart. lower must be asciiToLower(html).
 // Returns bodyEnd (start of end tag) and elemEnd (after end tag), or ok=false
-// if unclosed.
+// if unclosed. Accepts HTML-valid closers with ignored attributes
+// (</script foo>) by scanning quote-aware to the first unquoted '>'.
 func findScriptEndAfter(html, lower string, bodyStart int) (bodyEnd, elemEnd int, ok bool) {
 	search := bodyStart
 	for {
@@ -619,18 +640,38 @@ func findScriptEndAfter(html, lower string, bodyStart int) (bodyEnd, elemEnd int
 			search = afterName
 			continue
 		}
-		// Consume optional whitespace and optional '/', then require '>'.
+		// After optional whitespace / '/', scan quote-aware to first '>'.
+		// Ambiguous closers (attrs, form-feed) still terminate rather than
+		// dropping a following data-script body (fail closed for scanning).
 		i := afterName
-		for i < len(html) && (html[i] == ' ' || html[i] == '\t' || html[i] == '\n' || html[i] == '\r') {
+		for i < len(html) && isHTMLWhitespace(html[i]) {
 			i++
 		}
 		if i < len(html) && html[i] == '/' {
 			i++
 		}
-		if i < len(html) && html[i] == '>' {
-			return endName, i + 1, true
+		inQuote := byte(0)
+		for i < len(html) {
+			c := html[i]
+			if inQuote != 0 {
+				if c == inQuote {
+					inQuote = 0
+				}
+				i++
+				continue
+			}
+			switch c {
+			case '"', '\'':
+				inQuote = c
+				i++
+			case '>':
+				return endName, i + 1, true
+			default:
+				i++
+			}
 		}
-		search = afterName
+		// Truncated end tag: fail closed — no further scripts matched.
+		return 0, 0, false
 	}
 }
 
@@ -677,8 +718,9 @@ func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
 // and that can carry model-facing prose while keeping the rendered page clean:
 // comments, non-executable data script bodies, style bodies, and hidden
 // elements. Executable JavaScript bodies are omitted (see var block comment).
-// HTML comments whose ranges fall inside executable <script> elements are
-// also skipped so JS strings / markup containing <!-- --> do not re-enter the
+// HTML comments, <style> bodies, and hidden-element matches whose ranges fall
+// inside executable <script> elements are also skipped so JS strings / markup
+// containing <!-- -->, <style>, or display:none decoys do not re-enter the
 // scanned surface after executable bodies were filtered out.
 //
 // Gap: <noscript> bodies are not extracted today. Rendered/agent text may still
@@ -711,12 +753,18 @@ func extractHiddenContent(html string) string {
 		b.WriteString(s.body)
 		b.WriteByte('\n')
 	}
-	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
+	for _, loc := range reStyleBody.FindAllStringSubmatchIndex(html, -1) {
+		if rangeOverlaps(loc[0], loc[1], execRanges) {
+			continue
+		}
+		b.WriteString(html[loc[2]:loc[3]])
 		b.WriteByte('\n')
 	}
-	for _, m := range reHiddenElement.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
+	for _, loc := range reHiddenElement.FindAllStringSubmatchIndex(html, -1) {
+		if rangeOverlaps(loc[0], loc[1], execRanges) {
+			continue
+		}
+		b.WriteString(html[loc[2]:loc[3]])
 		b.WriteByte('\n')
 	}
 	return b.String()

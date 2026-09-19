@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -33,7 +34,32 @@ var (
 	evidenceAuditorRunCommand = func(cmd *exec.Cmd) ([]byte, error) { return cmd.CombinedOutput() }
 
 	evidenceAuditorSystemctl = runSystemctlOp
+	// evidenceAuditorWait is the sleep between transient systemd start
+	// probes. Tests replace it so a starting-then-running sequence does
+	// not take wall-clock time.
+	evidenceAuditorWait = func(ctx context.Context, d time.Duration) error {
+		if d <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
 )
+
+const (
+	evidenceAuditorSystemdStartRetries = 4
+	evidenceAuditorSystemdStartWait    = 200 * time.Millisecond
+)
+
+func systemdUserStateTransient(state string) bool {
+	return state == "initializing" || state == "starting"
+}
 
 // runSystemctlOp is the real implementation behind evidenceAuditorSystemctl.
 // It is named rather than anonymous so tests can exercise it directly, since
@@ -128,10 +154,12 @@ const (
 // "running" and "degraded" both count as usable: `is-system-running` exits
 // non-zero for "degraded" whenever ANY unrelated user unit has failed, which
 // is common on ordinary desktops and has nothing to do with whether this
-// timer can be installed and run. Every other state - "offline", "unknown",
-// an empty result, "initializing"/"starting", or a non-zero exit with no
-// recognized state word at all - is treated as not usable, same as a launch
-// failure (missing binary, unreachable session bus).
+// timer can be installed and run. "initializing" and "starting" are the
+// states a login-time init actually occupies; those are retried for a short
+// bound so a transient start does not permanently skip the auditor.
+// Every other state - "offline", "unknown", an empty result, or a non-zero
+// exit with no recognized state word at all - is treated as not usable,
+// same as a launch failure (missing binary, unreachable session bus).
 func evidenceAuditorUserSystemdUnavailable(ctx context.Context) (bool, string) {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return true, "systemctl not found in PATH"
@@ -139,22 +167,34 @@ func evidenceAuditorUserSystemdUnavailable(ctx context.Context) (bool, string) {
 	if strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")) == "" {
 		return true, "no user systemd session (XDG_RUNTIME_DIR is not set)"
 	}
-	err := evidenceAuditorSystemctl(ctx, systemctlUserRunning)
-	if err == nil {
-		return false, "" // fake/success path (e.g. TestMain's global stub): treat as "running".
-	}
-	var stateErr *systemctlUserStateError
-	if errors.As(err, &stateErr) {
-		switch stateErr.state {
-		case "running", "degraded":
-			return false, ""
-		case "":
-			return true, "systemctl --user is-system-running returned no result"
-		default:
-			return true, fmt.Sprintf("systemctl --user reports %q", stateErr.state)
+	var lastTransient string
+	for attempt := 0; attempt <= evidenceAuditorSystemdStartRetries; attempt++ {
+		if attempt > 0 {
+			if err := evidenceAuditorWait(ctx, evidenceAuditorSystemdStartWait); err != nil {
+				return true, fmt.Sprintf("systemctl --user is unusable: %v", err)
+			}
 		}
+		err := evidenceAuditorSystemctl(ctx, systemctlUserRunning)
+		if err == nil {
+			return false, "" // fake/success path (e.g. TestMain's global stub): treat as "running".
+		}
+		var stateErr *systemctlUserStateError
+		if errors.As(err, &stateErr) {
+			switch {
+			case stateErr.state == "running" || stateErr.state == "degraded":
+				return false, ""
+			case systemdUserStateTransient(stateErr.state):
+				lastTransient = stateErr.state
+				continue
+			case stateErr.state == "":
+				return true, "systemctl --user is-system-running returned no result"
+			default:
+				return true, fmt.Sprintf("systemctl --user reports %q", stateErr.state)
+			}
+		}
+		return true, fmt.Sprintf("systemctl --user is unusable: %v", err)
 	}
-	return true, fmt.Sprintf("systemctl --user is unusable: %v", err)
+	return true, fmt.Sprintf("systemctl --user reports %q", lastTransient)
 }
 
 type evidenceCorpusAuditorInstall struct {

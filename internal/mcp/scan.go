@@ -56,6 +56,12 @@ type ResponseScanOptions struct {
 	// OnSuppressedResponse receives a response-scanning match removed by a
 	// destination-scoped suppression. It is observational only.
 	OnSuppressedResponse func(scanner.ResponseMatch)
+
+	// OnObservedCoreResponse receives a core-floor finding that a declared
+	// operator exception downgraded from block to observe. It is separate from
+	// OnSuppressedResponse because ordinary suppression cannot reach the
+	// immutable floor, so the two must stay distinguishable in evidence.
+	OnObservedCoreResponse func(scanner.ObservedCoreMatch)
 }
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
@@ -195,6 +201,11 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
 			opts.OnSuppressedResponse(match)
+		}
+	}
+	for _, observed := range result.ObservedCoreMatches {
+		if opts.OnObservedCoreResponse != nil {
+			opts.OnObservedCoreResponse(observed)
 		}
 	}
 	var dlpMatches []scanner.TextDLPMatch
@@ -550,6 +561,11 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
 			opts.OnSuppressedResponse(match)
+		}
+	}
+	for _, observed := range result.ObservedCoreMatches {
+		if opts.OnObservedCoreResponse != nil {
+			opts.OnObservedCoreResponse(observed)
 		}
 	}
 	var dlpMatches []scanner.TextDLPMatch

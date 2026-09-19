@@ -1888,6 +1888,9 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
+					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
+						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
+					},
 					OnFinding: func(err error) {
 						ic.Logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 					},
@@ -2395,6 +2398,7 @@ func newInterceptHandler(
 			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 			recordDroppedResponseScanMatches(ic.Metrics, ic.Logger, actx, scanResult.SuppressedMatches, TransportConnect)
+			recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, scanResult.ObservedCoreMatches, TransportConnect)
 
 			// Capture observer: record intercept response scan verdict for policy replay.
 			// Runs after suppression so the recorded action matches runtime.

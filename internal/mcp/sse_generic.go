@@ -78,6 +78,11 @@ type GenericSSEScanOptions struct {
 	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
 	// observational only and must not alter stream control flow.
 	OnDroppedDLP func(scanner.TextDLPMatch, string)
+	// OnObservedCoreResponse receives core-floor findings a declared operator
+	// exception downgraded from block to observe. Observational only; without
+	// it a streamed floor finding could be withheld from blocking and never
+	// recorded.
+	OnObservedCoreResponse func(scanner.ObservedCoreMatch)
 }
 
 // ScanGenericSSEStream handles non-A2A text/event-stream responses with
@@ -210,6 +215,7 @@ func ScanGenericSSEStreamWithOptions(
 			skipTailInjection := false
 			skipTailDLP := false
 			injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+			emitObservedCoreSSE(opts, injectResult)
 			if injectResult.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
 			}
@@ -256,6 +262,7 @@ func ScanGenericSSEStreamWithOptions(
 			if !skipTailInjection && injectionTail != "" {
 				combined := injectionTail + " " + string(event)
 				tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
+				emitObservedCoreSSE(opts, tailInjectResult)
 				if tailInjectResult.Failed() {
 					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
 				}
@@ -452,4 +459,17 @@ func sseDLPMatchNames(matches []scanner.TextDLPMatch) string {
 		names = append(names, m.PatternName)
 	}
 	return strings.Join(names, ", ")
+}
+
+// emitObservedCoreSSE reports declared core-floor observations from an SSE
+// scan. Without it a streamed response could have a floor finding withheld
+// from blocking and never recorded, which is the one thing an observe
+// exception must never do.
+func emitObservedCoreSSE(opts GenericSSEScanOptions, result scanner.ResponseScanResult) {
+	if opts.OnObservedCoreResponse == nil {
+		return
+	}
+	for _, observed := range result.ObservedCoreMatches {
+		opts.OnObservedCoreResponse(observed)
+	}
 }

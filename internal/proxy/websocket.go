@@ -2600,6 +2600,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
 	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	recordDroppedResponseScanMatches(r.proxy.metrics, r.proxy.logger, actx, scanResult.SuppressedMatches, TransportWS)
+	recordObservedCoreResponseMatches(r.proxy.metrics, r.proxy.logger, actx, scanResult.ObservedCoreMatches, TransportWS)
 	if scanResult.Clean {
 		return msg, false
 	}

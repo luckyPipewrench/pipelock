@@ -161,14 +161,14 @@ func TestReverseCoreFloorBlocksSSEWithEmptyActions(t *testing.T) {
 	cfg.ResponseScanning.Action = ""
 	cfg.ResponseScanning.SSEStreaming.Action = ""
 
-	// The clean event is the positive control and it goes FIRST. Asserting
-	// only that the payload is absent would pass if the upstream never ran,
-	// if the handler errored, or if the request failed for any unrelated
-	// reason. Requiring the earlier event to arrive proves the stream was
-	// live and carrying data, so the payload's absence is the floor cutting
-	// the stream off rather than nothing having happened.
+	// Receipts are what make this conclusive. A clean control event and a
+	// terminated read prove the stream was live and got cut, but an unrelated
+	// proxy error would satisfy both. Only the floor emits a block receipt on
+	// the SSE layer, so asserting that receipt exists distinguishes "the core
+	// pattern was caught" from "something went wrong at the right moment".
+	cfg.FlightRecorder.RequireReceipts = true
 	const cleanEvent = "reverse core floor sse control"
-	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+	proxy, receiptDir, closeRecorder := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "data: "+cleanEvent+"\n\n")
@@ -198,5 +198,13 @@ func TestReverseCoreFloorBlocksSSEWithEmptyActions(t *testing.T) {
 	}
 	if strings.Contains(string(body), corePayloadForFloor) {
 		t.Fatalf("core injection reached the client on an SSE stream with both actions empty: %q", body)
+	}
+
+	waitForReceiptOrTimeout(t, receiptDir)
+	closeRecorder()
+	blocked := findReceiptByLayer(t, extractReceiptsFromDir(t, receiptDir), LayerSSEStream)
+	if blocked.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("SSE receipt verdict = %q, want %q: the stream ended without the floor recording a block",
+			blocked.ActionRecord.Verdict, config.ActionBlock)
 	}
 }

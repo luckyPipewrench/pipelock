@@ -26,8 +26,8 @@ for f in "$WORKFLOW" "$CODECOV"; do
 	fi
 done
 
-# Shards on the enterprise matrix. The upload step is gated to a single Go
-# version, so this is one upload per shard, not per shard per version.
+# The OSS and enterprise producers share the shard set; the workflow topology
+# tests enforce that equality. Only their Go 1.25 jobs upload coverage.
 shard_line="$(grep -m1 "^ *shard: \[" "$WORKFLOW" || true)"
 if [[ -z "$shard_line" ]]; then
 	printf 'codecov-upload-count: no shard matrix found in %s\n' "$WORKFLOW" >&2
@@ -36,9 +36,15 @@ fi
 shard_count="$(grep -o "'" <<<"$shard_line" | wc -l)"
 shard_count=$((shard_count / 2))
 
-# Plus the separate merged sandbox subprocess profile.
+# Count the actual uploading matrices, then add the merged subprocess profile.
+# Counting only enterprise omits the OSS-only files those reports cannot cover.
+matrix_uploads="$(grep -Ec '^[[:space:]]*-[[:space:]]+name: Upload coverage$' "$WORKFLOW" || true)"
+if [[ "$matrix_uploads" -eq 0 ]]; then
+	printf 'codecov-upload-count: no uploading test matrix found in %s\n' "$WORKFLOW" >&2
+	exit 2
+fi
 subprocess_uploads="$(grep -c 'name: Upload subprocess coverage' "$WORKFLOW" || true)"
-expected=$((shard_count + subprocess_uploads))
+expected=$((shard_count * matrix_uploads + subprocess_uploads))
 
 actual="$(grep -oP '^\s*after_n_builds:\s*\K[0-9]+' "$CODECOV" || true)"
 if [[ -z "$actual" ]]; then
@@ -49,12 +55,12 @@ fi
 if [[ "$actual" != "$expected" ]]; then
 	printf 'codecov-upload-count: MISMATCH\n' >&2
 	printf '  codecov.yml after_n_builds = %s\n' "$actual" >&2
-	printf '  CI actually uploads        = %s (%s enterprise shards + %s subprocess)\n' \
-		"$expected" "$shard_count" "$subprocess_uploads" >&2
+	printf '  CI actually uploads        = %s (%s matrices x %s shards + %s subprocess)\n' \
+		"$expected" "$matrix_uploads" "$shard_count" "$subprocess_uploads" >&2
 	printf '  A lower value makes Codecov judge partial data and fail spuriously.\n' >&2
 	printf '  A higher value makes it never post at all.\n' >&2
 	exit 1
 fi
 
-printf 'codecov-upload-count: OK (after_n_builds=%s matches %s shards + %s subprocess)\n' \
-	"$actual" "$shard_count" "$subprocess_uploads"
+printf 'codecov-upload-count: OK (after_n_builds=%s matches %s matrices x %s shards + %s subprocess)\n' \
+	"$actual" "$matrix_uploads" "$shard_count" "$subprocess_uploads"

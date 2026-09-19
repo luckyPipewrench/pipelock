@@ -111,7 +111,7 @@ func testLoopbackServiceSameUIDCompletionInNamespaceHelper(t *testing.T) {
 	namespaceAssertCompletion(t, network, listener.Addr().String())
 	if network == "tcp4" {
 		namespaceAssertCompletionFromAlternateLoopbackAddress(t, network, listener.Addr().String())
-		namespaceAssertNewSourcePortRejected(t, host, servicePort)
+		namespaceAssertNewSourcePortRejected(t, host, servicePort, listener)
 	}
 }
 
@@ -283,27 +283,35 @@ func namespaceDialTimedOut(ctx context.Context, err error) bool {
 	return errors.As(err, &networkErr) && networkErr.Timeout()
 }
 
-// namespaceAssertNewSourcePortRejected checks that a NEW flow bound to the
-// declared service's source port does not get through. It is a no-leak check
-// and NOT proof that the reply rule's state match is what stops it: the drop
-// here is over-determined, because the forward allow cannot match this packet's
-// destination port and the return path is barred by its destination address
-// regardless. Removing "ct state established ct direction reply" from the
-// rendered rule leaves this assertion passing, verified by neutralization.
-// The state match itself is pinned by the render and reload golden tests in
-// loopback_services_test.go, which do fail when it is removed.
-func namespaceAssertNewSourcePortRejected(t *testing.T, host string, servicePort int) {
+// namespaceAssertNewSourcePortRejected proves the reply rule's conntrack
+// predicates are what refuse a NEW flow, rather than an address or port
+// predicate refusing it first. The packet is built to satisfy every other
+// predicate the reply rule carries: it leaves over the loopback interface,
+// from the declared service address, from the declared service source port.
+// Only `ct state established ct direction reply` can reject it. It is aimed at
+// a DIFFERENT listener so the forward rule, which matches the declared
+// destination port, cannot admit it either.
+//
+// Freeing the declared port first is what makes that possible: while the
+// service still holds it, the dialer cannot bind it as a source, and an
+// earlier version of this test dialed from another loopback address instead.
+// That version passed with the conntrack predicates removed entirely, so it
+// proved nothing.
+func namespaceAssertNewSourcePortRejected(t *testing.T, host string, servicePort int, service net.Listener) {
 	t.Helper()
+	if err := service.Close(); err != nil {
+		t.Fatalf("close declared service listener to free port %d: %v", servicePort, err)
+	}
 	target := namespaceListener(t, "tcp4", host)
 	newCtx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
 	defer cancel()
-	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: servicePort}}
+	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host), Port: servicePort}}
 	conn, err := dialer.DialContext(newCtx, "tcp4", target.Addr().String())
 	if err == nil {
 		_ = conn.Close()
-		t.Fatal("NEW flow bound to the declared service source port unexpectedly passed the reply rule")
+		t.Fatal("a NEW flow matching the reply rule's address and source port passed: the conntrack state and direction predicates are not enforcing")
 	}
 	if !namespaceDialTimedOut(newCtx, err) {
-		t.Fatalf("NEW flow bound to source port %d rejected with %v, want a timeout from the nft drop", servicePort, err)
+		t.Fatalf("NEW flow from %s:%d rejected with %v, want a timeout from the nft drop", host, servicePort, err)
 	}
 }

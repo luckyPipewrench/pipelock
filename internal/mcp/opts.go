@@ -469,7 +469,12 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 		},
 		OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 			if o.AuditLogger != nil {
-				o.AuditLogger.LogResponseScanSuppressed(mustMCPAuditContext(o.AuditLogger, "MCP", auditResource), observed.Match.PatternName, "mcp_stdio", coreObservedEvidenceReason)
+				o.AuditLogger.LogCoreResponseObserved(mustMCPAuditContext(o.AuditLogger, "MCP", auditResource), observed.Match.PatternName, "mcp_stdio", audit.CoreObserveAuthorization{
+					Host:    observed.Host,
+					Reason:  observed.Reason,
+					Owner:   observed.Owner,
+					Expires: observed.Expires,
+				})
 			}
 			if o.Metrics != nil {
 				o.Metrics.RecordResponseSuppressedMatch(observed.Match.PatternName, "mcp_stdio", coreObservedEvidenceReason)

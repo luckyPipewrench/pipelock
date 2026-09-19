@@ -6204,7 +6204,12 @@ const ExemptReasonCoreObserved = "core_observed"
 func recordObservedCoreResponseMatches(m *metrics.Metrics, log *audit.Logger, actx audit.LogContext, observed []scanner.ObservedCoreMatch, surface string) {
 	for _, entry := range observed {
 		if log != nil {
-			log.LogResponseScanSuppressed(actx, entry.Match.PatternName, surface, ExemptReasonCoreObserved)
+			log.LogCoreResponseObserved(actx, entry.Match.PatternName, surface, audit.CoreObserveAuthorization{
+				Host:    entry.Host,
+				Reason:  entry.Reason,
+				Owner:   entry.Owner,
+				Expires: entry.Expires,
+			})
 		}
 		m.RecordResponseScanExempt(ExemptReasonCoreObserved, surface)
 		m.RecordResponseSuppressedMatch(entry.Match.PatternName, surface, ExemptReasonCoreObserved)

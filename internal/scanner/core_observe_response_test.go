@@ -172,3 +172,45 @@ func TestCoreObserveHostFromTarget(t *testing.T) {
 		}
 	}
 }
+
+// TestCoreObserveExceptionsFollowAConfigReload settles a review question about
+// whether a running proxy can keep honoring an exception the operator removed,
+// or ignore one they added, until restart.
+//
+// It cannot. A reload constructs a new Scanner from the new config and swaps it
+// in, so the exception set is rebuilt with everything else. This test pins that
+// by building the two scanners a reload produces and checking both directions:
+// an added exception takes effect, and a removed one stops applying.
+func TestCoreObserveExceptionsFollowAConfigReload(t *testing.T) {
+	const target = "https://docs.vendor.example/guide"
+
+	withException := config.Defaults()
+	withException.Internal = nil
+	withException.ResponseScanning.CoreObserveExceptions = []config.CoreObserveException{liveObserveEntry()}
+
+	withoutException := config.Defaults()
+	withoutException.Internal = nil
+
+	added, err := New(withException)
+	if err != nil {
+		t.Fatalf("build scanner with exception: %v", err)
+	}
+	removed, err := New(withoutException)
+	if err != nil {
+		t.Fatalf("build scanner without exception: %v", err)
+	}
+
+	addedResult := added.ScanResponseWithSuppress(context.Background(), coreInjectionPayload, target, nil)
+	if len(blockingCoreMatches(addedResult)) != 0 || len(addedResult.ObservedCoreMatches) != 1 {
+		t.Fatalf("an added exception did not take effect on the reloaded scanner: coreBlocks=%v observed=%d",
+			blockingCoreMatches(addedResult), len(addedResult.ObservedCoreMatches))
+	}
+
+	removedResult := removed.ScanResponseWithSuppress(context.Background(), coreInjectionPayload, target, nil)
+	if len(blockingCoreMatches(removedResult)) == 0 {
+		t.Fatal("a removed exception still withheld the block on the reloaded scanner")
+	}
+	if len(removedResult.ObservedCoreMatches) != 0 {
+		t.Fatal("a removed exception still produced an observation on the reloaded scanner")
+	}
+}

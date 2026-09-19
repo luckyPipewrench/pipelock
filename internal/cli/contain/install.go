@@ -2173,6 +2173,28 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	return changed || !tableLoaded || liveRulesDrifted || timerReconciled || persistReconciled, nil
 }
 
+// replaceOwnedLoopbackInputChain deletes a stale or drifted receiver gate and
+// loads the canonical one in a SINGLE nft transaction, so the boundary is
+// never live without its receiver-side check. Doing it as two commands would
+// leave a window in which marked flows are accepted at OUTPUT with nothing
+// checking the receiving socket.
+func replaceOwnedLoopbackInputChain(ctx context.Context, env *installEnv) error {
+	path := env.nftRulesPath + ".owned-loopback-input-replace"
+	body := "delete chain inet " + env.nftTableOrDefault() + " " + ownedLoopbackInputChain + "\n" +
+		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault())
+	if err := env.writeFile(path, []byte(body), modeConfigSecret); err != nil {
+		return fmt.Errorf("write owned loopback receiver chain replacement: %w", err)
+	}
+	defer func() { _ = env.removeFile(path) }()
+	if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", path); err != nil {
+		return fmt.Errorf("validate owned loopback receiver chain replacement: %w", err)
+	}
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", path); err != nil {
+		return fmt.Errorf("replace owned loopback receiver chain: %w", err)
+	}
+	return nil
+}
+
 // ensureOwnedLoopbackInputChain establishes the receiver-side gate before an
 // existing containment table is migrated to dynamic loopback rules. A missing
 // receiver gate alongside marked OUTPUT traffic would be fail-open, so an
@@ -2183,11 +2205,27 @@ func ensureOwnedLoopbackInputChain(ctx context.Context, env *installEnv) (bool, 
 		return false, fmt.Errorf("list owned loopback receiver chain: %w", err)
 	}
 	if code == 0 {
-		if !ownedLoopbackInputChainLooksManaged(out) {
-			return false, fmt.Errorf("owned loopback receiver chain %s is not recognizable; refusing to change dynamic loopback rules", ownedLoopbackInputChain)
+		if ownedLoopbackInputChainLooksManaged(out) {
+			// Already exactly the chain this package writes.
+			return false, nil
 		}
-		// The chain already existed; this call created nothing.
-		return false, nil
+		// The chain exists under a name only this package creates, but its
+		// contents are not what this version writes. That is what an UPGRADE
+		// looks like: a previous release's receiver gate, correct for its own
+		// version and stale for this one. Refusing here dead-ends the install
+		// with no operator action that can clear it, and an install that
+		// cannot proceed is an install that gets worked around.
+		//
+		// Replacing it is also the safe outcome for the other case this
+		// branch sees, a tampered chain: the canonical rules overwrite it
+		// either way. The danger the strict matcher exists to stop is
+		// ACCEPTING a chain that is not ours, which still cannot happen here.
+		// `contain verify` keeps reporting a mismatch so the operator learns
+		// the live chain had drifted.
+		if err := replaceOwnedLoopbackInputChain(ctx, env); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if !strings.Contains(strings.ToLower(out), "no such file") {
 		return false, fmt.Errorf("list owned loopback receiver chain exit=%d: %s", code, oneLine(out))

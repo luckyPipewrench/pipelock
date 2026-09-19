@@ -410,12 +410,6 @@ func TestEnsureOwnedLoopbackInputChainFailsClosedOnInterruptedMigration(t *testi
 			outputOut: "chain output_filter { ct mark " + ownedLoopbackConntrackMark + " accept }",
 			wantErr:   "refusing a fail-open repair",
 		},
-		{
-			name:      "receiver chain present but unrecognizable",
-			chainOut:  "chain " + ownedLoopbackInputChain + " { type filter hook input priority filter; policy accept; }",
-			chainCode: 0,
-			wantErr:   "not recognizable",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1182,12 +1176,6 @@ func TestReloadReceiverChainQueryOutcomes(t *testing.T) {
 			code:    1,
 			wantErr: "list owned loopback receiver chain exit=1",
 		},
-		{
-			name:    "the chain exists but is not the managed one",
-			out:     "chain " + ownedLoopbackInputChain + " { type filter hook input priority filter; policy accept; ct mark 0x1 accept }",
-			code:    0,
-			wantErr: "not recognizable",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1241,5 +1229,70 @@ func TestOwnedLoopbackSliceIsTopLevel(t *testing.T) {
 	// rules name is never created by anything.
 	if !strings.Contains(renderOwnedLoopbackAnchorUnit(), "Slice="+ownedLoopbackSlice+"\n") {
 		t.Fatalf("anchor unit does not join %s:\n%s", ownedLoopbackSlice, renderOwnedLoopbackAnchorUnit())
+	}
+}
+
+// TestDriftedReceiverChainIsReplacedNotRefused pins the UPGRADE path. The
+// receiver chain carries a name only this package creates, so a chain that
+// does not match the current canonical contents is either a previous release's
+// gate or a tampered one. Both are replaced by the canonical rules in a single
+// nft transaction.
+//
+// Refusing instead dead-ends the install with no operator action that clears
+// it, which is how a security control ends up disabled rather than fixed.
+// Observed on a real host: after the owned slice was renamed, every subsequent
+// `contain install` failed at the nft step against the previous install's own
+// chain.
+func TestDriftedReceiverChainIsReplacedNotRefused(t *testing.T) {
+	t.Parallel()
+	env, _, _ := newFakeEnv(t)
+	env.ownedLoopback = true
+	env.nftRulesPath = filepath.Join(t.TempDir(), "containment.nft")
+
+	// A previous release's gate: right chain name, stale slice inside.
+	stale := "table inet " + defaultNFTTable + " {\n    chain " + ownedLoopbackInputChain + " {\n" +
+		"        type filter hook input priority filter; policy accept;\n" +
+		"        ct mark " + ownedLoopbackConntrackMark + " socket cgroupv2 level 1 \"pipelock-contained.slice\" accept\n" +
+		"        ct mark " + ownedLoopbackConntrackMark + " drop\n    }\n}\n"
+	if ownedLoopbackInputChainLooksManaged(stale) {
+		t.Fatal("the stale fixture matches the current chain; this test would prove nothing")
+	}
+
+	var loaded string
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != nftExecutable(env) {
+			return "", 0, nil
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "list") && strings.Contains(joined, ownedLoopbackInputChain):
+			return stale, 0, nil
+		case strings.Contains(joined, "-f"):
+			if body, err := os.ReadFile(filepath.Clean(env.nftRulesPath + ".owned-loopback-input-replace")); err == nil {
+				loaded = string(body)
+			}
+			return "", 0, nil
+		default:
+			return "chain output_filter { }", 0, nil
+		}
+	}
+
+	created, err := ensureOwnedLoopbackInputChain(context.Background(), env)
+	if err != nil {
+		t.Fatalf("a drifted receiver chain was refused instead of replaced: %v", err)
+	}
+	if !created {
+		t.Fatal("replacing the chain must report a mutation so rollback can undo it")
+	}
+	// The replacement must delete and recreate in ONE transaction, or the
+	// boundary is briefly live with no receiver-side check behind it.
+	if !strings.Contains(loaded, "delete chain inet "+defaultNFTTable+" "+ownedLoopbackInputChain) {
+		t.Fatalf("replacement did not delete the stale chain:\n%s", loaded)
+	}
+	if !ownedLoopbackInputChainLooksManaged(loaded) {
+		t.Fatalf("replacement did not load the canonical chain:\n%s", loaded)
+	}
+	if _, err := os.Stat(env.nftRulesPath + ".owned-loopback-input-replace"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement transaction file was left behind: %v", err)
 	}
 }

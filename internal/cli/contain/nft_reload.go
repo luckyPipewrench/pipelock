@@ -262,9 +262,13 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		case inputCode != 0:
 			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input)))
 		default:
-			// Present but not the chain this package wrote. Refuse rather than
-			// replace trust state an operator may own.
-			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is not recognizable; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+			// Present under a name only this package creates, but not the
+			// contents this version writes. The reload rewrites the managed
+			// rules anyway and already deletes and recreates this chain in the
+			// same transaction when it is live, so treat it as live and let
+			// the canonical rules replace it. Refusing instead would wedge
+			// every reload after an upgrade, including the boot-time one.
+			receiverChainLive = true
 		}
 		if out != "" && !receiverChainLive {
 			// A managed OUTPUT chain marks flows; without its receiver gate the

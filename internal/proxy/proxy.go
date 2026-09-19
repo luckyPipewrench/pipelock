@@ -483,7 +483,7 @@ func scriptTypeAttribute(attrs string) string {
 				vStart := i
 				for i < len(attrs) {
 					c := attrs[i]
-					if isHTMLWhitespace(c) || c == '/' || c == '"' || c == '\'' {
+					if isHTMLWhitespace(c) || c == '"' || c == '\'' {
 						break
 					}
 					i++
@@ -511,7 +511,9 @@ func isHTMLWhitespace(b byte) bool {
 
 // scriptAttrsFromStartRaw returns the attribute blob inside a <script ...>
 // start tag raw token (text between the tag name and the closing '>').
-func scriptAttrsFromStartRaw(raw string) string {
+// A trailing '/' is trimmed only when selfClosing (html.SelfClosingTagToken),
+// so an unquoted type value may keep its solidus.
+func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 	if len(raw) < 2 || raw[0] != '<' {
 		return ""
 	}
@@ -527,7 +529,7 @@ func scriptAttrsFromStartRaw(raw string) string {
 	if end > 0 && raw[end-1] == '>' {
 		end--
 	}
-	if end > i && raw[end-1] == '/' {
+	if selfClosing && end > i && raw[end-1] == '/' {
 		end--
 	}
 	if end < i {
@@ -541,8 +543,9 @@ func scriptAttrsFromStartRaw(raw string) string {
 // script-data escaped, and script-data double-escaped end-tag rules apply
 // (a nested <!--<script></script>DIRECTIVE</script> keeps DIRECTIVE inside
 // the element). Markup-like text in HTML comments or attribute values is not
-// treated as a real start tag. Unclosed scripts fail closed: matching stops
-// and the partial element is omitted.
+// treated as a real start tag. Unclosed scripts fail closed: the partial
+// element is retained through EOF so its body is still classified
+// (executable MIME omitted; data scanned). Matching then stops.
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
@@ -564,7 +567,7 @@ func findScriptElements(doc string) []scriptElement {
 		if tok.Data != "script" {
 			continue
 		}
-		attrs := scriptAttrsFromStartRaw(raw)
+		attrs := scriptAttrsFromStartRaw(raw, tt == html.SelfClosingTagToken)
 		elemStart := tokenStart
 		bodyStart := tokenEnd
 
@@ -574,7 +577,19 @@ func findScriptElements(doc string) []scriptElement {
 		for {
 			tt2 := z.Next()
 			if tt2 == html.ErrorToken {
-				// Unclosed script: omit it and stop (fail closed).
+				// Unclosed script: retain through EOF (fail closed) so a
+				// data-script body is still scanned. extractHiddenContent
+				// continues to omit executable MIME.
+				bodyEnd = len(doc)
+				elemEnd = len(doc)
+				out = append(out, scriptElement{
+					attrs:     attrs,
+					body:      doc[bodyStart:bodyEnd],
+					bodyStart: bodyStart,
+					bodyEnd:   bodyEnd,
+					elemStart: elemStart,
+					elemEnd:   elemEnd,
+				})
 				return out
 			}
 			raw2 := string(z.Raw())

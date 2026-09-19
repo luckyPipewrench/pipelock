@@ -3300,6 +3300,17 @@ func replaceWithBlockReason(resp *http.Response, reason string) {
 	if state := reverseResponseReceiptStateFrom(resp); state != nil {
 		state.responseBlocked = true
 	}
+	// Close the upstream body before dropping the reference to it. Several
+	// block paths refuse a response whose body was only partly read - a scan
+	// failure, a bounded size-exempt read, a compressed body - and overwriting
+	// resp.Body there leaves the upstream connection open until it times out,
+	// because the transport only reclaims a connection whose body reached EOF
+	// or was closed. Doing it here covers every block path at once instead of
+	// relying on each one to remember. Paths that already closed pass a body
+	// that is closed or a NopCloser, and a second Close on either is harmless.
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",
 		Blocked:     true,

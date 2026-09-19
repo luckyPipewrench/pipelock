@@ -180,7 +180,19 @@ func TestReverseCoreFloorBlocksSSEWithEmptyActions(t *testing.T) {
 
 	resp := testGet(t, proxy.URL+"/events")
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+
+	// Same three-part assertion as TestReverseCoreFloorBlocksSSEWhenParentDisabled
+	// above, for the same reason: requiring only that the payload is absent is
+	// also satisfied by an unrelated proxy error or a truncation right after the
+	// clean event. Pin the opening status and the mid-flight termination too, so
+	// the only way this passes is the floor cutting the stream at the payload.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the stream to open with 200 before the floor terminates it, got %d", resp.StatusCode)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("expected the blocked stream to terminate the body read, got a clean EOF with body %q", body)
+	}
 	if !strings.Contains(string(body), cleanEvent) {
 		t.Fatalf("the clean control event never reached the client, so this case proves nothing about the floor: %q", body)
 	}

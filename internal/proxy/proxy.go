@@ -30,6 +30,8 @@ import (
 	"time"
 
 	readability "github.com/go-shiori/go-readability"
+	"golang.org/x/net/html"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -507,200 +509,103 @@ func isHTMLWhitespace(b byte) bool {
 	}
 }
 
-// isHTMLTagNameStart reports whether b may begin an HTML tag name (ASCII
-// letter) or an end-tag slash. Non-tag '<' (comparisons, generics text) must
-// not enter skipHTMLTagEnd.
-func isHTMLTagNameStart(b byte) bool {
-	return b == '/' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-// scriptTagNameBoundary reports whether b may follow the letters of a
-// "script" tag name in HTML (start or end tag).
-func scriptTagNameBoundary(b byte) bool {
-	return isHTMLWhitespace(b) || b == '/' || b == '>'
-}
-
-// skipHTMLTagEnd starts at pos (byte after '<') and returns the index after
-// the closing '>' of that tag, respecting quoted attribute values. If no
-// closing '>' is found, returns len(html). Callers must ensure the byte at
-// pos begins a real tag name (ASCII letter or '/') before invoking this;
-// otherwise a stray '<' (e.g. "1 < 2") can swallow a later real tag.
-func skipHTMLTagEnd(html string, pos int) int {
-	inQuote := byte(0)
-	for i := pos; i < len(html); i++ {
-		c := html[i]
-		if inQuote != 0 {
-			if c == inQuote {
-				inQuote = 0
-			}
-			continue
-		}
-		switch c {
-		case '"', '\'':
-			inQuote = c
-		case '>':
-			return i + 1
-		}
+// scriptAttrsFromStartRaw returns the attribute blob inside a <script ...>
+// start tag raw token (text between the tag name and the closing '>').
+func scriptAttrsFromStartRaw(raw string) string {
+	if len(raw) < 2 || raw[0] != '<' {
+		return ""
 	}
-	return len(html)
-}
-
-// findScriptStartAfter locates a real <script ...> start tag beginning at or
-// after from. Markup-like text inside HTML comments or quoted attribute values
-// of other tags is ignored. lower must be asciiToLower(html) (same length).
-// Returns elemStart, attrs (text between tag name and closing '>'), bodyStart,
-// and ok.
-func findScriptStartAfter(html, lower string, from int) (elemStart, bodyStart int, attrs string, ok bool) {
-	i := from
-	for i < len(html) {
-		if html[i] != '<' {
-			i++
-			continue
+	i := 1
+	for i < len(raw) {
+		c := raw[i]
+		if isHTMLWhitespace(c) || c == '/' || c == '>' {
+			break
 		}
-		// HTML comment: skip through --> so nested "<script" is not a start.
-		if i+3 < len(html) && html[i+1] == '!' && html[i+2] == '-' && html[i+3] == '-' {
-			j := i + 4
-			for j+2 < len(html) {
-				if html[j] == '-' && html[j+1] == '-' && html[j+2] == '>' {
-					i = j + 3
-					break
-				}
-				j++
-			}
-			if j+2 >= len(html) {
-				return 0, 0, "", false
-			}
-			continue
-		}
-		namePos := i + 1
-		if namePos >= len(html) || !isHTMLTagNameStart(html[namePos]) {
-			// Not a tag ('1 < 2', generics text, etc.): treat '<' as text.
-			i++
-			continue
-		}
-		if html[namePos] == '/' {
-			// End tag of something else — skip quote-aware.
-			i = skipHTMLTagEnd(html, namePos)
-			continue
-		}
-		// Case-insensitive "script" via length-preserving ASCII fold.
-		const scriptName = "script"
-		if namePos+len(scriptName) <= len(lower) &&
-			lower[namePos:namePos+len(scriptName)] == scriptName {
-			afterName := namePos + len(scriptName)
-			if afterName == len(html) || scriptTagNameBoundary(html[afterName]) {
-				inQuote := byte(0)
-				j := afterName
-				for j < len(html) {
-					c := html[j]
-					if inQuote != 0 {
-						if c == inQuote {
-							inQuote = 0
-						}
-						j++
-						continue
-					}
-					switch c {
-					case '"', '\'':
-						inQuote = c
-						j++
-					case '>':
-						attrs = html[afterName:j]
-						return i, j + 1, attrs, true
-					default:
-						j++
-					}
-				}
-				// Truncated start tag: stop (fail closed — no body extracted).
-				return 0, 0, "", false
-			}
-		}
-		// Non-script tag (or lookalike): skip through '>' so attribute values
-		// containing the characters <script are not treated as starts.
-		i = skipHTMLTagEnd(html, namePos)
+		i++
 	}
-	return 0, 0, "", false
-}
-
-// findScriptEndAfter finds the end of a script element's body (index of
-// '</script>') starting at bodyStart. lower must be asciiToLower(html).
-// Returns bodyEnd (start of end tag) and elemEnd (after end tag), or ok=false
-// if unclosed. Accepts HTML-valid closers with ignored attributes
-// (</script foo>) by scanning quote-aware to the first unquoted '>'.
-func findScriptEndAfter(html, lower string, bodyStart int) (bodyEnd, elemEnd int, ok bool) {
-	search := bodyStart
-	for {
-		idx := strings.Index(lower[search:], "</script")
-		if idx < 0 {
-			return 0, 0, false
-		}
-		endName := search + idx
-		afterName := endName + len("</script")
-		if afterName < len(html) && !scriptTagNameBoundary(html[afterName]) {
-			search = afterName
-			continue
-		}
-		// After optional whitespace / '/', scan quote-aware to first '>'.
-		// Ambiguous closers (attrs, form-feed) still terminate rather than
-		// dropping a following data-script body (fail closed for scanning).
-		i := afterName
-		for i < len(html) && isHTMLWhitespace(html[i]) {
-			i++
-		}
-		if i < len(html) && html[i] == '/' {
-			i++
-		}
-		inQuote := byte(0)
-		for i < len(html) {
-			c := html[i]
-			if inQuote != 0 {
-				if c == inQuote {
-					inQuote = 0
-				}
-				i++
-				continue
-			}
-			switch c {
-			case '"', '\'':
-				inQuote = c
-				i++
-			case '>':
-				return endName, i + 1, true
-			default:
-				i++
-			}
-		}
-		// Truncated end tag: fail closed — no further scripts matched.
-		return 0, 0, false
+	end := len(raw)
+	if end > 0 && raw[end-1] == '>' {
+		end--
 	}
+	if end > i && raw[end-1] == '/' {
+		end--
+	}
+	if end < i {
+		return ""
+	}
+	return raw[i:end]
 }
 
 // findScriptElements returns every well-formed <script>...</script> pair.
-// ASCII-folds the document once for case-insensitive tag matching (length-
-// preserving). Start tags ignore comment / quoted-attr decoys.
-func findScriptElements(html string) []scriptElement {
-	lower := asciiToLower(html)
+// Boundaries join golang.org/x/net/html.Tokenizer so WHATWG script-data,
+// script-data escaped, and script-data double-escaped end-tag rules apply
+// (a nested <!--<script></script>DIRECTIVE</script> keeps DIRECTIVE inside
+// the element). Markup-like text in HTML comments or attribute values is not
+// treated as a real start tag. Unclosed scripts fail closed: matching stops
+// and the partial element is omitted.
+func findScriptElements(doc string) []scriptElement {
+	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
-	from := 0
+	offset := 0
 	for {
-		elemStart, bodyStart, attrs, ok := findScriptStartAfter(html, lower, from)
-		if !ok {
+		tt := z.Next()
+		if tt == html.ErrorToken {
 			return out
 		}
-		bodyEnd, elemEnd, ok := findScriptEndAfter(html, lower, bodyStart)
-		if !ok {
-			// Unclosed script: stop matching further (matches prior regex fail-closed).
+		raw := string(z.Raw())
+		tokenStart := offset
+		tokenEnd := offset + len(raw)
+		offset = tokenEnd
+
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		tok := z.Token()
+		if tok.Data != "script" {
+			continue
+		}
+		attrs := scriptAttrsFromStartRaw(raw)
+		elemStart := tokenStart
+		bodyStart := tokenEnd
+
+		// Self-closing raw tokens still expect a body/end in the tree builder;
+		// collect until </script> so content after <script .../> is not dropped.
+		bodyEnd := bodyStart
+		elemEnd := bodyStart
+		foundEnd := false
+		for {
+			tt2 := z.Next()
+			if tt2 == html.ErrorToken {
+				// Unclosed script: omit it and stop (fail closed).
+				return out
+			}
+			raw2 := string(z.Raw())
+			tStart := offset
+			tEnd := offset + len(raw2)
+			offset = tEnd
+			if tt2 == html.EndTagToken {
+				tok2 := z.Token()
+				if tok2.Data == "script" {
+					bodyEnd = tStart
+					elemEnd = tEnd
+					foundEnd = true
+					break
+				}
+			}
+			// Keep extending body through non-end tokens (normally one Text).
+			bodyEnd = tEnd
+		}
+		if !foundEnd {
 			return out
 		}
 		out = append(out, scriptElement{
 			attrs:     attrs,
-			body:      html[bodyStart:bodyEnd],
+			body:      doc[bodyStart:bodyEnd],
 			bodyStart: bodyStart,
 			bodyEnd:   bodyEnd,
 			elemStart: elemStart,
 			elemEnd:   elemEnd,
 		})
-		from = elemEnd
 	}
 }
 

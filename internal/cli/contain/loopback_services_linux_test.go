@@ -8,7 +8,6 @@ package contain
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -16,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
@@ -109,6 +110,7 @@ func testLoopbackServiceSameUIDCompletionInNamespaceHelper(t *testing.T) {
 	loadNamespaceRules(t, paired)
 	namespaceAssertCompletion(t, network, listener.Addr().String())
 	if network == "tcp4" {
+		namespaceAssertCompletionFromAlternateLoopbackAddress(t, network, listener.Addr().String())
 		namespaceAssertNewSourcePortRejected(t, host, servicePort)
 	}
 }
@@ -166,21 +168,40 @@ func namespaceListener(t *testing.T, network, host string) net.Listener {
 }
 
 func namespaceLoopbackRules(host string, servicePort int, forward, reply bool) string {
-	daddrKeyword := "ip daddr"
-	if host == "::1" {
-		daddrKeyword = "ip6 daddr"
+	rules := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: 1,
+		ProxyUID:    2,
+		AgentUID:    0,
+		ProxyPort:   1,
+		Table:       loopbackNamespaceTable,
+		Chain:       "output_filter",
+		LoopbackServices: []config.ContainmentLoopbackService{{
+			Host: host,
+			Port: servicePort,
+		}},
+	})
+	serviceRules := nftLoopbackAcceptLines(0, host, servicePort)
+	forwardRule, replyRule, ok := strings.Cut(serviceRules, "\n")
+	if !ok {
+		panic("declared loopback renderer omitted reply rule")
 	}
-	var rules strings.Builder
-	fmt.Fprintf(&rules, "table inet %s {\n", loopbackNamespaceTable)
-	rules.WriteString("  chain output_filter { type filter hook output priority filter; policy accept;\n")
-	if forward {
-		fmt.Fprintf(&rules, "    meta skuid 0 %s %s tcp dport %d accept\n", daddrKeyword, host, servicePort)
+	if !forward {
+		rules = namespaceWithoutRenderedRule(rules, forwardRule)
 	}
-	if reply {
-		fmt.Fprintf(&rules, "    meta skuid 0 oifname \"lo\" %s %s tcp sport %d ct state established ct direction reply accept\n", daddrKeyword, host, servicePort)
+	if !reply {
+		rules = namespaceWithoutRenderedRule(rules, replyRule)
 	}
-	rules.WriteString("    meta skuid 0 counter drop\n  }\n}\n")
-	return rules.String()
+	return rules
+}
+
+func namespaceWithoutRenderedRule(rules, renderedRule string) string {
+	lines := strings.Split(rules, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == strings.TrimSpace(renderedRule) {
+			return strings.Join(append(lines[:i], lines[i+1:]...), "\n")
+		}
+	}
+	panic("declared loopback renderer rule missing from managed ruleset")
 }
 
 func loadNamespaceRules(t *testing.T, rules string) {
@@ -220,6 +241,22 @@ func namespaceAssertCompletion(t *testing.T, network, address string) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 	if err != nil {
 		t.Fatalf("same-UID loopback dial did not complete: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+}
+
+// namespaceAssertCompletionFromAlternateLoopbackAddress proves the reply rule
+// matches the declared service's source address. A connection from 127.0.0.2
+// to a service declared at 127.0.0.1 has a SYN-ACK source of 127.0.0.1 and a
+// destination of 127.0.0.2, so a reply daddr match would time out here.
+func namespaceAssertCompletionFromAlternateLoopbackAddress(t *testing.T, network, address string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), loopbackNamespaceTimeout)
+	defer cancel()
+	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.2")}}
+	conn, err := dialer.DialContext(ctx, network, address)
+	if err != nil {
+		t.Fatalf("alternate-loopback source dial did not complete: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 }

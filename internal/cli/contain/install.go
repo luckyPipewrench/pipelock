@@ -2508,15 +2508,16 @@ func operatorUIDFromEnv(env *installEnv) (int, error) {
 
 // nftLoopbackAcceptLines renders the complete forward/reply pair for one
 // declared agent-reachable loopback service. A service that shares the agent
-// UID needs its SYN-ACK to pass the OUTPUT chain too. The reply rule is narrow:
-// loopback only, the declared destination, source port, established state, and
+// UID needs its SYN-ACK to pass the OUTPUT chain too. Both rules are narrow:
+// loopback only, with the forward rule matching the declared destination and
+// the reply rule matching the declared source, source port, established state, and
 // reply direction.
 func nftLoopbackAcceptLines(agentUID int, host string, port int) string {
-	daddrKeyword := "ip daddr"
+	daddrKeyword, saddrKeyword := "ip daddr", "ip saddr"
 	if host == "::1" {
-		daddrKeyword = "ip6 daddr"
+		daddrKeyword, saddrKeyword = "ip6 daddr", "ip6 saddr"
 	}
-	return fmt.Sprintf("\t        meta skuid %d %s %s tcp dport %d accept\n\t        meta skuid %d oifname \"lo\" %s %s tcp sport %d ct state established ct direction reply accept\n", agentUID, daddrKeyword, host, port, agentUID, daddrKeyword, host, port)
+	return fmt.Sprintf("\t        meta skuid %d oifname \"lo\" %s %s tcp dport %d accept\n\t        meta skuid %d oifname \"lo\" %s %s tcp sport %d ct state established ct direction reply accept\n", agentUID, daddrKeyword, host, port, agentUID, saddrKeyword, host, port)
 }
 
 // nftRuleOptions carries renderNFTRules' inputs once the addition of declared

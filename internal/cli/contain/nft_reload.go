@@ -281,9 +281,8 @@ func partialManagedNFTBlockLength(rules []nftRuleWithHandle, i, loopbackStart, a
 	tailStart := loopbackStart + 1
 	for tailStart < len(rules) {
 		line := rules[tailStart].line
-		if lineHasAgentLoopbackAllowAnyPortAnyHost(line, agentUID) {
-			fields := nftLineFields(line)
-			declared[fields[5]+"/"+fields[8]] = true
+		if host, port, ok := agentLoopbackAllowHostPort(line, agentUID, false); ok {
+			declared[host+"/"+strconv.Itoa(port)] = true
 			tailStart++
 			continue
 		}
@@ -323,7 +322,8 @@ func agentLoopbackReplyHostPortKey(line string, agentUID int) (string, bool) {
 			if err != nil || !isTCPPort(field) {
 				continue
 			}
-			if lineHasAgentLoopbackReplyForHost(line, agentUID, host, port) {
+			if lineHasAgentLoopbackReplyForHost(line, agentUID, host, port) ||
+				lineHasLegacyAgentLoopbackReplyForHost(line, agentUID, host, port) {
 				return host + "/" + field, true
 			}
 		}
@@ -575,15 +575,35 @@ func legacyManagedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, prox
 }
 
 func lineHasAgentLoopbackReplyForForwardLine(forward, reply string, agentUID int) bool {
-	fields := nftLineFields(forward)
-	if !lineHasAgentLoopbackAllowAnyPortAnyHost(forward, agentUID) {
+	host, port, ok := agentLoopbackAllowHostPort(forward, agentUID, true)
+	return ok && lineHasAgentLoopbackReplyForHost(reply, agentUID, host, port)
+}
+
+// lineHasLegacyAgentLoopbackReplyForHost recognizes the reply shape emitted
+// before declared-service replies matched their source address. It is used only
+// by partial-block recovery so reload can remove a malformed managed block;
+// verification never treats this legacy rule as a healthy declared reply.
+func lineHasLegacyAgentLoopbackReplyForHost(line string, agentUID int, host string, port int) bool {
+	fields := nftLineFields(line)
+	daddrKeyword := []string{"ip", "daddr"}
+	if host == "::1" {
+		daddrKeyword = []string{"ip6", "daddr"}
+	}
+	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, daddrKeyword...)
+	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state")
+	if len(fields) < len(want)+5 {
 		return false
 	}
-	port, err := strconv.Atoi(fields[8])
-	if err != nil {
+	for i, field := range want {
+		if fields[i] != field {
+			return false
+		}
+	}
+	tail := fields[len(want):]
+	if !nftEstablishedState(tail[0]) || tail[1] != "ct" || tail[2] != "direction" || !nftReplyDirection(tail[3]) || tail[4] != "accept" {
 		return false
 	}
-	return lineHasAgentLoopbackReplyForHost(reply, agentUID, fields[5], port)
+	return nftRuleTailIsCommentOnly(tail[5:])
 }
 
 func nftRulesWithHandles(live string) []nftRuleWithHandle {

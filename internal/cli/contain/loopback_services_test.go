@@ -52,8 +52,8 @@ func TestRenderNFTRulesWithLoopbackServicesGolden(t *testing.T) {
 	one := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
 		loopbackTestService(9200),
 	})
-	wantOnePair := "\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept\n"
+	wantOnePair := "\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp dport 9200 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept\n"
 	if !strings.Contains(one, wantOnePair) {
 		t.Fatalf("one declared service: missing complete pair %q in:\n%s", wantOnePair, one)
 	}
@@ -69,8 +69,8 @@ func TestRenderNFTRulesWithLoopbackServicesGolden(t *testing.T) {
 		loopbackTestService(9201),
 	})
 	wantTwoPairs := wantOnePair +
-		"\t        meta skuid 966 ip daddr 127.0.0.1 tcp dport 9201 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp sport 9201 ct state established ct direction reply accept\n"
+		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp dport 9201 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip saddr 127.0.0.1 tcp sport 9201 ct state established ct direction reply accept\n"
 	if !strings.Contains(two, wantTwoPairs) {
 		t.Fatalf("two declared services: missing contiguous pairs in:\n%s", two)
 	}
@@ -83,19 +83,19 @@ func TestRenderNFTRulesWithLoopbackServicesIPv6(t *testing.T) {
 	svc := loopbackTestService(9200)
 	svc.Host = "::1"
 	body := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{svc})
-	want := "\t        meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip6 daddr ::1 tcp sport 9200 ct state established ct direction reply accept\n"
+	want := "\t        meta skuid 966 oifname \"lo\" ip6 daddr ::1 tcp dport 9200 accept\n" +
+		"\t        meta skuid 966 oifname \"lo\" ip6 saddr ::1 tcp sport 9200 ct state established ct direction reply accept\n"
 	if !strings.Contains(body, want) {
 		t.Fatalf("missing ipv6 declared pair in:\n%s", body)
 	}
 }
 
 func loopbackServiceRuleLine(port int, handle int) string {
-	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp dport ` + itoa(port) + ` accept # handle ` + itoa(handle)
 }
 
 func loopbackServiceReplyRuleLine(port int, handle int) string {
-	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` oifname "lo" ip daddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
+	return `meta skuid ` + itoa(loopbackTestAgentUID) + ` oifname "lo" ip saddr 127.0.0.1 tcp sport ` + itoa(port) + ` ct state established ct direction reply accept # handle ` + itoa(handle)
 }
 
 // numericNftStateListing mirrors the normalized connection-state spelling
@@ -120,6 +120,34 @@ func managedBlockWithLoopbackServicePairs(first int, ports []int) (string, int) 
 		lines = append(lines, loopbackServiceRuleLine(port, handle))
 		handle++
 		lines = append(lines, loopbackServiceReplyRuleLine(port, handle))
+		handle++
+	}
+	lines = append(lines,
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle `+itoa(handle))
+	handle++
+	lines = append(lines,
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle `+itoa(handle))
+	handle++
+	lines = append(lines,
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle `+itoa(handle))
+	return strings.Join(lines, "\n"), handle + 1
+}
+
+// historicalManagedBlockWithLoopbackServicePairs mirrors the pair emitted
+// before the forward interface and reply source-address corrections. Reload
+// must recognize this block only long enough to replace it.
+func historicalManagedBlockWithLoopbackServicePairs(first int, ports []int) (string, int) {
+	handle := first
+	lines := []string{`meta skuid 1000 accept # handle ` + itoa(handle)}
+	handle++
+	lines = append(lines, `meta skuid 967 accept # handle `+itoa(handle))
+	handle++
+	lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle `+itoa(handle))
+	handle++
+	for _, port := range ports {
+		lines = append(lines, `meta skuid 966 ip daddr 127.0.0.1 tcp dport `+itoa(port)+` accept # handle `+itoa(handle))
+		handle++
+		lines = append(lines, `meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport `+itoa(port)+` ct state established ct direction reply accept # handle `+itoa(handle))
 		handle++
 	}
 	lines = append(lines,
@@ -206,6 +234,27 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("handle %d missing from recognized block: %v", want, handles)
+			}
+		}
+	})
+
+	t.Run("previous malformed pair is recovered", func(t *testing.T) {
+		block, _ := historicalManagedBlockWithLoopbackServicePairs(20, []int{9200})
+		live := strings.Join([]string{
+			`table inet pipelock_containment {`,
+			`  chain output_filter { type filter hook output priority filter; policy accept;`,
+			block,
+			`  }`,
+			`}`,
+		}, "\n")
+		handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+		if len(handles) != 8 {
+			t.Fatalf("historical block: got %d handles, want 8: %v", len(handles), handles)
+		}
+		script := renderNFTManagedChainReloadScript(live, RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)}), defaultNFTTable, defaultNFTChain, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
+		for _, handle := range handles {
+			if !strings.Contains(script, "handle "+itoa(handle)) {
+				t.Fatalf("reload did not delete historical handle %d:\n%s", handle, script)
 			}
 		}
 	})
@@ -448,8 +497,8 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	t.Parallel()
 	lines := []string{
-		"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept",
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
+		`meta skuid 966 oifname "lo" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`,
 		"meta skuid 966 counter drop",
 	}
 	if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
@@ -464,15 +513,21 @@ func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
 	if !chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("a complete declared pair before the catch-all drop must be recognized")
 	}
+	if lineHasAgentLoopbackAllowForHost("meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept", loopbackTestAgentUID, "127.0.0.1", 9200) {
+		t.Fatal("an interface-unrestricted declared forward rule must not be recognized")
+	}
+	if lineHasAgentLoopbackReplyForHost(`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`, loopbackTestAgentUID, "127.0.0.1", 9200) {
+		t.Fatal("a destination-address reply rule must not be recognized")
+	}
 
 	afterDrop := []string{
 		"meta skuid 966 counter drop",
-		"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept",
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
 	}
 	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(afterDrop, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("an accept appearing AFTER the catch-all drop is unreachable and must not count")
 	}
-	if chainLinesHaveDeclaredLoopbackReplyBeforeDrop([]string{"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept", "meta skuid 966 counter drop"}, loopbackTestAgentUID, "127.0.0.1", 9200) {
+	if chainLinesHaveDeclaredLoopbackReplyBeforeDrop([]string{`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`, "meta skuid 966 counter drop"}, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("a missing reply half must not be accepted as a complete declared pair")
 	}
 }

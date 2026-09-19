@@ -1962,19 +1962,40 @@ func lineHasAgentProxyLoopbackAllow(line string, agentUID, port int) bool {
 // replacing it -- the exact trap declaring loopback services exists to
 // close.
 func lineHasAgentLoopbackAllowAnyPortAnyHost(line string, agentUID int) bool {
+	_, _, ok := agentLoopbackAllowHostPort(line, agentUID, false)
+	return ok
+}
+
+// agentLoopbackAllowHostPort extracts a managed loopback allow. The optional
+// interface requirement distinguishes current declared-service rules from the
+// older interface-unrestricted form that reload must still recognize to delete.
+func agentLoopbackAllowHostPort(line string, agentUID int, requireLoopbackInterface bool) (string, int, bool) {
 	fields := nftLineFields(line)
-	const wantLen = 10
-	if len(fields) < wantLen {
-		return false
+	const prefixLen = 3
+	if len(fields) < prefixLen || fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) {
+		return "", 0, false
 	}
-	daddrKeyword, host := fields[3], fields[5]
-	validHostPair := (daddrKeyword == "ip" && host == "127.0.0.1") || (daddrKeyword == "ip6" && host == "::1")
-	if fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
-		fields[4] != "daddr" || !validHostPair ||
-		fields[6] != "tcp" || fields[7] != "dport" || !isTCPPort(fields[8]) || fields[9] != "accept" {
-		return false
+	i := prefixLen
+	if len(fields) >= i+2 && fields[i] == "oifname" && fields[i+1] == `"lo"` {
+		i += 2
+	} else if requireLoopbackInterface {
+		return "", 0, false
 	}
-	return nftRuleTailIsCommentOnly(fields[wantLen:])
+	if len(fields) < i+7 {
+		return "", 0, false
+	}
+	host := fields[i+2]
+	validHostPair := (fields[i] == "ip" && fields[i+1] == "daddr" && host == "127.0.0.1") ||
+		(fields[i] == "ip6" && fields[i+1] == "daddr" && host == "::1")
+	if !validHostPair || fields[i+3] != "tcp" || fields[i+4] != "dport" || !isTCPPort(fields[i+5]) || fields[i+6] != "accept" ||
+		!nftRuleTailIsCommentOnly(fields[i+7:]) {
+		return "", 0, false
+	}
+	port, err := strconv.Atoi(fields[i+5])
+	if err != nil {
+		return "", 0, false
+	}
+	return host, port, true
 }
 
 func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
@@ -2072,22 +2093,8 @@ func declaredLoopbackPairProblem(lines []string, agentUID int, svc config.Contai
 // ever needs that one case; this is the general form declared loopback
 // services need.
 func lineHasAgentLoopbackAllowForHost(line string, agentUID int, host string, port int) bool {
-	fields := nftLineFields(line)
-	daddrKeyword := []string{"ip", "daddr"}
-	if host == "::1" {
-		daddrKeyword = []string{"ip6", "daddr"}
-	}
-	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID)}, daddrKeyword...)
-	want = append(want, host, "tcp", "dport", strconv.Itoa(port), "accept")
-	if len(fields) < len(want) {
-		return false
-	}
-	for i, field := range want {
-		if fields[i] != field {
-			return false
-		}
-	}
-	return nftRuleTailIsCommentOnly(fields[len(want):])
+	gotHost, gotPort, ok := agentLoopbackAllowHostPort(line, agentUID, true)
+	return ok && gotHost == host && gotPort == port
 }
 
 // lineHasAgentLoopbackReplyForHost matches the exact managed reply half of a
@@ -2096,11 +2103,11 @@ func lineHasAgentLoopbackAllowForHost(line string, agentUID int, host string, po
 // an unrelated hand-written reply rule as a declared service.
 func lineHasAgentLoopbackReplyForHost(line string, agentUID int, host string, port int) bool {
 	fields := nftLineFields(line)
-	daddrKeyword := []string{"ip", "daddr"}
+	saddrKeyword := []string{"ip", "saddr"}
 	if host == "::1" {
-		daddrKeyword = []string{"ip6", "daddr"}
+		saddrKeyword = []string{"ip6", "saddr"}
 	}
-	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, daddrKeyword...)
+	want := append([]string{"meta", "skuid", strconv.Itoa(agentUID), "oifname", `"lo"`}, saddrKeyword...)
 	want = append(want, host, "tcp", "sport", strconv.Itoa(port), "ct", "state")
 	if len(fields) < len(want)+5 {
 		return false

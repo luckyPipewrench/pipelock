@@ -161,15 +161,29 @@ func TestReverseCoreFloorBlocksSSEWithEmptyActions(t *testing.T) {
 	cfg.ResponseScanning.Action = ""
 	cfg.ResponseScanning.SSEStreaming.Action = ""
 
+	// The clean event is the positive control and it goes FIRST. Asserting
+	// only that the payload is absent would pass if the upstream never ran,
+	// if the handler errored, or if the request failed for any unrelated
+	// reason. Requiring the earlier event to arrive proves the stream was
+	// live and carrying data, so the payload's absence is the floor cutting
+	// the stream off rather than nothing having happened.
+	const cleanEvent = "reverse core floor sse control"
 	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+cleanEvent+"\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		_, _ = io.WriteString(w, "data: "+corePayloadForFloor+"\n\n")
 	})
 
 	resp := testGet(t, proxy.URL+"/events")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), cleanEvent) {
+		t.Fatalf("the clean control event never reached the client, so this case proves nothing about the floor: %q", body)
+	}
 	if strings.Contains(string(body), corePayloadForFloor) {
 		t.Fatalf("core injection reached the client on an SSE stream with both actions empty: %q", body)
 	}

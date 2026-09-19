@@ -568,11 +568,9 @@ func findScriptElements(doc string) []scriptElement {
 		elemStart := tokenStart
 		bodyStart := tokenEnd
 
-		// Self-closing raw tokens still expect a body/end in the tree builder;
-		// collect until </script> so content after <script .../> is not dropped.
-		bodyEnd := bodyStart
-		elemEnd := bodyStart
-		foundEnd := false
+		// Collect until </script>. Assign body/elem ends only when the end tag
+		// is found (avoids wastedassign on intermediate updates).
+		var bodyEnd, elemEnd int
 		for {
 			tt2 := z.Next()
 			if tt2 == html.ErrorToken {
@@ -583,20 +581,16 @@ func findScriptElements(doc string) []scriptElement {
 			tStart := offset
 			tEnd := offset + len(raw2)
 			offset = tEnd
-			if tt2 == html.EndTagToken {
-				tok2 := z.Token()
-				if tok2.Data == "script" {
-					bodyEnd = tStart
-					elemEnd = tEnd
-					foundEnd = true
-					break
-				}
+			if tt2 != html.EndTagToken {
+				continue
 			}
-			// Keep extending body through non-end tokens (normally one Text).
-			bodyEnd = tEnd
-		}
-		if !foundEnd {
-			return out
+			tok2 := z.Token()
+			if tok2.Data != "script" {
+				continue
+			}
+			bodyEnd = tStart
+			elemEnd = tEnd
+			break
 		}
 		out = append(out, scriptElement{
 			attrs:     attrs,

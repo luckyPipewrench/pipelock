@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1698,28 +1699,49 @@ func stepExportPipelockCA() step {
 		desc: "export pipelock TLS-MITM CA to /etc/pipelock/ca.pem",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			wrote = false
-			if pathExists(env, env.caExportPath) {
-				return false, nil
-			}
-			// Run as pipelock-proxy so the CA lookup uses the running
-			// instance's data dir layout. The pipelock CLI writes the CA
-			// PEM to stdout via `tls show-ca` - there is no --output flag,
-			// so we capture stdout here and write the file in Go after a
-			// PEM-shape sanity check.
-			if err := exportPipelockCA(ctx, env); err != nil {
+			current, err := currentPipelockCA(ctx, env)
+			if err != nil {
 				return false, err
 			}
-			wrote = true
-			return true, nil
+			changed, err := backupAndWriteIfChanged(env, env.caExportPath, current, modeCAReadable)
+			if err != nil {
+				return false, fmt.Errorf("write current Pipelock CA export: %w", err)
+			}
+			// Everything below runs AFTER the file has already been mutated, so
+			// each failure must restore the previous export itself. Returning
+			// (false, err) here would leave the new bytes on disk and skip undo
+			// entirely, because runSteps only rolls back steps whose apply
+			// reported didApply. A failed install would then replace a good
+			// export with an unverified one -- the opposite of what this step
+			// exists to guarantee.
+			restore := func(cause error) (bool, error) {
+				if !changed {
+					return false, cause
+				}
+				if rerr := restoreBackup(env, env.caExportPath); rerr != nil {
+					return false, fmt.Errorf("%w (and restoring the previous export failed: %w; rerun `pipelock contain install` as root)", cause, rerr)
+				}
+				return false, cause
+			}
+			exported, err := env.readFile(env.caExportPath)
+			if err != nil {
+				return restore(fmt.Errorf("read exported Pipelock CA %s: %w", env.caExportPath, err))
+			}
+			verifiedCurrent, err := currentPipelockCA(ctx, env)
+			if err != nil {
+				return restore(fmt.Errorf("read current Pipelock CA after export: %w", err))
+			}
+			if !bytes.Equal(exported, verifiedCurrent) {
+				return restore(fmt.Errorf("exported Pipelock CA %s does not match the selected Pipelock CA", env.caExportPath))
+			}
+			wrote = changed
+			return changed, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
 			if !wrote {
 				return nil
 			}
-			if err := env.removeFile(env.caExportPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove %s: %w", env.caExportPath, err)
-			}
-			return nil
+			return restoreBackup(env, env.caExportPath)
 		},
 	}
 }

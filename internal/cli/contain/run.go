@@ -579,10 +579,13 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 		}
 	}
 
-	// Numbered above the verify probe range (allProbes tops out at 15 after the
-	// private-temp canary; the conditional workspace_access probe is 16) so
-	// these run-only checks never collide with a verify probe
-	// number operators may key off.
+	// Published numbers are a contract operators and dashboards key off, so a
+	// run-only check must never reuse a verify probe number. This comment used
+	// to be the only thing holding that invariant and it did not hold it: a
+	// verify probe was added at 18 while this file had already published 18.
+	// TestContainRunProbeNumbersDoNotCollideWithVerify now fails when the two
+	// sets overlap, so a new probe on either side cannot silently take a number
+	// the other already publishes.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
 	writeTextLine(out, probe{n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"}, status, detail)
 	if status != statusPass {

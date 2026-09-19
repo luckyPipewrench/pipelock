@@ -2908,6 +2908,14 @@ func probeCABundle(ctx context.Context, env *probeEnv) (string, string) {
 	if !bundleContainsCertificate(data, currentDER) {
 		return statusFail, fmt.Sprintf("%s does not contain the selected Pipelock CA (it has %d cert(s), including CN=%s); run `pipelock contain ca-refresh`", env.caBundlePath, count, pipelockCN)
 	}
+	// Presence of the current CA is not sufficient. A rotation that appended
+	// the new CA without removing the old one leaves BOTH trusted, so every
+	// contained client still accepts anything the retired CA signed. Requiring
+	// the current CA to be the ONLY Pipelock CA in the bundle is what makes a
+	// rotation actually retire the previous one.
+	if stale := stalePipelockCertsInBundle(data, currentDER); stale > 0 {
+		return statusFail, fmt.Sprintf("%s still contains %d retired Pipelock CA certificate(s) alongside the selected one, so contained clients keep trusting material the proxy no longer presents; run `pipelock contain ca-refresh`", env.caBundlePath, stale)
+	}
 	return statusPass, fmt.Sprintf("%d certs in bundle, including the selected Pipelock CA CN=%s (matched by certificate material, not subject name)", count, pipelockCN)
 }
 
@@ -2947,6 +2955,34 @@ func bundleContainsCertificate(bundle, wantDER []byte) bool {
 // scanPipelockCertCN walks a PEM blob and returns the total cert
 // count and the CN of the first certificate whose subject CN
 // contains "pipelock" (case-insensitive).
+
+// stalePipelockCertsInBundle counts Pipelock-issued certificates in the bundle
+// that are NOT the currently selected CA. Each one is a CA whose signatures
+// contained clients still accept after it should have been retired.
+func stalePipelockCertsInBundle(bundle, currentDER []byte) int {
+	stale := 0
+	rest := bundle
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return stale
+		}
+		if block.Type != "CERTIFICATE" || bytes.Equal(block.Bytes, currentDER) {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			// Unparseable entries are counted by the bundle parse above; this
+			// check only judges certificates it can read.
+			continue
+		}
+		if strings.Contains(strings.ToLower(cert.Subject.CommonName), "pipelock") {
+			stale++
+		}
+	}
+}
+
 func scanPipelockCertCN(data []byte) (int, string, error) {
 	var count int
 	var pipelockCN string

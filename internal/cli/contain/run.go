@@ -577,9 +577,9 @@ func warnCustomPostureOutput(stderr io.Writer, postureOutput, posturePath string
 // probe here is automatically covered instead of needing a second list kept in
 // step by hand. Published numbers are an operator- and dashboard-facing
 // identity: two different checks sharing one number cannot be told apart.
-var containRunOnlyProbes = map[int]string{
-	17: containRunPrivilegeProbe,
-	18: containRunToolProbe,
+var containRunOnlyProbes = map[int]probe{
+	17: {n: 17, name: containRunPrivilegeProbe, desc: "pipelock-agent cannot sudo back out"},
+	18: {n: 18, name: containRunToolProbe, desc: "requested tool is registered in tools.list"},
 }
 
 func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) ([]toolsListEntry, error) {
@@ -600,14 +600,14 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 	// sets overlap, so a new probe on either side cannot silently take a number
 	// the other already publishes.
 	status, detail := probeAgentPrivilegeEscapeDenied(ctx, env)
-	writeTextLine(out, probe{n: 17, name: containRunOnlyProbes[17], desc: "pipelock-agent cannot sudo back out"}, status, detail)
+	writeTextLine(out, containRunOnlyProbes[17], status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at %s: %s: %s", containRunPrivilegeProbe, status, detail))
 	}
 
 	entries, status, detail := probeRequestedToolRegistered(env, tool)
-	writeTextLine(out, probe{n: 18, name: containRunOnlyProbes[18], desc: "requested tool is registered in tools.list"}, status, detail)
+	writeTextLine(out, containRunOnlyProbes[18], status, detail)
 	if status != statusPass {
 		return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))

@@ -4447,8 +4447,20 @@ func TestContainRunProbeNumbersDoNotCollideWithVerify(t *testing.T) {
 	// the list looks maintained and silently is not.
 	runOnly := containRunOnlyProbes
 	for _, p := range allProbes() {
-		if name, clash := runOnly[p.n]; clash {
-			t.Fatalf("verify probe %d (%s) reuses a number `contain run` already publishes for %s; pick an unused number", p.n, p.name, name)
+		if runProbe, clash := runOnly[p.n]; clash {
+			t.Fatalf("verify probe %d (%s) reuses a number `contain run` already publishes for %s; pick an unused number", p.n, p.name, runProbe.name)
+		}
+	}
+
+	// The registry key IS the published number, so a record whose own n
+	// disagrees with its key would emit one number while the collision check
+	// tested another.
+	for number, runProbe := range runOnly {
+		if runProbe.n != number {
+			t.Fatalf("run-only registry key %d holds a probe published as %d", number, runProbe.n)
+		}
+		if runProbe.name == "" || runProbe.desc == "" {
+			t.Fatalf("run-only probe %d has empty metadata: %+v", number, runProbe)
 		}
 	}
 	// Positive control: the assertion above is only meaningful if these numbers
@@ -4526,5 +4538,39 @@ func TestProbeCurrentCAExportRejectsUndecodableInput(t *testing.T) {
 	status, detail := probeCurrentCAExport(context.Background(), env)
 	if status != statusFail || !strings.Contains(detail, "does not match the selected Pipelock CA") {
 		t.Fatalf("status=%q detail=%q; want a material mismatch failure", status, detail)
+	}
+}
+
+// TestProbeCABundleRejectsRetiredPipelockCA pins that presence of the current
+// CA is not enough. A rotation that appends the new CA without removing the
+// old one leaves BOTH in the bundle, and every contained client keeps
+// accepting anything the retired CA signed. The bundle is what
+// SSL_CERT_FILE, NODE_EXTRA_CA_CERTS and their siblings all point at, so a
+// retired CA left there is a trust path the proxy no longer controls.
+func TestProbeCABundleRejectsRetiredPipelockCA(t *testing.T) {
+	t.Parallel()
+	env := makeProbeEnv(t)
+	current := []byte(testPEMCA(t))
+	retired := makeFakeCertPEM(t, "Pipelock CA")
+
+	// Positive control: current CA plus an unrelated root must still pass, or
+	// the rejection below would prove nothing.
+	clean := append(append([]byte{}, current...), makeFakeCertPEM(t, "Some Other Root")...)
+	if err := os.WriteFile(env.caBundlePath, clean, 0o600); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	env.currentCA = func(context.Context, *probeEnv) ([]byte, error) { return current, nil }
+	if status, detail := probeCABundle(context.Background(), env); status != statusPass {
+		t.Fatalf("clean bundle rejected: %s %s", status, detail)
+	}
+
+	// The rotation that only appended: both CAs present.
+	both := append(append(append([]byte{}, current...), retired...), makeFakeCertPEM(t, "Some Other Root")...)
+	if err := os.WriteFile(env.caBundlePath, both, 0o600); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	status, detail := probeCABundle(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, "retired Pipelock CA") {
+		t.Fatalf("status=%q detail=%q; want a failure naming the retired CA left in the bundle", status, detail)
 	}
 }

@@ -4,6 +4,9 @@
 package cliutil
 
 import (
+	"errors"
+	"io/fs"
+	"slices"
 	"testing"
 	"testing/fstest"
 )
@@ -63,4 +66,83 @@ func TestDetectRunContextRuntimeMarkers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetectRunContextFilesystemErrors(t *testing.T) {
+	t.Parallel()
+	readFailure := errors.New("fixture cgroup read failure")
+	for _, tc := range []struct {
+		name           string
+		kubernetesHost string
+		files          fstest.MapFS
+		failures       map[string]error
+		want           string
+		wantOpened     []string
+	}{
+		{
+			name: "marker errors permit cgroup fallback",
+			files: fstest.MapFS{
+				"proc/1/cgroup": {Data: []byte("0::/machine.slice/libpod-example.scope\n")},
+			},
+			failures: map[string]error{
+				".dockerenv": fs.ErrPermission, "run/.containerenv": fs.ErrPermission,
+			},
+			want: RunContextContainer, wantOpened: []string{".dockerenv", "run/.containerenv", "proc/1/cgroup"},
+		},
+		{
+			name: "unreadable Docker marker permits Podman marker",
+			files: fstest.MapFS{
+				"run/.containerenv": {},
+			},
+			failures: map[string]error{".dockerenv": fs.ErrPermission, "proc/1/cgroup": readFailure},
+			want:     RunContextContainer, wantOpened: []string{".dockerenv", "run/.containerenv"},
+		},
+		{
+			name:     "missing markers and failed cgroup read retain host context",
+			files:    fstest.MapFS{},
+			failures: map[string]error{"proc/1/cgroup": readFailure},
+			want:     RunContextHost, wantOpened: []string{".dockerenv", "run/.containerenv", "proc/1/cgroup"},
+		},
+		{
+			name:  "all filesystem signals unavailable retain host context",
+			files: fstest.MapFS{},
+			failures: map[string]error{
+				".dockerenv": fs.ErrPermission, "run/.containerenv": fs.ErrPermission, "proc/1/cgroup": readFailure,
+			},
+			want: RunContextHost, wantOpened: []string{".dockerenv", "run/.containerenv", "proc/1/cgroup"},
+		},
+		{
+			name: "pod signal avoids unavailable filesystem", kubernetesHost: "cluster.example",
+			files: fstest.MapFS{},
+			failures: map[string]error{
+				".dockerenv": fs.ErrPermission, "run/.containerenv": fs.ErrPermission, "proc/1/cgroup": readFailure,
+			},
+			want: RunContextPod,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := &runContextErrorFS{FS: tc.files, failures: tc.failures}
+			if got := detectRunContext(tc.kubernetesHost, root); got != tc.want {
+				t.Fatalf("run context = %q, want %q", got, tc.want)
+			}
+			if !slices.Equal(root.opened, tc.wantOpened) {
+				t.Fatalf("filesystem accesses = %v, want %v", root.opened, tc.wantOpened)
+			}
+		})
+	}
+}
+
+type runContextErrorFS struct {
+	fs.FS
+	failures map[string]error
+	opened   []string
+}
+
+func (f *runContextErrorFS) Open(name string) (fs.File, error) {
+	f.opened = append(f.opened, name)
+	if err := f.failures[name]; err != nil {
+		return nil, err
+	}
+	return f.FS.Open(name)
 }

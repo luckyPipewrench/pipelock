@@ -32,6 +32,7 @@ type nftReloadEnv struct {
 	reconcileLockPath string
 	table             string
 	chain             string
+	ownedLoopback     bool
 	runCmd            runCommand
 	readFile          func(string) ([]byte, error)
 	writeFile         func(string, []byte, os.FileMode) error
@@ -78,6 +79,7 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
 		table:             defaultNFTTable,
 		chain:             defaultNFTChain,
+		ownedLoopback:     true,
 		runCmd:            realRunCommand,
 		readFile:          os.ReadFile,
 		// writeFileAtomic (temp file + fsync + rename + directory fsync in
@@ -183,6 +185,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		Table:            env.table,
 		Chain:            env.chain,
 		LoopbackServices: loopbackServices,
+		OwnedLoopback:    env.ownedLoopback,
 	}))
 
 	// Persist the reconciled file FIRST, atomically, before touching the
@@ -230,6 +233,15 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		out = ""
 	} else if code != 0 {
 		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
+	}
+	if env.ownedLoopback && out != "" {
+		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, ownedLoopbackInputChain)
+		if inputErr != nil {
+			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain: %w", inputErr))
+		}
+		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
+			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing or unrecognized; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+		}
 	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
 		if env.report != nil {
@@ -474,6 +486,14 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int) string {
 	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
 	var script strings.Builder
+	if strings.Contains(rulesBody, "chain "+ownedLoopbackInputChain+" {") {
+		// A dynamic loopback update must replace the receiver gate in the
+		// same nft transaction as the OUTPUT rules. Leaving the old input
+		// chain in place would duplicate base chains; omitting this deletion
+		// would make a changed cgroup rule fail to load rather than silently
+		// widening it.
+		_, _ = fmt.Fprintf(&script, "delete chain inet %s %s\n", table, ownedLoopbackInputChain)
+	}
 	for _, handle := range handles {
 		_, _ = fmt.Fprintf(&script, "delete rule inet %s %s handle %d\n", table, chain, handle)
 	}

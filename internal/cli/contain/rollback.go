@@ -139,10 +139,12 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionDisablePipelockService(),
 		actionRemovePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
 		actionRemovePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
+		actionRemoveOwnedLoopbackAnchor(),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
+		actionRemoveWrapper("plk-contained-launch", "plk-contained-launch"),
 		actionRemoveWrapper("plk meta-wrapper", "plk"),
 		actionRemoveToolWrappers(),
 		actionRemoveUtilityWrappers(),
@@ -150,6 +152,30 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveAgentToolConfigs(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
+	}
+}
+
+func actionRemoveOwnedLoopbackAnchor() step {
+	return step{
+		name: "remove-owned-loopback-anchor",
+		desc: "remove the Pipelock-owned loopback cgroup anchor",
+		undo: func(ctx context.Context, env *installEnv) error {
+			if !env.ownedLoopback {
+				return nil
+			}
+			path := env.ownedLoopbackAnchorUnitPath
+			if path == "" {
+				return nil
+			}
+			unit := filepath.Base(path)
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				return fmt.Errorf("disable owned loopback anchor %s: %w", unit, err)
+			}
+			if err := restoreBackup(env, path); err != nil {
+				return fmt.Errorf("restore %s: %w", path, err)
+			}
+			return runOrErr(ctx, env, "systemctl", "daemon-reload")
+		},
 	}
 }
 

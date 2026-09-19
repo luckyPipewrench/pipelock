@@ -435,19 +435,29 @@ func TestReverseProxy_ShieldOnlyUnknownLengthReceiptPreservesLowerBound(t *testi
 	// figure is the larger amount genuinely observed. Asserting the bound
 	// rather than the old ceiling keeps the invariant while letting the read
 	// length follow the code.
-	if got, want := warn.ActionRecord.Shield.BodyBytes, cfg.BrowserShield.MaxShieldBytes+1; got != want {
-		t.Fatalf("unknown-length receipt body_bytes = %d, want observed lower bound %d", got, want)
+	got := warn.ActionRecord.Shield.BodyBytes
+	if got != len(page) {
+		t.Fatalf("receipt body_bytes = %d, want the %d bytes actually read", got, len(page))
 	}
-	if !strings.Contains(warn.ActionRecord.Pattern, "at least") {
-		t.Fatalf("unknown-length reason presents lower bound as exact: %q", warn.ActionRecord.Pattern)
+	// The floor read the whole body, so the figure is exact and the reason must
+	// not hedge it. The lower-bound wording belongs to a body the proxy could
+	// not finish reading, which no longer reaches this path: such a body blocks
+	// at the response scan ceiling first.
+	if strings.Contains(warn.ActionRecord.Pattern, "at least") {
+		t.Fatalf("a fully-read body reported its exact size as a lower bound: %q", warn.ActionRecord.Pattern)
 	}
 }
 
-// TestReverseProxy_ShieldOversizeTruncatedReceiptKeepsLowerBound is the half of
-// the evidence contract that survives the floor change: when the body genuinely
-// exceeds what the proxy will read, the receipt must present its figure as a
-// lower bound rather than as the body's size.
-func TestReverseProxy_ShieldOversizeTruncatedReceiptKeepsLowerBound(t *testing.T) {
+// TestReverseProxy_ShieldOversizeAboveScanCeilingBlocksBeforeShield pins where
+// an over-ceiling body is now decided.
+//
+// This case formerly asserted that a body larger than the proxy would read
+// produced a shield_oversize receipt whose figure was presented as a lower
+// bound. With the floor live, such a body never reaches shield handling: it
+// blocks at the response scan ceiling first, because an unreadable body cannot
+// be inspected and the floor fails closed. The evidence contract is preserved
+// by there being no under-stated shield figure to emit at all.
+func TestReverseProxy_ShieldOversizeAboveScanCeilingBlocksBeforeShield(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = true
@@ -465,14 +475,18 @@ func TestReverseProxy_ShieldOversizeTruncatedReceiptKeepsLowerBound(t *testing.T
 	}, shield.NewEngine(nil))
 
 	resp := testGet(t, proxySrv.URL+"/page")
-	_, _ = io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	waitForReceiptOrTimeout(t, dir)
 	closeRec()
-	receipts := extractReceiptsFromDir(t, dir)
-	warn := findReceiptByLayer(t, receipts, "shield_oversize")
-	if got := warn.ActionRecord.Shield.BodyBytes; got > len(page) {
-		t.Fatalf("truncated receipt body_bytes = %d overstates the %d-byte upstream body", got, len(page))
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a body above the scan ceiling must fail closed, got %d body=%q", resp.StatusCode, string(body))
+	}
+	for _, r := range extractReceiptsFromDir(t, dir) {
+		if r.ActionRecord.Layer == "shield_oversize" {
+			t.Fatalf("shield_oversize receipt emitted for a body the floor refused before shield handling")
+		}
 	}
 }
 

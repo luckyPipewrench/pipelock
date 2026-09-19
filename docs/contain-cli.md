@@ -300,10 +300,11 @@ duplicate, or proxy-port-colliding entry at config load time, so `pipelock
 check` and `contain install` both fail closed on it rather than silently
 dropping the exception.
 
-`contain install` renders each declared entry into the same managed nftables
-block as the implicit proxy-port allow. `contain reload-nft-rules` -- the
-same command the boot-time persistence unit runs on every boot -- re-reads
-the managed config and re-renders that block from the CURRENT declared set
+`contain install` renders each declared entry as a forward allow and a narrow
+established-reply allow in the same managed nftables block as the implicit
+proxy-port allow. The reply path is limited to `lo`, the declared loopback
+address and source port, and reply-direction traffic. `contain reload-nft-rules`
+re-reads the managed config and re-renders that block from the CURRENT declared set
 every time it runs, not from whatever it last loaded: an entry an operator
 removes, or one whose `expires_at` has passed, is dropped from the live
 chain and from the persisted rules file at the next reconciliation, without
@@ -320,6 +321,8 @@ extra service) and logs a warning naming the config path and why (a missing
 managed config names `pipelock contain install` as the recovery command; an
 unreadable or malformed one names re-running reconciliation once it is
 fixed).
+
+The boot-time persistence unit runs the same reconciliation command on every boot.
 
 `contain install` also enables a privileged containment expiry timer. Its
 oneshot service runs the same `contain reload-nft-rules` command, so a

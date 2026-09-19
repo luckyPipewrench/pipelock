@@ -1711,6 +1711,8 @@ containment:
 
 `host` must be a loopback literal, `127.0.0.1` or `::1`; a hostname, wildcard, or CIDR is rejected. `port` is a single TCP port (1-65535) distinct from the proxy port -- the proxy allow is implicit and does not need a declared entry. `owner`, `reason`, and `expires_at` (RFC3339, must remain in the future) are required, and an expired, malformed, duplicate, or proxy-port-colliding entry fails config validation, so `pipelock check` and `contain install` both fail closed rather than loading a ruleset that does not match the declaration.
 
+`contain install` renders each declared entry as a forward allow and a narrow established-reply allow. The reply path is limited to `lo`, the declared loopback address and source port, and reply-direction traffic.
+
 **Every add, remove, or expiry of an entry needs a reconciliation pass to reach the kernel: run `pipelock contain reload-nft-rules` as root after editing this list.** Editing the config alone is not enough -- the managed nftables chain and the persisted rules file only change on the next reconciliation, which is what that command (and the boot-time unit that runs it automatically on every boot) does. If the managed config is missing or unreadable, or the declared set as a whole contains a malformed or expired entry, reconciliation fails closed to zero declared loopback services and logs the config path and why (naming `pipelock contain install` as the recovery command for a missing config); it does not fail the reload. See "Declared loopback services" under `contain-cli.md` for how `contain install`, `contain reload-nft-rules`, and `contain verify` each honor this list.
 
 ## Kill Switch

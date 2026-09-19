@@ -147,6 +147,12 @@ func ScanGenericSSEStreamWithOptions(
 	reader := transport.NewSSEReader(body)
 	var tail string
 	var injectionTail string
+	// Stream-scoped on purpose. injectionTail carries bytes from one event into
+	// the next event's scan, so a finding in event N is presented again by
+	// event N+1's rolling scan. A per-event recorder starts with an empty seen
+	// map and reports that second sighting as a new observation, which is the
+	// duplicate this recorder exists to stop.
+	observedCore := newSSEObservedCoreRecorder(opts)
 
 	for {
 		select {
@@ -181,7 +187,6 @@ func ScanGenericSSEStreamWithOptions(
 
 		if len(event) > 0 {
 			droppedDLP := newSSEDLPDropRecorder(opts)
-			observedCore := newSSEObservedCoreRecorder(opts)
 			// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
 			// would be silently mapped to U+FFFD by Go's string(...) view
 			// while the original bytes still get re-emitted to the client,

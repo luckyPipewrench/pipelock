@@ -7,7 +7,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+	"time"
 )
+
+// unexpiredDate derives a date the guard cannot age out. A pinned literal here
+// would turn the clock-literal CI policy red on a calendar date with no commit
+// involved, which is exactly what this field's own expiry semantics are about.
+func unexpiredDate() string {
+	return time.Now().UTC().Add(72 * time.Hour).Format("2006-01-02")
+}
 
 // TestLogCoreResponseObserved_NamesTheAuthorization pins what separates an
 // operator-declared floor observation from an ordinary suppression. Ordinary
@@ -27,11 +35,12 @@ func TestLogCoreResponseObserved_NamesTheAuthorization(t *testing.T) {
 		t.Fatalf("NewHTTPLogContext: %v", ctxErr)
 	}
 
+	wantExpires := unexpiredDate()
 	logger.LogCoreResponseObserved(ctx, "Prompt Injection", "forward", CoreObserveAuthorization{
 		Host:    "docs.vendor.example",
 		Reason:  "vendor security documentation",
 		Owner:   "security-team",
-		Expires: "2099-01-01",
+		Expires: wantExpires,
 	})
 
 	var entry map[string]any
@@ -45,7 +54,7 @@ func TestLogCoreResponseObserved_NamesTheAuthorization(t *testing.T) {
 		"reason":          "core_observed",
 		"observe_host":    "docs.vendor.example",
 		"observe_owner":   "security-team",
-		"observe_expires": "2099-01-01",
+		"observe_expires": wantExpires,
 		"observe_reason":  "vendor security documentation",
 	} {
 		if got, _ := entry[field].(string); got != want {

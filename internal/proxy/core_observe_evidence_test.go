@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -73,12 +74,15 @@ func TestObservedCoreEvidenceNamesItsAuthorization(t *testing.T) {
 		t.Fatalf("audit logger: %v", err)
 	}
 
+	// Derived, never pinned: a literal date in a field that carries an expiry
+	// turns the clock-literal policy red on a calendar date with no commit.
+	wantExpires := time.Now().UTC().Add(72 * time.Hour).Format("2006-01-02")
 	recordObservedCoreResponseMatches(metrics.New(), log, audit.LogContext{}, []scanner.ObservedCoreMatch{{
 		Match:   scanner.ResponseMatch{PatternName: "Prompt Injection"},
 		Host:    "docs.vendor.example",
 		Reason:  "vendor security documentation",
 		Owner:   "security-team",
-		Expires: "2099-01-01",
+		Expires: wantExpires,
 	}}, TransportForward)
 	log.Close()
 
@@ -102,7 +106,7 @@ func TestObservedCoreEvidenceNamesItsAuthorization(t *testing.T) {
 		for field, want := range map[string]string{
 			"observe_host":    "docs.vendor.example",
 			"observe_owner":   "security-team",
-			"observe_expires": "2099-01-01",
+			"observe_expires": wantExpires,
 			"observe_reason":  "vendor security documentation",
 			"pattern":         "Prompt Injection",
 		} {

@@ -98,6 +98,10 @@ func TestMCPResponseReportsObservedCoreFinding(t *testing.T) {
 func TestMCPResponseReportsNothingWithoutAnException(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	// Defaults() sets the response action to warn, which returns Clean=false
+	// and still FORWARDS. Asserting Clean alone would therefore call a
+	// forwarded response "blocked" and make the allow case above vacuous.
+	cfg.ResponseScanning.Action = config.ActionBlock
 	sc, err := scanner.New(cfg)
 	if err != nil {
 		t.Fatalf("build scanner: %v", err)
@@ -113,8 +117,8 @@ func TestMCPResponseReportsNothingWithoutAnException(t *testing.T) {
 	}
 	// The same payload on the same path must still block, which is what makes
 	// the allow above attributable to the declared exception.
-	if verdict.Clean {
-		t.Fatal("the MCP path did not block an injection payload with no exception configured; the allow case is vacuous")
+	if verdict.Action != config.ActionBlock {
+		t.Fatalf("the MCP path did not block an injection payload with no exception configured: action=%q", verdict.Action)
 	}
 }
 

@@ -132,16 +132,24 @@ WantedBy=multi-user.target
 func chainLinesHaveOwnedLoopbackOutputRules(lines []string, agentUID int) bool {
 	wantMark := "ct mark set " + ownedLoopbackConntrackMark
 	wantSlice := `socket cgroupv2 level 1 "` + ownedLoopbackSlice + `"`
-	marks := 0
+	// Track the two families SEPARATELY. Counting matches and requiring two
+	// accepts a chain with duplicate IPv4 rules and no IPv6 rule at all, which
+	// leaves ::1 loopback unmarked while the count says the block is complete.
+	var haveV4, haveV6 bool
 	for _, line := range lines {
-		if strings.Contains(line, fmt.Sprintf("skuid %d", agentUID)) &&
-			strings.Contains(line, wantSlice) &&
-			strings.Contains(line, wantMark) {
-			marks++
+		if !strings.Contains(line, fmt.Sprintf("skuid %d", agentUID)) ||
+			!strings.Contains(line, wantSlice) ||
+			!strings.Contains(line, wantMark) {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "ip6 daddr"):
+			haveV6 = true
+		case strings.Contains(line, "ip daddr"):
+			haveV4 = true
 		}
 	}
-	// One for IPv4, one for IPv6; fewer means the block is incomplete.
-	return marks >= 2
+	return haveV4 && haveV6
 }
 
 // ownedLoopbackAnchorState reports the unit's enabled and active state before

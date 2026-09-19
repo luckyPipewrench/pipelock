@@ -767,7 +767,7 @@ func TestReloadRefusesWhenTheReceiverGateIsMissing(t *testing.T) {
 	}
 
 	err := reloadNFTRules(context.Background(), fx.env)
-	if err == nil || !strings.Contains(err.Error(), "missing or unrecognized") {
+	if err == nil || !strings.Contains(err.Error(), "missing while the managed output chain is present") {
 		t.Fatalf("reloadNFTRules = %v; want a refusal naming the missing receiver gate", err)
 	}
 }
@@ -962,6 +962,13 @@ func TestOwnedLoopbackOutputRulesDetectedInLiveChain(t *testing.T) {
 	}{
 		{name: "no marking rules at all", lines: []string{"meta skuid 966 drop"}},
 		{name: "only the IPv4 half", lines: []string{v4}},
+		{
+			// Counting matches instead of tracking families accepted this: two
+			// IPv4 rules satisfy a >=2 count while ::1 loopback is unmarked.
+			name:  "duplicate IPv4 rules and no IPv6 rule",
+			lines: []string{v4, v4},
+		},
+		{name: "only the IPv6 half", lines: []string{v6}},
 		{name: "marking rules belong to another uid", lines: []string{
 			strings.ReplaceAll(v4, "skuid 966", "skuid 1000"),
 			strings.ReplaceAll(v6, "skuid 966", "skuid 1000"),
@@ -1104,5 +1111,100 @@ func TestOwnedLoopbackAnchorUndoPreservesAPreexistingAnchor(t *testing.T) {
 	}
 	if disabled {
 		t.Fatalf("rollback disabled %s, which was already enabled and active before this install", unit)
+	}
+}
+
+// TestReloadQueriesReceiverChainIndependentlyOfOutputChain pins that the
+// receiver-chain query does not hide behind the OUTPUT chain's presence. The
+// two can exist independently: a partially torn-down ruleset can hold the
+// receiver chain with no OUTPUT chain. Recording it as absent there would skip
+// the delete and then try to add a base chain that already exists, failing the
+// transaction.
+func TestReloadQueriesReceiverChainIndependentlyOfOutputChain(t *testing.T) {
+	t.Parallel()
+	persisted := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: loopbackTestOperatorUID, ProxyUID: loopbackTestProxyUID,
+		AgentUID: loopbackTestAgentUID, ProxyPort: loopbackTestProxyPort,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+	fx := newNFTReloadTestFixture(t, "", nftReloadTestConfigWithService("2099-01-01T00:00:00Z"), persisted)
+	fx.env.ownedLoopback = true
+
+	managed := renderOwnedLoopbackInputChainTable(defaultNFTTable)
+	queried := false
+	base := fx.env.runCmd
+	fx.env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, ownedLoopbackInputChain) && strings.Contains(joined, "list") {
+			queried = true
+			// The receiver chain IS live even though the OUTPUT chain is not.
+			return managed, 0, nil
+		}
+		if strings.Contains(joined, "list chain") {
+			return "Error: No such file or directory", 1, nil
+		}
+		return base(ctx, name, args...)
+	}
+
+	_ = reloadNFTRules(context.Background(), fx.env)
+	if !queried {
+		t.Fatal("reload never queried the receiver chain because the OUTPUT chain was absent")
+	}
+}
+
+// TestReloadReceiverChainQueryOutcomes covers every branch of the receiver-gate
+// query. Each one decides whether the reload deletes a kernel chain, so an
+// outcome mishandled here either aborts the transaction or silently replaces a
+// chain the operator owns.
+func TestReloadReceiverChainQueryOutcomes(t *testing.T) {
+	t.Parallel()
+	persisted := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: loopbackTestOperatorUID, ProxyUID: loopbackTestProxyUID,
+		AgentUID: loopbackTestAgentUID, ProxyPort: loopbackTestProxyPort,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+
+	for _, tc := range []struct {
+		name     string
+		out      string
+		code     int
+		queryErr error
+		wantErr  string
+	}{
+		{
+			name:     "the query itself fails",
+			queryErr: errors.New("nft unavailable"),
+			wantErr:  "list owned loopback receiver chain",
+		},
+		{
+			name:    "the query fails for an unrecognized reason",
+			out:     "permission denied",
+			code:    1,
+			wantErr: "list owned loopback receiver chain exit=1",
+		},
+		{
+			name:    "the chain exists but is not the managed one",
+			out:     "chain " + ownedLoopbackInputChain + " { type filter hook input priority filter; policy accept; ct mark 0x1 accept }",
+			code:    0,
+			wantErr: "not recognizable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, nftReloadTestConfigWithService("2099-01-01T00:00:00Z"), persisted)
+			fx.env.ownedLoopback = true
+			base := fx.env.runCmd
+			tc := tc
+			fx.env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+				if strings.Contains(strings.Join(args, " "), ownedLoopbackInputChain) {
+					return tc.out, tc.code, tc.queryErr
+				}
+				return base(ctx, name, args...)
+			}
+			err := reloadNFTRules(context.Background(), fx.env)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("reloadNFTRules = %v; want %q", err, tc.wantErr)
+			}
+		})
 	}
 }

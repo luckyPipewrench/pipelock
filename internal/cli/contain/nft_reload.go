@@ -243,15 +243,35 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	// unit is the only thing that loads containment at boot, the host comes up
 	// with no containment rule for the agent at all.
 	receiverChainLive := false
-	if env.ownedLoopback && out != "" {
+	if env.ownedLoopback {
+		// Query the receiver chain on its OWN, not only when the OUTPUT chain
+		// is present. The two can exist independently: a partially torn-down
+		// ruleset can hold the receiver chain with no OUTPUT chain, and gating
+		// this query on `out` would then record the chain as absent, skip the
+		// delete, and try to add a base chain that is already there.
 		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, ownedLoopbackInputChain)
 		if inputErr != nil {
 			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain: %w", inputErr))
 		}
-		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
-			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing or unrecognized; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+		switch {
+		case inputCode == 0 && ownedLoopbackInputChainLooksManaged(input):
+			receiverChainLive = true
+		case inputCode != 0 && strings.Contains(strings.ToLower(input), "no such file"):
+			// Genuinely absent. Nothing to delete; the canonical rules create it.
+			receiverChainLive = false
+		case inputCode != 0:
+			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input)))
+		default:
+			// Present but not the chain this package wrote. Refuse rather than
+			// replace trust state an operator may own.
+			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is not recognizable; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
 		}
-		receiverChainLive = true
+		if out != "" && !receiverChainLive {
+			// A managed OUTPUT chain marks flows; without its receiver gate the
+			// host is already fail-open, so this is reported rather than
+			// silently repaired.
+			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing while the managed output chain is present; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+		}
 	}
 	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
 		if env.report != nil {

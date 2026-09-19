@@ -164,6 +164,74 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	})
 }
 
+// recoverActiveConductorPolicy restores a durable active bundle before listener
+// admission. A cache record identifies the last policy installed, but only the
+// apply boundary can establish that this running binary still satisfies its
+// signature, audience, lifetime, and minimum-version requirements.
+func (s *Server) recoverActiveConductorPolicy() error {
+	if s == nil {
+		return errors.New("nil runtime server")
+	}
+	s.conductorApplyMu.Lock()
+	defer s.conductorApplyMu.Unlock()
+	if s.conductorDown.Load() {
+		return applycache.ErrEntitlementLost
+	}
+	cfg := s.currentConfig()
+	if cfg == nil && s.proxy != nil {
+		cfg = s.proxy.CurrentConfig()
+	}
+	if cfg == nil {
+		return errors.New("runtime config unavailable")
+	}
+	if !cfg.Conductor.Enabled {
+		return nil
+	}
+	cache := s.applyCache()
+	if cache == nil {
+		return applycache.ErrCacheRequired
+	}
+	active, err := cache.Active()
+	if errors.Is(err, applycache.ErrNoValidBundle) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	resolver, err := buildConductorTrustResolver(cfg.Conductor, time.Now)
+	if err != nil {
+		return fmt.Errorf("building conductor recovery trust resolver: %w", err)
+	}
+	_, err = (applycache.Boundary{
+		Cache: cache,
+		Identity: applycache.Identity{
+			OrgID:      cfg.Conductor.OrgID,
+			FleetID:    cfg.Conductor.FleetID,
+			InstanceID: cfg.Conductor.InstanceID,
+			Labels:     conductorFollowerLabels(cfg),
+		},
+		Resolver:     resolver,
+		LocalVersion: cliutil.Version,
+		LoadConfig:   config.Load,
+		Reload: func(newCfg *config.Config) error {
+			return s.reloadConductorPolicyBundle(newCfg, active.Bundle.Payload.ConfigYAML)
+		},
+		StillEntitled: func() bool { return !s.conductorDown.Load() },
+	}).RecoverActive()
+	if err != nil {
+		return err
+	}
+	enforcer, ok := s.conductorStale.(*applycache.StaleEnforcer)
+	if !ok || enforcer == nil {
+		return errors.New("conductor recovery requires the stale-policy enforcer")
+	}
+	// Restore the last-good policy without overriding its configured expiry
+	// behavior. In particular, a strict expired cache must deny before the
+	// listener opens, while a renewed bundle remains fetchable by the poller.
+	enforcer.CheckNow()
+	return nil
+}
+
 func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bundleYAML string) error {
 	return config.PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, bundleYAML)
 }

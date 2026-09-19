@@ -7,6 +7,7 @@
 package applycache
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
@@ -229,6 +230,195 @@ func TestBoundaryApplyDoesNotActivateWhenReloadFails(t *testing.T) {
 	}
 	if _, activeErr := cache.Active(); !errors.Is(activeErr, ErrNoValidBundle) {
 		t.Fatalf("Active() after failed reload = %v, want ErrNoValidBundle", activeErr)
+	}
+}
+
+func TestBoundaryRecoverActiveReverifiesBeforeReloading(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+	seed := Boundary{
+		Cache:        cache,
+		Identity:     testIdentity(),
+		Resolver:     testResolver(key),
+		LocalVersion: "1.2.3",
+		Now:          func() time.Time { return testNow },
+		Reload:       func(*config.Config) error { return nil },
+	}
+	bundle := signedTestBundle(t, key, "bundle-recover", 1, "")
+	bundle.MinPipelockVersion = "1.2.3"
+	bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
+	if _, err := seed.Apply(bundle, ApplyOptions{}); err != nil {
+		t.Fatalf("seed Apply: %v", err)
+	}
+	before, err := os.ReadFile(activePath(cache))
+	if err != nil {
+		t.Fatalf("read active record before recovery: %v", err)
+	}
+
+	t.Run("unverifiable local version preserves active record", func(t *testing.T) {
+		reloadCalled := false
+		boundary := seed
+		boundary.LocalVersion = "0.0.0-dev.unknown"
+		boundary.Reload = func(*config.Config) error {
+			reloadCalled = true
+			return nil
+		}
+		if _, err := boundary.RecoverActive(); !errors.Is(err, ErrUnsupportedMinVersion) {
+			t.Fatalf("RecoverActive() error = %v, want ErrUnsupportedMinVersion", err)
+		}
+		if reloadCalled {
+			t.Fatal("RecoverActive() called Reload after version verification failed")
+		}
+		after, err := os.ReadFile(activePath(cache))
+		if err != nil {
+			t.Fatalf("read active record after rejected recovery: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Fatal("rejected recovery changed the durable active record")
+		}
+	})
+
+	t.Run("valid cached policy reloads without changing active record", func(t *testing.T) {
+		var reloaded *config.Config
+		boundary := seed
+		boundary.Reload = func(cfg *config.Config) error {
+			reloaded = cfg
+			return nil
+		}
+		if _, err := boundary.RecoverActive(); err != nil {
+			t.Fatalf("RecoverActive() error = %v", err)
+		}
+		if reloaded == nil || reloaded.Mode != config.ModeStrict {
+			t.Fatalf("recovered config = %+v, want strict policy", reloaded)
+		}
+		after, err := os.ReadFile(activePath(cache))
+		if err != nil {
+			t.Fatalf("read active record after recovery: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Fatal("successful recovery changed the durable active record")
+		}
+	})
+
+	t.Run("lost entitlement prevents cached reload", func(t *testing.T) {
+		reloadCalled := false
+		boundary := seed
+		boundary.Reload = func(*config.Config) error {
+			reloadCalled = true
+			return nil
+		}
+		boundary.StillEntitled = func() bool { return false }
+		if _, err := boundary.RecoverActive(); !errors.Is(err, ErrEntitlementLost) {
+			t.Fatalf("RecoverActive() error = %v, want ErrEntitlementLost", err)
+		}
+		if reloadCalled {
+			t.Fatal("RecoverActive() called Reload after entitlement loss")
+		}
+	})
+}
+
+func TestBoundaryRecoverActivePreservesStaleLifecycle(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		elapsed    time.Duration
+		afterGrace string
+		want       StaleState
+	}{
+		{"within grace", 90 * time.Second, config.ConductorStaleStrictDenyAll, StaleStateLastKnownGood},
+		{"strict after grace", 5 * time.Minute, config.ConductorStaleStrictDenyAll, StaleStateStrictDenyNoBundle},
+		{"continue after grace", 5 * time.Minute, config.ConductorStaleContinueLastKnownGood, StaleStateLastKnownGood},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			key := newTestKey(t)
+			cache := openTestCache(t)
+			now := testNow
+			boundary := Boundary{
+				Cache: cache, Identity: testIdentity(), Resolver: testResolver(key),
+				LocalVersion: "1.2.3", Now: func() time.Time { return now },
+				Reload: func(*config.Config) error { return nil },
+			}
+			bundle := signedTestBundle(t, key, "bundle-recover-stale", 1, "")
+			bundle.ExpiresAt = testNow.Add(time.Minute)
+			bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
+			if _, err := boundary.Apply(bundle, ApplyOptions{}); err != nil {
+				t.Fatalf("seed Apply: %v", err)
+			}
+			now = testNow.Add(tt.elapsed)
+			var reloaded *config.Config
+			boundary.Reload = func(cfg *config.Config) error { reloaded = cfg; return nil }
+			recovered, err := boundary.RecoverActive()
+			if err != nil {
+				t.Fatalf("RecoverActive within stale lifecycle: %v", err)
+			}
+			if reloaded == nil || reloaded.Mode != config.ModeStrict {
+				t.Fatal("recovery did not install the signed strict policy")
+			}
+			policy := config.ConductorStalePolicy{GraceMultiplier: 1, AfterGrace: tt.afterGrace}
+			if got := DecideStale(&recovered.VerifiedBundle, policy, now); got.State != tt.want {
+				t.Fatalf("stale decision = %s, want %s", got.State, tt.want)
+			}
+			if _, err := boundary.Apply(bundle, ApplyOptions{}); !errors.Is(err, conductor.ErrExpired) {
+				t.Fatalf("network Apply of expired bundle = %v, want ErrExpired", err)
+			}
+		})
+	}
+}
+
+func TestBoundaryRecoverActiveFailurePaths(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+	boundary := Boundary{
+		Cache: cache, Identity: testIdentity(), Resolver: testResolver(key),
+		LocalVersion: "1.2.3", Now: func() time.Time { return testNow },
+		Reload: func(*config.Config) error { return nil },
+	}
+	bundle := signedTestBundle(t, key, "bundle-recovery-errors", 1, "")
+	bundle.ExpiresAt = testNow.Add(time.Minute)
+	bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
+	if _, err := boundary.Apply(bundle, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(activePath(cache))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadFailure := errors.New("cached config unavailable")
+	reloadFailure := errors.New("runtime reload refused")
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Boundary)
+		want   error
+	}{
+		{"missing cache", func(b *Boundary) { b.Cache = nil }, ErrCacheRequired},
+		{"missing reload", func(b *Boundary) { b.Reload = nil }, nil},
+		{"empty cache", func(b *Boundary) { b.Cache = openTestCache(t) }, ErrNoValidBundle},
+		{"load failure", func(b *Boundary) {
+			b.LoadConfig = func(string) (*config.Config, error) { return nil, loadFailure }
+		}, loadFailure},
+		{"reload failure", func(b *Boundary) { b.Reload = func(*config.Config) error { return reloadFailure } }, reloadFailure},
+		{"wrong audience", func(b *Boundary) { b.Identity.OrgID = "other-org" }, conductor.ErrAudienceMismatch},
+		{"not yet valid", func(b *Boundary) {
+			b.Now = func() time.Time { return bundle.NotBefore.Add(-conductor.MessageNotBeforeSkew - time.Second) }
+		}, conductor.ErrNotYetValid},
+		{"expired signer remains refused", func(b *Boundary) {
+			b.Now = func() time.Time { return testNow.Add(2 * time.Hour) }
+		}, conductor.ErrSignatureVerification},
+		{"expired policy with unsupported binary", func(b *Boundary) {
+			b.Now = func() time.Time { return testNow.Add(5 * time.Minute) }
+			b.LocalVersion = "0.0.0-dev.unknown"
+		}, ErrUnsupportedMinVersion},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := boundary
+			tt.mutate(&attempt)
+			if _, err := attempt.RecoverActive(); err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
+				t.Fatalf("RecoverActive() = %v, want %v", err, tt.want)
+			}
+			after, err := os.ReadFile(activePath(cache))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed recovery changed durable active record: %v", err)
+			}
+		})
 	}
 }
 

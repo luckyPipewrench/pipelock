@@ -8,6 +8,7 @@
 package applycache
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +81,10 @@ type verifyOptions struct {
 	LocalVersion  string
 	Now           func() time.Time
 	AllowRollback bool
+	// RecoverActive allows the durable active bundle's expiry to be handled by
+	// DecideStale. Network staging never sets it. Signature-key lifecycle and
+	// the bundle's not-before gate still use the current verification time.
+	RecoverActive bool
 }
 
 type Cache struct {
@@ -271,7 +276,7 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 	}
 	configName := verified.BundleHash + configExt
 	configPath := filepath.Join(c.configsDir, configName)
-	if err := validateRegularFile(configPath, conductor.MaxConfigYAMLBytes); err != nil {
+	if err := validateConfigPayload(configPath, verified.Bundle.Payload.ConfigYAML); err != nil {
 		return err
 	}
 	active := activeRecord{
@@ -341,7 +346,7 @@ func (c *Cache) LookupBundle(hash string) (BundleLookup, error) {
 	if err := validateContainedPath(c.dir, configPath); err != nil {
 		return BundleLookup{}, err
 	}
-	if err := validateRegularFile(configPath, conductor.MaxConfigYAMLBytes); err != nil {
+	if err := validateConfigPayload(configPath, record.Bundle.Payload.ConfigYAML); err != nil {
 		return BundleLookup{}, err
 	}
 	return BundleLookup{
@@ -374,7 +379,7 @@ func (c *Cache) readActiveLocked() (VerifiedBundle, error) {
 	if err := validateContainedPath(c.dir, configPath); err != nil {
 		return VerifiedBundle{}, err
 	}
-	if err := validateRegularFile(configPath, conductor.MaxConfigYAMLBytes); err != nil {
+	if err := validateConfigPayload(configPath, bundleRecord.Bundle.Payload.ConfigYAML); err != nil {
 		return VerifiedBundle{}, err
 	}
 	return VerifiedBundle{
@@ -468,7 +473,11 @@ func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptio
 	// stopped followers applying policy for the whole of a rolling upgrade.
 	// Moving this call above VerifySignaturesAt would apply a bundle whose
 	// provenance was never established.
-	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(now); err != nil {
+	validationTime := now
+	if opts.RecoverActive && now.After(bundle.ExpiresAt) {
+		validationTime = bundle.ExpiresAt
+	}
+	if err := bundle.ValidateAtTimeAllowLegacyPolicyHash(validationTime); err != nil {
 		return err
 	}
 	if bundle.StreamSwitchAuthorization != nil {
@@ -701,6 +710,24 @@ func validateRegularFile(path string, maxBytes int) error {
 	}
 	if info.Size() > int64(maxBytes) {
 		return fmt.Errorf("%w: file_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), maxBytes)
+	}
+	return nil
+}
+
+// validateConfigPayload binds the on-disk staged config to the signed bundle
+// record that names it. A regular file at the expected path is not enough:
+// recovery and stale decisions must never treat a substituted policy file as
+// the cached signed policy.
+func validateConfigPayload(path, expected string) error {
+	if err := validateRegularFile(path, conductor.MaxConfigYAMLBytes); err != nil {
+		return err
+	}
+	contents, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(contents, []byte(expected)) {
+		return fmt.Errorf("%w: cached config does not match signed bundle payload", ErrInvalidActiveRecord)
 	}
 	return nil
 }

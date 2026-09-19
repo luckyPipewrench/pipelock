@@ -725,6 +725,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	s.refreshRuntimeState(nil, cfg, bundleResult, sc)
+	if err := s.recoverActiveConductorPolicy(); err != nil {
+		s.cleanup()
+		return nil, fmt.Errorf("recovering active conductor policy bundle: %w", err)
+	}
 
 	return s, nil
 }

@@ -92,3 +92,50 @@ func (b Boundary) Apply(bundle conductor.PolicyBundle, opts ApplyOptions) (Appli
 		ReloadedConfigHash: cfg.Hash(),
 	}, nil
 }
+
+// RecoverActive re-verifies and reloads the durable active bundle into the
+// current runtime. The active record is last-known-good disk state, not proof
+// that this process can enforce it: a restarted follower must re-establish the
+// signature, audience, not-before, and local-version gates before serving the
+// cached policy. The stale enforcer owns expiry, grace, and admission after
+// recovery. Recovery deliberately does not stage or activate anything;
+// a failed verification must leave the durable last-good record untouched.
+func (b Boundary) RecoverActive() (AppliedBundle, error) {
+	if b.Cache == nil {
+		return AppliedBundle{}, ErrCacheRequired
+	}
+	if b.Reload == nil {
+		return AppliedBundle{}, errors.New("conductor apply boundary reload function required")
+	}
+	loadConfig := b.LoadConfig
+	if loadConfig == nil {
+		loadConfig = config.Load
+	}
+	active, err := b.Cache.Active()
+	if err != nil {
+		return AppliedBundle{}, err
+	}
+	if err := verifyBundle(b.Cache.nowUTC(verifyOptions{Now: b.Now}), active.Bundle, verifyOptions{
+		Identity:      b.Identity,
+		Resolver:      b.Resolver,
+		LocalVersion:  b.LocalVersion,
+		Now:           b.Now,
+		RecoverActive: true,
+	}); err != nil {
+		return AppliedBundle{}, err
+	}
+	cfg, err := loadConfig(active.ConfigPath)
+	if err != nil {
+		return AppliedBundle{}, fmt.Errorf("loading verified cached conductor policy bundle config: %w", err)
+	}
+	if b.StillEntitled != nil && !b.StillEntitled() {
+		return AppliedBundle{}, ErrEntitlementLost
+	}
+	if err := b.Reload(cfg); err != nil {
+		return AppliedBundle{}, fmt.Errorf("reloading verified cached conductor policy bundle config: %w", err)
+	}
+	return AppliedBundle{
+		VerifiedBundle:     active,
+		ReloadedConfigHash: cfg.Hash(),
+	}, nil
+}

@@ -326,14 +326,17 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 // hidden elements remain on the hidden surface because they carry prose an
 // attacker can aim at the model while keeping the rendered page clean.
 var (
-	reHTMLComment = regexp.MustCompile(`(?s)<!--(.*?)-->`)
-	// type= inside a script start-tag attribute blob (quote-aware parsed).
-	reScriptTypeAttr = regexp.MustCompile(`(?i)\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
-	reStyleBody      = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
-	reHiddenElement  = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
+	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
+	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
+	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
 		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
 		`[^>]*>(.*?)</`)
 )
+
+// ambiguousScriptType is returned when script attribute parsing is ambiguous
+// (e.g. unclosed quotes). Unknown types are data carriers, so the body is
+// still scanned (fail closed).
+const ambiguousScriptType = "application/x-pipelock-ambiguous"
 
 // scriptElement is one matched <script>...</script> region. Attrs is the
 // start-tag attribute blob (may be empty); bodyStart/bodyEnd index the body
@@ -345,6 +348,46 @@ type scriptElement struct {
 	bodyEnd   int
 	elemStart int
 	elemEnd   int
+}
+
+// asciiToLower returns s with A-Z mapped to a-z. Length is preserved so
+// indexes into the result remain valid against the original string (unlike
+// strings.ToLower, which can change byte length for letters such as U+0130).
+func asciiToLower(s string) string {
+	var buf []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			if buf == nil {
+				buf = []byte(s)
+			}
+			buf[i] = c + ('a' - 'A')
+		}
+	}
+	if buf == nil {
+		return s
+	}
+	return string(buf)
+}
+
+// asciiEqualFold reports whether a and b are equal under ASCII case folding.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // isExecutableJavaScriptMIME reports whether a <script type="..."> value is
@@ -369,14 +412,85 @@ func isExecutableJavaScriptMIME(typeAttr string) bool {
 	return media.IsJavaScriptMediaType(t)
 }
 
+// scriptTypeAttribute returns the first real type= attribute value from a
+// script start-tag attribute blob. Parsing is quote-aware so a decoy
+// ` type=module` inside another attribute's quoted value cannot win.
+// On ambiguous markup (unclosed quotes), returns ambiguousScriptType so the
+// body is scanned (fail closed).
 func scriptTypeAttribute(attrs string) string {
-	m := reScriptTypeAttr.FindStringSubmatch(attrs)
-	if m == nil {
-		return ""
-	}
-	for _, g := range m[1:] {
-		if g != "" {
-			return g
+	i := 0
+	for i < len(attrs) {
+		for i < len(attrs) {
+			c := attrs[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' {
+				i++
+				continue
+			}
+			break
+		}
+		if i >= len(attrs) {
+			break
+		}
+		nameStart := i
+		for i < len(attrs) {
+			c := attrs[i]
+			if c == '=' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' || c == '"' || c == '\'' {
+				break
+			}
+			i++
+		}
+		if i == nameStart {
+			// Stray quote or punctuation — fail closed.
+			return ambiguousScriptType
+		}
+		name := attrs[nameStart:i]
+		for i < len(attrs) {
+			c := attrs[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				i++
+				continue
+			}
+			break
+		}
+		value := ""
+		if i < len(attrs) && attrs[i] == '=' {
+			i++
+			for i < len(attrs) {
+				c := attrs[i]
+				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+					i++
+					continue
+				}
+				break
+			}
+			if i >= len(attrs) {
+				return ambiguousScriptType
+			}
+			if q := attrs[i]; q == '"' || q == '\'' {
+				i++
+				vStart := i
+				for i < len(attrs) && attrs[i] != q {
+					i++
+				}
+				if i >= len(attrs) {
+					return ambiguousScriptType
+				}
+				value = attrs[vStart:i]
+				i++ // closing quote
+			} else {
+				vStart := i
+				for i < len(attrs) {
+					c := attrs[i]
+					if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' || c == '"' || c == '\'' {
+						break
+					}
+					i++
+				}
+				value = attrs[vStart:i]
+			}
+		}
+		if asciiEqualFold(name, "type") {
+			return value
 		}
 	}
 	return ""
@@ -393,57 +507,106 @@ func scriptTagNameBoundary(b byte) bool {
 	}
 }
 
-// findScriptStartAfter locates a <script ...> start tag beginning at or after
-// from. It uses a quote-aware attribute scan so a literal '>' inside a quoted
-// attribute value does not truncate the start tag. Returns elemStart,
-// attrs (text between tag name and closing '>'), bodyStart, and ok.
-func findScriptStartAfter(html string, from int) (elemStart, bodyStart int, attrs string, ok bool) {
-	lower := strings.ToLower(html)
-	search := from
-	for {
-		idx := strings.Index(lower[search:], "<script")
-		if idx < 0 {
-			return 0, 0, "", false
-		}
-		elemStart = search + idx
-		afterName := elemStart + len("<script")
-		if afterName < len(html) && !scriptTagNameBoundary(html[afterName]) {
-			search = afterName
+// skipHTMLTagEnd starts at pos (byte after '<') and returns the index after
+// the closing '>' of that tag, respecting quoted attribute values. If no
+// closing '>' is found, returns len(html).
+func skipHTMLTagEnd(html string, pos int) int {
+	inQuote := byte(0)
+	for i := pos; i < len(html); i++ {
+		c := html[i]
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			}
 			continue
 		}
-		// Quote-aware scan for the '>' that ends the start tag.
-		inQuote := byte(0)
-		i := afterName
-		for i < len(html) {
-			c := html[i]
-			if inQuote != 0 {
-				if c == inQuote {
-					inQuote = 0
+		switch c {
+		case '"', '\'':
+			inQuote = c
+		case '>':
+			return i + 1
+		}
+	}
+	return len(html)
+}
+
+// findScriptStartAfter locates a real <script ...> start tag beginning at or
+// after from. Markup-like text inside HTML comments or quoted attribute values
+// of other tags is ignored. lower must be asciiToLower(html) (same length).
+// Returns elemStart, attrs (text between tag name and closing '>'), bodyStart,
+// and ok.
+func findScriptStartAfter(html, lower string, from int) (elemStart, bodyStart int, attrs string, ok bool) {
+	i := from
+	for i < len(html) {
+		if html[i] != '<' {
+			i++
+			continue
+		}
+		// HTML comment: skip through --> so nested "<script" is not a start.
+		if i+3 < len(html) && html[i+1] == '!' && html[i+2] == '-' && html[i+3] == '-' {
+			j := i + 4
+			for j+2 < len(html) {
+				if html[j] == '-' && html[j+1] == '-' && html[j+2] == '>' {
+					i = j + 3
+					break
 				}
-				i++
-				continue
+				j++
 			}
-			switch c {
-			case '"', '\'':
-				inQuote = c
-				i++
-			case '>':
-				attrs = html[afterName:i]
-				return elemStart, i + 1, attrs, true
-			default:
-				i++
+			if j+2 >= len(html) {
+				return 0, 0, "", false
+			}
+			continue
+		}
+		namePos := i + 1
+		if namePos < len(html) && html[namePos] == '/' {
+			// End tag of something else — skip quote-aware.
+			i = skipHTMLTagEnd(html, namePos)
+			continue
+		}
+		// Case-insensitive "script" via length-preserving ASCII fold.
+		const scriptName = "script"
+		if namePos+len(scriptName) <= len(lower) &&
+			lower[namePos:namePos+len(scriptName)] == scriptName {
+			afterName := namePos + len(scriptName)
+			if afterName == len(html) || scriptTagNameBoundary(html[afterName]) {
+				inQuote := byte(0)
+				j := afterName
+				for j < len(html) {
+					c := html[j]
+					if inQuote != 0 {
+						if c == inQuote {
+							inQuote = 0
+						}
+						j++
+						continue
+					}
+					switch c {
+					case '"', '\'':
+						inQuote = c
+						j++
+					case '>':
+						attrs = html[afterName:j]
+						return i, j + 1, attrs, true
+					default:
+						j++
+					}
+				}
+				// Truncated start tag: stop (fail closed — no body extracted).
+				return 0, 0, "", false
 			}
 		}
-		// Truncated start tag: stop (fail closed — no body extracted).
-		return 0, 0, "", false
+		// Non-script tag (or lookalike): skip through '>' so attribute values
+		// containing the characters <script are not treated as starts.
+		i = skipHTMLTagEnd(html, namePos)
 	}
+	return 0, 0, "", false
 }
 
 // findScriptEndAfter finds the end of a script element's body (index of
-// '</script>') starting at bodyStart. Returns bodyEnd (start of end tag) and
-// elemEnd (after end tag), or ok=false if unclosed.
-func findScriptEndAfter(html string, bodyStart int) (bodyEnd, elemEnd int, ok bool) {
-	lower := strings.ToLower(html)
+// '</script>') starting at bodyStart. lower must be asciiToLower(html).
+// Returns bodyEnd (start of end tag) and elemEnd (after end tag), or ok=false
+// if unclosed.
+func findScriptEndAfter(html, lower string, bodyStart int) (bodyEnd, elemEnd int, ok bool) {
 	search := bodyStart
 	for {
 		idx := strings.Index(lower[search:], "</script")
@@ -472,16 +635,18 @@ func findScriptEndAfter(html string, bodyStart int) (bodyEnd, elemEnd int, ok bo
 }
 
 // findScriptElements returns every well-formed <script>...</script> pair.
-// Start tags are parsed with a quote-aware attribute scanner.
+// ASCII-folds the document once for case-insensitive tag matching (length-
+// preserving). Start tags ignore comment / quoted-attr decoys.
 func findScriptElements(html string) []scriptElement {
+	lower := asciiToLower(html)
 	var out []scriptElement
 	from := 0
 	for {
-		elemStart, bodyStart, attrs, ok := findScriptStartAfter(html, from)
+		elemStart, bodyStart, attrs, ok := findScriptStartAfter(html, lower, from)
 		if !ok {
 			return out
 		}
-		bodyEnd, elemEnd, ok := findScriptEndAfter(html, bodyStart)
+		bodyEnd, elemEnd, ok := findScriptEndAfter(html, lower, bodyStart)
 		if !ok {
 			// Unclosed script: stop matching further (matches prior regex fail-closed).
 			return out
@@ -521,9 +686,11 @@ func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
 // covering that surface.
 func extractHiddenContent(html string) string {
 	scripts := findScriptElements(html)
+	exec := make([]bool, len(scripts))
 	var execRanges [][2]int
-	for _, s := range scripts {
+	for i, s := range scripts {
 		if isExecutableJavaScriptMIME(scriptTypeAttribute(s.attrs)) {
+			exec[i] = true
 			execRanges = append(execRanges, [2]int{s.elemStart, s.elemEnd})
 		}
 	}
@@ -537,8 +704,8 @@ func extractHiddenContent(html string) string {
 		b.WriteString(html[loc[2]:loc[3]])
 		b.WriteByte('\n')
 	}
-	for _, s := range scripts {
-		if isExecutableJavaScriptMIME(scriptTypeAttribute(s.attrs)) {
+	for i, s := range scripts {
+		if exec[i] {
 			continue
 		}
 		b.WriteString(s.body)

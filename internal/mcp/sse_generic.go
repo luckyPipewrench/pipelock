@@ -78,6 +78,11 @@ type GenericSSEScanOptions struct {
 	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
 	// observational only and must not alter stream control flow.
 	OnDroppedDLP func(scanner.TextDLPMatch, string)
+	// OnObservedCoreResponse receives core-floor findings a declared operator
+	// exception downgraded from block to observe. Observational only; without
+	// it a streamed floor finding could be withheld from blocking and never
+	// recorded.
+	OnObservedCoreResponse func(scanner.ObservedCoreMatch)
 }
 
 // ScanGenericSSEStream handles non-A2A text/event-stream responses with
@@ -142,6 +147,12 @@ func ScanGenericSSEStreamWithOptions(
 	reader := transport.NewSSEReader(body)
 	var tail string
 	var injectionTail string
+	// Stream-scoped on purpose. injectionTail carries bytes from one event into
+	// the next event's scan, so a finding in event N is presented again by
+	// event N+1's rolling scan. A per-event recorder starts with an empty seen
+	// map and reports that second sighting as a new observation, which is the
+	// duplicate this recorder exists to stop.
+	observedCore := newSSEObservedCoreRecorder(opts)
 
 	for {
 		select {
@@ -210,6 +221,7 @@ func ScanGenericSSEStreamWithOptions(
 			skipTailInjection := false
 			skipTailDLP := false
 			injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+			observedCore.record(injectResult)
 			if injectResult.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
 			}
@@ -256,6 +268,7 @@ func ScanGenericSSEStreamWithOptions(
 			if !skipTailInjection && injectionTail != "" {
 				combined := injectionTail + " " + string(event)
 				tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
+				observedCore.record(tailInjectResult)
 				if tailInjectResult.Failed() {
 					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
 				}
@@ -452,4 +465,44 @@ func sseDLPMatchNames(matches []scanner.TextDLPMatch) string {
 		names = append(names, m.PatternName)
 	}
 	return strings.Join(names, ", ")
+}
+
+// sseObservedCoreRecorder reports declared core-floor observations from an SSE
+// scan exactly once per stream.
+//
+// Two scans see the same bytes: the current event, and then the rolling tail,
+// which is the retained prior bytes plus this event. The scanner's own
+// duplicate guard is per-call, so without a stream-local seen set the same
+// observation reaches audit and metrics twice and inflates both. This mirrors
+// sseDLPDropRecorder, which already solves the identical problem for dropped
+// DLP matches.
+type sseObservedCoreRecorder struct {
+	opts GenericSSEScanOptions
+	seen map[string]struct{}
+}
+
+func newSSEObservedCoreRecorder(opts GenericSSEScanOptions) *sseObservedCoreRecorder {
+	return &sseObservedCoreRecorder{opts: opts, seen: make(map[string]struct{})}
+}
+
+func (r *sseObservedCoreRecorder) record(result scanner.ResponseScanResult) {
+	if r == nil || r.opts.OnObservedCoreResponse == nil {
+		return
+	}
+	for _, observed := range result.ObservedCoreMatches {
+		key := sseObservedCoreKey(observed)
+		if _, ok := r.seen[key]; ok {
+			continue
+		}
+		r.seen[key] = struct{}{}
+		r.opts.OnObservedCoreResponse(observed)
+	}
+}
+
+// sseObservedCoreKey identifies an observation by what it asserts, not by
+// where it was found. Offsets shift between the current-event scan and the
+// rolling-tail scan for the same finding, so including one would defeat the
+// deduplication this exists for.
+func sseObservedCoreKey(observed scanner.ObservedCoreMatch) string {
+	return observed.Match.PatternName + "\x00" + observed.Host + "\x00" + observed.Match.MatchText
 }

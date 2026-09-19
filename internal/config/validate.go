@@ -171,6 +171,77 @@ func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error
 	return nil
 }
 
+// validateCoreObserveExceptions checks every declared floor-observe entry.
+//
+// Each field is required and every failure refuses the config, because this is
+// the only mechanism that withholds a block on the immutable response floor.
+// The host must be one exact host: a wildcard here would hand back the breadth
+// of exempt_domains that this valve exists to replace, so it is refused the
+// same way the passthrough and credential-route entries refuse one.
+func validateCoreObserveExceptions(entries []CoreObserveException) error {
+	type identity struct{ host, pattern string }
+	seen := make(map[identity]int, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		field := fmt.Sprintf("response_scanning.core_observe_exceptions[%d]", i)
+
+		host := []string{entry.Host}
+		if err := ValidateTrustedDomains(host, field+".host"); err != nil {
+			return err
+		}
+		if strings.ContainsAny(host[0], "*?[]") {
+			return fmt.Errorf("%s.host must be one exact host without wildcards; this entry withholds a block on the immutable response floor, so it may not cover a whole subtree", field)
+		}
+		entry.Host = canonicalCoreObserveHost(host[0])
+
+		entry.Pattern = strings.TrimSpace(entry.Pattern)
+		if entry.Pattern == "" {
+			return fmt.Errorf("%s.pattern is required; name exactly one core response pattern", field)
+		}
+		if !IsCoreResponsePatternName(entry.Pattern) {
+			return fmt.Errorf("%s.pattern %q is not a core response pattern; only the immutable floor needs this valve, and a configured pattern already has response_scanning.suppress. Valid names: %s", field, entry.Pattern, strings.Join(CoreResponsePatternNames(), ", "))
+		}
+
+		for _, text := range []struct {
+			name  string
+			value *string
+		}{
+			{name: "reason", value: &entry.Reason},
+			{name: "owner", value: &entry.Owner},
+		} {
+			*text.value = strings.TrimSpace(*text.value)
+			if *text.value == "" {
+				return fmt.Errorf("%s.%s is required", field, text.name)
+			}
+			if len(*text.value) > 200 {
+				return fmt.Errorf("%s.%s must be 200 characters or fewer", field, text.name)
+			}
+			if strings.IndexFunc(*text.value, unicode.IsControl) >= 0 {
+				return fmt.Errorf("%s.%s must not contain control characters", field, text.name)
+			}
+		}
+
+		entry.Expires = strings.TrimSpace(entry.Expires)
+		if entry.Expires == "" {
+			return fmt.Errorf("%s.expires is required", field)
+		}
+		parsed, err := time.Parse("2006-01-02", entry.Expires)
+		if err != nil {
+			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+		}
+		if parsed.Before(todayUTC()) {
+			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		}
+
+		key := identity{host: entry.Host, pattern: strings.ToLower(entry.Pattern)}
+		if prior, ok := seen[key]; ok {
+			return fmt.Errorf("%s duplicates response_scanning.core_observe_exceptions[%d] for host %q and pattern %q; declare one entry with the expiry you mean", field, prior, entry.Host, entry.Pattern)
+		}
+		seen[key] = i
+	}
+	return nil
+}
+
 func validateUnscannablePassthroughExpiryHorizons(entries []UnscannablePassthroughEntry) error {
 	for i, entry := range entries {
 		field := fmt.Sprintf("response_scanning.unscannable_passthrough[%d].expires", i)
@@ -2139,6 +2210,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes")
 	}
 	if err := validateUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	if err := validateCoreObserveExceptions(c.ResponseScanning.CoreObserveExceptions); err != nil {
 		return err
 	}
 	for i, entry := range c.ResponseScanning.UnscannablePassthrough {
@@ -4687,6 +4761,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 // | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
 // | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
 // | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |
+// | response_scanning.core_observe_exceptions[].expires | temporary | 30 days: this narrowly relaxes the immutable response floor for one host and one pattern. |
 // | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |.
 const (
 	// MaxBestEffortConfigHorizon bounds a configuration-sourced cooperative
@@ -4698,6 +4773,13 @@ const (
 	MaxQueryEntropyParamExclusionHorizon      = 180 * 24 * time.Hour
 	MaxRequestBodyEntropyWarnRouteHorizon     = 90 * 24 * time.Hour
 	MaxRequestBodySigV4CredentialRouteHorizon = 30 * 24 * time.Hour
+
+	// MaxCoreObserveExceptionHorizon matches the SigV4 credential-route
+	// horizon rather than the 90-day unscannable-passthrough one that shares
+	// its config block. The table above sets the length by what the exception
+	// RELAXES, not by where it lives: 30 days is what a narrow relaxation of a
+	// floor gets, and this relaxes the immutable response floor.
+	MaxCoreObserveExceptionHorizon = 30 * 24 * time.Hour
 )
 
 func validateTemporaryExpiryDate(field, value string, maximum time.Duration) error {
@@ -4757,6 +4839,12 @@ func (c *Config) ValidateExpiryAuthorizations() error {
 	for i, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
 		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d].expires", i)
 		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+			return err
+		}
+	}
+	for i, entry := range c.ResponseScanning.CoreObserveExceptions {
+		field := fmt.Sprintf("response_scanning.core_observe_exceptions[%d].expires", i)
+		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxCoreObserveExceptionHorizon); err != nil {
 			return err
 		}
 	}

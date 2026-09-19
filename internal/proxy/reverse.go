@@ -2717,13 +2717,15 @@ responseScanning:
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
 	maxBytes := responseBodyLimit
-	// shieldOnly means Browser Shield is the ONLY consumer of this body, which
-	// decides whether to read to the shield ceiling instead of the scan limit.
-	// It has to ask the scanner, not the raw flag: the core floor runs whether
-	// or not the optional layer is enabled, so with the flag off an oversized
-	// shieldable body was classified shield-only, took the scan_head/warn
-	// branch, and returned to the client with the floor never inspecting it.
-	shieldOnly := !sc.ResponseScanningEnabled() && shieldActiveForHost
+	// shieldOnly means Browser Shield is the ONLY consumer that needs the WHOLE
+	// body, so the read budget follows the shield ceiling rather than the scan
+	// limit. That stays keyed to the optional layer on purpose: switching it to
+	// the scanner would make every large response take the scan ceiling and
+	// start blocking ordinary large downloads, which is an availability
+	// regression an operator would answer by turning the proxy off. The floor
+	// still has to inspect what this path DOES read; that happens below,
+	// before any of its returns.
+	shieldOnly := !cfg.ResponseScanning.Enabled && shieldActiveForHost
 	if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 		// Browser Shield is independent of response injection scanning. When it
 		// is the only body consumer, read to its own ceiling instead of applying
@@ -2791,6 +2793,38 @@ responseScanning:
 		defer releaseSizeExemptScan()
 	} else if len(body) > maxBytes {
 		if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
+			// Every return below hands bytes to the client, so the immutable
+			// floor inspects what was read first. This path reads only to the
+			// shield ceiling, so the check is partial by construction and says
+			// so; that is the same bargain scan_head already makes, and it is
+			// strictly better than the previous behaviour, which returned here
+			// with no core scan at all.
+			if coreOnly := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress); !coreOnly.Clean {
+				corePatterns := make([]string, 0, len(coreOnly.Matches))
+				for _, m := range coreOnly.Matches {
+					if config.IsCoreResponsePatternName(m.PatternName) {
+						corePatterns = append(corePatterns, m.PatternName)
+					}
+				}
+				if len(corePatterns) > 0 {
+					emitReverseReceipt(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     LayerReverseResponseBlocked,
+						Pattern:   "response injection: " + strings.Join(corePatterns, ", "),
+						Transport: TransportReverse,
+						Method:    resp.Request.Method,
+						Target:    targetURL,
+						RequestID: requestID,
+						Agent:     agent,
+					})
+					rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+					rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "injection")
+					replaceWithBlockResponse(resp, corePatterns)
+					recordReverseOutcome(http.StatusForbidden, int64(len(body)), "response_scan")
+					return nil
+				}
+			}
 			decision := applyShieldOversize(body, false, cfg.BrowserShield.MaxShieldBytes)
 			if !decision.shieldable {
 				resp.Body = readCloserWithClose{

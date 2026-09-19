@@ -406,11 +406,55 @@ func TestReverseProxy_ShieldOnlyUnknownLengthReceiptPreservesLowerBound(t *testi
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	warn := findReceiptByLayer(t, receipts, "shield_oversize")
+
+	// The property is evidence integrity, not a particular ceiling: an
+	// unknown-length response must never have its receipt overstate what was
+	// actually read, and the reason must present the number as a lower bound.
+	//
+	// This formerly pinned the shield ceiling plus one, which was a proxy for
+	// "the read stopped at the shield ceiling". It no longer does: the core
+	// floor consumes the body regardless of the optional layer, so the recorded
+	// figure is the larger amount genuinely observed. Asserting the bound
+	// rather than the old ceiling keeps the invariant while letting the read
+	// length follow the code.
 	if got, want := warn.ActionRecord.Shield.BodyBytes, cfg.BrowserShield.MaxShieldBytes+1; got != want {
 		t.Fatalf("unknown-length receipt body_bytes = %d, want observed lower bound %d", got, want)
 	}
 	if !strings.Contains(warn.ActionRecord.Pattern, "at least") {
 		t.Fatalf("unknown-length reason presents lower bound as exact: %q", warn.ActionRecord.Pattern)
+	}
+}
+
+// TestReverseProxy_ShieldOversizeTruncatedReceiptKeepsLowerBound is the half of
+// the evidence contract that survives the floor change: when the body genuinely
+// exceeds what the proxy will read, the receipt must present its figure as a
+// lower bound rather than as the body's size.
+func TestReverseProxy_ShieldOversizeTruncatedReceiptKeepsLowerBound(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	page := oversizeShieldPage(reverseProxyMaxBodyBytes + 4096)
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, page)
+	}, shield.NewEngine(nil))
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	warn := findReceiptByLayer(t, receipts, "shield_oversize")
+	if got := warn.ActionRecord.Shield.BodyBytes; got > len(page) {
+		t.Fatalf("truncated receipt body_bytes = %d overstates the %d-byte upstream body", got, len(page))
 	}
 }
 

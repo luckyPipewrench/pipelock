@@ -1402,6 +1402,75 @@ func TestRecoverActiveConductorPolicySkipsDisabledConductor(t *testing.T) {
 	}
 }
 
+func TestRecoverActiveConductorPolicyRefusesUnavailableState(t *testing.T) {
+	t.Run("nil runtime", func(t *testing.T) {
+		var s *Server
+		if err := s.recoverActiveConductorPolicy(); err == nil {
+			t.Fatal("nil runtime recovery succeeded")
+		}
+	})
+	t.Run("entitlement teardown", func(t *testing.T) {
+		s := &Server{}
+		s.conductorDown.Store(true)
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrEntitlementLost) {
+			t.Fatalf("recovery after teardown = %v, want ErrEntitlementLost", err)
+		}
+	})
+	t.Run("missing config", func(t *testing.T) {
+		if err := (&Server{}).recoverActiveConductorPolicy(); err == nil {
+			t.Fatal("recovery without runtime config succeeded")
+		}
+	})
+	t.Run("missing cache", func(t *testing.T) {
+		s := &Server{cfg: &config.Config{Conductor: config.Conductor{Enabled: true}}}
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrCacheRequired) {
+			t.Fatalf("recovery without cache = %v, want ErrCacheRequired", err)
+		}
+	})
+	t.Run("proxy config fallback still requires cache", func(t *testing.T) {
+		parent, _ := newConductorApplyTestServer(t)
+		s := &Server{proxy: parent.proxy}
+		if err := s.recoverActiveConductorPolicy(); !errors.Is(err, applycache.ErrCacheRequired) {
+			t.Fatalf("proxy config fallback = %v, want ErrCacheRequired", err)
+		}
+	})
+	for _, fault := range []string{"substituted config", "unreadable roster", "missing enforcer"} {
+		t.Run(fault, func(t *testing.T) {
+			s, signer := newConductorApplyTestServer(t)
+			bundle := signedRuntimePolicyBundle(t, signer, "bundle-recovery-state", 1, "", "mode: strict\napi_allowlist:\n  - api.vendor.example\n")
+			applied, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := s.currentConfig()
+			activePath := filepath.Join(cfg.Conductor.BundleCacheDir, "active.json")
+			before, err := os.ReadFile(filepath.Clean(activePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want string
+			switch fault {
+			case "substituted config":
+				writePrivateTestFile(t, applied.ConfigPath, []byte("mode: balanced\n"))
+				want = "cached config does not match"
+			case "unreadable roster":
+				writePrivateTestFile(t, cfg.Conductor.TrustRosterPath, []byte("{"))
+				want = "building conductor recovery trust resolver"
+			case "missing enforcer":
+				s.conductorStale = nil
+				want = "requires the stale-policy enforcer"
+			}
+			if err := s.recoverActiveConductorPolicy(); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("recovery with %s = %v, want %q", fault, err, want)
+			}
+			after, err := os.ReadFile(filepath.Clean(activePath))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed recovery replaced durable active state: %v", err)
+			}
+		})
+	}
+}
+
 type runtimePolicySigner struct {
 	id   string
 	pub  ed25519.PublicKey

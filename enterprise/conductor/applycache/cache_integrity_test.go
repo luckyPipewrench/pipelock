@@ -313,6 +313,21 @@ func TestActiveRejectsConfigThatDiffersFromSignedPayload(t *testing.T) {
 	}
 }
 
+func TestActiveRejectsUnreadableConfigPayload(t *testing.T) {
+	cache, hash := storeValidActive(t)
+	configPath := filepath.Join(cache.configsDir, hash+configExt)
+	if err := os.Chmod(configPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
+	if _, err := os.ReadFile(filepath.Clean(configPath)); err == nil {
+		t.Skip("filesystem or effective identity permits reading mode-zero files")
+	}
+	if _, err := cache.Active(); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Active() with unreadable cached config = %v, want permission refusal", err)
+	}
+}
+
 // TestActivateRejectsMismatchedStagedBundle proves Activate refuses to point
 // the active record at a staged bundle whose identity disagrees with the
 // caller's verified bundle, even when the hash file exists.

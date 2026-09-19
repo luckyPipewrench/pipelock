@@ -98,7 +98,7 @@ func TestOwnedLoopbackRulesRejectStaleCgroupID(t *testing.T) {
 	if ownedLoopbackRulesReferenceCurrentAnchor("socket cgroupv2 level 1 12345", 1) {
 		t.Fatal("numeric cgroup ID must not be accepted as the current anchor")
 	}
-	if !ownedLoopbackRulesReferenceCurrentAnchor(`socket cgroupv2 level 1 "pipelock-contained.slice"`, 1) {
+	if !ownedLoopbackRulesReferenceCurrentAnchor(`socket cgroupv2 level 1 "`+ownedLoopbackSlice+`"`, 1) {
 		t.Fatal("current cgroup path must satisfy the anchor check")
 	}
 }
@@ -1206,5 +1206,40 @@ func TestReloadReceiverChainQueryOutcomes(t *testing.T) {
 				t.Fatalf("reloadNFTRules = %v; want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestOwnedLoopbackSliceIsTopLevel pins the invariant that made a real install
+// fail on a real host. systemd treats "-" in a slice name as a HIERARCHY
+// SEPARATOR: "a-b.slice" is a child of "a.slice" and its cgroup path is
+// "a.slice/a-b.slice", two levels deep. The nft rules match the owned slice at
+// "cgroupv2 level 1", so a hyphenated name can never resolve, and because nft
+// resolves a cgroup path when it LOADS a rule rather than when it matches, the
+// install does not degrade: it fails outright with
+// "cgroupv2 path fails: No such file or directory" and rolls back.
+//
+// Observed 2026-09-19: the failing install left an empty
+// /sys/fs/cgroup/pipelock.slice behind, implicitly created by systemd as the
+// parent, with no unit file of its own.
+func TestOwnedLoopbackSliceIsTopLevel(t *testing.T) {
+	t.Parallel()
+	name := strings.TrimSuffix(ownedLoopbackSlice, ".slice")
+	if name == ownedLoopbackSlice {
+		t.Fatalf("owned loopback slice %q does not end in .slice", ownedLoopbackSlice)
+	}
+	if strings.Contains(name, "-") {
+		t.Fatalf("owned loopback slice %q contains a hyphen, so systemd nests it under %q.slice and its cgroup sits below level 1; the nft rules match at level 1 and would never resolve",
+			ownedLoopbackSlice, strings.SplitN(name, "-", 2)[0])
+	}
+	// The rules must match the slice at exactly level 1, which is only correct
+	// for a top-level slice.
+	rules := nftOwnedLoopbackOutputRules(966) + nftOwnedLoopbackInputChain()
+	if !strings.Contains(rules, `socket cgroupv2 level 1 "`+ownedLoopbackSlice+`"`) {
+		t.Fatalf("rules do not match the owned slice at level 1:\n%s", rules)
+	}
+	// The anchor unit must place itself in that same slice, or the cgroup the
+	// rules name is never created by anything.
+	if !strings.Contains(renderOwnedLoopbackAnchorUnit(), "Slice="+ownedLoopbackSlice+"\n") {
+		t.Fatalf("anchor unit does not join %s:\n%s", ownedLoopbackSlice, renderOwnedLoopbackAnchorUnit())
 	}
 }

@@ -13,7 +13,17 @@ const (
 	// ownedLoopbackSlice is a shallow, Pipelock-owned cgroup-v2 anchor. nft
 	// resolves this path when it loads a rule, so install starts the anchor
 	// before it validates or loads the ruleset.
-	ownedLoopbackSlice      = "pipelock-contained.slice"
+	// NO HYPHEN. systemd treats "-" in a slice name as a HIERARCHY SEPARATOR,
+	// so "pipelock-contained.slice" is not a top-level slice at all: it is a
+	// child of an implicitly created "pipelock.slice", and its cgroup path is
+	// "pipelock.slice/pipelock-contained.slice" at level 2. The nft rules below
+	// match at level 1, so the path never resolved, and because nft resolves a
+	// cgroup path when it LOADS a rule, install failed outright with
+	// "cgroupv2 path fails: No such file or directory". Underscore carries no
+	// hierarchy meaning, so this name is genuinely top-level and level 1 is
+	// correct. Verified on a real host: the failing install created an empty
+	// /sys/fs/cgroup/pipelock.slice with no unit file behind it.
+	ownedLoopbackSlice      = "pipelock_contained.slice"
 	ownedLoopbackInputChain = "pipelock_owned_loopback_input"
 
 	// ownedLoopbackConntrackMark is reserved for a loopback flow whose source
@@ -115,7 +125,7 @@ Before=pipelock-containment-nft.service
 
 [Service]
 Type=simple
-Slice=pipelock-contained.slice
+Slice=` + ownedLoopbackSlice + `
 ExecStart=/usr/bin/sleep infinity
 Restart=always
 RestartSec=1

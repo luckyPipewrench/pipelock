@@ -938,8 +938,10 @@ func TestDecide_ShellExecution_ResponseScanningDisabled(t *testing.T) {
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
-	if decision.Outcome == Allow {
-		t.Errorf("core injection in a command must not be allowed with response_scanning disabled: %s", decision.UserMessage)
+	// Not merely "not Allow": Ask or an error outcome would also satisfy that
+	// while proving nothing about the floor resolving to enforcement.
+	if decision.Outcome != Deny {
+		t.Errorf("core injection in a command must Deny with response_scanning disabled, got %s: %s", decision.Outcome, decision.UserMessage)
 	}
 }
 
@@ -981,8 +983,10 @@ func TestDecide_ReadFile_ResponseScanningDisabled(t *testing.T) {
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
-	if decision.Outcome == Allow {
-		t.Errorf("core injection in file content must not be allowed with response_scanning disabled: %s", decision.UserMessage)
+	// Not merely "not Allow": Ask or an error outcome would also satisfy that
+	// while proving nothing about the floor resolving to enforcement.
+	if decision.Outcome != Deny {
+		t.Errorf("core injection in file content must Deny with response_scanning disabled, got %s: %s", decision.Outcome, decision.UserMessage)
 	}
 }
 

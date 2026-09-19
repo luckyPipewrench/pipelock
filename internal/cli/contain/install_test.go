@@ -224,42 +224,43 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:                  out,
-		errOut:               out,
-		operatorUser:         containInstallOperatorUser,
-		proxyUserName:        "pipelock-proxy",
-		agentUserName:        "pipelock-agent",
-		configDir:            filepath.Join(root, "etc", "pipelock"),
-		dataDir:              filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:           filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath:       filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:         filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:          filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		nftPersistUnitPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
-		nftExpiryServicePath: filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
-		nftExpiryTimerPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
-		sudoersPath:          filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:         filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		systemCABundlePath:   filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
-		caExportPath:         filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:         filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:         filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath:       filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:        filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		workspaceInvPath:     filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
-		evidenceACLInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
-		guardScriptPath:      filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
-		guardServiceUnit:     filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
-		guardPathUnit:        filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
-		undiciShimPath:       filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
-		profileScriptPath:    filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
-		agentHome:            filepath.Join(root, "home", "pipelock-agent"),
-		pipelockTarget:       filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		bashPath:             "/bin/bash",
-		nologinPath:          "/usr/sbin/nologin",
-		nftPath:              testNFT,
-		curlPath:             "/usr/bin/curl",
-		proxyPort:            8888,
+		out:                         out,
+		errOut:                      out,
+		operatorUser:                containInstallOperatorUser,
+		proxyUserName:               "pipelock-proxy",
+		agentUserName:               "pipelock-agent",
+		configDir:                   filepath.Join(root, "etc", "pipelock"),
+		dataDir:                     filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:                  filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:              filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:                filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:                 filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		nftPersistUnitPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
+		ownedLoopbackAnchorUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock-contained-anchor.service"),
+		nftExpiryServicePath:        filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
+		nftExpiryTimerPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
+		sudoersPath:                 filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:                filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		systemCABundlePath:          filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
+		caExportPath:                filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:                filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:                filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:               filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		evidenceACLInvPath:          filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		guardScriptPath:             filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit:            filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:               filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
+		undiciShimPath:              filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
+		profileScriptPath:           filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
+		agentHome:                   filepath.Join(root, "home", "pipelock-agent"),
+		pipelockTarget:              filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		bashPath:                    "/bin/bash",
+		nologinPath:                 "/usr/sbin/nologin",
+		nftPath:                     testNFT,
+		curlPath:                    "/usr/bin/curl",
+		proxyPort:                   8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -270,6 +271,11 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		t.Fatalf("write fake src: %v", err)
 	}
 	env.pipelockBinary = filepath.Join(root, "src", "pipelock")
+	runner.responses[argvFor("systemctl", "is-active", filepath.Base(env.ownedLoopbackAnchorUnitPath))] = struct {
+		out  string
+		code int
+		err  error
+	}{out: systemctlActive + "\n"}
 
 	// Pre-create the wrapperDir so wrapper writes don't fail.
 	if err := os.MkdirAll(env.wrapperDir, 0o755); err != nil { //nolint:gosec // tmpdir
@@ -497,6 +503,7 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 		env.systemUnitPath,
 		env.nftRulesPath,
 		filepath.Join(env.wrapperDir, "plk-launch"),
+		filepath.Join(env.wrapperDir, "plk-contained-launch"),
 		filepath.Join(env.wrapperDir, "plk"),
 		filepath.Join(env.wrapperDir, "plk-claude"),
 		env.wrapperInvPath,
@@ -616,6 +623,16 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	}
 
 	for _, path := range tracked {
+		if path == filepath.Join(env.wrapperDir, "plk") || path == filepath.Join(env.wrapperDir, "plk-claude") {
+			// These dispatchers now target the fixed contained-launch boundary,
+			// so changing the agent identity does not rewrite them. Their
+			// first-install backups therefore remain in place unchanged.
+			assertFileContents(t, path+".bak", legacyBody(path, legacyBodies))
+			if archives := backupArchives(t, path); len(archives) != 0 {
+				t.Fatalf("unchanged %s unexpectedly rotated backups: %v", path, archives)
+			}
+			continue
+		}
 		assertFileContents(t, path+".bak", firstLive[path])
 		archives := backupArchives(t, path)
 		if len(archives) != 1 {
@@ -1071,11 +1088,11 @@ func TestRenderLaunchWrapper_HasExpectedEnv(t *testing.T) {
 func TestRenderToolWrapper_UsesSudo(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderToolWrapper(env, "claude")
-	if !strings.Contains(body, "sudo -n -u pipelock-agent") {
+	if !strings.Contains(body, "sudo -n ") || strings.Contains(body, "sudo -n -u") {
 		t.Errorf("missing outer non-interactive sudo: %s", body)
 	}
-	if !strings.Contains(body, "plk-launch claude") {
-		t.Errorf("missing plk-launch dispatch: %s", body)
+	if !strings.Contains(body, "plk-contained-launch claude") {
+		t.Errorf("missing contained launcher dispatch: %s", body)
 	}
 }
 
@@ -1085,7 +1102,7 @@ func TestRenderMetaWrapper_UsesSudoAndDispatchesArgs(t *testing.T) {
 	if !strings.Contains(body, "usage: plk <tool> [args...]") {
 		t.Errorf("missing usage: %s", body)
 	}
-	if !strings.Contains(body, "sudo -n -u pipelock-agent") {
+	if !strings.Contains(body, "sudo -n ") || strings.Contains(body, "sudo -n -u") {
 		t.Errorf("missing outer non-interactive sudo: %s", body)
 	}
 	if !strings.Contains(body, `=~ ^[a-z0-9][a-z0-9_-]{0,30}$`) {
@@ -1094,18 +1111,18 @@ func TestRenderMetaWrapper_UsesSudoAndDispatchesArgs(t *testing.T) {
 	if !strings.Contains(body, "missing or empty allow-list") {
 		t.Errorf("missing allow-list precheck: %s", body)
 	}
-	if !strings.Contains(body, "plk-launch") || !strings.Contains(body, `"$@"`) {
-		t.Errorf("missing full argv dispatch to plk-launch: %s", body)
+	if !strings.Contains(body, "plk-contained-launch") || !strings.Contains(body, `"$@"`) {
+		t.Errorf("missing full argv dispatch to contained launcher: %s", body)
 	}
 }
 
 func TestRenderSudoers_HasOperatorAndLauncher(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderSudoers(env)
-	if !strings.Contains(body, "operator ALL=(pipelock-agent) NOPASSWD: ") {
+	if !strings.Contains(body, "operator ALL=(root) NOPASSWD: ") {
 		t.Errorf("sudoers missing rule: %s", body)
 	}
-	if !strings.Contains(body, "plk-launch *") {
+	if !strings.Contains(body, "plk-contained-launch *") {
 		t.Errorf("sudoers missing glob: %s", body)
 	}
 }
@@ -2158,12 +2175,12 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 31 steps total after combining the runtime
+	// Sanity: the install flow has 33 steps total after combining the runtime
 	// contract steps, credential guard, operator evidence ACL, and final
 	// readiness gate. Changing this count changes documented dry-run output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 31 {
-		t.Errorf("installSteps count: got %d, want 31", len(steps))
+	if len(steps) != 33 {
+		t.Errorf("installSteps count: got %d, want 33", len(steps))
 	}
 }
 

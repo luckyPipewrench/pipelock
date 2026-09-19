@@ -137,8 +137,8 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionPreserve("user-mode pipelock (operator decides whether to re-enable)"),
 		actionRemoveSystemUnit(),
 		actionDisablePipelockService(),
-		actionRemovePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
-		actionRemovePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
+		actionRestorePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
+		actionRestorePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
@@ -228,6 +228,22 @@ func actionRemovePath(desc string, pathFn func(*installEnv) string) step {
 			}
 			// Also drop the .bak if present.
 			_ = env.removeFile(path + ".bak")
+			return nil
+		},
+	}
+}
+
+// actionRestorePath reverses a backup-aware install write. It restores a
+// pre-install file when one exists and otherwise removes only the artifact the
+// installer created.
+func actionRestorePath(desc string, pathFn func(*installEnv) string) step {
+	return step{
+		name: "restore-" + desc,
+		desc: "restore or remove " + desc,
+		undo: func(_ context.Context, env *installEnv) error {
+			if err := restoreBackup(env, pathFn(env)); err != nil {
+				return fmt.Errorf("restore %s: %w", desc, err)
+			}
 			return nil
 		},
 	}

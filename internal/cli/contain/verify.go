@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,6 +135,8 @@ type probeEnv struct {
 	wrapperDir           string
 	toolWrappers         []string
 	caBundlePath         string
+	caExportPath         string
+	configDir            string
 	launchPath           string
 	nftTable             string
 	nftChain             string
@@ -179,6 +182,7 @@ type probeEnv struct {
 	selfPath        func() (string, error)
 	hashFile        func(path string) (string, error)
 	privateTmpProbe func(context.Context, *probeEnv) (string, string)
+	currentCA       func(context.Context, *probeEnv) ([]byte, error)
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -195,6 +199,8 @@ func defaultProbeEnv() *probeEnv {
 		wrapperDir:           defaultWrapperDir,
 		toolWrappers:         append([]string(nil), defaultToolWrappers...),
 		caBundlePath:         defaultCABundlePath,
+		caExportPath:         defaultCAExportPath,
+		configDir:            defaultConfigDir,
 		launchPath:           defaultLaunchScript,
 		nftTable:             defaultNFTTable,
 		nftChain:             defaultNFTChain,
@@ -358,6 +364,7 @@ func allProbes() []probe {
 		{13, "managed_config_metrics", "managed config keeps metrics on loopback or a current, source-scoped exception", probeManagedConfigMetrics},
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
+		{19, "pipelock_ca_export_current", "exported Pipelock CA matches the CA in the contain-managed keystore", probeCurrentCAExport},
 	}
 }
 
@@ -371,13 +378,16 @@ func probesForEnv(env *probeEnv) []probe {
 			}
 		}
 	}
-	// Preserve workspace_access as published probe 15. The new private-temp probe
-	// is 16; insert the conditional workspace result before it so configured
-	// output remains numerically ordered without renumbering the existing result.
+	// Preserve workspace_access as published probe 15. Insert it before the
+	// existing private-temp probe so configured output remains numerically ordered.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		privateTmp := probes[len(probes)-1]
-		probes[len(probes)-1] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
-		probes = append(probes, privateTmp)
+		privateTmpIndex := slices.IndexFunc(probes, func(p probe) bool { return p.name == "private_tmp_isolation" })
+		if privateTmpIndex < 0 {
+			return probes
+		}
+		probes = append(probes, probe{})
+		copy(probes[privateTmpIndex+1:], probes[privateTmpIndex:])
+		probes[privateTmpIndex] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
 	}
 	return probes
 }
@@ -693,6 +703,64 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	return statusPass, fmt.Sprintf("plk-launch clears the environment (env -i) and rebuilds exactly the %d-variable runtime contract, with the proxy, no-proxy, CA and identity values bound to this install", len(expected))
 }
 
+// probeCurrentCAExport compares the exported single CA with the CA selected by
+// the running proxy. Subject names are insufficient because a rotated CA can
+// retain the same subject while having different signing material.
+func probeCurrentCAExport(ctx context.Context, env *probeEnv) (string, string) {
+	exported, err := os.ReadFile(filepath.Clean(env.caExportPath))
+	if err != nil {
+		return statusFail, fmt.Sprintf("read exported Pipelock CA %s: %v; run `pipelock contain install` or `pipelock contain ca-refresh`", env.caExportPath, err)
+	}
+	if err := validateSingleCAPEM(exported); err != nil {
+		return statusFail, fmt.Sprintf("exported Pipelock CA %s is invalid: %v; run `pipelock contain ca-refresh`", env.caExportPath, err)
+	}
+	currentReader := env.currentCA
+	if currentReader == nil {
+		currentReader = currentCAForVerify
+	}
+	current, err := currentReader(ctx, env)
+	if err != nil {
+		return statusFail, fmt.Sprintf("read the selected Pipelock CA: %v; run `pipelock contain ca-refresh` after the proxy is healthy", err)
+	}
+	if err := validateSingleCAPEM(current); err != nil {
+		return statusFail, fmt.Sprintf("proxy returned an invalid current TLS CA: %v", err)
+	}
+	// Compare DECODED certificate material. Byte-comparing the PEM would reject
+	// the same certificate re-encoded with different but equally valid line
+	// wrapping or headers, which is a false alarm on a security probe and the
+	// fastest way to get an operator to stop trusting it.
+	exportedDER, err := firstCertificateDER(exported)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode exported Pipelock CA %s: %v; run `pipelock contain ca-refresh`", env.caExportPath, err)
+	}
+	currentDER, err := firstCertificateDER(current)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode the selected Pipelock CA: %v", err)
+	}
+	if !bytes.Equal(exportedDER, currentDER) {
+		return statusFail, fmt.Sprintf("exported Pipelock CA %s does not match the selected Pipelock CA; run `pipelock contain ca-refresh`", env.caExportPath)
+	}
+	return statusPass, "exported Pipelock CA matches the selected Pipelock CA (compared by material, not subject name; not a live handshake)"
+}
+
+func currentCAForVerify(ctx context.Context, env *probeEnv) ([]byte, error) {
+	args := []string{"-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"}
+	certPath := filepath.Join(env.configDir, "tls", "ca.pem")
+	if _, err := env.stat(certPath); err == nil {
+		args = append(args, "--cert", certPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect configured TLS CA %s: %w", certPath, err)
+	}
+	out, code, err := env.runCmd(ctx, "sudo", args...)
+	if err != nil {
+		return nil, fmt.Errorf("exec pipelock tls show-ca: %w", err)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("pipelock tls show-ca exited %d", code)
+	}
+	return []byte(out), nil
+}
+
 // launchEnvAssign is one NAME=VALUE assignment read from a launcher's exec
 // block, with surrounding shell quoting stripped from the value.
 type launchEnvAssign struct {
@@ -759,7 +827,11 @@ func firstLaunchEnvValueMismatch(assigns []launchEnvAssign, env *probeEnv) (name
 		"no_proxy":    contractNoProxy,
 	}
 	if env.caBundlePath != "" {
-		for _, n := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "CARGO_HTTP_CAINFO", "PIP_CERT"} {
+		// NODE_EXTRA_CA_CERTS joined this list when the contract stopped pointing
+		// Node at the single-CA export. Leaving it out let this probe pass a
+		// launcher that still pointed Node at the stale export, which is the
+		// leftover wrapper the export refresh exists to stop trusting.
+		for _, n := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "CARGO_HTTP_CAINFO", "PIP_CERT", "NODE_EXTRA_CA_CERTS"} {
 			expect[n] = env.caBundlePath
 		}
 	}
@@ -2799,7 +2871,7 @@ func wrappersForVerify(env *probeEnv) ([]string, error) {
 // Probe 5: ca_bundle_present
 // ---------------------------------------------------------------------------
 
-func probeCABundle(_ context.Context, env *probeEnv) (string, string) {
+func probeCABundle(ctx context.Context, env *probeEnv) (string, string) {
 	data, err := os.ReadFile(filepath.Clean(env.caBundlePath))
 	if err != nil {
 		return statusFail, fmt.Sprintf("read %s: %v", env.caBundlePath, err)
@@ -2815,12 +2887,102 @@ func probeCABundle(_ context.Context, env *probeEnv) (string, string) {
 	if pipelockCN == "" {
 		return statusFail, fmt.Sprintf("%s has %d cert(s); none match Pipelock", env.caBundlePath, count)
 	}
-	return statusPass, fmt.Sprintf("%d certs in bundle; pipelock CA CN=%s", count, pipelockCN)
+	// A subject common name is chosen by whoever mints the certificate, so two
+	// different Pipelock CAs carry the same one. This bundle is what every
+	// contained client actually trusts (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS and
+	// their siblings all point here), so matching a name would let a rotated-out
+	// CA keep passing verification while clients trust material the proxy no
+	// longer presents. Require the selected CA's own bytes to be in the bundle.
+	currentReader := env.currentCA
+	if currentReader == nil {
+		currentReader = currentCAForVerify
+	}
+	current, err := currentReader(ctx, env)
+	if err != nil {
+		return statusFail, fmt.Sprintf("read the selected Pipelock CA to check %s: %v; run `pipelock contain ca-refresh` after the proxy is healthy", env.caBundlePath, err)
+	}
+	currentDER, err := firstCertificateDER(current)
+	if err != nil {
+		return statusFail, fmt.Sprintf("decode the selected Pipelock CA: %v", err)
+	}
+	if !bundleContainsCertificate(data, currentDER) {
+		return statusFail, fmt.Sprintf("%s does not contain the selected Pipelock CA (it has %d cert(s), including CN=%s); run `pipelock contain ca-refresh`", env.caBundlePath, count, pipelockCN)
+	}
+	// Presence of the current CA is not sufficient. A rotation that appended
+	// the new CA without removing the old one leaves BOTH trusted, so every
+	// contained client still accepts anything the retired CA signed. Requiring
+	// the current CA to be the ONLY Pipelock CA in the bundle is what makes a
+	// rotation actually retire the previous one.
+	if stale := stalePipelockCertsInBundle(data, currentDER); stale > 0 {
+		return statusFail, fmt.Sprintf("%s still contains %d retired Pipelock CA certificate(s) alongside the selected one, so contained clients keep trusting material the proxy no longer presents; run `pipelock contain ca-refresh`", env.caBundlePath, stale)
+	}
+	return statusPass, fmt.Sprintf("%d certs in bundle, including the selected Pipelock CA CN=%s (matched by certificate material, not subject name)", count, pipelockCN)
+}
+
+// firstCertificateDER returns the DER bytes of the first CERTIFICATE block in a
+// PEM input, so comparisons are on certificate material rather than on an
+// encoding that can differ while describing the same certificate.
+func firstCertificateDER(pemBytes []byte) ([]byte, error) {
+	rest := pemBytes
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("no CERTIFICATE block found")
+		}
+		if block.Type == "CERTIFICATE" {
+			return block.Bytes, nil
+		}
+	}
+}
+
+// bundleContainsCertificate reports whether a PEM bundle carries a certificate
+// with exactly the given DER bytes.
+func bundleContainsCertificate(bundle, wantDER []byte) bool {
+	rest := bundle
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return false
+		}
+		if block.Type == "CERTIFICATE" && bytes.Equal(block.Bytes, wantDER) {
+			return true
+		}
+	}
 }
 
 // scanPipelockCertCN walks a PEM blob and returns the total cert
 // count and the CN of the first certificate whose subject CN
 // contains "pipelock" (case-insensitive).
+
+// stalePipelockCertsInBundle counts Pipelock-issued certificates in the bundle
+// that are NOT the currently selected CA. Each one is a CA whose signatures
+// contained clients still accept after it should have been retired.
+func stalePipelockCertsInBundle(bundle, currentDER []byte) int {
+	stale := 0
+	rest := bundle
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return stale
+		}
+		if block.Type != "CERTIFICATE" || bytes.Equal(block.Bytes, currentDER) {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			// Unparseable entries are counted by the bundle parse above; this
+			// check only judges certificates it can read.
+			continue
+		}
+		if strings.Contains(strings.ToLower(cert.Subject.CommonName), "pipelock") {
+			stale++
+		}
+	}
+}
+
 func scanPipelockCertCN(data []byte) (int, string, error) {
 	var count int
 	var pipelockCN string

@@ -390,7 +390,11 @@ func TestStepExportPipelockCAUndoAndErrorBranches(t *testing.T) {
 	if _, err := step.apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "invalid CA PEM") {
 		t.Fatalf("expected invalid pem error, got %v", err)
 	}
-	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+	current := testPEMCA(t)
+	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return current, 0, nil
+	}
+	if err := os.WriteFile(env.caExportPath, []byte(current), 0o600); err != nil {
 		t.Fatalf("write ca: %v", err)
 	}
 	applied, err := step.apply(context.Background(), env)

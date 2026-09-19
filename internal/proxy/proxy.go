@@ -327,8 +327,7 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 // attacker can aim at the model while keeping the rendered page clean.
 var (
 	reHTMLComment = regexp.MustCompile(`(?s)<!--(.*?)-->`)
-	// Capture attribute blob separately so executable JS can be filtered out.
-	reScriptTag      = regexp.MustCompile(`(?si)<script(\s[^>]*)?>(.*?)</script>`)
+	// type= inside a script start-tag attribute blob (quote-aware parsed).
 	reScriptTypeAttr = regexp.MustCompile(`(?i)\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
 	reStyleBody      = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
 	reHiddenElement  = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
@@ -336,21 +335,36 @@ var (
 		`[^>]*>(.*?)</`)
 )
 
+// scriptElement is one matched <script>...</script> region. Attrs is the
+// start-tag attribute blob (may be empty); bodyStart/bodyEnd index the body
+// exclusive of the tags; elemStart/elemEnd cover the full element.
+type scriptElement struct {
+	attrs     string
+	body      string
+	bodyStart int
+	bodyEnd   int
+	elemStart int
+	elemEnd   int
+}
+
 // isExecutableJavaScriptMIME reports whether a <script type="..."> value is
-// executable JavaScript. Empty/default and "module" are HTML script-type
-// specials; MIME aliases join media.IsJavaScriptMediaType (RFC 9239 §6) so
-// historical aliases are not under-covered. Unknown types are treated as data
-// carriers (fail closed: still scanned).
+// executable JavaScript. Empty/default and the exact HTML special "module"
+// (ASCII case-insensitive, before any MIME parameters) are executable.
+// Parameterized values such as "module;charset=utf-8" are data blocks per
+// WHATWG HTML. MIME aliases join media.IsJavaScriptMediaType (RFC 9239 §6)
+// so historical aliases are not under-covered. Unknown types are treated as
+// data carriers (fail closed: still scanned).
 func isExecutableJavaScriptMIME(typeAttr string) bool {
 	t := strings.ToLower(strings.TrimSpace(typeAttr))
 	if t == "" {
 		return true
 	}
-	if i := strings.IndexByte(t, ';'); i >= 0 {
-		t = strings.TrimSpace(t[:i])
-	}
+	// Exact "module" token only — check before stripping ;params.
 	if t == "module" {
 		return true
+	}
+	if i := strings.IndexByte(t, ';'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
 	}
 	return media.IsJavaScriptMediaType(t)
 }
@@ -368,26 +382,166 @@ func scriptTypeAttribute(attrs string) string {
 	return ""
 }
 
+// scriptTagNameBoundary reports whether b may follow the letters of a
+// "script" tag name in HTML (start or end tag).
+func scriptTagNameBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '/', '>':
+		return true
+	default:
+		return false
+	}
+}
+
+// findScriptStartAfter locates a <script ...> start tag beginning at or after
+// from. It uses a quote-aware attribute scan so a literal '>' inside a quoted
+// attribute value does not truncate the start tag. Returns elemStart,
+// attrs (text between tag name and closing '>'), bodyStart, and ok.
+func findScriptStartAfter(html string, from int) (elemStart, bodyStart int, attrs string, ok bool) {
+	lower := strings.ToLower(html)
+	search := from
+	for {
+		idx := strings.Index(lower[search:], "<script")
+		if idx < 0 {
+			return 0, 0, "", false
+		}
+		elemStart = search + idx
+		afterName := elemStart + len("<script")
+		if afterName < len(html) && !scriptTagNameBoundary(html[afterName]) {
+			search = afterName
+			continue
+		}
+		// Quote-aware scan for the '>' that ends the start tag.
+		inQuote := byte(0)
+		i := afterName
+		for i < len(html) {
+			c := html[i]
+			if inQuote != 0 {
+				if c == inQuote {
+					inQuote = 0
+				}
+				i++
+				continue
+			}
+			switch c {
+			case '"', '\'':
+				inQuote = c
+				i++
+			case '>':
+				attrs = html[afterName:i]
+				return elemStart, i + 1, attrs, true
+			default:
+				i++
+			}
+		}
+		// Truncated start tag: stop (fail closed — no body extracted).
+		return 0, 0, "", false
+	}
+}
+
+// findScriptEndAfter finds the end of a script element's body (index of
+// '</script>') starting at bodyStart. Returns bodyEnd (start of end tag) and
+// elemEnd (after end tag), or ok=false if unclosed.
+func findScriptEndAfter(html string, bodyStart int) (bodyEnd, elemEnd int, ok bool) {
+	lower := strings.ToLower(html)
+	search := bodyStart
+	for {
+		idx := strings.Index(lower[search:], "</script")
+		if idx < 0 {
+			return 0, 0, false
+		}
+		endName := search + idx
+		afterName := endName + len("</script")
+		if afterName < len(html) && !scriptTagNameBoundary(html[afterName]) {
+			search = afterName
+			continue
+		}
+		// Consume optional whitespace and optional '/', then require '>'.
+		i := afterName
+		for i < len(html) && (html[i] == ' ' || html[i] == '\t' || html[i] == '\n' || html[i] == '\r') {
+			i++
+		}
+		if i < len(html) && html[i] == '/' {
+			i++
+		}
+		if i < len(html) && html[i] == '>' {
+			return endName, i + 1, true
+		}
+		search = afterName
+	}
+}
+
+// findScriptElements returns every well-formed <script>...</script> pair.
+// Start tags are parsed with a quote-aware attribute scanner.
+func findScriptElements(html string) []scriptElement {
+	var out []scriptElement
+	from := 0
+	for {
+		elemStart, bodyStart, attrs, ok := findScriptStartAfter(html, from)
+		if !ok {
+			return out
+		}
+		bodyEnd, elemEnd, ok := findScriptEndAfter(html, bodyStart)
+		if !ok {
+			// Unclosed script: stop matching further (matches prior regex fail-closed).
+			return out
+		}
+		out = append(out, scriptElement{
+			attrs:     attrs,
+			body:      html[bodyStart:bodyEnd],
+			bodyStart: bodyStart,
+			bodyEnd:   bodyEnd,
+			elemStart: elemStart,
+			elemEnd:   elemEnd,
+		})
+		from = elemEnd
+	}
+}
+
+// rangeOverlaps reports whether [a0,a1) overlaps any [r0,r1) in ranges.
+func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
+	for _, r := range ranges {
+		if a0 < r[1] && a1 > r[0] {
+			return true
+		}
+	}
+	return false
+}
+
 // extractHiddenContent pulls text from HTML elements that readability strips
 // and that can carry model-facing prose while keeping the rendered page clean:
 // comments, non-executable data script bodies, style bodies, and hidden
 // elements. Executable JavaScript bodies are omitted (see var block comment).
+// HTML comments whose ranges fall inside executable <script> elements are
+// also skipped so JS strings / markup containing <!-- --> do not re-enter the
+// scanned surface after executable bodies were filtered out.
 //
 // Gap: <noscript> bodies are not extracted today. Rendered/agent text may still
 // include noscript content via readability; do not treat this helper as
 // covering that surface.
 func extractHiddenContent(html string) string {
-	var b strings.Builder
-	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
-		b.WriteByte('\n')
+	scripts := findScriptElements(html)
+	var execRanges [][2]int
+	for _, s := range scripts {
+		if isExecutableJavaScriptMIME(scriptTypeAttribute(s.attrs)) {
+			execRanges = append(execRanges, [2]int{s.elemStart, s.elemEnd})
+		}
 	}
-	for _, m := range reScriptTag.FindAllStringSubmatch(html, -1) {
-		attrs, body := m[1], m[2]
-		if isExecutableJavaScriptMIME(scriptTypeAttribute(attrs)) {
+
+	var b strings.Builder
+	for _, loc := range reHTMLComment.FindAllStringSubmatchIndex(html, -1) {
+		// loc[0]:loc[1] full match; loc[2]:loc[3] group 1 body.
+		if rangeOverlaps(loc[0], loc[1], execRanges) {
 			continue
 		}
-		b.WriteString(body)
+		b.WriteString(html[loc[2]:loc[3]])
+		b.WriteByte('\n')
+	}
+	for _, s := range scripts {
+		if isExecutableJavaScriptMIME(scriptTypeAttribute(s.attrs)) {
+			continue
+		}
+		b.WriteString(s.body)
 		b.WriteByte('\n')
 	}
 	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {

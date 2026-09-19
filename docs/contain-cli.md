@@ -226,6 +226,7 @@ pipelock contain verify
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 | 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |
+| 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA currently returned by the proxy. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 
@@ -398,7 +399,7 @@ The contract has four parts:
 
    - Proxy (upper- and lower-case): `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lowercase forms, all pointing at `http://127.0.0.1:<proxy-port>`.
    - `NO_PROXY` / `no_proxy` = `127.0.0.1,localhost,::1` (IPv6 loopback included so IPv6-first clients don't proxy a local dial).
-   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT` → the combined bundle; `NODE_EXTRA_CA_CERTS` → the Pipelock CA (node *appends* this to its built-in store).
+   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT`, and `NODE_EXTRA_CA_CERTS` → the combined bundle. Node appends it to its built-in store; using the shared bundle keeps all clients on the same rotated CA.
    - `NODE_OPTIONS=--require <undici-shim>` (see below).
 
 2. **node undici shim** (`/etc/pipelock/contain/undici-shim.cjs`). Node's built-in `fetch()` and undici-based clients ignore `HTTPS_PROXY` unless a global dispatcher is installed. The shim installs an undici `ProxyAgent` at startup. It is best-effort: if undici cannot be required, `http`/`https`-module traffic still honors the proxy env, so the shim degrades silently rather than breaking node.
@@ -603,7 +604,7 @@ Flags:
 
 ## `pipelock contain ca-refresh`
 
-Rebuilds `/etc/pipelock/combined-ca.pem` after the Pipelock CA has rotated, or after the system trust store has changed.
+Refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore and rebuilds `/etc/pipelock/combined-ca.pem` after a Pipelock CA rotation or a system trust-store change. `contain verify` compares the single export with that keystore CA by certificate material rather than by subject name, and fails rather than reporting readiness when they differ. This is not a live handshake: a proxy that has been running since before a rotation still holds the previous CA in memory, and only a restart makes the selected CA the served one.
 
 ```bash
 sudo pipelock contain ca-refresh

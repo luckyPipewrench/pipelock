@@ -149,6 +149,13 @@ func runCARefresh(ctx context.Context, env *installEnv, opts caRefreshOpts) erro
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 	}
 	if err := rebuildCombinedBundle(env, systemBundle); err != nil {
+		// The export above already landed. Leaving it would split the two trust
+		// files: ca.pem on the new CA, combined-ca.pem on the old one. Put the
+		// export back so both files describe the same CA and a rerun starts
+		// from a coherent state.
+		if rerr := restoreBackupIfPresent(env, env.caExportPath); rerr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%w (and restoring %s failed: %w; rerun `pipelock contain install` as root)", err, env.caExportPath, rerr))
+		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 	}
 	_, _ = fmt.Fprintln(env.out, "ca-refresh complete.")
@@ -366,14 +373,34 @@ func exportPipelockCA(ctx context.Context, env *installEnv) error {
 	if err := ensureSafeWriteTarget(env, env.caExportPath); err != nil {
 		return fmt.Errorf("validate CA export path %s: %w", env.caExportPath, err)
 	}
-	// Drop any stale on-disk export so a partial write can't fool the
-	// combined-bundle step into reading old bytes.
-	_ = env.removeFile(env.caExportPath)
+	current, err := currentPipelockCA(ctx, env)
+	if err != nil {
+		return err
+	}
+	// Back up rather than overwrite, so a later failure in this command can put
+	// the previous export back. ca-refresh used a plain write while install
+	// backed the file up, which let a failed bundle rebuild leave ca.pem on the
+	// new CA and combined-ca.pem on the old one. Clients follow the combined
+	// bundle, so that split leaves them trusting the previous CA while the
+	// single export looks correct.
+	if _, err := backupAndWriteIfChanged(env, env.caExportPath, current, modeCAReadable); err != nil {
+		return fmt.Errorf("write Pipelock CA export: %w", err)
+	}
+	return nil
+}
 
+// currentPipelockCA obtains and validates the CA in the contain-managed
+// keystore, which is the CA the proxy loads at startup. It reads that file
+// through `pipelock tls show-ca`; it does not perform a handshake, so it
+// reports the SELECTED CA and not necessarily the one a long-running proxy
+// still holds in memory. Callers that need rollback-safe writes may persist these bytes
+// with backupAndWrite; callers that only refresh an explicit output can write
+// them directly.
+func currentPipelockCA(ctx context.Context, env *installEnv) ([]byte, error) {
 	certPath := containManagedTLSCertPath(env)
 	out, code, err := runShowCA(ctx, env, certPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if code != 0 {
 		// Likely "ca.pem not found" because the selected CA path does
@@ -386,24 +413,24 @@ func exportPipelockCA(ctx context.Context, env *installEnv) error {
 		}
 		initOut, initCode, initErr := env.runCmd(ctx, "sudo", args...)
 		if initErr != nil {
-			return fmt.Errorf("exec sudo pipelock tls init: %w (captured %d bytes of output)", initErr, len(initOut))
+			return nil, fmt.Errorf("exec sudo pipelock tls init: %w (captured %d bytes of output)", initErr, len(initOut))
 		}
 		if initCode != 0 {
-			return fmt.Errorf("pipelock tls init exited %d (captured %d bytes of output)", initCode, len(initOut))
+			return nil, fmt.Errorf("pipelock tls init exited %d (captured %d bytes of output)", initCode, len(initOut))
 		}
 		out, code, err = runShowCA(ctx, env, certPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if code != 0 {
-			return fmt.Errorf("pipelock tls show-ca after init exited %d (captured %d bytes of output)", code, len(out))
+			return nil, fmt.Errorf("pipelock tls show-ca after init exited %d (captured %d bytes of output)", code, len(out))
 		}
 	}
 
 	if err := validateSingleCAPEM([]byte(out)); err != nil {
-		return fmt.Errorf("pipelock tls show-ca returned invalid CA PEM: %w", err)
+		return nil, fmt.Errorf("pipelock tls show-ca returned invalid CA PEM: %w", err)
 	}
-	return env.writeFile(env.caExportPath, []byte(out), modeCAReadable)
+	return []byte(out), nil
 }
 
 func validateSingleCAPEM(data []byte) error {

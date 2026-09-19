@@ -301,6 +301,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	for _, unit := range []string{filepath.Base(env.nftExpiryTimerPath), filepath.Base(env.nftExpiryServicePath)} {
 		runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
 	}
+	runner.on(argvFor(testSudoCmd, "-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"), testPEMCA(t), 0, nil)
 
 	return env, runner, out
 }
@@ -1041,7 +1042,7 @@ func TestRenderLaunchWrapper_HasExpectedEnv(t *testing.T) {
 		"HTTPS_PROXY=http://127.0.0.1:8888",
 		"https_proxy=http://127.0.0.1:8888",
 		"NO_PROXY=127.0.0.1,localhost,::1",
-		"NODE_EXTRA_CA_CERTS=" + env.caExportPath,
+		"NODE_EXTRA_CA_CERTS=" + env.caBundlePath,
 		"SSL_CERT_FILE=" + env.caBundlePath,
 		"GIT_SSL_CAINFO=" + env.caBundlePath,
 		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",

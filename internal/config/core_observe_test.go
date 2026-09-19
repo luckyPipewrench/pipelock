@@ -127,6 +127,45 @@ func TestMatchCoreObserveException_ScopeIsExact(t *testing.T) {
 	}
 }
 
+func TestValidateCoreObserveExceptions_RefusesOverlongText(t *testing.T) {
+	for _, field := range []string{"reason", "owner"} {
+		t.Run(field, func(t *testing.T) {
+			entry := validObserveEntry(t)
+			long := strings.Repeat("x", 201)
+			if field == "reason" {
+				entry.Reason = long
+			} else {
+				entry.Owner = long
+			}
+			err := validateCoreObserveExceptions([]CoreObserveException{entry})
+			if err == nil || !strings.Contains(err.Error(), "200 characters or fewer") {
+				t.Fatalf("expected length refusal for %s, got %v", field, err)
+			}
+		})
+	}
+}
+
+func TestValidate_RejectsABadCoreObserveEntry(t *testing.T) {
+	// Proves the entry validator is actually reachable from Validate rather
+	// than only from its own unit test.
+	cfg := Defaults()
+	bad := validObserveEntry(t)
+	bad.Owner = ""
+	cfg.ResponseScanning.CoreObserveExceptions = []CoreObserveException{bad}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "owner is required") {
+		t.Fatalf("Validate did not reject the entry: %v", err)
+	}
+}
+
+func TestMatchCoreObserveException_BlankExpiryNeverExtends(t *testing.T) {
+	entry := validObserveEntry(t)
+	entry.Expires = "   "
+	if _, ok := MatchCoreObserveException([]CoreObserveException{entry}, "docs.vendor.example", "Prompt Injection", time.Now().UTC()); ok {
+		t.Fatal("a blank expiry was treated as live")
+	}
+}
+
 func TestMatchCoreObserveException_MalformedExpiryNeverExtends(t *testing.T) {
 	entry := validObserveEntry(t)
 	entry.Expires = "garbage"

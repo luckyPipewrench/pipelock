@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
-// CoreObserveDecision reports whether one core response finding on one host is
-// operator-declared as observe-only.
+// MatchCoreObserveException reports whether one core response finding on one
+// host is operator-declared as observe-only. The scanner and the config
+// validator both go through it so they agree by construction about what "an
+// active exception" means.
 //
 // The decision is re-evaluated at scan time rather than cached from config
 // load. A long-running proxy loaded a config months ago; if the declared
@@ -17,16 +19,6 @@ import (
 // for a reload. Validation refuses an already-expired entry at load, and this
 // check refuses one that expired while the process was running. Both
 // directions fail closed to blocking, which is the shipped behavior.
-func (c *Config) CoreObserveDecision(host, patternName string, now time.Time) (CoreObserveException, bool) {
-	if c == nil {
-		return CoreObserveException{}, false
-	}
-	return MatchCoreObserveException(c.ResponseScanning.CoreObserveExceptions, host, patternName, now)
-}
-
-// MatchCoreObserveException is the shared matcher. The scanner and the config
-// validator both go through it so they agree by construction about what "an
-// active exception" means.
 func MatchCoreObserveException(entries []CoreObserveException, host, patternName string, now time.Time) (CoreObserveException, bool) {
 	host = canonicalCoreObserveHost(host)
 	if host == "" || strings.TrimSpace(patternName) == "" {

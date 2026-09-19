@@ -47,6 +47,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -336,8 +337,10 @@ var (
 )
 
 // isExecutableJavaScriptMIME reports whether a <script type="..."> value is
-// executable JavaScript (including the empty/default type). Unknown types are
-// treated as data carriers (fail closed: still scanned).
+// executable JavaScript. Empty/default and "module" are HTML script-type
+// specials; MIME aliases join media.IsJavaScriptMediaType (RFC 9239 §6) so
+// historical aliases are not under-covered. Unknown types are treated as data
+// carriers (fail closed: still scanned).
 func isExecutableJavaScriptMIME(typeAttr string) bool {
 	t := strings.ToLower(strings.TrimSpace(typeAttr))
 	if t == "" {
@@ -346,18 +349,10 @@ func isExecutableJavaScriptMIME(typeAttr string) bool {
 	if i := strings.IndexByte(t, ';'); i >= 0 {
 		t = strings.TrimSpace(t[:i])
 	}
-	switch t {
-	case "module",
-		"text/javascript",
-		"application/javascript",
-		"text/ecmascript",
-		"application/ecmascript",
-		"text/jscript",
-		"application/x-javascript":
+	if t == "module" {
 		return true
-	default:
-		return false
 	}
+	return media.IsJavaScriptMediaType(t)
 }
 
 func scriptTypeAttribute(attrs string) string {
@@ -377,6 +372,10 @@ func scriptTypeAttribute(attrs string) string {
 // and that can carry model-facing prose while keeping the rendered page clean:
 // comments, non-executable data script bodies, style bodies, and hidden
 // elements. Executable JavaScript bodies are omitted (see var block comment).
+//
+// Gap: <noscript> bodies are not extracted today. Rendered/agent text may still
+// include noscript content via readability; do not treat this helper as
+// covering that surface.
 func extractHiddenContent(html string) string {
 	var b strings.Builder
 	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {

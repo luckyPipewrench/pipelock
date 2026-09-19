@@ -2404,7 +2404,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 					resp.ContentLength = int64(len(body))
 				}
-				if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
+				if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
 					// Nothing downstream reads these bytes: with response
 					// scanning off the fall-through path returns at the
 					// short-circuit below, which labels the outcome
@@ -2565,7 +2565,10 @@ responseScanning:
 		recordReverseOutcome(http.StatusForbidden, -1, "compressed_response")
 		return nil
 	}
-	if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
+	// sc.ResponseScanningEnabled(), not the raw flag: core response patterns are
+	// the immutable floor and stay live when the operator disables the optional
+	// layer. Forward and intercept already gate on the scanner for this reason.
+	if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
@@ -2582,7 +2585,7 @@ responseScanning:
 		// Browser Shield has no SSE pipeline. Preserve streaming when response
 		// scanning is disabled instead of buffering an open-ended response that
 		// neither enabled control would inspect.
-		if !cfg.ResponseScanning.Enabled {
+		if !sc.ResponseScanningEnabled() {
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
 			return nil
@@ -2995,7 +2998,7 @@ responseScanning:
 		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
 	}
-	if !cfg.ResponseScanning.Enabled {
+	if !sc.ResponseScanningEnabled() {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
@@ -3016,7 +3019,9 @@ responseScanning:
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
 	// Runs after suppression so the recorded action matches runtime.
 	{
-		revAction := cfg.ResponseScanning.Action
+		// ResponseAction() equals the configured action whenever the optional
+		// layer is on, and resolves to block when only the floor is live.
+		revAction := sc.ResponseAction()
 		if revRespExempt {
 			revAction = config.ActionWarn
 		}
@@ -3066,7 +3071,7 @@ responseScanning:
 		return nil
 	}
 
-	action := cfg.ResponseScanning.Action
+	action := sc.ResponseAction()
 	// Exempt domains: pin to warn for visibility without blocking.
 	if revRespExempt {
 		action = config.ActionWarn

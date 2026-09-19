@@ -925,7 +925,10 @@ func TestDecide_ShellExecution_ResponseScanningDisabled(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 	sc := scanner.MustNew(cfg)
 
-	// Injection text in command should be allowed when response scanning is disabled.
+	// response_scanning.enabled is the OPTIONAL layer. The core patterns are the
+	// immutable floor and keep running when it is off, so a core injection
+	// phrase in a command is NOT allowed through. This case previously asserted
+	// the opposite and encoded the bypass.
 	action := Action{
 		Source: "test",
 		Kind:   EventShellExecution,
@@ -935,8 +938,30 @@ func TestDecide_ShellExecution_ResponseScanningDisabled(t *testing.T) {
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
+	if decision.Outcome == Allow {
+		t.Errorf("core injection in a command must not be allowed with response_scanning disabled: %s", decision.UserMessage)
+	}
+}
+
+// TestDecide_ShellExecution_ResponseScanningDisabled_CleanCommandStillAllowed is
+// the positive control for the case above: with the same configuration an
+// ordinary command still runs, so the assertion is about the floor rather than
+// about decide refusing everything.
+func TestDecide_ShellExecution_ResponseScanningDisabled_CleanCommandStillAllowed(t *testing.T) {
+	cfg, _, pc := testSetup(t)
+	cfg.ResponseScanning.Enabled = false
+	sc := scanner.MustNew(cfg)
+
+	decision := Decide(context.Background(), cfg, sc, pc, Action{
+		Source: "test",
+		Kind:   EventShellExecution,
+		Shell: &ShellPayload{
+			Command: "echo building the quarterly report",
+			CWD:     "/tmp",
+		},
+	})
 	if decision.Outcome != Allow {
-		t.Errorf("injection in command should be allowed with response_scanning disabled, got %s: %s", decision.Outcome, decision.UserMessage)
+		t.Errorf("an ordinary command must still be allowed, got %s: %s", decision.Outcome, decision.UserMessage)
 	}
 }
 
@@ -945,7 +970,8 @@ func TestDecide_ReadFile_ResponseScanningDisabled(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 	sc := scanner.MustNew(cfg)
 
-	// Injection in file content should be allowed when response scanning is off.
+	// Same contract as the shell case: the floor still runs with the optional
+	// layer off, so core injection in file content is not allowed through.
 	action := Action{
 		Source: "test",
 		Kind:   EventReadFile,
@@ -955,8 +981,28 @@ func TestDecide_ReadFile_ResponseScanningDisabled(t *testing.T) {
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
+	if decision.Outcome == Allow {
+		t.Errorf("core injection in file content must not be allowed with response_scanning disabled: %s", decision.UserMessage)
+	}
+}
+
+// TestDecide_ReadFile_ResponseScanningDisabled_CleanContentStillAllowed is the
+// positive control for the case above.
+func TestDecide_ReadFile_ResponseScanningDisabled_CleanContentStillAllowed(t *testing.T) {
+	cfg, _, pc := testSetup(t)
+	cfg.ResponseScanning.Enabled = false
+	sc := scanner.MustNew(cfg)
+
+	decision := Decide(context.Background(), cfg, sc, pc, Action{
+		Source: "test",
+		Kind:   EventReadFile,
+		File: &FilePayload{
+			FilePath: "/tmp/notes.txt",
+			Content:  "the quarterly report is attached for review",
+		},
+	})
 	if decision.Outcome != Allow {
-		t.Errorf("injection in file content should be allowed with response_scanning disabled, got %s: %s", decision.Outcome, decision.UserMessage)
+		t.Errorf("ordinary file content must still be allowed, got %s: %s", decision.Outcome, decision.UserMessage)
 	}
 }
 

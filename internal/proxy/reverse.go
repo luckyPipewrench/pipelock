@@ -2404,7 +2404,13 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 					resp.ContentLength = int64(len(body))
 				}
-				if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
+				// NOTE: deliberately the raw flag, not sc.ResponseScanningEnabled().
+				// Making this generic-MIME path scan requires buffering the body,
+				// which breaks the short-chunked streaming contract that
+				// TestReverseProxy_MediaSniffPreservesShortChunkedStream pins.
+				// Closing this last instance is a streaming-behaviour decision,
+				// tracked separately rather than smuggled in with the guard swap.
+				if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
 					// Nothing downstream reads these bytes: with response
 					// scanning off the fall-through path returns at the
 					// short-circuit below, which labels the outcome

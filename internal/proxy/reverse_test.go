@@ -1342,14 +1342,38 @@ func TestReverseProxy_ResponseScanningDisabled(t *testing.T) {
 	resp := testGet(t, proxy.URL+"/api/data")
 	defer func() { _ = resp.Body.Close() }()
 
-	// Scanning disabled: passes through.
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 (scanning disabled), got %d", resp.StatusCode)
-	}
-
+	// The core response patterns are the immutable floor: response_scanning.enabled
+	// turns off the OPTIONAL layer and does not take the floor with it. This case
+	// previously asserted the payload reached the client and encoded the bypass.
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != injectionPayload {
-		t.Fatal("response body was modified with scanning disabled")
+	if resp.StatusCode == http.StatusOK && string(body) == injectionPayload {
+		t.Fatalf("core injection reached the client verbatim with the optional layer off (status %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected the core floor to block with 403, got %d body=%q", resp.StatusCode, string(body))
+	}
+}
+
+// TestReverseProxy_ResponseScanningDisabled_CleanBodyStillServed is the positive
+// control for the case above: the same configuration still serves ordinary
+// content, so the assertion is about the floor and not about reverse refusing
+// everything once the optional layer is off.
+func TestReverseProxy_ResponseScanningDisabled_CleanBodyStillServed(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+
+	const clean = "the quarterly report is attached for review"
+	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(clean))
+	})
+
+	resp := testGet(t, proxy.URL+"/api/data")
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != clean {
+		t.Fatalf("ordinary content was not served: status=%d body=%q", resp.StatusCode, string(body))
 	}
 }
 

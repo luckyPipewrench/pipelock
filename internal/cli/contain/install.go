@@ -1269,7 +1269,7 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
 			target.unitPath, env.pipelockBinary, err)
 	}
-	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath)
+	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath, "--require-build-compatibility")
 	if err != nil {
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",

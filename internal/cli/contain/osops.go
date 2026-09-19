@@ -75,19 +75,20 @@ type installEnv struct {
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
-	operatorUser         string
-	proxyUserName        string
-	agentUserName        string
-	configDir            string
-	dataDir              string
-	wrapperDir           string
-	systemUnitPath       string
-	nftRulesPath         string
-	nftMainPath          string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
-	nftPersistUnitPath   string
-	nftExpiryServicePath string
-	nftExpiryTimerPath   string
-	reconcileLockPath    string
+	operatorUser                string
+	proxyUserName               string
+	agentUserName               string
+	configDir                   string
+	dataDir                     string
+	wrapperDir                  string
+	systemUnitPath              string
+	nftRulesPath                string
+	nftMainPath                 string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
+	nftPersistUnitPath          string
+	ownedLoopbackAnchorUnitPath string
+	nftExpiryServicePath        string
+	nftExpiryTimerPath          string
+	reconcileLockPath           string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared
 	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
@@ -117,6 +118,7 @@ type installEnv struct {
 	nftPath            string
 	curlPath           string
 	proxyPort          int
+	ownedLoopback      bool
 
 	prevNFTTableDump             string
 	prevNFTTableStateKnown       bool
@@ -153,37 +155,38 @@ type installEnv struct {
 func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
-		runCmd:               realRunCommand,
-		dialCtx:              realDial,
-		wait:                 waitForReadiness,
-		stat:                 os.Stat,
-		lstat:                os.Lstat,
-		readFile:             os.ReadFile,
-		writeFile:            writeFileAtomic,
-		removeFile:           os.Remove,
-		mkdirAll:             os.MkdirAll,
-		chown:                os.Chown,
-		lchown:               os.Lchown,
-		rename:               os.Rename,
-		chmod:                os.Chmod,
-		symlink:              os.Symlink,
-		lookupUser:           user.Lookup,
-		selfPath:             os.Executable,
-		hashFile:             sha256HexOfFile,
-		out:                  out,
-		errOut:               os.Stderr,
-		now:                  time.Now,
-		operatorUser:         os.Getenv("SUDO_USER"),
-		proxyUserName:        defaultProxyUser,
-		agentUserName:        defaultAgentUser,
-		configDir:            defaultConfigDir,
-		dataDir:              defaultDataDir,
-		wrapperDir:           defaultWrapperDir,
-		systemUnitPath:       defaultSystemUnitPath,
-		nftRulesPath:         defaultNFTRulesPath,
-		nftPersistUnitPath:   defaultNFTPersistUnitPath,
-		nftExpiryServicePath: defaultNFTExpiryServicePath,
-		nftExpiryTimerPath:   defaultNFTExpiryTimerPath,
+		runCmd:                      realRunCommand,
+		dialCtx:                     realDial,
+		wait:                        waitForReadiness,
+		stat:                        os.Stat,
+		lstat:                       os.Lstat,
+		readFile:                    os.ReadFile,
+		writeFile:                   writeFileAtomic,
+		removeFile:                  os.Remove,
+		mkdirAll:                    os.MkdirAll,
+		chown:                       os.Chown,
+		lchown:                      os.Lchown,
+		rename:                      os.Rename,
+		chmod:                       os.Chmod,
+		symlink:                     os.Symlink,
+		lookupUser:                  user.Lookup,
+		selfPath:                    os.Executable,
+		hashFile:                    sha256HexOfFile,
+		out:                         out,
+		errOut:                      os.Stderr,
+		now:                         time.Now,
+		operatorUser:                os.Getenv("SUDO_USER"),
+		proxyUserName:               defaultProxyUser,
+		agentUserName:               defaultAgentUser,
+		configDir:                   defaultConfigDir,
+		dataDir:                     defaultDataDir,
+		wrapperDir:                  defaultWrapperDir,
+		systemUnitPath:              defaultSystemUnitPath,
+		nftRulesPath:                defaultNFTRulesPath,
+		nftPersistUnitPath:          defaultNFTPersistUnitPath,
+		ownedLoopbackAnchorUnitPath: defaultOwnedLoopbackAnchorUnitPath,
+		nftExpiryServicePath:        defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:          defaultNFTExpiryTimerPath,
 		// The reconcile lock lives beside the nft rules file under
 		// /etc/nftables.d/, a directory only root writes, NOT under
 		// dataDir: dataDir is recursively chowned to pipelock-proxy by
@@ -217,6 +220,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftPath:            platform.nftPath,
 		curlPath:           platform.curlPath,
 		proxyPort:          defaultProxyPort,
+		ownedLoopback:      true,
 	}
 }
 
@@ -224,16 +228,17 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 // so the two subsystems agree on filesystem layout. Names are picked to
 // avoid collision with verify.go constants.
 const (
-	defaultConfigDir                = "/etc/pipelock"
-	defaultDataDir                  = "/var/lib/pipelock"
-	defaultSystemUnitPath           = "/etc/systemd/system/pipelock.service"
-	defaultNFTRulesPath             = "/etc/nftables.d/50-pipelock-containment.nft"
-	defaultNFTPersistUnitPath       = "/etc/systemd/system/pipelock-containment-nft.service"
-	defaultNFTExpiryServicePath     = "/etc/systemd/system/pipelock-containment-expiry.service"
-	defaultNFTExpiryTimerPath       = "/etc/systemd/system/pipelock-containment-expiry.timer"
-	containmentExpiryTimerCalendar  = "hourly"
-	containmentExpiryTimerAccuracy  = "1m"
-	containmentExpiryServiceTimeout = "90"
+	defaultConfigDir                   = "/etc/pipelock"
+	defaultDataDir                     = "/var/lib/pipelock"
+	defaultSystemUnitPath              = "/etc/systemd/system/pipelock.service"
+	defaultNFTRulesPath                = "/etc/nftables.d/50-pipelock-containment.nft"
+	defaultNFTPersistUnitPath          = "/etc/systemd/system/pipelock-containment-nft.service"
+	defaultOwnedLoopbackAnchorUnitPath = "/etc/systemd/system/pipelock-contained-anchor.service"
+	defaultNFTExpiryServicePath        = "/etc/systemd/system/pipelock-containment-expiry.service"
+	defaultNFTExpiryTimerPath          = "/etc/systemd/system/pipelock-containment-expiry.timer"
+	containmentExpiryTimerCalendar     = "hourly"
+	containmentExpiryTimerAccuracy     = "1m"
+	containmentExpiryServiceTimeout    = "90"
 	// defaultNFTMainConfigPath is the distro nft service config that
 	// pre-portability installs appended a managed `include` line to. New
 	// installs persist via defaultNFTPersistUnitPath and never touch this

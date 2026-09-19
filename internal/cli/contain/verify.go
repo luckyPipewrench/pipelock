@@ -128,34 +128,36 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port                 int
-	operatorUser         string
-	proxyUserName        string
-	agentUserName        string
-	wrapperDir           string
-	toolWrappers         []string
-	caBundlePath         string
-	caExportPath         string
-	configDir            string
-	launchPath           string
-	nftTable             string
-	nftChain             string
-	nftRulesPath         string
-	nftMainPath          string
-	nftPersistUnitPath   string
-	nftExpiryServicePath string
-	nftExpiryTimerPath   string
-	nftPath              string
-	serviceName          string
-	readinessTimeout     time.Duration
-	curlPath             string
-	pinPath              string
-	wrapperInvPath       string
-	toolsListPath        string
-	configPath           string
-	workspaceInvPath     string
-	workspacePaths       []string
-	workspaceGrants      []workspaceGrant
+	port                        int
+	operatorUser                string
+	proxyUserName               string
+	agentUserName               string
+	wrapperDir                  string
+	toolWrappers                []string
+	caBundlePath                string
+	caExportPath                string
+	configDir                   string
+	launchPath                  string
+	nftTable                    string
+	nftChain                    string
+	nftRulesPath                string
+	nftMainPath                 string
+	nftPersistUnitPath          string
+	nftExpiryServicePath        string
+	nftExpiryTimerPath          string
+	nftPath                     string
+	serviceName                 string
+	readinessTimeout            time.Duration
+	curlPath                    string
+	pinPath                     string
+	wrapperInvPath              string
+	toolsListPath               string
+	configPath                  string
+	workspaceInvPath            string
+	workspacePaths              []string
+	workspaceGrants             []workspaceGrant
+	ownedLoopbackAnchorUnitPath string
+	ownedLoopback               bool
 	// workspaceInvErr records a recorded-inventory read that failed for any
 	// reason other than absence. The workspace probe fails on it so a permission
 	// or parse error cannot make verify pass with the grant set silently empty.
@@ -192,44 +194,46 @@ type probeEnv struct {
 func defaultProbeEnv() *probeEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &probeEnv{
-		port:                 defaultProxyPort,
-		operatorUser:         os.Getenv("SUDO_USER"),
-		proxyUserName:        defaultProxyUser,
-		agentUserName:        defaultAgentUser,
-		wrapperDir:           defaultWrapperDir,
-		toolWrappers:         append([]string(nil), defaultToolWrappers...),
-		caBundlePath:         defaultCABundlePath,
-		caExportPath:         defaultCAExportPath,
-		configDir:            defaultConfigDir,
-		launchPath:           defaultLaunchScript,
-		nftTable:             defaultNFTTable,
-		nftChain:             defaultNFTChain,
-		nftRulesPath:         defaultNFTRulesPath,
-		nftPersistUnitPath:   defaultNFTPersistUnitPath,
-		nftExpiryServicePath: defaultNFTExpiryServicePath,
-		nftExpiryTimerPath:   defaultNFTExpiryTimerPath,
-		nftPath:              platform.nftPath,
-		serviceName:          defaultServiceName,
-		curlPath:             platform.curlPath,
-		pinPath:              defaultIntegrityPin,
-		wrapperInvPath:       defaultWrapperInvPath,
-		toolsListPath:        defaultToolsListPath,
-		workspaceInvPath:     defaultWorkspaceInvPath,
-		configPath:           filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		pipelockTarget:       defaultPipelockTarget,
-		verifyRunningImage:   true,
-		now:                  time.Now,
-		runCmd:               realRunCommand,
-		dropCounter:          readContainmentDropCounter,
-		dialCtx:              realDial,
-		wait:                 waitForReadiness,
-		lookupUser:           user.Lookup,
-		groupIDs:             realGroupIDs,
-		stat:                 os.Stat,
-		readFile:             os.ReadFile,
-		readLink:             os.Readlink,
-		selfPath:             os.Executable,
-		hashFile:             sha256HexOfFile,
+		port:                        defaultProxyPort,
+		operatorUser:                os.Getenv("SUDO_USER"),
+		proxyUserName:               defaultProxyUser,
+		agentUserName:               defaultAgentUser,
+		wrapperDir:                  defaultWrapperDir,
+		toolWrappers:                append([]string(nil), defaultToolWrappers...),
+		caBundlePath:                defaultCABundlePath,
+		caExportPath:                defaultCAExportPath,
+		configDir:                   defaultConfigDir,
+		launchPath:                  defaultLaunchScript,
+		nftTable:                    defaultNFTTable,
+		nftChain:                    defaultNFTChain,
+		nftRulesPath:                defaultNFTRulesPath,
+		nftPersistUnitPath:          defaultNFTPersistUnitPath,
+		nftExpiryServicePath:        defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:          defaultNFTExpiryTimerPath,
+		nftPath:                     platform.nftPath,
+		serviceName:                 defaultServiceName,
+		curlPath:                    platform.curlPath,
+		pinPath:                     defaultIntegrityPin,
+		wrapperInvPath:              defaultWrapperInvPath,
+		toolsListPath:               defaultToolsListPath,
+		workspaceInvPath:            defaultWorkspaceInvPath,
+		configPath:                  filepath.Join(defaultConfigDir, "pipelock.yaml"),
+		pipelockTarget:              defaultPipelockTarget,
+		verifyRunningImage:          true,
+		now:                         time.Now,
+		runCmd:                      realRunCommand,
+		dropCounter:                 readContainmentDropCounter,
+		dialCtx:                     realDial,
+		wait:                        waitForReadiness,
+		lookupUser:                  user.Lookup,
+		groupIDs:                    realGroupIDs,
+		stat:                        os.Stat,
+		readFile:                    os.ReadFile,
+		readLink:                    os.Readlink,
+		selfPath:                    os.Executable,
+		hashFile:                    sha256HexOfFile,
+		ownedLoopbackAnchorUnitPath: defaultOwnedLoopbackAnchorUnitPath,
+		ownedLoopback:               true,
 	}
 }
 
@@ -1573,6 +1577,11 @@ func probeManagedConfigMetrics(_ context.Context, env *probeEnv) (string, string
 // probeNFTContainment verifies the installed nftables boundary structure,
 // ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
+	if env.ownedLoopback {
+		if status, detail := probeOwnedLoopbackAnchor(ctx, env); status != statusPass {
+			return status, detail
+		}
+	}
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("nft unavailable: %v", err)
@@ -1624,6 +1633,21 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
+	if env.ownedLoopback {
+		if !ownedLoopbackRulesReferenceCurrentAnchor(out, 4) {
+			return statusFail, "owned loopback OUTPUT rules do not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules"
+		}
+		input, inputCode, inputErr := env.runCmd(ctx, probeNFTExecutable(env), "-n", "list", "chain", "inet", env.nftTable, ownedLoopbackInputChain)
+		if inputErr != nil {
+			return statusFail, fmt.Sprintf("list owned loopback receiver chain: %v", inputErr)
+		}
+		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
+			return statusFail, fmt.Sprintf("owned loopback receiver chain %s is missing or unrecognized; marked loopback traffic is denied until `pipelock contain install` restores the receiver gate", ownedLoopbackInputChain)
+		}
+		if !ownedLoopbackRulesReferenceCurrentAnchor(input, 1) {
+			return statusFail, "owned loopback receiver rule does not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules"
+		}
+	}
 	// A managed config this probe cannot read or honor fails the probe
 	// outright. Reporting it only alongside an unsafe verdict left the
 	// canonical case silent: once reload has already reconciled to zero
@@ -1671,6 +1695,28 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
 		env.nftTable, env.nftChain, current.agentUID, loopbackSummary)
+}
+
+func probeOwnedLoopbackAnchor(ctx context.Context, env *probeEnv) (string, string) {
+	path := filepath.Clean(env.ownedLoopbackAnchorUnitPath)
+	if path == "." || path == "" {
+		return statusFail, "owned loopback cgroup anchor path is not configured; run pipelock contain install"
+	}
+	if _, err := env.readFile(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is missing; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path)
+		}
+		return statusFail, fmt.Sprintf("read owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path, err)
+	}
+	unit := filepath.Base(path)
+	out, code, err := env.runCmd(ctx, "systemctl", "is-active", unit)
+	if err != nil {
+		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", unit, err)
+	}
+	if code != 0 || strings.TrimSpace(out) != systemctlActive {
+		return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is %q; plk-contained-launch checks this anchor before starting a contained tool, so dynamic loopback access is denied until `pipelock contain install` restores it", unit, oneLine(out))
+	}
+	return statusPass, fmt.Sprintf("owned loopback cgroup anchor %s is active", unit)
 }
 
 // probeContainmentExpiryTimer verifies the privileged reconciliation timer
@@ -1819,14 +1865,20 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 	if !unitHasExactEntry(body, "Unit", "DefaultDependencies", "no") {
 		return fmt.Errorf("%s missing exact DefaultDependencies=no", env.nftPersistUnitPath)
 	}
-	if !unitHasExactEntry(body, "Unit", "After", "local-fs.target") {
-		return fmt.Errorf("%s missing exact After=local-fs.target", env.nftPersistUnitPath)
+	if !unitEntryHasWord(body, "After", "local-fs.target") {
+		return fmt.Errorf("%s missing After dependency on local-fs.target", env.nftPersistUnitPath)
+	}
+	if env.ownedLoopback && !unitEntryHasWord(body, "After", filepath.Base(env.ownedLoopbackAnchorUnitPath)) {
+		return fmt.Errorf("%s does not wait for owned loopback anchor %s", env.nftPersistUnitPath, filepath.Base(env.ownedLoopbackAnchorUnitPath))
 	}
 	if !unitHasExactEntry(body, "Unit", "Before", "network-pre.target") {
 		return fmt.Errorf("%s missing exact Before=network-pre.target", env.nftPersistUnitPath)
 	}
-	if !unitHasExactEntry(body, "Unit", "Wants", "network-pre.target") {
-		return fmt.Errorf("%s missing exact Wants=network-pre.target", env.nftPersistUnitPath)
+	if !unitEntryHasWord(body, "Wants", "network-pre.target") {
+		return fmt.Errorf("%s missing Wants=network-pre.target", env.nftPersistUnitPath)
+	}
+	if env.ownedLoopback && !unitEntryHasWord(body, "Wants", filepath.Base(env.ownedLoopbackAnchorUnitPath)) {
+		return fmt.Errorf("%s does not start owned loopback anchor %s", env.nftPersistUnitPath, filepath.Base(env.ownedLoopbackAnchorUnitPath))
 	}
 	if !unitHasExactEntry(body, "Unit", "ConditionPathExists", env.nftRulesPath) {
 		return fmt.Errorf("%s missing ConditionPathExists for %s", env.nftPersistUnitPath, env.nftRulesPath)
@@ -1872,11 +1924,31 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		Table:            env.nftTable,
 		Chain:            env.nftChain,
 		LoopbackServices: loopbackServices,
+		OwnedLoopback:    env.ownedLoopback,
 	})
 	if string(rules) != want {
 		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
 	}
 	return nil
+}
+
+func unitEntryHasWord(body, key, want string) bool {
+	inSection := false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSection = line == "[Unit]"
+			continue
+		}
+		if inSection && strings.HasPrefix(line, key+"=") {
+			for _, value := range strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, key+"="))) {
+				if value == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {

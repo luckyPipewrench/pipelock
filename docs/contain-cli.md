@@ -280,8 +280,8 @@ it as an unexpected verdict in the meantime, because it does not match any
 declared entry. Declare the service instead of hand-editing the rules; that
 is the trap `containment.loopback_services` exists to close.
 
-#
 ## Dynamic listeners owned by the contained runtime
+
 
 Some stock tools bind a loopback listener on a kernel-assigned TCP port and then connect back to it. Pipelock supports that path without an operator-declared port only when **both** the client and receiving socket belong to Pipelock's owned containment slice. The output hook marks a new loopback flow from that slice; the input hook admits the marked flow only when the receiving socket is in the same slice, and drops every other marked flow. This does not permit a contained process to reach unrelated loopback listeners, including services running under the same Unix account.
 

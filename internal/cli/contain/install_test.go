@@ -309,10 +309,16 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	}
 	runner.on(argvFor(testSudoCmd, "-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"), testPEMCA(t), 0, nil)
 
-	// Owned loopback is enabled in the production default, so the fixture has
-	// to answer the anchor and receiver-chain queries the install path makes.
-	// Leaving it off here meant the end-to-end install test never exercised
-	// either path.
+	// Answers for the anchor and receiver-chain queries, so a test that DOES
+	// enable owned loopback has them available.
+	//
+	// This fixture leaves ownedLoopback false and therefore does not exercise
+	// those paths itself. Enabling it here fails 15 tests that build their live
+	// nft chain with the legacy renderer and then assert no drift: the new
+	// drift check correctly reports drift against a chain carrying no marking
+	// rules, so each failure is a true positive. Migrating those fixtures is
+	// tracked separately; the owned-loopback paths are covered directly in
+	// owned_loopback_test.go.
 	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain),
 		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault()), 0, nil)
 	anchorUnit := filepath.Base(env.ownedLoopbackAnchorUnitPath)

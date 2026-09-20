@@ -31,6 +31,24 @@ func newBrowserCAEnv(t *testing.T) (*installEnv, *fakeNSS) {
 	t.Helper()
 	env, _, _ := newFakeEnv(t)
 	env.agentHome = filepath.Join(t.TempDir(), "agent")
+	// Point the agent user's home at this test's temporary directory. The shared
+	// fake returns the literal /home/pipelock-agent, which exists on a developer
+	// box that already runs containment and does not exist in CI, so a probe
+	// resolving the home through lookupUser read real host state and passed
+	// locally while failing on a clean machine.
+	baseLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		u, err := baseLookup(name)
+		if err != nil {
+			return nil, err
+		}
+		if name == env.agentUserName {
+			clone := *u
+			clone.HomeDir = env.agentHome
+			return &clone, nil
+		}
+		return u, nil
+	}
 	env.caExportPath = filepath.Join(t.TempDir(), "ca.pem")
 	env.lookPath = func(name string) (string, error) {
 		if name != browserCACertutilName {

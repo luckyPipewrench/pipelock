@@ -61,11 +61,11 @@ func TestContainedNetworkNamespaceUnits(t *testing.T) {
 		}
 	}
 
-	service := renderContainedProxyForwarderUnit("pipelock-proxy", 8888)
+	service := renderContainedProxyForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", 8888)
 	for _, want := range []string{
 		"User=pipelock-proxy",
 		"Group=pipelock-proxy",
-		"ExecStart=" + systemdSocketProxydPath + " 127.0.0.1:8888",
+		"ExecStart=/usr/local/bin/pipelock contain netns-forward --systemd-listener --target-tcp 127.0.0.1:8888",
 		"Requires=pipelock.service",
 	} {
 		if !strings.Contains(service, want) {
@@ -85,7 +85,7 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	units := map[string]string{
 		containedNetworkNamespaceUnit:            renderContainedNetworkNamespaceUnit(),
 		containedProxyForwarderUnit + ".socket":  renderContainedProxySocketUnit("pipelock-agent"),
-		containedProxyForwarderUnit + ".service": renderContainedProxyForwarderUnit("pipelock-proxy", 8888),
+		containedProxyForwarderUnit + ".service": renderContainedProxyForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", 8888),
 		containedNamespaceForwarderUnit:          renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", 8888),
 		"pipelock.service":                       "[Service]\nType=simple\nExecStart=/usr/bin/sleep infinity\n",
 	}
@@ -96,7 +96,7 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
 	declaredBase := loopbackForwarderUnitBase(declared.Host, declared.Port)
 	units[declaredBase+".socket"] = renderDeclaredLoopbackSocketUnit("pipelock-agent", declared)
-	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit("pipelock-proxy", declared)
+	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", declared)
 	units[declaredBase+"-netns.service"] = renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", declared)
 	paths := make([]string, 0, len(units))
 	for name, body := range units {
@@ -273,7 +273,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			for path, body := range map[string]string{
 				env.networkNamespaceUnitPath:      renderContainedNetworkNamespaceUnit(),
 				env.proxyForwarderSocketPath:      renderContainedProxySocketUnit(env.agentUserName),
-				env.proxyForwarderServicePath:     renderContainedProxyForwarderUnit(env.proxyUserName, env.port),
+				env.proxyForwarderServicePath:     renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.port),
 				env.namespaceForwarderServicePath: renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port),
 			} {
 				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -513,7 +513,7 @@ func TestDeclaredLoopbackForwarderRevokeRollsBack(t *testing.T) {
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 	servicePath := filepath.Join(unitDir, loopbackForwarderUnitBase(service.Host, service.Port)+".service")
 	body, readErr := os.ReadFile(filepath.Clean(servicePath)) //nolint:gosec // test-owned temporary path
-	if readErr != nil || string(body) != renderDeclaredLoopbackForwarderUnit(env.proxyUserName, service) {
+	if readErr != nil || string(body) != renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service) {
 		t.Fatalf("managed forwarder was not reconstructed after rollback: body=%q err=%v", body, readErr)
 	}
 	inv, invErr := readLoopbackForwarderInventory(env)
@@ -528,7 +528,7 @@ func TestDeclaredLoopbackForwarderUnits(t *testing.T) {
 		{Host: "::1", Port: 9300},
 	} {
 		socket := renderDeclaredLoopbackSocketUnit("pipelock-agent", service)
-		forwarder := renderDeclaredLoopbackForwarderUnit("pipelock-proxy", service)
+		forwarder := renderDeclaredLoopbackForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", service)
 		nsForwarder := renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", service)
 		address := systemdListenAddress(service.Host, service.Port)
 		doorway := declaredLoopbackDoorwayPath(service.Host, service.Port)
@@ -546,7 +546,7 @@ func TestDeclaredLoopbackForwarderUnits(t *testing.T) {
 				t.Fatalf("declared socket for %+v must not contain %q; a .socket listener is always host-namespace:\n%s", service, forbidden, socket)
 			}
 		}
-		if !strings.Contains(forwarder, "ExecStart="+systemdSocketProxydPath+" "+address) || strings.Contains(forwarder, "PrivateNetwork=true") {
+		if !strings.Contains(forwarder, "--systemd-listener --target-tcp "+address) || strings.Contains(forwarder, "PrivateNetwork=true") {
 			t.Fatalf("declared forwarder for %+v cannot bridge to host:\n%s", service, forwarder)
 		}
 		// The in-namespace listener is a service, which is the only unit type

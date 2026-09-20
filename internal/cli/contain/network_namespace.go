@@ -108,25 +108,29 @@ WantedBy=multi-user.target
 		declaredLoopbackDoorwayPath(service.Host, service.Port))
 }
 
-func renderDeclaredLoopbackForwarderUnit(proxyUser string, service config.ContainmentLoopbackService) string {
+// renderDeclaredLoopbackForwarderUnit relays one declared service's host
+// doorway to its real loopback address. It runs the Pipelock binary rather
+// than systemd-socket-proxyd: on an SELinux system the proxyd binary
+// transitions into systemd_socket_proxyd_t, and any mount-namespace sandbox
+// directive here (PrivateTmp=, ProtectHome=, ProtectSystem=) makes the kernel
+// refuse that transition as unbounded. The unit then starts cleanly and every
+// connect returns EACCES, visible only as one "Failed to connect to remote
+// host: Permission denied" line in its own journal. Our own binary takes no
+// domain transition, so it keeps the full sandbox.
+func renderDeclaredLoopbackForwarderUnit(pipelockPath, proxyUser string, service config.ContainmentLoopbackService) string {
 	return fmt.Sprintf(`[Unit]
 Description=Forward one declared contained-agent loopback service to the host
 
 [Service]
-Type=notify
+Type=exec
 User=%s
 Group=%s
-ExecStart=%s %s
-# NoNewPrivileges= is deliberately absent. On an SELinux system it blocks the
-# transition into systemd_socket_proxyd_t, because that domain is not bounded
-# by init_t, and the denial surfaces only as "Failed to connect to remote host:
-# Permission denied" from a unit that started successfully. SELinux confines
-# this process into its own domain instead, and User= plus the Protect*
-# directives below still apply on systems without it.
+ExecStart=%s contain netns-forward --systemd-listener --target-tcp %s
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-`, proxyUser, proxyUser, systemdSocketProxydPath, systemdListenAddress(service.Host, service.Port))
+`, proxyUser, proxyUser, pipelockPath, systemdListenAddress(service.Host, service.Port))
 }
 
 func desiredLoopbackForwarders(services []config.ContainmentLoopbackService) loopbackForwarderInventory {
@@ -178,7 +182,6 @@ const (
 	// directory first; /run is tmpfs, so no stale socket survives a reboot,
 	// and RemoveOnStop= clears it when the socket stops.
 	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy.sock"
-	systemdSocketProxydPath       = "/usr/lib/systemd/systemd-socket-proxyd"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
 )
 
@@ -214,7 +217,7 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 	}{
 		{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit()},
 		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
-		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.port)},
+		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.port)},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}
 	for _, unit := range units {
@@ -253,7 +256,7 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		nsPath := filepath.Join(unitDir, unit+"-netns.service")
 		for path, want := range map[string]string{
 			socketPath:  renderDeclaredLoopbackSocketUnit(env.agentUserName, service),
-			servicePath: renderDeclaredLoopbackForwarderUnit(env.proxyUserName, service),
+			servicePath: renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service),
 			nsPath:      renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
 		} {
 			body, readErr := env.readFile(path)
@@ -418,24 +421,25 @@ WantedBy=multi-user.target
 		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath)
 }
 
-func renderContainedProxyForwarderUnit(proxyUser string, port int) string {
+// renderContainedProxyForwarderUnit relays the host doorway to Pipelock's own
+// loopback listener. See the declared-loopback forwarder above for why this
+// runs the Pipelock binary instead of systemd-socket-proxyd.
+func renderContainedProxyForwarderUnit(pipelockPath, proxyUser string, port int) string {
 	return fmt.Sprintf(`[Unit]
 Description=Forward contained-agent proxy connections to the host Pipelock listener
 Requires=pipelock.service
 After=pipelock.service
 
 [Service]
-Type=notify
+Type=exec
 User=%s
 Group=%s
-ExecStart=%s 127.0.0.1:%d
-# NoNewPrivileges= is deliberately absent; see the declared-loopback forwarder
-# above. It blocks the SELinux transition into systemd_socket_proxyd_t and the
-# only symptom is a started unit whose every connect returns EACCES.
+ExecStart=%s contain netns-forward --systemd-listener --target-tcp 127.0.0.1:%d
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-`, proxyUser, proxyUser, systemdSocketProxydPath, port)
+`, proxyUser, proxyUser, pipelockPath, port)
 }
 
 type unitRuntimeState struct {
@@ -505,7 +509,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			paths := []managedFile{
 				{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit(), modeUnitFile},
 				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName), modeUnitFile},
-				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.proxyPort), modeUnitFile},
+				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.proxyPort), modeUnitFile},
 				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.proxyPort), modeUnitFile},
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
@@ -516,7 +520,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				desiredUnits[unit] = true
 				paths = append(paths,
 					managedFile{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service), modeUnitFile},
-					managedFile{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.proxyUserName, service), modeUnitFile},
+					managedFile{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service), modeUnitFile},
 					managedFile{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service), modeUnitFile},
 				)
 			}

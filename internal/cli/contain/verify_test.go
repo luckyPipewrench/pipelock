@@ -4015,7 +4015,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 		case env.proxyForwarderSocketPath:
 			return []byte(renderContainedProxySocketUnit(env.agentUserName)), nil
 		case env.proxyForwarderServicePath:
-			return []byte(renderContainedProxyForwarderUnit(env.proxyUserName, env.port)), nil
+			return []byte(renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.port)), nil
 		case env.namespaceForwarderServicePath:
 			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)), nil
 		case env.loopbackForwarderInvPath:

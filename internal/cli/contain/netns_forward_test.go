@@ -60,7 +60,7 @@ func TestProxyOneNetnsConnForwardsBothDirections(t *testing.T) {
 	t.Cleanup(func() { _ = agent.Close() })
 
 	done := make(chan error, 1)
-	go func() { done <- proxyOneNetnsConn(context.Background(), forwarded, target) }()
+	go func() { done <- proxyOneNetnsConn(context.Background(), forwarded, "unix", target) }()
 
 	want := []byte("CONNECT example.invalid:443 HTTP/1.1\r\n\r\n")
 	if err := agent.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -89,7 +89,7 @@ func TestProxyOneNetnsConnFailsWhenDoorwayIsAbsent(t *testing.T) {
 	agent, forwarded := net.Pipe()
 	t.Cleanup(func() { _ = agent.Close() })
 
-	err := proxyOneNetnsConn(context.Background(), forwarded, filepath.Join(t.TempDir(), "missing.sock"))
+	err := proxyOneNetnsConn(context.Background(), forwarded, "unix", filepath.Join(t.TempDir(), "missing.sock"))
 	if err == nil || !strings.Contains(err.Error(), "dial host doorway") {
 		t.Fatalf("err = %v, want a dial failure naming the doorway", err)
 	}
@@ -166,14 +166,22 @@ func TestNetnsForwardCmdRequiresBothFlags(t *testing.T) {
 		{},
 		{"--listen", "127.0.0.1:8888"},
 		{"--target", "/run/x.sock"},
+		// A listener from both sources, or neither target, or both targets.
+		{"--listen", "127.0.0.1:8888", "--systemd-listener", "--target", "/run/x.sock"},
+		{"--systemd-listener"},
+		{"--systemd-listener", "--target", "/run/x.sock", "--target-tcp", "127.0.0.1:8888"},
 	} {
 		cmd := netnsForwardCmd()
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
 		cmd.SetErr(&buf)
 		cmd.SetArgs(args)
-		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "required") {
-			t.Fatalf("args %v: err = %v, want a missing-flag refusal", args, err)
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("args %v: accepted an invalid flag combination", args)
+		}
+		if !strings.Contains(err.Error(), "required") && !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("args %v: err = %v, want a flag-combination refusal", args, err)
 		}
 	}
 }

@@ -230,7 +230,7 @@ pipelock contain verify
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
-| 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`, under a nickname this install owns. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Probes 17 and 18 are published by `contain run`, not `verify`. |
+| 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`. It reports trust, not provenance: a matching certificate an operator added themselves passes, because the agent can browse either way. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Install and rollback consult the ownership marker so rollback removes only what install added. Probes 17 and 18 are published by `contain run`, not `verify`. |
 
 ### Managed metrics invariant
 

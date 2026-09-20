@@ -66,9 +66,11 @@ func newBrowserCAEnv(t *testing.T) (*installEnv, *fakeNSS) {
 	env.runCmd = nss.run
 	// Unprivileged stand-in for the descriptor-based owner. It keeps the part
 	// this suite can actually assert -- the symlink refusal and the mode change
-	// -- and drops only the chown, which needs root. Production keeps
-	// applyAgentOwnershipNoFollow; TestBrowserCAOwnershipRefusesASymlinkedLeaf
-	// exercises the real one.
+	// -- and drops only the chown, which needs root. The real
+	// applyAgentOwnershipNoFollow is exercised against a symlinked leaf, a
+	// directory leaf and a regular leaf in browser_ca_nofollow_unix_test.go.
+	// This comment previously cited a test that did not exist, so the attack
+	// path read as covered while nothing asserted it.
 	env.ownLeafNoFollow = func(path string, mode os.FileMode, _, _ int) error {
 		info, err := os.Lstat(path)
 		if err != nil {

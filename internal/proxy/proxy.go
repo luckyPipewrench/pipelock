@@ -673,10 +673,13 @@ func findScriptElements(doc string) []scriptElement {
 	}
 }
 
-// rangeOverlaps reports whether [a0,a1) overlaps any [r0,r1) in ranges.
-func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
+// rangeStartsInside reports whether a0 lies in any half-open [r0,r1) in ranges.
+// Used so hidden-surface regex matches are skipped only when their start is
+// inside an executable <script> element (matches that begin outside but extend
+// into or past executable script stay scanned).
+func rangeStartsInside(a0 int, ranges [][2]int) bool {
 	for _, r := range ranges {
-		if a0 < r[1] && a1 > r[0] {
+		if a0 >= r[0] && a0 < r[1] {
 			return true
 		}
 	}
@@ -688,10 +691,12 @@ func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
 // comments, non-executable data script bodies, style bodies, noscript bodies,
 // and hidden elements. Executable JavaScript bodies are omitted (see var block
 // comment). HTML comments, <style> bodies, <noscript> bodies, and
-// hidden-element matches whose ranges fall inside executable <script> elements
-// are also skipped so JS strings / markup containing <!-- -->, <style>,
-// <noscript>, or display:none decoys do not re-enter the scanned surface after
-// executable bodies were filtered out.
+// hidden-element matches whose start lies inside an executable <script>
+// element are also skipped so JS strings / markup containing <!-- -->,
+// <style>, <noscript>, or display:none decoys do not re-enter the scanned
+// surface after executable bodies were filtered out. Matches that start
+// outside executable script but extend into or past it (unclosed comment
+// through EOF; style open outside / close inside JS) stay scanned.
 func extractHiddenContent(html string) string {
 	scripts := findScriptElements(html)
 	exec := make([]bool, len(scripts))
@@ -706,7 +711,7 @@ func extractHiddenContent(html string) string {
 	var b strings.Builder
 	for _, loc := range reHTMLComment.FindAllStringSubmatchIndex(html, -1) {
 		// loc[0]:loc[1] full match; loc[2]:loc[3] group 1 body.
-		if rangeOverlaps(loc[0], loc[1], execRanges) {
+		if rangeStartsInside(loc[0], execRanges) {
 			continue
 		}
 		b.WriteString(html[loc[2]:loc[3]])
@@ -720,21 +725,21 @@ func extractHiddenContent(html string) string {
 		b.WriteByte('\n')
 	}
 	for _, loc := range reStyleBody.FindAllStringSubmatchIndex(html, -1) {
-		if rangeOverlaps(loc[0], loc[1], execRanges) {
+		if rangeStartsInside(loc[0], execRanges) {
 			continue
 		}
 		b.WriteString(html[loc[2]:loc[3]])
 		b.WriteByte('\n')
 	}
 	for _, loc := range reNoscriptBody.FindAllStringSubmatchIndex(html, -1) {
-		if rangeOverlaps(loc[0], loc[1], execRanges) {
+		if rangeStartsInside(loc[0], execRanges) {
 			continue
 		}
 		b.WriteString(html[loc[2]:loc[3]])
 		b.WriteByte('\n')
 	}
 	for _, loc := range reHiddenElement.FindAllStringSubmatchIndex(html, -1) {
-		if rangeOverlaps(loc[0], loc[1], execRanges) {
+		if rangeStartsInside(loc[0], execRanges) {
 			continue
 		}
 		b.WriteString(html[loc[2]:loc[3]])

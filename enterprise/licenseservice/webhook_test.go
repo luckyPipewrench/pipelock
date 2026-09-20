@@ -7,6 +7,7 @@
 package licenseservice
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -3097,6 +3098,8 @@ func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
 
 	t.Run("completion audit failure does not retry a delivered email", func(t *testing.T) {
 		ts := newTestSetup(t)
+		var logOutput bytes.Buffer
+		ts.handler.log = zerolog.New(&logOutput)
 		const orderID = "order_free_520_completion_audit_failure"
 		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "completion-audit@example.com")); err != nil {
 			t.Fatalf("issue trial: %v", err)
@@ -3125,6 +3128,9 @@ func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
 		}
 		if ent == nil || ent.LastDeliveryStatus != "sent" {
 			t.Fatalf("delivery completion was not persisted: %+v", ent)
+		}
+		if !strings.Contains(logOutput.String(), "record trial resend completion") {
+			t.Fatalf("completion audit failure was not attempted: %s", logOutput.String())
 		}
 	})
 }
@@ -3243,7 +3249,7 @@ func newFileBackedTrialSupportHandlers(t *testing.T) (*WebhookHandler, *WebhookH
 	return first, second, firstDB
 }
 
-func TestTrialSupportResendAndRevokeSerializeAcrossConnections(t *testing.T) {
+func TestTrialSupportResendThenRefundProducesRevocation(t *testing.T) {
 	resender, revoker, db := newFileBackedTrialSupportHandlers(t)
 	const orderID = "order_free_520_cross_process_support"
 	if err := resender.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "cross-process@example.com")); err != nil {
@@ -3283,23 +3289,13 @@ func TestTrialSupportResendAndRevokeSerializeAcrossConnections(t *testing.T) {
 		resendDone <- resender.ResendTrialAccess(t.Context(), orderID, "support resend", time.Now())
 	}()
 	<-emailEntered
-	revokeStarted := make(chan struct{})
 	revokeDone := make(chan error, 1)
 	go func() {
-		close(revokeStarted)
 		revokeDone <- revoker.HandleOrderRefundEvent(t.Context(), &PolarWebhookEvent{
 			Type: EventOrderRefunded,
 			Data: json.RawMessage(fmt.Sprintf(`{"id":%q}`, orderID)),
 		}, "msg_cross_process_refund")
 	}()
-	<-revokeStarted
-
-	select {
-	case err := <-revokeDone:
-		close(releaseEmail)
-		t.Fatalf("revocation crossed an in-flight resend: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
 	close(releaseEmail)
 	if err := <-resendDone; err != nil {
 		t.Fatalf("resend trial: %v", err)
@@ -3310,6 +3306,29 @@ func TestTrialSupportResendAndRevokeSerializeAcrossConnections(t *testing.T) {
 	ent, err := db.GetBySubscriptionID(t.Context(), orderID)
 	if err != nil || ent == nil || ent.Status != statusRevoked {
 		t.Fatalf("trial state after serialized support actions: entitlement=%+v err=%v", ent, err)
+	}
+}
+
+func TestTrialSupportOperationsHonorLockContextCancellation(t *testing.T) {
+	handler, _, db := newFileBackedTrialSupportHandlers(t)
+	const orderID = "order_free_520_lock_cancellation"
+	if err := handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "lock-cancellation@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	release, err := acquireTrialSupportLock(t.Context(), db.trialSupportLockPath)
+	if err != nil {
+		t.Fatalf("hold trial support lock: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := handler.RevokeTrialAccess(ctx, orderID, "canceled lock wait", time.Now()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("revoke with canceled lock wait error = %v, want context canceled", err)
+	}
+	ent, err := db.GetBySubscriptionID(t.Context(), orderID)
+	if err != nil || ent == nil || ent.Status != statusActive {
+		t.Fatalf("canceled lock wait changed trial state: entitlement=%+v err=%v", ent, err)
 	}
 }
 

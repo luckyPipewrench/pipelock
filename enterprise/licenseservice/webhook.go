@@ -260,7 +260,7 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 }
 
 func (h *WebhookHandler) processSubscriptionDelivery(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
-	return h.db.withTrialSupportLock(func() error {
+	return h.db.withTrialSupportLock(ctx, func() error {
 		return h.processSubscriptionDeliveryLocked(ctx, sub, eventType, msgID)
 	})
 }
@@ -649,7 +649,7 @@ func (h *WebhookHandler) ResendTrialAccess(ctx context.Context, subID, reason st
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("resend reason is required")
 	}
-	return h.db.withTrialSupportLock(func() error {
+	return h.db.withTrialSupportLock(ctx, func() error {
 		return h.resendTrialAccessLocked(ctx, subID, reason, now)
 	})
 }
@@ -725,7 +725,7 @@ func (h *WebhookHandler) RevokeTrialAccess(ctx context.Context, subID, reason st
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("revocation reason is required")
 	}
-	return h.db.withTrialSupportLock(func() error {
+	return h.db.withTrialSupportLock(ctx, func() error {
 		return h.revokeTrialAccessLocked(ctx, subID, reason, now)
 	})
 }
@@ -1187,7 +1187,7 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	}
 
 	org := order.Customer.Metadata["org"]
-	return h.db.withTrialSupportLock(func() error {
+	return h.db.withTrialSupportLock(ctx, func() error {
 		return h.handleOrderEventLocked(ctx, order, tier, features, org)
 	})
 }

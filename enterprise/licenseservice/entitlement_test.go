@@ -177,7 +177,7 @@ func TestEntitlementDB_RevokeTrialAccessDatabaseFailures(t *testing.T) {
 		db := openTestDB(t)
 		db.trialSupportLockPath = filepath.Join(t.TempDir(), "missing", "trial-support.lock")
 		called := false
-		err := db.withTrialSupportLock(func() error {
+		err := db.withTrialSupportLock(t.Context(), func() error {
 			called = true
 			return nil
 		})

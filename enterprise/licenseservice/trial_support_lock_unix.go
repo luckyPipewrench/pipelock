@@ -7,12 +7,15 @@
 package licenseservice
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-func acquireTrialSupportLock(path string) (func(), error) {
+func acquireTrialSupportLock(ctx context.Context, path string) (func(), error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open trial support lock: %w", err)
@@ -26,9 +29,23 @@ func acquireTrialSupportLock(path string) (func(), error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("secure trial support lock: %w", err)
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("acquire trial support lock: %w", err)
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("acquire trial support lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("acquire trial support lock: %w", ctx.Err())
+		case <-retry.C:
+		}
 	}
 	return func() {
 		_ = unix.Flock(fd, unix.LOCK_UN)

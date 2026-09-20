@@ -331,13 +331,13 @@ func resolveTrialSupportLockPath(ctx context.Context, db *sql.DB) (string, error
 	return "", errors.New("entitlement database has no main file")
 }
 
-func (e *EntitlementDB) withTrialSupportLock(fn func() error) error {
+func (e *EntitlementDB) withTrialSupportLock(ctx context.Context, fn func() error) error {
 	e.trialSupportMu.Lock()
 	defer e.trialSupportMu.Unlock()
 	if e.trialSupportLockPath == "" {
 		return fn()
 	}
-	release, err := acquireTrialSupportLock(e.trialSupportLockPath)
+	release, err := acquireTrialSupportLock(ctx, e.trialSupportLockPath)
 	if err != nil {
 		return err
 	}
@@ -1045,7 +1045,7 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 func (e *EntitlementDB) RevokeTrialAccess(ctx context.Context, subID, reason string, now time.Time) (*Entitlement, []LicenseIssuance, error) {
 	var entitlement *Entitlement
 	var issuances []LicenseIssuance
-	err := e.withTrialSupportLock(func() error {
+	err := e.withTrialSupportLock(ctx, func() error {
 		var err error
 		entitlement, issuances, err = e.revokeTrialAccessLocked(ctx, subID, reason, now)
 		return err

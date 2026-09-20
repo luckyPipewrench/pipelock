@@ -7,6 +7,7 @@
 package licenseservice
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 
 func TestAcquireTrialSupportLockSerializesProcesses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trial-support.lock")
-	release, err := acquireTrialSupportLock(path)
+	release, err := acquireTrialSupportLock(context.Background(), path)
 	if err != nil {
 		t.Fatalf("acquire parent lock: %v", err)
 	}

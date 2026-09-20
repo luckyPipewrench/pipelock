@@ -235,7 +235,7 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 		_ = h.ledger.LogError(order0.ID, "fetch order from polar", err)
 		return fmt.Errorf("fetch order from polar: %w", err)
 	}
-	return h.db.withTrialSupportLock(func() error {
+	return h.db.withTrialSupportLock(ctx, func() error {
 		return h.handleOrderRefundEventLocked(ctx, event, msgID, order)
 	})
 }

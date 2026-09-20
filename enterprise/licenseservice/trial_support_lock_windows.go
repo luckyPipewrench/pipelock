@@ -7,13 +7,16 @@
 package licenseservice
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-func acquireTrialSupportLock(path string) (func(), error) {
+func acquireTrialSupportLock(ctx context.Context, path string) (func(), error) {
 	pathPointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, fmt.Errorf("encode trial support lock path: %w", err)
@@ -41,9 +44,23 @@ func acquireTrialSupportLock(path string) (func(), error) {
 		return nil, fmt.Errorf("secure trial support lock: %w", err)
 	}
 	var overlapped windows.Overlapped
-	if err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 0xffffffff, 0xffffffff, &overlapped); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("acquire trial support lock: %w", err)
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		err = windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 0xffffffff, 0xffffffff, &overlapped)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			_ = f.Close()
+			return nil, fmt.Errorf("acquire trial support lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, fmt.Errorf("acquire trial support lock: %w", ctx.Err())
+		case <-retry.C:
+		}
 	}
 	return func() {
 		_ = windows.UnlockFileEx(handle, 0, 0xffffffff, 0xffffffff, &overlapped)

@@ -596,6 +596,23 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 }
 
+func TestEmitContainRunPostureRejectsAgentReadableSigningKey(t *testing.T) {
+	env := allPassEnv(t)
+	baseRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "sudo" && containsArg(args, "test") && containsArg(args, "-r") {
+			return "", 0, nil
+		}
+		return baseRun(ctx, name, args...)
+	}
+	cfg := config.Defaults()
+	cfg.FlightRecorder.SigningKeyPath = "/agent-readable/receipt.key"
+	_, err := emitContainRunPosture(cfg, nil, t.TempDir(), env, []string{"claude"})
+	if err == nil || !strings.Contains(err.Error(), "could forge its own containment evidence") {
+		t.Fatalf("error = %v, want readable-key refusal", err)
+	}
+}
+
 func TestContainRunContainmentEvidence_RejectsProbeFailures(t *testing.T) {
 	tests := []struct {
 		name   string

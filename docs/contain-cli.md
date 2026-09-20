@@ -311,10 +311,11 @@ After=pipelock-agent-netns.service pipelock-agent-netns-forward.service
 [Service]
 User=pipelock-agent
 Group=pipelock-agent
+WorkingDirectory=/home/pipelock-agent
 PrivateNetwork=true
 JoinsNamespaceOf=pipelock-agent-netns.service
 PrivateTmp=true
-ExecStartPre=+/usr/bin/systemd-run --wait --collect --service-type=oneshot -- /usr/local/bin/pipelock contain run --dry-run -- agent-tool
+ExecStartPre=!/usr/local/bin/pipelock contain service-posture -- agent-tool
 ExecStart=
 ExecStart=/usr/local/bin/plk-launch agent-tool
 Restart=on-failure
@@ -322,11 +323,15 @@ Restart=on-failure
 
 The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `PrivateNetwork=true` can create a separate empty namespace when no valid target is available, so it isn't enough on its own.
 
-The short-lived `ExecStartPre` command asks PID 1 to run the normal root preflight in a separate one-shot service. The `+` prefix grants root to that command only. The preflight exits before the agent starts and never receives agent input or output.
+The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. A mismatch or inconclusive check fails the pre-start command, so systemd never starts the agent. The signer exits before the agent starts and never receives agent input or output.
 
 Immediately before it executes the tool, `plk-launch` checks its user, its real kernel namespace identity, the interfaces visible in that namespace, and the Pipelock health endpoint. The root preflight and probe 21 also compare the managed namespace with the host and inspect every live process under the agent user. The service settings state the intended isolation. These checks prove the running process received it.
 
-This service arrangement doesn't emit the signed posture capsule or final workspace change statement produced by `contain run`. If you need those artifacts for each session, run `pipelock contain run -- agent-tool` from a root-owned outer service. That root process stays alive to supervise the child and produce the final statement. The two launch methods don't provide the same evidence.
+The pre-start signer writes the same signed posture capsule path used by `contain run` and labels its signed `contain_launch.launcher` evidence as `systemd-service-prestart:/usr/local/bin/plk-launch`. That label means the signer directly observed the exact managed namespace and working proxy doorway before systemd admitted the pending unprivileged service launch. The tool and arguments on `ExecStartPre` must match `ExecStart`; they describe the pending launch, while the capsule doesn't claim that the agent process had already started.
+
+`contain run` makes a different observation. Its root supervisor signs the host-side preflight and intended launch contract, then `plk-launch` independently refuses to execute the child unless the child is in the exact managed namespace. Because the `contain run` signer itself is outside the child namespace, its capsule doesn't claim signer membership in that namespace. The supervisor remains alive and additionally emits the post-session workspace change statement; the unprivileged service path has no long-lived supervisor and therefore emits no final workspace statement.
+
+Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

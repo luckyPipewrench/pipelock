@@ -458,7 +458,7 @@
       },
       "availability": {
         "scope": "platform_dependent",
-        "qualifier": "Kernel-enforced containment requires Linux, nftables, and the managed identities; other targets cannot provide this containment path."
+        "qualifier": "Kernel-enforced containment requires Linux, nftables, and the managed identities. The recommended unprivileged systemd service emits signed pre-launch posture from a root signer that verifies its own managed namespace and proxy doorway; contain run instead signs a host-side preflight and also emits a post-session workspace statement."
       },
       "surface_coverage": [
         {

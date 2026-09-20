@@ -4102,6 +4102,11 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	case testNFT:
 		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:
+		// Containment posture signing must prove the managed agent cannot read
+		// the private signing key. Exit 1 is test(1)'s ordinary "not readable".
+		if containsArg(args, "test") && containsArg(args, "-r") && len(args) > 0 && strings.HasSuffix(args[len(args)-1], ".key") {
+			return "", 1, nil
+		}
 		// Probe 11: plk-launch allow-list probe invokes plk-launch with a
 		// sentinel tool name. Expect exit 5 = denial.
 		if containsArg(args, "plk-launch") || containsArg(args, probe11Sentinel) {

@@ -82,7 +82,14 @@ func assertAgentNetworkNamespace(ctx context.Context, env netnsAssertEnv) error 
 	if got := env.euid(); got != wantUID {
 		return fmt.Errorf("launcher has effective uid %d, want %s uid %d", got, env.agentUser, wantUID)
 	}
+	return assertManagedNetworkNamespace(ctx, env)
+}
 
+// assertManagedNetworkNamespace proves that the calling process is inside the
+// exact managed namespace and can use only its loopback proxy doorway. It does
+// not constrain the caller's uid, so a short root pre-start signer can attest
+// what it directly observed before the unprivileged service body starts.
+func assertManagedNetworkNamespace(ctx context.Context, env netnsAssertEnv) error {
 	out, code, err := env.runCmd(ctx, containSystemctlPath, "is-active", "--quiet", containedNetworkNamespaceUnit)
 	if err != nil {
 		return fmt.Errorf("check managed network namespace: %w", err)

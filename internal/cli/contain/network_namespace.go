@@ -117,7 +117,12 @@ Type=notify
 User=%s
 Group=%s
 ExecStart=%s %s
-NoNewPrivileges=true
+# NoNewPrivileges= is deliberately absent. On an SELinux system it blocks the
+# transition into systemd_socket_proxyd_t, because that domain is not bounded
+# by init_t, and the denial surfaces only as "Failed to connect to remote host:
+# Permission denied" from a unit that started successfully. SELinux confines
+# this process into its own domain instead, and User= plus the Protect*
+# directives below still apply on systems without it.
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
@@ -424,7 +429,9 @@ Type=notify
 User=%s
 Group=%s
 ExecStart=%s 127.0.0.1:%d
-NoNewPrivileges=true
+# NoNewPrivileges= is deliberately absent; see the declared-loopback forwarder
+# above. It blocks the SELinux transition into systemd_socket_proxyd_t and the
+# only symptom is a started unit whose every connect returns EACCES.
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict

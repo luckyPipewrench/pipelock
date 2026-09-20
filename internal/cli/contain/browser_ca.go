@@ -218,6 +218,14 @@ func removeBrowserCAMarker(env *installEnv) error {
 }
 
 func ownNSSFiles(env *installEnv, db string, uid, gid int) error {
+	// Fall back to the real descriptor-based operation rather than dereferencing
+	// a nil seam. An env constructed without this field is a wiring mistake, and
+	// failing closed on the privileged path is better than a panic mid-install
+	// that leaves earlier steps applied.
+	own := env.ownLeafNoFollow
+	if own == nil {
+		own = applyAgentOwnershipNoFollow
+	}
 	for _, name := range nssDatabaseFiles {
 		path := filepath.Join(db, name)
 		if err := ensureAgentConfigLeaf(env, path); err != nil {
@@ -227,7 +235,7 @@ func ownNSSFiles(env *installEnv, db string, uid, gid int) error {
 		// path-based chmod here would resolve the leaf again, and the directory
 		// belongs to the contained agent, so a symlink swapped in after the
 		// check above would redirect this privileged change onto another file.
-		if err := env.ownLeafNoFollow(path, 0o600, uid, gid); err != nil {
+		if err := own(path, 0o600, uid, gid); err != nil {
 			return err
 		}
 	}

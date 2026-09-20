@@ -328,7 +328,7 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 // hidden elements remain on the hidden surface because they carry prose an
 // attacker can aim at the model while keeping the rendered page clean.
 var (
-	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
+	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)(?:-->|$)`)
 	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
 	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
 		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
@@ -546,13 +546,38 @@ func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 // treated as a real start tag. Unclosed scripts fail closed: the partial
 // element is retained through EOF so its body is still classified
 // (executable MIME omitted; data scanned). Matching then stops.
+//
+// Self-closing <script .../> still arms the tokenizer's script-data rawTag;
+// NextIsNotRawText clears it and the element is recorded with an empty body
+// so a following data script is not swallowed. SVG/MathML foreign content is
+// tracked (foreignObject is an HTML integration point): StartTag script in
+// foreign content also calls NextIsNotRawText per x/net/html parser rules.
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
 	offset := 0
+	foreignDepth := 0
+	htmlIntegration := 0
+	collecting := false
+	var attrs string
+	var elemStart, bodyStart int
+
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
+			if collecting {
+				// Unclosed script: retain through EOF (fail closed) so a
+				// data-script body is still scanned. extractHiddenContent
+				// continues to omit executable MIME.
+				out = append(out, scriptElement{
+					attrs:     attrs,
+					body:      doc[bodyStart:],
+					bodyStart: bodyStart,
+					bodyEnd:   len(doc),
+					elemStart: elemStart,
+					elemEnd:   len(doc),
+				})
+			}
 			return out
 		}
 		raw := string(z.Raw())
@@ -560,61 +585,80 @@ func findScriptElements(doc string) []scriptElement {
 		tokenEnd := offset + len(raw)
 		offset = tokenEnd
 
-		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
-			continue
+		var name string
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken || tt == html.EndTagToken {
+			name = z.Token().Data
 		}
-		tok := z.Token()
-		if tok.Data != "script" {
-			continue
-		}
-		attrs := scriptAttrsFromStartRaw(raw, tt == html.SelfClosingTagToken)
-		elemStart := tokenStart
-		bodyStart := tokenEnd
 
-		// Collect until </script>. Assign body/elem ends only when the end tag
-		// is found (avoids wastedassign on intermediate updates).
-		var bodyEnd, elemEnd int
-		for {
-			tt2 := z.Next()
-			if tt2 == html.ErrorToken {
-				// Unclosed script: retain through EOF (fail closed) so a
-				// data-script body is still scanned. extractHiddenContent
-				// continues to omit executable MIME.
-				bodyEnd = len(doc)
-				elemEnd = len(doc)
+		// Track SVG/MathML foreign content. foreignObject is an HTML
+		// integration point (leave foreign on entry, re-enter on leave).
+		// Self-closing svg/math/foreignObject do not change depth.
+		if tt == html.StartTagToken {
+			switch name {
+			case "svg", "math":
+				foreignDepth++
+			case "foreignobject":
+				if foreignDepth > 0 {
+					htmlIntegration++
+				}
+			}
+		} else if tt == html.EndTagToken {
+			switch name {
+			case "foreignobject":
+				if htmlIntegration > 0 {
+					htmlIntegration--
+				}
+			case "svg", "math":
+				if foreignDepth > 0 {
+					foreignDepth--
+				}
+			}
+		}
+
+		if collecting {
+			if tt == html.EndTagToken && name == "script" {
 				out = append(out, scriptElement{
 					attrs:     attrs,
-					body:      doc[bodyStart:bodyEnd],
+					body:      doc[bodyStart:tokenStart],
 					bodyStart: bodyStart,
-					bodyEnd:   bodyEnd,
+					bodyEnd:   tokenStart,
 					elemStart: elemStart,
-					elemEnd:   elemEnd,
+					elemEnd:   tokenEnd,
 				})
-				return out
+				collecting = false
 			}
-			raw2 := string(z.Raw())
-			tStart := offset
-			tEnd := offset + len(raw2)
-			offset = tEnd
-			if tt2 != html.EndTagToken {
-				continue
-			}
-			tok2 := z.Token()
-			if tok2.Data != "script" {
-				continue
-			}
-			bodyEnd = tStart
-			elemEnd = tEnd
-			break
+			continue
 		}
-		out = append(out, scriptElement{
-			attrs:     attrs,
-			body:      doc[bodyStart:bodyEnd],
-			bodyStart: bodyStart,
-			bodyEnd:   bodyEnd,
-			elemStart: elemStart,
-			elemEnd:   elemEnd,
-		})
+
+		if name != "script" || (tt != html.StartTagToken && tt != html.SelfClosingTagToken) {
+			continue
+		}
+
+		selfClosing := tt == html.SelfClosingTagToken
+		attrs = scriptAttrsFromStartRaw(raw, selfClosing)
+		elemStart = tokenStart
+		bodyStart = tokenEnd
+
+		if selfClosing {
+			// Tokenizer still arms script-data for <script .../>; clear it and
+			// record an empty-body element so a following data script is seen.
+			z.NextIsNotRawText()
+			out = append(out, scriptElement{
+				attrs:     attrs,
+				body:      "",
+				bodyStart: bodyStart,
+				bodyEnd:   bodyStart,
+				elemStart: elemStart,
+				elemEnd:   tokenEnd,
+			})
+			continue
+		}
+
+		// SVG/MathML <script> is not HTML raw text (x/net/html foreign rules).
+		if foreignDepth > 0 && htmlIntegration == 0 {
+			z.NextIsNotRawText()
+		}
+		collecting = true
 	}
 }
 

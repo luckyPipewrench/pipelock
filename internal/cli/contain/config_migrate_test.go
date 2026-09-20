@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"gopkg.in/yaml.v3"
 )
@@ -207,6 +208,92 @@ func TestMigratePipelockConfigForContain_PreservesApprovedMetricsExposure(t *tes
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestMigratePipelockConfigForContain_AcceptsNullMetricsExposure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "omitted", body: "containment: {}\n"},
+		{name: "null", body: "containment:\n  metrics_exposure: null\n"},
+		{name: "blank", body: "containment:\n  metrics_exposure:\n"},
+		{name: "tilde", body: "containment:\n  metrics_exposure: ~\n"},
+		{name: "uppercase null", body: "containment:\n  metrics_exposure: NULL\n"},
+		{name: "null containment", body: "containment: null\n"},
+		{name: "blank containment", body: "containment:\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original, err := config.LoadBytes([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("runtime config rejects fixture: %v", err)
+			}
+			if original.Containment.MetricsExposure != nil {
+				t.Fatal("fixture unexpectedly authorizes metrics exposure")
+			}
+			env, _, _ := newFakeEnv(t)
+			home := t.TempDir()
+			origLookup := env.lookupUser
+			env.lookupUser = func(name string) (*user.User, error) {
+				if name == containInstallOperatorUser {
+					return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+				}
+				return origLookup(name)
+			}
+			out, artifacts, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte(tc.body))
+			if err != nil {
+				t.Fatalf("migrate runtime-valid config: %v", err)
+			}
+			if len(artifacts) != 0 {
+				t.Fatalf("unexpected migrated artifacts: %+v", artifacts)
+			}
+			loaded, err := config.LoadBytes(out)
+			if err != nil {
+				t.Fatalf("load migrated config: %v", err)
+			}
+			if loaded.MetricsListen != containMetricsListen || loaded.Containment.MetricsExposure != nil {
+				t.Fatalf("migration changed metrics authority: listen=%q policy=%+v", loaded.MetricsListen, loaded.Containment.MetricsExposure)
+			}
+			if _, err := containServiceReadOnlyPaths(out, env.proxyPort); err != nil {
+				t.Fatalf("validate migrated service config: %v", err)
+			}
+			if _, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte("metrics_listen: 192.0.2.20:9191\n"+tc.body)); err == nil {
+				t.Fatal("missing metrics policy authorized a non-loopback listener")
+			}
+		})
+	}
+}
+
+func TestMigratePipelockConfigForContain_RejectsNonMappingContainmentPolicies(t *testing.T) {
+	const metricsPolicyTypeError = "containment.metrics_exposure must be a mapping"
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "quoted null policy", body: "containment:\n  metrics_exposure: \"null\"\n", want: metricsPolicyTypeError},
+		{name: "empty string policy", body: "containment:\n  metrics_exposure: \"\"\n", want: metricsPolicyTypeError},
+		{name: "boolean policy", body: "containment:\n  metrics_exposure: false\n", want: metricsPolicyTypeError},
+		{name: "sequence policy", body: "containment:\n  metrics_exposure: []\n", want: metricsPolicyTypeError},
+		{name: "quoted null containment", body: "containment: \"null\"\n", want: "containment must be a mapping"},
+		{name: "sequence containment", body: "containment: []\n", want: "containment must be a mapping"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			home := t.TempDir()
+			origLookup := env.lookupUser
+			env.lookupUser = func(name string) (*user.User, error) {
+				if name == containInstallOperatorUser {
+					return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+				}
+				return origLookup(name)
+			}
+			_, _, err := migratePipelockConfigForContain(env, filepath.Join(home, "pipelock.yaml"), []byte(tc.body))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("migrate error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

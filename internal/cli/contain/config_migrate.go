@@ -201,7 +201,7 @@ func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 
 func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.ContainmentMetricsExposure, error) {
 	containment := mappingValue(root, "containment")
-	if containment == nil {
+	if containment == nil || (containment.Kind == yaml.ScalarNode && containment.Tag == "!!null") {
 		return nil, nil
 	}
 	if containment.Kind != yaml.MappingNode {
@@ -209,6 +209,10 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 	}
 	exposure := mappingValue(containment, "metrics_exposure")
 	if exposure == nil {
+		return nil, nil
+	}
+	// Match config.Load: a null optional policy grants no metrics exposure.
+	if exposure.Kind == yaml.ScalarNode && exposure.Tag == "!!null" {
 		return nil, nil
 	}
 	if exposure.Kind != yaml.MappingNode {
@@ -267,7 +271,7 @@ func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int,
 // config load / contain install time rather than silently ignored.
 func containmentLoopbackServicesFromMapping(root *yaml.Node) ([]config.ContainmentLoopbackService, error) {
 	containment := mappingValue(root, "containment")
-	if containment == nil {
+	if containment == nil || (containment.Kind == yaml.ScalarNode && containment.Tag == "!!null") {
 		return nil, nil
 	}
 	if containment.Kind != yaml.MappingNode {

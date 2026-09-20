@@ -110,13 +110,13 @@ func TestScanAgentCard_RejectedCardDoesNotLearnBaseline(t *testing.T) {
 
 // TestCardDescriptiveDigest_FramesFieldBoundaries proves the descriptive
 // IDENTITY cannot be collided by moving a delimiter across a field boundary.
-// cardDescriptiveText joins attacker-controlled fields with newlines, so
-// {Name: "A\nB", Description: ""} and {Name: "A", Description: "B\n"} flatten
+// cardDescriptiveText joins attacker-controlled fields with spaces, so
+// {Name: "A B", Description: ""} and {Name: "A", Description: "B "} flatten
 // identically. A baseline comparing that text reports "no drift" for a card
 // whose fields changed, recording no adoption and no audit event.
 func TestCardDescriptiveDigest_FramesFieldBoundaries(t *testing.T) {
-	left := A2AAgentCard{Name: "A\nB", Description: "", URL: "https://agent.vendor.example/a2a"}
-	right := A2AAgentCard{Name: "A", Description: "B\n", URL: "https://agent.vendor.example/a2a"}
+	left := A2AAgentCard{Name: "A B", Description: "", URL: "https://agent.vendor.example/a2a"}
+	right := A2AAgentCard{Name: "A", Description: "B ", URL: "https://agent.vendor.example/a2a"}
 
 	// Calibration: the ambiguity is real in the flattened text.
 	if cardDescriptiveText(left) != cardDescriptiveText(right) {

@@ -46,6 +46,18 @@ const (
 	// refund, so a ledger reader can prove the credential was pulled.
 	AuditTrialRefundRevoked = "trial_refund_revoked"
 	AuditEvalRejected       = "eval_rejected"
+	// Request events are written before an operator action crosses an
+	// irreversible boundary. Completion can then be correlated with durable
+	// entitlement state even if a later ledger append fails.
+	AuditTrialResendRequested = "trial_resend_requested"
+	AuditTrialRevokeRequested = "trial_revoke_requested"
+	// AuditTrialResent records an operator-requested delivery of an existing
+	// trial token. It is intentionally distinct from AuditEmailSent: the latter
+	// proves transport delivery, while this records the support action and why.
+	AuditTrialResent = "trial_resent"
+	// AuditTrialRevoked records an operator's completed entitlement revocation,
+	// including the zero-live-token case where no per-token record is emitted.
+	AuditTrialRevoked = "trial_revoked"
 )
 
 // AuditEntry is a single line in the append-only JSONL audit ledger.

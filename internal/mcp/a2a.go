@@ -745,21 +745,24 @@ func cardDescriptiveText(card A2AAgentCard) string {
 	sort.Slice(skills, func(i, j int) bool { return lessA2ASkill(skills[i], skills[j]) })
 	var b strings.Builder
 	b.WriteString(card.Name)
-	b.WriteByte('\n')
+	// ASCII spaces survive cue normalization, which removes control characters.
+	// Keep field boundaries so a preceding name cannot absorb a directive's
+	// initial word. Control characters within a field remain normalized normally.
+	b.WriteByte(' ')
 	b.WriteString(card.Description)
 	for _, s := range skills {
-		b.WriteByte('\n')
+		b.WriteByte(' ')
 		b.WriteString(s.Name)
-		b.WriteByte('\n')
+		b.WriteByte(' ')
 		b.WriteString(s.Description)
 	}
 	return b.String()
 }
 
 // cardDescriptiveDigest is the EQUALITY identity for a card's descriptive text.
-// cardDescriptiveText below joins attacker-controlled fields with newlines and
-// is therefore ambiguous: {Name: "A\nB", Description: ""} and {Name: "A",
-// Description: "B\n"} flatten to the same string, so a baseline comparing that
+// cardDescriptiveText joins attacker-controlled fields with spaces and
+// is therefore ambiguous: {Name: "A B", Description: ""} and {Name: "A",
+// Description: "B "} flatten to the same string, so a baseline comparing that
 // text reports no drift for a card whose fields actually changed, recording no
 // adoption and no audit event. The digest frames every field and every
 // collection, so distinct cards cannot collide.

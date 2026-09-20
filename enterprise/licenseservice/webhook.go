@@ -260,6 +260,12 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 }
 
 func (h *WebhookHandler) processSubscriptionDelivery(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
+	return h.db.withTrialSupportLock(ctx, func() error {
+		return h.processSubscriptionDeliveryLocked(ctx, sub, eventType, msgID)
+	})
+}
+
+func (h *WebhookHandler) processSubscriptionDeliveryLocked(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
 	h.processMu.Lock()
 	defer h.processMu.Unlock()
 
@@ -581,6 +587,220 @@ func (h *WebhookHandler) deliverLicenseEmail(ctx context.Context, ent *Entitleme
 	}
 	_ = h.ledger.LogEmailSent(ent.SubscriptionID, ent.CustomerEmail, msgID)
 	return nil
+}
+
+// TrialAccess is the support-facing view of a trial entitlement. It excludes
+// the token itself: recovery always delivers the deterministic existing token
+// through the registered delivery channel.
+type TrialAccess struct {
+	SubscriptionID string
+	CustomerEmail  string
+	Tier           string
+	Status         string
+	ExpiresAt      *time.Time
+	LicenseID      string
+	DeliveryStatus string
+	Revoked        bool
+}
+
+// InspectTrialAccess returns the current support view for one trial. It is a
+// subscription-ID lookup rather than an email lookup so an operator must use a
+// provider-authenticated identifier, not a mutable customer claim.
+func (h *WebhookHandler) InspectTrialAccess(ctx context.Context, subID string) (TrialAccess, error) {
+	if strings.TrimSpace(subID) == "" {
+		return TrialAccess{}, errors.New("subscription_id is required")
+	}
+	ent, err := h.db.GetBySubscriptionID(ctx, subID)
+	if err != nil {
+		return TrialAccess{}, fmt.Errorf("load trial entitlement: %w", err)
+	}
+	if ent == nil || !isTrialTier(ent.Tier) {
+		return TrialAccess{}, ErrTrialAccessNotFound
+	}
+	revoked := ent.Status == statusRevoked
+	if !revoked && ent.LastLicenseID != "" {
+		records, err := h.db.ListLicenseRevocations(ctx)
+		if err != nil {
+			return TrialAccess{}, fmt.Errorf("list license revocations: %w", err)
+		}
+		for _, record := range records {
+			if record.LicenseID == ent.LastLicenseID {
+				revoked = true
+				break
+			}
+		}
+	}
+	return TrialAccess{
+		SubscriptionID: ent.SubscriptionID,
+		CustomerEmail:  ent.CustomerEmail,
+		Tier:           ent.Tier,
+		Status:         ent.Status,
+		ExpiresAt:      ent.LastLicenseExpiresAt,
+		LicenseID:      ent.LastLicenseID,
+		DeliveryStatus: ent.LastDeliveryStatus,
+		Revoked:        revoked,
+	}, nil
+}
+
+// ResendTrialAccess sends the original deterministic trial token without
+// minting a replacement or extending its expiry. It is intentionally operator
+// only: this service has no buyer-authenticated recovery credential.
+func (h *WebhookHandler) ResendTrialAccess(ctx context.Context, subID, reason string, now time.Time) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("resend reason is required")
+	}
+	return h.db.withTrialSupportLock(ctx, func() error {
+		return h.resendTrialAccessLocked(ctx, subID, reason, now)
+	})
+}
+
+func (h *WebhookHandler) resendTrialAccessLocked(ctx context.Context, subID, reason string, now time.Time) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	access, err := h.InspectTrialAccess(ctx, subID)
+	if err != nil {
+		return err
+	}
+	if access.Status != statusActive || access.Revoked || access.LicenseID == "" {
+		return fmt.Errorf("trial access %s is not eligible for resend", subID)
+	}
+	if now.IsZero() || access.ExpiresAt == nil || !now.Before(*access.ExpiresAt) {
+		return fmt.Errorf("trial access %s is expired or missing its original expiry", subID)
+	}
+	if err := h.ledger.Log(AuditEntry{
+		Event:          AuditTrialResendRequested,
+		SubscriptionID: access.SubscriptionID,
+		CustomerEmail:  access.CustomerEmail,
+		LicenseID:      access.LicenseID,
+		Tier:           access.Tier,
+		ExpiresAt:      formatAuditExpiry(access.ExpiresAt),
+		Detail:         reason,
+	}); err != nil {
+		return fmt.Errorf("record trial resend request: %w", err)
+	}
+	ent, err := h.db.GetBySubscriptionID(ctx, subID)
+	if err != nil {
+		return fmt.Errorf("reload trial entitlement for resend: %w", err)
+	}
+	if ent == nil || !isTrialTier(ent.Tier) || ent.Status != statusActive {
+		return fmt.Errorf("trial access %s is not eligible for resend", subID)
+	}
+	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, subID, now)
+	if err != nil {
+		return fmt.Errorf("verify persisted trial issuance: %w", err)
+	}
+	matchedIssuance := false
+	for _, issuance := range issuances {
+		if issuance.LicenseID == ent.LastLicenseID {
+			matchedIssuance = true
+			break
+		}
+	}
+	if ent.LastLicenseID == "" || !matchedIssuance {
+		return fmt.Errorf("trial access %s has no matching persisted issuance", subID)
+	}
+	token, err := h.regenerateToken(ent)
+	if err != nil {
+		return err
+	}
+	if err := h.deliverLicenseEmail(ctx, ent, token, ent.LastLicenseTier, now); err != nil {
+		return fmt.Errorf("deliver trial access: %w", err)
+	}
+	updated, err := h.db.GetBySubscriptionID(ctx, subID)
+	if err != nil {
+		return fmt.Errorf("confirm trial delivery status: %w", err)
+	}
+	if updated == nil || updated.LastDeliveryStatus != "sent" {
+		return fmt.Errorf("trial access %s email delivery failed", subID)
+	}
+	// Delivery status is the durable completion record. The mandatory request
+	// entry above ensures the action remains attributable if this secondary
+	// JSONL completion append fails after the email has already been sent.
+	if err := h.ledger.Log(AuditEntry{
+		Event:          AuditTrialResent,
+		SubscriptionID: ent.SubscriptionID,
+		CustomerEmail:  ent.CustomerEmail,
+		LicenseID:      ent.LastLicenseID,
+		Tier:           ent.LastLicenseTier,
+		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
+		Detail:         reason,
+	}); err != nil {
+		h.log.Error().Err(err).Str("subscription_id", ent.SubscriptionID).Msg("record trial resend completion")
+	}
+	return nil
+}
+
+// RevokeTrialAccess records every still-valid trial token in the revocation
+// table and transitions the entitlement in one database transaction. The next
+// signed CRL is therefore built from the same durable state that marks the
+// trial unavailable; the immutable trial slot is deliberately retained.
+func (h *WebhookHandler) RevokeTrialAccess(ctx context.Context, subID, reason string, now time.Time) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("revocation reason is required")
+	}
+	return h.db.withTrialSupportLock(ctx, func() error {
+		return h.revokeTrialAccessLocked(ctx, subID, reason, now)
+	})
+}
+
+func (h *WebhookHandler) revokeTrialAccessLocked(ctx context.Context, subID, reason string, now time.Time) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	access, err := h.InspectTrialAccess(ctx, subID)
+	if err != nil {
+		return err
+	}
+	if access.Status == statusRevoked {
+		return ErrTrialAlreadyRevoked
+	}
+	if err := h.ledger.Log(AuditEntry{
+		Event:          AuditTrialRevokeRequested,
+		SubscriptionID: access.SubscriptionID,
+		CustomerEmail:  access.CustomerEmail,
+		LicenseID:      access.LicenseID,
+		Tier:           access.Tier,
+		ExpiresAt:      formatAuditExpiry(access.ExpiresAt),
+		Detail:         reason,
+	}); err != nil {
+		return fmt.Errorf("record trial revocation request: %w", err)
+	}
+
+	ent, issuances, err := h.db.revokeTrialAccessLocked(ctx, subID, reason, now)
+	if err != nil {
+		return err
+	}
+	// The entitlement status and license_revocations rows committed above are
+	// the durable completion record. The mandatory request entry ensures the
+	// operator action remains attributable if these secondary JSONL appends
+	// fail after the transaction has committed.
+	for _, issuance := range issuances {
+		if err := h.ledger.LogLicenseRevoked(ent.SubscriptionID, ent.CustomerEmail, issuance.LicenseID, reason); err != nil {
+			h.log.Error().Err(err).
+				Str("subscription_id", ent.SubscriptionID).
+				Str("license_id", issuance.LicenseID).
+				Msg("record trial license revocation completion")
+		}
+	}
+	if err := h.ledger.Log(AuditEntry{
+		Event:          AuditTrialRevoked,
+		SubscriptionID: ent.SubscriptionID,
+		CustomerEmail:  ent.CustomerEmail,
+		Tier:           ent.Tier,
+		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
+		Detail:         reason,
+	}); err != nil {
+		h.log.Error().Err(err).Str("subscription_id", ent.SubscriptionID).Msg("record trial entitlement revocation completion")
+	}
+	return nil
+}
+
+func formatAuditExpiry(expiresAt *time.Time) string {
+	if expiresAt == nil {
+		return ""
+	}
+	return expiresAt.UTC().Format(time.RFC3339)
 }
 
 func (h *WebhookHandler) regenerateToken(ent *Entitlement) (string, error) {
@@ -981,7 +1201,12 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	}
 
 	org := order.Customer.Metadata["org"]
+	return h.db.withTrialSupportLock(ctx, func() error {
+		return h.handleOrderEventLocked(ctx, order, tier, features, org)
+	})
+}
 
+func (h *WebhookHandler) handleOrderEventLocked(ctx context.Context, order *PolarOrder, tier string, features []byte, org string) error {
 	h.processMu.Lock()
 	defer h.processMu.Unlock()
 

@@ -150,9 +150,13 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 	evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 	// Injection: scan command for prompt injection relay.
-	if cfg.ResponseScanning.Enabled {
+	// sc.ResponseScanningEnabled()/ResponseAction(), not the raw config: the core
+	// response patterns are the immutable floor and keep running when the
+	// operator turns the optional layer off, and the action resolves to block
+	// when only the floor is live.
+	if sc.ResponseScanningEnabled() {
 		injResult := sc.ScanResponse(context.Background(), p.Command)
-		evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+		evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
 	}
 
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
@@ -300,9 +304,9 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 		dlpResult := sc.ScanTextForDLP(context.Background(), scanText)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
-		if cfg.ResponseScanning.Enabled {
+		if sc.ResponseScanningEnabled() {
 			injResult := sc.ScanResponse(context.Background(), scanText)
-			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
 		}
 	}
 
@@ -331,9 +335,9 @@ func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *polic
 		dlpResult := sc.ScanTextForDLP(context.Background(), content)
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
-		if cfg.ResponseScanning.Enabled {
+		if sc.ResponseScanningEnabled() {
 			injResult := sc.ScanResponse(context.Background(), content)
-			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
 		}
 	}
 

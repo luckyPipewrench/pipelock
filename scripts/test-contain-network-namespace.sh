@@ -89,6 +89,11 @@ fi
 touch "${inside_port_file}" "${host_port_file}"
 chown "${agent_user}" "${inside_port_file}"
 chmod 0600 "${inside_port_file}" "${host_port_file}"
+# mktemp -d leaves the directory 0700 root, so the listener running as the
+# contained user cannot traverse into it to publish its port, and the failure
+# reads as "did not publish its kernel-assigned port" rather than a permission
+# problem. Grant traverse only; the files keep their own modes.
+chmod 0711 "${runtime_dir}"
 
 # The host doorway is a pathname unix socket in the HOST namespace, because
 # systemd.socket(5) allocates every .socket listener there regardless of
@@ -158,7 +163,7 @@ else
         host_port="$(<"${host_port_file}")"
     fi
     if [[ -z "${host_port}" ]] || ! wait_for curl --noproxy '*' --silent --show-error --fail \
-        --connect-timeout 1 --max-time 2 "http://127.0.0.1:${host_port}/"; then
+        --connect-timeout 1 --max-time 2 --output /dev/null "http://127.0.0.1:${host_port}/"; then
         fail "host-loopback control listener is reachable from the host"
     elif namespace_curl "http://127.0.0.1:${host_port}/"; then
         fail "a contained process cannot reach a host-loopback listener"

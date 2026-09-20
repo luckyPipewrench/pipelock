@@ -101,7 +101,13 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
 		if hasResponseImageSignature(body) {
-			return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+			result := s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+			if !result.Clean {
+				// An unverified image-shaped body cannot safely be rewritten from
+				// a text scan view. Empty output makes strip callers fail closed.
+				result.TransformedContent = ""
+			}
+			return result
 		}
 		textual, classifyErr := isTextualResponseBody(ctx, body)
 		if classifyErr != nil {

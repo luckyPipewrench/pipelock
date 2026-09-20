@@ -542,8 +542,10 @@ func TestScanResponseBody_MalformedJPEGStillScans(t *testing.T) {
 	if isCompleteJPEG(body) {
 		t.Fatal("malformed JPEG passed structural validation")
 	}
-	s := MustNew(testResponseConfig())
-	if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); result.Clean {
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Action = config.ActionStrip
+	s := MustNew(cfg)
+	if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); result.Clean || result.TransformedContent != "" {
 		t.Fatal("malformed JPEG bypassed ordinary response scanning")
 	}
 }
@@ -661,12 +663,14 @@ func TestBoundedZlibTextRejectsTruncatedAndOversizedData(t *testing.T) {
 }
 
 func TestScanResponseBody_InvalidImageStillScans(t *testing.T) {
-	s := MustNew(testResponseConfig())
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Action = config.ActionStrip
+	s := MustNew(cfg)
 	body := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0xda, 'D', 'A', 'N', 0xc9, 0x92, 0x1c}
 	if isCompletePNG(body) {
 		t.Fatal("malformed fixture unexpectedly passed PNG validation")
 	}
-	if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); result.Clean {
+	if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); result.Clean || result.TransformedContent != "" {
 		t.Fatal("malformed image-shaped body bypassed response scanning")
 	}
 }

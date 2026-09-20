@@ -51,10 +51,19 @@ func TestConductorApplyTeardownSurvivesLateStaleCheck(t *testing.T) {
 	if !s.conductorDown.Load() {
 		t.Fatal("fixture did not tear down Conductor")
 	}
+	assertApplyDenial := func(phase string) {
+		t.Helper()
+		decision := s.killswitch.IsActiveForIP("203.0.113.7")
+		if !decision.Active || decision.Source != "conductor_apply_failure" {
+			t.Fatalf("%s: decision=%+v, want independent policy-application denial", phase, decision)
+		}
+	}
+	assertApplyDenial("late stale check")
 	if got := requestStatus(); got != http.StatusServiceUnavailable {
 		t.Fatalf("late stale check cleared strict entitlement denial: status=%d, want 503", got)
 	}
 	s.setConductorApplyConsistency(nil)
+	assertApplyDenial("consistency completion")
 	if got := requestStatus(); got != http.StatusServiceUnavailable {
 		t.Fatalf("consistency completion cleared strict entitlement denial: status=%d, want 503", got)
 	}

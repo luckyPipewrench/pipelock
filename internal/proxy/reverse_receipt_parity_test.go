@@ -916,10 +916,14 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 			},
 		},
 		{
-			name:        "unscanned SSE stream",
-			path:        "/events",
-			wantStatus:  http.StatusOK,
-			wantPattern: []string{"status=200", "reason=sse_stream_unscanned"},
+			name:       "SSE stream with parent scanning off",
+			path:       "/events",
+			wantStatus: http.StatusOK,
+			// Formerly reason=sse_stream_unscanned: reverse short-circuited
+			// SSE when the optional layer was off. The core floor still has
+			// to inspect events, and SSE already has a per-event scanner, so
+			// the outcome is a scanned stream rather than an unscanned one.
+			wantPattern: []string{"status=200", "reason=sse_stream"},
 			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
 				t.Helper()
 				cfg.ResponseScanning.Enabled = false

@@ -2404,13 +2404,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 					resp.ContentLength = int64(len(body))
 				}
-				if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
-					// Nothing downstream reads these bytes: with response
-					// scanning off the fall-through path returns at the
-					// short-circuit below, which labels the outcome
-					// "complete". Record the boundary-limited label here
-					// instead, so a body no scanner ever read is never
-					// reported as complete coverage.
+				// sc.ResponseScanningEnabled(), not the raw flag: generic MIME
+				// that sniffed as non-media is still text the core floor must
+				// inspect. The media branch already buffered these bytes, so
+				// scanning them does not add a new streaming tradeoff.
+				if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
+					// Nothing downstream reads these bytes: with the floor
+					// and the optional layer both off, the fall-through
+					// path would label the outcome "complete". Record the
+					// boundary-limited label here instead, so a body no
+					// scanner ever read is never reported as complete
+					// coverage.
 					rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 						strconv.Itoa(resp.StatusCode))
 					recordReverseOutcome(resp.StatusCode, resp.ContentLength, outcomeReason)
@@ -2565,7 +2569,10 @@ responseScanning:
 		recordReverseOutcome(http.StatusForbidden, -1, "compressed_response")
 		return nil
 	}
-	if !cfg.ResponseScanning.Enabled && !shieldActiveForHost {
+	// sc.ResponseScanningEnabled(), not the raw flag: core response patterns are
+	// the immutable floor and stay live when the operator disables the optional
+	// layer. Forward and intercept already gate on the scanner for this reason.
+	if !sc.ResponseScanningEnabled() && !shieldActiveForHost {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "complete")
@@ -2582,7 +2589,7 @@ responseScanning:
 		// Browser Shield has no SSE pipeline. Preserve streaming when response
 		// scanning is disabled instead of buffering an open-ended response that
 		// neither enabled control would inspect.
-		if !cfg.ResponseScanning.Enabled {
+		if !sc.ResponseScanningEnabled() {
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
 			return nil
@@ -2710,7 +2717,11 @@ responseScanning:
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
 	maxBytes := responseBodyLimit
-	shieldOnly := !cfg.ResponseScanning.Enabled && shieldActiveForHost
+	// Browser Shield may use its smaller read budget only when no response
+	// scanner is active. ResponseScanningEnabled includes the immutable core
+	// floor even when the optional response_scanning layer is disabled; otherwise
+	// a shield-capped response could forward an uninspected tail.
+	shieldOnly := !sc.ResponseScanningEnabled() && shieldActiveForHost
 	if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 		// Browser Shield is independent of response injection scanning. When it
 		// is the only body consumer, read to its own ceiling instead of applying
@@ -2778,6 +2789,8 @@ responseScanning:
 		defer releaseSizeExemptScan()
 	} else if len(body) > maxBytes {
 		if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
+			// No response scanner, including the core floor, is active on this
+			// path, so Browser Shield alone owns its documented oversize action.
 			decision := applyShieldOversize(body, false, cfg.BrowserShield.MaxShieldBytes)
 			if !decision.shieldable {
 				resp.Body = readCloserWithClose{
@@ -2995,7 +3008,7 @@ responseScanning:
 		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
 	}
-	if !cfg.ResponseScanning.Enabled {
+	if !sc.ResponseScanningEnabled() {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
@@ -3016,7 +3029,9 @@ responseScanning:
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
 	// Runs after suppression so the recorded action matches runtime.
 	{
-		revAction := cfg.ResponseScanning.Action
+		// ResponseAction() equals the configured action whenever the optional
+		// layer is on, and resolves to block when only the floor is live.
+		revAction := sc.ResponseAction()
 		if revRespExempt {
 			revAction = config.ActionWarn
 		}
@@ -3066,7 +3081,7 @@ responseScanning:
 		return nil
 	}
 
-	action := cfg.ResponseScanning.Action
+	action := sc.ResponseAction()
 	// Exempt domains: pin to warn for visibility without blocking.
 	if revRespExempt {
 		action = config.ActionWarn
@@ -3284,6 +3299,17 @@ func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
 func replaceWithBlockReason(resp *http.Response, reason string) {
 	if state := reverseResponseReceiptStateFrom(resp); state != nil {
 		state.responseBlocked = true
+	}
+	// Close the upstream body before dropping the reference to it. Several
+	// block paths refuse a response whose body was only partly read - a scan
+	// failure, a bounded size-exempt read, a compressed body - and overwriting
+	// resp.Body there leaves the upstream connection open until it times out,
+	// because the transport only reclaims a connection whose body reached EOF
+	// or was closed. Doing it here covers every block path at once instead of
+	// relying on each one to remember. Paths that already closed pass a body
+	// that is closed or a NopCloser, and a second Close on either is harmless.
+	if resp.Body != nil {
+		_ = resp.Body.Close()
 	}
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",

@@ -223,6 +223,9 @@ func TestMigratePipelockConfigForContain_AcceptsNullMetricsExposure(t *testing.T
 		{name: "uppercase null", body: "containment:\n  metrics_exposure: NULL\n"},
 		{name: "null containment", body: "containment: null\n"},
 		{name: "blank containment", body: "containment:\n"},
+		{name: "aliased null containment", body: "agents: &absent null\ncontainment: *absent\n"},
+		{name: "aliased null metrics policy", body: "containment:\n  loopback_services: &absent null\n  metrics_exposure: *absent\n"},
+		{name: "aliased null loopback services", body: "containment:\n  metrics_exposure: &absent null\n  loopback_services: *absent\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			original, err := config.LoadBytes([]byte(tc.body))
@@ -278,6 +281,9 @@ func TestMigratePipelockConfigForContain_RejectsNonMappingContainmentPolicies(t 
 		{name: "sequence policy", body: "containment:\n  metrics_exposure: []\n", want: metricsPolicyTypeError},
 		{name: "quoted null containment", body: "containment: \"null\"\n", want: "containment must be a mapping"},
 		{name: "sequence containment", body: "containment: []\n", want: "containment must be a mapping"},
+		{name: "quoted null containment alias", body: "agents: &not_null \"null\"\ncontainment: *not_null\n", want: "containment must be a mapping"},
+		{name: "quoted null metrics alias", body: "containment:\n  loopback_services: &not_null \"null\"\n  metrics_exposure: *not_null\n", want: metricsPolicyTypeError},
+		{name: "recursive metrics alias", body: "containment: &self\n  metrics_exposure: *self\n", want: metricsPolicyTypeError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)

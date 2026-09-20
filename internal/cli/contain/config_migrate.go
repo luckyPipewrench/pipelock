@@ -199,20 +199,29 @@ func containServiceReadOnlyPaths(data []byte, proxyPort int) ([]string, error) {
 	return containServiceReadOnlyPathsFromMapping(mapping)
 }
 
+// absentContainmentValue recognizes omitted values and parsed YAML nulls,
+// including aliases to null. Other alias targets retain strict type checks.
+func absentContainmentValue(node *yaml.Node) bool {
+	if node == nil {
+		return true
+	}
+	if node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!null"
+}
+
 func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.ContainmentMetricsExposure, error) {
 	containment := mappingValue(root, "containment")
-	if containment == nil || (containment.Kind == yaml.ScalarNode && containment.Tag == "!!null") {
+	if absentContainmentValue(containment) {
 		return nil, nil
 	}
 	if containment.Kind != yaml.MappingNode {
 		return nil, errors.New("containment must be a mapping")
 	}
 	exposure := mappingValue(containment, "metrics_exposure")
-	if exposure == nil {
-		return nil, nil
-	}
 	// Match config.Load: a null optional policy grants no metrics exposure.
-	if exposure.Kind == yaml.ScalarNode && exposure.Tag == "!!null" {
+	if absentContainmentValue(exposure) {
 		return nil, nil
 	}
 	if exposure.Kind != yaml.MappingNode {
@@ -271,23 +280,20 @@ func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int,
 // config load / contain install time rather than silently ignored.
 func containmentLoopbackServicesFromMapping(root *yaml.Node) ([]config.ContainmentLoopbackService, error) {
 	containment := mappingValue(root, "containment")
-	if containment == nil || (containment.Kind == yaml.ScalarNode && containment.Tag == "!!null") {
+	if absentContainmentValue(containment) {
 		return nil, nil
 	}
 	if containment.Kind != yaml.MappingNode {
 		return nil, errors.New("containment must be a mapping")
 	}
 	services := mappingValue(containment, "loopback_services")
-	if services == nil {
-		return nil, nil
-	}
 	// An explicit YAML null means the same thing as an absent key: no
 	// declared services. config.Load already decodes it that way into a nil
 	// slice, and refusing it here made the two disagree about one file --
 	// `pipelock check` accepted it while `contain install --config` failed
 	// before staging anything, leaving the operator to discover that only
 	// omitting the key or writing [] would work.
-	if services.Kind == yaml.ScalarNode && services.Tag == "!!null" {
+	if absentContainmentValue(services) {
 		return nil, nil
 	}
 	if services.Kind != yaml.SequenceNode {

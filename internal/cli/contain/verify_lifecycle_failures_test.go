@@ -741,22 +741,31 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			env.workspacePaths = []string{"/workspace"}
 		})
 		probes := probesForEnv(env)
-		if len(probes) != len(allProbes())+1 ||
-			probes[len(probes)-4].name != "workspace_access" || probes[len(probes)-4].n != 15 ||
-			probes[len(probes)-3].name != "private_tmp_isolation" || probes[len(probes)-3].n != 16 {
+		if len(probes) != len(allProbes())+1 {
 			t.Fatalf("probes = %v", probes)
 		}
-		// Assert the CA probe by NAME and NUMBER. Checking only the shifted
-		// indexes of its neighbours would still pass if this probe were
-		// renamed, renumbered, or dropped entirely, which is the one outcome
-		// that matters for a security check.
-		caProbe := probes[len(probes)-2]
-		if caProbe.name != "pipelock_ca_export_current" || caProbe.n != 19 {
-			t.Fatalf("CA probe = %+v; want pipelock_ca_export_current published as 19", caProbe)
+		// Assert each probe by NAME and NUMBER, and assert workspace_access
+		// lands immediately before private_tmp_isolation. Indexing from the end
+		// silently re-points every time a probe is appended, which is how this
+		// assertion drifted once already.
+		byName := func(name string) (int, probe) {
+			for i, p := range probes {
+				if p.name == name {
+					return i, p
+				}
+			}
+			t.Fatalf("probe %q missing from %v", name, probes)
+			return -1, probe{}
 		}
-		last := probes[len(probes)-1]
-		if last.name != "agent_network_namespace" || last.n != 21 {
-			t.Fatalf("last probe = %+v; want agent_network_namespace published as 20", last)
+		wsIdx, ws := byName("workspace_access")
+		tmpIdx, tmp := byName("private_tmp_isolation")
+		_, caExport := byName("pipelock_ca_export_current")
+		_, browser := byName(probeBrowserCATrust)
+		if ws.n != 15 || tmp.n != 16 || caExport.n != 19 || browser.n != probeBrowserCATrustNum {
+			t.Fatalf("probe numbers drifted: %v", probes)
+		}
+		if tmpIdx != wsIdx+1 {
+			t.Fatalf("workspace_access must be inserted directly before private_tmp_isolation: %v", probes)
 		}
 	})
 

@@ -128,7 +128,7 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 3. Copy the pipelock binary into a system path the agent user cannot replace, then compute and pin its SHA-256 at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
 4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
 5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
-6. Install the private agent network namespace and its socket-activated proxy bridge, then install the nftables containment ruleset: deny direct outbound traffic from the agent user while allowing the operator and `pipelock-proxy` to reach the internet. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
+6. Install the private agent network namespace and its socket-activated proxy bridge, add the Pipelock CA to the contained agent's per-user NSS database so Chromium-family browsers trust it, then install the nftables containment ruleset: deny direct outbound traffic from the agent user while allowing the operator and `pipelock-proxy` to reach the internet. Browser trust requires `certutil` (`libnss3-tools` on Debian/Ubuntu, `mozilla-nss-tools` on SUSE, `nss` on Arch, or `nss-tools` on Red Hat-family distributions); installation fails rather than reporting ready when it cannot be established. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
 7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
 8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
 9. Drop the `plk-launch` wrapper, the root-owned contained launcher, and one wrapper per registered tool into `/usr/local/bin/`.
@@ -199,7 +199,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 17 fixed probes (numbered 1-14, 16, 19, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. It prints pass, fail, skip, or unknown for each probe. Probe 16 temporarily creates and removes one canary in each host temporary directory. Probe 21 starts short-lived network checks to prove the agent namespace can't reach a host loopback listener but can reach the namespace proxy socket. Both probes require root to start transient services. Probe numbers are an operator contract, so new probes don't renumber published ones.
+Verify normally makes no host changes. It walks 18 fixed probes (numbered 1-14, 16, 19, 20, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. It prints pass, fail, skip, or unknown for each probe.
 
 ```bash
 pipelock contain verify
@@ -225,6 +225,7 @@ pipelock contain verify
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, and the namespace proxy socket reaches Pipelock. |
+| 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`. It reports trust, not provenance: a matching certificate an operator added themselves passes, because the agent can browse either way. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Install and rollback consult the ownership marker so rollback removes only what install added. Probes 17 and 18 are published by `contain run`, not `verify`. |
 
 ### Managed metrics invariant
 

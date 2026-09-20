@@ -94,10 +94,14 @@ type Cache struct {
 	bundlesDir string
 	configsDir string
 	now        func() time.Time
+	write      func(path string, data []byte) error
 	mu         sync.Mutex
 }
 
 type VerifiedBundle struct {
+	// baseHash is the active pointer observed while staging. Compensation may
+	// restore the previous runtime only while that same pointer remains active.
+	baseHash   string
 	Bundle     conductor.PolicyBundle
 	BundleHash string
 	VerifiedAt time.Time
@@ -227,10 +231,10 @@ func (c *Cache) stageVerified(bundle conductor.PolicyBundle, opts verifyOptions)
 	configName := bundleHash + configExt
 	recordName := bundleHash + recordExt
 	configPath := filepath.Join(c.configsDir, configName)
-	if err := durableWrite(filepath.Join(c.bundlesDir, recordName), recordBytes); err != nil {
+	if err := c.writeDurably(filepath.Join(c.bundlesDir, recordName), recordBytes); err != nil {
 		return VerifiedBundle{}, err
 	}
-	if err := durableWrite(configPath, []byte(bundle.Payload.ConfigYAML)); err != nil {
+	if err := c.writeDurably(configPath, []byte(bundle.Payload.ConfigYAML)); err != nil {
 		return VerifiedBundle{}, err
 	}
 	return VerifiedBundle{
@@ -238,6 +242,7 @@ func (c *Cache) stageVerified(bundle conductor.PolicyBundle, opts verifyOptions)
 		BundleHash: bundleHash,
 		VerifiedAt: now,
 		ConfigPath: configPath,
+		baseHash:   baseHash,
 	}, nil
 }
 
@@ -270,7 +275,12 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 	if currentErr != nil && !errors.Is(currentErr, ErrNoValidBundle) {
 		return currentErr
 	}
-	if currentErr == nil && !strings.EqualFold(record.BaseHash, current.BundleHash) {
+	// A directory fsync can report an error after the active-pointer rename has
+	// already taken effect. Retrying that exact activation must be allowed: it
+	// re-durabilizes the same verified pointer rather than treating the already
+	// visible candidate as a competing concurrent apply.
+	alreadyActive := currentErr == nil && strings.EqualFold(current.BundleHash, verified.BundleHash)
+	if currentErr == nil && !alreadyActive && !strings.EqualFold(record.BaseHash, current.BundleHash) {
 		return fmt.Errorf("%w: active bundle changed since staging", ErrInvalidActiveRecord)
 	}
 	if errors.Is(currentErr, ErrNoValidBundle) && record.BaseHash != "" {
@@ -294,7 +304,7 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 	if err != nil {
 		return fmt.Errorf("conductor apply cache: marshal active record: %w", err)
 	}
-	if err := durableWrite(filepath.Join(c.dir, activeRecordName), activeBytes); err != nil {
+	if err := c.writeDurably(filepath.Join(c.dir, activeRecordName), activeBytes); err != nil {
 		return err
 	}
 	return nil
@@ -307,6 +317,13 @@ func (c *Cache) Active() (VerifiedBundle, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.readActiveLocked()
+}
+
+func (c *Cache) writeDurably(path string, data []byte) error {
+	if c.write != nil {
+		return c.write(path, data)
+	}
+	return durableWrite(path, data)
 }
 
 // BundleLookup reports a stored bundle plus the hash of the bundle that was

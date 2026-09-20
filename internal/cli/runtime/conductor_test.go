@@ -1502,6 +1502,11 @@ func (s runtimePolicySigner) resolver() conductor.SignatureKeyResolver {
 
 func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	t.Helper()
+	return newConductorApplyTestServerWithConfig(t, "")
+}
+
+func newConductorApplyTestServerWithConfig(t *testing.T, extraConfig string) (*Server, runtimePolicySigner) {
+	t.Helper()
 	// conductor.enabled triggers the fleet-license gate; install a real
 	// Enterprise token for the test so the production gate path is exercised.
 	setTestFleetLicense(t)
@@ -1569,6 +1574,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 		"  audit_signing_key_id: audit-key-1",
 		"  recorder_key_id: recorder-key-1",
 		"  honor_remote_kill_switch: false",
+		extraConfig,
 		"",
 	}, "\n"))
 

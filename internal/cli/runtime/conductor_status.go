@@ -41,6 +41,7 @@ type conductorPolicyStatusReporter struct {
 	heartbeatEndpoint string
 	cfg               config.Conductor
 	cache             *applycache.Cache
+	activeSnapshot    func() (applycache.VerifiedBundle, error)
 	// markerPath is the follower's local enrollment marker, and identity is
 	// resolved from it lazily rather than once at construction.
 	//
@@ -78,7 +79,7 @@ type conductorHeartbeatConfig struct {
 	privateKey  ed25519.PrivateKey
 }
 
-func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTPDoer, cache *applycache.Cache) (*conductorPolicyStatusReporter, error) {
+func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTPDoer, cache *applycache.Cache, activeSnapshot ...func() (applycache.VerifiedBundle, error)) (*conductorPolicyStatusReporter, error) {
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil
 	}
@@ -101,6 +102,9 @@ func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTP
 		cfg:               cfg.Conductor,
 		cache:             cache,
 		markerPath:        markerPath,
+	}
+	if len(activeSnapshot) > 0 {
+		r.activeSnapshot = activeSnapshot[0]
 	}
 	// Resolve now when the marker already exists, so an already-enrolled follower
 	// behaves exactly as before and never pays a lookup on its first report.
@@ -297,12 +301,12 @@ func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent, identi
 	}
 }
 
-// buildAppliedState is the SINGLE derivation of what this follower is running,
-// shared by the unsigned runtime-status POST and the signed audit-batch
-// applied-state so the two views never drift. It reads the same source the
-// status POST always used (applycache.Cache.Active + the poll StatusEvent) and
-// produces already-sanitized, bounds-satisfying values so conductor-side
-// FollowerAppliedState.Validate never fails a legitimate batch closed.
+// buildAppliedState derives both unsigned and signed policy state.
+// The runtime snapshot checks live consistency; the poll event supplies
+// the last observed apply outcome. A busy snapshot omits the active claim
+// without inventing an apply failure. Strings are sanitized and bounded so
+// the resulting value satisfies FollowerAppliedState.Validate before signing
+// or reporting it to the control plane.
 func (r *conductorPolicyStatusReporter) buildAppliedState(ev policysync.StatusEvent) conductor.FollowerAppliedState {
 	pollAt := ev.PollAt
 	if pollAt.IsZero() {
@@ -323,21 +327,33 @@ func (r *conductorPolicyStatusReporter) buildAppliedState(ev policysync.StatusEv
 	if ev.AppliedBundle != nil {
 		applied.LastSuccessfulApplyAt = pollAt.UTC()
 	}
-	if r.cache != nil {
-		if active, err := r.cache.Active(); err == nil {
-			applied.ActiveBundleID = boundAppliedStateString(active.Bundle.BundleID)
-			applied.ActiveBundleVersion = active.Bundle.Version
-			applied.ActiveBundleHash = strings.ToLower(active.BundleHash)
-			applied.ActiveBundleMinPipelockVersion = boundAppliedStateString(active.Bundle.MinPipelockVersion)
-		}
+	var active applycache.VerifiedBundle
+	var activeErr error
+	if r.activeSnapshot != nil {
+		active, activeErr = r.activeSnapshot()
+	} else if r.cache != nil {
+		active, activeErr = r.cache.Active()
+	} else {
+		return applied
 	}
+	if activeErr != nil {
+		if errors.Is(activeErr, applycache.ErrLivePolicyUncertain) {
+			applied.LastApplyErrorCode = "apply_failed"
+			applied.LastApplyErrorMessage = sanitizeAppliedStateMessage(activeErr.Error())
+		}
+		return applied
+	}
+	applied.ActiveBundleID = boundAppliedStateString(active.Bundle.BundleID)
+	applied.ActiveBundleVersion = active.Bundle.Version
+	applied.ActiveBundleHash = strings.ToLower(active.BundleHash)
+	applied.ActiveBundleMinPipelockVersion = boundAppliedStateString(active.Bundle.MinPipelockVersion)
 	return applied
 }
 
 // appliedStateProvider returns the callback the audit producer calls to attach
 // applied-state to a signed batch. It reads the latest observed poll outcome
 // (or a zero event, before the first poll) and derives applied-state from the
-// live cache. It always reports ok=true: even with no active bundle yet the
+// runtime snapshot. It always reports ok=true: even with no active bundle yet the
 // version/timestamps are worth signing, and ObservedAt is always set.
 func (r *conductorPolicyStatusReporter) appliedStateProvider() func() (conductor.FollowerAppliedState, bool) {
 	if r == nil {

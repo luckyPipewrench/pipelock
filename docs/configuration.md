@@ -329,6 +329,8 @@ Enables TLS MITM on CONNECT tunnels, allowing pipelock to decrypt, scan, and re-
 
 Requires a CA certificate trusted by the agent. Generate one with `pipelock tls init` and install it with `pipelock tls install-ca`.
 
+For `pipelock contain`, `contain install` also establishes the interception CA in the contained user's NSS database because Chromium-family browsers on Linux do not consume `SSL_CERT_FILE` or the other CA environment variables used by command-line tools. The install requires `certutil` and fails closed if the exact CA cannot be confirmed with SSL CA trust; `contain verify` reports the same browser-consulted control. This trust step does not by itself configure or guarantee a browser automation runtime.
+
 **Upgrade note:** a config that previously loaded with a private-suffix wildcard in `tls_interception.passthrough_domains` (for example `*.github.io` or `*.s3.amazonaws.com`) now refuses to load. Replace the wildcard with its exact hosts (for example `mybucket.s3.amazonaws.com`); if the required host set is unbounded, no passthrough equivalent exists, so intercept the traffic with `tls_interception` and a trusted local CA or constrain it to a fixed host set. A JavaScript alias other than `text/javascript`/`application/javascript`/`application/ecmascript` in `response_scanning.unscannable_passthrough[].content_types` also now refuses to load; both changes are fail-closed, and neither affects `exempt_domains`, `trusted_domains`, or any other grant list.
 
 ```yaml

@@ -45,9 +45,14 @@ type installEnv struct {
 	mkdirAll   func(path string, mode os.FileMode) error
 	chown      func(path string, uid, gid int) error
 	lchown     func(path string, uid, gid int) error
-	rename     func(oldPath, newPath string) error
-	chmod      func(path string, mode os.FileMode) error
-	symlink    func(target, linkPath string) error
+	// ownLeafNoFollow applies mode and ownership through a single O_NOFOLLOW
+	// descriptor. It is a seam so tests can run unprivileged; production must
+	// keep the descriptor-based implementation, because a path-based chmod in
+	// an agent-owned directory is redirectable by a swapped symlink.
+	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
+	rename          func(oldPath, newPath string) error
+	chmod           func(path string, mode os.FileMode) error
+	symlink         func(target, linkPath string) error
 
 	// lookupUser resolves system users by name. Used to translate the
 	// configured proxy/agent user names into numeric UIDs for nft rules
@@ -125,6 +130,8 @@ type installEnv struct {
 	nftPath                  string
 	curlPath                 string
 	proxyPort                int
+	lookPath                 func(string) (string, error)
+	platformFamily           string
 
 	prevNFTTableDump             string
 	prevNFTTableStateKnown       bool
@@ -197,6 +204,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		ownedLoopbackAnchorUnitPath:   defaultOwnedLoopbackAnchorUnitPath,
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
+		ownLeafNoFollow:               applyAgentOwnershipNoFollow,
 		// The reconcile lock lives beside the nft rules file under
 		// /etc/nftables.d/, a directory only root writes, NOT under
 		// dataDir: dataDir is recursively chowned to pipelock-proxy by
@@ -231,6 +239,8 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftPath:                  platform.nftPath,
 		curlPath:                 platform.curlPath,
 		proxyPort:                defaultProxyPort,
+		lookPath:                 exec.LookPath,
+		platformFamily:           platform.family,
 	}
 }
 

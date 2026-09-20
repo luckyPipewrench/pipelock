@@ -130,56 +130,74 @@ func reverseShieldConfiguredServer(t *testing.T, cfg *config.Config, upstream ht
 	return proxySrv
 }
 
-// With response injection scanning disabled, Browser Shield must use its own
-// ceiling. Crossing the reverse response-scanner ceiling must not select the
-// scanner's block path or bypass the configured shield oversize action.
-func TestReverseProxy_ShieldOnlyResponseAboveScannerCeilingHonorsOversizeAction(t *testing.T) {
+// The immutable core floor is still active when response_scanning is disabled,
+// so a response larger than its whole-body scan ceiling is denied regardless of
+// Browser Shield's oversize action. The clean under-ceiling control proves this
+// does not turn ordinary shielded traffic into a blanket block.
+func TestReverseProxy_CoreFloorResponseAboveScannerCeilingBlocksDespiteShieldOversizeAction(t *testing.T) {
 	page := oversizeShieldPage(reverseProxyMaxBodyBytes + 4096)
-	for _, tt := range []struct {
-		name        string
-		action      string
-		wantStatus  int
-		wantTracker bool
-	}{
-		{name: "block", action: config.ShieldOversizeBlock, wantStatus: http.StatusForbidden},
-		{name: "warn", action: config.ShieldOversizeWarn, wantStatus: http.StatusOK, wantTracker: true},
-		{name: "scan_head", action: config.ShieldOversizeScanHead, wantStatus: http.StatusOK},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := reverseShieldResponseHarness(t, config.ShieldStrictnessStandard, tt.action, false, oversizeShieldTestCap, page)
+	for _, action := range []string{config.ShieldOversizeBlock, config.ShieldOversizeWarn, config.ShieldOversizeScanHead} {
+		t.Run(action, func(t *testing.T) {
+			resp := reverseShieldResponseHarness(t, config.ShieldStrictnessStandard, action, false, oversizeShieldTestCap, page)
 			defer func() { _ = resp.Body.Close() }()
 
-			if resp.StatusCode != tt.wantStatus {
-				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 			}
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatalf("read response: %v", err)
 			}
-			if got := strings.Contains(string(body), "tracker.vendor.example"); got != tt.wantTracker {
-				t.Errorf("tracking pixel present = %v, want %v", got, tt.wantTracker)
-			}
-			if tt.wantStatus == http.StatusOK && !strings.HasSuffix(string(body), oversizeShieldTail) {
-				t.Fatal("oversize action truncated the streamed response tail")
+			if strings.Contains(string(body), "tracker.vendor.example") {
+				t.Fatal("blocked response leaked the upstream body")
 			}
 		})
 	}
+
+	t.Run("clean response below scan ceiling still flows", func(t *testing.T) {
+		clean := oversizeShieldPage(oversizeShieldTestCap * 2)
+		resp := reverseShieldResponseHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, false, oversizeShieldTestCap, clean)
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("under-ceiling clean response status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		if !strings.HasSuffix(string(body), oversizeShieldTail) {
+			t.Fatal("under-ceiling clean response did not preserve its tail")
+		}
+	})
 }
 
-func TestReverseProxy_ShieldOnlyResponseAboveScannerCeilingPassesNonShieldableContent(t *testing.T) {
+// Non-shieldable text still belongs to the core response floor. The positive
+// control separates the necessary large-response block from a text/plain
+// regression for ordinary responses.
+func TestReverseProxy_CoreFloorResponseAboveScannerCeilingBlocksNonShieldableContent(t *testing.T) {
 	body := strings.Repeat("plain response data\n", reverseProxyMaxBodyBytes/10)
 	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, oversizeShieldTestCap, "text/plain", body)
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("non-shieldable response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-shieldable response status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if _, err := io.ReadAll(resp.Body); err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if string(got) != body {
-		t.Fatal("non-shieldable response was modified or truncated")
+
+	clean := strings.Repeat("plain response data\n", oversizeShieldTestCap/10)
+	cleanResp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, oversizeShieldTestCap, "text/plain", clean)
+	defer func() { _ = cleanResp.Body.Close() }()
+	if cleanResp.StatusCode != http.StatusOK {
+		t.Fatalf("under-ceiling non-shieldable response status = %d, want %d", cleanResp.StatusCode, http.StatusOK)
+	}
+	got, err := io.ReadAll(cleanResp.Body)
+	if err != nil {
+		t.Fatalf("read under-ceiling response: %v", err)
+	}
+	if string(got) != clean {
+		t.Fatal("under-ceiling non-shieldable response was modified or truncated")
 	}
 }
 
@@ -406,11 +424,69 @@ func TestReverseProxy_ShieldOnlyUnknownLengthReceiptPreservesLowerBound(t *testi
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	warn := findReceiptByLayer(t, receipts, "shield_oversize")
-	if got, want := warn.ActionRecord.Shield.BodyBytes, cfg.BrowserShield.MaxShieldBytes+1; got != want {
-		t.Fatalf("unknown-length receipt body_bytes = %d, want observed lower bound %d", got, want)
+
+	// The property is evidence integrity, not a particular ceiling: an
+	// unknown-length response must never have its receipt overstate what was
+	// actually read, and the reason must present the number as a lower bound.
+	//
+	// This formerly pinned the shield ceiling plus one, which was a proxy for
+	// "the read stopped at the shield ceiling". It no longer does: the core
+	// floor consumes the body regardless of the optional layer, so the recorded
+	// figure is the larger amount genuinely observed. Asserting the bound
+	// rather than the old ceiling keeps the invariant while letting the read
+	// length follow the code.
+	got := warn.ActionRecord.Shield.BodyBytes
+	if got != len(page) {
+		t.Fatalf("receipt body_bytes = %d, want the %d bytes actually read", got, len(page))
 	}
-	if !strings.Contains(warn.ActionRecord.Pattern, "at least") {
-		t.Fatalf("unknown-length reason presents lower bound as exact: %q", warn.ActionRecord.Pattern)
+	// The floor read the whole body, so the figure is exact and the reason must
+	// not hedge it. The lower-bound wording belongs to a body the proxy could
+	// not finish reading, which no longer reaches this path: such a body blocks
+	// at the response scan ceiling first.
+	if strings.Contains(warn.ActionRecord.Pattern, "at least") {
+		t.Fatalf("a fully-read body reported its exact size as a lower bound: %q", warn.ActionRecord.Pattern)
+	}
+}
+
+// TestReverseProxy_ShieldOversizeAboveScanCeilingBlocksBeforeShield pins where
+// an over-ceiling body is now decided.
+//
+// This case formerly asserted that a body larger than the proxy would read
+// produced a shield_oversize receipt whose figure was presented as a lower
+// bound. With the floor live, such a body never reaches shield handling: it
+// blocks at the response scan ceiling first, because an unreadable body cannot
+// be inspected and the floor fails closed. The evidence contract is preserved
+// by there being no under-stated shield figure to emit at all.
+func TestReverseProxy_ShieldOversizeAboveScanCeilingBlocksBeforeShield(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	page := oversizeShieldPage(reverseProxyMaxBodyBytes + 4096)
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, page)
+	}, shield.NewEngine(nil))
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a body above the scan ceiling must fail closed, got %d body=%q", resp.StatusCode, string(body))
+	}
+	for _, r := range extractReceiptsFromDir(t, dir) {
+		if r.ActionRecord.Layer == "shield_oversize" {
+			t.Fatalf("shield_oversize receipt emitted for a body the floor refused before shield handling")
+		}
 	}
 }
 
@@ -754,6 +830,10 @@ func TestReverseProxy_ShieldRunsForGenericMIMEWhenResponseScanningDisabled(t *te
 }
 
 func TestReverseProxy_ShieldExemptHostPassesLargeResponseWhenResponseScanningDisabled(t *testing.T) {
+	// Formerly streamed a body larger than the scan ceiling because the
+	// optional layer was off and the host was shield-exempt. The core floor
+	// still requires a scan, so the scan ceiling applies and this oversize
+	// body is blocked.
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
 	cfg.BrowserShield.Enabled = true
@@ -773,11 +853,36 @@ func TestReverseProxy_ShieldExemptHostPassesLargeResponseWhenResponseScanningDis
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("oversize shield-exempt body must hit the scan ceiling, got status %d body=%q", resp.StatusCode, string(body))
+	}
+}
+
+func TestReverseProxy_ShieldExemptHostPassesUnderCapResponseWhenResponseScanningDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	page := oversizeShieldPage(oversizeShieldTestCap)
+	proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, page)
+	}, func(cfg *config.Config, upstreamURL *url.URL) {
+		cfg.BrowserShield.ExemptDomains = []string{upstreamURL.Hostname()}
+	}, nil)
+
+	resp := testGet(t, proxySrv.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("shield-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
+		t.Fatalf("under-cap shield-exempt response status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	if string(body) != page {
-		t.Fatal("shield-exempt response was modified or truncated")
+		t.Fatal("under-cap shield-exempt response was modified or truncated")
 	}
 }
 
@@ -906,5 +1011,55 @@ func TestReverseProxy_ShieldOversize_DoesNotBlockShieldIneligibleImage(t *testin
 	body, _ := io.ReadAll(resp.Body)
 	if !bytes.Equal(body, imageBody) {
 		t.Fatal("oversize non-shieldable image was modified or truncated")
+	}
+}
+
+// oversizeShieldPageWithInjection builds an oversized shieldable page whose
+// core prompt-injection phrase begins after the shield cap. A head-only scan
+// cannot find the phrase; a whole-body core-floor scan must.
+func oversizeShieldPageWithInjection(minBytes int) string {
+	var b strings.Builder
+	b.WriteString("<html><body>")
+	for b.Len()+len(corePayloadForFloor)+len(oversizeShieldTail) < minBytes {
+		b.WriteString("<p>filler paragraph for size</p>")
+	}
+	b.WriteString("<p>" + corePayloadForFloor + "</p>")
+	b.WriteString(oversizeShieldTail)
+	return b.String()
+}
+
+func TestReverseProxy_ShieldOversizeTailCoreInjectionBlocks(t *testing.T) {
+	for _, action := range []string{config.ShieldOversizeScanHead, config.ShieldOversizeWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.MaxShieldBytes = oversizeShieldTestCap
+			cfg.BrowserShield.OversizeAction = action
+			page := oversizeShieldPageWithInjection(oversizeShieldTestCap * 2)
+			if offset := strings.Index(page, corePayloadForFloor); offset <= cfg.BrowserShield.MaxShieldBytes {
+				t.Fatalf("core payload offset = %d, must exceed shield cap %d", offset, cfg.BrowserShield.MaxShieldBytes)
+			}
+
+			// Shield must be active for this host. An exempt host would not prove
+			// the shield-capped response path that used to leave this tail unseen.
+			proxySrv := reverseShieldConfiguredServer(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, page)
+			}, nil, nil)
+
+			resp := testGet(t, proxySrv.URL+"/page")
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("tail core injection status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+			}
+			if strings.Contains(string(body), corePayloadForFloor) {
+				t.Fatalf("tail core injection reached the client with action=%s", action)
+			}
+		})
 	}
 }

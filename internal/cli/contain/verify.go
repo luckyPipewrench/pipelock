@@ -20,7 +20,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -161,6 +160,10 @@ type probeEnv struct {
 	proxyForwarderSocketPath      string
 	proxyForwarderServicePath     string
 	namespaceForwarderServicePath string
+	agentHome                     string
+	platformFamily                string
+	lookPath                      func(string) (string, error)
+	browserCATrust                func(context.Context, *probeEnv) (string, string)
 	// workspaceInvErr records a recorded-inventory read that failed for any
 	// reason other than absence. The workspace probe fails on it so a permission
 	// or parse error cannot make verify pass with the grant set silently empty.
@@ -241,6 +244,8 @@ func defaultProbeEnv() *probeEnv {
 		proxyForwarderSocketPath:      defaultProxyForwarderSocketPath,
 		proxyForwarderServicePath:     defaultProxyForwarderServicePath,
 		namespaceForwarderServicePath: defaultNamespaceForwarderServicePath,
+		platformFamily:                platform.family,
+		lookPath:                      exec.LookPath,
 	}
 }
 
@@ -376,6 +381,7 @@ func allProbes() []probe {
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
 		{19, "pipelock_ca_export_current", "exported Pipelock CA matches the CA in the contain-managed keystore", probeCurrentCAExport},
+		{probeBrowserCATrustNum, probeBrowserCATrust, "contained agent NSS database trusts the Pipelock CA", probeBrowserCATrustState},
 		{21, "agent_network_namespace", "contained-agent namespace is private and reaches only its proxy socket", probeAgentNetworkNamespace},
 	}
 }
@@ -391,15 +397,23 @@ func probesForEnv(env *probeEnv) []probe {
 		}
 	}
 	// Preserve workspace_access as published probe 15. Insert it before the
-	// existing private-temp probe so configured output remains numerically ordered.
+	// private-temp probe so configured output remains numerically ordered
+	// without renumbering published results, including the browser-CA probe
+	// that follows private-temp.
 	if len(env.workspacePaths) > 0 || len(env.workspaceGrants) > 0 || env.workspaceInvErr != nil {
-		privateTmpIndex := slices.IndexFunc(probes, func(p probe) bool { return p.name == "private_tmp_isolation" })
-		if privateTmpIndex < 0 {
-			return probes
+		out := make([]probe, 0, len(probes)+1)
+		inserted := false
+		for _, p := range probes {
+			if p.name == "private_tmp_isolation" && !inserted {
+				out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+				inserted = true
+			}
+			out = append(out, p)
 		}
-		probes = append(probes, probe{})
-		copy(probes[privateTmpIndex+1:], probes[privateTmpIndex:])
-		probes[privateTmpIndex] = probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess}
+		if !inserted {
+			out = append(out, probe{15, "workspace_access", "pipelock-agent can read configured workspace paths and no grant has expired", probeWorkspaceAccess})
+		}
+		return out
 	}
 	return probes
 }

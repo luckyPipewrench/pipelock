@@ -27,6 +27,7 @@ var ErrURLBlocked = errors.New("url blocked")
 func CheckCmd() *cobra.Command {
 	var configFile string
 	var scanURL string
+	var requireBuildCompatibility bool
 
 	cmd := &cobra.Command{
 		Use:   "check",
@@ -47,6 +48,12 @@ Examples:
 				if err != nil {
 					cmd.PrintErrf("Config validation FAILED: %v\n", err)
 					return err
+				}
+				if requireBuildCompatibility {
+					if err := checkBuildConfigCompatibility(cfg); err != nil {
+						cmd.PrintErrf("Config validation FAILED: %v\n", err)
+						return err
+					}
 				}
 				cmd.Println("Config validation: OK")
 				cmd.Printf("  Mode:           %s\n", cfg.Mode)
@@ -126,8 +133,26 @@ Examples:
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path to validate")
 	cmd.Flags().StringVar(&scanURL, "url", "", "URL to scan through the configured scanners")
+	cmd.Flags().BoolVar(&requireBuildCompatibility, "require-build-compatibility", false, "require this build to enforce every configured capability")
+	_ = cmd.Flags().MarkHidden("require-build-compatibility")
 
 	return cmd
+}
+
+// checkBuildConfigCompatibility rejects configuration that this build can
+// parse but cannot enforce. contain install executes the candidate binary's
+// check command before replacing the installed binary, so this guard prevents
+// a core/dev build from silently removing named-profile listeners.
+func checkBuildConfigCompatibility(cfg *config.Config) error {
+	if config.ValidateAgentsFunc != nil {
+		return nil
+	}
+	for name := range cfg.Agents {
+		if name != "_default" {
+			return errors.New("named agent profiles require an enterprise build")
+		}
+	}
+	return nil
 }
 
 // checkConfigAdvisories returns non-fatal advisory messages for the loaded

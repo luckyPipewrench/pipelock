@@ -46,6 +46,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 // the same lock, so a concurrent operator reload cannot be overwritten by a
 // stale pre-apply snapshot.
 func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
+	return s.reloadLockedWithPolicyRestore(newCfg, false)
+}
+
+func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringPriorPolicy bool) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			ReloadPanicHandler(r, s.sentry, s.logger, s.opts.ConfigFile)
@@ -315,7 +319,9 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		// time-windowed dedup keyed on the LAST EMITTED reload event:
 		// the first of a stacked pair still logs, any event with the
 		// same hash inside 2s skips silently.
-		if s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged {
+		// Compensation and uncertain applies must execute: a failed restoration
+		// may publish another config without updating the last-success marker.
+		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged {
 			return nil
 		}
 
@@ -500,7 +506,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		// Compare resolved-vs-resolved configs so bundle merges and
 		// MCP listener auto-enable do not look like policy downgrades
 		// during hot reload.
-		if reasons := implausibleReloadTeardownReasons(oldCfg, newCfg); len(reasons) > 0 {
+		if reasons := implausibleReloadTeardownReasons(oldCfg, newCfg); len(reasons) > 0 && !restoringPriorPolicy {
 			rejectErr := fmt.Errorf("rejected: implausibly empty config reload would weaken security posture: %s", strings.Join(reasons, ", "))
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -514,7 +520,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 			for _, drop := range cleanDrops {
 				outcome := ruleBundleOutcomeDegraded
 				severity := config.SeverityWarn
-				if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+				if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) && !restoringPriorPolicy {
 					outcome = ruleBundleOutcomeRejected
 					severity = config.SeverityCritical
 				}
@@ -531,7 +537,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 					DroppedPatterns: drop.Total(),
 				})
 			}
-			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) && !restoringPriorPolicy {
 				rejectErr := fmt.Errorf("rejected: strict mode rule bundle coverage drop: %s", bundleCoverageDropSummary(cleanDrops))
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
 				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -551,7 +557,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 		// Block downgrades from strict mode and from explicit "required"
 		// security contracts. A required evidence/signature mode should not
 		// keep forwarding under a warning-only weakening reload.
-		if reason := reloadDowngradeRejectReason(oldCfg, newCfg, warnings); reason != "" {
+		if reason := reloadDowngradeRejectReason(oldCfg, newCfg, warnings); reason != "" && !restoringPriorPolicy {
 			rejectErr := fmt.Errorf("rejected: security downgrade from %s", reason)
 			if fields := trustExpansionReloadFields(warnings); len(fields) > 0 {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %s cannot widen trust at runtime; previous configuration remains active; restart Pipelock to apply this change\n", strings.Join(fields, ", "))

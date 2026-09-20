@@ -755,7 +755,7 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 			t.Fatalf("CA probe = %+v; want pipelock_ca_export_current published as 19", caProbe)
 		}
 		last := probes[len(probes)-1]
-		if last.name != "agent_network_namespace" || last.n != 20 {
+		if last.name != "agent_network_namespace" || last.n != 21 {
 			t.Fatalf("last probe = %+v; want agent_network_namespace published as 20", last)
 		}
 	})

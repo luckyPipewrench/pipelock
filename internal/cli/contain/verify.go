@@ -374,7 +374,7 @@ func allProbes() []probe {
 		{14, "launch_env_allow_list", "plk-launch clears the operator environment (env -i) before exec", probeLaunchEnvAllowList},
 		{16, "private_tmp_isolation", "transient contained-agent service cannot see the operator temporary-directory canary", probePrivateTmp},
 		{19, "pipelock_ca_export_current", "exported Pipelock CA matches the CA in the contain-managed keystore", probeCurrentCAExport},
-		{20, "agent_network_namespace", "contained-agent namespace is private and reaches only its proxy socket", probeAgentNetworkNamespace},
+		{21, "agent_network_namespace", "contained-agent namespace is private and reaches only its proxy socket", probeAgentNetworkNamespace},
 	}
 }
 

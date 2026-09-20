@@ -199,7 +199,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 17 fixed probes (numbered 1-14, 16, 19, and 20) plus the conditional workspace probe, numbered 15, when workspaces are configured. It prints pass, fail, skip, or unknown for each probe. Probe 16 temporarily creates and removes one canary in each host temporary directory. Probe 20 starts short-lived network checks to prove the agent namespace can't reach a host loopback listener but can reach the namespace proxy socket. Both probes require root to start transient services. Probe numbers are an operator contract, so new probes don't renumber published ones.
+Verify normally makes no host changes. It walks 17 fixed probes (numbered 1-14, 16, 19, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. It prints pass, fail, skip, or unknown for each probe. Probe 16 temporarily creates and removes one canary in each host temporary directory. Probe 21 starts short-lived network checks to prove the agent namespace can't reach a host loopback listener but can reach the namespace proxy socket. Both probes require root to start transient services. Probe numbers are an operator contract, so new probes don't renumber published ones.
 
 ```bash
 pipelock contain verify
@@ -224,7 +224,7 @@ pipelock contain verify
 | 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
-| 20 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, and the namespace proxy socket reaches Pipelock. |
+| 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, and the namespace proxy socket reaches Pipelock. |
 
 ### Managed metrics invariant
 

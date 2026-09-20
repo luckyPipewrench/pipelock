@@ -16,6 +16,51 @@ Rule: detection, blocking, scanning, verification, and single-agent enforcement
 stay free. Paid code must fail closed at runtime with `License.HasFeature`, not
 only by living behind the `enterprise` build tag.
 
+## v3.6 release delta (audited at `f737b28e0dde86e329928ba571948f40fc0024e3`)
+
+This is an additive v3.6 audit record for the current paid-gate release
+condition. It does not replace or reinterpret the historical v2.7 audit below.
+The audited checkout is exactly the named `origin/main` base.
+
+| Audited condition | Count |
+|---|---:|
+| Shipped paid-gate bypasses | 0 |
+| Missing fail-closed paid-gate tests | 0 |
+| Missing capability-manifest classifications | 0 |
+
+The audit covers the operator surfaces included in the v3.6 release scope:
+each is classified Free, Pro, Assess, or Enterprise in
+[`capability-manifest.json`](capability-manifest.json); paid paths use the
+existing feature checks; and the relevant paid-gate tests exercise refusal
+without the entitlement or with an under-tier entitlement. Detection and
+single-agent enforcement remain Free.
+
+Items explicitly deferred beyond v3.6 are outside this audit and are not a
+condition of the v3.6 tag gate.
+
+### Classification boundary and proof limits
+
+Nested fields are classified through their parent capability rather than as
+independent root surfaces. For example, nested `agents.<profile>` fields remain
+within the named-agent capability family; the manifest records the relevant
+operator-facing nested fields where a distinct paid capability needs one.
+Integration installers/managers and read-only status surfaces are explicit
+manifest exclusions, not unclassified capabilities.
+
+The manifest leaves two deliberately recorded proof-design limitations:
+
+- Gate ownership matching is compatibility-only: source-prefix and feature
+  matching show that a direct runtime gate has a manifest owner compatible with
+  its feature, but do not prove the full semantic ownership chain.
+- Assess has an enforcement/proof asymmetry: its `assess` proof and enforcement
+  intentionally resolve to the same `checkAssessLicense` declaration rather
+  than to a separate helper. That is not a missing gate or a missing test.
+
+The counts above are an audit result, not a claim that the manifest's static
+checks alone prove runtime behavior. The manifest parity and direct-gate tests
+check source and inventory coverage; the cited paid-gate tests remain the
+fail-closed runtime evidence.
+
 ## Entitlement Map
 
 | Entitlement | Tier | Runtime gate |

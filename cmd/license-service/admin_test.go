@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,6 +234,209 @@ func TestDispatchAdmin(t *testing.T) {
 			t.Fatal("missing --crl must surface an error through dispatch")
 		}
 	})
+
+	for _, subcommand := range []string{"inspect-trial", "resend-trial", "revoke-trial"} {
+		t.Run(subcommand+"_dispatched_and_requires_identifier", func(t *testing.T) {
+			setAdminEnv(t)
+			swapArgs(t, subcommand)
+			handled, err := dispatchAdmin(discardLog())
+			if !handled {
+				t.Fatalf("%s must be handled by dispatchAdmin", subcommand)
+			}
+			if err == nil || !strings.Contains(err.Error(), "--subscription-id is required") {
+				t.Fatalf("%s without --subscription-id error = %v", subcommand, err)
+			}
+		})
+	}
+}
+
+func TestTrialAdminCommandsRequireReasons(t *testing.T) {
+	setAdminEnv(t)
+	if err := runResendTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil || !strings.Contains(err.Error(), "--reason is required") {
+		t.Fatalf("resend trial without --reason error = %v", err)
+	}
+	if err := runRevokeTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil || !strings.Contains(err.Error(), "--reason is required") {
+		t.Fatalf("revoke trial without --reason error = %v", err)
+	}
+}
+
+func TestRunTrialAdminCommands(t *testing.T) {
+	t.Run("inspect prints persisted trial state", func(t *testing.T) {
+		setAdminEnv(t)
+		seedAdminTrial(t, "order_admin_inspect")
+		output := captureStdout(t, func() error {
+			return runInspectTrial(discardLog(), []string{"--subscription-id", "order_admin_inspect"})
+		})
+		if !strings.Contains(output, "subscription_id=order_admin_inspect") ||
+			!strings.Contains(output, "email=buyer@example.com") ||
+			!strings.Contains(output, "status=active") {
+			t.Fatalf("inspect output missing trial state: %q", output)
+		}
+	})
+
+	t.Run("inspect unknown trial fails", func(t *testing.T) {
+		setAdminEnv(t)
+		if err := runInspectTrial(discardLog(), []string{"--subscription-id", "order_missing"}); err == nil {
+			t.Fatal("unknown trial inspection must fail")
+		}
+	})
+
+	t.Run("commands fail when service configuration is unavailable", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			run  func() error
+		}{
+			{name: "inspect", run: func() error {
+				return runInspectTrial(discardLog(), []string{"--subscription-id", "order_trial"})
+			}},
+			{name: "resend", run: func() error {
+				return runResendTrial(discardLog(), []string{"--subscription-id", "order_trial", "--reason", "support"})
+			}},
+			{name: "revoke", run: func() error {
+				return runRevokeTrial(discardLog(), []string{"--subscription-id", "order_trial", "--reason", "support"})
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				clearLicenseServiceEnv(t)
+				if err := test.run(); err == nil {
+					t.Fatal("missing service configuration must fail")
+				}
+			})
+		}
+	})
+
+	t.Run("resend reaches support handler and reports invalid state", func(t *testing.T) {
+		setAdminEnv(t)
+		if err := runResendTrial(discardLog(), []string{
+			"--subscription-id", "order_missing",
+			"--reason", "buyer requested recovery",
+		}); err == nil {
+			t.Fatal("unknown trial resend must fail")
+		}
+	})
+
+	t.Run("revoke persists status and CRL row", func(t *testing.T) {
+		setAdminEnv(t)
+		seedAdminTrial(t, "order_admin_revoke")
+		if err := runRevokeTrial(discardLog(), []string{
+			"--subscription-id", "order_admin_revoke",
+			"--reason", "operator requested revocation",
+		}); err != nil {
+			t.Fatalf("runRevokeTrial: %v", err)
+		}
+		db, err := licenseservice.OpenEntitlementDB(t.Context(), os.Getenv("DB_PATH"))
+		if err != nil {
+			t.Fatalf("reopen entitlement database: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		ent, err := db.GetBySubscriptionID(t.Context(), "order_admin_revoke")
+		if err != nil {
+			t.Fatalf("load revoked trial: %v", err)
+		}
+		if ent == nil || ent.Status != "revoked" {
+			t.Fatalf("trial status after admin revoke: %+v", ent)
+		}
+		revocations, err := db.ListLicenseRevocations(t.Context())
+		if err != nil {
+			t.Fatalf("list license revocations: %v", err)
+		}
+		if len(revocations) != 1 || revocations[0].SubscriptionID != "order_admin_revoke" || revocations[0].Reason != "operator requested revocation" {
+			t.Fatalf("revocations after admin revoke: %+v", revocations)
+		}
+	})
+
+	t.Run("revoke unknown trial reports handler error", func(t *testing.T) {
+		setAdminEnv(t)
+		if err := runRevokeTrial(discardLog(), []string{
+			"--subscription-id", "order_missing",
+			"--reason", "operator requested revocation",
+		}); err == nil {
+			t.Fatal("unknown trial revocation must fail")
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "inspect", run: func() error { return runInspectTrial(discardLog(), []string{"--unknown"}) }},
+		{name: "resend", run: func() error { return runResendTrial(discardLog(), []string{"--unknown"}) }},
+		{name: "revoke", run: func() error { return runRevokeTrial(discardLog(), []string{"--unknown"}) }},
+	} {
+		t.Run(test.name+" rejects unknown flag", func(t *testing.T) {
+			setAdminEnv(t)
+			if err := test.run(); err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -unknown") {
+				t.Fatalf("unknown flag error = %v", err)
+			}
+		})
+	}
+}
+
+func seedAdminTrial(t *testing.T, subscriptionID string) {
+	t.Helper()
+	db, err := licenseservice.OpenEntitlementDB(t.Context(), os.Getenv("DB_PATH"))
+	if err != nil {
+		t.Fatalf("open entitlement database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	now := time.Now().UTC().Truncate(time.Second)
+	expires := now.Add(30 * 24 * time.Hour)
+	ent := &licenseservice.Entitlement{
+		SubscriptionID:       subscriptionID,
+		CustomerEmail:        "buyer@example.com",
+		ProductID:            "prod_trial",
+		Tier:                 "trial",
+		BillingInterval:      "one_time",
+		Status:               "active",
+		CurrentPeriodEnd:     expires,
+		Features:             `[]`,
+		LastLicenseID:        "lic_" + subscriptionID,
+		LastLicenseIssuedAt:  &now,
+		LastLicenseExpiresAt: &expires,
+		LastLicensePeriodEnd: &expires,
+		LastLicenseTier:      "trial",
+		LastLicenseInterval:  "one_time",
+		LastLicenseProductID: "prod_trial",
+		LastDeliveryStatus:   "sent",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	issuance := licenseservice.LicenseIssuance{
+		LicenseID:      ent.LastLicenseID,
+		SubscriptionID: subscriptionID,
+		ExpiresAt:      expires,
+		IssuedAt:       now,
+	}
+	if err := db.UpsertWithLicenseIssuance(t.Context(), ent, issuance); err != nil {
+		t.Fatalf("seed trial entitlement: %v", err)
+	}
+}
+
+func captureStdout(t *testing.T, run func() error) string {
+	t.Helper()
+	original := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open stdout pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = original })
+	runErr := run()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	os.Stdout = original
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+	if runErr != nil {
+		t.Fatalf("captured command failed: %v", runErr)
+	}
+	return string(output)
 }
 
 func TestLoadSigningKeyHelpers(t *testing.T) {

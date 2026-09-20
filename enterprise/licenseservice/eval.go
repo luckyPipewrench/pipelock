@@ -222,9 +222,6 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 	}
 	_ = h.ledger.LogWebhookReceived(event.Type, order0.ID)
 
-	h.processMu.Lock()
-	defer h.processMu.Unlock()
-
 	committed, err := h.db.WebhookCommitted(ctx, msgID)
 	if err != nil {
 		return fmt.Errorf("check webhook delivery: %w", err)
@@ -237,6 +234,22 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 	if err != nil {
 		_ = h.ledger.LogError(order0.ID, "fetch order from polar", err)
 		return fmt.Errorf("fetch order from polar: %w", err)
+	}
+	return h.db.withTrialSupportLock(ctx, func() error {
+		return h.handleOrderRefundEventLocked(ctx, event, msgID, order)
+	})
+}
+
+func (h *WebhookHandler) handleOrderRefundEventLocked(ctx context.Context, event *PolarWebhookEvent, msgID string, order *PolarOrder) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
+	committed, err := h.db.WebhookCommitted(ctx, msgID)
+	if err != nil {
+		return fmt.Errorf("recheck webhook delivery: %w", err)
+	}
+	if committed {
+		return nil
 	}
 
 	refundState := classifyRefund(order)

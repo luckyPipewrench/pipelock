@@ -1009,11 +1009,11 @@ const binaryResponseTextRunMinBytes = 16
 const responseBodyContextCheckBytes = 4096
 
 // opaqueResponseTextView produces one bounded scanner view from an opaque body.
-// Short spans of valid control runes are semantic text boundaries and become a
-// space, so NUL-split instructions remain visible. Invalid bytes and longer
-// binary spans end the group; retained groups are separated by a non-whitespace
-// sentinel so unrelated fragments cannot synthesize an instruction. Groups
-// below the phrase floor are dropped, excluding short accidental tokens.
+// Short spans of control or malformed bytes are semantic text boundaries and
+// become a space, so split instructions remain visible. Longer binary spans end
+// the group; retained groups are separated by a non-whitespace sentinel so
+// unrelated fragments cannot synthesize an instruction. Groups below the
+// phrase floor are dropped, excluding short accidental tokens.
 func opaqueResponseTextView(ctx context.Context, data []byte) (string, error) {
 	var view strings.Builder
 	var group strings.Builder
@@ -1053,7 +1053,6 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (string, error) {
 		}
 
 		separatorStart := i
-		soft := true
 		for i < len(data) {
 			if err := checkContext(i); err != nil {
 				return "", err
@@ -1062,12 +1061,9 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (string, error) {
 			if isPrintableResponseRune(r, size) {
 				break
 			}
-			if r == utf8.RuneError && size == 1 {
-				soft = false
-			}
 			i += size
 		}
-		if soft && i-separatorStart <= 8 && group.Len() > 0 {
+		if i-separatorStart <= 8 && group.Len() > 0 {
 			group.WriteByte(' ')
 			continue
 		}

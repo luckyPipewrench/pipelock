@@ -506,7 +506,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// Compare resolved-vs-resolved configs so bundle merges and
 		// MCP listener auto-enable do not look like policy downgrades
 		// during hot reload.
-		if reasons := implausibleReloadTeardownReasons(oldCfg, newCfg); len(reasons) > 0 {
+		if reasons := implausibleReloadTeardownReasons(oldCfg, newCfg); len(reasons) > 0 && !restoringPriorPolicy {
 			rejectErr := fmt.Errorf("rejected: implausibly empty config reload would weaken security posture: %s", strings.Join(reasons, ", "))
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -520,7 +520,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			for _, drop := range cleanDrops {
 				outcome := ruleBundleOutcomeDegraded
 				severity := config.SeverityWarn
-				if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+				if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) && !restoringPriorPolicy {
 					outcome = ruleBundleOutcomeRejected
 					severity = config.SeverityCritical
 				}
@@ -537,7 +537,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 					DroppedPatterns: drop.Total(),
 				})
 			}
-			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) {
+			if strictRuleBundleDegradationDisallowed(oldCfg, newCfg) && !restoringPriorPolicy {
 				rejectErr := fmt.Errorf("rejected: strict mode rule bundle coverage drop: %s", bundleCoverageDropSummary(cleanDrops))
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
 				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)

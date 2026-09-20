@@ -58,7 +58,7 @@ func TestConductorActiveSnapshotRequiresConsistentRuntime(t *testing.T) {
 	s.conductorApplyMu.Lock()
 	_, lockedErr := s.conductorActiveSnapshot()
 	s.conductorApplyMu.Unlock()
-	if !errors.Is(lockedErr, applycache.ErrLivePolicyUncertain) {
+	if !errors.Is(lockedErr, errConductorSnapshotBusy) {
 		t.Fatalf("snapshot during apply = %v", lockedErr)
 	}
 	snapshot, err := s.conductorActiveSnapshot()
@@ -124,5 +124,41 @@ func TestConductorApplySignedHeartbeatOmitsUncertainPolicy(t *testing.T) {
 		} else if state.ActiveBundleHash != applied.BundleHash || state.LastApplyErrorCode != "" {
 			t.Fatalf("healthy signed state did not recover: %+v", state)
 		}
+	}
+}
+
+func TestConductorSnapshotContentionPreservesTheLastApplyOutcome(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	bundle := signedRuntimePolicyBundle(t, signer, "snapshot-contention", 1, "", "mode: balanced\n")
+	applied, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter := s.conductorStatusReporter.(*conductorPolicyStatusReporter)
+	for _, failed := range []bool{false, true} {
+		event := policysync.StatusEvent{PollAt: time.Now().UTC()}
+		if failed {
+			event.ApplyError = errors.New("previous apply was refused")
+		}
+		s.conductorApplyMu.Lock()
+		state := reporter.buildAppliedState(event)
+		s.conductorApplyMu.Unlock()
+		if state.ActiveBundleHash != "" || state.ActiveBundleID != "" || state.ActiveBundleVersion != 0 {
+			t.Fatalf("contended snapshot made an active-policy claim: %+v", state)
+		}
+		if failed {
+			if state.LastApplyErrorCode != "apply_failed" || state.LastApplyErrorMessage != event.ApplyError.Error() {
+				t.Errorf("contended snapshot replaced the observed failure: %+v", state)
+			}
+		} else if state.LastApplyErrorCode != "" || state.LastApplyErrorMessage != "" {
+			t.Errorf("contended snapshot invented an apply failure: %+v", state)
+		}
+		if err := state.Validate(); err != nil {
+			t.Fatalf("contended snapshot violates the wire contract: %v", err)
+		}
+	}
+	state := reporter.buildAppliedState(policysync.StatusEvent{PollAt: time.Now().UTC()})
+	if state.ActiveBundleHash != applied.BundleHash || state.LastApplyErrorCode != "" {
+		t.Fatalf("released snapshot did not report the committed policy: %+v", state)
 	}
 }

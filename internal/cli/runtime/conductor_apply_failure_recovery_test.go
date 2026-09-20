@@ -195,7 +195,7 @@ func TestConductorApplySerializesReloadAndSuppressesPendingClaims(t *testing.T) 
 		t.Fatal("runtime did not wire its policy status reporter")
 	}
 	state, ok := reporter.appliedStateProvider()()
-	if !ok || state.ActiveBundleID != "" || state.ActiveBundleVersion != 0 || state.ActiveBundleHash != "" || state.LastApplyErrorCode != "apply_failed" {
+	if !ok || state.ActiveBundleID != "" || state.ActiveBundleVersion != 0 || state.ActiveBundleHash != "" || state.LastApplyErrorCode != "" || state.LastApplyErrorMessage != "" {
 		t.Errorf("pending activation made an active-policy claim: %+v", state)
 	}
 	if err := state.Validate(); err != nil {

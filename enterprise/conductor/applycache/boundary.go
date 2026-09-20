@@ -201,8 +201,13 @@ func (b Boundary) RecoverActive() (AppliedBundle, error) {
 	if b.StillEntitled != nil && !b.StillEntitled() {
 		return AppliedBundle{}, ErrEntitlementLost
 	}
+	// Reload may publish before returning an error. Recovery owns the same
+	// admission state as apply until the cached policy is fully installed.
+	if b.Consistency != nil {
+		b.Consistency(ErrLivePolicyUncertain)
+	}
 	if err := b.Reload(cfg); err != nil {
-		return AppliedBundle{}, fmt.Errorf("reloading verified cached conductor policy bundle config: %w", err)
+		return AppliedBundle{}, b.deny(fmt.Errorf("reloading verified cached conductor policy bundle config: %w", err))
 	}
 	b.markConsistent()
 	return AppliedBundle{

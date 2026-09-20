@@ -24,6 +24,9 @@ func TestBoundaryApplyActivationFailureStates(t *testing.T) {
 		restores  int
 	}{
 		{name: "first apply", first: true, restores: 1},
+		{name: "first unreadable pointer", first: true, uncertain: true},
+		{name: "first incomplete pointer", first: true, uncertain: true},
+		{name: "first competing pointer", first: true, uncertain: true},
 		{name: "prior pointer preserved", restores: 1},
 		{name: "persistent post-rename failure", uncertain: true},
 		{name: "unreadable pointer", uncertain: true},
@@ -62,11 +65,13 @@ func TestBoundaryApplyActivationFailureStates(t *testing.T) {
 				LocalVersion: "1.2.3", Now: func() time.Time { return testNow },
 				Reload: func(*config.Config) error {
 					switch tc.name {
-					case "unreadable pointer":
+					case "unreadable pointer", "first unreadable pointer":
 						return os.WriteFile(activePath, []byte("invalid record"), 0o600)
+					case "first incomplete pointer":
+						return os.WriteFile(activePath, []byte("{}"), 0o600)
 					case "removed pointer":
 						return os.Remove(activePath)
-					case "competing pointer":
+					case "competing pointer", "first competing pointer":
 						cache.write = nil
 						_, err := cache.storeVerified(signedTestBundle(t, key, "competing", 3, priorHash), testVerifyOptions(key))
 						return err
@@ -89,8 +94,8 @@ func TestBoundaryApplyActivationFailureStates(t *testing.T) {
 				if !errors.Is(activeErr, ErrNoValidBundle) {
 					t.Fatalf("active error=%v, want missing bundle", activeErr)
 				}
-			case "unreadable pointer":
-				if activeErr == nil {
+			case "unreadable pointer", "first unreadable pointer", "first incomplete pointer":
+				if activeErr == nil || errors.Is(activeErr, ErrNoValidBundle) {
 					t.Fatal("invalid active pointer was accepted")
 				}
 			default:
@@ -98,7 +103,7 @@ func TestBoundaryApplyActivationFailureStates(t *testing.T) {
 				switch tc.name {
 				case "persistent post-rename failure":
 					wantVersion = 2
-				case "competing pointer":
+				case "competing pointer", "first competing pointer":
 					wantVersion = 3
 				}
 				if activeErr != nil || active.Bundle.Version != wantVersion {

@@ -12,7 +12,9 @@ import (
 )
 
 func TestController_ConductorApplyFailureSurvivesStaleClear(t *testing.T) {
-	controller := New(config.Defaults())
+	cfg := config.Defaults()
+	cfg.KillSwitch.Message = "policy recovery required"
+	controller := New(cfg)
 	controller.SetConductorApplyFailure(true, "apply outcome unknown")
 	controller.SetConductorStale(false, "")
 
@@ -22,13 +24,17 @@ func TestController_ConductorApplyFailureSurvivesStaleClear(t *testing.T) {
 	if !decision.Active || decision.Source != "conductor_apply_failure" {
 		t.Fatalf("decision after stale clear = %+v, want conductor_apply_failure deny", decision)
 	}
-	if !controller.Sources()["conductor_apply_failure"] {
-		t.Fatal("Sources()[conductor_apply_failure] = false, want true")
+	if !controller.Sources()["conductor_apply_failure"] || !controller.ConductorApplyFailure() {
+		t.Fatal("uncertainty status disagrees with admission")
 	}
 
 	controller.SetConductorApplyFailure(false, "")
-	if decision := controller.IsActiveHTTP(request); decision.Active {
+	if decision := controller.IsActiveHTTP(request); decision.Active || controller.ConductorApplyFailure() {
 		t.Fatalf("decision after resolved apply = %+v, want allowed", decision)
+	}
+	controller.SetConductorApplyFailure(true, "")
+	if decision := controller.IsActiveHTTP(request); !decision.Active || decision.Message != cfg.KillSwitch.Message {
+		t.Fatalf("empty apply message did not retain configured denial: %+v", decision)
 	}
 }
 

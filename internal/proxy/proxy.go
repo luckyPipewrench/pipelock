@@ -563,12 +563,37 @@ func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 // desc/title/foreignObject, MathML mi/mo/mn/ms/mtext, and annotation-xml when
 // encoding is text/html or application/xhtml+xml. SVG <title> also needs
 // NextIsNotRawText so the tokenizer does not arm RCDATA and hide children.
+//
+// Active namespace follows an element stack (not a global htmlIntegration
+// counter): nested <svg>/<math> inside an HTML integration point re-enters
+// foreign content, so self-closing foreign script rules apply again.
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
 	offset := 0
-	foreignDepth := 0
-	htmlIntegration := 0
+	// nsStack tracks open elements that switch foreign vs HTML context.
+	// Top.foreign is the current child namespace (true = SVG/MathML foreign).
+	var nsStack []struct {
+		name    string
+		foreign bool
+	}
+	inForeign := func() bool {
+		return len(nsStack) > 0 && nsStack[len(nsStack)-1].foreign
+	}
+	pushNS := func(name string, foreign bool) {
+		nsStack = append(nsStack, struct {
+			name    string
+			foreign bool
+		}{name: name, foreign: foreign})
+	}
+	popNS := func(name string) {
+		for i := len(nsStack) - 1; i >= 0; i-- {
+			if nsStack[i].name == name {
+				nsStack = nsStack[:i]
+				return
+			}
+		}
+	}
 	collecting := false
 	var attrs string
 	var elemStart, bodyStart int
@@ -577,9 +602,8 @@ func findScriptElements(doc string) []scriptElement {
 		attrs = scriptAttrsFromStartRaw(raw, selfClosing)
 		elemStart = tokenStart
 		bodyStart = tokenEnd
-		inForeign := foreignDepth > 0 && htmlIntegration == 0
 		if selfClosing {
-			if inForeign {
+			if inForeign() {
 				// SVG/MathML foreign self-closing script: clear script-data and
 				// record an empty-body element so a following data script is seen.
 				z.NextIsNotRawText()
@@ -599,7 +623,7 @@ func findScriptElements(doc string) []scriptElement {
 			collecting = true
 			return
 		}
-		if inForeign {
+		if inForeign() {
 			z.NextIsNotRawText()
 		}
 		collecting = true
@@ -628,48 +652,48 @@ func findScriptElements(doc string) []scriptElement {
 		tokenEnd := offset + len(raw)
 		offset = tokenEnd
 
+		// Token() consumes TagName/TagAttr iterators; call once per Next and
+		// reuse attrs (a second Token() returns empty Attr).
+		var tok html.Token
 		var name string
 		if tt == html.StartTagToken || tt == html.SelfClosingTagToken || tt == html.EndTagToken {
-			name = z.Token().Data
+			tok = z.Token()
+			name = tok.Data
 		}
 
 		// Track SVG/MathML foreign content and HTML / MathML text integration
 		// points (x/net/html foreign.go). Self-closing svg/math/integration
-		// tags do not change depth.
+		// tags do not change the stack.
 		switch tt {
 		case html.StartTagToken:
 			switch name {
 			case "svg", "math":
-				foreignDepth++
+				// Re-enter foreign even inside an HTML integration point
+				// (e.g. <svg> nested in <foreignObject>).
+				pushNS(name, true)
 			case "foreignobject", "desc", "title":
-				if foreignDepth > 0 {
+				if inForeign() {
 					// SVG <title> arms tokenizer RCDATA like HTML title; clear
-					// it in foreign content (parser always NextIsNotRawText for
-					// foreign start tags). Only needed while still foreign.
-					if name == "title" && htmlIntegration == 0 {
+					// it while entering from foreign content (parser always
+					// NextIsNotRawText for foreign start tags).
+					if name == "title" {
 						z.NextIsNotRawText()
 					}
-					htmlIntegration++
+					pushNS(name, false)
 				}
 			case "mi", "mo", "mn", "ms", "mtext":
-				if foreignDepth > 0 {
-					htmlIntegration++
+				if inForeign() {
+					pushNS(name, false)
 				}
 			case "annotation-xml":
-				if foreignDepth > 0 && annotationXMLEncodingIsHTMLIntegration(z) {
-					htmlIntegration++
+				if inForeign() && annotationXMLEncodingIsHTMLIntegration(tok.Attr) {
+					pushNS(name, false)
 				}
 			}
 		case html.EndTagToken:
 			switch name {
-			case "foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext", "annotation-xml":
-				if htmlIntegration > 0 {
-					htmlIntegration--
-				}
-			case "svg", "math":
-				if foreignDepth > 0 {
-					foreignDepth--
-				}
+			case "foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext", "annotation-xml", "svg", "math":
+				popNS(name)
 			}
 		}
 
@@ -710,11 +734,11 @@ func findScriptElements(doc string) []scriptElement {
 	}
 }
 
-// annotationXMLEncodingIsHTMLIntegration reports whether the current
-// annotation-xml start tag is an HTML integration point per HTML5 /
-// x/net/html (encoding text/html or application/xhtml+xml).
-func annotationXMLEncodingIsHTMLIntegration(z *html.Tokenizer) bool {
-	for _, a := range z.Token().Attr {
+// annotationXMLEncodingIsHTMLIntegration reports whether annotation-xml
+// attributes make it an HTML integration point per HTML5 / x/net/html
+// (encoding text/html or application/xhtml+xml).
+func annotationXMLEncodingIsHTMLIntegration(attrs []html.Attribute) bool {
+	for _, a := range attrs {
 		if a.Key != "encoding" {
 			continue
 		}

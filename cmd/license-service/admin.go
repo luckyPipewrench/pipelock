@@ -33,6 +33,9 @@ var adminSubcommands = map[string]bool{
 	"recover-crl-generation":  true,
 	"import-issuance":         true,
 	"list-imported-issuances": true,
+	"inspect-trial":           true,
+	"resend-trial":            true,
+	"revoke-trial":            true,
 }
 
 // dispatchAdmin runs an admin subcommand if os.Args names one, returning
@@ -55,6 +58,12 @@ func dispatchAdmin(log zerolog.Logger) (bool, error) {
 		return true, runImportIssuance(log, args)
 	case "list-imported-issuances":
 		return true, runListImportedIssuances(log, args)
+	case "inspect-trial":
+		return true, runInspectTrial(log, args)
+	case "resend-trial":
+		return true, runResendTrial(log, args)
+	case "revoke-trial":
+		return true, runRevokeTrial(log, args)
 	default:
 		return true, fmt.Errorf("unknown admin subcommand %q", sub)
 	}
@@ -274,6 +283,85 @@ func runListImportedIssuances(log zerolog.Logger, args []string) error {
 			r.IssuedAt.UTC().Format(time.RFC3339), expires, r.TokenSHA256,
 			r.ImportedAt.UTC().Format(time.RFC3339))
 	}
+	return nil
+}
+
+func runInspectTrial(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("inspect-trial", flag.ContinueOnError)
+	subscriptionID := fs.String("subscription-id", "", "Polar trial order id (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*subscriptionID) == "" {
+		return errors.New("--subscription-id is required")
+	}
+	handler, cleanup, err := adminHandler(context.Background(), log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	access, err := handler.InspectTrialAccess(context.Background(), *subscriptionID)
+	if err != nil {
+		return fmt.Errorf("inspect trial: %w", err)
+	}
+	expires := ""
+	if access.ExpiresAt != nil {
+		expires = access.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	_, _ = fmt.Fprintf(os.Stdout,
+		"subscription_id=%s email=%s tier=%s status=%s license_id=%s expires=%s delivery=%s revoked=%t\n",
+		access.SubscriptionID, access.CustomerEmail, access.Tier, access.Status,
+		access.LicenseID, expires, access.DeliveryStatus, access.Revoked)
+	return nil
+}
+
+func runResendTrial(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("resend-trial", flag.ContinueOnError)
+	subscriptionID := fs.String("subscription-id", "", "Polar trial order id (required)")
+	reason := fs.String("reason", "", "support reason for the resend (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*subscriptionID) == "" {
+		return errors.New("--subscription-id is required")
+	}
+	if strings.TrimSpace(*reason) == "" {
+		return errors.New("--reason is required")
+	}
+	handler, cleanup, err := adminHandler(context.Background(), log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := handler.ResendTrialAccess(context.Background(), *subscriptionID, *reason, time.Now()); err != nil {
+		return fmt.Errorf("resend trial: %w", err)
+	}
+	log.Info().Str("subscription_id", *subscriptionID).Str("reason", *reason).Msg("trial access resent")
+	return nil
+}
+
+func runRevokeTrial(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("revoke-trial", flag.ContinueOnError)
+	subscriptionID := fs.String("subscription-id", "", "Polar trial order id (required)")
+	reason := fs.String("reason", "", "human-readable revocation reason (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*subscriptionID) == "" {
+		return errors.New("--subscription-id is required")
+	}
+	if strings.TrimSpace(*reason) == "" {
+		return errors.New("--reason is required")
+	}
+	handler, cleanup, err := adminHandler(context.Background(), log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := handler.RevokeTrialAccess(context.Background(), *subscriptionID, *reason, time.Now()); err != nil {
+		return fmt.Errorf("revoke trial: %w", err)
+	}
+	log.Info().Str("subscription_id", *subscriptionID).Str("reason", *reason).Msg("trial access revoked durably; a cached CRL response can persist for up to one minute")
 	return nil
 }
 

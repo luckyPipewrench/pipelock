@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -21,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2705,6 +2707,496 @@ func TestHandleOrderEvent_OneTimeTrial(t *testing.T) {
 	if entAfter.LastDeliveryStatus != testDeliveryStatusSent {
 		t.Errorf("delivery status = %q, want %q", entAfter.LastDeliveryStatus, testDeliveryStatusSent)
 	}
+}
+
+func TestTrialSupportAccess(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	var delivered []resendRequest
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var request resendRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode delivery: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		delivered = append(delivered, request)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_trial_support"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	ts.handler.email = &EmailSender{
+		apiKey:    "re_" + "test_key",
+		fromEmail: "test@pipelock.dev",
+		client:    emailSrv.Client(),
+		apiURL:    emailSrv.URL,
+	}
+
+	const orderID = "order_free_520_support"
+	if err := ts.handler.HandleOrderEvent(ctx, zeroTrialOrderEvent(t, orderID, "support@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	issued, err := ts.db.GetBySubscriptionID(ctx, orderID)
+	if err != nil || issued == nil {
+		t.Fatalf("load issued trial: entitlement=%+v err=%v", issued, err)
+	}
+	if issued.LastLicenseExpiresAt == nil {
+		t.Fatal("issued trial has no expiry")
+	}
+	originalExpiry := *issued.LastLicenseExpiresAt
+	originalToken, err := ts.handler.regenerateToken(issued)
+	if err != nil {
+		t.Fatalf("regenerate issued token: %v", err)
+	}
+
+	access, err := ts.handler.InspectTrialAccess(ctx, orderID)
+	if err != nil {
+		t.Fatalf("inspect trial: %v", err)
+	}
+	if access.LicenseID != issued.LastLicenseID || access.ExpiresAt == nil || !access.ExpiresAt.Equal(originalExpiry) || access.Revoked {
+		t.Fatalf("unexpected support view: %+v", access)
+	}
+
+	if err := ts.handler.ResendTrialAccess(ctx, orderID, "buyer requested recovery", time.Now()); err != nil {
+		t.Fatalf("resend trial: %v", err)
+	}
+	if len(delivered) != 2 {
+		t.Fatalf("email deliveries = %d, want original plus resend", len(delivered))
+	}
+	if !strings.Contains(delivered[1].HTML, originalToken) {
+		t.Fatal("resend did not carry the original deterministic token")
+	}
+	resent, err := ts.db.GetBySubscriptionID(ctx, orderID)
+	if err != nil || resent == nil {
+		t.Fatalf("load resent trial: entitlement=%+v err=%v", resent, err)
+	}
+	if resent.LastLicenseID != issued.LastLicenseID || resent.LastLicenseExpiresAt == nil || !resent.LastLicenseExpiresAt.Equal(originalExpiry) {
+		t.Fatalf("resend changed trial identity or expiry: %+v", resent)
+	}
+	if got := countLicenseIssuances(t, ts.db, orderID); got != 1 {
+		t.Fatalf("resend minted %d issuances, want 1", got)
+	}
+
+	var slotExpiry time.Time
+	if err := ts.db.db.QueryRowContext(ctx, `SELECT expires_at FROM active_trial_slots WHERE subscription_id = ?`, orderID).Scan(&slotExpiry); err != nil {
+		t.Fatalf("load trial slot: %v", err)
+	}
+	if err := ts.handler.RevokeTrialAccess(ctx, orderID, "support revocation", time.Now()); err != nil {
+		t.Fatalf("revoke trial: %v", err)
+	}
+	revoked, err := ts.db.GetBySubscriptionID(ctx, orderID)
+	if err != nil || revoked == nil {
+		t.Fatalf("load revoked trial: entitlement=%+v err=%v", revoked, err)
+	}
+	if revoked.Status != statusRevoked {
+		t.Fatalf("status after revocation = %q, want %q", revoked.Status, statusRevoked)
+	}
+	var retainedSlotExpiry time.Time
+	if err := ts.db.db.QueryRowContext(ctx, `SELECT expires_at FROM active_trial_slots WHERE subscription_id = ?`, orderID).Scan(&retainedSlotExpiry); err != nil {
+		t.Fatalf("load retained trial slot: %v", err)
+	}
+	if !retainedSlotExpiry.Equal(slotExpiry) {
+		t.Fatalf("revocation changed immutable trial slot expiry: got %v want %v", retainedSlotExpiry, slotExpiry)
+	}
+	crl, err := ts.handler.SignedCRL(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("sign CRL after trial revoke: %v", err)
+	}
+	foundRevocation := false
+	for _, item := range crl.Payload.Revoked {
+		if item.ID == issued.LastLicenseID {
+			foundRevocation = true
+		}
+	}
+	if !foundRevocation {
+		t.Fatalf("signed CRL omitted revoked trial token %q", issued.LastLicenseID)
+	}
+	if err := ts.handler.RevokeTrialAccess(ctx, orderID, "replay", time.Now()); !errors.Is(err, ErrTrialAlreadyRevoked) {
+		t.Fatalf("replayed revocation error = %v, want ErrTrialAlreadyRevoked", err)
+	}
+	if err := ts.handler.ResendTrialAccess(ctx, orderID, "after revoke", time.Now()); err == nil {
+		t.Fatal("resend after revocation must fail")
+	}
+
+	ledgerData, err := os.ReadFile(ts.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger: %v", err)
+	}
+	if !strings.Contains(string(ledgerData), AuditTrialResendRequested) ||
+		!strings.Contains(string(ledgerData), AuditTrialResent) ||
+		!strings.Contains(string(ledgerData), AuditTrialRevokeRequested) ||
+		!strings.Contains(string(ledgerData), AuditLicenseRevoked) {
+		t.Fatalf("support actions missing from audit ledger: %s", ledgerData)
+	}
+}
+
+func TestTrialSupportAccessRejectsInvalidState(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+	nonTrial := &Entitlement{
+		SubscriptionID:   "sub_paid_not_trial",
+		CustomerEmail:    "paid@example.com",
+		ProductID:        "prod_paid",
+		Tier:             tierPro,
+		BillingInterval:  "month",
+		Status:           statusActive,
+		CurrentPeriodEnd: time.Now().Add(24 * time.Hour),
+		Features:         "[]",
+	}
+	if err := ts.db.Upsert(ctx, nonTrial); err != nil {
+		t.Fatalf("create non-trial entitlement: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "unknown inspect",
+			run: func() error {
+				_, err := ts.handler.InspectTrialAccess(ctx, "order_missing")
+				return err
+			},
+		},
+		{
+			name: "non-trial inspect",
+			run: func() error {
+				_, err := ts.handler.InspectTrialAccess(ctx, nonTrial.SubscriptionID)
+				return err
+			},
+		},
+		{
+			name: "blank identifier",
+			run: func() error {
+				return ts.handler.ResendTrialAccess(ctx, "", "support", time.Now())
+			},
+		},
+		{
+			name: "blank resend reason",
+			run: func() error {
+				return ts.handler.ResendTrialAccess(ctx, "order_missing", "", time.Now())
+			},
+		},
+		{
+			name: "blank revoke reason",
+			run: func() error {
+				return ts.handler.RevokeTrialAccess(ctx, "order_missing", "", time.Now())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err == nil {
+				t.Fatal("invalid trial support request must fail")
+			}
+		})
+	}
+}
+
+func TestInspectTrialAccessDetectsTokenRevocation(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_inspect_revoked_token"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "inspect-revoked@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+	if err != nil || ent == nil {
+		t.Fatalf("load issued trial: entitlement=%+v err=%v", ent, err)
+	}
+	if err := ts.db.UpsertLicenseRevocation(t.Context(), RevokedLicenseRecord{
+		LicenseID:      ent.LastLicenseID,
+		SubscriptionID: orderID,
+		Reason:         "support",
+		RevokedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("record token revocation: %v", err)
+	}
+	access, err := ts.handler.InspectTrialAccess(t.Context(), orderID)
+	if err != nil {
+		t.Fatalf("inspect trial: %v", err)
+	}
+	if !access.Revoked {
+		t.Fatalf("inspect did not surface token revocation: %+v", access)
+	}
+}
+
+func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
+	t.Run("malformed persisted token metadata is rejected", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_malformed_resend"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "malformed-resend@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		if _, err := ts.db.db.ExecContext(t.Context(),
+			`UPDATE entitlements SET last_license_issued_at = NULL WHERE subscription_id = ?`, orderID); err != nil {
+			t.Fatalf("remove issue timestamp: %v", err)
+		}
+		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "support", time.Now()); err == nil {
+			t.Fatal("resend with malformed token metadata must fail")
+		}
+	})
+
+	t.Run("delivery state persistence failure is nonzero", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_delivery_state_failure"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "delivery-state@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if err := ts.db.Close(); err != nil {
+				t.Errorf("close entitlement database: %v", err)
+			}
+			w.Header().Set("Content-Type", testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id":"msg_without_delivery_state"}`))
+		}))
+		t.Cleanup(emailSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "support", time.Now()); err == nil {
+			t.Fatal("delivery-state persistence failure must fail")
+		}
+	})
+
+	t.Run("email failure is nonzero and preserves the original trial", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_email_failure"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "email-failure@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		before, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+		if err != nil || before == nil {
+			t.Fatalf("load issued trial: entitlement=%+v err=%v", before, err)
+		}
+		failureSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		t.Cleanup(failureSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: failureSrv.Client(), apiURL: failureSrv.URL}
+
+		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "delivery retry", time.Now()); err == nil {
+			t.Fatal("email failure must make operator resend fail")
+		}
+		after, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+		if err != nil || after == nil {
+			t.Fatalf("load failed delivery state: entitlement=%+v err=%v", after, err)
+		}
+		if after.LastLicenseID != before.LastLicenseID || after.LastLicenseExpiresAt == nil || !after.LastLicenseExpiresAt.Equal(*before.LastLicenseExpiresAt) {
+			t.Fatalf("email failure changed trial token state: before=%+v after=%+v", before, after)
+		}
+		if after.LastDeliveryStatus != "failed" {
+			t.Fatalf("delivery status = %q, want failed", after.LastDeliveryStatus)
+		}
+	})
+
+	t.Run("audit failure is nonzero", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_audit_failure"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "audit-failure@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		var emailAttempts atomic.Int32
+		emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			emailAttempts.Add(1)
+			w.Header().Set("Content-Type", testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id":"unexpected"}`))
+		}))
+		t.Cleanup(emailSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+		if err := ts.ledger.Close(); err != nil {
+			t.Fatalf("close ledger: %v", err)
+		}
+		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "audit failure", time.Now()); err == nil {
+			t.Fatal("audit failure must make operator resend fail")
+		}
+		if got := emailAttempts.Load(); got != 0 {
+			t.Fatalf("audit failure sent %d emails, want 0", got)
+		}
+	})
+
+	t.Run("completion audit failure does not retry a delivered email", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_completion_audit_failure"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "completion-audit@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		var emailAttempts atomic.Int32
+		emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			emailAttempts.Add(1)
+			if err := ts.ledger.Close(); err != nil {
+				t.Errorf("close ledger after send: %v", err)
+			}
+			w.Header().Set("Content-Type", testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id":"msg_delivered_before_audit_failure"}`))
+		}))
+		t.Cleanup(emailSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+
+		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "completion audit failure", time.Now()); err != nil {
+			t.Fatalf("delivered resend must not report failure after completion audit error: %v", err)
+		}
+		if got := emailAttempts.Load(); got != 1 {
+			t.Fatalf("email attempts = %d, want 1", got)
+		}
+		ent, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+		if err != nil {
+			t.Fatalf("load delivered trial: %v", err)
+		}
+		if ent == nil || ent.LastDeliveryStatus != "sent" {
+			t.Fatalf("delivery completion was not persisted: %+v", ent)
+		}
+	})
+}
+
+func TestTrialSupportAccessRejectsExpiredResend(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_expired_resend"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "expired-resend@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	if _, err := ts.db.db.ExecContext(t.Context(),
+		`UPDATE entitlements SET last_license_expires_at = ? WHERE subscription_id = ?`, time.Now().Add(-time.Minute), orderID); err != nil {
+		t.Fatalf("expire trial entitlement: %v", err)
+	}
+	var emailAttempts atomic.Int32
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		emailAttempts.Add(1)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"unexpected"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+
+	if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "expired recovery", time.Now()); err == nil {
+		t.Fatal("expired trial resend must fail")
+	}
+	if got := emailAttempts.Load(); got != 0 {
+		t.Fatalf("expired trial sent %d emails, want 0", got)
+	}
+}
+
+func TestTrialRevocationRequiresAuditIntentBeforeCommit(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_revoke_audit_failure"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "revoke-audit@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	if err := ts.ledger.Close(); err != nil {
+		t.Fatalf("close ledger: %v", err)
+	}
+	if err := ts.handler.RevokeTrialAccess(t.Context(), orderID, "audit unavailable", time.Now()); err == nil {
+		t.Fatal("audit failure must make operator revocation fail")
+	}
+	ent, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+	if err != nil {
+		t.Fatalf("load trial after failed revocation: %v", err)
+	}
+	if ent == nil || ent.Status != statusActive {
+		t.Fatalf("audit failure crossed revocation boundary: %+v", ent)
+	}
+	revocations, err := ts.db.ListLicenseRevocations(t.Context())
+	if err != nil {
+		t.Fatalf("list revocations: %v", err)
+	}
+	if len(revocations) != 0 {
+		t.Fatalf("audit failure wrote %d revocations, want 0", len(revocations))
+	}
+}
+
+func TestTrialRevocationAuditsZeroUnexpiredTokens(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_expired_revoke"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "expired-revoke@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	expired := time.Now().Add(-time.Minute)
+	if _, err := ts.db.db.ExecContext(t.Context(),
+		`UPDATE entitlements SET last_license_expires_at = ? WHERE subscription_id = ?`, expired, orderID); err != nil {
+		t.Fatalf("expire trial entitlement: %v", err)
+	}
+	if _, err := ts.db.db.ExecContext(t.Context(),
+		`UPDATE license_issuances SET expires_at = ? WHERE subscription_id = ?`, expired, orderID); err != nil {
+		t.Fatalf("expire trial issuance: %v", err)
+	}
+	if err := ts.handler.RevokeTrialAccess(t.Context(), orderID, "expired trial cleanup", time.Now()); err != nil {
+		t.Fatalf("revoke expired trial: %v", err)
+	}
+	var revocationRows int
+	if err := ts.db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM license_revocations WHERE subscription_id = ?`, orderID).Scan(&revocationRows); err != nil {
+		t.Fatalf("count revocations: %v", err)
+	}
+	if revocationRows != 0 {
+		t.Fatalf("expired trial created %d token revocations, want 0", revocationRows)
+	}
+	ledgerData, err := os.ReadFile(ts.ledger.path)
+	if err != nil {
+		t.Fatalf("read audit ledger: %v", err)
+	}
+	if !strings.Contains(string(ledgerData), AuditTrialRevoked) {
+		t.Fatalf("zero-token trial revocation missing entitlement audit: %s", ledgerData)
+	}
+}
+
+func TestTrialRevocationConcurrentReplay(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_concurrent_revoke"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "concurrent-revoke@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			results <- ts.handler.RevokeTrialAccess(t.Context(), orderID, "concurrent support revoke", time.Now())
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	successes := 0
+	replays := 0
+	for err := range results {
+		if err == nil {
+			successes++
+			continue
+		}
+		if errors.Is(err, ErrTrialAlreadyRevoked) {
+			replays++
+			continue
+		}
+		t.Fatalf("concurrent revocation error = %v", err)
+	}
+	if successes != 1 || replays != 1 {
+		t.Fatalf("concurrent results: successes=%d replays=%d, want one each", successes, replays)
+	}
+}
+
+func TestTrialSupportAccessDatabaseErrors(t *testing.T) {
+	t.Run("inspect fails when entitlement database is closed", func(t *testing.T) {
+		ts := newTestSetup(t)
+		if err := ts.db.Close(); err != nil {
+			t.Fatalf("close database: %v", err)
+		}
+		if _, err := ts.handler.InspectTrialAccess(t.Context(), "order_closed_db"); err == nil {
+			t.Fatal("closed database inspect must fail")
+		}
+	})
+
+	t.Run("revoke fails when revocation transaction cannot begin", func(t *testing.T) {
+		ts := newTestSetup(t)
+		if err := ts.db.Close(); err != nil {
+			t.Fatalf("close database: %v", err)
+		}
+		if err := ts.handler.RevokeTrialAccess(t.Context(), "order_closed_db", "database failure", time.Now()); err == nil {
+			t.Fatal("closed database revocation must fail")
+		}
+	})
 }
 
 func TestHandleActive_ConcurrentTrialClaimReturnsDenial(t *testing.T) {

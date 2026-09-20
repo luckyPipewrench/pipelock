@@ -35,6 +35,117 @@ func openTestDB(t *testing.T) *EntitlementDB {
 	return db
 }
 
+func TestEntitlementDB_RevokeTrialAccessRejectsInvalidState(t *testing.T) {
+	t.Run("blank subscription", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, _, err := db.RevokeTrialAccess(t.Context(), " ", "support", time.Now()); err == nil {
+			t.Fatal("blank subscription must fail")
+		}
+	})
+
+	t.Run("blank reason", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_trial", " ", time.Now()); err == nil {
+			t.Fatal("blank reason must fail")
+		}
+	})
+
+	t.Run("zero time defaults before missing lookup", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_missing", "support", time.Time{}); !errors.Is(err, ErrTrialAccessNotFound) {
+			t.Fatalf("missing trial error = %v, want ErrTrialAccessNotFound", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		tier   string
+		status string
+		want   error
+	}{
+		{name: "non-trial", tier: tierPro, status: statusActive, want: ErrTrialAccessNotFound},
+		{name: "already revoked", tier: tierTrial, status: statusRevoked, want: ErrTrialAlreadyRevoked},
+		{name: "inactive", tier: tierTrial, status: statusCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTestDB(t)
+			ent := testEntitlement("order_" + strings.ReplaceAll(test.name, " ", "_"))
+			ent.Tier = test.tier
+			ent.BillingInterval = billingIntervalOneTime
+			ent.Status = test.status
+			if err := db.Upsert(t.Context(), ent); err != nil {
+				t.Fatalf("seed entitlement: %v", err)
+			}
+			_, _, err := db.RevokeTrialAccess(t.Context(), ent.SubscriptionID, "support", time.Now())
+			if test.want != nil {
+				if !errors.Is(err, test.want) {
+					t.Fatalf("revocation error = %v, want %v", err, test.want)
+				}
+			} else if err == nil {
+				t.Fatal("inactive trial revocation must fail")
+			}
+		})
+	}
+
+	t.Run("license id without issue time", func(t *testing.T) {
+		db := openTestDB(t)
+		now := time.Now().UTC()
+		expires := now.Add(time.Hour)
+		ent := testEntitlement("order_missing_issue_time")
+		ent.Tier = tierTrial
+		ent.BillingInterval = billingIntervalOneTime
+		ent.Status = statusActive
+		ent.LastLicenseID = "lic_missing_issue_time"
+		ent.LastLicenseExpiresAt = &expires
+		if err := db.Upsert(t.Context(), ent); err != nil {
+			t.Fatalf("seed malformed trial: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), ent.SubscriptionID, "support", now); err == nil {
+			t.Fatal("license without issue timestamp must fail")
+		}
+	})
+
+	t.Run("legacy last license without issuance row is revoked", func(t *testing.T) {
+		db := openTestDB(t)
+		now := time.Now().UTC()
+		expires := now.Add(time.Hour)
+		ent := testEntitlement("order_legacy_last_license")
+		ent.Tier = tierTrial
+		ent.BillingInterval = billingIntervalOneTime
+		ent.Status = statusActive
+		ent.LastLicenseID = "lic_legacy_last_license"
+		ent.LastLicenseIssuedAt = &now
+		ent.LastLicenseExpiresAt = &expires
+		if err := db.Upsert(t.Context(), ent); err != nil {
+			t.Fatalf("seed legacy trial: %v", err)
+		}
+		revoked, issuances, err := db.RevokeTrialAccess(t.Context(), ent.SubscriptionID, "support", now)
+		if err != nil {
+			t.Fatalf("revoke legacy trial: %v", err)
+		}
+		if revoked.Status != statusRevoked || len(issuances) != 1 || issuances[0].LicenseID != ent.LastLicenseID {
+			t.Fatalf("legacy revocation result: entitlement=%+v issuances=%+v", revoked, issuances)
+		}
+		records, err := db.ListLicenseRevocations(t.Context())
+		if err != nil {
+			t.Fatalf("list legacy revocation: %v", err)
+		}
+		if len(records) != 1 || records[0].LicenseID != ent.LastLicenseID {
+			t.Fatalf("legacy revocation records: %+v", records)
+		}
+	})
+
+	t.Run("closed database cannot begin", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.Close(); err != nil {
+			t.Fatalf("close database: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_trial", "support", time.Now()); err == nil {
+			t.Fatal("closed database revocation must fail")
+		}
+	})
+}
+
 func TestEntitlementDB_ConcurrentWritersClaimOneActiveTrialSlot(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "entitlements.db")
 	first, err := OpenEntitlementDB(t.Context(), dbPath)

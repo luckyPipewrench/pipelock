@@ -136,6 +136,16 @@ var ErrActiveTrialExists = errors.New("active trial already exists")
 // revoking or status-mirroring a legacy row and buys no enforcement.
 var ErrTrialEmailNotCanonical = errors.New("trial email cannot be canonicalized")
 
+// ErrTrialAccessNotFound means an operator requested trial support for an
+// entitlement that does not exist or is not a trial. Keeping non-trial rows
+// out of these operations prevents the support path from becoming a second
+// license-management surface for paid subscriptions.
+var ErrTrialAccessNotFound = errors.New("trial access not found")
+
+// ErrTrialAlreadyRevoked means a trial revocation replay was refused. A replay
+// must not quietly look like a new successful action to an operator.
+var ErrTrialAlreadyRevoked = errors.New("trial access already revoked")
+
 type entitlementExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -976,6 +986,93 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 	return getEntitlementBySubscriptionID(ctx, e.db, subID)
 }
 
+// RevokeTrialAccess atomically records revocations for every still-valid
+// trial token and marks the entitlement revoked. It deliberately does not
+// modify active_trial_slots: that table preserves the trial's original expiry
+// and remains the one-active-trial authority even after revocation.
+func (e *EntitlementDB) RevokeTrialAccess(ctx context.Context, subID, reason string, now time.Time) (*Entitlement, []LicenseIssuance, error) {
+	if strings.TrimSpace(subID) == "" {
+		return nil, nil, errors.New("subscription_id is required")
+	}
+	if strings.TrimSpace(reason) == "" {
+		return nil, nil, errors.New("revocation reason is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin trial revocation transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	ent, err := getEntitlementBySubscriptionID(ctx, tx, subID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load trial entitlement: %w", err)
+	}
+	if ent == nil || !isTrialTier(ent.Tier) {
+		return nil, nil, ErrTrialAccessNotFound
+	}
+	if ent.Status == statusRevoked {
+		return nil, nil, ErrTrialAlreadyRevoked
+	}
+	if ent.Status != statusActive {
+		return nil, nil, fmt.Errorf("trial access %s is not active", subID)
+	}
+
+	issuances, err := listUnexpiredLicenseIssuances(ctx, tx, subID, now)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list trial license issuances: %w", err)
+	}
+	if ent.LastLicenseID != "" && ent.LastLicenseExpiresAt != nil && ent.LastLicenseExpiresAt.After(now) {
+		found := false
+		for _, issuance := range issuances {
+			if issuance.LicenseID == ent.LastLicenseID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if ent.LastLicenseIssuedAt == nil {
+				return nil, nil, errors.New("trial access has a license ID without an issue timestamp")
+			}
+			issuances = append(issuances, LicenseIssuance{
+				LicenseID:      ent.LastLicenseID,
+				SubscriptionID: ent.SubscriptionID,
+				ExpiresAt:      *ent.LastLicenseExpiresAt,
+				IssuedAt:       *ent.LastLicenseIssuedAt,
+			})
+		}
+	}
+	for _, issuance := range issuances {
+		if err := upsertLicenseRevocation(ctx, tx, RevokedLicenseRecord{
+			LicenseID:      issuance.LicenseID,
+			SubscriptionID: ent.SubscriptionID,
+			Reason:         reason,
+			RevokedAt:      now.UTC(),
+		}); err != nil {
+			return nil, nil, fmt.Errorf("record trial license revocation: %w", err)
+		}
+	}
+
+	ent.Status = statusRevoked
+	ent.NextRefreshAt = nil
+	if err := upsertEntitlement(ctx, tx, ent); err != nil {
+		return nil, nil, fmt.Errorf("persist revoked trial entitlement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit trial revocation: %w", err)
+	}
+	committed = true
+	return ent, issuances, nil
+}
+
 func getEntitlementBySubscriptionID(ctx context.Context, q entitlementQueryer, subID string) (*Entitlement, error) {
 	const query = `
 	SELECT
@@ -1098,6 +1195,13 @@ func (e *EntitlementDB) UpdateNextRefresh(ctx context.Context, subID string, nex
 
 // UpsertLicenseRevocation records a revoked license ID for CRL publication.
 func (e *EntitlementDB) UpsertLicenseRevocation(ctx context.Context, rec RevokedLicenseRecord) error {
+	if err := upsertLicenseRevocation(ctx, e.db, rec); err != nil {
+		return fmt.Errorf("upsert license revocation %s: %w", rec.LicenseID, err)
+	}
+	return nil
+}
+
+func upsertLicenseRevocation(ctx context.Context, exec entitlementExecer, rec RevokedLicenseRecord) error {
 	if rec.LicenseID == "" {
 		return errors.New("license_id is required")
 	}
@@ -1118,11 +1222,8 @@ func (e *EntitlementDB) UpsertLicenseRevocation(ctx context.Context, rec Revoked
 		reason = excluded.reason,
 		revoked_at = excluded.revoked_at
 	`
-	_, err := e.db.ExecContext(ctx, query, rec.LicenseID, rec.SubscriptionID, rec.Reason, rec.RevokedAt)
-	if err != nil {
-		return fmt.Errorf("upsert license revocation %s: %w", rec.LicenseID, err)
-	}
-	return nil
+	_, err := exec.ExecContext(ctx, query, rec.LicenseID, rec.SubscriptionID, rec.Reason, rec.RevokedAt)
+	return err
 }
 
 // ListLicenseRevocations returns all currently published license revocations.
@@ -1488,6 +1589,14 @@ func insertLicenseIssuance(ctx context.Context, exec entitlementExecer, issuance
 
 // ListUnexpiredLicenseIssuances returns every still-valid license minted for a subscription.
 func (e *EntitlementDB) ListUnexpiredLicenseIssuances(ctx context.Context, subID string, now time.Time) ([]LicenseIssuance, error) {
+	return listUnexpiredLicenseIssuances(ctx, e.db, subID, now)
+}
+
+type entitlementRowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func listUnexpiredLicenseIssuances(ctx context.Context, q entitlementRowsQueryer, subID string, now time.Time) ([]LicenseIssuance, error) {
 	const query = `
 	SELECT license_id, subscription_id, expires_at, issued_at
 	FROM license_issuances
@@ -1495,7 +1604,7 @@ func (e *EntitlementDB) ListUnexpiredLicenseIssuances(ctx context.Context, subID
 	  AND expires_at > ?
 	ORDER BY issued_at ASC, license_id ASC
 	`
-	rows, err := e.db.QueryContext(ctx, query, subID, now.UTC())
+	rows, err := q.QueryContext(ctx, query, subID, now.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("list license issuances %s: %w", subID, err)
 	}

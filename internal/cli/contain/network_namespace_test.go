@@ -89,6 +89,15 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 		containedNamespaceForwarderUnit:          renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", 8888),
 		"pipelock.service":                       "[Service]\nType=simple\nExecStart=/usr/bin/sleep infinity\n",
 	}
+	// Every unit the installer writes belongs here, including the per-service
+	// declared-loopback set. Leaving those out is what let a malformed socket
+	// unit reach a real install twice: the proxy units were covered and the
+	// declared ones, which carry the browser control port, were not.
+	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+	declaredBase := loopbackForwarderUnitBase(declared.Host, declared.Port)
+	units[declaredBase+".socket"] = renderDeclaredLoopbackSocketUnit("pipelock-agent", declared)
+	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit("pipelock-proxy", declared)
+	units[declaredBase+"-netns.service"] = renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", declared)
 	paths := make([]string, 0, len(units))
 	for name, body := range units {
 		path := filepath.Join(dir, name)

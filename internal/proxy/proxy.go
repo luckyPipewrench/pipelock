@@ -564,15 +564,17 @@ func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 // encoding is text/html or application/xhtml+xml. SVG <title> also needs
 // NextIsNotRawText so the tokenizer does not arm RCDATA and hide children.
 //
-// Active namespace follows an element stack (not a global htmlIntegration
+// Active namespace follows an open-element stack (not a global htmlIntegration
 // counter): nested <svg>/<math> inside an HTML integration point re-enters
-// foreign content, so self-closing foreign script rules apply again.
+// foreign content, so self-closing foreign script rules apply again. MathML
+// text integration points (mi/mo/mn/ms/mtext) stay foreign for immediate
+// mglyph/malignmark children (HTML5 / x/net/html inForeignContent).
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
 	offset := 0
-	// nsStack tracks open elements that switch foreign vs HTML context.
-	// Top.foreign is the current child namespace (true = SVG/MathML foreign).
+	// nsStack tracks open elements and their child namespace context.
+	// Top.foreign is true when the next child is SVG/MathML foreign content.
 	var nsStack []struct {
 		name    string
 		foreign bool
@@ -661,9 +663,9 @@ func findScriptElements(doc string) []scriptElement {
 			name = tok.Data
 		}
 
-		// Track SVG/MathML foreign content and HTML / MathML text integration
-		// points (x/net/html foreign.go). Self-closing svg/math/integration
-		// tags do not change the stack.
+		// Track open elements + namespace (x/net/html foreign.go / inForeignContent).
+		// Self-closing tags do not change the stack. Under an active stack,
+		// every start tag is recorded so immediate-parent checks stay accurate.
 		switch tt {
 		case html.StartTagToken:
 			switch name {
@@ -688,11 +690,28 @@ func findScriptElements(doc string) []scriptElement {
 			case "annotation-xml":
 				if inForeign() && annotationXMLEncodingIsHTMLIntegration(tok.Attr) {
 					pushNS(name, false)
+				} else if len(nsStack) > 0 {
+					pushNS(name, inForeign())
+				}
+			case "mglyph", "malignmark":
+				// HTML5: MathML text integration points remain in foreign
+				// content for mglyph/malignmark start tags (immediate parent).
+				if len(nsStack) > 0 {
+					top := nsStack[len(nsStack)-1]
+					switch top.name {
+					case "mi", "mo", "mn", "ms", "mtext":
+						pushNS(name, true)
+					default:
+						pushNS(name, inForeign())
+					}
+				}
+			default:
+				if len(nsStack) > 0 {
+					pushNS(name, inForeign())
 				}
 			}
 		case html.EndTagToken:
-			switch name {
-			case "foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext", "annotation-xml", "svg", "math":
+			if len(nsStack) > 0 {
 				popNS(name)
 			}
 		}
@@ -742,8 +761,9 @@ func annotationXMLEncodingIsHTMLIntegration(attrs []html.Attribute) bool {
 		if a.Key != "encoding" {
 			continue
 		}
-		v := strings.TrimSpace(a.Val)
-		return strings.EqualFold(v, "text/html") || strings.EqualFold(v, "application/xhtml+xml")
+		// Exact ASCII case-insensitive match (HTML5 / x/net/html foreign.go);
+		// do not TrimSpace — padded values are not HTML integration points.
+		return strings.EqualFold(a.Val, "text/html") || strings.EqualFold(a.Val, "application/xhtml+xml")
 	}
 	return false
 }

@@ -8,9 +8,11 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -19,14 +21,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
-type cancelOnSecondErrContext struct {
+type cancelAfterErrChecksContext struct {
 	context.Context
-	calls int
+	calls       int
+	cancelAfter int
 }
 
-func (c *cancelOnSecondErrContext) Err() error {
+func (c *cancelAfterErrChecksContext) Err() error {
 	c.calls++
-	if c.calls > 1 {
+	if c.calls >= c.cancelAfter {
 		return context.Canceled
 	}
 	return nil
@@ -223,8 +226,25 @@ func TestScanResponseBody_UTF16PreservesDecodedEvidence(t *testing.T) {
 
 func TestDecodeLikelyUTF16ResponseBodyRejectsBinaryNULs(t *testing.T) {
 	body := bytes.Repeat([]byte{0x00, 0xff, 0x01, 0x80}, 32)
-	if decoded, ok := decodeLikelyUTF16ResponseBody(body); ok {
+	if decoded, ok, err := decodeLikelyUTF16ResponseBody(t.Context(), body); err != nil || ok {
 		t.Fatalf("opaque binary decoded as UTF-16: %q", decoded)
+	}
+}
+
+func TestDecodeLikelyUTF16ResponseBodyObservesCancellation(t *testing.T) {
+	ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 2}
+	body := encodeUTF16ResponseBody(strings.Repeat("a", responseBodyContextCheckBytes), true, true)
+	decoded, ok, err := decodeLikelyUTF16ResponseBody(ctx, body)
+	if !errors.Is(err, context.Canceled) || ok || decoded != "" {
+		t.Fatalf("UTF-16 decode returned decoded=%q ok=%v err=%v, want cancellation", decoded, ok, err)
+	}
+}
+
+func TestDecodeLikelyUTF16ResponseBodyHandlesSurrogates(t *testing.T) {
+	body := []byte{0xff, 0xfe, 0x3d, 0xd8, 0x00, 0xde, 0x00, 0xd8}
+	decoded, ok, err := decodeLikelyUTF16ResponseBody(t.Context(), body)
+	if err != nil || !ok || decoded != "😀�" {
+		t.Fatalf("UTF-16 surrogate decode returned decoded=%q ok=%v err=%v", decoded, ok, err)
 	}
 }
 
@@ -297,16 +317,53 @@ func TestScanResponseBody_CanceledOpaqueBinaryFailsClosed(t *testing.T) {
 	}
 }
 
-func TestScanResponseBody_CancellationDuringOpaqueExtractionFailsClosed(t *testing.T) {
-	ctx := &cancelOnSecondErrContext{Context: context.Background()}
+func TestScanResponseBody_CancellationDuringPreprocessingFailsClosed(t *testing.T) {
+	ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 3}
 	s := MustNew(testResponseConfig())
-	result := s.ScanResponseBodyWithSuppress(ctx, bytes.Repeat([]byte{0xff, 0x80}, 64), "", nil)
+	result := s.ScanResponseBodyWithSuppress(ctx, bytes.Repeat([]byte("ordinary response text "), 512), "", nil)
 	if result.Clean || !result.Failed() || len(result.Matches) != 0 {
-		t.Fatalf("cancellation during opaque extraction was not a fail-closed scan error: %+v", result)
+		t.Fatalf("cancellation during response preprocessing was not a fail-closed scan error: %+v", result)
 	}
-	if ctx.calls != 2 {
-		t.Fatalf("context checks = %d, want entry and post-extraction checks", ctx.calls)
+	if ctx.calls != 3 {
+		t.Fatalf("context checks = %d, want cancellation during body classification", ctx.calls)
 	}
+}
+
+func TestScanResponseBody_UTF16DecodeCancellationFailsClosed(t *testing.T) {
+	ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 3}
+	s := MustNew(testResponseConfig())
+	result := s.ScanResponseBodyWithSuppress(ctx, encodeUTF16ResponseBody("ordinary response text", true, true), "", nil)
+	if result.Clean || !result.Failed() || result.ScanError != context.Canceled.Error() {
+		t.Fatalf("cancellation during UTF-16 decode was not fail closed: %+v", result)
+	}
+}
+
+func TestOpaqueResponseTextViewObservesCancellationDuringExtraction(t *testing.T) {
+	ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 3}
+	view, err := opaqueResponseTextView(ctx, bytes.Repeat([]byte{0xff}, responseBodyContextCheckBytes*3))
+	if !errors.Is(err, context.Canceled) || view != "" {
+		t.Fatalf("opaque extraction returned view=%q err=%v, want cancellation", view, err)
+	}
+}
+
+func TestScanOpaqueResponseTextPropagatesCancellation(t *testing.T) {
+	s := MustNew(testResponseConfig())
+
+	t.Run("during extraction", func(t *testing.T) {
+		ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 2}
+		result := s.scanOpaqueResponseText(ctx, bytes.Repeat([]byte{0xff}, responseBodyContextCheckBytes*2), "", nil)
+		if result.Clean || !result.Failed() {
+			t.Fatalf("extraction cancellation was not propagated: %+v", result)
+		}
+	})
+
+	t.Run("after extraction", func(t *testing.T) {
+		ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 3}
+		result := s.scanOpaqueResponseText(ctx, []byte("substantive printable response"), "", nil)
+		if result.Clean || !result.Failed() {
+			t.Fatalf("post-extraction cancellation was not propagated: %+v", result)
+		}
+	})
 }
 
 func TestScanResponseBody_PNGTextMetadataStillScans(t *testing.T) {
@@ -405,11 +462,17 @@ func TestIsTextualResponseBody(t *testing.T) {
 		{name: "plain text", body: []byte("ordinary response text"), want: true},
 		{name: "unicode text", body: []byte("ordinary response 你好"), want: true},
 		{name: "small invalid prefix", body: append([]byte{0xff}, []byte("ordinary response text")...), want: true},
+		{name: "exact printable threshold", body: []byte{'a', 'b', 'c', 'd', 0x00}, want: true},
+		{name: "below printable threshold", body: []byte{'a', 'b', 'c', 0x00, 0x01}, want: false},
 		{name: "opaque binary", body: bytes.Repeat([]byte{0x00, 0xff, 0x01, 0x80}, 32), want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isTextualResponseBody(tt.body); got != tt.want {
+			got, err := isTextualResponseBody(t.Context(), tt.body)
+			if err != nil {
+				t.Fatalf("isTextualResponseBody() error = %v", err)
+			}
+			if got != tt.want {
 				t.Fatalf("isTextualResponseBody() = %v, want %v", got, tt.want)
 			}
 		})
@@ -422,7 +485,10 @@ func TestOpaqueResponseTextView(t *testing.T) {
 	body = append(body, []byte("instruction")...)
 	body = append(body, 0xff, 0x80, 'D', 'A', 'N', 0x00, 0xff)
 	body = append(body, []byte("second printable instruction")...)
-	view := opaqueResponseTextView(body)
+	view, err := opaqueResponseTextView(t.Context(), body)
+	if err != nil {
+		t.Fatalf("opaqueResponseTextView() error = %v", err)
+	}
 	if view != "substantive printable instruction\n�\nsecond printable instruction" {
 		t.Fatalf("opaqueResponseTextView() = %q", view)
 	}

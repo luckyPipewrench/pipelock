@@ -102,8 +102,16 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		if hasResponseImageSignature(body) {
 			return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
 		}
-		if !isTextualResponseBody(body) {
-			if decoded, ok := decodeLikelyUTF16ResponseBody(body); ok {
+		textual, classifyErr := isTextualResponseBody(ctx, body)
+		if classifyErr != nil {
+			return ResponseScanResult{Clean: false, ScanError: classifyErr.Error()}
+		}
+		if !textual {
+			decoded, decodedOK, decodeErr := decodeLikelyUTF16ResponseBody(ctx, body)
+			if decodeErr != nil {
+				return ResponseScanResult{Clean: false, ScanError: decodeErr.Error()}
+			}
+			if decodedOK {
 				decodedResult := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
 				if !decodedResult.Clean {
 					// A decoded view cannot safely replace the encoded body.
@@ -143,7 +151,10 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 }
 
 func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
-	view := opaqueResponseTextView(body)
+	view, extractErr := opaqueResponseTextView(ctx, body)
+	if extractErr != nil {
+		return ResponseScanResult{Clean: false, ScanError: extractErr.Error()}
+	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return ResponseScanResult{Clean: false, ScanError: err.Error()}
@@ -165,9 +176,9 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 // ASCII-range UTF-16 whose NUL bytes consistently occupy one byte parity. The
 // parity and density requirements keep arbitrary NUL-bearing binary data on the
 // opaque-run path while preserving response scanning for common UTF-16 text.
-func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
+func decodeLikelyUTF16ResponseBody(ctx context.Context, data []byte) (string, bool, error) {
 	if len(data) < 2 {
-		return "", false
+		return "", false, nil
 	}
 	littleEndian := false
 	offset := 0
@@ -183,10 +194,15 @@ func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
 			sample = sample[:4096]
 		}
 		if len(sample) < 4 || len(sample)%2 != 0 {
-			return "", false
+			return "", false, nil
 		}
 		var evenNULs, oddNULs int
 		for i, b := range sample {
+			if i%responseBodyContextCheckBytes == 0 && ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return "", false, err
+				}
+			}
 			if b != 0 {
 				continue
 			}
@@ -198,14 +214,14 @@ func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
 		}
 		totalNULs := evenNULs + oddNULs
 		if totalNULs < 2 || (evenNULs != 0 && oddNULs != 0) || totalNULs*5 < len(sample)*2 {
-			return "", false
+			return "", false, nil
 		}
 		littleEndian = oddNULs > 0
 	}
 
 	encoded := data[offset:]
 	if len(encoded) == 0 || len(encoded)%2 != 0 {
-		return "", false
+		return "", false, nil
 	}
 	readUnit := func(i int) uint16 {
 		if littleEndian {
@@ -216,6 +232,11 @@ func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
 	var decoded strings.Builder
 	decoded.Grow(len(encoded))
 	for i := 0; i < len(encoded); i += 2 {
+		if i%responseBodyContextCheckBytes == 0 && ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return "", false, err
+			}
+		}
 		unit := readUnit(i)
 		if unit >= 0xd800 && unit <= 0xdbff && i+3 < len(encoded) {
 			next := readUnit(i + 2)
@@ -231,7 +252,12 @@ func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
 		}
 		decoded.WriteRune(rune(unit))
 	}
-	return decoded.String(), true
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
+	}
+	return decoded.String(), true, nil
 }
 
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
@@ -920,13 +946,22 @@ func isPrintableText(data []byte) bool {
 // the body instead of causing an immediate binary verdict, so a small malformed
 // prefix cannot hide an otherwise textual prompt injection. Opaque compressed
 // data stays below the printable threshold and is not fed to prose regexes.
-func isTextualResponseBody(data []byte) bool {
+func isTextualResponseBody(ctx context.Context, data []byte) (bool, error) {
 	if len(data) == 0 {
-		return true
+		return true, nil
 	}
-	total := 0
-	printable := 0
+	var total uint64
+	var printable uint64
+	nextContextCheck := 0
 	for i := 0; i < len(data); {
+		if i >= nextContextCheck {
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+			}
+			nextContextCheck = i + responseBodyContextCheckBytes
+		}
 		r, size := utf8.DecodeRune(data[i:])
 		total++
 		if isPrintableResponseRune(r, size) {
@@ -934,12 +969,15 @@ func isTextualResponseBody(data []byte) bool {
 		}
 		i += size
 	}
-	return printable*5 >= total*4
+	return printable*5 >= total*4, nil
 }
 
 // Sixteen bytes is long enough to represent a phrase-level instruction while
 // excluding short token-like coincidences such as the three-byte ISO witness.
 const binaryResponseTextRunMinBytes = 16
+
+// Keep cancellation latency bounded without adding a context lookup per byte.
+const responseBodyContextCheckBytes = 4096
 
 // opaqueResponseTextView produces one bounded scanner view from an opaque body.
 // Short spans of valid control runes are semantic text boundaries and become a
@@ -947,10 +985,21 @@ const binaryResponseTextRunMinBytes = 16
 // binary spans end the group; retained groups are separated by a non-whitespace
 // sentinel so unrelated fragments cannot synthesize an instruction. Groups
 // below the phrase floor are dropped, excluding short accidental tokens.
-func opaqueResponseTextView(data []byte) string {
+func opaqueResponseTextView(ctx context.Context, data []byte) (string, error) {
 	var view strings.Builder
 	var group strings.Builder
 	printableBytes := 0
+	nextContextCheck := 0
+	checkContext := func(offset int) error {
+		if offset < nextContextCheck {
+			return nil
+		}
+		nextContextCheck = offset + responseBodyContextCheckBytes
+		if ctx == nil {
+			return nil
+		}
+		return ctx.Err()
+	}
 	flush := func() {
 		if printableBytes >= binaryResponseTextRunMinBytes {
 			if view.Len() > 0 {
@@ -963,6 +1012,9 @@ func opaqueResponseTextView(data []byte) string {
 	}
 
 	for i := 0; i < len(data); {
+		if err := checkContext(i); err != nil {
+			return "", err
+		}
 		r, size := utf8.DecodeRune(data[i:])
 		if isPrintableResponseRune(r, size) {
 			group.Write(data[i : i+size])
@@ -974,6 +1026,9 @@ func opaqueResponseTextView(data []byte) string {
 		separatorStart := i
 		soft := true
 		for i < len(data) {
+			if err := checkContext(i); err != nil {
+				return "", err
+			}
 			r, size = utf8.DecodeRune(data[i:])
 			if isPrintableResponseRune(r, size) {
 				break
@@ -990,7 +1045,12 @@ func opaqueResponseTextView(data []byte) string {
 		flush()
 	}
 	flush()
-	return view.String()
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+	return view.String(), nil
 }
 
 func isPrintableResponseRune(r rune, size int) bool {

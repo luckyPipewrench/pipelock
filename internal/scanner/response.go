@@ -108,20 +108,10 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 				if !result.Clean {
 					// A decoded view cannot safely replace the encoded body.
 					result.TransformedContent = ""
-				}
-				return result
-			}
-			for _, run := range binaryResponseTextRuns(body) {
-				result := s.ScanResponseWithSuppress(ctx, string(run), suppressTarget, suppress)
-				if !result.Clean {
-					// Extracted text cannot safely replace the complete binary
-					// body under strip or ask actions. An empty transformation
-					// makes those callers fail closed instead.
-					result.TransformedContent = ""
 					return result
 				}
 			}
-			return ResponseScanResult{Clean: true}
+			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
 		}
 		return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
 	}
@@ -139,6 +129,20 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		// A metadata-only scan cannot safely transform the complete image body.
 		// Leave this empty so strip callers fail closed instead of replacing the
 		// image with redacted metadata bytes.
+		result.TransformedContent = ""
+	}
+	return result
+}
+
+func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	view := opaqueResponseTextView(body)
+	if view == "" {
+		return ResponseScanResult{Clean: true}
+	}
+	result := s.ScanResponseWithSuppress(ctx, view, suppressTarget, suppress)
+	if !result.Clean {
+		// An extracted view cannot safely replace the complete binary body.
+		// Empty output makes strip and ask callers fail closed.
 		result.TransformedContent = ""
 	}
 	return result
@@ -190,15 +194,31 @@ func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
 	if len(encoded) == 0 || len(encoded)%2 != 0 {
 		return "", false
 	}
-	units := make([]uint16, len(encoded)/2)
-	for i := range units {
+	readUnit := func(i int) uint16 {
 		if littleEndian {
-			units[i] = uint16(encoded[2*i]) | uint16(encoded[2*i+1])<<8
-		} else {
-			units[i] = uint16(encoded[2*i])<<8 | uint16(encoded[2*i+1])
+			return uint16(encoded[i]) | uint16(encoded[i+1])<<8
 		}
+		return uint16(encoded[i])<<8 | uint16(encoded[i+1])
 	}
-	return string(utf16.Decode(units)), true
+	var decoded strings.Builder
+	decoded.Grow(len(encoded))
+	for i := 0; i < len(encoded); i += 2 {
+		unit := readUnit(i)
+		if unit >= 0xd800 && unit <= 0xdbff && i+3 < len(encoded) {
+			next := readUnit(i + 2)
+			if next >= 0xdc00 && next <= 0xdfff {
+				decoded.WriteRune(utf16.DecodeRune(rune(unit), rune(next)))
+				i += 2
+				continue
+			}
+		}
+		if unit >= 0xd800 && unit <= 0xdfff {
+			decoded.WriteRune(unicode.ReplacementChar)
+			continue
+		}
+		decoded.WriteRune(rune(unit))
+	}
+	return decoded.String(), true
 }
 
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
@@ -908,33 +928,56 @@ func isTextualResponseBody(data []byte) bool {
 // excluding short token-like coincidences such as the three-byte ISO witness.
 const binaryResponseTextRunMinBytes = 16
 
-// binaryResponseTextRuns retains substantive printable runs from an otherwise
-// opaque response. This keeps embedded instructions visible without feeding
-// short accidental byte sequences to prose regexes. Non-text bytes separate
-// runs so unrelated fragments cannot combine into a synthetic directive.
-func binaryResponseTextRuns(data []byte) [][]byte {
-	var extracted [][]byte
-	runStart := -1
-	flush := func(end int) {
-		if runStart >= 0 && end-runStart >= binaryResponseTextRunMinBytes {
-			extracted = append(extracted, data[runStart:end])
+// opaqueResponseTextView produces one bounded scanner view from an opaque body.
+// Short spans of valid control runes are semantic text boundaries and become a
+// space, so NUL-split instructions remain visible. Invalid bytes and longer
+// binary spans end the group; retained groups are separated by a non-whitespace
+// sentinel so unrelated fragments cannot synthesize an instruction. Groups
+// below the phrase floor are dropped, excluding short accidental tokens.
+func opaqueResponseTextView(data []byte) string {
+	var view strings.Builder
+	var group strings.Builder
+	printableBytes := 0
+	flush := func() {
+		if printableBytes >= binaryResponseTextRunMinBytes {
+			if view.Len() > 0 {
+				view.WriteString("\n\ufffd\n")
+			}
+			view.WriteString(group.String())
 		}
-		runStart = -1
+		group.Reset()
+		printableBytes = 0
 	}
+
 	for i := 0; i < len(data); {
 		r, size := utf8.DecodeRune(data[i:])
-		textual := isPrintableResponseRune(r, size)
-		if textual {
-			if runStart < 0 {
-				runStart = i
-			}
-		} else {
-			flush(i)
+		if isPrintableResponseRune(r, size) {
+			group.Write(data[i : i+size])
+			printableBytes += size
+			i += size
+			continue
 		}
-		i += size
+
+		separatorStart := i
+		soft := true
+		for i < len(data) {
+			r, size = utf8.DecodeRune(data[i:])
+			if isPrintableResponseRune(r, size) {
+				break
+			}
+			if r == utf8.RuneError && size == 1 {
+				soft = false
+			}
+			i += size
+		}
+		if soft && i-separatorStart <= 8 && group.Len() > 0 {
+			group.WriteByte(' ')
+			continue
+		}
+		flush()
 	}
-	flush(len(data))
-	return extracted
+	flush()
+	return view.String()
 }
 
 func isPrintableResponseRune(r rune, size int) bool {

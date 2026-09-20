@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -87,15 +88,41 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 }
 
 // ScanResponseBodyWithSuppress scans a raw HTTP response body. For verified PNG
-// and JPEG bodies it scans textual metadata but excludes compressed pixel data,
-// which can contain accidental pattern-shaped bytes. Declared Content-Type is
-// not consulted, so mislabeled text still takes the ordinary fail-closed path.
+// and JPEG bodies it scans textual metadata but excludes compressed pixel data.
+// Other opaque binary bodies are not treated as prose: arbitrary compressed
+// bytes can contain accidental pattern-shaped sequences that have no prompt
+// semantics. Declared Content-Type is not consulted, so mislabeled textual
+// content still takes the ordinary scan path.
 func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
 	if ctx != nil && ctx.Err() != nil {
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
+		if hasResponseImageSignature(body) {
+			return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+		}
+		if !isTextualResponseBody(body) {
+			if decoded, ok := decodeLikelyUTF16ResponseBody(body); ok {
+				result := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
+				if !result.Clean {
+					// A decoded view cannot safely replace the encoded body.
+					result.TransformedContent = ""
+				}
+				return result
+			}
+			for _, run := range binaryResponseTextRuns(body) {
+				result := s.ScanResponseWithSuppress(ctx, string(run), suppressTarget, suppress)
+				if !result.Clean {
+					// Extracted text cannot safely replace the complete binary
+					// body under strip or ask actions. An empty transformation
+					// makes those callers fail closed instead.
+					result.TransformedContent = ""
+					return result
+				}
+			}
+			return ResponseScanResult{Clean: true}
+		}
 		return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
 	}
 	if err != nil {
@@ -115,6 +142,63 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		result.TransformedContent = ""
 	}
 	return result
+}
+
+// decodeLikelyUTF16ResponseBody recognizes BOM-marked UTF-16 and BOM-less
+// ASCII-range UTF-16 whose NUL bytes consistently occupy one byte parity. The
+// parity and density requirements keep arbitrary NUL-bearing binary data on the
+// opaque-run path while preserving response scanning for common UTF-16 text.
+func decodeLikelyUTF16ResponseBody(data []byte) (string, bool) {
+	if len(data) < 2 {
+		return "", false
+	}
+	littleEndian := false
+	offset := 0
+	switch {
+	case data[0] == 0xff && data[1] == 0xfe:
+		littleEndian = true
+		offset = 2
+	case data[0] == 0xfe && data[1] == 0xff:
+		offset = 2
+	default:
+		sample := data
+		if len(sample) > 4096 {
+			sample = sample[:4096]
+		}
+		if len(sample) < 4 || len(sample)%2 != 0 {
+			return "", false
+		}
+		var evenNULs, oddNULs int
+		for i, b := range sample {
+			if b != 0 {
+				continue
+			}
+			if i%2 == 0 {
+				evenNULs++
+			} else {
+				oddNULs++
+			}
+		}
+		totalNULs := evenNULs + oddNULs
+		if totalNULs < 2 || (evenNULs != 0 && oddNULs != 0) || totalNULs*5 < len(sample)*2 {
+			return "", false
+		}
+		littleEndian = oddNULs > 0
+	}
+
+	encoded := data[offset:]
+	if len(encoded) == 0 || len(encoded)%2 != 0 {
+		return "", false
+	}
+	units := make([]uint16, len(encoded)/2)
+	for i := range units {
+		if littleEndian {
+			units[i] = uint16(encoded[2*i]) | uint16(encoded[2*i+1])<<8
+		} else {
+			units[i] = uint16(encoded[2*i])<<8 | uint16(encoded[2*i+1])
+		}
+	}
+	return string(utf16.Decode(units)), true
 }
 
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
@@ -796,6 +880,65 @@ func isPrintableText(data []byte) bool {
 	}
 	// At least 80% printable runes to be considered text.
 	return printable*5 >= total*4
+}
+
+// isTextualResponseBody classifies bytes by what they contain, not by the
+// response's declared media type. Invalid UTF-8 and control bytes count against
+// the body instead of causing an immediate binary verdict, so a small malformed
+// prefix cannot hide an otherwise textual prompt injection. Opaque compressed
+// data stays below the printable threshold and is not fed to prose regexes.
+func isTextualResponseBody(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	total := 0
+	printable := 0
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		total++
+		if isPrintableResponseRune(r, size) {
+			printable++
+		}
+		i += size
+	}
+	return printable*5 >= total*4
+}
+
+// Sixteen bytes is long enough to represent a phrase-level instruction while
+// excluding short token-like coincidences such as the three-byte ISO witness.
+const binaryResponseTextRunMinBytes = 16
+
+// binaryResponseTextRuns retains substantive printable runs from an otherwise
+// opaque response. This keeps embedded instructions visible without feeding
+// short accidental byte sequences to prose regexes. Non-text bytes separate
+// runs so unrelated fragments cannot combine into a synthetic directive.
+func binaryResponseTextRuns(data []byte) [][]byte {
+	var extracted [][]byte
+	runStart := -1
+	flush := func(end int) {
+		if runStart >= 0 && end-runStart >= binaryResponseTextRunMinBytes {
+			extracted = append(extracted, data[runStart:end])
+		}
+		runStart = -1
+	}
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		textual := isPrintableResponseRune(r, size)
+		if textual {
+			if runStart < 0 {
+				runStart = i
+			}
+		} else {
+			flush(i)
+		}
+		i += size
+	}
+	flush(len(data))
+	return extracted
+}
+
+func isPrintableResponseRune(r rune, size int) bool {
+	return (r != utf8.RuneError || size != 1) && (unicode.IsPrint(r) || r == '\t' || r == '\n' || r == '\r')
 }
 
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,

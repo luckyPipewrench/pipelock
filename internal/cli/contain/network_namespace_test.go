@@ -28,15 +28,36 @@ func TestContainedNetworkNamespaceUnits(t *testing.T) {
 		}
 	}
 
-	socket := renderContainedProxySocketUnit(8888)
+	socket := renderContainedProxySocketUnit(containedDoorwaySocketPath, "pipelock-agent")
 	for _, want := range []string{
-		"JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
-		"PrivateNetwork=true",
-		"ListenStream=127.0.0.1:8888",
+		"ListenStream=" + containedDoorwaySocketPath,
+		"SocketMode=0660",
+		"SocketGroup=pipelock-agent",
+		"RemoveOnStop=true",
 		"WantedBy=sockets.target",
 	} {
 		if !strings.Contains(socket, want) {
 			t.Fatalf("socket unit missing %q:\n%s", want, socket)
+		}
+	}
+	// systemd.socket(5): every .socket listener is allocated in the HOST
+	// network namespace. Asking for one inside the agent namespace is what
+	// made an earlier revision fail at install, so these must stay absent.
+	for _, forbidden := range []string{"PrivateNetwork=true", "JoinsNamespaceOf=", "ListenStream=127.0.0.1"} {
+		if strings.Contains(socket, forbidden) {
+			t.Fatalf("socket unit must not contain %q; a .socket listener is always host-namespace:\n%s", forbidden, socket)
+		}
+	}
+
+	nsForward := renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", containedDoorwaySocketPath, "pipelock-agent", 8888)
+	for _, want := range []string{
+		"JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
+		"PrivateNetwork=true",
+		"ExecStart=/usr/local/bin/pipelock contain netns-forward --listen 127.0.0.1:8888 --target " + containedDoorwaySocketPath,
+		"User=pipelock-agent",
+	} {
+		if !strings.Contains(nsForward, want) {
+			t.Fatalf("namespace forwarder unit missing %q:\n%s", want, nsForward)
 		}
 	}
 
@@ -63,8 +84,9 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	dir := t.TempDir()
 	units := map[string]string{
 		containedNetworkNamespaceUnit:            renderContainedNetworkNamespaceUnit(),
-		containedProxyForwarderUnit + ".socket":  renderContainedProxySocketUnit(8888),
+		containedProxyForwarderUnit + ".socket":  renderContainedProxySocketUnit(containedDoorwaySocketPath, "pipelock-agent"),
 		containedProxyForwarderUnit + ".service": renderContainedProxyForwarderUnit("pipelock-proxy", 8888),
+		containedNamespaceForwarderUnit:          renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", containedDoorwaySocketPath, "pipelock-agent", 8888),
 		"pipelock.service":                       "[Service]\nType=simple\nExecStart=/usr/bin/sleep infinity\n",
 	}
 	paths := make([]string, 0, len(units))
@@ -229,19 +251,21 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			env := &probeEnv{
-				port:                      8888,
-				proxyUserName:             "pipelock-proxy",
-				agentUserName:             "pipelock-agent",
-				networkNamespaceUnitPath:  filepath.Join(root, containedNetworkNamespaceUnit),
-				proxyForwarderSocketPath:  filepath.Join(root, containedProxyForwarderUnit+".socket"),
-				proxyForwarderServicePath: filepath.Join(root, containedProxyForwarderUnit+".service"),
-				loopbackForwarderInvPath:  filepath.Join(root, "loopback-forwarders.json"),
-				readFile:                  os.ReadFile,
+				port:                          8888,
+				proxyUserName:                 "pipelock-proxy",
+				agentUserName:                 "pipelock-agent",
+				networkNamespaceUnitPath:      filepath.Join(root, containedNetworkNamespaceUnit),
+				proxyForwarderSocketPath:      filepath.Join(root, containedProxyForwarderUnit+".socket"),
+				proxyForwarderServicePath:     filepath.Join(root, containedProxyForwarderUnit+".service"),
+				namespaceForwarderServicePath: filepath.Join(root, containedNamespaceForwarderUnit),
+				loopbackForwarderInvPath:      filepath.Join(root, "loopback-forwarders.json"),
+				readFile:                      os.ReadFile,
 			}
 			for path, body := range map[string]string{
-				env.networkNamespaceUnitPath:  renderContainedNetworkNamespaceUnit(),
-				env.proxyForwarderSocketPath:  renderContainedProxySocketUnit(env.port),
-				env.proxyForwarderServicePath: renderContainedProxyForwarderUnit(env.proxyUserName, env.port),
+				env.networkNamespaceUnitPath:      renderContainedNetworkNamespaceUnit(),
+				env.proxyForwarderSocketPath:      renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName),
+				env.proxyForwarderServicePath:     renderContainedProxyForwarderUnit(env.proxyUserName, env.port),
+				env.namespaceForwarderServicePath: renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.port),
 			} {
 				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 					t.Fatal(err)

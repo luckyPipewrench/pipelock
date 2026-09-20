@@ -128,38 +128,39 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port                      int
-	operatorUser              string
-	proxyUserName             string
-	agentUserName             string
-	wrapperDir                string
-	toolWrappers              []string
-	caBundlePath              string
-	caExportPath              string
-	configDir                 string
-	launchPath                string
-	nftTable                  string
-	nftChain                  string
-	nftRulesPath              string
-	nftMainPath               string
-	nftPersistUnitPath        string
-	nftExpiryServicePath      string
-	nftExpiryTimerPath        string
-	nftPath                   string
-	serviceName               string
-	readinessTimeout          time.Duration
-	curlPath                  string
-	pinPath                   string
-	wrapperInvPath            string
-	toolsListPath             string
-	configPath                string
-	workspaceInvPath          string
-	loopbackForwarderInvPath  string
-	workspacePaths            []string
-	workspaceGrants           []workspaceGrant
-	networkNamespaceUnitPath  string
-	proxyForwarderSocketPath  string
-	proxyForwarderServicePath string
+	port                          int
+	operatorUser                  string
+	proxyUserName                 string
+	agentUserName                 string
+	wrapperDir                    string
+	toolWrappers                  []string
+	caBundlePath                  string
+	caExportPath                  string
+	configDir                     string
+	launchPath                    string
+	nftTable                      string
+	nftChain                      string
+	nftRulesPath                  string
+	nftMainPath                   string
+	nftPersistUnitPath            string
+	nftExpiryServicePath          string
+	nftExpiryTimerPath            string
+	nftPath                       string
+	serviceName                   string
+	readinessTimeout              time.Duration
+	curlPath                      string
+	pinPath                       string
+	wrapperInvPath                string
+	toolsListPath                 string
+	configPath                    string
+	workspaceInvPath              string
+	loopbackForwarderInvPath      string
+	workspacePaths                []string
+	workspaceGrants               []workspaceGrant
+	networkNamespaceUnitPath      string
+	proxyForwarderSocketPath      string
+	proxyForwarderServicePath     string
+	namespaceForwarderServicePath string
 	// workspaceInvErr records a recorded-inventory read that failed for any
 	// reason other than absence. The workspace probe fails on it so a permission
 	// or parse error cannot make verify pass with the grant set silently empty.
@@ -197,48 +198,49 @@ type probeEnv struct {
 func defaultProbeEnv() *probeEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &probeEnv{
-		port:                      defaultProxyPort,
-		operatorUser:              os.Getenv("SUDO_USER"),
-		proxyUserName:             defaultProxyUser,
-		agentUserName:             defaultAgentUser,
-		wrapperDir:                defaultWrapperDir,
-		toolWrappers:              append([]string(nil), defaultToolWrappers...),
-		caBundlePath:              defaultCABundlePath,
-		caExportPath:              defaultCAExportPath,
-		configDir:                 defaultConfigDir,
-		launchPath:                defaultLaunchScript,
-		nftTable:                  defaultNFTTable,
-		nftChain:                  defaultNFTChain,
-		nftRulesPath:              defaultNFTRulesPath,
-		nftPersistUnitPath:        defaultNFTPersistUnitPath,
-		nftExpiryServicePath:      defaultNFTExpiryServicePath,
-		nftExpiryTimerPath:        defaultNFTExpiryTimerPath,
-		nftPath:                   platform.nftPath,
-		serviceName:               defaultServiceName,
-		curlPath:                  platform.curlPath,
-		pinPath:                   defaultIntegrityPin,
-		wrapperInvPath:            defaultWrapperInvPath,
-		toolsListPath:             defaultToolsListPath,
-		workspaceInvPath:          defaultWorkspaceInvPath,
-		loopbackForwarderInvPath:  defaultLoopbackForwarderInvPath,
-		configPath:                filepath.Join(defaultConfigDir, "pipelock.yaml"),
-		pipelockTarget:            defaultPipelockTarget,
-		verifyRunningImage:        true,
-		now:                       time.Now,
-		runCmd:                    realRunCommand,
-		dropCounter:               readContainmentDropCounter,
-		dialCtx:                   realDial,
-		wait:                      waitForReadiness,
-		lookupUser:                user.Lookup,
-		groupIDs:                  realGroupIDs,
-		stat:                      os.Stat,
-		readFile:                  os.ReadFile,
-		readLink:                  os.Readlink,
-		selfPath:                  os.Executable,
-		hashFile:                  sha256HexOfFile,
-		networkNamespaceUnitPath:  defaultNetworkNamespaceUnitPath,
-		proxyForwarderSocketPath:  defaultProxyForwarderSocketPath,
-		proxyForwarderServicePath: defaultProxyForwarderServicePath,
+		port:                          defaultProxyPort,
+		operatorUser:                  os.Getenv("SUDO_USER"),
+		proxyUserName:                 defaultProxyUser,
+		agentUserName:                 defaultAgentUser,
+		wrapperDir:                    defaultWrapperDir,
+		toolWrappers:                  append([]string(nil), defaultToolWrappers...),
+		caBundlePath:                  defaultCABundlePath,
+		caExportPath:                  defaultCAExportPath,
+		configDir:                     defaultConfigDir,
+		launchPath:                    defaultLaunchScript,
+		nftTable:                      defaultNFTTable,
+		nftChain:                      defaultNFTChain,
+		nftRulesPath:                  defaultNFTRulesPath,
+		nftPersistUnitPath:            defaultNFTPersistUnitPath,
+		nftExpiryServicePath:          defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
+		nftPath:                       platform.nftPath,
+		serviceName:                   defaultServiceName,
+		curlPath:                      platform.curlPath,
+		pinPath:                       defaultIntegrityPin,
+		wrapperInvPath:                defaultWrapperInvPath,
+		toolsListPath:                 defaultToolsListPath,
+		workspaceInvPath:              defaultWorkspaceInvPath,
+		loopbackForwarderInvPath:      defaultLoopbackForwarderInvPath,
+		configPath:                    filepath.Join(defaultConfigDir, "pipelock.yaml"),
+		pipelockTarget:                defaultPipelockTarget,
+		verifyRunningImage:            true,
+		now:                           time.Now,
+		runCmd:                        realRunCommand,
+		dropCounter:                   readContainmentDropCounter,
+		dialCtx:                       realDial,
+		wait:                          waitForReadiness,
+		lookupUser:                    user.Lookup,
+		groupIDs:                      realGroupIDs,
+		stat:                          os.Stat,
+		readFile:                      os.ReadFile,
+		readLink:                      os.Readlink,
+		selfPath:                      os.Executable,
+		hashFile:                      sha256HexOfFile,
+		networkNamespaceUnitPath:      defaultNetworkNamespaceUnitPath,
+		proxyForwarderSocketPath:      defaultProxyForwarderSocketPath,
+		proxyForwarderServicePath:     defaultProxyForwarderServicePath,
+		namespaceForwarderServicePath: defaultNamespaceForwarderServicePath,
 	}
 }
 

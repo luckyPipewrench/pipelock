@@ -54,6 +54,7 @@ planned actions without touching state.`,
 		listWorkspacesCmd(),
 		caRefreshCmd(),
 		reloadNFTRulesCmd(),
+		netnsForwardCmd(),
 		upgradeCmd(),
 	)
 

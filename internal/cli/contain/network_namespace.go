@@ -118,24 +118,35 @@ func decodeLoopbackForwarderInventory(data []byte) (loopbackForwarderInventory, 
 }
 
 const (
-	containedNetworkNamespaceUnit = "pipelock-agent-netns.service"
-	containedProxyForwarderUnit   = "pipelock-agent-proxy"
+	containedNetworkNamespaceUnit   = "pipelock-agent-netns.service"
+	containedProxyForwarderUnit     = "pipelock-agent-proxy"
+	containedNamespaceForwarderUnit = "pipelock-agent-netns-forward.service"
+	// containedDoorwaySocketPath is the one filesystem object the contained
+	// namespace may cross. It sits directly in /run rather than a subdirectory
+	// so the socket unit does not depend on anything else having created a
+	// directory first; /run is tmpfs, so no stale socket survives a reboot,
+	// and RemoveOnStop= clears it when the socket stops.
+	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy.sock"
 	systemdSocketProxydPath       = "/usr/lib/systemd/systemd-socket-proxyd"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
 )
 
-// The contained agent keeps the long-standing 127.0.0.1 proxy contract. A
-// systemd socket is created inside this unit's private network namespace and
-// its host-namespace service forwards accepted connections to the real
-// host-loopback proxy. We deliberately rejected a veth because it would add a
-// routed interface plus packet-filter state solely to reach one socket, and
-// rejected moving an additional Pipelock listener into this namespace because
-// the proxy itself needs host-network egress. Socket activation crosses only
-// the one explicitly declared listening socket and creates no route at all.
+// The contained agent keeps the long-standing 127.0.0.1 proxy contract. That
+// listener lives INSIDE this unit's private network namespace and is created
+// by pipelock contain netns-forward, which joins the namespace and forwards to
+// a pathname unix socket on the host. See netns_forward.go for why a systemd
+// socket unit cannot supply it: systemd.socket(5) allocates every .socket
+// listener in the HOST network namespace, whatever PrivateNetwork= says.
+//
+// We deliberately rejected a veth because it would add a routed interface plus
+// packet-filter state solely to reach one socket, and rejected moving an
+// additional Pipelock listener into this namespace because the proxy itself
+// needs host-network egress. The unix doorway crosses only one explicitly
+// declared filesystem object and creates no route at all.
 func renderContainedNetworkNamespaceUnit() string {
 	return `[Unit]
 Description=Pipelock contained-agent network namespace
-Before=pipelock-agent-proxy.socket
+Before=pipelock-agent-netns-forward.service
 
 [Service]
 Type=simple
@@ -151,8 +162,9 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		want string
 	}{
 		{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit()},
-		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.port)},
+		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName)},
 		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.port)},
+		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.port)},
 	}
 	for _, unit := range units {
 		if strings.TrimSpace(unit.path) == "" {
@@ -297,21 +309,60 @@ func namespaceProbeSystemdRunArgs(env *probeEnv, command []string) []string {
 	return append(args, command...)
 }
 
-func renderContainedProxySocketUnit(port int) string {
+// renderContainedProxySocketUnit declares the host-side doorway. It is a
+// PATHNAME unix socket on purpose: network_namespaces(7) isolates only the
+// abstract unix namespace, so a path-addressed socket is reachable from inside
+// the agent's namespace while carrying no route and no interface. The socket
+// lives in the host namespace because that is the only place systemd will put
+// a .socket listener; SocketMode/SocketGroup are what actually restrict who
+// may cross it.
+func renderContainedProxySocketUnit(socketPath, agentUser string) string {
 	return fmt.Sprintf(`[Unit]
-Description=Pipelock proxy socket inside the contained-agent network namespace
-Requires=%s
-After=%s
-JoinsNamespaceOf=%s
+Description=Pipelock host doorway socket for the contained-agent namespace
 
 [Socket]
-ListenStream=127.0.0.1:%d
-PrivateNetwork=true
-NoDelay=true
+ListenStream=%s
+SocketMode=0660
+SocketUser=root
+SocketGroup=%s
+RemoveOnStop=true
 
 [Install]
 WantedBy=sockets.target
-`, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit, port)
+`, socketPath, agentUser)
+}
+
+// renderContainedNamespaceForwarderUnit creates the in-namespace listener. It
+// is a service rather than a socket because JoinsNamespaceOf= places a unit's
+// PROCESSES in the namespace, which is exactly what is needed here and exactly
+// what a socket unit's listener does not get.
+func renderContainedNamespaceForwarderUnit(pipelockPath, socketPath, agentUser string, port int) string {
+	return fmt.Sprintf(`[Unit]
+Description=Pipelock proxy listener inside the contained-agent network namespace
+Requires=%s
+After=%s
+Requires=%s.socket
+After=%s.socket
+JoinsNamespaceOf=%s
+
+[Service]
+Type=simple
+User=%s
+Group=%s
+ExecStart=%s contain netns-forward --listen 127.0.0.1:%d --target %s
+PrivateNetwork=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+`, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
+		containedProxyForwarderUnit, containedProxyForwarderUnit,
+		containedNetworkNamespaceUnit,
+		agentUser, agentUser, pipelockPath, port, socketPath)
 }
 
 func renderContainedProxyForwarderUnit(proxyUser string, port int) string {
@@ -398,8 +449,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			paths := []managedFile{
 				{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit(), modeUnitFile},
-				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.proxyPort), modeUnitFile},
+				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName), modeUnitFile},
 				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.proxyPort), modeUnitFile},
+				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.proxyPort), modeUnitFile},
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
 			unitDir := filepath.Dir(env.proxyForwarderSocketPath)
@@ -494,6 +546,14 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					return true, fmt.Errorf("enable contained namespace socket %s: %w", socket, err)
 				}
 			}
+			// The in-namespace listener is a service, not a socket, so it is not
+			// in previousSockets and has to be started explicitly. --now matters:
+			// enable alone writes the boot symlink and leaves the namespace with
+			// no listener until the host reboots, which on a containment feature
+			// means the agent silently has no proxy.
+			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", containedNamespaceForwarderUnit); err != nil {
+				return true, fmt.Errorf("enable contained namespace forwarder %s: %w", containedNamespaceForwarderUnit, err)
+			}
 			// Retire the superseded cgroup anchor only after the private namespace
 			// socket is live. Keeping both would leave two mechanisms that can
 			// disagree; on any later install failure undo restores the old file and
@@ -530,6 +590,13 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 		undo: func(ctx context.Context, env *installEnv) error {
 			var errs []error
 			namespaceUnit := filepath.Base(env.networkNamespaceUnitPath)
+			// Stop the in-namespace listener before the namespace holder, and
+			// before restoring unit files, so it cannot be left running against
+			// a definition that no longer exists. Cleanup tolerates an absent
+			// unit: a failure earlier in apply may mean it was never written.
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", containedNamespaceForwarderUnit); err != nil {
+				errs = append(errs, err)
+			}
 			for socket, state := range previousSockets {
 				if !state.active {
 					if err := runSystemctlCleanupUnit(ctx, env, "stop", socket); err != nil {

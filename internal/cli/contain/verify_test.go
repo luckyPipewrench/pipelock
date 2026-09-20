@@ -3936,6 +3936,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.networkNamespaceUnitPath = filepath.Join(unitDir, containedNetworkNamespaceUnit)
 	env.proxyForwarderSocketPath = filepath.Join(unitDir, containedProxyForwarderUnit+".socket")
 	env.proxyForwarderServicePath = filepath.Join(unitDir, containedProxyForwarderUnit+".service")
+	env.namespaceForwarderServicePath = filepath.Join(unitDir, containedNamespaceForwarderUnit)
 	env.loopbackForwarderInvPath = filepath.Join(t.TempDir(), "loopback-forwarders.json")
 
 	// Probe 1: both users present.
@@ -4012,9 +4013,11 @@ func allPassEnv(t *testing.T) *probeEnv {
 		case env.networkNamespaceUnitPath:
 			return []byte(renderContainedNetworkNamespaceUnit()), nil
 		case env.proxyForwarderSocketPath:
-			return []byte(renderContainedProxySocketUnit(env.port)), nil
+			return []byte(renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName)), nil
 		case env.proxyForwarderServicePath:
 			return []byte(renderContainedProxyForwarderUnit(env.proxyUserName, env.port)), nil
+		case env.namespaceForwarderServicePath:
+			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.port)), nil
 		case env.loopbackForwarderInvPath:
 			return []byte("{\n  \"services\": []\n}\n"), nil
 		}

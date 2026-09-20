@@ -2825,11 +2825,32 @@ func TestTrialSupportAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit ledger: %v", err)
 	}
-	if !strings.Contains(string(ledgerData), AuditTrialResendRequested) ||
-		!strings.Contains(string(ledgerData), AuditTrialResent) ||
-		!strings.Contains(string(ledgerData), AuditTrialRevokeRequested) ||
-		!strings.Contains(string(ledgerData), AuditLicenseRevoked) {
-		t.Fatalf("support actions missing from audit ledger: %s", ledgerData)
+	wantEvents := map[string]int{
+		AuditTrialResendRequested: 0,
+		AuditTrialResent:          0,
+		AuditTrialRevokeRequested: 0,
+		AuditLicenseRevoked:       0,
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(ledgerData)), "\n") {
+		var entry AuditEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode audit entry %q: %v", line, err)
+		}
+		if _, tracked := wantEvents[entry.Event]; !tracked {
+			continue
+		}
+		if entry.SubscriptionID != orderID || entry.LicenseID != issued.LastLicenseID {
+			t.Fatalf("audit event %q has wrong ownership: %+v", entry.Event, entry)
+		}
+		if entry.Detail == "" {
+			t.Fatalf("audit event %q omitted its operator reason: %+v", entry.Event, entry)
+		}
+		wantEvents[entry.Event]++
+	}
+	for event, count := range wantEvents {
+		if count != 1 {
+			t.Fatalf("audit event %q count = %d, want 1; ledger: %s", event, count, ledgerData)
+		}
 	}
 }
 
@@ -3005,6 +3026,33 @@ func TestRevokeTrialAccessDoesNotMislabelInactiveTrial(t *testing.T) {
 }
 
 func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
+	t.Run("missing persisted issuance is rejected", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const orderID = "order_free_520_missing_issuance"
+		if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "missing-issuance@example.com")); err != nil {
+			t.Fatalf("issue trial: %v", err)
+		}
+		if _, err := ts.db.db.ExecContext(t.Context(), `DELETE FROM license_issuances WHERE subscription_id = ?`, orderID); err != nil {
+			t.Fatalf("remove persisted issuance: %v", err)
+		}
+		var emailAttempts atomic.Int32
+		emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			emailAttempts.Add(1)
+			w.Header().Set("Content-Type", testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id":"unexpected"}`))
+		}))
+		t.Cleanup(emailSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+
+		err := ts.handler.ResendTrialAccess(t.Context(), orderID, "support", time.Now())
+		if err == nil || !strings.Contains(err.Error(), "no matching persisted issuance") {
+			t.Fatalf("missing issuance error = %v", err)
+		}
+		if got := emailAttempts.Load(); got != 0 {
+			t.Fatalf("missing issuance sent %d emails, want 0", got)
+		}
+	})
+
 	t.Run("malformed persisted token metadata is rejected", func(t *testing.T) {
 		ts := newTestSetup(t)
 		const orderID = "order_free_520_malformed_resend"
@@ -3015,8 +3063,20 @@ func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
 			`UPDATE entitlements SET last_license_issued_at = NULL WHERE subscription_id = ?`, orderID); err != nil {
 			t.Fatalf("remove issue timestamp: %v", err)
 		}
-		if err := ts.handler.ResendTrialAccess(t.Context(), orderID, "support", time.Now()); err == nil {
-			t.Fatal("resend with malformed token metadata must fail")
+		var emailAttempts atomic.Int32
+		emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			emailAttempts.Add(1)
+			w.Header().Set("Content-Type", testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id":"unexpected"}`))
+		}))
+		t.Cleanup(emailSrv.Close)
+		ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+		err := ts.handler.ResendTrialAccess(t.Context(), orderID, "support", time.Now())
+		if err == nil || !strings.Contains(err.Error(), "persisted issue and expiry timestamps") {
+			t.Fatalf("malformed metadata error = %v", err)
+		}
+		if got := emailAttempts.Load(); got != 0 {
+			t.Fatalf("malformed metadata sent %d emails, want 0", got)
 		}
 	})
 
@@ -3288,7 +3348,11 @@ func TestTrialSupportResendThenRefundProducesRevocation(t *testing.T) {
 	go func() {
 		resendDone <- resender.ResendTrialAccess(t.Context(), orderID, "support resend", time.Now())
 	}()
-	<-emailEntered
+	select {
+	case <-emailEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resend did not reach email delivery")
+	}
 	revokeDone := make(chan error, 1)
 	go func() {
 		revokeDone <- revoker.HandleOrderRefundEvent(t.Context(), &PolarWebhookEvent{

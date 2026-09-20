@@ -21,7 +21,11 @@ func acquireTrialSupportLock(ctx context.Context, path string) (func(), error) {
 		return nil, fmt.Errorf("open trial support lock: %w", err)
 	}
 	var info unix.Stat_t
-	if err := unix.Fstat(fd, &info); err != nil || info.Mode&unix.S_IFMT != unix.S_IFREG {
+	if err := unix.Fstat(fd, &info); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("stat trial support lock %s: %w", path, err)
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("trial support lock is not a regular file: %s", path)
 	}

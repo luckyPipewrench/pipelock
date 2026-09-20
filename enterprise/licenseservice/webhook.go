@@ -662,7 +662,7 @@ func (h *WebhookHandler) resendTrialAccessLocked(ctx context.Context, subID, rea
 	if err != nil {
 		return err
 	}
-	if access.Status != statusActive || access.Revoked {
+	if access.Status != statusActive || access.Revoked || access.LicenseID == "" {
 		return fmt.Errorf("trial access %s is not eligible for resend", subID)
 	}
 	if now.IsZero() || access.ExpiresAt == nil || !now.Before(*access.ExpiresAt) {
@@ -685,6 +685,20 @@ func (h *WebhookHandler) resendTrialAccessLocked(ctx context.Context, subID, rea
 	}
 	if ent == nil || !isTrialTier(ent.Tier) || ent.Status != statusActive {
 		return fmt.Errorf("trial access %s is not eligible for resend", subID)
+	}
+	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, subID, now)
+	if err != nil {
+		return fmt.Errorf("verify persisted trial issuance: %w", err)
+	}
+	matchedIssuance := false
+	for _, issuance := range issuances {
+		if issuance.LicenseID == ent.LastLicenseID {
+			matchedIssuance = true
+			break
+		}
+	}
+	if ent.LastLicenseID == "" || !matchedIssuance {
+		return fmt.Errorf("trial access %s has no matching persisted issuance", subID)
 	}
 	token, err := h.regenerateToken(ent)
 	if err != nil {

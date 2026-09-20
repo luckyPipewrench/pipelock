@@ -333,6 +333,8 @@ The pre-start signer writes the same signed posture capsule path used by `contai
 
 Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
+Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Replace the earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above, then run `sudo systemctl daemon-reload` and restart that service. An old drop-in still performs a preflight, but it doesn't emit a capsule.
+
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking
 rules, or an unreadable managed DROP counter is reported as not enforced rather

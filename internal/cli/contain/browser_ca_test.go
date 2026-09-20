@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -45,6 +46,24 @@ func newBrowserCAEnv(t *testing.T) (*installEnv, *fakeNSS) {
 		entries: make(map[string]fakeNSSEntry),
 	}
 	env.runCmd = nss.run
+	// Unprivileged stand-in for the descriptor-based owner. It keeps the part
+	// this suite can actually assert -- the symlink refusal and the mode change
+	// -- and drops only the chown, which needs root. Production keeps
+	// applyAgentOwnershipNoFollow; TestBrowserCAOwnershipRefusesASymlinkedLeaf
+	// exercises the real one.
+	env.ownLeafNoFollow = func(path string, mode os.FileMode, _, _ int) error {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("open %s without following symlinks: is a symlink", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; refusing to change its ownership", path)
+		}
+		return os.Chmod(path, mode)
+	}
 	return env, nss
 }
 
@@ -229,19 +248,19 @@ func TestEstablishAgentBrowserCATrust(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid ownership marker blocks rerun", func(t *testing.T) {
-		env, nss := newBrowserCAEnv(t)
+	t.Run("a marker that does not describe this database blocks rerun", func(t *testing.T) {
+		env, _ := newBrowserCAEnv(t)
 		if _, err := establishAgentBrowserCATrust(context.Background(), env); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(browserCAMarkerPath(nss.db), []byte("invalid\n"), 0o600); err != nil {
+		if err := os.WriteFile(browserCAMarkerPath(env), []byte("invalid\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		changed, err := establishAgentBrowserCATrust(context.Background(), env)
-		if changed || err == nil || !strings.Contains(err.Error(), "ownership marker") || !strings.Contains(err.Error(), "invalid") {
-			t.Fatalf("changed=%v err=%v, want invalid marker refusal", changed, err)
+		if changed || err == nil || !strings.Contains(err.Error(), "ownership marker does not describe") {
+			t.Fatalf("changed=%v err=%v, want a refusal naming the mismatched marker", changed, err)
 		}
-		marker, readErr := os.ReadFile(browserCAMarkerPath(nss.db))
+		marker, readErr := os.ReadFile(browserCAMarkerPath(env))
 		if readErr != nil || string(marker) != "invalid\n" {
 			t.Fatalf("negative-test marker mutation missing: %q %v", marker, readErr)
 		}
@@ -295,42 +314,42 @@ func TestBrowserCAFilesystemFailures(t *testing.T) {
 	if _, err := establishAgentBrowserCATrust(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
-	if owned, err := markerOwnedBy(env, nss.db); err != nil || !owned {
+	if owned, err := markerOwnedBy(env, nss.db, testBrowserCAFingerprint(t, env)); err != nil || !owned {
 		t.Fatalf("positive marker control owned=%v err=%v", owned, err)
 	}
 
 	originalRead := env.readFile
 	env.readFile = func(path string) ([]byte, error) {
-		if path == browserCAMarkerPath(nss.db) {
+		if path == browserCAMarkerPath(env) {
 			return nil, errors.New("read denied")
 		}
 		return originalRead(path)
 	}
-	if owned, err := markerOwnedBy(env, nss.db); owned || err == nil || !strings.Contains(err.Error(), "read browser CA ownership marker") {
+	if owned, err := markerOwnedBy(env, nss.db, testBrowserCAFingerprint(t, env)); owned || err == nil || !strings.Contains(err.Error(), "read browser CA ownership marker") {
 		t.Fatalf("owned=%v err=%v, want marker read failure", owned, err)
 	}
 	env.readFile = originalRead
 
 	originalWrite := env.writeFile
 	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
-		if path == browserCAMarkerPath(nss.db) {
+		if path == browserCAMarkerPath(env) {
 			return errors.New("write denied")
 		}
 		return originalWrite(path, contents, mode)
 	}
-	if err := writeBrowserCAMarker(env, nss.db); err == nil || !strings.Contains(err.Error(), "write browser CA ownership marker") {
+	if err := writeBrowserCAMarker(env, nss.db, testBrowserCAFingerprint(t, env)); err == nil || !strings.Contains(err.Error(), "write browser CA ownership marker") {
 		t.Fatalf("marker write error = %v", err)
 	}
 	env.writeFile = originalWrite
 
 	originalRemove := env.removeFile
 	env.removeFile = func(path string) error {
-		if path == browserCAMarkerPath(nss.db) {
+		if path == browserCAMarkerPath(env) {
 			return errors.New("remove denied")
 		}
 		return originalRemove(path)
 	}
-	if err := removeBrowserCAMarker(env, nss.db); err == nil || !strings.Contains(err.Error(), "remove browser CA ownership marker") {
+	if err := removeBrowserCAMarker(env); err == nil || !strings.Contains(err.Error(), "remove browser CA ownership marker") {
 		t.Fatalf("marker remove error = %v", err)
 	}
 }
@@ -401,12 +420,14 @@ func TestEstablishAgentBrowserCATrustFailurePaths(t *testing.T) {
 
 	t.Run("new database ownership failure", func(t *testing.T) {
 		env, _ := newBrowserCAEnv(t)
-		originalChmod := env.chmod
-		env.chmod = func(path string, mode os.FileMode) error {
+		// Ownership now runs through the descriptor-based seam, so failing the
+		// old path-based chmod would no longer reach the code under test.
+		originalOwn := env.ownLeafNoFollow
+		env.ownLeafNoFollow = func(path string, mode os.FileMode, uid, gid int) error {
 			if filepath.Base(path) == nssDatabaseFile {
-				return errors.New("chmod denied")
+				return fmt.Errorf("chmod %s: denied", path)
 			}
-			return originalChmod(path, mode)
+			return originalOwn(path, mode, uid, gid)
 		}
 		changed, err := establishAgentBrowserCATrust(context.Background(), env)
 		if !changed || err == nil || !strings.Contains(err.Error(), "chmod") || !strings.Contains(err.Error(), nssDatabaseFile) {
@@ -548,12 +569,12 @@ func TestOwnNSSFilesFailurePaths(t *testing.T) {
 	if err := os.WriteFile(missing, []byte("db"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalChown := env.lchown
-	env.lchown = func(path string, uid, gid int) error {
+	originalOwn := env.ownLeafNoFollow
+	env.ownLeafNoFollow = func(path string, mode os.FileMode, uid, gid int) error {
 		if filepath.Base(path) == nssDatabaseFile {
 			return errors.New("chown denied")
 		}
-		return originalChown(path, uid, gid)
+		return originalOwn(path, mode, uid, gid)
 	}
 	if err := ownNSSFiles(env, nss.db, 123, 456); err == nil || !strings.Contains(err.Error(), "chown denied") {
 		t.Fatalf("chown error = %v", err)
@@ -603,10 +624,10 @@ func TestEstablishBrowserCATrustRemainingFailures(t *testing.T) {
 	})
 
 	t.Run("marker write failure", func(t *testing.T) {
-		env, nss := newBrowserCAEnv(t)
+		env, _ := newBrowserCAEnv(t)
 		originalWrite := env.writeFile
 		env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
-			if path == browserCAMarkerPath(nss.db) {
+			if path == browserCAMarkerPath(env) {
 				return errors.New("marker denied")
 			}
 			return originalWrite(path, contents, mode)
@@ -810,7 +831,7 @@ func TestBrowserCAStepRollbackRemovesOnlyManagedTrust(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(nss.db, nssDatabaseFile)); err != nil {
 		t.Fatalf("shared NSS database was removed: %v", err)
 	}
-	if _, err := os.Stat(browserCAMarkerPath(nss.db)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(browserCAMarkerPath(env)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ownership marker survived rollback: %v", err)
 	}
 }
@@ -861,4 +882,21 @@ func TestActionRemoveBrowserCATrustRemovesExactManagedCA(t *testing.T) {
 	if _, ok := nss.entries[browserCANSSNickname]; ok {
 		t.Fatal("exact managed CA survived removal")
 	}
+}
+
+// testBrowserCAFingerprint derives the fingerprint the ownership marker must
+// carry, from the same export the production path reads. Hardcoding a literal
+// here would let the marker and the certificate drift apart while every test
+// still passed.
+func testBrowserCAFingerprint(t *testing.T, env *installEnv) string {
+	t.Helper()
+	pem, err := os.ReadFile(filepath.Clean(env.caExportPath))
+	if err != nil {
+		t.Fatalf("read CA export for fingerprint: %v", err)
+	}
+	fingerprint, err := firstCertFingerprint(pem)
+	if err != nil {
+		t.Fatalf("fingerprint CA export: %v", err)
+	}
+	return fingerprint
 }

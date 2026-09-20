@@ -45,9 +45,14 @@ type installEnv struct {
 	mkdirAll   func(path string, mode os.FileMode) error
 	chown      func(path string, uid, gid int) error
 	lchown     func(path string, uid, gid int) error
-	rename     func(oldPath, newPath string) error
-	chmod      func(path string, mode os.FileMode) error
-	symlink    func(target, linkPath string) error
+	// ownLeafNoFollow applies mode and ownership through a single O_NOFOLLOW
+	// descriptor. It is a seam so tests can run unprivileged; production must
+	// keep the descriptor-based implementation, because a path-based chmod in
+	// an agent-owned directory is redirectable by a swapped symlink.
+	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
+	rename          func(oldPath, newPath string) error
+	chmod           func(path string, mode os.FileMode) error
+	symlink         func(target, linkPath string) error
 
 	// lookupUser resolves system users by name. Used to translate the
 	// configured proxy/agent user names into numeric UIDs for nft rules
@@ -168,6 +173,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		mkdirAll:                    os.MkdirAll,
 		chown:                       os.Chown,
 		lchown:                      os.Lchown,
+		ownLeafNoFollow:             applyAgentOwnershipNoFollow,
 		rename:                      os.Rename,
 		chmod:                       os.Chmod,
 		symlink:                     os.Symlink,

@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -163,32 +164,53 @@ func inspectBrowserCA(ctx context.Context, run runCommand, family, db, wantFinge
 	}, nil
 }
 
-func browserCAMarkerPath(db string) string { return filepath.Join(db, browserCAMarkerFile) }
+// browserCAMarkerPath keeps the ownership marker in the ROOT-OWNED managed
+// directory, never inside the agent's own NSS database. The marker decides
+// whether uninstall may remove trust material, so a marker the contained agent
+// can create is a marker the agent can use to steer a privileged removal: it
+// could forge one for a database Pipelock never touched, or for operator-owned
+// trust, and rollback would act on it.
+func browserCAMarkerPath(env *installEnv) string {
+	return filepath.Join(env.configDir, "contain", browserCAMarkerFile)
+}
 
-func markerOwnedBy(env *installEnv, db string) (bool, error) {
-	data, err := env.readFile(browserCAMarkerPath(db))
+// browserCAMarkerBody binds the marker to BOTH the database it describes and
+// the exact certificate installed there. Either alone is insufficient: a body
+// that names only the path still authorizes removing whatever certificate now
+// sits under the nickname, and a body that names only the fingerprint
+// authorizes acting on a different database.
+func browserCAMarkerBody(db, fingerprint string) []byte {
+	return []byte("managed\n" + db + "\n" + fingerprint + "\n")
+}
+
+func markerOwnedBy(env *installEnv, db, fingerprint string) (bool, error) {
+	data, err := env.readFile(browserCAMarkerPath(env))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read browser CA ownership marker: %w", err)
 	}
-	if string(data) != "managed\n" {
-		return false, fmt.Errorf("browser CA ownership marker in %s is invalid; refusing to change trust state", db)
+	want := browserCAMarkerBody(db, fingerprint)
+	if !bytes.Equal(data, want) {
+		return false, fmt.Errorf("browser CA ownership marker does not describe %s with the current Pipelock CA; refusing to change trust state", db)
 	}
 	return true, nil
 }
 
-func writeBrowserCAMarker(env *installEnv, db string) error {
-	path := browserCAMarkerPath(db)
-	if err := env.writeFile(path, []byte("managed\n"), 0o600); err != nil {
+func writeBrowserCAMarker(env *installEnv, db, fingerprint string) error {
+	path := browserCAMarkerPath(env)
+	if err := env.mkdirAll(filepath.Dir(path), modeDirSystem); err != nil {
+		return fmt.Errorf("create managed directory for browser CA ownership marker: %w", err)
+	}
+	if err := env.writeFile(path, browserCAMarkerBody(db, fingerprint), 0o600); err != nil {
 		return fmt.Errorf("write browser CA ownership marker: %w", err)
 	}
 	return nil
 }
 
-func removeBrowserCAMarker(env *installEnv, db string) error {
-	err := env.removeFile(browserCAMarkerPath(db))
+func removeBrowserCAMarker(env *installEnv) error {
+	err := env.removeFile(browserCAMarkerPath(env))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove browser CA ownership marker: %w", err)
 	}
@@ -201,11 +223,12 @@ func ownNSSFiles(env *installEnv, db string, uid, gid int) error {
 		if err := ensureAgentConfigLeaf(env, path); err != nil {
 			return err
 		}
-		if err := env.chmod(path, 0o600); err != nil {
-			return fmt.Errorf("chmod %s: %w", path, err)
-		}
-		if err := env.lchown(path, uid, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", path, err)
+		// Apply mode and ownership through a single O_NOFOLLOW descriptor. A
+		// path-based chmod here would resolve the leaf again, and the directory
+		// belongs to the contained agent, so a symlink swapped in after the
+		// check above would redirect this privileged change onto another file.
+		if err := env.ownLeafNoFollow(path, 0o600, uid, gid); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -246,14 +269,14 @@ func establishAgentBrowserCATrust(ctx context.Context, env *installEnv) (bool, e
 			if !state.serverTrust {
 				return false, fmt.Errorf("pipelock CA is present in %s with SSL trust %q, not C; refusing to overwrite operator-managed trust", db, state.trust)
 			}
-			_, err = markerOwnedBy(env, db)
+			_, err = markerOwnedBy(env, db, fingerprint)
 			return false, err
 		}
 	} else if _, err := runBrowserCertutil(ctx, env.runCmd, env.platformFamily, "-d", "sql:"+db, "-N", "--empty-password"); err != nil {
 		return true, fmt.Errorf("initialize NSS database %s: %w", db, err)
 	}
 
-	if err := writeBrowserCAMarker(env, db); err != nil {
+	if err := writeBrowserCAMarker(env, db, fingerprint); err != nil {
 		return true, err
 	}
 	if _, err := runBrowserCertutil(ctx, env.runCmd, env.platformFamily, "-d", "sql:"+db, "-A", "-t", browserCATrustArgs, "-n", browserCANSSNickname, "-i", caPath); err != nil {
@@ -277,7 +300,7 @@ func establishAgentBrowserCATrust(ctx context.Context, env *installEnv) (bool, e
 func removeManagedBrowserCA(ctx context.Context, env *installEnv) error {
 	db := agentNSSDatabaseDir(agentHomeDir(env), env.stat)
 	if !nssDatabaseExists(env.stat, db) {
-		return removeBrowserCAMarker(env, db)
+		return removeBrowserCAMarker(env)
 	}
 	caPEM, err := env.readFile(filepath.Clean(env.caExportPath))
 	if err != nil {
@@ -287,7 +310,7 @@ func removeManagedBrowserCA(ctx context.Context, env *installEnv) error {
 	if err != nil {
 		return fmt.Errorf("parse Pipelock CA before removing browser trust: %w", err)
 	}
-	owned, err := markerOwnedBy(env, db)
+	owned, err := markerOwnedBy(env, db, fingerprint)
 	if err != nil || !owned {
 		return err
 	}
@@ -306,7 +329,7 @@ func removeManagedBrowserCA(ctx context.Context, env *installEnv) error {
 			return fmt.Errorf("remove Pipelock CA from %s: %w", db, err)
 		}
 	}
-	return removeBrowserCAMarker(env, db)
+	return removeBrowserCAMarker(env)
 }
 
 func stepEstablishBrowserCATrust() step {

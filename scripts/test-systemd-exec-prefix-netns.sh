@@ -54,6 +54,19 @@ run_probe() {
     local unit=$3
     local output=$4
 
+    # Pre-create the capture file owned by the agent. A "+" pre-start runs as
+    # ROOT, so it would otherwise create this file root-owned and the main
+    # process, which runs as the agent, could not append to it. The unit would
+    # then fail for a reason that has nothing to do with the namespace question
+    # being measured.
+    : > "$output"
+    chown "$agent_user" "$output"
+    chmod 0600 "$output"
+
+    # A failed unit is a RESULT here, not an error: the whole point is to learn
+    # what each prefix does. Without this, set -e aborts before the verdict
+    # prints and the script looks like it hung.
+    local rc=0
     systemd-run \
         --wait \
         --collect \
@@ -64,9 +77,9 @@ run_probe() {
         --property=PrivateNetwork=true \
         --property="JoinsNamespaceOf=$target.service" \
         --property="ExecStartPre=${prefix}/bin/sh -c 'printf PRE_EUID= > $output; id -u >> $output; printf PRE_NETNS= >> $output; readlink /proc/self/ns/net >> $output'" \
-        /bin/sh -c "printf MAIN_EUID= >> '$output'; id -u >> '$output'; printf MAIN_NETNS= >> '$output'; readlink /proc/self/ns/net >> '$output'" >/dev/null
+        /bin/sh -c "printf MAIN_EUID= >> '$output'; id -u >> '$output'; printf MAIN_NETNS= >> '$output'; readlink /proc/self/ns/net >> '$output'" >/dev/null || rc=$?
 
-    echo "$label raw result:"
+    echo "$label raw result: (unit exit $rc)"
     sed 's/^/  /' "$output"
 }
 
@@ -74,6 +87,13 @@ classify() {
     local observed=$1
     local target_ns=$2
     local host_ns=$3
+    # An absent measurement must not present as a definite verdict. If the
+    # probe never wrote its namespace, the honest answer is that we do not
+    # know, not that it was somewhere other than the target.
+    if [[ -z $observed ]]; then
+        printf 'UNKNOWN_NOT_CAPTURED'
+        return
+    fi
     if [[ $observed == "$target_ns" ]]; then
         printf 'INSIDE'
     elif [[ $observed == "$host_ns" ]]; then

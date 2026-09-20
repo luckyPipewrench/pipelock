@@ -222,7 +222,10 @@ func decodeLikelyUTF16ResponseBody(ctx context.Context, data []byte) (string, bo
 		if len(sample) > 4096 {
 			sample = sample[:4096]
 		}
-		if len(sample) < 4 || len(sample)%2 != 0 {
+		if len(sample)%2 != 0 {
+			sample = sample[:len(sample)-1]
+		}
+		if len(sample) < 4 {
 			return "", false, nil
 		}
 		var evenNULs, oddNULs int
@@ -253,9 +256,6 @@ func decodeLikelyUTF16ResponseBody(ctx context.Context, data []byte) (string, bo
 		return "", false, nil
 	}
 	if len(encoded)%2 != 0 {
-		if offset == 0 {
-			return "", false, nil
-		}
 		encoded = encoded[:len(encoded)-1]
 	}
 	readUnit := func(i int) uint16 {

@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,8 @@ func TestContainedNetworkNamespaceUnits(t *testing.T) {
 	for _, want := range []string{
 		"PrivateNetwork=true",
 		"ExecStart=/usr/bin/sleep infinity",
+		"ExecStartPost=/bin/sh -c '/usr/bin/readlink /proc/self/ns/net > " + containedNamespaceIdentityPath + "'",
+		"RuntimeDirectory=pipelock-contain",
 		"NoNewPrivileges=true",
 	} {
 		if !strings.Contains(namespace, want) {
@@ -372,6 +376,9 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 					statusFail: "host loopback reachable",
 				}[tt.boundaryStatus]
 			}
+			env.agentProcessNetnsProbe = func(context.Context, *probeEnv, string) (string, string) {
+				return statusPass, "live agent processes use managed namespace"
+			}
 
 			status, detail := probeAgentNetworkNamespace(context.Background(), env)
 			if status != tt.wantStatus || !strings.Contains(detail, tt.wantDetail) {
@@ -449,6 +456,212 @@ func TestProbeNetworkNamespaceBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProbeAgentProcessNamespaces(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		namespaces map[string]string
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:       "all agent processes use anchor",
+			namespaces: map[string]string{"101": "net:[200]", "102": "net:[200]"},
+			wantStatus: statusPass,
+			wantDetail: "2 live pipelock-agent process(es)",
+		},
+		{
+			name:       "one stale service uses host namespace",
+			namespaces: map[string]string{"101": "net:[200]", "102": "net:[100]"},
+			wantStatus: statusFail,
+			wantDetail: "pid 102",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			procRoot := t.TempDir()
+			for pid, namespace := range tc.namespaces {
+				pidRoot := filepath.Join(procRoot, pid)
+				if err := os.MkdirAll(filepath.Join(pidRoot, "ns"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(pidRoot, "status"), []byte("Name:\tagent\nUid:\t987\t987\t987\t987\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(pidRoot, "stat"), procStatFixture(pid, "12345"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(namespace, filepath.Join(pidRoot, "ns", "net")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			otherRoot := filepath.Join(procRoot, "201")
+			if err := os.MkdirAll(otherRoot, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(otherRoot, "status"), []byte("Uid:\t1000\t1000\t1000\t1000\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			env := &probeEnv{
+				agentUserName: "pipelock-agent",
+				procRoot:      procRoot,
+				lookupUser: func(string) (*user.User, error) {
+					return &user.User{Uid: "987", Username: "pipelock-agent"}, nil
+				},
+				readDir:  os.ReadDir,
+				readFile: os.ReadFile,
+				readLink: os.Readlink,
+			}
+			status, detail := probeAgentProcessNamespaces(context.Background(), env, "net:[200]")
+			if status != tc.wantStatus || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("probeAgentProcessNamespaces() = (%q, %q), want status %q detail containing %q", status, detail, tc.wantStatus, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestProbeAgentProcessNamespacesFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	base := func() *probeEnv {
+		return &probeEnv{
+			agentUserName: "pipelock-agent",
+			procRoot:      "/proc",
+			lookupUser: func(string) (*user.User, error) {
+				return &user.User{Uid: "987", Username: "pipelock-agent"}, nil
+			},
+			readDir: func(string) ([]os.DirEntry, error) { return nil, nil },
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*probeEnv)
+		wantErr string
+	}{
+		{name: "user lookup", mutate: func(env *probeEnv) {
+			env.lookupUser = func(string) (*user.User, error) { return nil, errors.New("lookup failed") }
+		}, wantErr: "lookup failed"},
+		{name: "invalid uid", mutate: func(env *probeEnv) {
+			env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "bad"}, nil }
+		}, wantErr: "invalid uid"},
+		{name: "process listing", mutate: func(env *probeEnv) {
+			env.readDir = func(string) ([]os.DirEntry, error) { return nil, errors.New("listing failed") }
+		}, wantErr: "listing failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := base()
+			tc.mutate(env)
+			status, detail := probeAgentProcessNamespaces(context.Background(), env, "net:[200]")
+			if status != statusFail || !strings.Contains(detail, tc.wantErr) {
+				t.Fatalf("probeAgentProcessNamespaces() = (%q, %q), want failure containing %q", status, detail, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestProbeAgentProcessNamespacesSkipsRecycledPID(t *testing.T) {
+	t.Parallel()
+
+	procRoot := t.TempDir()
+	pidRoot := filepath.Join(procRoot, "101")
+	if err := os.MkdirAll(filepath.Join(pidRoot, "ns"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	status := []byte("Name:\tagent\nUid:\t987\t987\t987\t987\n")
+	if err := os.WriteFile(filepath.Join(pidRoot, "status"), status, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("net:[200]", filepath.Join(pidRoot, "ns", "net")); err != nil {
+		t.Fatal(err)
+	}
+	statReads := 0
+	env := &probeEnv{
+		agentUserName: "pipelock-agent",
+		procRoot:      procRoot,
+		lookupUser: func(string) (*user.User, error) {
+			return &user.User{Uid: "987", Username: "pipelock-agent"}, nil
+		},
+		readDir: os.ReadDir,
+		readFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, "/stat") {
+				statReads++
+				return procStatFixture("101", strconv.Itoa(100+statReads)), nil
+			}
+			return os.ReadFile(path) //nolint:gosec // fixture paths stay under t.TempDir
+		},
+		readLink: os.Readlink,
+	}
+
+	gotStatus, detail := probeAgentProcessNamespaces(context.Background(), env, "net:[200]")
+	if gotStatus != statusPass || !strings.Contains(detail, "0 live pipelock-agent process(es)") {
+		t.Fatalf("probeAgentProcessNamespaces() = (%q, %q), want recycled pid skipped", gotStatus, detail)
+	}
+}
+
+func TestEffectiveUIDFromProcStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		status  string
+		want    int
+		wantErr string
+	}{
+		{name: "valid", status: "Name:\tagent\nUid:\t987\t988\t989\t990\n", want: 988},
+		{name: "missing", status: "Name:\tagent\n", wantErr: "missing Uid"},
+		{name: "wrong field count", status: "Uid:\t987\t988\n", wantErr: "malformed Uid"},
+		{name: "invalid effective uid", status: "Uid:\t987\tbad\t989\t990\n", wantErr: "malformed effective uid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := effectiveUIDFromProcStatus([]byte(tc.status))
+			if tc.wantErr == "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("effectiveUIDFromProcStatus() = (%d, %v), want (%d, nil)", got, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("effectiveUIDFromProcStatus() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestProcessStartTimeFromProcStat(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		stat    []byte
+		want    string
+		wantErr string
+	}{
+		{name: "valid with spaces and parenthesis in command", stat: procStatFixture("101", "12345"), want: "12345"},
+		{name: "missing command terminator", stat: []byte("101 agent"), wantErr: "missing command terminator"},
+		{name: "missing start time", stat: []byte("101 (agent) S 0"), wantErr: "missing start time"},
+		{name: "invalid start time", stat: procStatFixture("101", "invalid"), wantErr: "malformed stat start time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := processStartTimeFromProcStat(tc.stat)
+			if tc.wantErr == "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("processStartTimeFromProcStat() = (%q, %v), want (%q, nil)", got, err, tc.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("processStartTimeFromProcStat() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func procStatFixture(pid, startTime string) []byte {
+	return []byte(pid + " (agent worker)) S" + strings.Repeat(" 0", 18) + " " + startTime + "\n")
 }
 
 func TestDeclaredLoopbackForwardersInstallAndRevoke(t *testing.T) {

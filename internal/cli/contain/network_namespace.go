@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -211,6 +212,7 @@ const (
 	containedNetworkNamespaceUnit   = "pipelock-agent-netns.service"
 	containedProxyForwarderUnit     = "pipelock-agent-proxy"
 	containedNamespaceForwarderUnit = "pipelock-agent-netns-forward.service"
+	containedNamespaceIdentityPath  = "/run/pipelock-contain/agent-netns.id"
 	// containedDoorwaySocketPath is the one filesystem object the contained
 	// namespace may cross. It sits directly in /run rather than a subdirectory
 	// so the socket unit does not depend on anything else having created a
@@ -240,8 +242,12 @@ Before=pipelock-agent-netns-forward.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/sleep infinity
+ExecStartPost=/bin/sh -c '/usr/bin/readlink /proc/self/ns/net > /run/pipelock-contain/agent-netns.id'
 PrivateNetwork=true
 NoNewPrivileges=true
+RuntimeDirectory=pipelock-contain
+RuntimeDirectoryMode=0755
+UMask=0022
 `
 }
 
@@ -340,10 +346,169 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		return statusFail, fmt.Sprintf("contained network namespace %s resolves to the host network namespace", namespaceUnit)
 	}
 
+	var boundaryStatus, boundaryDetail string
 	if env.networkNamespaceProbe != nil {
-		return env.networkNamespaceProbe(ctx, env)
+		boundaryStatus, boundaryDetail = env.networkNamespaceProbe(ctx, env)
+	} else {
+		boundaryStatus, boundaryDetail = probeNetworkNamespaceBoundary(ctx, env)
 	}
-	return probeNetworkNamespaceBoundary(ctx, env)
+	if boundaryStatus != statusPass {
+		return boundaryStatus, boundaryDetail
+	}
+	var processStatus, processDetail string
+	if env.agentProcessNetnsProbe != nil {
+		processStatus, processDetail = env.agentProcessNetnsProbe(ctx, env, agentNamespace)
+	} else {
+		processStatus, processDetail = probeAgentProcessNamespaces(ctx, env, agentNamespace)
+	}
+	if processStatus != statusPass {
+		return processStatus, processDetail
+	}
+	return statusPass, boundaryDetail + "; " + processDetail
+}
+
+// probeAgentProcessNamespaces catches services installed before the namespace
+// feature, or custom services whose User= is correct but whose network
+// namespace properties were never updated. Every live process under the
+// managed agent UID must occupy the anchor namespace; merely finding the unit
+// files healthy does not establish that runtime fact.
+func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespace string) (string, string) {
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return statusFail, fmt.Sprintf("lookup %s for live namespace audit: %v", env.agentUserName, err)
+	}
+	agentUID, err := strconv.Atoi(agent.Uid)
+	if err != nil || agentUID <= 0 {
+		return statusFail, fmt.Sprintf("%s has invalid uid %q for live namespace audit", env.agentUserName, agent.Uid)
+	}
+	procRoot := env.procRoot
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	if env.readDir == nil {
+		return statusFail, "live agent process namespace audit is unavailable"
+	}
+	entries, err := env.readDir(procRoot)
+	if err != nil {
+		return statusFail, fmt.Sprintf("list live processes for namespace audit: %v", err)
+	}
+	checked := 0
+	var outside []string
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 1 || !entry.IsDir() {
+			continue
+		}
+		statusPath := filepath.Join(procRoot, entry.Name(), "status")
+		status, err := env.readFile(statusPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return statusFail, fmt.Sprintf("read process %d identity for namespace audit: %v", pid, err)
+		}
+		effectiveUID, err := effectiveUIDFromProcStatus(status)
+		if err != nil {
+			return statusFail, fmt.Sprintf("read process %d identity for namespace audit: %v", pid, err)
+		}
+		if effectiveUID != agentUID {
+			continue
+		}
+		statPath := filepath.Join(procRoot, entry.Name(), "stat")
+		stat, err := env.readFile(statPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return statusFail, fmt.Sprintf("read process %d start time for namespace audit: %v", pid, err)
+		}
+		startTime, err := processStartTimeFromProcStat(stat)
+		if err != nil {
+			return statusFail, fmt.Sprintf("read process %d start time for namespace audit: %v", pid, err)
+		}
+		namespace, err := env.readLink(filepath.Join(procRoot, entry.Name(), "ns", "net"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return statusFail, fmt.Sprintf("read process %d network namespace: %v", pid, err)
+		}
+		// Re-read identity and start time after the namespace. The effective
+		// UID alone is insufficient because Linux may recycle a PID for a new
+		// process under the same account.
+		status, err = env.readFile(statusPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return statusFail, fmt.Sprintf("re-read process %d identity for namespace audit: %v", pid, err)
+		}
+		effectiveUID, err = effectiveUIDFromProcStatus(status)
+		if err != nil {
+			return statusFail, fmt.Sprintf("re-read process %d identity for namespace audit: %v", pid, err)
+		}
+		if effectiveUID != agentUID {
+			continue
+		}
+		stat, err = env.readFile(statPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return statusFail, fmt.Sprintf("re-read process %d start time for namespace audit: %v", pid, err)
+		}
+		currentStartTime, err := processStartTimeFromProcStat(stat)
+		if err != nil {
+			return statusFail, fmt.Sprintf("re-read process %d start time for namespace audit: %v", pid, err)
+		}
+		if currentStartTime != startTime {
+			continue
+		}
+		checked++
+		if namespace != agentNamespace {
+			outside = append(outside, strconv.Itoa(pid))
+		}
+	}
+	if len(outside) > 0 {
+		return statusFail, fmt.Sprintf("%s has live process(es) outside the managed network namespace (pid %s); update or stop the stale agent service", env.agentUserName, strings.Join(outside, ", "))
+	}
+	return statusPass, fmt.Sprintf("%d live %s process(es) use the managed network namespace", checked, env.agentUserName)
+}
+
+func processStartTimeFromProcStat(stat []byte) (string, error) {
+	// Field 2 (comm) is parenthesized and may contain spaces or parentheses.
+	// Splitting after its final ')' leaves fields 3 onward, with starttime
+	// (field 22) at zero-based index 19.
+	closeParen := bytes.LastIndexByte(stat, ')')
+	if closeParen < 0 {
+		return "", errors.New("malformed stat: missing command terminator")
+	}
+	fields := strings.Fields(string(stat[closeParen+1:]))
+	if len(fields) <= 19 {
+		return "", errors.New("malformed stat: missing start time")
+	}
+	if _, err := strconv.ParseUint(fields[19], 10, 64); err != nil {
+		return "", fmt.Errorf("malformed stat start time %q", fields[19])
+	}
+	return fields[19], nil
+}
+
+func effectiveUIDFromProcStatus(status []byte) (int, error) {
+	for _, line := range strings.Split(string(status), "\n") {
+		if !strings.HasPrefix(line, "Uid:") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "Uid:"))
+		if len(fields) != 4 {
+			return 0, fmt.Errorf("malformed Uid field %q", line)
+		}
+		uid, err := strconv.Atoi(fields[1])
+		if err != nil || uid < 0 {
+			return 0, fmt.Errorf("malformed effective uid in %q", line)
+		}
+		return uid, nil
+	}
+	return 0, errors.New("missing Uid field")
 }
 
 func probeNetworkNamespaceBoundary(ctx context.Context, env *probeEnv) (string, string) {

@@ -175,23 +175,26 @@ type probeEnv struct {
 	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
 	// run produced, even when --posture-output points off the default path.
 	postureProofPath string
+	procRoot         string
 
 	now func() time.Time
 
-	runCmd                runCommand
-	dropCounter           dropCounterFunc
-	dialCtx               dialFunc
-	wait                  waitFunc
-	lookupUser            lookupUserFunc
-	groupIDs              groupIDsFunc
-	stat                  func(path string) (os.FileInfo, error)
-	readFile              func(path string) ([]byte, error)
-	readLink              func(path string) (string, error)
-	selfPath              func() (string, error)
-	hashFile              func(path string) (string, error)
-	privateTmpProbe       func(context.Context, *probeEnv) (string, string)
-	networkNamespaceProbe func(context.Context, *probeEnv) (string, string)
-	currentCA             func(context.Context, *probeEnv) ([]byte, error)
+	runCmd                 runCommand
+	dropCounter            dropCounterFunc
+	dialCtx                dialFunc
+	wait                   waitFunc
+	lookupUser             lookupUserFunc
+	groupIDs               groupIDsFunc
+	stat                   func(path string) (os.FileInfo, error)
+	readFile               func(path string) ([]byte, error)
+	readDir                func(path string) ([]os.DirEntry, error)
+	readLink               func(path string) (string, error)
+	selfPath               func() (string, error)
+	hashFile               func(path string) (string, error)
+	privateTmpProbe        func(context.Context, *probeEnv) (string, string)
+	networkNamespaceProbe  func(context.Context, *probeEnv) (string, string)
+	agentProcessNetnsProbe func(context.Context, *probeEnv, string) (string, string)
+	currentCA              func(context.Context, *probeEnv) ([]byte, error)
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -228,6 +231,7 @@ func defaultProbeEnv() *probeEnv {
 		configPath:                    filepath.Join(defaultConfigDir, "pipelock.yaml"),
 		pipelockTarget:                defaultPipelockTarget,
 		verifyRunningImage:            true,
+		procRoot:                      "/proc",
 		now:                           time.Now,
 		runCmd:                        realRunCommand,
 		dropCounter:                   readContainmentDropCounter,
@@ -237,6 +241,7 @@ func defaultProbeEnv() *probeEnv {
 		groupIDs:                      realGroupIDs,
 		stat:                          os.Stat,
 		readFile:                      os.ReadFile,
+		readDir:                       os.ReadDir,
 		readLink:                      os.Readlink,
 		selfPath:                      os.Executable,
 		hashFile:                      sha256HexOfFile,

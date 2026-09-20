@@ -3935,6 +3935,9 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.networkNamespaceProbe = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test network namespace boundary passed"
 	}
+	env.agentProcessNetnsProbe = func(context.Context, *probeEnv, string) (string, string) {
+		return statusPass, "test live agent process namespaces passed"
+	}
 	env.operatorUser = testOperatorUser
 	env.nftRulesPath = filepath.Join(t.TempDir(), "50-pipelock-containment.nft")
 	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")

@@ -2822,6 +2822,12 @@ func renderLaunchWrapper(env *installEnv) string {
 		`    exit 8`,
 		`fi`,
 		"",
+		// A configured JoinsNamespaceOf= relationship is not proof that
+		// systemd actually placed this process in the managed namespace. The
+		// final unprivileged launcher checks the kernel namespace identities
+		// immediately before exec, closing both stale-unit and late-load gaps.
+		shellQuote(env.pipelockTarget) + " contain assert-agent-netns --agent-user " + shellQuote(env.agentUserName) + " --proxy-port " + strconv.Itoa(env.proxyPort),
+		"",
 		// The runtime contract (proxy + CA across tool ecosystems, plus the
 		// node undici shim) is rendered from the single source of truth in
 		// runtime_contract.go so plk-launch, the profile.d script, and the

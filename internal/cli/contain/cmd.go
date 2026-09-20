@@ -55,6 +55,7 @@ planned actions without touching state.`,
 		caRefreshCmd(),
 		reloadNFTRulesCmd(),
 		netnsForwardCmd(),
+		netnsAssertCmd(),
 		upgradeCmd(),
 	)
 

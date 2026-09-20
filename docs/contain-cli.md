@@ -224,7 +224,7 @@ pipelock contain verify
 | 15 | `workspace_access` (conditional) | Present when `--workspace` paths are passed or recorded grants exist: each path is readable/traversable by the agent user, and no recorded grant has expired. Its published number remains stable. |
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
-| 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, and the namespace proxy socket reaches Pipelock. |
+| 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, the namespace proxy socket reaches Pipelock, and every live process under the managed agent UID occupies that same namespace. |
 | 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`. It reports trust, not provenance: a matching certificate an operator added themselves passes, because the agent can browse either way. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Install and rollback consult the ownership marker so rollback removes only what install added. Probes 17 and 18 are published by `contain run`, not `verify`. |
 
 ### Managed metrics invariant
@@ -297,19 +297,36 @@ contain install` as root.
 
 An exclusive lock prevents `contain install` and `contain reload-nft-rules` from reconciling the same config at once. The root-owned lock file lives beside the persisted rules under `/etc/nftables.d/`. Reconciliation rejects a symlink, named pipe, or non-root owner at that path.
 
-`contain verify` compares the declared set with the root-owned forwarder inventory and each managed unit file. It requires every declared socket to be persistently enabled and active. Its live namespace probe also fails when the namespace is missing, shares the host network namespace, reaches a host loopback canary, or can't reach the Pipelock proxy socket.
+`contain verify` compares the declared set with the root-owned forwarder inventory and each managed unit file. It requires every declared socket to be persistently enabled and active. The live namespace probe fails when the namespace is missing, shares the host network namespace, reaches a host loopback canary, can't reach the Pipelock proxy socket, or finds a managed-agent process outside the namespace. The process check catches older and custom services that run under the correct user but never entered the managed namespace.
 
 ### Launching a contained systemd service
 
-A long-running service enters the same namespace through `contain run`. Run the service itself as root and put the registered agent command after `--`:
+Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:
 
 ```ini
+[Unit]
+BindsTo=pipelock-agent-netns.service pipelock-agent-netns-forward.service
+After=pipelock-agent-netns.service pipelock-agent-netns-forward.service
+
 [Service]
-ExecStart=/usr/local/bin/pipelock contain run -- claude
+User=pipelock-agent
+Group=pipelock-agent
+PrivateNetwork=true
+JoinsNamespaceOf=pipelock-agent-netns.service
+PrivateTmp=true
+ExecStartPre=+/usr/bin/systemd-run --wait --collect --service-type=oneshot -- /usr/local/bin/pipelock contain run --dry-run -- agent-tool
+ExecStart=
+ExecStart=/usr/local/bin/plk-launch agent-tool
 Restart=on-failure
 ```
 
-`contain run` performs the normal preflight, then creates the transient `pipelock-agent` child with `PrivateNetwork=true` and `JoinsNamespaceOf=pipelock-agent-netns.service`. The static service doesn't need to choose or create a namespace itself. Don't set `User=pipelock-agent` on the outer service because `contain run` needs root to verify the host boundary and start the child under the managed identity.
+The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `PrivateNetwork=true` can create a separate empty namespace when no valid target is available, so it isn't enough on its own.
+
+The short-lived `ExecStartPre` command asks PID 1 to run the normal root preflight in a separate one-shot service. The `+` prefix grants root to that command only. The preflight exits before the agent starts and never receives agent input or output.
+
+Immediately before it executes the tool, `plk-launch` checks its user, its real kernel namespace identity, the interfaces visible in that namespace, and the Pipelock health endpoint. The root preflight and probe 21 also compare the managed namespace with the host and inspect every live process under the agent user. The service settings state the intended isolation. These checks prove the running process received it.
+
+This service arrangement doesn't emit the signed posture capsule or final workspace change statement produced by `contain run`. If you need those artifacts for each session, run `pipelock contain run -- agent-tool` from a root-owned outer service. That root process stays alive to supervise the child and produce the final statement. The two launch methods don't provide the same evidence.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

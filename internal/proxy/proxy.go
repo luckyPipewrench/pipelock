@@ -553,9 +553,16 @@ func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 // still arms script-data, so we must NOT call NextIsNotRawText and instead
 // collect until </script> like a normal start. SVG/MathML foreign self-closing
 // <script .../> does call NextIsNotRawText and records an empty body so a
-// following data script is not swallowed. foreignObject is an HTML integration
-// point; StartTag script in foreign content also calls NextIsNotRawText per
-// x/net/html parser rules.
+// following data script is not swallowed. StartTag script in foreign content
+// also calls NextIsNotRawText per x/net/html parser rules.
+//
+// Foreign content after NextIsNotRawText can expose nested StartTag script
+// tokens. Closing the outer at the nested start (before classifying) keeps a
+// nested application/json body from being swallowed into an outer executable
+// range. HTML integration points match x/net/html foreign.go: SVG
+// desc/title/foreignObject, MathML mi/mo/mn/ms/mtext, and annotation-xml when
+// encoding is text/html or application/xhtml+xml. SVG <title> also needs
+// NextIsNotRawText so the tokenizer does not arm RCDATA and hide children.
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
@@ -565,6 +572,38 @@ func findScriptElements(doc string) []scriptElement {
 	collecting := false
 	var attrs string
 	var elemStart, bodyStart int
+
+	beginScript := func(raw string, tokenStart, tokenEnd int, selfClosing bool) {
+		attrs = scriptAttrsFromStartRaw(raw, selfClosing)
+		elemStart = tokenStart
+		bodyStart = tokenEnd
+		inForeign := foreignDepth > 0 && htmlIntegration == 0
+		if selfClosing {
+			if inForeign {
+				// SVG/MathML foreign self-closing script: clear script-data and
+				// record an empty-body element so a following data script is seen.
+				z.NextIsNotRawText()
+				out = append(out, scriptElement{
+					attrs:     attrs,
+					body:      "",
+					bodyStart: bodyStart,
+					bodyEnd:   bodyStart,
+					elemStart: elemStart,
+					elemEnd:   tokenEnd,
+				})
+				collecting = false
+				return
+			}
+			// Bare HTML: self-closing flag is ignored (HTML5). Tokenizer stays
+			// in script-data; collect like a normal start until </script>.
+			collecting = true
+			return
+		}
+		if inForeign {
+			z.NextIsNotRawText()
+		}
+		collecting = true
+	}
 
 	for {
 		tt := z.Next()
@@ -594,22 +633,36 @@ func findScriptElements(doc string) []scriptElement {
 			name = z.Token().Data
 		}
 
-		// Track SVG/MathML foreign content. foreignObject is an HTML
-		// integration point (leave foreign on entry, re-enter on leave).
-		// Self-closing svg/math/foreignObject do not change depth.
+		// Track SVG/MathML foreign content and HTML / MathML text integration
+		// points (x/net/html foreign.go). Self-closing svg/math/integration
+		// tags do not change depth.
 		switch tt {
 		case html.StartTagToken:
 			switch name {
 			case "svg", "math":
 				foreignDepth++
-			case "foreignobject":
+			case "foreignobject", "desc", "title":
 				if foreignDepth > 0 {
+					// SVG <title> arms tokenizer RCDATA like HTML title; clear
+					// it in foreign content (parser always NextIsNotRawText for
+					// foreign start tags). Only needed while still foreign.
+					if name == "title" && htmlIntegration == 0 {
+						z.NextIsNotRawText()
+					}
+					htmlIntegration++
+				}
+			case "mi", "mo", "mn", "ms", "mtext":
+				if foreignDepth > 0 {
+					htmlIntegration++
+				}
+			case "annotation-xml":
+				if foreignDepth > 0 && annotationXMLEncodingIsHTMLIntegration(z) {
 					htmlIntegration++
 				}
 			}
 		case html.EndTagToken:
 			switch name {
-			case "foreignobject":
+			case "foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext", "annotation-xml":
 				if htmlIntegration > 0 {
 					htmlIntegration--
 				}
@@ -621,6 +674,21 @@ func findScriptElements(doc string) []scriptElement {
 		}
 
 		if collecting {
+			// Foreign script (after NextIsNotRawText) can contain nested
+			// StartTag/SelfClosing script tokens. Close the outer before the
+			// nested start so classification sees each element separately.
+			if (tt == html.StartTagToken || tt == html.SelfClosingTagToken) && name == "script" {
+				out = append(out, scriptElement{
+					attrs:     attrs,
+					body:      doc[bodyStart:tokenStart],
+					bodyStart: bodyStart,
+					bodyEnd:   tokenStart,
+					elemStart: elemStart,
+					elemEnd:   tokenStart,
+				})
+				beginScript(raw, tokenStart, tokenEnd, tt == html.SelfClosingTagToken)
+				continue
+			}
 			if tt == html.EndTagToken && name == "script" {
 				out = append(out, scriptElement{
 					attrs:     attrs,
@@ -638,39 +706,22 @@ func findScriptElements(doc string) []scriptElement {
 		if name != "script" || (tt != html.StartTagToken && tt != html.SelfClosingTagToken) {
 			continue
 		}
+		beginScript(raw, tokenStart, tokenEnd, tt == html.SelfClosingTagToken)
+	}
+}
 
-		selfClosing := tt == html.SelfClosingTagToken
-		attrs = scriptAttrsFromStartRaw(raw, selfClosing)
-		elemStart = tokenStart
-		bodyStart = tokenEnd
-
-		if selfClosing {
-			if foreignDepth > 0 && htmlIntegration == 0 {
-				// SVG/MathML foreign self-closing script: clear script-data and
-				// record an empty-body element so a following data script is seen.
-				z.NextIsNotRawText()
-				out = append(out, scriptElement{
-					attrs:     attrs,
-					body:      "",
-					bodyStart: bodyStart,
-					bodyEnd:   bodyStart,
-					elemStart: elemStart,
-					elemEnd:   tokenEnd,
-				})
-				continue
-			}
-			// Bare HTML: self-closing flag is ignored (HTML5). Tokenizer stays
-			// in script-data; collect like a normal start until </script>.
-			collecting = true
+// annotationXMLEncodingIsHTMLIntegration reports whether the current
+// annotation-xml start tag is an HTML integration point per HTML5 /
+// x/net/html (encoding text/html or application/xhtml+xml).
+func annotationXMLEncodingIsHTMLIntegration(z *html.Tokenizer) bool {
+	for _, a := range z.Token().Attr {
+		if a.Key != "encoding" {
 			continue
 		}
-
-		// SVG/MathML <script> is not HTML raw text (x/net/html foreign rules).
-		if foreignDepth > 0 && htmlIntegration == 0 {
-			z.NextIsNotRawText()
-		}
-		collecting = true
+		v := strings.TrimSpace(a.Val)
+		return strings.EqualFold(v, "text/html") || strings.EqualFold(v, "application/xhtml+xml")
 	}
+	return false
 }
 
 // rangeStartsInside reports whether a0 lies in any half-open [r0,r1) in ranges.

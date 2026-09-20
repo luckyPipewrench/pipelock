@@ -89,6 +89,15 @@ func (s *Server) teardownConductor(reason string) {
 		s.conductorLifeMu.Unlock()
 		return
 	}
+	// Publish strict denial before the stopped state, under the same lock
+	// used by consistency completion. A stale check already in flight may
+	// clear its own source after cancellation, so retain the independent gate
+	// until restart as well.
+	if s.conductorStaleStrictDeny.Load() && s.killswitch != nil {
+		const message = "conductor fleet entitlement lost under strict stale policy; denying all traffic (fail-closed)"
+		s.killswitch.SetConductorApplyFailure(true, message)
+		s.killswitch.SetConductorStale(true, message)
+	}
 	s.conductorDown.Store(true)
 	cancel := s.conductorCancel
 	wait := s.conductorWait
@@ -108,19 +117,6 @@ func (s *Server) teardownConductor(reason string) {
 	s.conductorAuditQueue = nil
 	s.conductorLifeMu.Unlock()
 
-	// Fail closed on strict stale policy BEFORE cancelling the pollers. The
-	// stale enforcer's ticker is about to stop and can never re-engage once the
-	// fleet entitlement is permanently gone; a strict follower whose active
-	// bundle later ages past grace would otherwise serve stale config forever.
-	// Engage the conductor_stale kill-switch source now so the deny is in place
-	// before the enforcer dies, closing the teardown fail-open window. This is an
-	// independent OR-composed source: it stays engaged regardless of any later
-	// clear of conductor_remote. Under continue_last_known_good the flag is false
-	// and the existing serve-last-config semantics are preserved.
-	if s.conductorStaleStrictDeny.Load() && s.killswitch != nil {
-		s.killswitch.SetConductorStale(true,
-			"conductor fleet entitlement lost under strict stale policy; denying all traffic (fail-closed)")
-	}
 	// Stop the follower pollers. Their Run loops return context.Canceled, which
 	// the Start error branches treat as a clean stop (no process-wide cancel).
 	if cancel != nil {

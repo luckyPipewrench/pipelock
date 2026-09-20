@@ -104,12 +104,20 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		}
 		if !isTextualResponseBody(body) {
 			if decoded, ok := decodeLikelyUTF16ResponseBody(body); ok {
-				result := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
-				if !result.Clean {
+				decodedResult := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
+				if !decodedResult.Clean {
 					// A decoded view cannot safely replace the encoded body.
-					result.TransformedContent = ""
-					return result
+					decodedResult.TransformedContent = ""
+					return decodedResult
 				}
+				rawResult := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+				rawResult.SuppressedMatches = append(decodedResult.SuppressedMatches, rawResult.SuppressedMatches...)
+				rawResult.ObservedCoreMatches = append(decodedResult.ObservedCoreMatches, rawResult.ObservedCoreMatches...)
+				if decodedResult.StegoDensity > rawResult.StegoDensity {
+					rawResult.StegoDensity = decodedResult.StegoDensity
+				}
+				rawResult.StegoDetected = decodedResult.StegoDetected || rawResult.StegoDetected
+				return rawResult
 			}
 			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
 		}
@@ -136,6 +144,11 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 
 func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
 	view := opaqueResponseTextView(body)
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return ResponseScanResult{Clean: false, ScanError: err.Error()}
+		}
+	}
 	if view == "" {
 		return ResponseScanResult{Clean: true}
 	}

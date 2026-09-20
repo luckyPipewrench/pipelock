@@ -736,8 +736,26 @@ func TestBrowserCATrustLifecycleWiring(t *testing.T) {
 	if ca < 0 || bundle < 0 || nft < 0 || bundle >= ca || ca >= nft {
 		t.Fatalf("browser CA step order bundle=%d browser=%d nft=%d", bundle, ca, nft)
 	}
-	if stepIndex(rollbackActions(rollbackOpts{}), "remove-agent-browser-ca-trust") < 0 {
+	rollback := rollbackActions(rollbackOpts{})
+	remove := stepIndex(rollback, "remove-agent-browser-ca-trust")
+	if remove < 0 {
 		t.Fatal("rollback does not remove managed browser CA trust")
+	}
+	// runUndo walks the slice in REVERSE, so a higher index executes earlier.
+	// Browser-trust removal recomputes the CA fingerprint from the export, so
+	// it has to execute before the restores put the pre-install bytes back,
+	// which means it has to sit at a higher index than both of them. Getting
+	// this backwards leaves the Pipelock CA trusted in the agent's browser
+	// after an uninstall, because the removal refuses on a fingerprint it can
+	// no longer match.
+	for _, name := range []string{"restore-pipelock CA export", "restore-combined CA bundle"} {
+		restore := stepIndex(rollback, name)
+		if restore < 0 {
+			t.Fatalf("rollback is missing %s", name)
+		}
+		if remove <= restore {
+			t.Fatalf("browser-trust removal index %d must exceed %s index %d so it executes first", remove, name, restore)
+		}
 	}
 }
 
@@ -917,4 +935,19 @@ func testBrowserCAFingerprint(t *testing.T, env *installEnv) string {
 		t.Fatalf("fingerprint CA export: %v", err)
 	}
 	return fingerprint
+}
+
+// TestDocumentedFixedProbeCountMatchesRegistry keeps the operator contract in
+// docs/contain-cli.md honest. The count is a code fact duplicated into prose,
+// so it drifts silently every time a probe is added; a reviewer caught exactly
+// that on the browser-CA probe. Nothing else compares the two.
+func TestDocumentedFixedProbeCountMatchesRegistry(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "contain-cli.md"))
+	if err != nil {
+		t.Fatalf("read contain-cli.md: %v", err)
+	}
+	want := fmt.Sprintf("It walks %d fixed probes", len(allProbes()))
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("docs/contain-cli.md does not state %q; the registry has %d fixed probes", want, len(allProbes()))
+	}
 }

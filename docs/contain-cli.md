@@ -198,9 +198,10 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 16 fixed probes (numbered 1–14
-and 16) plus the existing conditional workspace probe, numbered 15, when
-workspaces are configured. It prints pass / fail / skip / unknown per probe. Probe 16 temporarily creates and
+Verify normally makes no host changes. It walks 17 fixed probes (numbered 1–14,
+16, 19, and 20) plus the existing conditional workspace probe, numbered 15, when
+workspaces are configured. Probes 17 and 18 are published by `contain run`, not
+`verify`. It prints pass / fail / skip / unknown per probe. Probe 16 temporarily creates and
 removes one canary in each host temporary directory; it requires root to start
 the transient service and otherwise skips. Probe numbers are an operator
 contract; new probes are appended above the existing range rather than

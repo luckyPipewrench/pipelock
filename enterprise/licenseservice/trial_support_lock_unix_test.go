@@ -18,7 +18,7 @@ import (
 func TestAcquireTrialSupportLockSecuresAndRejectsInvalidFiles(t *testing.T) {
 	t.Run("regular file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "trial-support.lock")
-		if err := os.WriteFile(path, nil, 0o666); err != nil {
+		if err := os.WriteFile(path, nil, 0o666); err != nil { //nolint:gosec // intentionally permissive fixture; the lock must tighten it
 			t.Fatalf("create permissive lock file: %v", err)
 		}
 		release, err := acquireTrialSupportLock(path)

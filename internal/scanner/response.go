@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -129,7 +130,7 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 			}
 			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
 		}
-		return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+		return s.scanTextualResponseBody(ctx, body, suppressTarget, suppress)
 	}
 	if err != nil {
 		return ResponseScanResult{
@@ -148,6 +149,28 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		result.TransformedContent = ""
 	}
 	return result
+}
+
+func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	raw := string(body)
+	rawResult := s.ScanResponseWithSuppress(ctx, raw, suppressTarget, suppress)
+	if !rawResult.Clean || utf8.ValidString(raw) {
+		return rawResult
+	}
+
+	separatorView := string(bytes.ToValidUTF8(body, []byte(" ")))
+	separatorResult := s.ScanResponseWithSuppress(ctx, separatorView, suppressTarget, suppress)
+	separatorResult.SuppressedMatches = append(rawResult.SuppressedMatches, separatorResult.SuppressedMatches...)
+	separatorResult.ObservedCoreMatches = append(rawResult.ObservedCoreMatches, separatorResult.ObservedCoreMatches...)
+	if rawResult.StegoDensity > separatorResult.StegoDensity {
+		separatorResult.StegoDensity = rawResult.StegoDensity
+	}
+	separatorResult.StegoDetected = rawResult.StegoDetected || separatorResult.StegoDetected
+	if !separatorResult.Clean {
+		// A normalized separator view cannot safely transform the original bytes.
+		separatorResult.TransformedContent = ""
+	}
+	return separatorResult
 }
 
 func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
@@ -220,8 +243,14 @@ func decodeLikelyUTF16ResponseBody(ctx context.Context, data []byte) (string, bo
 	}
 
 	encoded := data[offset:]
-	if len(encoded) == 0 || len(encoded)%2 != 0 {
+	if len(encoded) == 0 {
 		return "", false, nil
+	}
+	if len(encoded)%2 != 0 {
+		if offset == 0 {
+			return "", false, nil
+		}
+		encoded = encoded[:len(encoded)-1]
 	}
 	readUnit := func(i int) uint16 {
 		if littleEndian {

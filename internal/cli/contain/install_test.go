@@ -199,8 +199,21 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		// chown/lchown can't really run under non-root tests; no-op so the
 		// orchestration progresses. Tests that need to assert ownership calls
 		// can substitute their own hooks.
-		chown:   func(string, int, int) error { return nil },
-		lchown:  func(string, int, int) error { return nil },
+		chown:  func(string, int, int) error { return nil },
+		lchown: func(string, int, int) error { return nil },
+		// Unprivileged stand-in for the descriptor-based owner: keeps the
+		// symlink refusal and the mode change, drops only the chown, which
+		// needs root. The real one is exercised in browser_ca_test.go.
+		ownLeafNoFollow: func(path string, mode os.FileMode, _, _ int) error {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("open %s without following symlinks: is a symlink", path)
+			}
+			return os.Chmod(path, mode)
+		},
 		rename:  os.Rename,
 		chmod:   os.Chmod,
 		symlink: os.Symlink,
@@ -324,6 +337,15 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	anchorUnit := filepath.Base(env.ownedLoopbackAnchorUnitPath)
 	runner.on(argvFor(testSystemctl, "is-active", anchorUnit), systemctlActive+"\n", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", anchorUnit), systemctlEnabled+"\n", 0, nil)
+
+	nss := &fakeNSS{db: filepath.Join(env.agentHome, nssDBRelLegacy()), entries: make(map[string]fakeNSSEntry)}
+	env.lookPath = func(string) (string, error) { return "/usr/bin/certutil", nil }
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == browserCACertutilName {
+			return nss.run(ctx, name, args...)
+		}
+		return runner.run(ctx, name, args...)
+	}
 
 	return env, runner, out
 }
@@ -2191,12 +2213,13 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 33 steps total after combining the runtime
-	// contract steps, credential guard, operator evidence ACL, and final
-	// readiness gate. Changing this count changes documented dry-run output.
+	// Sanity: the install flow has 34 steps total after combining the runtime
+	// contract steps, credential guard, operator evidence ACL, browser CA
+	// trust, and final readiness gate. Changing this count changes documented
+	// dry-run output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 33 {
-		t.Errorf("installSteps count: got %d, want 33", len(steps))
+	if len(steps) != 34 {
+		t.Errorf("installSteps count: got %d, want 34", len(steps))
 	}
 }
 

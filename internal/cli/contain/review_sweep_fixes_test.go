@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -87,8 +88,8 @@ func TestProbeWorkspaceAccess_FailsOnUnreadableInventory(t *testing.T) {
 	env := makeProbeEnv(t)
 	env.workspaceInvErr = errors.New("permission denied")
 	probes := probesForEnv(env)
-	if probes[len(probes)-3].name != "workspace_access" {
-		t.Fatalf("workspace_access probe must run when the inventory is unreadable; got %q", probes[len(probes)-3].name)
+	if !slices.ContainsFunc(probes, func(p probe) bool { return p.name == "workspace_access" }) {
+		t.Fatalf("workspace_access probe must run when the inventory is unreadable; got %v", probes)
 	}
 	status, detail := probeWorkspaceAccess(context.Background(), env)
 	if status != statusFail || !strings.Contains(detail, "could not be read") {

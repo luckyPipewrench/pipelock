@@ -281,6 +281,8 @@ Each entry uses the same reviewable lifecycle as `containment.metrics_exposure`.
 
 `contain install` writes one socket and forwarder service pair for each declaration. It also writes a root-owned inventory containing the address, port, owner, reason, and expiry. `contain reload-nft-rules` re-reads the managed config and reconciles those units from the current declaration set. Removing an entry or letting it expire disables and removes its namespace socket at the next successful reconciliation. The host nftables rules never gain an allow for a declared service.
 
+`pipelock contain install` prints a warning when a declared address has no reachable host TCP listener. It keeps the declaration because the host service may be temporarily stopped or start later. This still reserves the address inside the private namespace: if the contained tool is supposed to bind that port itself, remove the declaration instead of ignoring the warning.
+
 Run `sudo pipelock contain reload-nft-rules` after changing `containment.loopback_services`. The boot-time persistence unit runs the same reconciliation on startup. If the managed config is missing or unreadable, or the declared set is malformed or expired, reconciliation uses zero declared forwarders and logs the reason. The base namespace and proxy socket stay in place, so the agent loses the extra service without gaining another path.
 
 The boot-time persistence unit runs the same reconciliation command on every boot.

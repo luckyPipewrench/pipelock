@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -43,6 +44,40 @@ func systemdListenAddress(host string, port int) string {
 		return fmt.Sprintf("[::1]:%d", port)
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+const loopbackHostProbeTimeout = 250 * time.Millisecond
+
+// warnUnavailableHostLoopbackServices catches a declaration that has nothing
+// to forward on the host. The declaration is still honored: a host service may
+// be intentionally stopped during install and started later. The warning is
+// important because honoring it reserves the same address inside the agent's
+// namespace; if the contained tool meant to own that port itself, its bind
+// fails far away from the configuration mistake that caused the collision.
+func warnUnavailableHostLoopbackServices(
+	ctx context.Context,
+	services []config.ContainmentLoopbackService,
+	dial dialFunc,
+	warn func(string),
+) {
+	if dial == nil || warn == nil {
+		return
+	}
+	for _, service := range services {
+		address := net.JoinHostPort(service.Host, strconv.Itoa(service.Port))
+		conn, err := dial(ctx, "tcp", address, loopbackHostProbeTimeout)
+		if err == nil {
+			_ = conn.Close()
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		warn(fmt.Sprintf(
+			"containment.loopback_services entry %s has no reachable host TCP listener (%v); Pipelock will still reserve %s inside the agent namespace. Remove this entry if the contained tool owns that port",
+			address, err, address,
+		))
+	}
 }
 
 // declaredLoopbackDoorwayPath is the per-service host doorway. Each declared
@@ -487,6 +522,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					return false, err
 				}
 			}
+			warnUnavailableHostLoopbackServices(ctx, services, env.dialCtx, func(message string) {
+				_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
+			})
 			oldInventory, err := readLoopbackForwarderInventory(env)
 			if err != nil {
 				return false, err

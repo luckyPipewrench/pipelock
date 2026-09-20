@@ -1731,6 +1731,8 @@ containment:
 
 `contain install` creates a socket with the declared address and port inside the agent namespace. A socket-activated service in the host namespace forwards accepted connections to the same host loopback address and port. This exposes one listening socket without adding a network interface, gateway, or route.
 
+`pipelock contain install` warns when no TCP listener is reachable at the declared host address. The declaration is still installed because the host service may start later, but it immediately reserves the same address inside the agent namespace. Remove the declaration when the contained tool owns that port; otherwise the tool's bind fails with an address-in-use error even though no host TCP listener exists.
+
 This declaration isn't needed for a listener that the contained tool starts. The tool and its child processes share the private namespace's loopback interface, so they can connect to a kernel-assigned port there. A listener on the host's loopback interface remains unreachable, including one owned by `pipelock-agent`.
 
 The built-in proxy uses the same shape. `pipelock-agent-proxy.socket` listens on `127.0.0.1:<proxy-port>` inside the private namespace, and its host-side service forwards to the real Pipelock listener. The runtime proxy URL stays `http://127.0.0.1:<proxy-port>`.

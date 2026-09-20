@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -92,8 +94,8 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	// Every unit the installer writes belongs here, including the per-service
 	// declared-loopback set. Leaving those out is what let a malformed socket
 	// unit reach a real install twice: the proxy units were covered and the
-	// declared ones, which carry the browser control port, were not.
-	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+	// declared ones were not.
+	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
 	declaredBase := loopbackForwarderUnitBase(declared.Host, declared.Port)
 	units[declaredBase+".socket"] = renderDeclaredLoopbackSocketUnit("pipelock-agent", declared)
 	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", declared)
@@ -109,6 +111,58 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "systemd-analyze", append([]string{"verify"}, paths...)...) //nolint:gosec // fixed executable and test-owned paths
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("systemd-analyze verify: %v\n%s", err, out)
+	}
+}
+
+func TestInstallNetworkNamespaceWarnsWhenDeclaredHostListenerIsUnavailable(t *testing.T) {
+	env, _, out := newFakeEnv(t)
+	env.dialCtx = func(_ context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
+		if network != "tcp" || address != "127.0.0.1:9222" || timeout != loopbackHostProbeTimeout {
+			t.Fatalf("dial = (%q, %q, %s)", network, address, timeout)
+		}
+		return nil, errors.New("connection refused")
+	}
+	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	configBody := "containment:\n  loopback_services:\n    - host: 127.0.0.1\n      port: 9222\n" +
+		"      owner: browser-team\n      reason: browser control\n      expires_at: 2099-01-01T00:00:00Z\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallNetworkNamespace().apply(context.Background(), env); err != nil {
+		t.Fatalf("install network namespace: %v", err)
+	}
+	warning := out.String()
+	for _, want := range []string{
+		"WARNING: containment.loopback_services entry 127.0.0.1:9222 has no reachable host TCP listener",
+		"Pipelock will still reserve 127.0.0.1:9222 inside the agent namespace",
+		"Remove this entry if the contained tool owns that port",
+	} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("warning missing %q:\n%s", want, warning)
+		}
+	}
+}
+
+func TestHostListenerWarningSkipsUnavailableProbeAndCanceledContext(t *testing.T) {
+	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+	var warnings []string
+	warn := func(message string) { warnings = append(warnings, message) }
+
+	warnUnavailableHostLoopbackServices(context.Background(), []config.ContainmentLoopbackService{service}, nil, warn)
+	warnUnavailableHostLoopbackServices(context.Background(), []config.ContainmentLoopbackService{service}, func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}, warn)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	warnUnavailableHostLoopbackServices(ctx, []config.ContainmentLoopbackService{service}, func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		return nil, context.Canceled
+	}, warn)
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none when probing is unavailable or canceled", warnings)
 	}
 }
 

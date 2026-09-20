@@ -717,7 +717,7 @@ func (h *WebhookHandler) RevokeTrialAccess(ctx context.Context, subID, reason st
 	if err != nil {
 		return err
 	}
-	if access.Status != statusActive || access.Revoked {
+	if access.Status == statusRevoked {
 		return ErrTrialAlreadyRevoked
 	}
 	if err := h.ledger.Log(AuditEntry{

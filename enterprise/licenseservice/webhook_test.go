@@ -2922,6 +2922,81 @@ func TestInspectTrialAccessDetectsTokenRevocation(t *testing.T) {
 	}
 }
 
+func TestRevokeTrialAccessCompletesPartialTokenRevocation(t *testing.T) {
+	ts := newTestSetup(t)
+	const orderID = "order_free_520_partial_token_revocation"
+	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "partial-revoke@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+	ent, err := ts.db.GetBySubscriptionID(t.Context(), orderID)
+	if err != nil || ent == nil {
+		t.Fatalf("load issued trial: entitlement=%+v err=%v", ent, err)
+	}
+	now := time.Now().UTC()
+	older := LicenseIssuance{
+		LicenseID:      "lic_older_live_trial_token",
+		SubscriptionID: orderID,
+		IssuedAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+	}
+	if err := ts.db.InsertLicenseIssuance(t.Context(), older); err != nil {
+		t.Fatalf("record older trial issuance: %v", err)
+	}
+	issuances, err := ts.db.ListUnexpiredLicenseIssuances(t.Context(), orderID, now)
+	if err != nil {
+		t.Fatalf("list seeded trial issuances: %v", err)
+	}
+	if len(issuances) != 2 {
+		t.Fatalf("seeded trial issuances = %+v, want 2", issuances)
+	}
+	if err := ts.db.UpsertLicenseRevocation(t.Context(), RevokedLicenseRecord{
+		LicenseID:      ent.LastLicenseID,
+		SubscriptionID: orderID,
+		Reason:         "partial support revocation",
+		RevokedAt:      now,
+	}); err != nil {
+		t.Fatalf("record partial token revocation: %v", err)
+	}
+	if err := ts.handler.RevokeTrialAccess(t.Context(), orderID, "revoke every live token", now); err != nil {
+		t.Fatalf("revoke trial with newest token already revoked: %v", err)
+	}
+	records, err := ts.db.ListLicenseRevocations(t.Context())
+	if err != nil {
+		t.Fatalf("list token revocations: %v", err)
+	}
+	revokedIDs := make(map[string]bool, len(records))
+	for _, record := range records {
+		revokedIDs[record.LicenseID] = true
+	}
+	if !revokedIDs[ent.LastLicenseID] || !revokedIDs[older.LicenseID] {
+		t.Fatalf("trial revocation omitted a live issuance: %+v", records)
+	}
+}
+
+func TestRevokeTrialAccessDoesNotMislabelInactiveTrial(t *testing.T) {
+	ts := newTestSetup(t)
+	ent := &Entitlement{
+		SubscriptionID:   "order_free_520_inactive_revoke",
+		CustomerEmail:    "inactive-revoke@example.com",
+		ProductID:        "prod_trial",
+		Tier:             tierTrial,
+		BillingInterval:  billingIntervalOneTime,
+		Status:           statusCanceled,
+		CurrentPeriodEnd: time.Now().Add(time.Hour),
+		Features:         "[]",
+	}
+	if err := ts.db.Upsert(t.Context(), ent); err != nil {
+		t.Fatalf("create inactive trial: %v", err)
+	}
+	err := ts.handler.RevokeTrialAccess(t.Context(), ent.SubscriptionID, "support", time.Now())
+	if err == nil {
+		t.Fatal("inactive trial revocation must fail")
+	}
+	if errors.Is(err, ErrTrialAlreadyRevoked) {
+		t.Fatalf("inactive trial was mislabeled as already revoked: %v", err)
+	}
+}
+
 func TestResendTrialAccessFailsOnDeliveryAndAuditErrors(t *testing.T) {
 	t.Run("malformed persisted token metadata is rejected", func(t *testing.T) {
 		ts := newTestSetup(t)

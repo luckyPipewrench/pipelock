@@ -389,13 +389,13 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
 func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return s.matchDecodedCoreResponseRecursive(content, 0, suppress)
+	return s.matchDecodedCoreResponseRecursive(content, 0, suppress, strings.ContainsRune(content, '\n'))
 }
 
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
+func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor, crossesFragmentBoundary bool) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
@@ -415,20 +415,20 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
 			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-				return decodedSet
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, crossesFragmentBoundary); len(decodedSet.matches) > 0 {
+				return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
 		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
-			return decodedSet
+			return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
 		}
-		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-			return decodedSet
+		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, crossesFragmentBoundary); len(decodedSet.matches) > 0 {
+			return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
 		}
 	}
 
@@ -444,7 +444,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
-				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, false); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
 			}
@@ -454,7 +454,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, false); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 		}

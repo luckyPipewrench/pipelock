@@ -518,14 +518,76 @@ func TestDeclaredLoopbackForwarderUnits(t *testing.T) {
 		{Host: "127.0.0.1", Port: 9200},
 		{Host: "::1", Port: 9300},
 	} {
-		socket := renderDeclaredLoopbackSocketUnit(service)
+		socket := renderDeclaredLoopbackSocketUnit("pipelock-agent", service)
 		forwarder := renderDeclaredLoopbackForwarderUnit("pipelock-proxy", service)
+		nsForwarder := renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", service)
 		address := systemdListenAddress(service.Host, service.Port)
-		if !strings.Contains(socket, "ListenStream="+address) || !strings.Contains(socket, "JoinsNamespaceOf="+containedNetworkNamespaceUnit) {
-			t.Fatalf("declared socket for %+v does not bind inside namespace:\n%s", service, socket)
+		doorway := declaredLoopbackDoorwayPath(service.Host, service.Port)
+
+		// The host doorway is a pathname unix socket. This test previously
+		// required JoinsNamespaceOf= here and called that "binds inside
+		// namespace", which systemd.socket(5) says is impossible: every
+		// .socket listener is allocated in the host network namespace. The
+		// install failed on exactly that.
+		if !strings.Contains(socket, "ListenStream="+doorway) {
+			t.Fatalf("declared socket for %+v does not open its host doorway:\n%s", service, socket)
+		}
+		for _, forbidden := range []string{"PrivateNetwork=true", "JoinsNamespaceOf=", "ListenStream=" + address} {
+			if strings.Contains(socket, forbidden) {
+				t.Fatalf("declared socket for %+v must not contain %q; a .socket listener is always host-namespace:\n%s", service, forbidden, socket)
+			}
 		}
 		if !strings.Contains(forwarder, "ExecStart="+systemdSocketProxydPath+" "+address) || strings.Contains(forwarder, "PrivateNetwork=true") {
 			t.Fatalf("declared forwarder for %+v cannot bridge to host:\n%s", service, forwarder)
+		}
+		// The in-namespace listener is a service, which is the only unit type
+		// whose processes JoinsNamespaceOf= actually moves.
+		for _, want := range []string{
+			"JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
+			"PrivateNetwork=true",
+			"ExecStart=/usr/local/bin/pipelock contain netns-forward --listen " + address + " --target " + doorway,
+		} {
+			if !strings.Contains(nsForwarder, want) {
+				t.Fatalf("declared namespace listener for %+v missing %q:\n%s", service, want, nsForwarder)
+			}
+		}
+	}
+}
+
+// TestNoSocketUnitClaimsTheAgentNamespace enumerates every rendered unit that
+// contains a [Socket] section and asserts none of them asks for the contained
+// agent's network namespace.
+//
+// systemd.socket(5): "All network sockets allocated through .socket units are
+// allocated in the host's network namespace." PrivateNetwork= and
+// JoinsNamespaceOf= on a socket unit move the ACTIVATED SERVICE's processes,
+// never the listener. Two separate renderers made this mistake, and the second
+// survived a fix to the first because the sweep was scoped to the renderer in
+// front of the author rather than to every ListenStream= in the package.
+//
+// If a new socket renderer is added, add it here. The list is the coverage.
+func TestNoSocketUnitClaimsTheAgentNamespace(t *testing.T) {
+	svc := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+	socketUnits := map[string]string{
+		"contained proxy doorway":   renderContainedProxySocketUnit("pipelock-agent"),
+		"declared loopback doorway": renderDeclaredLoopbackSocketUnit("pipelock-agent", svc),
+	}
+
+	for name, body := range socketUnits {
+		if !strings.Contains(body, "[Socket]") {
+			t.Fatalf("%s is not a socket unit; this list must only hold socket units:\n%s", name, body)
+		}
+		for _, forbidden := range []string{"PrivateNetwork=", "JoinsNamespaceOf=", "NetworkNamespacePath="} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s contains %q: a .socket listener is always allocated in the host network namespace, so this silently does not do what it reads as:\n%s",
+					name, forbidden, body)
+			}
+		}
+		// A doorway must be a pathname unix socket, which is what actually
+		// crosses the boundary; network_namespaces(7) isolates only the
+		// abstract unix namespace.
+		if !strings.Contains(body, "ListenStream=/run/") {
+			t.Errorf("%s does not listen on a pathname unix socket under /run:\n%s", name, body)
 		}
 	}
 }

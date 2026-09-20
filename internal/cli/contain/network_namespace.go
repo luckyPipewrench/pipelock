@@ -45,21 +45,67 @@ func systemdListenAddress(host string, port int) string {
 	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
-func renderDeclaredLoopbackSocketUnit(service config.ContainmentLoopbackService) string {
+// declaredLoopbackDoorwayPath is the per-service host doorway. Each declared
+// service gets its own socket so one service's reachability cannot be widened
+// by another's, and so revoking one removes exactly one filesystem object.
+func declaredLoopbackDoorwayPath(host string, port int) string {
+	return "/run/" + loopbackForwarderUnitBase(host, port) + ".sock"
+}
+
+// renderDeclaredLoopbackSocketUnit declares one host doorway per declared
+// loopback service. Like the proxy doorway it is a PATHNAME unix socket in the
+// HOST namespace, because systemd.socket(5) allocates every .socket listener
+// there no matter what PrivateNetwork= says. The in-namespace listener that
+// the agent actually connects to comes from the forwarder service below.
+func renderDeclaredLoopbackSocketUnit(agentUser string, service config.ContainmentLoopbackService) string {
 	return fmt.Sprintf(`[Unit]
-Description=Pipelock declared loopback service inside the contained-agent network namespace
-Requires=%s
-After=%s
-JoinsNamespaceOf=%s
+Description=Pipelock host doorway for one declared contained-agent loopback service
 
 [Socket]
 ListenStream=%s
-PrivateNetwork=true
-NoDelay=true
+SocketMode=0660
+SocketUser=root
+SocketGroup=%s
+RemoveOnStop=true
 
 [Install]
 WantedBy=sockets.target
-`, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit, systemdListenAddress(service.Host, service.Port))
+`, declaredLoopbackDoorwayPath(service.Host, service.Port), agentUser)
+}
+
+// renderDeclaredLoopbackNamespaceForwarderUnit creates the in-namespace
+// listener for one declared service. It is a service because JoinsNamespaceOf=
+// places a unit's PROCESSES in the namespace, which is what is needed, and
+// which a socket unit's listener never gets.
+func renderDeclaredLoopbackNamespaceForwarderUnit(pipelockPath, agentUser string, service config.ContainmentLoopbackService) string {
+	base := loopbackForwarderUnitBase(service.Host, service.Port)
+	return fmt.Sprintf(`[Unit]
+Description=Pipelock declared loopback listener inside the contained-agent network namespace
+Requires=%s
+After=%s
+Requires=%s.socket
+After=%s.socket
+JoinsNamespaceOf=%s
+
+[Service]
+Type=simple
+User=%s
+Group=%s
+ExecStart=%s contain netns-forward --listen %s --target %s
+PrivateNetwork=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+`, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
+		base, base, containedNetworkNamespaceUnit,
+		agentUser, agentUser, pipelockPath,
+		systemdListenAddress(service.Host, service.Port),
+		declaredLoopbackDoorwayPath(service.Host, service.Port))
 }
 
 func renderDeclaredLoopbackForwarderUnit(proxyUser string, service config.ContainmentLoopbackService) string {
@@ -199,9 +245,11 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		unit := loopbackForwarderUnitBase(service.Host, service.Port)
 		socketPath := filepath.Join(unitDir, unit+".socket")
 		servicePath := filepath.Join(unitDir, unit+".service")
+		nsPath := filepath.Join(unitDir, unit+"-netns.service")
 		for path, want := range map[string]string{
-			socketPath:  renderDeclaredLoopbackSocketUnit(service),
+			socketPath:  renderDeclaredLoopbackSocketUnit(env.agentUserName, service),
 			servicePath: renderDeclaredLoopbackForwarderUnit(env.proxyUserName, service),
+			nsPath:      renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
 		} {
 			body, readErr := env.readFile(path)
 			if readErr != nil || string(body) != want {
@@ -460,8 +508,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				unit := loopbackForwarderUnitBase(service.Host, service.Port)
 				desiredUnits[unit] = true
 				paths = append(paths,
-					managedFile{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(service), modeUnitFile},
+					managedFile{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service), modeUnitFile},
 					managedFile{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.proxyUserName, service), modeUnitFile},
+					managedFile{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service), modeUnitFile},
 				)
 			}
 			for _, item := range paths {
@@ -554,6 +603,15 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", containedNamespaceForwarderUnit); err != nil {
 				return true, fmt.Errorf("enable contained namespace forwarder %s: %w", containedNamespaceForwarderUnit, err)
 			}
+			// Same for each declared loopback service: its in-namespace listener
+			// is a service, so enabling the socket alone leaves the agent with a
+			// host doorway and nothing inside the namespace to connect to.
+			for unit := range desiredUnits {
+				nsUnit := unit + "-netns.service"
+				if err := runOrErr(ctx, env, "systemctl", "enable", "--now", nsUnit); err != nil {
+					return true, fmt.Errorf("enable declared loopback namespace listener %s: %w", nsUnit, err)
+				}
+			}
 			// Retire the superseded cgroup anchor only after the private namespace
 			// socket is live. Keeping both would leave two mechanisms that can
 			// disagree; on any later install failure undo restores the old file and
@@ -596,6 +654,15 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			// unit: a failure earlier in apply may mean it was never written.
 			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", containedNamespaceForwarderUnit); err != nil {
 				errs = append(errs, err)
+			}
+			for socket := range previousSockets {
+				base := strings.TrimSuffix(socket, ".socket")
+				if !strings.HasPrefix(base, "pipelock-agent-loopback-") {
+					continue
+				}
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", base+"-netns.service"); err != nil {
+					errs = append(errs, err)
+				}
 			}
 			for socket, state := range previousSockets {
 				if !state.active {

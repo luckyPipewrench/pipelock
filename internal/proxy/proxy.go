@@ -593,7 +593,8 @@ func findScriptElements(doc string) []scriptElement {
 		// Track SVG/MathML foreign content. foreignObject is an HTML
 		// integration point (leave foreign on entry, re-enter on leave).
 		// Self-closing svg/math/foreignObject do not change depth.
-		if tt == html.StartTagToken {
+		switch tt {
+		case html.StartTagToken:
 			switch name {
 			case "svg", "math":
 				foreignDepth++
@@ -602,7 +603,7 @@ func findScriptElements(doc string) []scriptElement {
 					htmlIntegration++
 				}
 			}
-		} else if tt == html.EndTagToken {
+		case html.EndTagToken:
 			switch name {
 			case "foreignobject":
 				if htmlIntegration > 0 {

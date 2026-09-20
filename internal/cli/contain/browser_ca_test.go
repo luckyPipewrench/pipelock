@@ -953,3 +953,62 @@ func TestDocumentedFixedProbeCountMatchesRegistry(t *testing.T) {
 		t.Fatalf("docs/contain-cli.md does not state %q; the registry has %d fixed probes", want, len(allProbes()))
 	}
 }
+
+// TestBrowserCATrustRefusesAForeignNicknameHoldingTheSameCA covers the real
+// host failure: an operator had trusted the Pipelock CA by hand under the
+// nickname "Pipelock CA" before this install step existed. NSS will not add
+// the same certificate under a second nickname, so certutil -A exited 0 having
+// created nothing, and the install then failed its own post-add assertion with
+// a message saying the CA was not trusted, while certutil -L showed it trusted.
+func TestBrowserCATrustRefusesAForeignNicknameHoldingTheSameCA(t *testing.T) {
+	env, nss := newBrowserCAEnv(t)
+
+	// The database must already EXIST on disk, or the install takes its
+	// fresh-database path and never inspects what is in it.
+	if err := os.MkdirAll(nss.db, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range nssDatabaseFiles {
+		if err := os.WriteFile(filepath.Join(nss.db, file), []byte("db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Seed the operator's own entry holding the identical certificate.
+	caPEM, err := os.ReadFile(env.caExportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nss.entries["Pipelock CA"] = fakeNSSEntry{trust: browserCATrustArgs, pem: string(caPEM)}
+
+	changed, err := establishAgentBrowserCATrust(context.Background(), env)
+	if err == nil {
+		t.Fatal("install accepted a database where the CA is trusted under a foreign nickname")
+	}
+	if changed {
+		t.Error("changed = true; the refusal must happen before anything is written")
+	}
+	for _, want := range []string{"Pipelock CA", "certutil -D", "rerun install"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to name %q so the operator can act on it", err, want)
+		}
+	}
+	if _, ok := nss.entries[browserCANSSNickname]; ok {
+		t.Error("the managed nickname was created despite the refusal")
+	}
+}
+
+// TestBrowserCATrustIgnoresUnrelatedNicknames is the positive control: a
+// database holding other certificates must still install normally, or the
+// refusal above would be indistinguishable from refusing everything.
+func TestBrowserCATrustIgnoresUnrelatedNicknames(t *testing.T) {
+	env, nss := newBrowserCAEnv(t)
+	nss.entries["Some Other CA"] = fakeNSSEntry{trust: browserCATrustArgs, pem: distinctTestCA(t)}
+
+	if _, err := establishAgentBrowserCATrust(context.Background(), env); err != nil {
+		t.Fatalf("install refused a database holding an unrelated certificate: %v", err)
+	}
+	if _, ok := nss.entries[browserCANSSNickname]; !ok {
+		t.Error("the managed nickname was not created")
+	}
+}

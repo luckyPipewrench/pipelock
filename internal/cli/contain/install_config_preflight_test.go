@@ -44,7 +44,7 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 			// the path it was handed, and the installer rewrites it back to the
 			// managed path before the operator sees it.
 			staged := stagedPipelockConfigPath(env)
-			runner.on(argvFor(env.pipelockBinary, "check", "--config", staged), strings.ReplaceAll(tt.failureOut, "CONFIG", staged), 1, nil)
+			runner.on(argvFor(env.pipelockBinary, "check", "--config", staged, "--require-build-compatibility"), strings.ReplaceAll(tt.failureOut, "CONFIG", staged), 1, nil)
 
 			err := runInstall(context.Background(), env, installOpts{configSource: src})
 			assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
@@ -100,7 +100,7 @@ func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) 
 	if err := os.WriteFile(target, []byte("metrics_listen: 127.0.0.1:9091\nagents:\n  _default:\n    budget:\n      fan_out_limit: 4\n"), 0o600); err != nil {
 		t.Fatalf("write existing config: %v", err)
 	}
-	runner.on(argvFor(env.pipelockBinary, "check", "--config", target),
+	runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"),
 		"Config validation FAILED: parsing config "+target+": fan_out_limit was removed because it was not enforced; remove it from the config\n",
 		1, nil)
 
@@ -151,7 +151,7 @@ func TestRunInstall_ConfigPreflightDryRunReportsWithoutMutation(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	src := writePreflightConfig(t, "dry-source.yaml", "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n")
 	target := managedPipelockConfigPath(env)
-	runner.on(argvFor(env.pipelockBinary, "check", "--config", src),
+	runner.on(argvFor(env.pipelockBinary, "check", "--config", src, "--require-build-compatibility"),
 		"Config validation FAILED: parsing config "+src+": max_retries_per_endpoint was removed because it was not enforced; remove it from the config\n",
 		1, nil)
 
@@ -183,7 +183,7 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
 	}
-	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", stagedPipelockConfigPath(env))
+	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", stagedPipelockConfigPath(env), "--require-build-compatibility")
 	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
 	// The staged candidate is promoted to the managed path and the staging file
 	// is discarded, so a successful install leaves no residue behind.
@@ -219,7 +219,7 @@ func TestRunInstall_ConfigPreflightNeverMakesTheCandidateLive(t *testing.T) {
 	const badBody = "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n"
 	src := writePreflightConfig(t, "bad.yaml", badBody)
 	staged := stagedPipelockConfigPath(env)
-	runner.on(argvFor(env.pipelockBinary, "check", "--config", staged), "Config validation FAILED\n", 1, nil)
+	runner.on(argvFor(env.pipelockBinary, "check", "--config", staged, "--require-build-compatibility"), "Config validation FAILED\n", 1, nil)
 
 	var liveDuringPreflight string
 	var sawCheck bool
@@ -306,7 +306,7 @@ func TestRunInstall_ConfigPreflightAllowsValidExistingManagedConfigWithoutConfig
 	if err := runInstall(context.Background(), env, installOpts{}); err != nil {
 		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
 	}
-	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", target)
+	assertSawCall(t, runner, env.pipelockBinary, "check", "--config", target, "--require-build-compatibility")
 	assertSawCall(t, runner, testSystemctl, "enable", "--now", "pipelock")
 }
 
@@ -321,7 +321,7 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
 				t.Helper()
 				target := seedManagedConfig(t, env)
-				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", -1, errors.New("exec failed"))
+				runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"), "", -1, errors.New("exec failed"))
 				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
 			},
 			want: "exec failed",
@@ -331,7 +331,7 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
 				t.Helper()
 				target := seedManagedConfig(t, env)
-				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", 2, nil)
+				runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"), "", 2, nil)
 				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
 			},
 			want: "pipelock check exited 2",
@@ -371,7 +371,7 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 			run: func(t *testing.T, env *installEnv, runner *fakeRunner) error {
 				t.Helper()
 				target := seedManagedConfig(t, env)
-				runner.on(argvFor(env.pipelockBinary, "check", "--config", target), "", 0, nil)
+				runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"), "", 0, nil)
 				origRun := env.runCmd
 				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
 					out, code, err := origRun(ctx, name, args...)

@@ -2852,6 +2852,7 @@ func TestTrialSupportAccessRejectsInvalidState(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func() error
+		want string
 	}{
 		{
 			name: "unknown inspect",
@@ -2859,6 +2860,7 @@ func TestTrialSupportAccessRejectsInvalidState(t *testing.T) {
 				_, err := ts.handler.InspectTrialAccess(ctx, "order_missing")
 				return err
 			},
+			want: ErrTrialAccessNotFound.Error(),
 		},
 		{
 			name: "non-trial inspect",
@@ -2866,30 +2868,34 @@ func TestTrialSupportAccessRejectsInvalidState(t *testing.T) {
 				_, err := ts.handler.InspectTrialAccess(ctx, nonTrial.SubscriptionID)
 				return err
 			},
+			want: ErrTrialAccessNotFound.Error(),
 		},
 		{
 			name: "blank identifier",
 			run: func() error {
 				return ts.handler.ResendTrialAccess(ctx, "", "support", time.Now())
 			},
+			want: "subscription_id is required",
 		},
 		{
 			name: "blank resend reason",
 			run: func() error {
 				return ts.handler.ResendTrialAccess(ctx, "order_missing", "", time.Now())
 			},
+			want: "resend reason is required",
 		},
 		{
 			name: "blank revoke reason",
 			run: func() error {
 				return ts.handler.RevokeTrialAccess(ctx, "order_missing", "", time.Now())
 			},
+			want: "revocation reason is required",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.run(); err == nil {
-				t.Fatal("invalid trial support request must fail")
+			if err := tt.run(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("invalid trial support request error = %v, want %q", err, tt.want)
 			}
 		})
 	}
@@ -3237,7 +3243,7 @@ func newFileBackedTrialSupportHandlers(t *testing.T) (*WebhookHandler, *WebhookH
 	return first, second, firstDB
 }
 
-func TestTrialSupportResendAndRevokeSerializeAcrossProcesses(t *testing.T) {
+func TestTrialSupportResendAndRevokeSerializeAcrossConnections(t *testing.T) {
 	resender, revoker, db := newFileBackedTrialSupportHandlers(t)
 	const orderID = "order_free_520_cross_process_support"
 	if err := resender.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "cross-process@example.com")); err != nil {

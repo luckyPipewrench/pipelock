@@ -59,4 +59,19 @@ func TestAcquireTrialSupportLockSecuresAndRejectsInvalidFiles(t *testing.T) {
 			t.Fatalf("named-pipe error = %v", err)
 		}
 	})
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target.lock")
+		if err := os.WriteFile(target, nil, 0o600); err != nil {
+			t.Fatalf("create symlink target: %v", err)
+		}
+		path := filepath.Join(dir, "trial-support.lock")
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatalf("create lock symlink: %v", err)
+		}
+		if _, err := acquireTrialSupportLock(path); err == nil || !strings.Contains(err.Error(), "open trial support lock") {
+			t.Fatalf("symlink error = %v", err)
+		}
+	})
 }

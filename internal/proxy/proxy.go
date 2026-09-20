@@ -312,87 +312,30 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 	return fallback
 }
 
-// Regex patterns for extracting content from HTML hiding spots that
-// readability strips (comments, non-executable data script bodies, style
-// bodies, hidden elements). We scan only these extracted fragments for
-// injection, not the full HTML markup, to avoid false positives on
-// legitimate HTML tags and attributes.
+// The hidden-content surface: text an HTML page can keep away from a human
+// reader while still aiming it at a model. Comments, style and noscript
+// bodies, non-executable data script bodies, and elements the page renders
+// invisible all qualify. Only those fragments reach the injection scanner,
+// never the whole markup, so ordinary tags and attributes do not trip it.
 //
-// Executable JavaScript script bodies are intentionally excluded from this
-// surface (AF-333 residual). Fetch returns readability text to the agent, so
-// minified JS/JSON bundles are not on the human-rendered or agent-visible
-// channel; scanning them blocked clean pages (~858KB HTML vs ~6.6KB rendered
-// text). Injection that only lives in executable JS is still covered when
-// readability fails: the follow-up scan runs on the raw HTML body. Data
-// scripts (application/json, ld+json, text/plain, …), comments, style,
-// noscript, and hidden elements remain on the hidden surface because they
-// carry prose an attacker can aim at the model while keeping the rendered
-// page clean.
-var (
-	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)(?:-->|$)`)
-	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
-	reNoscriptBody  = regexp.MustCompile(`(?si)<noscript[^>]*>(.*?)</noscript>`)
-	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
-		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
-		`[^>]*>(.*?)</`)
-)
-
-// ambiguousScriptType is returned when script attribute parsing is ambiguous
-// (e.g. unclosed quotes). Unknown types are data carriers, so the body is
-// still scanned (fail closed).
-const ambiguousScriptType = "application/x-pipelock-ambiguous"
-
-// scriptElement is one matched <script>...</script> region. Attrs is the
-// start-tag attribute blob (may be empty); bodyStart/bodyEnd index the body
-// exclusive of the tags; elemStart/elemEnd cover the full element.
-type scriptElement struct {
-	attrs     string
-	body      string
-	bodyStart int
-	bodyEnd   int
-	elemStart int
-	elemEnd   int
-}
-
-// asciiToLower returns s with A-Z mapped to a-z. Length is preserved so
-// indexes into the result remain valid against the original string (unlike
-// strings.ToLower, which can change byte length for letters such as U+0130).
-func asciiToLower(s string) string {
-	var buf []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			if buf == nil {
-				buf = []byte(s)
-			}
-			buf[i] = c + ('a' - 'A')
-		}
-	}
-	if buf == nil {
-		return s
-	}
-	return string(buf)
-}
-
-// asciiEqualFold reports whether a and b are equal under ASCII case folding.
-func asciiEqualFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
-}
+// Executable JavaScript bodies are deliberately off this surface.
+// Fetch hands the agent readability text, so a minified JS bundle reaches
+// neither the rendered page nor the agent, and scanning it blocked clean
+// responses (~858KB of HTML behind ~6.6KB of rendered text). Injection living
+// only in executable JS is still covered when readability yields nothing: the
+// follow-up scan then runs against the raw HTML body.
+//
+// The surface is computed from a real parse tree, never from regexes or
+// hand-rolled tag scanning over the source. That is a security property
+// rather than a tidiness one. This code decides what NOT to scan, so every
+// construct it models differently from a browser is a fail-open, and in
+// hand-rolled scanning that set has no bound: script-data escape states,
+// foreign-content namespaces, HTML integration points, self-closing rules and
+// attribute quoting each hid a payload during review of this change.
+// html.Parse resolves all of them the way a browser does. It also retires the
+// decoy class by construction, because markup written inside a JavaScript
+// string is a text node in the tree and can never re-enter the surface as a
+// comment, a style body or a hidden element.
 
 // isExecutableJavaScriptMIME reports whether a <script type="..."> value is
 // executable JavaScript. Empty/default and the exact HTML special "module"
@@ -400,7 +343,7 @@ func asciiEqualFold(a, b string) bool {
 // Parameterized values such as "module;charset=utf-8" are data blocks per
 // WHATWG HTML. MIME aliases join media.IsJavaScriptMediaType (RFC 9239 §6)
 // so historical aliases are not under-covered. Unknown types are treated as
-// data carriers (fail closed: still scanned).
+// data carriers, which fails closed because their bodies stay scanned.
 func isExecutableJavaScriptMIME(typeAttr string) bool {
 	t := strings.ToLower(strings.TrimSpace(typeAttr))
 	if t == "" {
@@ -416,430 +359,131 @@ func isExecutableJavaScriptMIME(typeAttr string) bool {
 	return media.IsJavaScriptMediaType(t)
 }
 
-// scriptTypeAttribute returns the first real type= attribute value from a
-// script start-tag attribute blob. Parsing is quote-aware so a decoy
-// ` type=module` inside another attribute's quoted value cannot win.
-// On ambiguous markup (unclosed quotes), returns ambiguousScriptType so the
-// body is scanned (fail closed).
-func scriptTypeAttribute(attrs string) string {
-	i := 0
-	for i < len(attrs) {
-		for i < len(attrs) {
-			c := attrs[i]
-			if isHTMLWhitespace(c) || c == '/' {
-				i++
-				continue
-			}
-			break
-		}
-		if i >= len(attrs) {
-			break
-		}
-		nameStart := i
-		for i < len(attrs) {
-			c := attrs[i]
-			if c == '=' || isHTMLWhitespace(c) || c == '/' || c == '"' || c == '\'' {
-				break
-			}
-			i++
-		}
-		if i == nameStart {
-			// Stray quote or punctuation — fail closed.
-			return ambiguousScriptType
-		}
-		name := attrs[nameStart:i]
-		for i < len(attrs) {
-			c := attrs[i]
-			if isHTMLWhitespace(c) {
-				i++
-				continue
-			}
-			break
-		}
-		value := ""
-		if i < len(attrs) && attrs[i] == '=' {
-			i++
-			for i < len(attrs) {
-				c := attrs[i]
-				if isHTMLWhitespace(c) {
-					i++
-					continue
-				}
-				break
-			}
-			if i >= len(attrs) {
-				return ambiguousScriptType
-			}
-			if q := attrs[i]; q == '"' || q == '\'' {
-				i++
-				vStart := i
-				for i < len(attrs) && attrs[i] != q {
-					i++
-				}
-				if i >= len(attrs) {
-					return ambiguousScriptType
-				}
-				value = attrs[vStart:i]
-				i++ // closing quote
-			} else {
-				vStart := i
-				for i < len(attrs) {
-					c := attrs[i]
-					if isHTMLWhitespace(c) || c == '"' || c == '\'' {
-						break
-					}
-					i++
-				}
-				value = attrs[vStart:i]
-			}
-		}
-		if asciiEqualFold(name, "type") {
-			return value
+// nodeAttr returns the value of the first attribute named key (the one the
+// parser resolved as authoritative) and whether it was present at all.
+// Presence matters on its own for boolean attributes such as hidden.
+func nodeAttr(n *html.Node, key string) (string, bool) {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val, true
 		}
 	}
-	return ""
+	return "", false
 }
 
-// isHTMLWhitespace reports whether b is HTML whitespace (ASCII space, tab,
-// LF, FF, CR). Form feed is included so tag scanning matches HTML5.
-func isHTMLWhitespace(b byte) bool {
+// isExecutableScriptNode reports whether n is a <script> element whose body
+// the browser executes rather than exposes as data. Namespace is irrelevant:
+// an SVG script executes by the same rule an HTML one does.
+func isExecutableScriptNode(n *html.Node) bool {
+	if n.Data != "script" {
+		return false
+	}
+	typ, _ := nodeAttr(n, "type")
+	return isExecutableJavaScriptMIME(typ)
+}
+
+// elementConcealsText reports whether n keeps its text out of the rendered
+// page: a raw-text carrier readability strips (style, noscript, and the data
+// scripts that reach here), or an element the page hides.
+//
+// Hiding is read from parsed attributes, so only the boolean hidden attribute
+// counts and a value cannot change that (HTML defines hidden="false" as
+// hidden). An unrelated attribute that merely ends in the word, such as
+// aria-hidden, is not a match, matching the behavior this replaced.
+func elementConcealsText(n *html.Node) bool {
+	switch n.Data {
+	case "script", "style", "noscript":
+		return true
+	}
+	if _, ok := nodeAttr(n, "hidden"); ok {
+		return true
+	}
+	style, ok := nodeAttr(n, "style")
+	if !ok {
+		return false
+	}
+	// Collapse whitespace so "display : none" reads the same as "display:none".
+	var sb strings.Builder
+	for i := 0; i < len(style); i++ {
+		if c := style[i]; !isASCIISpace(c) {
+			sb.WriteByte(c)
+		}
+	}
+	flat := strings.ToLower(sb.String())
+	return strings.Contains(flat, "display:none") ||
+		strings.Contains(flat, "visibility:hidden")
+}
+
+// isASCIISpace reports whether b is ASCII whitespace.
+func isASCIISpace(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', '\f', '\r':
+	case ' ', '\t', '\n', '\v', '\f', '\r':
 		return true
 	default:
 		return false
 	}
 }
 
-// scriptAttrsFromStartRaw returns the attribute blob inside a <script ...>
-// start tag raw token (text between the tag name and the closing '>').
-// A trailing '/' is trimmed only when selfClosing (html.SelfClosingTagToken),
-// so an unquoted type value may keep its solidus.
-func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
-	if len(raw) < 2 || raw[0] != '<' {
-		return ""
-	}
-	i := 1
-	for i < len(raw) {
-		c := raw[i]
-		if isHTMLWhitespace(c) || c == '/' || c == '>' {
-			break
-		}
-		i++
-	}
-	end := len(raw)
-	if end > 0 && raw[end-1] == '>' {
-		end--
-	}
-	if selfClosing && end > i && raw[end-1] == '/' {
-		end--
-	}
-	if end < i {
-		return ""
-	}
-	return raw[i:end]
-}
-
-// findScriptElements returns every well-formed <script>...</script> pair.
-// Boundaries join golang.org/x/net/html.Tokenizer so WHATWG script-data,
-// script-data escaped, and script-data double-escaped end-tag rules apply
-// (a nested <!--<script></script>DIRECTIVE</script> keeps DIRECTIVE inside
-// the element). Markup-like text in HTML comments or attribute values is not
-// treated as a real start tag. Unclosed scripts fail closed: the partial
-// element is retained through EOF so its body is still classified
-// (executable MIME omitted; data scanned). Matching then stops.
+// collectHiddenContent walks the parse tree appending every fragment on the
+// hidden surface. concealed carries down from an ancestor that hides its
+// subtree, so text nested inside a display:none container is collected too.
 //
-// Bare HTML ignores the self-closing flag on <script> (HTML5): the tokenizer
-// still arms script-data, so we must NOT call NextIsNotRawText and instead
-// collect until </script> like a normal start. SVG/MathML foreign self-closing
-// <script .../> does call NextIsNotRawText and records an empty body so a
-// following data script is not swallowed. StartTag script in foreign content
-// also calls NextIsNotRawText per x/net/html parser rules.
+// Comments are always collected wherever they sit. A comment inside an
+// executable script is impossible by construction: the tokenizer makes that
+// region raw text, so the walk never reaches it as a comment node.
+func collectHiddenContent(b *strings.Builder, n *html.Node, concealed bool) {
+	switch n.Type {
+	case html.CommentNode:
+		writeHiddenFragment(b, n.Data)
+		return
+	case html.TextNode:
+		if concealed {
+			writeHiddenFragment(b, n.Data)
+		}
+		return
+	case html.ElementNode:
+		if isExecutableScriptNode(n) {
+			// The executed body itself leaves the surface, so stop concealing
+			// and let the text children fall through unwritten. Children are
+			// still walked: in SVG and MathML a script body is parsed as
+			// markup, so a nested <script type="application/json"> is a real
+			// element whose data the browser never executes. Returning here
+			// instead would drop that data block from the scan.
+			concealed = false
+		} else if !concealed && elementConcealsText(n) {
+			concealed = true
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		collectHiddenContent(b, c, concealed)
+	}
+}
+
+// writeHiddenFragment appends one fragment and the newline that keeps
+// adjacent fragments from fusing into a match that exists in neither.
+func writeHiddenFragment(b *strings.Builder, s string) {
+	if s == "" {
+		return
+	}
+	b.WriteString(s)
+	b.WriteByte('\n')
+}
+
+// extractHiddenContent returns the concatenated hidden surface of an HTML
+// document for injection scanning.
 //
-// Foreign content after NextIsNotRawText can expose nested StartTag script
-// tokens. Closing the outer at the nested start (before classifying) keeps a
-// nested application/json body from being swallowed into an outer executable
-// range. HTML integration points match x/net/html foreign.go: SVG
-// desc/title/foreignObject, MathML mi/mo/mn/ms/mtext, and annotation-xml when
-// encoding is text/html or application/xhtml+xml. SVG <title> also needs
-// NextIsNotRawText so the tokenizer does not arm RCDATA and hide children.
-//
-// Active namespace follows an open-element stack (not a global htmlIntegration
-// counter): nested <svg>/<math> inside an HTML integration point re-enters
-// foreign content, so self-closing foreign script rules apply again. MathML
-// text integration points (mi/mo/mn/ms/mtext) stay foreign for immediate
-// mglyph/malignmark children (HTML5 / x/net/html inForeignContent).
-func findScriptElements(doc string) []scriptElement {
-	z := html.NewTokenizer(strings.NewReader(doc))
-	var out []scriptElement
-	offset := 0
-	// nsStack tracks open elements and their child namespace context.
-	// Top.foreign is true when the next child is SVG/MathML foreign content.
-	var nsStack []struct {
-		name    string
-		foreign bool
+// The error branch fails closed by handing the scanner the whole document. It
+// is unreachable as called: html.Parse reports only reader errors and a
+// strings.Reader has none, and the HTML parsing algorithm is defined to
+// recover from any byte sequence rather than reject one. It stays because the
+// failure direction has to be right if this ever reads from a network body.
+func extractHiddenContent(doc string) string {
+	root, err := html.Parse(strings.NewReader(doc))
+	if err != nil {
+		return doc
 	}
-	inForeign := func() bool {
-		return len(nsStack) > 0 && nsStack[len(nsStack)-1].foreign
-	}
-	pushNS := func(name string, foreign bool) {
-		nsStack = append(nsStack, struct {
-			name    string
-			foreign bool
-		}{name: name, foreign: foreign})
-	}
-	popNS := func(name string) {
-		for i := len(nsStack) - 1; i >= 0; i-- {
-			if nsStack[i].name == name {
-				nsStack = nsStack[:i]
-				return
-			}
-		}
-	}
-	collecting := false
-	var attrs string
-	var elemStart, bodyStart int
-
-	beginScript := func(raw string, tokenStart, tokenEnd int, selfClosing bool) {
-		attrs = scriptAttrsFromStartRaw(raw, selfClosing)
-		elemStart = tokenStart
-		bodyStart = tokenEnd
-		if selfClosing {
-			if inForeign() {
-				// SVG/MathML foreign self-closing script: clear script-data and
-				// record an empty-body element so a following data script is seen.
-				z.NextIsNotRawText()
-				out = append(out, scriptElement{
-					attrs:     attrs,
-					body:      "",
-					bodyStart: bodyStart,
-					bodyEnd:   bodyStart,
-					elemStart: elemStart,
-					elemEnd:   tokenEnd,
-				})
-				collecting = false
-				return
-			}
-			// Bare HTML: self-closing flag is ignored (HTML5). Tokenizer stays
-			// in script-data; collect like a normal start until </script>.
-			collecting = true
-			return
-		}
-		if inForeign() {
-			z.NextIsNotRawText()
-		}
-		collecting = true
-	}
-
-	for {
-		tt := z.Next()
-		if tt == html.ErrorToken {
-			if collecting {
-				// Unclosed script: retain through EOF (fail closed) so a
-				// data-script body is still scanned. extractHiddenContent
-				// continues to omit executable MIME.
-				out = append(out, scriptElement{
-					attrs:     attrs,
-					body:      doc[bodyStart:],
-					bodyStart: bodyStart,
-					bodyEnd:   len(doc),
-					elemStart: elemStart,
-					elemEnd:   len(doc),
-				})
-			}
-			return out
-		}
-		raw := string(z.Raw())
-		tokenStart := offset
-		tokenEnd := offset + len(raw)
-		offset = tokenEnd
-
-		// Token() consumes TagName/TagAttr iterators; call once per Next and
-		// reuse attrs (a second Token() returns empty Attr).
-		var tok html.Token
-		var name string
-		if tt == html.StartTagToken || tt == html.SelfClosingTagToken || tt == html.EndTagToken {
-			tok = z.Token()
-			name = tok.Data
-		}
-
-		// Track open elements + namespace (x/net/html foreign.go / inForeignContent).
-		// Self-closing tags do not change the stack. Under an active stack,
-		// every start tag is recorded so immediate-parent checks stay accurate.
-		switch tt {
-		case html.StartTagToken:
-			switch name {
-			case "svg", "math":
-				// Re-enter foreign even inside an HTML integration point
-				// (e.g. <svg> nested in <foreignObject>).
-				pushNS(name, true)
-			case "foreignobject", "desc", "title":
-				if inForeign() {
-					// SVG <title> arms tokenizer RCDATA like HTML title; clear
-					// it while entering from foreign content (parser always
-					// NextIsNotRawText for foreign start tags).
-					if name == "title" {
-						z.NextIsNotRawText()
-					}
-					pushNS(name, false)
-				}
-			case "mi", "mo", "mn", "ms", "mtext":
-				if inForeign() {
-					pushNS(name, false)
-				}
-			case "annotation-xml":
-				if inForeign() && annotationXMLEncodingIsHTMLIntegration(tok.Attr) {
-					pushNS(name, false)
-				} else if len(nsStack) > 0 {
-					pushNS(name, inForeign())
-				}
-			case "mglyph", "malignmark":
-				// HTML5: MathML text integration points remain in foreign
-				// content for mglyph/malignmark start tags (immediate parent).
-				if len(nsStack) > 0 {
-					top := nsStack[len(nsStack)-1]
-					switch top.name {
-					case "mi", "mo", "mn", "ms", "mtext":
-						pushNS(name, true)
-					default:
-						pushNS(name, inForeign())
-					}
-				}
-			default:
-				if len(nsStack) > 0 {
-					pushNS(name, inForeign())
-				}
-			}
-		case html.EndTagToken:
-			if len(nsStack) > 0 {
-				popNS(name)
-			}
-		}
-
-		if collecting {
-			// Foreign script (after NextIsNotRawText) can contain nested
-			// StartTag/SelfClosing script tokens. Close the outer before the
-			// nested start so classification sees each element separately.
-			if (tt == html.StartTagToken || tt == html.SelfClosingTagToken) && name == "script" {
-				out = append(out, scriptElement{
-					attrs:     attrs,
-					body:      doc[bodyStart:tokenStart],
-					bodyStart: bodyStart,
-					bodyEnd:   tokenStart,
-					elemStart: elemStart,
-					elemEnd:   tokenStart,
-				})
-				beginScript(raw, tokenStart, tokenEnd, tt == html.SelfClosingTagToken)
-				continue
-			}
-			if tt == html.EndTagToken && name == "script" {
-				out = append(out, scriptElement{
-					attrs:     attrs,
-					body:      doc[bodyStart:tokenStart],
-					bodyStart: bodyStart,
-					bodyEnd:   tokenStart,
-					elemStart: elemStart,
-					elemEnd:   tokenEnd,
-				})
-				collecting = false
-			}
-			continue
-		}
-
-		if name != "script" || (tt != html.StartTagToken && tt != html.SelfClosingTagToken) {
-			continue
-		}
-		beginScript(raw, tokenStart, tokenEnd, tt == html.SelfClosingTagToken)
-	}
-}
-
-// annotationXMLEncodingIsHTMLIntegration reports whether annotation-xml
-// attributes make it an HTML integration point per HTML5 / x/net/html
-// (encoding text/html or application/xhtml+xml).
-func annotationXMLEncodingIsHTMLIntegration(attrs []html.Attribute) bool {
-	for _, a := range attrs {
-		if a.Key != "encoding" {
-			continue
-		}
-		// Exact ASCII case-insensitive match (HTML5 / x/net/html foreign.go);
-		// do not TrimSpace — padded values are not HTML integration points.
-		return strings.EqualFold(a.Val, "text/html") || strings.EqualFold(a.Val, "application/xhtml+xml")
-	}
-	return false
-}
-
-// rangeStartsInside reports whether a0 lies in any half-open [r0,r1) in ranges.
-// Used so hidden-surface regex matches are skipped only when their start is
-// inside an executable <script> element (matches that begin outside but extend
-// into or past executable script stay scanned).
-func rangeStartsInside(a0 int, ranges [][2]int) bool {
-	for _, r := range ranges {
-		if a0 >= r[0] && a0 < r[1] {
-			return true
-		}
-	}
-	return false
-}
-
-// extractHiddenContent pulls text from HTML elements that readability strips
-// and that can carry model-facing prose while keeping the rendered page clean:
-// comments, non-executable data script bodies, style bodies, noscript bodies,
-// and hidden elements. Executable JavaScript bodies are omitted (see var block
-// comment). HTML comments, <style> bodies, <noscript> bodies, and
-// hidden-element matches whose start lies inside an executable <script>
-// element are also skipped so JS strings / markup containing <!-- -->,
-// <style>, <noscript>, or display:none decoys do not re-enter the scanned
-// surface after executable bodies were filtered out. Matches that start
-// outside executable script but extend into or past it (unclosed comment
-// through EOF; style open outside / close inside JS) stay scanned.
-func extractHiddenContent(html string) string {
-	scripts := findScriptElements(html)
-	exec := make([]bool, len(scripts))
-	var execRanges [][2]int
-	for i, s := range scripts {
-		if isExecutableJavaScriptMIME(scriptTypeAttribute(s.attrs)) {
-			exec[i] = true
-			execRanges = append(execRanges, [2]int{s.elemStart, s.elemEnd})
-		}
-	}
-
 	var b strings.Builder
-	for _, loc := range reHTMLComment.FindAllStringSubmatchIndex(html, -1) {
-		// loc[0]:loc[1] full match; loc[2]:loc[3] group 1 body.
-		if rangeStartsInside(loc[0], execRanges) {
-			continue
-		}
-		b.WriteString(html[loc[2]:loc[3]])
-		b.WriteByte('\n')
-	}
-	for i, s := range scripts {
-		if exec[i] {
-			continue
-		}
-		b.WriteString(s.body)
-		b.WriteByte('\n')
-	}
-	for _, loc := range reStyleBody.FindAllStringSubmatchIndex(html, -1) {
-		if rangeStartsInside(loc[0], execRanges) {
-			continue
-		}
-		b.WriteString(html[loc[2]:loc[3]])
-		b.WriteByte('\n')
-	}
-	for _, loc := range reNoscriptBody.FindAllStringSubmatchIndex(html, -1) {
-		if rangeStartsInside(loc[0], execRanges) {
-			continue
-		}
-		b.WriteString(html[loc[2]:loc[3]])
-		b.WriteByte('\n')
-	}
-	for _, loc := range reHiddenElement.FindAllStringSubmatchIndex(html, -1) {
-		if rangeStartsInside(loc[0], execRanges) {
-			continue
-		}
-		b.WriteString(html[loc[2]:loc[3]])
-		b.WriteByte('\n')
-	}
+	collectHiddenContent(&b, root, false)
 	return b.String()
 }
 

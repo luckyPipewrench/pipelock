@@ -24,9 +24,11 @@ import (
 func TestBrowserCAOwnershipRefusesASymlinkedLeaf(t *testing.T) {
 	dir := t.TempDir()
 
-	// The file the attacker wants the privileged change applied to.
+	// The file the attacker wants the privileged change applied to. 0400 is
+	// chosen so a redirected chmod to 0600 would be visible as a change, while
+	// staying inside the repository's file-permission rule.
 	victim := filepath.Join(dir, "victim")
-	if err := os.WriteFile(victim, []byte("victim"), 0o644); err != nil {
+	if err := os.WriteFile(victim, []byte("victim"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	victimBefore, err := os.Stat(victim)
@@ -63,11 +65,11 @@ func TestBrowserCAOwnershipRefusesASymlinkedLeaf(t *testing.T) {
 // refused everything, which is the shape a vacuous negative test takes.
 func TestBrowserCAOwnershipAppliesToARegularLeaf(t *testing.T) {
 	leaf := filepath.Join(t.TempDir(), "cert9.db")
-	if err := os.WriteFile(leaf, []byte("db"), 0o644); err != nil {
+	if err := os.WriteFile(leaf, []byte("db"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	// Pass this process's own ids so Fchown is a no-op rather than a privileged
-	// change; the mode change is what this control observes.
+	// change; the mode change from 0400 to 0600 is what this control observes.
 	if err := applyAgentOwnershipNoFollow(leaf, 0o600, os.Getuid(), os.Getgid()); err != nil {
 		t.Fatalf("applyAgentOwnershipNoFollow on a regular file: %v", err)
 	}

@@ -88,7 +88,23 @@ namespace, so the in-namespace listener cannot come from socket activation.`,
 	return cmd
 }
 
-func runNetnsForward(ctx context.Context, opts netnsForwardOpts, errOut io.Writer) error {
+// syncWriter serializes diagnostic writes. Each accepted connection reports
+// failures from its own goroutine, and io.Writer promises nothing about
+// concurrent use, so interleaved or torn lines are the caller's problem
+// unless we take the lock here.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+func runNetnsForward(ctx context.Context, opts netnsForwardOpts, rawErrOut io.Writer) error {
+	errOut := &syncWriter{w: rawErrOut}
 	// Fail closed on a missing doorway rather than accepting connections that
 	// cannot go anywhere. An agent that gets a refused connection learns the
 	// proxy is down; one that gets an accepted-then-dropped connection sees a

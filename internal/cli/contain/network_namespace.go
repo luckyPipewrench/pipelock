@@ -162,9 +162,9 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		want string
 	}{
 		{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit()},
-		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName)},
+		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
 		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.port)},
-		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.port)},
+		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}
 	for _, unit := range units {
 		if strings.TrimSpace(unit.path) == "" {
@@ -316,7 +316,7 @@ func namespaceProbeSystemdRunArgs(env *probeEnv, command []string) []string {
 // lives in the host namespace because that is the only place systemd will put
 // a .socket listener; SocketMode/SocketGroup are what actually restrict who
 // may cross it.
-func renderContainedProxySocketUnit(socketPath, agentUser string) string {
+func renderContainedProxySocketUnit(agentUser string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Pipelock host doorway socket for the contained-agent namespace
 
@@ -329,14 +329,14 @@ RemoveOnStop=true
 
 [Install]
 WantedBy=sockets.target
-`, socketPath, agentUser)
+`, containedDoorwaySocketPath, agentUser)
 }
 
 // renderContainedNamespaceForwarderUnit creates the in-namespace listener. It
 // is a service rather than a socket because JoinsNamespaceOf= places a unit's
 // PROCESSES in the namespace, which is exactly what is needed here and exactly
 // what a socket unit's listener does not get.
-func renderContainedNamespaceForwarderUnit(pipelockPath, socketPath, agentUser string, port int) string {
+func renderContainedNamespaceForwarderUnit(pipelockPath, agentUser string, port int) string {
 	return fmt.Sprintf(`[Unit]
 Description=Pipelock proxy listener inside the contained-agent network namespace
 Requires=%s
@@ -362,7 +362,7 @@ WantedBy=multi-user.target
 `, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
 		containedProxyForwarderUnit, containedProxyForwarderUnit,
 		containedNetworkNamespaceUnit,
-		agentUser, agentUser, pipelockPath, port, socketPath)
+		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath)
 }
 
 func renderContainedProxyForwarderUnit(proxyUser string, port int) string {
@@ -449,9 +449,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			paths := []managedFile{
 				{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit(), modeUnitFile},
-				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName), modeUnitFile},
+				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName), modeUnitFile},
 				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.proxyUserName, env.proxyPort), modeUnitFile},
-				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.proxyPort), modeUnitFile},
+				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.proxyPort), modeUnitFile},
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
 			unitDir := filepath.Dir(env.proxyForwarderSocketPath)

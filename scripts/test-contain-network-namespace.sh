@@ -6,6 +6,7 @@ set -u -o pipefail
 
 namespace_unit=pipelock-agent-netns.service
 proxy_socket=pipelock-agent-proxy.socket
+namespace_forwarder=pipelock-agent-netns-forward.service
 agent_user=pipelock-agent
 proxy_port="${1:-8888}"
 run_id="$$"
@@ -89,14 +90,24 @@ touch "${inside_port_file}" "${host_port_file}"
 chown "${agent_user}" "${inside_port_file}"
 chmod 0600 "${inside_port_file}" "${host_port_file}"
 
-# Starting the namespace-bound socket creates the private network namespace and
-# the one allowed bridge to the host proxy. It creates no interface or route.
+# The host doorway is a pathname unix socket in the HOST namespace, because
+# systemd.socket(5) allocates every .socket listener there regardless of
+# PrivateNetwork=. The in-namespace listener is a separate service that joins
+# the namespace and dials that socket.
 if ! systemctl start "${proxy_socket}"; then
-    fail "start installed namespace proxy socket ${proxy_socket}"
+    fail "start host doorway socket ${proxy_socket}"
+    exit 1
+fi
+if ! systemctl start "${namespace_forwarder}"; then
+    fail "start in-namespace proxy listener ${namespace_forwarder}"
     exit 1
 fi
 if ! systemctl is-active --quiet "${namespace_unit}"; then
     fail "private network namespace anchor ${namespace_unit} is active"
+    exit 1
+fi
+if ! systemctl is-active --quiet "${namespace_forwarder}"; then
+    fail "in-namespace proxy listener ${namespace_forwarder} is active"
     exit 1
 fi
 

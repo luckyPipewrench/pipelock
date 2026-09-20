@@ -4013,11 +4013,11 @@ func allPassEnv(t *testing.T) *probeEnv {
 		case env.networkNamespaceUnitPath:
 			return []byte(renderContainedNetworkNamespaceUnit()), nil
 		case env.proxyForwarderSocketPath:
-			return []byte(renderContainedProxySocketUnit(containedDoorwaySocketPath, env.agentUserName)), nil
+			return []byte(renderContainedProxySocketUnit(env.agentUserName)), nil
 		case env.proxyForwarderServicePath:
 			return []byte(renderContainedProxyForwarderUnit(env.proxyUserName, env.port)), nil
 		case env.namespaceForwarderServicePath:
-			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, containedDoorwaySocketPath, env.agentUserName, env.port)), nil
+			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)), nil
 		case env.loopbackForwarderInvPath:
 			return []byte("{\n  \"services\": []\n}\n"), nil
 		}

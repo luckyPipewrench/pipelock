@@ -324,12 +324,14 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 // channel; scanning them blocked clean pages (~858KB HTML vs ~6.6KB rendered
 // text). Injection that only lives in executable JS is still covered when
 // readability fails: the follow-up scan runs on the raw HTML body. Data
-// scripts (application/json, ld+json, text/plain, …), comments, style, and
-// hidden elements remain on the hidden surface because they carry prose an
-// attacker can aim at the model while keeping the rendered page clean.
+// scripts (application/json, ld+json, text/plain, …), comments, style,
+// noscript, and hidden elements remain on the hidden surface because they
+// carry prose an attacker can aim at the model while keeping the rendered
+// page clean.
 var (
 	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)(?:-->|$)`)
 	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
+	reNoscriptBody  = regexp.MustCompile(`(?si)<noscript[^>]*>(.*?)</noscript>`)
 	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
 		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
 		`[^>]*>(.*?)</`)
@@ -683,16 +685,13 @@ func rangeOverlaps(a0, a1 int, ranges [][2]int) bool {
 
 // extractHiddenContent pulls text from HTML elements that readability strips
 // and that can carry model-facing prose while keeping the rendered page clean:
-// comments, non-executable data script bodies, style bodies, and hidden
-// elements. Executable JavaScript bodies are omitted (see var block comment).
-// HTML comments, <style> bodies, and hidden-element matches whose ranges fall
-// inside executable <script> elements are also skipped so JS strings / markup
-// containing <!-- -->, <style>, or display:none decoys do not re-enter the
-// scanned surface after executable bodies were filtered out.
-//
-// Gap: <noscript> bodies are not extracted today. Rendered/agent text may still
-// include noscript content via readability; do not treat this helper as
-// covering that surface.
+// comments, non-executable data script bodies, style bodies, noscript bodies,
+// and hidden elements. Executable JavaScript bodies are omitted (see var block
+// comment). HTML comments, <style> bodies, <noscript> bodies, and
+// hidden-element matches whose ranges fall inside executable <script> elements
+// are also skipped so JS strings / markup containing <!-- -->, <style>,
+// <noscript>, or display:none decoys do not re-enter the scanned surface after
+// executable bodies were filtered out.
 func extractHiddenContent(html string) string {
 	scripts := findScriptElements(html)
 	exec := make([]bool, len(scripts))
@@ -721,6 +720,13 @@ func extractHiddenContent(html string) string {
 		b.WriteByte('\n')
 	}
 	for _, loc := range reStyleBody.FindAllStringSubmatchIndex(html, -1) {
+		if rangeOverlaps(loc[0], loc[1], execRanges) {
+			continue
+		}
+		b.WriteString(html[loc[2]:loc[3]])
+		b.WriteByte('\n')
+	}
+	for _, loc := range reNoscriptBody.FindAllStringSubmatchIndex(html, -1) {
 		if rangeOverlaps(loc[0], loc[1], execRanges) {
 			continue
 		}

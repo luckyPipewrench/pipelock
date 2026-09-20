@@ -246,13 +246,13 @@ func TestExtractHiddenContent_HostileSurfaces(t *testing.T) {
 			// <!-- in an ignored attribute before an executable script; the
 			// regex match extends through a later closed comment with the
 			// directive. Start is outside exec → stay scanned (not rangeOverlaps).
-			html: `<img alt="<!--"><script>const KEEP="x";</script><!-- ` + directive + ` -->`,
+			html:         `<img alt="<!--"><script>const KEEP="x";</script><!-- ` + directive + ` -->`,
 			wantContains: directive,
 		},
 		{
 			name: "closed_comment_straddle_attr_into_exec_script_still_scanned",
 			// Comment opens in ignored attr (outside), closes inside exec JS.
-			html: `<img alt="<!-- ` + directive + ` "><script>const CLOSE="-->";</script>`,
+			html:         `<img alt="<!-- ` + directive + ` "><script>const CLOSE="-->";</script>`,
 			wantContains: directive,
 		},
 		{

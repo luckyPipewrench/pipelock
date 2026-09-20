@@ -547,11 +547,13 @@ func scriptAttrsFromStartRaw(raw string, selfClosing bool) string {
 // element is retained through EOF so its body is still classified
 // (executable MIME omitted; data scanned). Matching then stops.
 //
-// Self-closing <script .../> still arms the tokenizer's script-data rawTag;
-// NextIsNotRawText clears it and the element is recorded with an empty body
-// so a following data script is not swallowed. SVG/MathML foreign content is
-// tracked (foreignObject is an HTML integration point): StartTag script in
-// foreign content also calls NextIsNotRawText per x/net/html parser rules.
+// Bare HTML ignores the self-closing flag on <script> (HTML5): the tokenizer
+// still arms script-data, so we must NOT call NextIsNotRawText and instead
+// collect until </script> like a normal start. SVG/MathML foreign self-closing
+// <script .../> does call NextIsNotRawText and records an empty body so a
+// following data script is not swallowed. foreignObject is an HTML integration
+// point; StartTag script in foreign content also calls NextIsNotRawText per
+// x/net/html parser rules.
 func findScriptElements(doc string) []scriptElement {
 	z := html.NewTokenizer(strings.NewReader(doc))
 	var out []scriptElement
@@ -641,17 +643,23 @@ func findScriptElements(doc string) []scriptElement {
 		bodyStart = tokenEnd
 
 		if selfClosing {
-			// Tokenizer still arms script-data for <script .../>; clear it and
-			// record an empty-body element so a following data script is seen.
-			z.NextIsNotRawText()
-			out = append(out, scriptElement{
-				attrs:     attrs,
-				body:      "",
-				bodyStart: bodyStart,
-				bodyEnd:   bodyStart,
-				elemStart: elemStart,
-				elemEnd:   tokenEnd,
-			})
+			if foreignDepth > 0 && htmlIntegration == 0 {
+				// SVG/MathML foreign self-closing script: clear script-data and
+				// record an empty-body element so a following data script is seen.
+				z.NextIsNotRawText()
+				out = append(out, scriptElement{
+					attrs:     attrs,
+					body:      "",
+					bodyStart: bodyStart,
+					bodyEnd:   bodyStart,
+					elemStart: elemStart,
+					elemEnd:   tokenEnd,
+				})
+				continue
+			}
+			// Bare HTML: self-closing flag is ignored (HTML5). Tokenizer stays
+			// in script-data; collect like a normal start until </script>.
+			collecting = true
 			continue
 		}
 

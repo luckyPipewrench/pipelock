@@ -146,6 +146,95 @@ func TestEntitlementDB_RevokeTrialAccessRejectsInvalidState(t *testing.T) {
 	})
 }
 
+func TestEntitlementDB_RevokeTrialAccessDatabaseFailures(t *testing.T) {
+	seedActiveTrial := func(t *testing.T, db *EntitlementDB, id string, withIssuance bool) {
+		t.Helper()
+		now := time.Now().UTC()
+		expires := now.Add(time.Hour)
+		ent := testEntitlement(id)
+		ent.Tier = tierTrial
+		ent.BillingInterval = billingIntervalOneTime
+		ent.Status = statusActive
+		ent.LastLicenseID = "lic_" + id
+		ent.LastLicenseIssuedAt = &now
+		ent.LastLicenseExpiresAt = &expires
+		if err := db.Upsert(t.Context(), ent); err != nil {
+			t.Fatalf("seed active trial: %v", err)
+		}
+		if withIssuance {
+			if err := db.InsertLicenseIssuance(t.Context(), LicenseIssuance{
+				LicenseID:      ent.LastLicenseID,
+				SubscriptionID: id,
+				IssuedAt:       now,
+				ExpiresAt:      expires,
+			}); err != nil {
+				t.Fatalf("seed license issuance: %v", err)
+			}
+		}
+	}
+
+	t.Run("lock file cannot open", func(t *testing.T) {
+		db := openTestDB(t)
+		db.trialSupportLockPath = filepath.Join(t.TempDir(), "missing", "trial-support.lock")
+		called := false
+		err := db.withTrialSupportLock(func() error {
+			called = true
+			return nil
+		})
+		if err == nil || called {
+			t.Fatalf("lock failure: called=%t err=%v", called, err)
+		}
+	})
+
+	t.Run("entitlement lookup fails", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, err := db.db.ExecContext(t.Context(), `DROP TABLE entitlements`); err != nil {
+			t.Fatalf("drop entitlements: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_lookup_failure", "support", time.Now()); err == nil || !strings.Contains(err.Error(), "load trial entitlement") {
+			t.Fatalf("lookup failure error = %v", err)
+		}
+	})
+
+	t.Run("issuance listing fails", func(t *testing.T) {
+		db := openTestDB(t)
+		seedActiveTrial(t, db, "order_issuance_failure", false)
+		if _, err := db.db.ExecContext(t.Context(), `DROP TABLE license_issuances`); err != nil {
+			t.Fatalf("drop license issuances: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_issuance_failure", "support", time.Now()); err == nil || !strings.Contains(err.Error(), "list trial license issuances") {
+			t.Fatalf("issuance failure error = %v", err)
+		}
+	})
+
+	t.Run("revocation write fails", func(t *testing.T) {
+		db := openTestDB(t)
+		seedActiveTrial(t, db, "order_revocation_failure", true)
+		if _, err := db.db.ExecContext(t.Context(), `DROP TABLE license_revocations`); err != nil {
+			t.Fatalf("drop license revocations: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_revocation_failure", "support", time.Now()); err == nil || !strings.Contains(err.Error(), "record trial license revocation") {
+			t.Fatalf("revocation failure error = %v", err)
+		}
+	})
+
+	t.Run("entitlement update fails", func(t *testing.T) {
+		db := openTestDB(t)
+		seedActiveTrial(t, db, "order_update_failure", false)
+		if _, err := db.db.ExecContext(t.Context(), `
+			CREATE TRIGGER fail_trial_revoke
+			BEFORE UPDATE ON entitlements
+			WHEN NEW.status = 'revoked'
+			BEGIN SELECT RAISE(ABORT, 'forced trial revoke failure'); END
+		`); err != nil {
+			t.Fatalf("create update failure trigger: %v", err)
+		}
+		if _, _, err := db.RevokeTrialAccess(t.Context(), "order_update_failure", "support", time.Now()); err == nil || !strings.Contains(err.Error(), "persist revoked trial entitlement") {
+			t.Fatalf("update failure error = %v", err)
+		}
+	})
+}
+
 func TestEntitlementDB_ConcurrentWritersClaimOneActiveTrialSlot(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "entitlements.db")
 	first, err := OpenEntitlementDB(t.Context(), dbPath)

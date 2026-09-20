@@ -3369,6 +3369,30 @@ func TestTrialSupportAccessDatabaseErrors(t *testing.T) {
 	})
 }
 
+func TestHandleOrderRefundEventLockedRechecksDelivery(t *testing.T) {
+	t.Run("already committed", func(t *testing.T) {
+		ts := newTestSetup(t)
+		const msgID = "msg_refund_recheck_committed"
+		if err := ts.db.MarkWebhookCommitted(t.Context(), msgID, EventOrderRefunded, "order_refund_recheck"); err != nil {
+			t.Fatalf("mark webhook committed: %v", err)
+		}
+		if err := ts.handler.handleOrderRefundEventLocked(t.Context(), &PolarWebhookEvent{Type: EventOrderRefunded}, msgID, &PolarOrder{ID: "order_refund_recheck"}); err != nil {
+			t.Fatalf("committed refund recheck: %v", err)
+		}
+	})
+
+	t.Run("database error", func(t *testing.T) {
+		ts := newTestSetup(t)
+		if err := ts.db.Close(); err != nil {
+			t.Fatalf("close database: %v", err)
+		}
+		err := ts.handler.handleOrderRefundEventLocked(t.Context(), &PolarWebhookEvent{Type: EventOrderRefunded}, "msg_refund_recheck_error", &PolarOrder{ID: "order_refund_recheck"})
+		if err == nil || !strings.Contains(err.Error(), "recheck webhook delivery") {
+			t.Fatalf("refund recheck error = %v", err)
+		}
+	})
+}
+
 func TestHandleActive_ConcurrentTrialClaimReturnsDenial(t *testing.T) {
 	ts := newTestSetup(t)
 	now := time.Now().UTC()

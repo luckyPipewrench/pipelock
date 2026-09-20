@@ -87,8 +87,8 @@ func TestProbeWorkspaceAccess_FailsOnUnreadableInventory(t *testing.T) {
 	env := makeProbeEnv(t)
 	env.workspaceInvErr = errors.New("permission denied")
 	probes := probesForEnv(env)
-	if probes[len(probes)-3].name != "workspace_access" {
-		t.Fatalf("workspace_access probe must run when the inventory is unreadable; got %q", probes[len(probes)-3].name)
+	if probes[len(probes)-4].name != "workspace_access" {
+		t.Fatalf("workspace_access probe must run when the inventory is unreadable; got %q", probes[len(probes)-4].name)
 	}
 	status, detail := probeWorkspaceAccess(context.Background(), env)
 	if status != statusFail || !strings.Contains(detail, "could not be read") {

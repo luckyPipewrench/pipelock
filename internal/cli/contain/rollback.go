@@ -141,7 +141,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		// not destroy operator trust state it did not create.
 		actionRestorePath("pipelock CA export", func(e *installEnv) string { return e.caExportPath }),
 		actionRestorePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
-		actionRemoveOwnedLoopbackAnchor(),
+		actionRemoveNetworkNamespace(),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
@@ -157,26 +157,64 @@ func rollbackActions(opts rollbackOpts) []step {
 	}
 }
 
-func actionRemoveOwnedLoopbackAnchor() step {
+func actionRemoveNetworkNamespace() step {
 	return step{
-		name: "remove-owned-loopback-anchor",
-		desc: "remove the Pipelock-owned loopback cgroup anchor",
+		name: "remove-agent-network-namespace",
+		desc: "remove the contained-agent network namespace and proxy forwarder units",
 		undo: func(ctx context.Context, env *installEnv) error {
-			if !env.ownedLoopback {
-				return nil
+			var errs []error
+			if inv, err := readLoopbackForwarderInventory(env); err != nil {
+				errs = append(errs, err)
+			} else {
+				unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+				for _, record := range inv.Services {
+					socket := record.Unit + ".socket"
+					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", socket); err != nil {
+						errs = append(errs, err)
+					}
+					for _, suffix := range []string{".socket", ".service"} {
+						path := filepath.Join(unitDir, record.Unit+suffix)
+						if err := restoreBackup(env, path); err != nil {
+							errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+						}
+					}
+				}
 			}
-			path := env.ownedLoopbackAnchorUnitPath
-			if path == "" {
-				return nil
+			for _, path := range []string{env.proxyForwarderSocketPath, env.proxyForwarderServicePath, env.networkNamespaceUnitPath} {
+				if path == "" {
+					continue
+				}
+				unit := filepath.Base(path)
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+					errs = append(errs, fmt.Errorf("disable %s: %w", unit, err))
+				}
+				if err := restoreBackup(env, path); err != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+				}
 			}
-			unit := filepath.Base(path)
-			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
-				return fmt.Errorf("disable owned loopback anchor %s: %w", unit, err)
+			// Remove the prior release's cgroup anchor too. It is no longer a
+			// containment mechanism and must not survive as a second apparent
+			// source of truth after rollback or upgrade.
+			if path := env.ownedLoopbackAnchorUnitPath; path != "" {
+				unit := filepath.Base(path)
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+					errs = append(errs, fmt.Errorf("disable legacy %s: %w", unit, err))
+				}
+				for _, candidate := range []string{path, path + ".bak"} {
+					if err := env.removeFile(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+						errs = append(errs, fmt.Errorf("remove legacy %s: %w", candidate, err))
+					}
+				}
 			}
-			if err := restoreBackup(env, path); err != nil {
-				return fmt.Errorf("restore %s: %w", path, err)
+			if env.loopbackForwarderInvPath != "" {
+				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
+				}
 			}
-			return runOrErr(ctx, env, "systemctl", "daemon-reload")
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				errs = append(errs, err)
+			}
+			return errors.Join(errs...)
 		},
 	}
 }

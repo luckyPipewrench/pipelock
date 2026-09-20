@@ -37,56 +37,30 @@ func loopbackTestService(port int) config.ContainmentLoopbackService {
 	}
 }
 
-// TestRenderNFTRulesWithLoopbackServicesGolden pins the exact rule text for
-// 0, 1, and 2 declared loopback services: the additional accepts sit inside
-// the managed block, immediately after the implicit proxy-port allow and
-// before the DNS drops, in declaration order.
+// TestRenderNFTRulesWithLoopbackServicesGolden pins the namespace-era
+// contract: declarations never widen the host nftables boundary.
 func TestRenderNFTRulesWithLoopbackServicesGolden(t *testing.T) {
 	t.Parallel()
 
-	none := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, nil)
-	if none != RenderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort) {
-		t.Fatal("zero declared services must render identically to RenderNFTRules")
-	}
-
-	one := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
-		loopbackTestService(9200),
-	})
-	wantOnePair := "\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp dport 9200 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept\n"
-	if !strings.Contains(one, wantOnePair) {
-		t.Fatalf("one declared service: missing complete pair %q in:\n%s", wantOnePair, one)
-	}
-	if idx := strings.Index(one, wantOnePair); idx == -1 || !strings.Contains(one[:idx], "dport 8888 accept") {
-		t.Fatalf("declared loopback pair must render after the implicit proxy-port allow:\n%s", one)
-	}
-	if idx := strings.Index(one, wantOnePair); idx == -1 || !strings.Contains(one[idx:], "udp dport 53") {
-		t.Fatalf("declared loopback pair must render before the DNS drops:\n%s", one)
-	}
-
-	two := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
+	want := RenderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort)
+	got := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{
 		loopbackTestService(9200),
 		loopbackTestService(9201),
 	})
-	wantTwoPairs := wantOnePair +
-		"\t        meta skuid 966 oifname \"lo\" ip daddr 127.0.0.1 tcp dport 9201 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip saddr 127.0.0.1 tcp sport 9201 ct state established ct direction reply accept\n"
-	if !strings.Contains(two, wantTwoPairs) {
-		t.Fatalf("two declared services: missing contiguous pairs in:\n%s", two)
+	if got != want || strings.Contains(got, "9200") || strings.Contains(got, "9201") {
+		t.Fatalf("declared services widened host nft rules:\n%s", got)
 	}
 }
 
-// TestRenderNFTRulesWithLoopbackServicesIPv6 confirms the ::1 render path
-// uses "ip6 daddr" instead of "ip daddr".
+// IPv6 declarations use the same namespace socket mechanism and likewise do
+// not create a host nftables exception.
 func TestRenderNFTRulesWithLoopbackServicesIPv6(t *testing.T) {
 	t.Parallel()
 	svc := loopbackTestService(9200)
 	svc.Host = "::1"
 	body := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{svc})
-	want := "\t        meta skuid 966 oifname \"lo\" ip6 daddr ::1 tcp dport 9200 accept\n" +
-		"\t        meta skuid 966 oifname \"lo\" ip6 saddr ::1 tcp sport 9200 ct state established ct direction reply accept\n"
-	if !strings.Contains(body, want) {
-		t.Fatalf("missing ipv6 declared pair in:\n%s", body)
+	if strings.Contains(body, "::1") || strings.Contains(body, "9200") {
+		t.Fatalf("IPv6 declaration widened host nft rules:\n%s", body)
 	}
 }
 
@@ -303,8 +277,8 @@ func TestReloadRecognizesBlockWithDeclaredLoopbackServices(t *testing.T) {
 				t.Fatalf("reload script missing delete for handle %d:\n%s", handle, script)
 			}
 		}
-		if strings.Count(script, "dport 9200 accept") != 1 || strings.Count(script, "sport 9200 ct state established ct direction reply accept") != 1 {
-			t.Fatalf("reload should load exactly one fresh declared pair, not append alongside the old pair:\n%s", script)
+		if strings.Contains(script, "dport 9200 accept") || strings.Contains(script, "sport 9200 ct state established ct direction reply accept") {
+			t.Fatalf("reload must remove the legacy declared pair without adding a host replacement:\n%s", script)
 		}
 	})
 }
@@ -474,8 +448,8 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 		}
 	}
 	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-	if len(handles) != 8 {
-		t.Fatalf("after repeated reloads, got %d managed rules, want one paired block of 8: %v", len(handles), handles)
+	if len(handles) != 6 {
+		t.Fatalf("after repeated reloads, got %d managed rules, want one namespace-era block of 6: %v", len(handles), handles)
 	}
 	for _, line := range foreign {
 		// nft lists an established-reply rule in its numeric form, which is what a
@@ -490,97 +464,27 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 	}
 }
 
-// TestVerifyDeclaredLoopbackServiceMatchers is the direct-function proof for
-// the two verify-side matchers: an accept for a declared host:port is
-// recognized before the drop, and lineHasAgentLoopbackAllowForHost does not
-// falsely match an unrelated port or host.
-func TestVerifyDeclaredLoopbackServiceMatchers(t *testing.T) {
+// TestLegacyLoopbackRuleMatchers keeps migration recognition narrow: reload
+// may remove old host nft exceptions, but verify never treats them as safe.
+func TestLegacyLoopbackRuleMatchers(t *testing.T) {
 	t.Parallel()
-	lines := []string{
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
-		`meta skuid 966 oifname "lo" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`,
-		"meta skuid 966 counter drop",
-	}
-	if !chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
-		t.Fatal("declared accept before the catch-all drop must be recognized")
-	}
-	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9201) {
-		t.Fatal("a different declared port must not match")
-	}
-	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(lines, loopbackTestAgentUID, "::1", 9200) {
-		t.Fatal("a different declared host must not match")
-	}
-	if !chainLinesHaveDeclaredLoopbackPairBeforeDrop(lines, loopbackTestAgentUID, "127.0.0.1", 9200) {
-		t.Fatal("a complete declared pair before the catch-all drop must be recognized")
+	if !lineHasAgentLoopbackAllowForHost(`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`, loopbackTestAgentUID, "127.0.0.1", 9200) {
+		t.Fatal("legacy forward rule must be recognized for removal")
 	}
 	if lineHasAgentLoopbackAllowForHost("meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept", loopbackTestAgentUID, "127.0.0.1", 9200) {
-		t.Fatal("an interface-unrestricted declared forward rule must not be recognized")
+		t.Fatal("an interface-unrestricted rule must not match the paired legacy form")
 	}
 	if lineHasAgentLoopbackReplyForHost(`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`, loopbackTestAgentUID, "127.0.0.1", 9200) {
 		t.Fatal("a destination-address reply rule must not be recognized")
-	}
-
-	afterDrop := []string{
-		"meta skuid 966 counter drop",
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
-	}
-	if chainLinesHaveDeclaredLoopbackAllowBeforeDrop(afterDrop, loopbackTestAgentUID, "127.0.0.1", 9200) {
-		t.Fatal("an accept appearing AFTER the catch-all drop is unreachable and must not count")
-	}
-	if chainLinesHaveDeclaredLoopbackReplyBeforeDrop([]string{`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`, "meta skuid 966 counter drop"}, loopbackTestAgentUID, "127.0.0.1", 9200) {
-		t.Fatal("a missing reply half must not be accepted as a complete declared pair")
-	}
-}
-
-// TestDeclaredLoopbackPairProblemNamesChainState ensures verification does not
-// call a present first pair "missing" when later copies or ordering defects
-// reveal a failed reconciliation.
-func TestDeclaredLoopbackPairProblemNamesChainState(t *testing.T) {
-	t.Parallel()
-	block, _ := managedBlockWithLoopbackServicePairs(20, []int{9200})
-	base := strings.Split(numericNftStateListing(block), "\n")
-	svc := loopbackTestService(9200)
-
-	tests := []struct {
-		name  string
-		lines []string
-		want  string
-	}{
-		{
-			name:  "missing",
-			lines: append([]string(nil), base[:4]...),
-			want:  "missing",
-		},
-		{
-			name:  "duplicated",
-			lines: append(append([]string(nil), base...), base...),
-			want:  "duplicated",
-		},
-		{
-			name: "misordered",
-			lines: func() []string {
-				lines := append([]string(nil), base...)
-				lines[3], lines[4] = lines[4], lines[3]
-				return lines
-			}(),
-			want: "misordered",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			problem := declaredLoopbackPairProblem(tc.lines, loopbackTestAgentUID, svc)
-			if !strings.Contains(problem, "forward/reply pair is "+tc.want) {
-				t.Fatalf("problem = %q, want %q", problem, tc.want)
-			}
-		})
 	}
 }
 
 // TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices proves the core
 // verify security decision: an undeclared loopback accept for the agent UID
 // is unsafe, an accept the declared set names is not, and the implicit
-// proxy-port allow keeps passing regardless of the declared set.
-func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
+// proxy-port allow keeps passing while every old host-loopback exception is
+// rejected, even when the service remains declared for namespace forwarding.
+func TestUnsafeVerdictRejectsLegacyLoopbackServices(t *testing.T) {
 	t.Parallel()
 	uids := containmentUIDs{operatorUID: loopbackTestOperatorUID, operatorKnown: true, proxyUID: loopbackTestProxyUID, agentUID: loopbackTestAgentUID}
 
@@ -589,19 +493,18 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 			"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9200 accept",
 			"meta skuid 966 counter drop",
 		}
-		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, nil) {
+		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
 			t.Fatal("an undeclared loopback accept before the agent drop must be flagged unsafe")
 		}
 	})
 
-	t.Run("declared loopback accept is not unsafe", func(t *testing.T) {
+	t.Run("formerly declared loopback accept is unsafe", func(t *testing.T) {
 		lines := []string{
 			`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`,
 			"meta skuid 966 counter drop",
 		}
-		declared := []config.ContainmentLoopbackService{loopbackTestService(9200)}
-		if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, declared) {
-			t.Fatal("a declared loopback accept must not be flagged unsafe")
+		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
+			t.Fatal("a declared service no longer justifies a host nft accept")
 		}
 	})
 
@@ -610,8 +513,7 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 			"meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept",
 			"meta skuid 966 counter drop",
 		}
-		declared := []config.ContainmentLoopbackService{loopbackTestService(9200)}
-		if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, declared) {
+		if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
 			t.Fatal("the implicit proxy-port allow must never be flagged unsafe")
 		}
 	})
@@ -621,22 +523,18 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 			"meta skuid 966 ip daddr 127.0.0.1 tcp dport 9300 accept",
 			"meta skuid 966 counter drop",
 		}
-		declared := []config.ContainmentLoopbackService{loopbackTestService(9200)}
-		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, declared) {
+		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
 			t.Fatal("an accept for an undeclared port must stay unsafe even with an unrelated declared service present")
 		}
 	})
 
-	t.Run("declared ::1 loopback accept is not unsafe", func(t *testing.T) {
+	t.Run("formerly declared ::1 loopback accept is unsafe", func(t *testing.T) {
 		lines := []string{
 			`meta skuid 966 oifname "lo" ip6 daddr ::1 tcp dport 9200 accept`,
 			"meta skuid 966 counter drop",
 		}
-		svc := loopbackTestService(9200)
-		svc.Host = "::1"
-		declared := []config.ContainmentLoopbackService{svc}
-		if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, declared) {
-			t.Fatal("a declared ::1 loopback accept must not be flagged unsafe")
+		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
+			t.Fatal("a declared ::1 service no longer justifies a host nft accept")
 		}
 	})
 
@@ -645,17 +543,14 @@ func TestUnsafeVerdictToleratesOnlyDeclaredLoopbackServices(t *testing.T) {
 			"meta skuid 966 ip6 daddr ::1 tcp dport 9200 accept",
 			"meta skuid 966 counter drop",
 		}
-		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort, nil) {
+		if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, loopbackTestProxyPort) {
 			t.Fatal("an undeclared ::1 loopback accept must be flagged unsafe")
 		}
 	})
 }
 
-// TestVerifyPersistenceRendersDeclaredIPv6Service confirms verifyNFTPersistence's
-// canonical-rules comparison (via renderNFTRulesWithServices) includes a
-// declared ::1 entry's ip6 accept line, so a persisted rules file that
-// carries the ::1 exception still matches canonical instead of being
-// reported as drifted.
+// Declared IPv6 services are absent from the persisted host rules because the
+// namespace socket inventory is their source of truth.
 func TestVerifyPersistenceRendersDeclaredIPv6Service(t *testing.T) {
 	t.Parallel()
 	svc := loopbackTestService(9200)
@@ -669,8 +564,8 @@ func TestVerifyPersistenceRendersDeclaredIPv6Service(t *testing.T) {
 		Chain:            defaultNFTChain,
 		LoopbackServices: []config.ContainmentLoopbackService{svc},
 	})
-	if !strings.Contains(body, "ip6 daddr ::1 tcp dport 9200 accept") {
-		t.Fatalf("rendered persisted rules text missing declared ::1 accept:\n%s", body)
+	if strings.Contains(body, "::1") || strings.Contains(body, "9200") {
+		t.Fatalf("rendered persisted rules unexpectedly carry declared ::1 service:\n%s", body)
 	}
 }
 
@@ -1044,87 +939,8 @@ func TestReloadRecognizesBlockWithIPv6DeclaredLoopbackService(t *testing.T) {
 			t.Fatalf("reload script missing delete for handle %d (block not recognized, would append a second block):\n%s", handle, script)
 		}
 	}
-	if strings.Count(script, "ip6 daddr ::1 tcp dport 9200 accept") != 1 {
-		t.Fatalf("reload should load exactly one fresh ::1 accept, not append alongside the old one:\n%s", script)
-	}
-}
-
-// TestDoctorSurfacesMissingDeclaredLoopbackService confirms `contain doctor`
-// has a section that reports a declared loopback service: doctor.go has no
-// dedicated "list declared exceptions" printout (checked: doctor.go has no
-// occurrence of "metrics_exposure", "MetricsExposure", or "managed config" --
-// grep run during this pass came back empty), but doctorChainStructureReader
-// (doctor.go) passes probeNFTContainment's (verify.go) detail text straight
-// through for any FAIL that is not a definite bypass, via the unknownInfra
-// "managed chain structure could not establish containment: <detail>" path.
-// A declared-but-missing loopback service therefore already surfaces to the
-// operator through `contain doctor`, with no doctor.go change needed.
-func TestDoctorSurfacesMissingDeclaredLoopbackService(t *testing.T) {
-	t.Parallel()
-	configBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
-	base := makeProbeEnv(t, func(e *probeEnv) {
-		e.operatorUser = testOperatorUser
-		e.lookupUser = containTestLookup
-		e.nftRulesPath = "rules.nft"
-		e.readFile = func(path string) ([]byte, error) {
-			if path == e.configPath {
-				return []byte(configBody), nil
-			}
-			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
-		}
-		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
-		}
-	})
-	doctor := &doctorEnv{port: defaultProxyPort, agentUserName: testAgentUser}
-	reader := doctorChainStructureReader(base, doctor)
-	res := reader(context.Background())
-	if res.status == statusPass {
-		t.Fatalf("expected doctor to report the missing declared service, got pass: %q", res.detail)
-	}
-	if !strings.Contains(res.detail, "declared loopback service 127.0.0.1:9200") || !strings.Contains(res.detail, "owner=search-team") {
-		t.Fatalf("doctor detail = %q, want it to name the missing declared service and its owner", res.detail)
-	}
-}
-
-func TestProbeNFTContainmentRequiresDeclaredLoopbackReplyRule(t *testing.T) {
-	t.Parallel()
-	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	configBody := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: search-team\n    reason: local index\n    expires_at: \"" + expiresAt + "\"\n"
-	forward := `meta skuid 987 oifname "lo" ip daddr 127.0.0.1 tcp dport 9200 accept`
-	reply := `meta skuid 987 oifname "lo" ip saddr 127.0.0.1 tcp sport 9200 ct state established ct direction reply accept`
-	liveWithoutReply := strings.Replace(goodNFTContainmentOutput,
-		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n\t\t"+forward, 1)
-	if !strings.Contains(liveWithoutReply, forward) || strings.Contains(liveWithoutReply, reply) {
-		t.Fatal("reply-rule mutation must retain the declared forward rule and remove only its reply half")
-	}
-
-	base := makeProbeEnv(t, func(e *probeEnv) {
-		e.lookupUser = containTestLookup
-		e.nftRulesPath = ""
-		e.nftPersistUnitPath = ""
-		e.readFile = func(path string) ([]byte, error) {
-			if path == e.configPath {
-				return []byte(configBody), nil
-			}
-			return nil, fmt.Errorf("unexpected read %q", path)
-		}
-		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-			return liveWithoutReply, 0, nil
-		}
-	})
-	status, detail := probeNFTContainment(context.Background(), base)
-	if status != statusFail || !strings.Contains(detail, "forward/reply pair is missing") || !strings.Contains(detail, "pipelock contain reload-nft-rules") {
-		t.Fatalf("missing reply rule status=%q detail=%q, want fail naming the missing pair and reconciliation command", status, detail)
-	}
-
-	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
-		return strings.Replace(liveWithoutReply, forward, forward+"\n\t\t"+reply, 1), 0, nil
-	}
-	status, detail = probeNFTContainment(context.Background(), base)
-	if status != statusPass {
-		t.Fatalf("complete declared pair must pass verification: status=%q detail=%q", status, detail)
+	if strings.Contains(script, "ip6 daddr ::1 tcp dport 9200 accept") {
+		t.Fatalf("reload must remove the legacy ::1 accept without adding a host replacement:\n%s", script)
 	}
 }
 
@@ -1294,27 +1110,19 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 	t.Parallel()
 	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, nftReloadTestConfigWithService("2099-01-01T00:00:00Z"), basePersisted)
+	var forwarded []config.ContainmentLoopbackService
+	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
+		return nil
+	}
 	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
-	for _, handle := range []int{20, 21, 22, 23, 24, 25} {
-		if !fx.deleteHandle(handle) {
-			t.Fatalf("expected delete for old base-block handle %d in:\n%s", handle, fx.appliedBody())
-		}
+	if len(forwarded) != 1 || forwarded[0].Port != 9200 {
+		t.Fatalf("namespace forwarders = %+v, want declared port 9200", forwarded)
 	}
-	if !strings.Contains(fx.appliedBody(), "ip daddr 127.0.0.1 tcp dport 9200 accept") {
-		t.Fatalf("newly-declared service was not loaded:\n%s", fx.appliedBody())
-	}
-	persisted, ok := fx.persisted()
-	wantPersisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
-	if !ok || persisted != wantPersisted {
-		t.Fatalf("persisted rules file must exactly match the declared-service render: ok=%v\nwant:\n%s\ngot:\n%s", ok, wantPersisted, persisted)
-	}
-	if !strings.HasSuffix(fx.appliedBody(), persisted) {
-		t.Fatalf("live reload script must load the exact persisted declared-service render:\n%s", fx.appliedBody())
-	}
-	if !strings.Contains(persisted, "ip daddr 127.0.0.1 tcp dport 9200 accept") {
-		t.Fatalf("persisted rules file was not updated to carry the newly-declared service: %q", persisted)
+	if strings.Contains(fx.appliedBody(), "9200") {
+		t.Fatalf("declared service leaked into host nft transaction:\n%s", fx.appliedBody())
 	}
 	if len(fx.warnings) != 0 {
 		t.Fatalf("a valid new declaration must not warn, got %v", fx.warnings)
@@ -1330,6 +1138,11 @@ func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
 	t.Parallel()
 	withServicePersisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", withServicePersisted) // managed config with the entry simply removed
+	var forwarded []config.ContainmentLoopbackService
+	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
+		return nil
+	}
 	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
@@ -1344,12 +1157,8 @@ func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
 	if fx.deleteHandle(10) {
 		t.Fatalf("reload removed foreign non-paired reply handle 10:\n%s", fx.appliedBody())
 	}
-	persisted, ok := fx.persisted()
-	if !ok {
-		t.Fatal("persisted rules file was not rewritten after revocation")
-	}
-	if strings.Contains(persisted, "dport 9200 accept") || strings.Contains(persisted, "sport 9200 ct state established ct direction reply accept") {
-		t.Fatalf("persisted rules file still carries the revoked service pair: %q", persisted)
+	if len(forwarded) != 0 {
+		t.Fatalf("revoked namespace forwarders = %+v, want none", forwarded)
 	}
 }
 
@@ -1362,15 +1171,19 @@ func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
 	t.Parallel()
 	withServicePersistedExpired := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, nftReloadTestConfigWithService("2000-01-01T00:00:00Z"), withServicePersistedExpired)
+	var forwarded []config.ContainmentLoopbackService
+	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
+		return nil
+	}
 	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if strings.Contains(fx.appliedBody(), "dport 9200 accept") || strings.Contains(fx.appliedBody(), "sport 9200 ct state established ct direction reply accept") {
 		t.Fatalf("expired service's complete pair must not be reloaded:\n%s", fx.appliedBody())
 	}
-	persisted, ok := fx.persisted()
-	if !ok || strings.Contains(persisted, "dport 9200 accept") || strings.Contains(persisted, "sport 9200 ct state established ct direction reply accept") {
-		t.Fatalf("persisted rules file still carries the expired service pair: ok=%v %q", ok, persisted)
+	if len(forwarded) != 0 {
+		t.Fatalf("expired namespace forwarders = %+v, want none", forwarded)
 	}
 	if len(fx.warnings) != 1 {
 		t.Fatalf("expected exactly one warning naming the dropped entry, got %v", fx.warnings)
@@ -1429,6 +1242,63 @@ func TestReloadNFTRulesWarnsOnAbsentManagedConfig(t *testing.T) {
 	if !strings.Contains(fx.warnings[0], "not found") || !strings.Contains(fx.warnings[0], "contain install") {
 		t.Fatalf("warning = %q, want it to say the config was not found and name `pipelock contain install`", fx.warnings[0])
 	}
+}
+
+func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
+	t.Parallel()
+	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+
+	t.Run("no-op nft reconciliation", func(t *testing.T) {
+		fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, "mode: balanced\n", basePersisted)
+		fx.env.reconcileForwarders = func(context.Context, []config.ContainmentLoopbackService) error {
+			return errors.New("forwarder failed")
+		}
+		err := reloadNFTRules(context.Background(), fx.env)
+		if err == nil || !strings.Contains(err.Error(), "reconcile namespace loopback forwarders") {
+			t.Fatalf("reload error = %v, want no-op forwarder reconciliation failure", err)
+		}
+	})
+
+	t.Run("after nft rewrite", func(t *testing.T) {
+		fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", basePersisted)
+		fx.env.reconcileForwarders = func(context.Context, []config.ContainmentLoopbackService) error {
+			return errors.New("forwarder failed")
+		}
+		err := reloadNFTRules(context.Background(), fx.env)
+		if err == nil || !strings.Contains(err.Error(), "nft boundary is current") {
+			t.Fatalf("reload error = %v, want post-rewrite forwarder reconciliation failure", err)
+		}
+	})
+}
+
+func TestReloadNFTRulesLegacyReceiverQueryFailures(t *testing.T) {
+	t.Parallel()
+	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	live := strings.Replace(nftReloadTestLiveWithNoService, "meta skuid 1000 accept", `ct mark set 0x504c4b01 socket cgroupv2 level 1 "pipelock_contained.slice" # handle 19
+    meta skuid 1000 accept`, 1)
+
+	t.Run("command error", func(t *testing.T) {
+		fx := newNFTReloadTestFixture(t, live, "mode: balanced\n", basePersisted)
+		err := reloadNFTRules(context.Background(), fx.env)
+		if err == nil || !strings.Contains(err.Error(), "list legacy owned loopback receiver chain") {
+			t.Fatalf("reload error = %v, want legacy receiver query error", err)
+		}
+	})
+
+	t.Run("non-missing exit", func(t *testing.T) {
+		fx := newNFTReloadTestFixture(t, live, "mode: balanced\n", basePersisted)
+		originalRun := fx.env.runCmd
+		fx.env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+			if strings.HasPrefix(strings.Join(args, " "), "-n list chain") {
+				return "permission denied", 1, nil
+			}
+			return originalRun(ctx, name, args...)
+		}
+		err := reloadNFTRules(context.Background(), fx.env)
+		if err == nil || !strings.Contains(err.Error(), "exit=1: permission denied") {
+			t.Fatalf("reload error = %v, want legacy receiver non-missing exit", err)
+		}
+	})
 }
 
 // statefulFakeFS is a minimal path->bytes store for the HIGH-severity
@@ -1497,7 +1367,7 @@ func TestReloadNFTRulesWriteFailureLeavesPreviousFileIntact(t *testing.T) {
 	t.Parallel()
 	const rulesPath = "/managed/50-pipelock-containment.nft"
 	const configPath = "/etc/pipelock/pipelock.yaml"
-	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain) + "# stale revision\n"
 	fs := newStatefulFakeFS(map[string][]byte{
 		rulesPath:  []byte(oldRules),
 		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")), // a NEW declared service, so the reconciled body differs
@@ -1545,7 +1415,7 @@ func TestReloadNFTRulesKernelFailureRestoresPreviousFile(t *testing.T) {
 	t.Parallel()
 	const rulesPath = "/managed/50-pipelock-containment.nft"
 	const configPath = "/etc/pipelock/pipelock.yaml"
-	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain) + "# stale revision\n"
 	fs := newStatefulFakeFS(map[string][]byte{
 		rulesPath:  []byte(oldRules),
 		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")),
@@ -1811,7 +1681,7 @@ func TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors(t *testing
 	t.Parallel()
 	const rulesPath = "/managed/50-pipelock-containment.nft"
 	const configPath = "/etc/pipelock/pipelock.yaml"
-	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
+	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain) + "# stale revision\n"
 	fs := newStatefulFakeFS(map[string][]byte{
 		rulesPath:  []byte(oldRules),
 		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")),
@@ -1888,8 +1758,8 @@ func TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors(t *testing
 	if string(persisted) != kernelBody {
 		t.Fatalf("persisted file and live kernel did not converge after recovery:\npersisted:\n%s\nkernel:\n%s", persisted, kernelBody)
 	}
-	if !strings.Contains(string(persisted), "dport 9200 accept") {
-		t.Fatalf("recovered state should carry the declared service:\n%s", persisted)
+	if strings.Contains(string(persisted), "dport 9200 accept") {
+		t.Fatalf("recovered host rules must not carry the declared service:\n%s", persisted)
 	}
 }
 
@@ -2271,7 +2141,7 @@ func TestContainmentDropCounterRefusesUnusableLoopbackPolicy(t *testing.T) {
 
 	t.Run("unusable declaration refuses the count", func(t *testing.T) {
 		_, err := containmentDropCounterFromChainText(
-			chainText, defaultNFTChain, uids, loopbackTestProxyPort, nil,
+			chainText, defaultNFTChain, uids, loopbackTestProxyPort,
 			"managed config declares something Pipelock cannot honor (expired at 2000-01-01T00:00:00Z)", true)
 		if err == nil {
 			t.Fatal("expected a refusal: the chain is canonical but the declared policy cannot be honored")
@@ -2289,7 +2159,7 @@ func TestContainmentDropCounterRefusesUnusableLoopbackPolicy(t *testing.T) {
 	// satisfied by refusing everything.
 	t.Run("usable declaration still counts", func(t *testing.T) {
 		if _, err := containmentDropCounterFromChainText(
-			chainText, defaultNFTChain, uids, loopbackTestProxyPort, nil, "", false); err != nil {
+			chainText, defaultNFTChain, uids, loopbackTestProxyPort, "", false); err != nil {
 			t.Fatalf("canonical chain with a usable declaration: %v", err)
 		}
 	})

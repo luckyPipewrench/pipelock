@@ -742,17 +742,21 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 		})
 		probes := probesForEnv(env)
 		if len(probes) != len(allProbes())+1 ||
-			probes[len(probes)-3].name != "workspace_access" || probes[len(probes)-3].n != 15 ||
-			probes[len(probes)-2].name != "private_tmp_isolation" || probes[len(probes)-2].n != 16 {
+			probes[len(probes)-4].name != "workspace_access" || probes[len(probes)-4].n != 15 ||
+			probes[len(probes)-3].name != "private_tmp_isolation" || probes[len(probes)-3].n != 16 {
 			t.Fatalf("probes = %v", probes)
 		}
 		// Assert the CA probe by NAME and NUMBER. Checking only the shifted
 		// indexes of its neighbours would still pass if this probe were
 		// renamed, renumbered, or dropped entirely, which is the one outcome
 		// that matters for a security check.
+		caProbe := probes[len(probes)-2]
+		if caProbe.name != "pipelock_ca_export_current" || caProbe.n != 19 {
+			t.Fatalf("CA probe = %+v; want pipelock_ca_export_current published as 19", caProbe)
+		}
 		last := probes[len(probes)-1]
-		if last.name != "pipelock_ca_export_current" || last.n != 19 {
-			t.Fatalf("last probe = %+v; want pipelock_ca_export_current published as 19", last)
+		if last.name != "agent_network_namespace" || last.n != 20 {
+			t.Fatalf("last probe = %+v; want agent_network_namespace published as 20", last)
 		}
 	})
 

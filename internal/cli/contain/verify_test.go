@@ -2599,7 +2599,7 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	}
 
 	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort, nil) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
 		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
 	}
 }
@@ -3296,10 +3296,10 @@ func TestRunVerify_TextOutput_AllPass(t *testing.T) {
 	if !strings.HasPrefix(out, "pipelock contain verify") {
 		t.Errorf("missing header: %q", out)
 	}
-	if strings.Count(out, "[PASS]") != 16 {
-		t.Errorf("want 16 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
+	if strings.Count(out, "[PASS]") != 17 {
+		t.Errorf("want 17 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
 	}
-	if !strings.Contains(out, "16 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "17 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing aggregate: %q", out)
 	}
 }
@@ -3316,10 +3316,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 17 {
-		t.Fatalf("expected 17 JSON records (16 probes + aggregate), got %d: %q", len(lines), buf.String())
+	if len(lines) != 18 {
+		t.Fatalf("expected 18 JSON records (17 probes + aggregate), got %d: %q", len(lines), buf.String())
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 17; i++ {
 		var rec probeRecord
 		if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
 			t.Fatalf("line %d: parse: %v (line=%q)", i, err, lines[i])
@@ -3339,10 +3339,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 		}
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[16]), &agg); err != nil {
-		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[16])
+	if err := json.Unmarshal([]byte(lines[17]), &agg); err != nil {
+		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[17])
 	}
-	if agg.Aggregate.Pass != 16 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
+	if agg.Aggregate.Pass != 17 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
 		t.Errorf("aggregate counts: %+v", agg.Aggregate)
 	}
 	if agg.Aggregate.ExitCode != cliutil.ExitOK {
@@ -3354,9 +3354,9 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	env := allPassEnv(t)
 	var systemdCalled bool
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name == testSystemctl {
+		if name == testSystemctl && containsArg(args, testService) {
 			systemdCalled = true
-			return "", 1, errors.New("systemd should not run in enforcement-only mode")
+			return "", 1, errors.New("pipelock service liveness should not run in enforcement-only mode")
 		}
 		return defaultRunForAllPass(name, args)
 	}
@@ -3387,7 +3387,7 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	if strings.Contains(out, "probe 2:") || strings.Contains(out, "probe 6:") {
 		t.Errorf("liveness probes should be omitted: %q", out)
 	}
-	if !strings.Contains(out, "14 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "15 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing enforcement-only aggregate: %q", out)
 	}
 	if !strings.Contains(out, "probe 10: deployed pipelock binary matches TOFU pin; running-service image is not verified") ||
@@ -3603,8 +3603,8 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 17 {
-		t.Fatalf("JSON record count = %d, want 17: %q", len(lines), buf.String())
+	if len(lines) != 18 {
+		t.Fatalf("JSON record count = %d, want 18: %q", len(lines), buf.String())
 	}
 	var canary probeRecord
 	if err := json.Unmarshal([]byte(lines[7]), &canary); err != nil {
@@ -3614,11 +3614,11 @@ func TestRunVerify_JSONUnknownIsIncomplete(t *testing.T) {
 		t.Fatalf("canary record = %+v, want probe 8 unknown", canary)
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[16]), &agg); err != nil {
+	if err := json.Unmarshal([]byte(lines[17]), &agg); err != nil {
 		t.Fatalf("decode aggregate: %v", err)
 	}
-	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 15 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
-		t.Fatalf("aggregate = %+v, want 15 pass / 1 unknown / exit 2", agg.Aggregate)
+	if agg.Aggregate.Unknown != 1 || agg.Aggregate.Pass != 16 || agg.Aggregate.ExitCode != cliutil.ExitConfig {
+		t.Fatalf("aggregate = %+v, want 16 pass / 1 unknown / exit 2", agg.Aggregate)
 	}
 }
 
@@ -3631,7 +3631,7 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 			}
 			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 				switch {
-				case name == testSystemctl:
+				case name == testSystemctl && containsArg(args, testService):
 					return "", -1, errors.New("systemctl unavailable")
 				case name == testSudoCmd && containsArg(args, testOperatorUser) && containsArg(args, curlPath):
 					return "curl: (22) HTTP 500", 22, nil
@@ -3655,14 +3655,14 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 12 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 13 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 2 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 12 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 13 pass / 1 fail / 2 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "12 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "13 PASS / 1 FAIL / 2 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -3686,9 +3686,9 @@ func TestRunVerify_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text probe", successfulWrites: 1, want: "writing probe 1 text"},
-		{name: "text aggregate", successfulWrites: 17, want: "writing verify aggregate"},
+		{name: "text aggregate", successfulWrites: 18, want: "writing verify aggregate"},
 		{name: "JSON probe", jsonOutput: true, want: "encoding probe 1 JSON"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 16, want: "encoding aggregate JSON"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 17, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {
@@ -3926,9 +3926,17 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.privateTmpProbe = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test private temporary-directory canary passed"
 	}
+	env.networkNamespaceProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "test network namespace boundary passed"
+	}
 	env.operatorUser = testOperatorUser
 	env.nftRulesPath = filepath.Join(t.TempDir(), "50-pipelock-containment.nft")
 	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+	unitDir := t.TempDir()
+	env.networkNamespaceUnitPath = filepath.Join(unitDir, containedNetworkNamespaceUnit)
+	env.proxyForwarderSocketPath = filepath.Join(unitDir, containedProxyForwarderUnit+".socket")
+	env.proxyForwarderServicePath = filepath.Join(unitDir, containedProxyForwarderUnit+".service")
+	env.loopbackForwarderInvPath = filepath.Join(t.TempDir(), "loopback-forwarders.json")
 
 	// Probe 1: both users present.
 	env.lookupUser = func(name string) (*user.User, error) {
@@ -4000,6 +4008,16 @@ func allPassEnv(t *testing.T) *probeEnv {
 		return defaultRunForAllPass(name, args)
 	}
 	env.readFile = func(path string) ([]byte, error) {
+		switch path {
+		case env.networkNamespaceUnitPath:
+			return []byte(renderContainedNetworkNamespaceUnit()), nil
+		case env.proxyForwarderSocketPath:
+			return []byte(renderContainedProxySocketUnit(env.port)), nil
+		case env.proxyForwarderServicePath:
+			return []byte(renderContainedProxyForwarderUnit(env.proxyUserName, env.port)), nil
+		case env.loopbackForwarderInvPath:
+			return []byte("{\n  \"services\": []\n}\n"), nil
+		}
 		if path == env.configPath {
 			return []byte("metrics_listen: 127.0.0.1:9091\n"), nil
 		}
@@ -4020,6 +4038,12 @@ func allPassEnv(t *testing.T) *probeEnv {
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}
 	env.readLink = func(path string) (string, error) {
+		if path == fmt.Sprintf("/proc/%d/ns/net", testServicePID) {
+			return "net:[200]", nil
+		}
+		if path == "/proc/1/ns/net" {
+			return "net:[100]", nil
+		}
 		if path != procExe {
 			return "", fmt.Errorf("unexpected readLink %s", path)
 		}
@@ -4048,6 +4072,12 @@ func allPassEnv(t *testing.T) *probeEnv {
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
 	case testSystemctl:
+		if containsArg(args, "is-enabled") {
+			return "enabled\n", 0, nil
+		}
+		if containsArg(args, "is-active") {
+			return "active\n", 0, nil
+		}
 		if containsArg(args, "--value") {
 			switch {
 			case containsArg(args, "--property=ExecStart"):

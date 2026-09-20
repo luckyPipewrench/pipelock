@@ -31,7 +31,8 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 			for _, want := range []string{
 				"--expand-environment=no",
 				"--property=PrivateTmp=true",
-				"--slice=" + ownedLoopbackSlice,
+				"--property=PrivateNetwork=true",
+				"--property=JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
 				"--uid=966",
 				"--gid=966",
 				"--property=SupplementaryGroups=1001",

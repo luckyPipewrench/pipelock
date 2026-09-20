@@ -236,6 +236,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		nftRulesPath:                filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
 		nftMainPath:                 filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
 		nftPersistUnitPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
+		networkNamespaceUnitPath:    filepath.Join(root, "etc", "systemd", "system", containedNetworkNamespaceUnit),
+		proxyForwarderSocketPath:    filepath.Join(root, "etc", "systemd", "system", containedProxyForwarderUnit+".socket"),
+		proxyForwarderServicePath:   filepath.Join(root, "etc", "systemd", "system", containedProxyForwarderUnit+".service"),
 		ownedLoopbackAnchorUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock-contained-anchor.service"),
 		nftExpiryServicePath:        filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
 		nftExpiryTimerPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
@@ -248,6 +251,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		wrapperInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
 		toolsListPath:               filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
 		workspaceInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		loopbackForwarderInvPath:    filepath.Join(root, "etc", "pipelock", "contain", "loopback-forwarders.json"),
 		evidenceACLInvPath:          filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
 		guardScriptPath:             filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
 		guardServiceUnit:            filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
@@ -271,12 +275,6 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		t.Fatalf("write fake src: %v", err)
 	}
 	env.pipelockBinary = filepath.Join(root, "src", "pipelock")
-	runner.responses[argvFor("systemctl", "is-active", filepath.Base(env.ownedLoopbackAnchorUnitPath))] = struct {
-		out  string
-		code int
-		err  error
-	}{out: systemctlActive + "\n"}
-
 	// Pre-create the wrapperDir so wrapper writes don't fail.
 	if err := os.MkdirAll(env.wrapperDir, 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir wrapperDir: %v", err)
@@ -309,21 +307,8 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	}
 	runner.on(argvFor(testSudoCmd, "-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"), testPEMCA(t), 0, nil)
 
-	// Answers for the anchor and receiver-chain queries, so a test that DOES
-	// enable owned loopback has them available.
-	//
-	// This fixture leaves ownedLoopback false and therefore does not exercise
-	// those paths itself. Enabling it here fails 15 tests that build their live
-	// nft chain with the legacy renderer and then assert no drift: the new
-	// drift check correctly reports drift against a chain carrying no marking
-	// rules, so each failure is a true positive. Migrating those fixtures is
-	// tracked separately; the owned-loopback paths are covered directly in
-	// owned_loopback_test.go.
-	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain),
-		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault()), 0, nil)
-	anchorUnit := filepath.Base(env.ownedLoopbackAnchorUnitPath)
-	runner.on(argvFor(testSystemctl, "is-active", anchorUnit), systemctlActive+"\n", 0, nil)
-	runner.on(argvFor(testSystemctl, "is-enabled", anchorUnit), systemctlEnabled+"\n", 0, nil)
+	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), legacyOwnedLoopbackInputChain),
+		"No such file or directory", 1, nil)
 
 	return env, runner, out
 }

@@ -46,8 +46,9 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 			t.Fatalf("reload script removed foreign established-reply handle %d:\n%s", handle, script)
 		}
 	}
-	if strings.Contains(script, "delete chain") || strings.Contains(script, "delete table") {
-		t.Fatalf("reload script must preserve the shared chain:\n%s", script)
+	if strings.Contains(script, "delete table") || !strings.Contains(script, "flush chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) ||
+		!strings.Contains(script, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) {
+		t.Fatalf("reload script must remove only the obsolete receiver chain and preserve the shared table:\n%s", script)
 	}
 	if !strings.HasSuffix(script, body) {
 		t.Fatalf("reload script does not finish by loading one canonical ruleset:\n%s", script)

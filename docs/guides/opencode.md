@@ -77,7 +77,7 @@ Start in `balanced` to surface false positives in audit mode. Promote to a block
 
 ## Containment for Local Multi-User Hosts
 
-If you run OpenCode on a shared host, layer the [`pipelock contain`](../contain-cli.md) lifecycle on top of MCP wrapping. `pipelock contain install` splits the host into `operator` / `pipelock-proxy` / `pipelock-agent` users and uses nftables owner-match to force the contained agent user through Pipelock on loopback, including tools that try raw sockets. The two layers compose: MCP wrapping covers JSON-RPC scanning; containment covers the underlying egress path.
+If you run OpenCode on a shared host, layer the [`pipelock contain`](../contain-cli.md) lifecycle on top of MCP wrapping. `pipelock contain install` splits the host into `operator`, `pipelock-proxy`, and `pipelock-agent` users. OpenCode runs in a private network namespace with only a socket-forwarded path to Pipelock, while nftables owner-match keeps the agent UID denied outside that launch path. MCP wrapping scans JSON-RPC messages, and containment controls the network path underneath them.
 
 ## Troubleshooting
 

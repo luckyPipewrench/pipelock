@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -97,6 +98,12 @@ type LicenseIssuance struct {
 // EntitlementDB manages the SQLite entitlement store.
 type EntitlementDB struct {
 	db *sql.DB
+
+	// trialSupportMu covers in-memory databases and callers sharing this DB
+	// handle. trialSupportLockPath extends the same critical section across
+	// separate license-service processes using the on-disk database.
+	trialSupportMu       sync.Mutex
+	trialSupportLockPath string
 
 	// journalMode is the mode the database settled on at open time. See
 	// enableWAL for why it is not guaranteed to be WAL.
@@ -272,6 +279,12 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 		}
 	}
 	edb.journalMode = mode
+	lockPath, err := resolveTrialSupportLockPath(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	edb.trialSupportLockPath = lockPath
 
 	// A database that cannot become WAL because it is not on disk keeps nothing
 	// across a restart, which empties the table the one-trial limit is read
@@ -291,6 +304,45 @@ func OpenEntitlementDB(ctx context.Context, path string) (*EntitlementDB, error)
 	}
 
 	return edb, nil
+}
+
+func resolveTrialSupportLockPath(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA database_list")
+	if err != nil {
+		return "", fmt.Errorf("resolve entitlement database path: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var sequence int
+		var name, path string
+		if err := rows.Scan(&sequence, &name, &path); err != nil {
+			return "", fmt.Errorf("scan entitlement database path: %w", err)
+		}
+		if name == "main" {
+			if path == "" {
+				return "", nil
+			}
+			return filepath.Clean(path) + ".trial-support.lock", nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read entitlement database path: %w", err)
+	}
+	return "", errors.New("entitlement database has no main file")
+}
+
+func (e *EntitlementDB) withTrialSupportLock(fn func() error) error {
+	e.trialSupportMu.Lock()
+	defer e.trialSupportMu.Unlock()
+	if e.trialSupportLockPath == "" {
+		return fn()
+	}
+	release, err := acquireTrialSupportLock(e.trialSupportLockPath)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
 }
 
 // Close closes the underlying database connection.
@@ -991,6 +1043,17 @@ func (e *EntitlementDB) GetBySubscriptionID(ctx context.Context, subID string) (
 // modify active_trial_slots: that table preserves the trial's original expiry
 // and remains the one-active-trial authority even after revocation.
 func (e *EntitlementDB) RevokeTrialAccess(ctx context.Context, subID, reason string, now time.Time) (*Entitlement, []LicenseIssuance, error) {
+	var entitlement *Entitlement
+	var issuances []LicenseIssuance
+	err := e.withTrialSupportLock(func() error {
+		var err error
+		entitlement, issuances, err = e.revokeTrialAccessLocked(ctx, subID, reason, now)
+		return err
+	})
+	return entitlement, issuances, err
+}
+
+func (e *EntitlementDB) revokeTrialAccessLocked(ctx context.Context, subID, reason string, now time.Time) (*Entitlement, []LicenseIssuance, error) {
 	if strings.TrimSpace(subID) == "" {
 		return nil, nil, errors.New("subscription_id is required")
 	}

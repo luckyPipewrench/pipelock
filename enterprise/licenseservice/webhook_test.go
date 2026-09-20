@@ -3212,23 +3212,118 @@ func TestTrialRevocationAuditsZeroUnexpiredTokens(t *testing.T) {
 	}
 }
 
-func TestTrialRevocationConcurrentReplay(t *testing.T) {
+func newFileBackedTrialSupportHandlers(t *testing.T) (*WebhookHandler, *WebhookHandler, *EntitlementDB) {
+	t.Helper()
 	ts := newTestSetup(t)
+	dbPath := filepath.Join(t.TempDir(), "trial-support.db")
+	firstDB, err := OpenEntitlementDB(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("open first trial support database: %v", err)
+	}
+	t.Cleanup(func() { _ = firstDB.Close() })
+	secondDB, err := OpenEntitlementDB(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("open second trial support database: %v", err)
+	}
+	t.Cleanup(func() { _ = secondDB.Close() })
+	first, err := NewWebhookHandler(ts.cfg, firstDB, ts.handler.polar, ts.handler.email, ts.ledger, ts.privateKey, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("create first trial support handler: %v", err)
+	}
+	second, err := NewWebhookHandler(ts.cfg, secondDB, ts.handler.polar, ts.handler.email, ts.ledger, ts.privateKey, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("create second trial support handler: %v", err)
+	}
+	return first, second, firstDB
+}
+
+func TestTrialSupportResendAndRevokeSerializeAcrossProcesses(t *testing.T) {
+	resender, revoker, db := newFileBackedTrialSupportHandlers(t)
+	const orderID = "order_free_520_cross_process_support"
+	if err := resender.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "cross-process@example.com")); err != nil {
+		t.Fatalf("issue trial: %v", err)
+	}
+
+	emailEntered := make(chan struct{})
+	releaseEmail := make(chan struct{})
+	emailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(emailEntered)
+		<-releaseEmail
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_cross_process_resend"}`))
+	}))
+	t.Cleanup(emailSrv.Close)
+	resender.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: emailSrv.Client(), apiURL: emailSrv.URL}
+	refundSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = fmt.Fprintf(w, `{
+			"id": %q,
+			"billing_reason": "purchase",
+			"status": "refunded",
+			"paid": true,
+			"total_amount": 0,
+			"net_amount": 0,
+			"refunded_amount": 1,
+			"currency": "usd",
+			"customer": {"email": "cross-process@example.com", "metadata": {}},
+			"product": {"id": "prod_trial_free", "name": "Pipelock Pro Trial", "metadata": {"pipelock_tier": "trial"}}
+		}`, orderID)
+	}))
+	t.Cleanup(refundSrv.Close)
+	revoker.polar = NewPolarClient("polar_"+"test", refundSrv.URL, defaultPolarAPIVersion)
+
+	resendDone := make(chan error, 1)
+	go func() {
+		resendDone <- resender.ResendTrialAccess(t.Context(), orderID, "support resend", time.Now())
+	}()
+	<-emailEntered
+	revokeStarted := make(chan struct{})
+	revokeDone := make(chan error, 1)
+	go func() {
+		close(revokeStarted)
+		revokeDone <- revoker.HandleOrderRefundEvent(t.Context(), &PolarWebhookEvent{
+			Type: EventOrderRefunded,
+			Data: json.RawMessage(fmt.Sprintf(`{"id":%q}`, orderID)),
+		}, "msg_cross_process_refund")
+	}()
+	<-revokeStarted
+
+	select {
+	case err := <-revokeDone:
+		close(releaseEmail)
+		t.Fatalf("revocation crossed an in-flight resend: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseEmail)
+	if err := <-resendDone; err != nil {
+		t.Fatalf("resend trial: %v", err)
+	}
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("revoke trial: %v", err)
+	}
+	ent, err := db.GetBySubscriptionID(t.Context(), orderID)
+	if err != nil || ent == nil || ent.Status != statusRevoked {
+		t.Fatalf("trial state after serialized support actions: entitlement=%+v err=%v", ent, err)
+	}
+}
+
+func TestTrialRevocationConcurrentReplay(t *testing.T) {
+	first, second, _ := newFileBackedTrialSupportHandlers(t)
 	const orderID = "order_free_520_concurrent_revoke"
-	if err := ts.handler.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "concurrent-revoke@example.com")); err != nil {
+	if err := first.HandleOrderEvent(t.Context(), zeroTrialOrderEvent(t, orderID, "concurrent-revoke@example.com")); err != nil {
 		t.Fatalf("issue trial: %v", err)
 	}
 
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var workers sync.WaitGroup
-	for range 2 {
+	for _, handler := range []*WebhookHandler{first, second} {
 		workers.Add(1)
-		go func() {
+		go func(handler *WebhookHandler) {
 			defer workers.Done()
 			<-start
-			results <- ts.handler.RevokeTrialAccess(t.Context(), orderID, "concurrent support revoke", time.Now())
-		}()
+			results <- handler.RevokeTrialAccess(t.Context(), orderID, "concurrent support revoke", time.Now())
+		}(handler)
 	}
 	close(start)
 	workers.Wait()

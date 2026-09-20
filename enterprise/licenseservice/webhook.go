@@ -260,6 +260,12 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 }
 
 func (h *WebhookHandler) processSubscriptionDelivery(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
+	return h.db.withTrialSupportLock(func() error {
+		return h.processSubscriptionDeliveryLocked(ctx, sub, eventType, msgID)
+	})
+}
+
+func (h *WebhookHandler) processSubscriptionDeliveryLocked(ctx context.Context, sub *PolarSubscription, eventType, msgID string) error {
 	h.processMu.Lock()
 	defer h.processMu.Unlock()
 
@@ -640,12 +646,18 @@ func (h *WebhookHandler) InspectTrialAccess(ctx context.Context, subID string) (
 // minting a replacement or extending its expiry. It is intentionally operator
 // only: this service has no buyer-authenticated recovery credential.
 func (h *WebhookHandler) ResendTrialAccess(ctx context.Context, subID, reason string, now time.Time) error {
-	h.processMu.Lock()
-	defer h.processMu.Unlock()
-
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("resend reason is required")
 	}
+	return h.db.withTrialSupportLock(func() error {
+		return h.resendTrialAccessLocked(ctx, subID, reason, now)
+	})
+}
+
+func (h *WebhookHandler) resendTrialAccessLocked(ctx context.Context, subID, reason string, now time.Time) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
 	access, err := h.InspectTrialAccess(ctx, subID)
 	if err != nil {
 		return err
@@ -670,6 +682,9 @@ func (h *WebhookHandler) ResendTrialAccess(ctx context.Context, subID, reason st
 	ent, err := h.db.GetBySubscriptionID(ctx, subID)
 	if err != nil {
 		return fmt.Errorf("reload trial entitlement for resend: %w", err)
+	}
+	if ent == nil || !isTrialTier(ent.Tier) || ent.Status != statusActive {
+		return fmt.Errorf("trial access %s is not eligible for resend", subID)
 	}
 	token, err := h.regenerateToken(ent)
 	if err != nil {
@@ -707,12 +722,18 @@ func (h *WebhookHandler) ResendTrialAccess(ctx context.Context, subID, reason st
 // signed CRL is therefore built from the same durable state that marks the
 // trial unavailable; the immutable trial slot is deliberately retained.
 func (h *WebhookHandler) RevokeTrialAccess(ctx context.Context, subID, reason string, now time.Time) error {
-	h.processMu.Lock()
-	defer h.processMu.Unlock()
-
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("revocation reason is required")
 	}
+	return h.db.withTrialSupportLock(func() error {
+		return h.revokeTrialAccessLocked(ctx, subID, reason, now)
+	})
+}
+
+func (h *WebhookHandler) revokeTrialAccessLocked(ctx context.Context, subID, reason string, now time.Time) error {
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+
 	access, err := h.InspectTrialAccess(ctx, subID)
 	if err != nil {
 		return err
@@ -732,7 +753,7 @@ func (h *WebhookHandler) RevokeTrialAccess(ctx context.Context, subID, reason st
 		return fmt.Errorf("record trial revocation request: %w", err)
 	}
 
-	ent, issuances, err := h.db.RevokeTrialAccess(ctx, subID, reason, now)
+	ent, issuances, err := h.db.revokeTrialAccessLocked(ctx, subID, reason, now)
 	if err != nil {
 		return err
 	}
@@ -1166,7 +1187,12 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 	}
 
 	org := order.Customer.Metadata["org"]
+	return h.db.withTrialSupportLock(func() error {
+		return h.handleOrderEventLocked(ctx, order, tier, features, org)
+	})
+}
 
+func (h *WebhookHandler) handleOrderEventLocked(ctx context.Context, order *PolarOrder, tier string, features []byte, org string) error {
 	h.processMu.Lock()
 	defer h.processMu.Unlock()
 

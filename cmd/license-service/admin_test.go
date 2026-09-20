@@ -243,8 +243,8 @@ func TestDispatchAdmin(t *testing.T) {
 			if !handled {
 				t.Fatalf("%s must be handled by dispatchAdmin", subcommand)
 			}
-			if err == nil {
-				t.Fatalf("%s without --subscription-id must fail", subcommand)
+			if err == nil || !strings.Contains(err.Error(), "--subscription-id is required") {
+				t.Fatalf("%s without --subscription-id error = %v", subcommand, err)
 			}
 		})
 	}
@@ -252,11 +252,11 @@ func TestDispatchAdmin(t *testing.T) {
 
 func TestTrialAdminCommandsRequireReasons(t *testing.T) {
 	setAdminEnv(t)
-	if err := runResendTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil {
-		t.Fatal("resend trial without --reason must fail")
+	if err := runResendTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil || !strings.Contains(err.Error(), "--reason is required") {
+		t.Fatalf("resend trial without --reason error = %v", err)
 	}
-	if err := runRevokeTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil {
-		t.Fatal("revoke trial without --reason must fail")
+	if err := runRevokeTrial(discardLog(), []string{"--subscription-id", "order_trial"}); err == nil || !strings.Contains(err.Error(), "--reason is required") {
+		t.Fatalf("revoke trial without --reason error = %v", err)
 	}
 }
 
@@ -340,7 +340,7 @@ func TestRunTrialAdminCommands(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list license revocations: %v", err)
 		}
-		if len(revocations) != 1 || revocations[0].SubscriptionID != "order_admin_revoke" {
+		if len(revocations) != 1 || revocations[0].SubscriptionID != "order_admin_revoke" || revocations[0].Reason != "operator requested revocation" {
 			t.Fatalf("revocations after admin revoke: %+v", revocations)
 		}
 	})
@@ -364,8 +364,9 @@ func TestRunTrialAdminCommands(t *testing.T) {
 		{name: "revoke", run: func() error { return runRevokeTrial(discardLog(), []string{"--unknown"}) }},
 	} {
 		t.Run(test.name+" rejects unknown flag", func(t *testing.T) {
-			if err := test.run(); err == nil {
-				t.Fatal("unknown flag must fail")
+			setAdminEnv(t)
+			if err := test.run(); err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -unknown") {
+				t.Fatalf("unknown flag error = %v", err)
 			}
 		})
 	}

@@ -392,6 +392,19 @@ func TestOperatorHintForResultResolvesAuditReasons(t *testing.T) {
 }
 
 func TestRemediationHintsDoNotRecommendInertKnobs(t *testing.T) {
+	t.Run("request body prompt injection omits response exemptions", func(t *testing.T) {
+		hint := OperatorHintForResult(AuditBodyPromptInjection, "request body contains prompt injection")
+		if !strings.Contains(hint, "request_body_scanning.trusted_hosts") {
+			t.Fatalf("request-body prompt-injection hint = %q, want trusted-host control", hint)
+		}
+		if strings.Contains(hint, "response_scanning.exempt_domains") {
+			t.Fatalf("request-body prompt-injection hint = %q, recommends an unconsulted response exemption", hint)
+		}
+		if !strings.Contains(hint, "configured action") || !strings.Contains(hint, "`block` action") {
+			t.Fatalf("request-body prompt-injection hint = %q, must preserve the configured action", hint)
+		}
+	})
+
 	t.Run("core response rejects inert suppression advice", func(t *testing.T) {
 		hint := OperatorHintForResult(ScannerCoreResponse, "core response pattern: role_override")
 		if strings.Contains(hint, "top-level `suppress:`") {

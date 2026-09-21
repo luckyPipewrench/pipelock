@@ -672,6 +672,7 @@ func newInterceptHandler(
 		// RecordClean is only applied when the request was fully clean so that
 		// warn/strip findings do not contribute to score decay.
 		hasFinding := false
+		interceptHeaderWarningPattern := ""
 		var interceptRedactionReport *redact.Report
 		var interceptGate ContractGateOutput
 		withInterceptRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
@@ -1352,13 +1353,7 @@ func newInterceptHandler(
 				hdrHasFinding := headerResult != nil && !headerResult.Clean
 				hdrAction := config.ActionAllow
 				if hdrHasFinding {
-					hdrAction = headerResult.Action
-					if hdrAction == "" {
-						hdrAction = ic.Config.RequestBodyScanning.Action
-					}
-					if shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config) {
-						hdrAction = config.ActionBlock
-					}
+					hdrAction, _ = headerDLPDecision(headerResult, ic.Config)
 					hdrAction = decide.UpgradeAction(hdrAction, interceptEscalationLevel(ic), &ic.Config.AdaptiveEnforcement)
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
@@ -1380,14 +1375,7 @@ func newInterceptHandler(
 
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
-				action := headerResult.Action
-				if action == "" {
-					action = ic.Config.RequestBodyScanning.Action
-				}
-				headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config)
-				if headerHardBlock {
-					action = config.ActionBlock
-				}
+				action, headerHardBlock := headerDLPDecision(headerResult, ic.Config)
 				originalAction := action
 				level := interceptEscalationLevel(ic)
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
@@ -1408,6 +1396,7 @@ func newInterceptHandler(
 						RequestID:  ic.RequestID,
 					})
 				}
+				ic.Logger.LogHeaderDLP(actx, headerResult.HeaderName, action, dlpMatchNames(headerResult.DLPMatches), dlpBundleRules(headerResult.DLPMatches))
 				reason := "request header contains secret"
 				if escalatedBlock && !ic.Config.EnforceEnabled() {
 					reason += " (escalated)"
@@ -1435,6 +1424,7 @@ func newInterceptHandler(
 				}
 				// Audit mode: log but forward.
 				ic.Logger.LogAnomaly(actx, "header_dlp", reason, 0.8) // 0.8: high confidence DLP match
+				interceptHeaderWarningPattern = strings.Join(dlpMatchNames(headerResult.DLPMatches), ", ")
 			}
 		}
 
@@ -1770,6 +1760,10 @@ func newInterceptHandler(
 			receiptVerdict = config.ActionWarn
 			receiptLayer = scannerLabelBodyEntropy
 			receiptPattern = interceptEntropyWarningPattern
+		} else if interceptHeaderWarningPattern != "" {
+			receiptVerdict = config.ActionWarn
+			receiptLayer = "dlp_header"
+			receiptPattern = interceptHeaderWarningPattern
 		}
 		allowReceipt := withInterceptRedaction(receipt.EmitOpts{
 			ActionID:  actionID,

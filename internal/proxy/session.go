@@ -378,13 +378,15 @@ func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling
 
 	// Domain burst detection: count unique new domains in the rolling window.
 	windowCutoff := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
-	s.domainWindows, _ = pruneDomainWindow(s.domainWindows, domain, windowCutoff, now)
-
-	uniqueDomains := countUniqueDomains(s.domainWindows)
-	if uniqueDomains >= cfg.DomainBurst {
-		// Score only on first detection per window. Repeat detections still
-		// return the anomaly (so AnomalyAction=block fires) but with Score 0
-		// to prevent adaptive escalation from repeated signals.
+	var (
+		uniqueDomains int
+		domainAdded   bool
+	)
+	s.domainWindows, uniqueDomains, domainAdded = pruneDomainWindow(s.domainWindows, domain, windowCutoff, now)
+	if domainAdded && uniqueDomains >= cfg.DomainBurst {
+		// Score only on first detection per window. Later new destinations
+		// remain observable but score zero; requests to destinations already
+		// in the window are clean and can drive adaptive decay.
 		windowDur := time.Duration(cfg.WindowMinutes) * time.Minute
 		score := 0.0
 		if s.lastBurstAt.IsZero() || now.Sub(s.lastBurstAt) >= windowDur {
@@ -411,9 +413,10 @@ func countUniqueDomains(entries []domainEntry) int {
 }
 
 // pruneDomainWindow removes expired entries, appends domain if not already
-// present, and returns the updated slice plus the unique domain count.
+// present, and returns the updated slice, unique count, and whether the current
+// request introduced a new domain.
 // Shared by per-session RecordRequest and per-IP RecordIPDomain.
-func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now time.Time) ([]domainEntry, int) {
+func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now time.Time) ([]domainEntry, int, bool) {
 	pruned := entries[:0]
 	for _, de := range entries {
 		if de.at.After(windowCutoff) {
@@ -432,7 +435,7 @@ func pruneDomainWindow(entries []domainEntry, domain string, windowCutoff, now t
 		pruned = append(pruned, domainEntry{domain: domain, at: now})
 	}
 
-	return pruned, countUniqueDomains(pruned)
+	return pruned, countUniqueDomains(pruned), !seen
 }
 
 // defaultMaxLevelDuration is the maximum time a session stays at an escalation level
@@ -1786,13 +1789,13 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 	now := time.Now()
 	windowCutoff := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 
-	pruned, uniqueDomains := pruneDomainWindow(sm.ipDomains[clientIP], domain, windowCutoff, now)
+	pruned, uniqueDomains, domainAdded := pruneDomainWindow(sm.ipDomains[clientIP], domain, windowCutoff, now)
 	sm.ipDomains[clientIP] = pruned
 
 	var anomalies []Anomaly
-	if uniqueDomains >= cfg.DomainBurst {
+	if domainAdded && uniqueDomains >= cfg.DomainBurst {
 		// Same cooldown pattern as per-session burst: score once per window,
-		// anomaly returned every time so AnomalyAction=block still fires.
+		// while each later new destination remains observable.
 		windowDur := time.Duration(cfg.WindowMinutes) * time.Minute
 		lastBurst := sm.ipBurstCooldown[clientIP]
 		score := 0.0

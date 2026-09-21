@@ -54,7 +54,7 @@ type installEnv struct {
 	// repairLeafMode reads and tightens a file's mode through a single
 	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable
 	// path cannot redirect a privileged chmod. Injectable for tests.
-	repairLeafMode func(path string, mode os.FileMode) (os.FileMode, bool, error)
+	repairLeafMode func(path string, mode os.FileMode, onlyWhenTooPermissive bool) (os.FileMode, bool, error)
 	rename         func(oldPath, newPath string) error
 	chmod          func(path string, mode os.FileMode) error
 	symlink        func(target, linkPath string) error
@@ -179,7 +179,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		chown:                       os.Chown,
 		lchown:                      os.Lchown,
 		ownLeafNoFollow:             applyAgentOwnershipNoFollow,
-		repairLeafMode:              repairLeafModeNoFollow,
+		repairLeafMode:              setLeafModeNoFollow,
 		rename:                      os.Rename,
 		chmod:                       os.Chmod,
 		symlink:                     os.Symlink,

@@ -1174,11 +1174,11 @@ func stepStagePipelockConfig(opts installOpts) step {
 // configModeRepairer returns the descriptor-based mode repair, letting a test
 // inject a failure. One accessor for both apply and undo keeps the two halves
 // using the same operation.
-func configModeRepairer(env *installEnv) func(string, os.FileMode) (os.FileMode, bool, error) {
+func configModeRepairer(env *installEnv) func(string, os.FileMode, bool) (os.FileMode, bool, error) {
 	if env.repairLeafMode != nil {
 		return env.repairLeafMode
 	}
-	return repairLeafModeNoFollow
+	return setLeafModeNoFollow
 }
 
 func stepRepairManagedConfigMode() step {
@@ -1197,7 +1197,7 @@ func stepRepairManagedConfigMode() step {
 			// The descriptor-based repair reads and changes the mode through one
 			// O_NOFOLLOW open, so there is no path-based stat to race and no
 			// separate existence probe to get wrong.
-			prev, changed, err := configModeRepairer(env)(dst, modeConfigSecret)
+			prev, changed, err := configModeRepairer(env)(dst, modeConfigSecret, true)
 			if err != nil {
 				// Absence is the ordinary first-install case: promotion owns
 				// creating the file. Every OTHER error, including a permission
@@ -1223,7 +1223,7 @@ func stepRepairManagedConfigMode() step {
 			}
 			// Rollback must put back the mode this step found, or a later step's
 			// failure leaves the file tightened and the install half-applied.
-			if _, _, err := configModeRepairer(env)(repairedPath, previousMode); err != nil {
+			if _, _, err := configModeRepairer(env)(repairedPath, previousMode, false); err != nil {
 				return fmt.Errorf("restore %s mode: %w", repairedPath, err)
 			}
 			repaired = false

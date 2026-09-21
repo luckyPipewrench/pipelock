@@ -14,6 +14,6 @@ import (
 // path, and Windows cannot express the Unix permission bits this repair exists
 // to correct, so it fails closed rather than falling back to a path-resolving
 // chmod the platform cannot make safe.
-func repairLeafModeNoFollow(path string, _ os.FileMode) (os.FileMode, bool, error) {
+func setLeafModeNoFollow(path string, _ os.FileMode, _ bool) (os.FileMode, bool, error) {
 	return 0, false, errors.New("config mode repair requires a Unix host: " + path)
 }

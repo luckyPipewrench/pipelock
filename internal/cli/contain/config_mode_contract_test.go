@@ -48,7 +48,7 @@ func TestRepairManagedConfigMode_TightensExistingLooseConfig(t *testing.T) {
 	env := &installEnv{
 		configDir:      t.TempDir(),
 		out:            &out,
-		repairLeafMode: repairLeafModeNoFollow,
+		repairLeafMode: setLeafModeNoFollow,
 	}
 
 	dst := managedPipelockConfigPath(env)
@@ -94,7 +94,7 @@ func TestRepairManagedConfigMode_TightensExistingLooseConfig(t *testing.T) {
 // a change.
 func TestRepairManagedConfigMode_NoConfigYet(t *testing.T) {
 	var out bytes.Buffer
-	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
 
 	applied, err := stepRepairManagedConfigMode().apply(context.Background(), env)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestRepairManagedConfigMode_ChmodFailureSurfaces(t *testing.T) {
 	env := &installEnv{
 		configDir: dir,
 		out:       &out,
-		repairLeafMode: func(string, os.FileMode) (os.FileMode, bool, error) {
+		repairLeafMode: func(string, os.FileMode, bool) (os.FileMode, bool, error) {
 			return 0, false, errors.New("read-only filesystem")
 		},
 	}
@@ -148,7 +148,7 @@ func TestRepairManagedConfigMode_RefusesSymlinkedLeaf(t *testing.T) {
 	}
 	var out bytes.Buffer
 	dir := t.TempDir()
-	env := &installEnv{configDir: dir, out: &out, repairLeafMode: repairLeafModeNoFollow}
+	env := &installEnv{configDir: dir, out: &out, repairLeafMode: setLeafModeNoFollow}
 
 	victim := filepath.Join(dir, "victim")
 	if err := os.WriteFile(victim, []byte("do not touch\n"), 0o600); err != nil {
@@ -184,7 +184,7 @@ func TestRepairManagedConfigMode_UndoRestoresPreviousMode(t *testing.T) {
 		t.Skip("Windows does not preserve Unix permission bits")
 	}
 	var out bytes.Buffer
-	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
 	dst := managedPipelockConfigPath(env)
 	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -214,7 +214,7 @@ func TestRepairManagedConfigMode_UndoRestoresPreviousMode(t *testing.T) {
 // touch a file this step never modified.
 func TestRepairManagedConfigMode_UndoWithoutApplyIsNoOp(t *testing.T) {
 	var out bytes.Buffer
-	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
 	if err := stepRepairManagedConfigMode().undo(context.Background(), env); err != nil {
 		t.Errorf("undo without apply: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRepairManagedConfigMode_UndoFailureSurfaces(t *testing.T) {
 	env := &installEnv{
 		configDir: t.TempDir(),
 		out:       &out,
-		repairLeafMode: func(path string, mode os.FileMode) (os.FileMode, bool, error) {
+		repairLeafMode: func(path string, mode os.FileMode, _ bool) (os.FileMode, bool, error) {
 			calls++
 			if calls == 1 {
 				return 0o640, true, nil
@@ -249,5 +249,64 @@ func TestRepairManagedConfigMode_UndoFailureSurfaces(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read-only filesystem") {
 		t.Errorf("error lost its cause: %v", err)
+	}
+}
+
+// 0400 already satisfies the admin CLI: no group, world or owner-execute bit.
+// Rewriting it to 0600 would GRANT owner write access to a file that was
+// stricter, so the repair must leave it alone. Tightening that loosens is worse
+// than not running at all.
+func TestRepairManagedConfigMode_LeavesStricterModeAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	var out bytes.Buffer
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
+	dst := managedPipelockConfigPath(env)
+	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(dst, 0o400); err != nil {
+		t.Fatalf("seed mode: %v", err)
+	}
+
+	applied, err := stepRepairManagedConfigMode().apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if applied {
+		t.Error("repair reported a change on a 0400 config the admin CLI already accepts")
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o400 {
+		t.Errorf("mode changed to %#o; the repair loosened a stricter config", got)
+	}
+}
+
+// A directory or device at the managed path means the leaf is not the config
+// install wrote. The open succeeds, so only the regular-file check stands
+// between a privileged mode change and an unintended target.
+func TestRepairManagedConfigMode_RefusesNonRegularLeaf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file-type semantics")
+	}
+	var out bytes.Buffer
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
+	if err := os.Mkdir(managedPipelockConfigPath(env), 0o750); err != nil {
+		t.Fatalf("seed directory: %v", err)
+	}
+
+	applied, err := stepRepairManagedConfigMode().apply(context.Background(), env)
+	if err == nil {
+		t.Fatal("a directory at the managed config path was accepted")
+	}
+	if applied {
+		t.Error("directory reported as repaired")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("error does not name the cause: %v", err)
 	}
 }

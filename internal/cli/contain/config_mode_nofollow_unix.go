@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 )
 
 // repairLeafModeNoFollow reads and tightens the mode of the FILE ITSELF rather
@@ -26,7 +28,7 @@ import (
 // It is deliberately mode-only. applyAgentOwnershipNoFollow is the sibling for
 // agent-readable files and also chowns to the agent, which would be wrong here:
 // the managed config is proxy-owned and agent-denied on purpose.
-func repairLeafModeNoFollow(path string, mode os.FileMode) (os.FileMode, bool, error) {
+func setLeafModeNoFollow(path string, mode os.FileMode, onlyWhenTooPermissive bool) (os.FileMode, bool, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, false, fmt.Errorf("open %s without following symlinks: %w", path, err)
@@ -44,6 +46,14 @@ func repairLeafModeNoFollow(path string, mode os.FileMode) (os.FileMode, bool, e
 	}
 
 	previous := os.FileMode(st.Mode).Perm()
+	// Tightening must not LOOSEN. The admin CLI accepts any mode with no group,
+	// world or owner-execute bit, so 0400 already satisfies it and rewriting it
+	// to 0600 would hand the owner write access it did not have. Repair only a
+	// mode the CLI would actually refuse. Rollback passes false here because it
+	// restores exactly what the repair found, including a mode the CLI refuses.
+	if onlyWhenTooPermissive && previous&session.ConfigPermRejectMask == 0 {
+		return previous, false, nil
+	}
 	if previous == mode.Perm() {
 		return previous, false, nil
 	}

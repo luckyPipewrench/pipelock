@@ -111,7 +111,7 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		{"a2a", AuditA2AScan, "invalid JSON", "no exemption knob", false},
 		{"agent budget", AuditAgentBudget, "request budget exceeded", "request count is expected", false},
 		{"session anomaly", AuditSessionAnomaly, "baseline_deviation", "baseline show", false},
-		{"query entropy", ScannerEntropy, "high entropy query value", "query_entropy_param_exclusions", false},
+		{"query entropy", ScannerEntropy, `high entropy query param "sig"`, "query_entropy_param_exclusions", false},
 		{"denial of wallet", ScannerDenialOfWallet, "tool call limit exceeded", "max_tool_calls_per_session", false},
 		{"ssrf metadata", ScannerSSRF, "metadata endpoint blocked", "non-overridable SSRF deny", true},
 		{"ssrf metadata label", ScannerSSRFMetadata, "metadata endpoint blocked", "non-overridable SSRF deny", true},
@@ -249,8 +249,28 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 		if !strings.Contains(g.OperatorKnob, "query_entropy_param_exclusions") {
 			t.Fatalf("query-entropy knob = %q, want query_entropy_param_exclusions first", g.OperatorKnob)
 		}
-		if OperatorHintForResult(ScannerEntropy, "query x") != queryEntropyOperatorKnob {
+		if OperatorHintForResult(ScannerEntropy, `high entropy query key "sig"`) != queryEntropyOperatorKnob {
 			t.Fatal("OperatorHintForResult should return the query knob for a query reason")
+		}
+	})
+
+	t.Run("classifier is exact and strips nested prefix", func(t *testing.T) {
+		cases := []struct {
+			reason string
+			want   bool
+		}{
+			{`high entropy query param "sig" (4.50 > 4.00 threshold)`, true},
+			{`high entropy query key "opaque" (4.50 > 4.00 threshold)`, true},
+			{`high entropy path segment (4.50 > 4.00 threshold)`, false},
+			{`nested URL in query parameter "redirect": high entropy query param "sig"`, true},
+			{`nested URL in query parameter "query trap": high entropy path segment`, false},
+			{`future query entropy prose`, false},
+		}
+		for _, tc := range cases {
+			got := IsQueryEntropyResult(Result{Scanner: ScannerEntropy, Reason: tc.reason})
+			if got != tc.want {
+				t.Errorf("IsQueryEntropyResult(%q) = %v, want %v", tc.reason, got, tc.want)
+			}
 		}
 	})
 

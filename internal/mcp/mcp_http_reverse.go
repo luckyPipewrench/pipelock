@@ -2621,7 +2621,7 @@ func a2aHeaderBlockReason(result A2AScanResult) blockreason.Reason {
 			}
 			return blockreason.PatternUnavailable
 		}
-		return mcpURLBlockReason(result.URLFindings[0].Scanner)
+		return mcpURLBlockReason(result.URLFindings[0])
 	}
 	return blockreason.ParseError
 }

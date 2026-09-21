@@ -824,7 +824,7 @@ func newInterceptHandler(
 				if ic.Config.ExplainBlocksEnabled() && urlResult.Hint != "" {
 					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
 				}
-				writeBlockedError(w, blockInfo(urlResult.Scanner),
+				writeBlockedError(w, blockInfoForResult(urlResult),
 					"blocked: "+urlResult.Reason, status)
 				return
 			}
@@ -860,7 +860,7 @@ func newInterceptHandler(
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				})
-				writeBlockedError(w, blockInfo(urlResult.Scanner),
+				writeBlockedError(w, blockInfoForResult(urlResult),
 					"blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}

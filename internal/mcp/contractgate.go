@@ -347,7 +347,7 @@ func mcpScannerBlockReason(verdict InputVerdict, policyVerdict policy.Verdict, c
 	case len(verdict.Inject) > 0:
 		return blockreason.PromptInjection
 	case len(verdict.URLFindings) > 0:
-		return mcpURLBlockReason(verdict.URLFindings[0].Scanner)
+		return mcpURLBlockReason(verdict.URLFindings[0])
 	case policyVerdict.Matched:
 		return blockreason.ToolPolicyDeny
 	case chainMatched:
@@ -357,8 +357,11 @@ func mcpScannerBlockReason(verdict InputVerdict, policyVerdict policy.Verdict, c
 	}
 }
 
-func mcpURLBlockReason(scannerLabel string) blockreason.Reason {
-	switch scannerLabel {
+func mcpURLBlockReason(result scanner.Result) blockreason.Reason {
+	if scanner.IsQueryEntropyResult(result) {
+		return blockreason.QueryEntropy
+	}
+	switch result.Scanner {
 	case scanner.ScannerScheme:
 		return blockreason.SchemeBlocked
 	case scanner.ScannerBlocklist:

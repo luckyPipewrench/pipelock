@@ -135,7 +135,7 @@ const (
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
 	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
 
-	// Query entropy shares the ScannerEntropy label with path/subdomain entropy
+	// Query entropy shares the ScannerEntropy label with path entropy
 	// but is a distinct gate with a distinct knob. The table is keyed by label
 	// alone, so this variant is selected by GuidanceForResult from the scan
 	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
@@ -361,7 +361,7 @@ func OperatorHintFor(label string) string {
 }
 
 // GuidanceForResult returns guidance using the scan Reason to disambiguate
-// same-label variants. ScannerEntropy distinguishes query from path/subdomain
+// same-label variants. ScannerEntropy distinguishes query from path
 // entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
@@ -396,6 +396,19 @@ func stripNestedURLReasonPrefix(reason string) string {
 		return reason
 	}
 	return reason
+}
+
+// IsQueryEntropyResult reports whether an entropy finding came from a query
+// key or value. ScannerEntropy intentionally remains the shared audit/metrics
+// layer; this predicate gives public reason-code and remediation consumers the
+// narrower gate identity without parsing broad prose fragments independently.
+func IsQueryEntropyResult(result Result) bool {
+	return result.Scanner == ScannerEntropy && isQueryEntropyReason(stripNestedURLReasonPrefix(result.Reason))
+}
+
+func isQueryEntropyReason(reason string) bool {
+	return strings.HasPrefix(reason, queryEntropyKeyReasonPrefix) ||
+		strings.HasPrefix(reason, queryEntropyParamReasonPrefix)
 }
 
 func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
@@ -615,7 +628,7 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			}, true
 		}
 	}
-	if label == ScannerEntropy && strings.Contains(reason, "query ") {
+	if label == ScannerEntropy && isQueryEntropyReason(reason) {
 		return RemediationGuidance{
 			OperatorKnob:    queryEntropyOperatorKnob,
 			OperatorBroader: queryEntropyOperatorBroader,

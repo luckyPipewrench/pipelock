@@ -392,7 +392,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"WebSocket blocked: "+result.Reason, status)
 			return
 		}
@@ -415,7 +415,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"WebSocket "+adaptiveBlockedReason, status)
 			return
 		}

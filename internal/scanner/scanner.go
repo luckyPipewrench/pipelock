@@ -3806,6 +3806,11 @@ func buildPathEntropyExempt(cfg *config.Config) *reqpolicy.Matcher {
 	return m
 }
 
+const (
+	queryEntropyKeyReasonPrefix   = "high entropy query key "
+	queryEntropyParamReasonPrefix = "high entropy query param "
+)
+
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
@@ -3865,7 +3870,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			if entropy > s.entropyThreshold {
 				return Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}
@@ -3886,7 +3891,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					}
 					return Result{
 						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
 					}
@@ -3916,7 +3921,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 			if entropy > s.entropyThreshold {
 				return Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}, true
@@ -3935,7 +3940,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if entropy > s.entropyThreshold {
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 				Scanner: ScannerEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}, true

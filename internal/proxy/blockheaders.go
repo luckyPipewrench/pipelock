@@ -11,9 +11,9 @@ import (
 )
 
 // reasonFromScanner maps a scanner.Scanner* layer label to the public
-// blockreason.Reason code. This is the single source of truth used by every
-// HTTP transport's block path so the same scanner finding produces the same
-// header value on forward, intercept, fetch, reverse, MCP, and WebSocket.
+// blockreason.Reason code. URL-result callers use reasonFromResult so the
+// shared entropy layer can distinguish query from path findings; label-only
+// callers preserve the historical path-entropy fallback.
 //
 // Returns blockreason.ParseError when the label is unrecognized so the helper
 // is total: a missing mapping never leaves a block path emitting an empty
@@ -26,7 +26,7 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.DomainBlocklist
 	case scanner.ScannerSSRFMetadata:
 		return blockreason.SSRFMetadata
-	case scanner.ScannerSSRF:
+	case scanner.ScannerSSRF, scanner.ScannerCoreSSRF:
 		return blockreason.SSRFPrivateIP
 	case scanner.ScannerEntropy:
 		return blockreason.PathEntropy
@@ -59,6 +59,13 @@ func reasonFromScanner(label string) blockreason.Reason {
 	}
 }
 
+func reasonFromResult(result scanner.Result) blockreason.Reason {
+	if scanner.IsQueryEntropyResult(result) {
+		return blockreason.QueryEntropy
+	}
+	return reasonFromScanner(result.Scanner)
+}
+
 // blockInfo builds a complete blockreason.Info from a scanner label.
 // Used by transports whose block decision came from the URL/header pipeline.
 //
@@ -85,6 +92,10 @@ func blockInfo(scannerLabel string) blockreason.Info {
 		return info
 	}
 	return out
+}
+
+func blockInfoForResult(result scanner.Result) blockreason.Info {
+	return blockInfoFor(reasonFromResult(result), result.Scanner)
 }
 
 // blockInfoFor builds a blockreason.Info from an explicit reason code, e.g.

@@ -405,7 +405,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"CONNECT blocked: "+result.Reason, status)
 			return
 		}
@@ -418,7 +418,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			emitConnectSessionDenyReceipt()
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"CONNECT "+adaptiveBlockedReason, status)
 			return
 		}
@@ -1220,7 +1220,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
 			writeBlockedError(w,
-				blockInfo(result.Scanner),
+				blockInfoForResult(result),
 				"blocked: "+result.Reason, status)
 			return
 		}
@@ -1233,7 +1233,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			writeBlockedError(w,
-				blockInfo(result.Scanner),
+				blockInfoForResult(result),
 				adaptiveBlockedReason, status)
 			return
 		}
@@ -3138,7 +3138,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 func a2aBodyBlockReason(result mcp.A2AScanResult) blockreason.Reason {
 	if len(result.URLFindings) > 0 {
-		return reasonFromScanner(result.URLFindings[0].Scanner)
+		return reasonFromResult(result.URLFindings[0])
 	}
 	if len(result.InjectFindings) > 0 {
 		return blockreason.PromptInjection

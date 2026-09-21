@@ -2244,6 +2244,13 @@ func TestA2AHeaderBlockReason(t *testing.T) {
 			want: blockreason.SSRFMetadata,
 		},
 		{
+			name: "query_entropy",
+			in: A2AScanResult{
+				URLFindings: []scanner.Result{{Scanner: scanner.ScannerEntropy, Reason: `high entropy query param "sig"`}},
+			},
+			want: blockreason.QueryEntropy,
+		},
+		{
 			name: "infrastructure_timeout",
 			in: A2AScanResult{
 				URLFindings: []scanner.Result{{

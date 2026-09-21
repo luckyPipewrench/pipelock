@@ -4,7 +4,9 @@
 package proxy
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -21,6 +23,7 @@ func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 		scanner.ScannerScheme:           blockreason.SchemeBlocked,
 		scanner.ScannerBlocklist:        blockreason.DomainBlocklist,
 		scanner.ScannerSSRF:             blockreason.SSRFPrivateIP,
+		scanner.ScannerCoreSSRF:         blockreason.SSRFPrivateIP,
 		scanner.ScannerSSRFMetadata:     blockreason.SSRFMetadata,
 		scanner.ScannerEntropy:          blockreason.PathEntropy,
 		scanner.ScannerSubdomainEntropy: blockreason.SubdomainEntropy,
@@ -54,6 +57,54 @@ func TestReasonFromScanner_UnknownLayerReturnsParseError(t *testing.T) {
 	got := reasonFromScanner("nonexistent_layer")
 	if got != blockreason.ParseError {
 		t.Errorf("unknown layer = %q, want ParseError", got)
+	}
+}
+
+func TestReasonFromResult_DisambiguatesEntropyGate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		result scanner.Result
+		want   blockreason.Reason
+	}{
+		{"query param", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: `high entropy query param "sig" (4.50 > 4.00 threshold)`}, blockreason.QueryEntropy},
+		{"query key", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: `high entropy query key "opaque" (4.50 > 4.00 threshold)`}, blockreason.QueryEntropy},
+		{"path", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: "high entropy path segment (4.50 > 4.00 threshold)"}, blockreason.PathEntropy},
+		{"unknown entropy prose", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: "future entropy finding"}, blockreason.PathEntropy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasonFromResult(tc.result); got != tc.want {
+				t.Fatalf("reasonFromResult(%#v) = %q, want %q", tc.result, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteBlockedError_EntropyReasonMatchesGate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		result scanner.Result
+		want   blockreason.Reason
+	}{
+		{"query", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: `high entropy query param "sig" (4.50 > 4.00 threshold)`}, blockreason.QueryEntropy},
+		{"path", scanner.Result{Scanner: scanner.ScannerEntropy, Reason: "high entropy path segment (4.50 > 4.00 threshold)"}, blockreason.PathEntropy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeBlockedError(w, blockInfoForResult(tc.result), "blocked: "+tc.result.Reason, http.StatusForbidden)
+			if got := w.Header().Get(blockreason.HeaderReason); got != string(tc.want) {
+				t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, tc.want)
+			}
+			if got := w.Header().Get(blockreason.HeaderLayer); got != scanner.ScannerEntropy {
+				t.Fatalf("%s = %q, want %q", blockreason.HeaderLayer, got, scanner.ScannerEntropy)
+			}
+			if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), tc.result.Reason) {
+				t.Fatalf("response = status %d body %q, want unchanged block body", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

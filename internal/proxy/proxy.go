@@ -5065,7 +5065,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() {
 				resp.Hint = result.Hint
 			}
-			writeBlockedJSON(w, blockInfo(result.Scanner), status, resp)
+			writeBlockedJSON(w, blockInfoForResult(result), status, resp)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.

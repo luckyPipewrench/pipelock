@@ -897,7 +897,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				reason = "submit profile: upstream URL scan denied"
 			}
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfo(urlResult.Scanner),
+				blockInfoForResult(urlResult),
 				reason)
 			return
 		}

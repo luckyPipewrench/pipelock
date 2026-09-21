@@ -1361,18 +1361,20 @@ func decodeOpaqueResponseFragments(fragments []string) string {
 	}
 	var joined strings.Builder
 	decodedBytes := 0
-	for i, fragment := range fragments {
+	decodedFragments := 0
+	for _, fragment := range fragments {
 		decoded, ok := decodeOpaqueResponseFragment(fragment)
 		if !ok {
-			return ""
+			continue
 		}
-		if i > 0 {
+		if decodedFragments > 0 {
 			joined.WriteByte('\n')
 		}
 		joined.Write(decoded)
 		decodedBytes += len(decoded)
+		decodedFragments++
 	}
-	if decodedBytes < binaryResponseTextRunMinBytes {
+	if decodedFragments < 2 || decodedBytes < binaryResponseTextRunMinBytes {
 		return ""
 	}
 	return joined.String()

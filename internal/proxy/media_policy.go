@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"mime"
 	"strings"
@@ -88,6 +89,12 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 	// Non-media content types pass through the media policy (content
 	// scanning is handled by the response scanner elsewhere).
 	if !isMediaType(mt) {
+		return MediaPolicyVerdict{Body: body, MediaType: mt}
+	}
+	// A zero-byte response cannot carry metadata or any other media payload.
+	// This covers HEAD and bodyless responses without making enforcement depend
+	// on request method, which is unavailable at several policy call sites.
+	if len(body) == 0 {
 		return MediaPolicyVerdict{Body: body, MediaType: mt}
 	}
 
@@ -176,7 +183,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 			// potentially booby-trapped content. The error surfaces in the
 			// exposure event for operator visibility.
 			exposure.Blocked = true
-			exposure.BlockReason = fmt.Sprintf("media_policy: image parse error: %v", err)
+			exposure.BlockReason = mediaParseBlockReason(mt, err)
 			return MediaPolicyVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -197,6 +204,13 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 		StripResult: stripResult,
 		Exposure:    exposureOrNil(cfg, exposure),
 	}
+}
+
+func mediaParseBlockReason(mediaType string, err error) string {
+	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+	}
+	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }
 
 // effectiveMediaType treats a declared media type as authoritative only when

@@ -571,6 +571,27 @@ func TestStripMetadata_ErrorsSurface(t *testing.T) {
 	}
 }
 
+func TestStripMetadata_SignatureMismatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		ct   string
+		data []byte
+		want error
+	}{
+		{name: "jpeg", ct: "image/jpeg", data: []byte{0x00, 0x01}, want: ErrJPEGSignatureMismatch},
+		{name: "png", ct: "image/png", data: []byte{0x00, 0x01}, want: ErrPNGSignatureMismatch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := StripMetadata(tt.ct, tt.data)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("StripMetadata(%q) error = %v, want %v", tt.ct, err, tt.want)
+			}
+		})
+	}
+}
+
 // TestCanonicalMediaType exercises parameter stripping and case folding.
 func TestCanonicalMediaType(t *testing.T) {
 	t.Parallel()

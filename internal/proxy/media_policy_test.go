@@ -290,13 +290,40 @@ func TestApplyMediaPolicy_AudioVideoAllowed(t *testing.T) {
 func TestApplyMediaPolicy_ParseErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	// Wrong prefix - media.StripMetadata returns ErrInvalidJPEG.
-	v := applyMediaPolicy(cfg, "image/jpeg", []byte{0x00, 0x01, 0x02, 0x03})
+	// Valid JPEG signature followed by a truncated marker. This is malformed
+	// media, not a declared-type/actual-bytes mismatch.
+	v := applyMediaPolicy(cfg, "image/jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0})
 	if !v.Blocked {
 		t.Fatal("malformed jpeg must be blocked (fail-closed)")
 	}
 	if !strings.Contains(v.BlockReason, "parse error") {
 		t.Errorf("block reason = %q, want parse error", v.BlockReason)
+	}
+}
+
+func TestApplyMediaPolicy_EmptyImagePasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	for _, body := range [][]byte{nil, {}} {
+		v := applyMediaPolicy(cfg, "image/png", body)
+		if v.Blocked {
+			t.Fatalf("empty image response blocked: %s", v.BlockReason)
+		}
+		if v.StripResult != nil {
+			t.Fatal("empty image response must not enter metadata surgery")
+		}
+	}
+}
+
+func TestApplyMediaPolicy_SignatureMismatchIsDiagnosed(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	v := applyMediaPolicy(cfg, "image/png", []byte{0x00, 0x01})
+	if !v.Blocked {
+		t.Fatal("declared PNG with non-PNG bytes must be blocked")
+	}
+	if !strings.Contains(v.BlockReason, `declared image type "image/png" does not match response bytes`) {
+		t.Errorf("block reason = %q, want declared-type mismatch", v.BlockReason)
 	}
 }
 

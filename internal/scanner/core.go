@@ -296,7 +296,7 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 	if ctx != nil && ctx.Err() != nil {
 		return nil
 	}
-	coreSet := s.scanCoreResponse(content, nil)
+	coreSet := s.scanCoreResponse(content, nil, false)
 	return coreSet.matches
 }
 
@@ -323,7 +323,7 @@ func hasIdentityByteOffsetMap(source, transformed string) bool {
 	return true
 }
 
-func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
+func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppressor, forceEncodedDecode bool) responseMatchSet {
 	if s.core == nil {
 		return responseMatchSet{}
 	}
@@ -377,7 +377,7 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
-	if hasEncodedRun(content) {
+	if forceEncodedDecode || hasEncodedRun(content) {
 		if decodedSet := s.matchDecodedCoreResponse(content, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
@@ -389,24 +389,19 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
 func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return s.matchDecodedCoreResponseRecursive(content, 0, suppress, strings.ContainsRune(content, '\n'))
+	return markFragmentBoundaries(s.matchDecodedCoreResponseRecursive(content, 0, suppress), content)
 }
 
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor, crossesFragmentBoundary bool) responseMatchSet {
+func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
 
 	// Strategy 1: whole-content decode (strip whitespace first).
-	stripped := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-			return -1
-		}
-		return r
-	}, content)
+	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -415,47 +410,48 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
 			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
-				return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
+				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, crossesFragmentBoundary); len(decodedSet.matches) > 0 {
-				return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
 		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
-			return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
+			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
-		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, crossesFragmentBoundary); len(decodedSet.matches) > 0 {
-			return markFragmentBoundary(decodedSet, crossesFragmentBoundary)
+		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
 	}
 
 	// Strategy 2: segment-level decode.
-	segments := extractEncodedRuns(content, minSegmentDecodeLen)
+	segments := extractEncodedRunSpans(content, minSegmentDecodeLen)
 	for _, seg := range segments {
+		_, sourceOffsets := stripDecodeWhitespace(seg.text, seg.start)
 		for _, enc := range []*base64.Encoding{
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
-					return decodedSet
+					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
-				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, false); len(decodedSet.matches) > 0 {
-					return decodedSet
+				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
 			}
 		}
-		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+		if decoded, err := hex.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
 			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress, false); len(decodedSet.matches) > 0 {
-				return decodedSet
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
+				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
 		}
 	}

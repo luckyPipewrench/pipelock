@@ -59,6 +59,7 @@ def run_wrapper(
     packages: str = "example.com/p/pkg",
     args: list[str] | None = None,
     env_overrides: dict[str, str] | None = None,
+    attempt_timeout_seconds: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         env = os.environ.copy()
@@ -70,6 +71,8 @@ def run_wrapper(
             str(WRAPPER),
             "--packages",
             packages,
+            *(["--attempt-timeout-seconds", attempt_timeout_seconds]
+              if attempt_timeout_seconds is not None else []),
             "--",
             "bash",
             "-c",
@@ -94,6 +97,91 @@ def terminate_and_reap(process: subprocess.Popen[str]) -> None:
 
 
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_attempt_deadline_bounds_all_packages_and_cleans_the_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            group_file = Path(tmp) / "group"
+            result = run_wrapper(
+                r'''
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/first"}'
+printf '%s\n' '{"Action":"start","Package":"example.com/p/second"}'
+exec python3 -c 'import os, time; open(os.environ["GROUP_FILE"], "w").write(str(os.getpgrp())); time.sleep(30)'
+''',
+                packages="example.com/p/first example.com/p/second",
+                attempt_timeout_seconds="1",
+                env_overrides={"GROUP_FILE": str(group_file)},
+            )
+            self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+            self.assertIn('"Package":"example.com/p/first"', result.stdout)
+            self.assertIn('"Package":"example.com/p/second"', result.stdout)
+            self.assertIn("first pass exceeded the whole-command deadline", result.stderr)
+            self.assertNotIn("FLAKE RETRY", result.stderr)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(int(group_file.read_text()), 0)
+
+    def test_attempt_deadline_cannot_retry_only_the_completed_failed_package(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ -e "$state" ]; then
+  echo 'incorrect partial retry'
+  exit 0
+fi
+: >"$state"
+printf '%s\n' '{"Action":"run","Package":"example.com/p/first","Test":"TestSlow"}'
+printf '%s\n' '{"Action":"output","Package":"example.com/p/first","Test":"TestSlow","Output":"panic: test timed out after 1s\n"}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/first"}'
+printf '%s\n' '{"Action":"start","Package":"example.com/p/second"}'
+exec python3 -c 'import time; time.sleep(30)'
+''',
+            packages="example.com/p/first example.com/p/second",
+            attempt_timeout_seconds="1",
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertNotIn("incorrect partial retry", result.stdout)
+        self.assertNotIn("FLAKE RETRY", result.stderr)
+
+    def test_retry_has_its_own_whole_command_deadline(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"panic: test timed out after 1s\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg"}'
+  exit 1
+fi
+printf '%s\n' 'retry started'
+exec python3 -c 'import time; time.sleep(30)'
+''',
+            attempt_timeout_seconds="1",
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertIn("retry started", result.stdout)
+        self.assertIn("retry pass exceeded the whole-command deadline", result.stderr)
+        self.assertIn("rerunning failed package(s) once", result.stderr)
+        self.assertNotIn("failed then passed", result.stderr)
+
+    def test_attempt_deadline_preserves_arguments_and_success(self) -> None:
+        result = run_wrapper(
+            'printf "%s\\n" "$@"',
+            packages="example.com/p/first example.com/p/second",
+            args=["-race", "-parallel=2"],
+            attempt_timeout_seconds="5",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "-race", "-parallel=2", "example.com/p/first", "example.com/p/second",
+        ])
+
+    def test_invalid_attempt_deadline_refuses_before_execution(self) -> None:
+        for value in ("0", "-1", "invalid", ""):
+            with self.subTest(value=value):
+                result = run_wrapper('echo executed', attempt_timeout_seconds=value)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn("executed", result.stdout)
+
     def test_process_cleanup_terminates_and_reaps_wrapper(self) -> None:
         process = subprocess.Popen(
             ["python3", "-c", "import time; time.sleep(3600)"],

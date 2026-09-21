@@ -106,7 +106,7 @@ def ci_race_shape_errors(ci: str) -> list[str]:
         if (
             direct_count
             and '-p="$package_parallelism" -parallel=2' in job
-            and "-timeout=15m -count=1" in job
+            and "-timeout=20m -count=1" in job
         ):
             inline.append(name)
         else:
@@ -122,23 +122,98 @@ def ci_race_shape_errors(ci: str) -> list[str]:
     return errors
 
 
+def ci_retry_budget_errors(ci: str) -> list[str]:
+    """Budget complete command attempts, independent of package execution waves."""
+    errors = []
+    for name in CI_RACE_PRODUCERS:
+        job = job_block(ci, name)
+        job_timeout = re.search(r"(?m)^    timeout-minutes: (\d+)\s*$", job)
+        test_timeout = re.search(r"-timeout=(\d+)m\b", job)
+        if job_timeout is None or test_timeout is None:
+            errors.append(f"{name}: missing explicit job or test deadline")
+            continue
+        retry_command = re.search(r"(?m)^\s*bash scripts/ci-test-with-retry\.sh\b[^\n]*$", job)
+        if retry_command is None:
+            errors.append(f"{name}: missing bounded retry runner")
+            continue
+        attempt_timeout = re.search(
+            r"--attempt-timeout-seconds ([1-9][0-9]*) --(?:\s*\\)?\s*$",
+            retry_command[0],
+        )
+        if attempt_timeout is None:
+            errors.append(f"{name}: missing whole-command attempt deadline")
+            continue
+        seconds = int(attempt_timeout[1])
+        if seconds <= int(test_timeout[1]) * 60:
+            errors.append(f"{name}: attempt deadline must leave room beyond a package timeout")
+        # Each attempt has ten seconds of KILL grace, then the existing buffer
+        # covers capture cleanup, setup and upload. Round up to whole minutes.
+        minimum = (2 * (seconds + 10) + 59) // 60 + 5
+        if int(job_timeout[1]) < minimum:
+            errors.append(f"{name}: job budget must be at least {minimum} minutes")
+    return errors
+
+
 class TestRaceTestShape(unittest.TestCase):
+    def test_ci_job_budget_covers_the_timeout_retry(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        self.assertEqual(ci_retry_budget_errors(ci), [])
+
+    def test_shortening_one_retry_budget_is_detected(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        name = "test-enterprise-go125"
+        original = job_block(ci, name)
+        shortened, count = re.subn(
+            r"(?m)^    timeout-minutes: \d+$",
+            "    timeout-minutes: 20",
+            original,
+        )
+        self.assertEqual(count, 1)
+        drifted = ci.replace(original, shortened, 1)
+        self.assertIn(
+            f"{name}: job budget must be at least 48 minutes",
+            ci_retry_budget_errors(drifted),
+        )
+
+    def test_package_timeout_cannot_substitute_for_an_attempt_deadline(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        name = "test-enterprise-go125"
+        original = job_block(ci, name)
+        unbounded, count = re.subn(r" --attempt-timeout-seconds [0-9]+", "", original)
+        self.assertEqual(count, 1)
+        drifted = ci.replace(original, unbounded, 1)
+        self.assertIn(
+            f"{name}: missing whole-command attempt deadline",
+            ci_retry_budget_errors(drifted),
+        )
+
+    def test_attempt_deadline_changes_recompute_the_job_budget(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        name = "test-oss-go126"
+        original = job_block(ci, name)
+        longer, count = re.subn(r"--attempt-timeout-seconds [0-9]+", "--attempt-timeout-seconds 1800", original)
+        self.assertEqual(count, 1)
+        self.assertIn(
+            f"{name}: job budget must be at least 66 minutes",
+            ci_retry_budget_errors(ci.replace(original, longer, 1)),
+        )
+
     def test_oss_proxy_shape_limits_package_fanout(self) -> None:
         command = printed_command("--shard", "proxy")
 
-        self.assertIn("go test -race -p=1 -parallel=2 -count=1 -timeout=15m", command)
+        self.assertIn("go test -race -p=1 -parallel=2 -count=1 -timeout=20m", command)
         self.assertIn("github.com/luckyPipewrench/pipelock/internal/proxy", command)
 
     def test_enterprise_rest_shape_uses_common_limits(self) -> None:
         command = printed_command("--shard", "rest-0", "--tags", "enterprise")
 
-        self.assertIn("go test -race -p=2 -parallel=2 -count=1 -timeout=15m", command)
+        self.assertIn("go test -race -p=2 -parallel=2 -count=1 -timeout=20m", command)
         self.assertIn("-tags enterprise", command)
 
     def test_named_package_selection_cannot_bypass_common_limits(self) -> None:
         command = printed_command("--packages", "./internal/config ./internal/mcp")
 
-        self.assertIn("go test -race -p=2 -parallel=2 -count=1 -timeout=15m", command)
+        self.assertIn("go test -race -p=2 -parallel=2 -count=1 -timeout=20m", command)
         self.assertIn("./internal/config ./internal/mcp", command)
 
     def test_local_and_release_targets_delegate_to_the_runner(self) -> None:

@@ -96,7 +96,9 @@ if [[ ${#packages[@]} -eq 0 ]]; then
   exit 1
 fi
 
-cmd=(go test -race "-p=$package_parallelism" -parallel=2 -count=1 -timeout=15m)
+# The full proxy package can exhaust fifteen minutes while healthy tests are
+# still starting. Keep this suite budget aligned with the CI race producers.
+cmd=(go test -race "-p=$package_parallelism" -parallel=2 -count=1 -timeout=20m)
 if [[ -n "$tags" ]]; then
   cmd+=(-tags "$tags")
 fi

@@ -509,6 +509,77 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 	}
 }
 
+// TestRunProxyWithSandbox_CancellationReapsEscapedStderrHolder drives the
+// direct-child exit ordering that a CommandContext child can hide. The direct
+// shell ignores the cancellation watcher's first SIGTERM; the later
+// waitForCommandWithProcessGroup teardown kills it, at which point the setsid
+// child becomes an adopted descendant. That child holds stderr, whose Go
+// exec.Cmd copy goroutine keeps Cmd.Wait blocked until it is killed before the
+// reap begins.
+func TestRunProxyWithSandbox_CancellationReapsEscapedStderrHolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real sandbox proxy process")
+	}
+
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	holderPIDFile := filepath.Join(dir, "holder.pid")
+	// Bind the command to the test lifetime rather than ctx so the RunProxy
+	// cancellation watcher owns the direct child's exit. The escaped child
+	// inherits both output descriptors and survives the direct shell's process
+	// group.
+	script := "umask 077; trap '' TERM; setsid sleep 300 & holder=$!; " +
+		"printf '%s\\n' \"$holder\" > \"$MCP_TEST_HOLDER_PID_FILE\"; " +
+		"touch \"$MCP_TEST_READY_FILE\"; while :; do sleep 1; done"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientIn := newBlockingReader()
+	defer func() { _ = clientIn.Close() }()
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", script) // #nosec G204 G702 -- fixed test command
+	cmd.Env = append(os.Environ(),
+		"MCP_TEST_READY_FILE="+readyFile,
+		"MCP_TEST_HOLDER_PID_FILE="+holderPIDFile,
+	)
+	var logBuf syncBuffer
+	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
+	opts.sessionExitForTest = liveSessionExitHooks()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, &logBuf, opts)
+	}()
+
+	testwait.For(t, 10*time.Second, func() bool {
+		_, err := os.Stat(readyFile)
+		return err == nil
+	}, "the TERM-ignoring sandbox command to become ready")
+
+	pidBytes, err := os.ReadFile(filepath.Clean(holderPIDFile))
+	if err != nil {
+		t.Fatalf("read escaped stderr holder PID: %v", err)
+	}
+	holderPID, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil || holderPID <= 0 {
+		t.Fatalf("escaped stderr holder PID = %q, want positive integer", pidBytes)
+	}
+	t.Cleanup(func() {
+		if processAlive(holderPID) {
+			_ = syscall.Kill(holderPID, syscall.SIGKILL)
+		}
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatalf("sandbox proxy did not stop after cancellation while an escaped descendant held stderr; holder pid=%d alive=%t; log: %q",
+			holderPID, processAlive(holderPID), logBuf.String())
+	}
+
+	waitForGone(t, map[string]int{"escaped stderr holder": holderPID}, 5*time.Second)
+}
+
 // TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit reproduces the
 // race where the response reader sees EOF just before the direct child exits.
 // Ordinary EOF must wait for that exit rather than turning it into SIGTERM,

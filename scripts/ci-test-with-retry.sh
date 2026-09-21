@@ -12,10 +12,11 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" -- go test [flags]" >&2
+  echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" [--attempt-timeout-seconds N] -- go test [flags]" >&2
 }
 
 packages=""
+attempt_timeout_seconds=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --packages)
@@ -24,6 +25,14 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       packages="$2"
+      shift 2
+      ;;
+    --attempt-timeout-seconds)
+      if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+        usage
+        exit 2
+      fi
+      attempt_timeout_seconds="$2"
       shift 2
       ;;
     --)
@@ -42,6 +51,11 @@ if [ "$#" -eq 0 ] || [ -z "$packages" ]; then
   exit 2
 fi
 
+if [ -n "$attempt_timeout_seconds" ] && ! command -v timeout >/dev/null 2>&1; then
+  echo "ci-test-with-retry: timeout is required for an attempt deadline" >&2
+  exit 2
+fi
+
 read -r -a package_args <<<"$packages"
 if [ "${#package_args[@]}" -eq 0 ]; then
   echo "ci-test-with-retry: no packages were provided" >&2
@@ -54,6 +68,7 @@ capture_failed=0
 process_cleanup_failed=0
 last_process_group=""
 active_process_group=""
+attempt_incomplete=0
 
 process_group_is_alive() {
   local process_group="$1"
@@ -126,6 +141,12 @@ run_and_tee() {
   local stderr_file="$3"
   shift 3
 
+  # Go's -timeout applies to each package binary, not to all package waves.
+  # Bound the complete command independently on both the first and retry pass.
+  if [ -n "$attempt_timeout_seconds" ]; then
+    set -- timeout --kill-after=10s "${attempt_timeout_seconds}s" "$@"
+  fi
+
   local stdout_fifo="${stdout_file}.fifo"
   local stderr_fifo="${stderr_file}.fifo"
   mkfifo "$stdout_fifo" "$stderr_fifo"
@@ -144,6 +165,19 @@ run_and_tee() {
 
   local command_status=0
   wait "$command_pid" || command_status=$?
+
+  if [ -n "$attempt_timeout_seconds" ]; then
+    case "$command_status" in
+      124)
+        echo "ci-test-with-retry: ${pass_label} exceeded the whole-command deadline (${attempt_timeout_seconds}s); incomplete attempts are not retried" >&2
+        attempt_incomplete=1
+        ;;
+      137)
+        echo "ci-test-with-retry: ${pass_label} was killed before a complete result; incomplete attempts are not retried" >&2
+        attempt_incomplete=1
+        ;;
+    esac
+  fi
 
   # Descendants can inherit the FIFO writers. Clean the process group before
   # waiting for tee, or an orphan could keep capture open indefinitely.
@@ -388,6 +422,10 @@ set -e
 
 if [ "$capture_failed" -ne 0 ] || [ "$process_cleanup_failed" -ne 0 ]; then
   exit 1
+fi
+
+if [ "$attempt_incomplete" -ne 0 ]; then
+  exit "$first_status"
 fi
 
 if [ "$first_status" -eq 0 ]; then

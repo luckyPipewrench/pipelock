@@ -1401,7 +1401,7 @@ func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	}
 
 	logger.Close()
-	auditBytes, err := os.ReadFile(auditPath)
+	auditBytes, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatalf("read audit log: %v", err)
 	}

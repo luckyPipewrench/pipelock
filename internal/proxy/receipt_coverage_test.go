@@ -1410,6 +1410,40 @@ func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	}
 }
 
+func TestFetchJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+		"." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" +
+		"." + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+
+	rph := newReceiptProxyHelper(t)
+	h := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Mode = config.ModeStrict
+		cfg.APIAllowlist = []string{"127.0.0.1"}
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+		cfg.RequestBodyScanning.SensitiveHeaders = []string{"Cookie"}
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.URL+"/app"), nil)
+	req.Header.Set("Cookie", "session="+jwt)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	recorded := rph.requireReceipt(t, "dlp_header")
+	if recorded.ActionRecord.Verdict != config.ActionWarn || recorded.ActionRecord.Pattern != "request_header_secret" {
+		t.Fatalf("receipt verdict/pattern = %q/%q, want warn header evidence", recorded.ActionRecord.Verdict, recorded.ActionRecord.Pattern)
+	}
+}
+
 // setupWSProxyWithReceipts boots a real WS proxy with receipt emission.
 func setupWSProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func(*config.Config)) (string, func()) {
 	t.Helper()

@@ -21,6 +21,13 @@ func RequestIdentity(header http.Header) {
 	header.Set("Accept-Encoding", "identity")
 }
 
+// HasNonIdentityContentEncoding reports whether any Content-Encoding header
+// value contains an encoding other than identity. HTTP permits repeated header
+// fields, so callers must inspect all values rather than Header.Get's first.
+func HasNonIdentityContentEncoding(header http.Header) bool {
+	return len(nonIdentityEncodings(header.Values("Content-Encoding"))) != 0
+}
+
 // DecodeResponse replaces a gzip- or deflate-encoded response body with a
 // decoded stream and removes headers that describe the encoded representation.
 // Callers retain their existing decoded-body size limits. Unsupported,

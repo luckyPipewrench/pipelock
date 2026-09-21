@@ -5016,6 +5016,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolver timeouts) from the finding classification - neither is evidence
 	// of threat.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
+	fetchReceiptVerdict := config.ActionAllow
+	fetchReceiptLayer := ""
+	fetchReceiptPattern := ""
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
@@ -5232,6 +5235,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if headerHadFinding {
 		hasFinding = true
+		if !headerBlocked {
+			fetchReceiptVerdict = config.ActionWarn
+			fetchReceiptLayer = "dlp_header"
+			fetchReceiptPattern = "request_header_secret"
+		}
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
 			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
 			headerSignal := session.SignalNearMiss
@@ -5727,7 +5735,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// emit is skipped when require_receipts is on to avoid a duplicate.
 	fetchAllowReceipt := receipt.EmitOpts{
 		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
+		Verdict:             fetchReceiptVerdict,
+		Layer:               fetchReceiptLayer,
+		Pattern:             fetchReceiptPattern,
 		Transport:           "fetch",
 		Method:              http.MethodGet,
 		Target:              displayURL,

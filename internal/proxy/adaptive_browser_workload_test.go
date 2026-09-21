@@ -55,6 +55,9 @@ func TestAdaptiveDefaultsBrowserWorkloadRecoversButRotationEscalates(t *testing.
 	if got := rotation.EscalationLevel(); got == 0 {
 		t.Fatalf("fresh-domain rotation stayed normal with score %.2f", rotation.ThreatScore())
 	}
+	if got := rotation.ThreatScore(); got != 6 {
+		t.Fatalf("fresh-domain rotation score = %.2f, want 6.00", got)
+	}
 }
 
 func recordAdaptiveAnomalies(sess *SessionState, anomalies []Anomaly, cfg *config.AdaptiveEnforcement) {

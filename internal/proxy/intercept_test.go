@@ -2662,7 +2662,7 @@ func TestInterceptTunnel_CompressedResponseBlockedViaRoundTripper(t *testing.T) 
 			StatusCode: http.StatusOK,
 			Header: http.Header{
 				"Content-Type":     []string{"application/json"},
-				"Content-Encoding": []string{"gzip"},
+				"Content-Encoding": []string{"identity", "gzip"},
 			},
 			Body: io.NopCloser(strings.NewReader("fake-gzip-payload")),
 		}, nil

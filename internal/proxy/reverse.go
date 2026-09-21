@@ -2212,7 +2212,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		emitReverseReceipt(passthroughReceipt)
 	}
 	compressedResponseErr := error(nil)
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 		switch {
 		case HasSingleSSEContentType(resp.Header):
 			compressedResponseErr = errors.New("compressed streaming response cannot be scanned")

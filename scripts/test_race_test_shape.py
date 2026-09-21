@@ -146,9 +146,10 @@ def ci_retry_budget_errors(ci: str) -> list[str]:
         seconds = int(attempt_timeout[1])
         if seconds <= int(test_timeout[1]) * 60:
             errors.append(f"{name}: attempt deadline must leave room beyond a package timeout")
-        # Each attempt has ten seconds of KILL grace, then the existing buffer
-        # covers capture cleanup, setup and upload. Round up to whole minutes.
-        minimum = (2 * (seconds + 10) + 59) // 60 + 5
+        # Capture allows the command's ten-second KILL grace, plus ten seconds
+        # to stop a stuck reader. Both readers run concurrently. The existing
+        # buffer covers group cleanup, setup and upload; round up to minutes.
+        minimum = (2 * (seconds + 20) + 59) // 60 + 5
         if int(job_timeout[1]) < minimum:
             errors.append(f"{name}: job budget must be at least {minimum} minutes")
     return errors

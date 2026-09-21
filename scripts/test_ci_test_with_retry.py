@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,14 +81,18 @@ def run_wrapper(
             "fake-go",
             *(args or []),
         ]
-        return subprocess.run(
-            cmd,
-            cwd=ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError("ci-test-with-retry did not finish within 30 seconds") from exc
 
 
 def terminate_and_reap(process: subprocess.Popen[str]) -> None:
@@ -97,6 +102,44 @@ def terminate_and_reap(process: subprocess.Popen[str]) -> None:
 
 
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_harness_deadline_reports_an_assertion(self) -> None:
+        with mock.patch.object(
+            subprocess, "run", side_effect=subprocess.TimeoutExpired(["bash"], 30)
+        ) as run:
+            with self.assertRaisesRegex(AssertionError, "did not finish within 30 seconds"):
+                run_wrapper("exit 0")
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+
+    def test_capture_deadline_bounds_escaped_fifo_writers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            holder_file = Path(tmp) / "holder-pid"
+
+            def cleanup_holder() -> None:
+                if holder_file.exists():
+                    try:
+                        os.kill(int(holder_file.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+            try:
+                result = run_wrapper(
+                    r'''
+exec python3 -c 'import os, subprocess, sys; child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"], start_new_session=True); open(os.environ["HOLDER_FILE"], "w").write(str(child.pid)); print("command completed", flush=True)'
+''',
+                    attempt_timeout_seconds="1",
+                    env_overrides={"HOLDER_FILE": str(holder_file)},
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("command completed", result.stdout)
+                self.assertIn("failed to capture complete test output", result.stderr)
+                self.assertIn("stdout=124, stderr=124", result.stderr)
+                self.assertNotIn("FLAKE RETRY", result.stderr)
+                # The escaped writer remains alive: fixture cleanup cannot be
+                # what allowed the wrapper's capture wait to finish.
+                os.kill(int(holder_file.read_text()), 0)
+            finally:
+                cleanup_holder()
+
     def test_attempt_deadline_bounds_all_packages_and_cleans_the_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             group_file = Path(tmp) / "group"

@@ -151,9 +151,16 @@ run_and_tee() {
   local stderr_fifo="${stderr_file}.fifo"
   mkfifo "$stdout_fifo" "$stderr_fifo"
 
-  tee "$stdout_file" <"$stdout_fifo" &
+  # A setsid descendant may retain a writer outside the command's group.
+  # Bound both capture readers from startup, allowing the command's KILL
+  # grace to finish first. An expired capture remains an incomplete failure.
+  local capture_command=(tee)
+  if [ -n "$attempt_timeout_seconds" ]; then
+    capture_command=(timeout --kill-after=10s "$((attempt_timeout_seconds + 10))s" tee)
+  fi
+  "${capture_command[@]}" "$stdout_file" <"$stdout_fifo" &
   local stdout_tee_pid=$!
-  tee "$stderr_file" <"$stderr_fifo" >&2 &
+  "${capture_command[@]}" "$stderr_file" <"$stderr_fifo" >&2 &
   local stderr_tee_pid=$!
 
   # Python creates a new session without relying on non-standard setsid(1)
@@ -196,7 +203,7 @@ run_and_tee() {
   rm -f -- "$stdout_fifo" "$stderr_fifo"
 
   if [ "$stdout_tee_status" -ne 0 ] || [ "$stderr_tee_status" -ne 0 ]; then
-    echo "ci-test-with-retry: failed to capture complete test output" >&2
+    echo "ci-test-with-retry: failed to capture complete test output (stdout=${stdout_tee_status}, stderr=${stderr_tee_status})" >&2
     capture_failed=1
   fi
   return "$command_status"

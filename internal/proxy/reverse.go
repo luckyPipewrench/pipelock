@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -178,6 +179,7 @@ func NewReverseProxy(
 		req.URL.Path = cleanReversePath(req.URL.Path)
 		req.URL.RawPath = ""
 		req.Host = upstream.Host
+		responseencoding.RequestIdentity(req.Header)
 	}
 
 	// ModifyResponse scans response bodies for injection.
@@ -2209,8 +2211,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		emitReverseReceipt(passthroughReceipt)
 	}
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) &&
-		(cfg.ResponseScanning.Enabled || cfg.MediaPolicy.IsEnabled()) {
+	compressedResponseErr := error(nil)
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		switch {
+		case HasSingleSSEContentType(resp.Header):
+			compressedResponseErr = errors.New("compressed streaming response cannot be scanned")
+		case sc.ResponseScanningEnabled() || cfg.MediaPolicy.IsEnabled() || shieldActiveForHost:
+			compressedResponseErr = responseencoding.DecodeResponse(resp)
+		}
+	}
+	if compressedResponseErr != nil {
 		_ = resp.Body.Close()
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
@@ -2533,35 +2543,6 @@ responseScanning:
 		rp.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportReverse)
 	}
 
-	// Fail-closed on compressed responses: regex can't match gzipped content.
-	// Must check before reading body so compressed injection isn't forwarded.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		_ = resp.Body.Close()
-		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
-		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
-		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
-		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
-		// Reverse proxy has no session-profiling context; the taint
-		// fields that forward.go threads into its EmitOpts are
-		// intentionally omitted here and on the SSE / oversize / read-
-		// error block paths below. Adding them would require plumbing
-		// a session manager through ReverseProxyHandler, which is out
-		// of scope for this fix (parity for the existing block paths).
-		emitReverseReceipt(receipt.EmitOpts{
-			ActionID:  actionID,
-			Verdict:   config.ActionBlock,
-			Layer:     LayerReverseResponseBlocked,
-			Pattern:   "compressed response cannot be scanned",
-			Transport: "reverse",
-			Method:    resp.Request.Method,
-			Target:    targetURL,
-			RequestID: requestID,
-			Agent:     agent,
-		})
-		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
-		recordReverseOutcome(http.StatusForbidden, -1, "compressed_response")
-		return nil
-	}
 	// sc.ResponseScanningEnabled(), not the raw flag: core response patterns are
 	// the immutable floor and stay live when the operator disables the optional
 	// layer. Forward and intercept already gate on the scanner for this reason.

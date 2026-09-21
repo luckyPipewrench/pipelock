@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -950,9 +951,9 @@ func newInterceptHandler(
 			}
 		}
 
-		// Strip Accept-Encoding to force identity encoding upstream.
-		// This ensures responses arrive uncompressed so we can scan them.
-		r.Header.Del("Accept-Encoding")
+		// Prefer identity upstream. Some origins ignore this request; the
+		// response path decodes supported encodings before scanning.
+		responseencoding.RequestIdentity(r.Header)
 
 		// Request body DLP scanning. interceptBodyBytes is hoisted out
 		// of the scanner block so the envelope inject site below can
@@ -1834,9 +1835,19 @@ func newInterceptHandler(
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
 		}
 
-		// Fail-closed on compressed responses: DLP regex can't match
-		// compressed content. Block rather than forward unscanned data.
+		// Origins sometimes ignore the explicit identity request. Decode bounded,
+		// buffered response formats before scanning; streaming and unsupported
+		// encodings remain fail-closed because they cannot safely enter the body
+		// scanners as opaque bytes.
+		compressedResponseErr := error(nil)
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+			if HasSingleSSEContentType(resp.Header) {
+				compressedResponseErr = errors.New("compressed streaming response cannot be scanned")
+			} else {
+				compressedResponseErr = responseencoding.DecodeResponse(resp)
+			}
+		}
+		if compressedResponseErr != nil {
 			ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
 			ic.Metrics.RecordTLSResponseBlocked("compressed")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

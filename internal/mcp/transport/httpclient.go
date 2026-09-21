@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
 // ErrStreamNotSupported indicates the upstream server returned HTTP 405 for
@@ -185,6 +187,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	responseencoding.RequestIdentity(req.Header)
 
 	// Always remove any caller-supplied Mcp-Session-Id BEFORE the conditional
 	// Set below: on the first request c.sessionID is empty and Set is skipped,
@@ -267,15 +270,17 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil, err
 	}
 
-	// Fail closed on compressed responses before wrapping the body in
-	// SingleMessageReader or SSEReader. Both readers see opaque bytes
-	// after this point; gzip/br/zstd would otherwise reach downstream
-	// scanners as binary garbage and never trigger the body-scan guards.
-	// DisableCompression on the transport guarantees the encoding header
-	// survives transparent decompression, so this check is authoritative.
+	// Decode supported buffered JSON responses before scanning. Compressed SSE,
+	// unsupported encodings, and malformed streams stay fail-closed.
 	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		_ = resp.Body.Close()
-		return nil, ErrCompressedResponse
+		if HasSingleSSEContentType(resp.Header) {
+			_ = resp.Body.Close()
+			return nil, ErrCompressedResponse
+		}
+		if err := responseencoding.DecodeResponse(resp); err != nil {
+			_ = resp.Body.Close()
+			return nil, ErrCompressedResponse
+		}
 	}
 
 	// Route based on Content-Type.
@@ -380,6 +385,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		}
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	responseencoding.RequestIdentity(req.Header)
 
 	c.sessionMu.Lock()
 	req.Header.Del("Mcp-Session-Id")
@@ -473,6 +479,7 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 			req.Header.Add(key, v)
 		}
 	}
+	responseencoding.RequestIdentity(req.Header)
 	req.Header.Del("Mcp-Session-Id")
 	req.Header.Del(pipelockSessionTokenHeader)
 	if sid != "" {

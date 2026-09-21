@@ -56,6 +56,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -5769,6 +5770,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.emitOutcomeReceipt(cfg, fetchAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 	}()
 
+	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
@@ -5869,14 +5871,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 
-	// Fail closed on compressed responses before reading the body. p.client
-	// is shared between forward proxy and /fetch and now sets
-	// DisableCompression: true so the upstream Content-Encoding survives
-	// transparent decompression. Without this guard, a gzip/br/zstd response
-	// would flow into readability extraction and the response scanner as
-	// binary garbage, bypassing both. Forward proxy already runs the same
-	// guard in forward.go; this completes parity on the fetch surface.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	// Decode supported single-layer encodings before the existing decoded-body
+	// size limit and scanners. Unsupported, stacked, and malformed encodings
+	// remain fail-closed instead of reaching readability as opaque bytes.
+	if err := responseencoding.DecodeResponse(resp); err != nil {
 		log.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
 		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{

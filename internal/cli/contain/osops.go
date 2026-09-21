@@ -278,13 +278,18 @@ const (
 	// tool names/paths only. Mutation remains gated by root-owned directories.
 	modeCAReadable        os.FileMode = 0o644 // public CA certs, read by pipelock-agent
 	modeAllowListReadable os.FileMode = 0o644 // runtime policy metadata, read by pipelock-agent
-	modeConfigSecret      os.FileMode = 0o640 // /etc/pipelock/pipelock.yaml - pipelock-proxy reads, pipelock-agent denied
-	modePinSecret         os.FileMode = 0o600 // integrity pin - pipelock-proxy only
-	modeSudoers           os.FileMode = 0o440 // /etc/sudoers.d/*
-	modeWrapperExec       os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
-	modeUnitFile          os.FileMode = 0o644
-	modeNFTFile           os.FileMode = 0o644
-	modeNFTMainConfig     os.FileMode = 0o600
+	// 0o600, not 0o640: pipelock-proxy OWNS these files, so the group bit
+	// grants nothing (the installer never adds a member to that group) while
+	// the admin CLI refuses any config carrying group bits, because this file
+	// holds the admin API token. Installing 0o640 made every shipped admin
+	// command fail against the shipped config with "restrict to 0o600".
+	modeConfigSecret  os.FileMode = 0o600 // pipelock.yaml, license.token, roster.json, integrity manifest, tls/ca.pem - pipelock-proxy only
+	modePinSecret     os.FileMode = 0o600 // integrity pin - pipelock-proxy only
+	modeSudoers       os.FileMode = 0o440 // /etc/sudoers.d/*
+	modeWrapperExec   os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
+	modeUnitFile      os.FileMode = 0o644
+	modeNFTFile       os.FileMode = 0o644
+	modeNFTMainConfig os.FileMode = 0o600
 	// Directory modes. modeDirTraversable is intentionally world-traversable
 	// because pipelock-agent is a separate UID and must walk into
 	// /etc/pipelock/contain; modeDirPrivate is for dirs containing only

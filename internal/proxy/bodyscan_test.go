@@ -682,6 +682,64 @@ func TestRequestDLPPatternControlsAcrossTransports(t *testing.T) {
 	})
 }
 
+func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+
+	jwt := scanner.TextDLPMatch{PatternName: "JWT Token", Severity: config.SeverityCritical}
+	aws := scanner.TextDLPMatch{PatternName: "AWS Access ID", Severity: config.SeverityCritical}
+
+	tests := []struct {
+		name       string
+		result     *BodyScanResult
+		wantAction string
+		wantHard   bool
+	}{
+		{
+			name:       "nil result is clean",
+			wantAction: "",
+		},
+		{
+			name: "JWT in Cookie warns",
+			result: &BodyScanResult{
+				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionWarn,
+		},
+		{
+			name: "JWT in Authorization still blocks",
+			result: &BodyScanResult{
+				Action:     config.ActionBlock,
+				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Authorization",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "another secret alongside Cookie JWT still blocks",
+			result: &BodyScanResult{
+				Action:     config.ActionBlock,
+				DLPMatches: []scanner.TextDLPMatch{jwt, aws},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			action, hard := headerDLPDecision(tt.result, cfg)
+			if action != tt.wantAction || hard != tt.wantHard {
+				t.Fatalf("headerDLPDecision() = (%q, %v), want (%q, %v)", action, hard, tt.wantAction, tt.wantHard)
+			}
+		})
+	}
+}
+
 func requestDLPPatternControlCases() []struct {
 	name            string
 	configure       func(*config.Config)

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -1341,6 +1342,71 @@ func TestReceiptCoverage_ForwardHeaderDLPEmitsReceipt(t *testing.T) {
 	r := rph.requireReceipt(t, "dlp_header")
 	if r.ActionRecord.Verdict != config.ActionBlock || r.ActionRecord.Transport != TransportForward {
 		t.Fatalf("receipt verdict/transport = %q/%q", r.ActionRecord.Verdict, r.ActionRecord.Transport)
+	}
+}
+
+func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+		"." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" +
+		"." + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Cookie"); got != "session="+jwt {
+			t.Errorf("Cookie = %q, want JWT session cookie", got)
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+
+	cache, pool, cfg, _, _, m := testInterceptSetup(t)
+	cfg.Mode = config.ModeStrict
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Cookie"}
+	cfg.APIAllowlist = []string{upstream.Listener.Addr().(*net.TCPAddr).IP.String()}
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, true, true)
+	if err != nil {
+		t.Fatalf("audit logger: %v", err)
+	}
+	t.Cleanup(logger.Close)
+
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/app", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Cookie", "session="+jwt)
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	_ = resp.Body.Close()
+
+	recorded := rph.requireReceipt(t, "dlp_header")
+	if recorded.ActionRecord.Verdict != config.ActionWarn || !strings.Contains(recorded.ActionRecord.Pattern, "JWT Token") {
+		t.Fatalf("receipt verdict/pattern = %q/%q, want warn JWT evidence", recorded.ActionRecord.Verdict, recorded.ActionRecord.Pattern)
+	}
+
+	logger.Close()
+	auditBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if !bytes.Contains(auditBytes, []byte(`"event":"header_dlp"`)) || !bytes.Contains(auditBytes, []byte("JWT Token")) {
+		t.Fatalf("audit log missing JWT header finding: %s", auditBytes)
 	}
 }
 

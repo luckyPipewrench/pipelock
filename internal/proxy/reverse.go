@@ -1013,15 +1013,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		})
 		if headerResult != nil {
 			hasFinding = true
-			action := headerResult.Action
+			action, headerHardBlock := headerDLPDecision(headerResult, cfg)
 			if action == "" {
-				action = cfg.RequestBodyScanning.Action
-			}
-			if action == "" {
-				action = config.ActionBlock
-			}
-			headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, cfg)
-			if headerHardBlock {
 				action = config.ActionBlock
 			}
 			requestEffectiveAction = strongestRequestAction(requestEffectiveAction, action)

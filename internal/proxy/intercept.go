@@ -1840,7 +1840,7 @@ func newInterceptHandler(
 		// encodings remain fail-closed because they cannot safely enter the body
 		// scanners as opaque bytes.
 		compressedResponseErr := error(nil)
-		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 			if HasSingleSSEContentType(resp.Header) {
 				compressedResponseErr = errors.New("compressed streaming response cannot be scanned")
 			} else {

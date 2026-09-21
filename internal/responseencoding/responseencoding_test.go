@@ -21,6 +21,29 @@ func TestRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestHasNonIdentityContentEncoding(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		values []string
+		want   bool
+	}{
+		{name: "absent"},
+		{name: "identity only", values: []string{"identity", "identity"}},
+		{name: "identity before gzip", values: []string{"identity", "gzip"}, want: true},
+		{name: "gzip before identity", values: []string{"gzip", "identity"}, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			header := make(http.Header)
+			for _, value := range tt.values {
+				header.Add("Content-Encoding", value)
+			}
+			if got := HasNonIdentityContentEncoding(header); got != tt.want {
+				t.Fatalf("HasNonIdentityContentEncoding() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeResponse(t *testing.T) {
 	const plain = "ordinary response body"
 

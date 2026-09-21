@@ -48,21 +48,6 @@ var ErrInvalidPipelockSessionToken = errors.New("invalid Pipelock session token"
 
 const pipelockSessionTokenHeader = "Pipelock-Session-Token"
 
-// hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
-// Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
-func hasNonIdentityEncoding(ce string) bool {
-	if ce == "" {
-		return false
-	}
-	for _, enc := range strings.Split(ce, ",") {
-		enc = strings.TrimSpace(strings.ToLower(enc))
-		if enc != "" && enc != "identity" {
-			return true
-		}
-	}
-	return false
-}
-
 func validPipelockSessionToken(token string) bool {
 	if len(token) != 43 {
 		return false
@@ -272,7 +257,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 
 	// Decode supported buffered JSON responses before scanning. Compressed SSE,
 	// unsupported encodings, and malformed streams stay fail-closed.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 		if HasSingleSSEContentType(resp.Header) {
 			_ = resp.Body.Close()
 			return nil, ErrCompressedResponse
@@ -430,7 +415,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	// SSEReader receives opaque bytes and would silently fail to parse a
 	// gzipped event stream, which is a bypass vector against the streaming
 	// scanners.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 		_ = resp.Body.Close()
 		return nil, ErrCompressedResponse
 	}

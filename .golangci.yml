@@ -68,6 +68,14 @@ linters:
       - path: internal/cli/contain/workspace_statement_test\.go
         linters: [gosec]
         text: "G304"
+      # The config-mode contract test must SEED the exact loose mode the product
+      # refuses (0o640) so it can prove the installer tightens it. Creating it
+      # through os.WriteFile alone is not enough, because the umask silently
+      # reduces it and the assertion then proves nothing. The file lives in the
+      # test's own temporary directory.
+      - path: internal/cli/contain/config_mode_contract_test\.go
+        linters: [gosec]
+        text: "G302"
       # migrateScalarFile takes the destination's mode per call site. Its
       # callers pass modeConfigSecret or modePinSecret, which are distinct
       # policy classes that happen to carry the same numeric mode now that the

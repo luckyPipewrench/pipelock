@@ -308,6 +308,7 @@ func installSteps(opts installOpts) []step {
 		stepStagePipelockConfig(opts),
 		stepPreflightPipelockConfig(opts),
 		stepPromotePipelockConfig(opts),
+		stepRepairManagedConfigMode(),
 		stepChownToProxy("config", func(e *installEnv) string { return e.configDir }),
 		stepChownToProxy("data", func(e *installEnv) string { return e.dataDir }),
 		// Grant the human operator a user-scoped read+traverse ACL on the
@@ -1158,6 +1159,39 @@ func stepStagePipelockConfig(opts installOpts) step {
 				}
 			}
 			return errors.Join(stagedErr, cleanupMigratedConfigArtifacts(env, migrated))
+		},
+	}
+}
+
+// stepRepairManagedConfigMode tightens an already-installed config that carries
+// a mode the admin CLI refuses. Promotion cannot do this: it returns early when
+// install runs without --config, and again when the staged bytes are identical
+// to what is already there, so an upgrade over a config written by an older
+// version keeps that version's mode forever. The admin CLI reads this file for
+// its API token and rejects any group, world or owner-execute bit, so leaving
+// the mode alone leaves every shipped admin command broken on exactly the
+// installs that have been running longest.
+func stepRepairManagedConfigMode() step {
+	return step{
+		name: "repair-config-mode",
+		desc: "tighten an existing pipelock.yaml that carries a mode the admin CLI rejects",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			dst := managedPipelockConfigPath(env)
+			info, err := env.stat(dst)
+			if err != nil {
+				// No managed config yet: promotion owns creating it.
+				return false, nil
+			}
+			if info.Mode().Perm() == modeConfigSecret {
+				return false, nil
+			}
+			if err := env.chmod(dst, modeConfigSecret); err != nil {
+				return false, fmt.Errorf("chmod %s: %w", dst, err)
+			}
+			_, _ = fmt.Fprintf(env.out,
+				"  tightened %s from %#o to %#o so the admin API commands can read it\n",
+				dst, info.Mode().Perm(), modeConfigSecret)
+			return true, nil
 		},
 	}
 }

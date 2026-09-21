@@ -6,6 +6,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -1407,6 +1408,63 @@ func TestInterceptTunnel_BlocksCompressedResponse(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (compressed response should be blocked)", resp.StatusCode)
+	}
+}
+
+func TestInterceptTunnel_DecodesGzipResponseBeforeScanning(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "ordinary widget", body: "window.SupportWidget = window.SupportWidget || function() {};", wantStatus: http.StatusOK},
+		{name: "injection remains blocked", body: testInjectionPayload, wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Accept-Encoding"); got != "identity" {
+					t.Errorf("upstream Accept-Encoding = %q, want identity", got)
+				}
+				w.Header().Set("Content-Type", "application/javascript")
+				w.Header().Set("Content-Encoding", "gzip")
+				zw := gzip.NewWriter(w)
+				if _, err := io.WriteString(zw, tt.body); err != nil {
+					t.Errorf("write gzip body: %v", err)
+				}
+				if err := zw.Close(); err != nil {
+					t.Errorf("close gzip body: %v", err)
+				}
+			}))
+			defer upstream.Close()
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Action = config.ActionBlock
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+
+			addr := upstream.Listener.Addr().String()
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/widget", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+
+			resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+			defer func() { _ = resp.Body.Close() }()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tt.wantStatus, got)
+			}
+			if tt.wantStatus == http.StatusOK && string(got) != tt.body {
+				t.Fatalf("decoded body = %q, want %q", got, tt.body)
+			}
+		})
 	}
 }
 

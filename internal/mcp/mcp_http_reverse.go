@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -980,6 +981,7 @@ func RunHTTPListenerProxy(
 			}
 			upReq.Header.Set("Accept", "text/event-stream")
 			forwardListenerUpstreamHeaders(upReq, r, true)
+			responseencoding.RequestIdentity(upReq.Header)
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
@@ -1124,6 +1126,7 @@ func RunHTTPListenerProxy(
 				}
 			}
 			forwardListenerUpstreamHeaders(upReq, r, false)
+			responseencoding.RequestIdentity(upReq.Header)
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
@@ -1582,6 +1585,7 @@ func RunHTTPListenerProxy(
 		upReq.Header.Set("Accept", "application/json, text/event-stream")
 
 		forwardListenerUpstreamHeaders(upReq, r, false)
+		responseencoding.RequestIdentity(upReq.Header)
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {

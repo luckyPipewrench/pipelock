@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -2082,6 +2083,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// attacker-supplied identity hint to the destination service.
 	stripInternalIdentity(outReq)
 	removeHopByHopHeaders(outReq.Header)
+	responseencoding.RequestIdentity(outReq.Header)
 
 	// Inject mediation envelope (and attach RFC 9421 signature when the
 	// envelope emitter has a signer) before forwarding on the allow
@@ -2582,8 +2584,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// only its injection matching is skipped below.
 	if (!fwdRespIsSSE || fwdAuthenticatedArtifact) &&
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
-		// Fail-closed on compressed responses: regex can't match compressed content.
-		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		// Some origins ignore Accept-Encoding: identity. Decode supported single-layer
+		// encodings before applying the existing decoded-body cap and scanners.
+		if err := responseencoding.DecodeResponse(resp); err != nil {
 			p.logger.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 			writeBlockedError(w,

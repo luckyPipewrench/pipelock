@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -64,6 +66,13 @@ type ResponseMatch struct {
 	BundleVersion string `json:"bundle_version,omitempty"`
 	matchLength   int
 	span          MatchSpan
+	// crossesFragmentBoundary is set only when whole-content decoding joined
+	// source text across a reconstructed opaque-response boundary. Decoded
+	// match spans index decoded bytes, so they cannot prove this from offsets.
+	crossesFragmentBoundary bool
+	decodedSourceStart      int
+	decodedSourceEnd        int
+	hasDecodedSource        bool
 }
 
 type responseMatchSet struct {
@@ -87,16 +96,54 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 }
 
 // ScanResponseBodyWithSuppress scans a raw HTTP response body. For verified PNG
-// and JPEG bodies it scans textual metadata but excludes compressed pixel data,
-// which can contain accidental pattern-shaped bytes. Declared Content-Type is
-// not consulted, so mislabeled text still takes the ordinary fail-closed path.
+// and JPEG bodies it scans textual metadata but excludes compressed pixel data.
+// Other opaque binary bodies are not treated as prose: arbitrary compressed
+// bytes can contain accidental pattern-shaped sequences that have no prompt
+// semantics. Declared Content-Type is not consulted, so mislabeled textual
+// content still takes the ordinary scan path.
 func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
 	if ctx != nil && ctx.Err() != nil {
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
-		return s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+		if hasResponseImageSignature(body) {
+			result := s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
+			if !result.Clean {
+				// An unverified image-shaped body cannot safely be rewritten from
+				// a text scan view. Empty output makes strip callers fail closed.
+				result.TransformedContent = ""
+			}
+			return result
+		}
+		textual, classifyErr := isTextualResponseBody(ctx, body)
+		if classifyErr != nil {
+			return ResponseScanResult{Clean: false, ScanError: classifyErr.Error()}
+		}
+		if !textual {
+			decoded, decodedOK, decodeErr := decodeLikelyUTF16ResponseBody(ctx, body)
+			if decodeErr != nil {
+				return ResponseScanResult{Clean: false, ScanError: decodeErr.Error()}
+			}
+			if decodedOK {
+				decodedResult := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
+				if !decodedResult.Clean {
+					// A decoded view cannot safely replace the encoded body.
+					decodedResult.TransformedContent = ""
+					return decodedResult
+				}
+				rawResult := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+				rawResult.SuppressedMatches = append(decodedResult.SuppressedMatches, rawResult.SuppressedMatches...)
+				rawResult.ObservedCoreMatches = append(decodedResult.ObservedCoreMatches, rawResult.ObservedCoreMatches...)
+				if decodedResult.StegoDensity > rawResult.StegoDensity {
+					rawResult.StegoDensity = decodedResult.StegoDensity
+				}
+				rawResult.StegoDetected = decodedResult.StegoDetected || rawResult.StegoDetected
+				return rawResult
+			}
+			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+		}
+		return s.scanTextualResponseBody(ctx, body, suppressTarget, suppress)
 	}
 	if err != nil {
 		return ResponseScanResult{
@@ -117,11 +164,236 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	return result
 }
 
+func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	raw := string(body)
+	rawResult := s.ScanResponseWithSuppress(ctx, raw, suppressTarget, suppress)
+	if !rawResult.Clean || utf8.ValidString(raw) {
+		return rawResult
+	}
+
+	separatorView := string(bytes.ToValidUTF8(body, []byte(" ")))
+	separatorResult := s.ScanResponseWithSuppress(ctx, separatorView, suppressTarget, suppress)
+	separatorResult.SuppressedMatches = append(rawResult.SuppressedMatches, separatorResult.SuppressedMatches...)
+	separatorResult.ObservedCoreMatches = append(rawResult.ObservedCoreMatches, separatorResult.ObservedCoreMatches...)
+	if rawResult.StegoDensity > separatorResult.StegoDensity {
+		separatorResult.StegoDensity = rawResult.StegoDensity
+	}
+	separatorResult.StegoDetected = rawResult.StegoDetected || separatorResult.StegoDetected
+	if !separatorResult.Clean {
+		// A normalized separator view cannot safely transform the original bytes.
+		separatorResult.TransformedContent = ""
+	}
+	return separatorResult
+}
+
+func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	views, extractErr := opaqueResponseTextView(ctx, body)
+	if extractErr != nil {
+		return ResponseScanResult{Clean: false, ScanError: extractErr.Error()}
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return ResponseScanResult{Clean: false, ScanError: err.Error()}
+		}
+	}
+	if views.retained == "" && views.fragmented == "" && views.encoded == "" && views.decoded == "" {
+		return ResponseScanResult{Clean: true}
+	}
+	result := ResponseScanResult{Clean: true}
+	if views.retained != "" {
+		result = s.ScanResponseWithSuppress(ctx, views.retained, suppressTarget, suppress)
+		if !result.Clean {
+			result.TransformedContent = ""
+			return result
+		}
+	}
+	seenReconstructed := make(map[string]struct{}, 3)
+	for _, reconstructed := range []string{views.fragmented, views.encoded, views.decoded} {
+		if reconstructed == "" {
+			continue
+		}
+		if _, seen := seenReconstructed[reconstructed]; seen {
+			continue
+		}
+		seenReconstructed[reconstructed] = struct{}{}
+		reconstructedResult := s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
+		reconstructedResult = requireFragmentBoundaryMatch(reconstructed, reconstructedResult)
+		reconstructedResult.SuppressedMatches = append(result.SuppressedMatches, reconstructedResult.SuppressedMatches...)
+		reconstructedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, reconstructedResult.ObservedCoreMatches...)
+		if result.StegoDensity > reconstructedResult.StegoDensity {
+			reconstructedResult.StegoDensity = result.StegoDensity
+		}
+		reconstructedResult.StegoDetected = result.StegoDetected || reconstructedResult.StegoDetected
+		result = reconstructedResult
+		if !result.Clean {
+			break
+		}
+	}
+	if !result.Clean {
+		// An extracted view cannot safely replace the complete binary body.
+		// Empty output makes strip and ask callers fail closed.
+		result.TransformedContent = ""
+	}
+	return result
+}
+
+// requireFragmentBoundaryMatch limits the reconstructed view to findings that
+// actually cross one of its synthetic newlines. Internal fragment whitespace is
+// normalized to spaces before those newlines are inserted, so a surviving
+// newline proves the match joined attacker-separated fragments. This preserves
+// short structured and optional-whitespace matches when they cross a boundary
+// without promoting an isolated DAN-like token from one fragment.
+func requireFragmentBoundaryMatch(content string, result ResponseScanResult) ResponseScanResult {
+	if result.Failed() {
+		return result
+	}
+	views := map[string]string{
+		ViewForMatching:     normalize.ForMatching(content),
+		ViewInvisibleSpaced: normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(content)),
+	}
+	views[ViewLeetspeak] = normalize.Leetspeak(views[ViewForMatching])
+	views[ViewVowelFold] = normalize.FoldVowels(views[ViewForMatching])
+	crossesBoundary := func(match ResponseMatch) bool {
+		if match.crossesFragmentBoundary {
+			return true
+		}
+		view, ok := views[match.span.ViewLabel]
+		if !ok || match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
+			return false
+		}
+		return strings.ContainsRune(view[match.span.ByteStart:match.span.ByteEnd], '\n')
+	}
+	kept := result.Matches[:0]
+	for _, match := range result.Matches {
+		if crossesBoundary(match) {
+			kept = append(kept, match)
+		}
+	}
+	result.Matches = kept
+	suppressed := result.SuppressedMatches[:0]
+	for _, match := range result.SuppressedMatches {
+		if crossesBoundary(match) {
+			suppressed = append(suppressed, match)
+		}
+	}
+	result.SuppressedMatches = suppressed
+	observed := result.ObservedCoreMatches[:0]
+	for _, match := range result.ObservedCoreMatches {
+		if crossesBoundary(match.Match) {
+			observed = append(observed, match)
+		}
+	}
+	result.ObservedCoreMatches = observed
+	if len(kept) == 0 {
+		result.Clean = true
+		result.TransformedContent = ""
+	}
+	return result
+}
+
+// decodeLikelyUTF16ResponseBody recognizes BOM-marked UTF-16 and BOM-less
+// ASCII-range UTF-16 whose NUL bytes consistently occupy one byte parity. The
+// parity and density requirements keep arbitrary NUL-bearing binary data on the
+// opaque-run path while preserving response scanning for common UTF-16 text.
+func decodeLikelyUTF16ResponseBody(ctx context.Context, data []byte) (string, bool, error) {
+	if len(data) < 2 {
+		return "", false, nil
+	}
+	littleEndian := false
+	offset := 0
+	switch {
+	case data[0] == 0xff && data[1] == 0xfe:
+		littleEndian = true
+		offset = 2
+	case data[0] == 0xfe && data[1] == 0xff:
+		offset = 2
+	default:
+		sample := data
+		if len(sample) > 4096 {
+			sample = sample[:4096]
+		}
+		if len(sample)%2 != 0 {
+			sample = sample[:len(sample)-1]
+		}
+		if len(sample) < 4 {
+			return "", false, nil
+		}
+		var evenNULs, oddNULs int
+		for i, b := range sample {
+			if i%responseBodyContextCheckBytes == 0 && ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return "", false, err
+				}
+			}
+			if b != 0 {
+				continue
+			}
+			if i%2 == 0 {
+				evenNULs++
+			} else {
+				oddNULs++
+			}
+		}
+		totalNULs := evenNULs + oddNULs
+		if totalNULs < 2 || (evenNULs != 0 && oddNULs != 0) || totalNULs*5 < len(sample)*2 {
+			return "", false, nil
+		}
+		littleEndian = oddNULs > 0
+	}
+
+	encoded := data[offset:]
+	if len(encoded) == 0 {
+		return "", false, nil
+	}
+	if len(encoded)%2 != 0 {
+		encoded = encoded[:len(encoded)-1]
+	}
+	readUnit := func(i int) uint16 {
+		if littleEndian {
+			return uint16(encoded[i]) | uint16(encoded[i+1])<<8
+		}
+		return uint16(encoded[i])<<8 | uint16(encoded[i+1])
+	}
+	var decoded strings.Builder
+	decoded.Grow(len(encoded))
+	for i := 0; i < len(encoded); i += 2 {
+		if i%responseBodyContextCheckBytes == 0 && ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return "", false, err
+			}
+		}
+		unit := readUnit(i)
+		if unit >= 0xd800 && unit <= 0xdbff && i+3 < len(encoded) {
+			next := readUnit(i + 2)
+			if next >= 0xdc00 && next <= 0xdfff {
+				decoded.WriteRune(utf16.DecodeRune(rune(unit), rune(next)))
+				i += 2
+				continue
+			}
+		}
+		if unit >= 0xd800 && unit <= 0xdfff {
+			decoded.WriteRune(unicode.ReplacementChar)
+			continue
+		}
+		decoded.WriteRune(rune(unit))
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
+	}
+	return decoded.String(), true, nil
+}
+
 // ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
 // destination-scoped suppressions inside each normalization pass. This prevents
 // a suppressed first-pass hit from masking a later unsuppressed encoded or
 // normalized hit on the same content.
 func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
+	return s.scanResponseWithSuppress(ctx, content, suppressTarget, suppress, false)
+}
+
+func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
@@ -205,7 +477,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponse(content, filterSuppressed); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponse(content, filterSuppressed, forceEncodedDecode); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -298,7 +570,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// contiguous run of base64/hex alphabet characters long enough to be
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
-	if len(matches) == 0 && hasEncodedRun(content) {
+	if len(matches) == 0 && (forceEncodedDecode || hasEncodedRun(content)) {
 		decodedSet := s.matchDecodedResponse(content)
 		matches = filterSuppressed(decodedSet.matches)
 	}
@@ -632,7 +904,7 @@ const responseDecodeMaxDepth = 5
 // multi-layer chains (e.g., base64(hex(injection))). Two strategies per layer:
 // whole-content decode and segment-level decode.
 func (s *Scanner) matchDecodedResponse(content string) responseMatchSet {
-	return s.matchDecodedResponseRecursive(content, 0)
+	return markFragmentBoundaries(s.matchDecodedResponseRecursive(content, 0), content)
 }
 
 // matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
@@ -642,12 +914,7 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 	}
 
 	// Strategy 1: whole-content decode.
-	stripped := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-			return -1
-		}
-		return r
-	}, content)
+	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -656,23 +923,23 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
 			if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
 			// Always recurse on successful decode. The depth limit is the
 			// safety bound; gating on hasEncodedRun lets attackers bypass
 			// by splitting or punctuating the inner encoded layer.
 			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
 		if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
-			return decodedSet
+			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
 		if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
-			return decodedSet
+			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
 	}
 
@@ -691,33 +958,127 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
-	segments := extractEncodedRuns(content, minSegmentDecodeLen)
+	segments := extractEncodedRunSpans(content, minSegmentDecodeLen)
 	for _, seg := range segments {
+		_, sourceOffsets := stripDecodeWhitespace(seg.text, seg.start)
 		for _, enc := range []*base64.Encoding{
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
-					return decodedSet
+					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
 				if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
-					return decodedSet
+					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
 			}
 		}
-		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+		if decoded, err := hex.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
 			if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
 			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
-				return decodedSet
+				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
 		}
 	}
 	return responseMatchSet{}
+}
+
+func markFragmentBoundaries(set responseMatchSet, source string) responseMatchSet {
+	for i := range set.matches {
+		match := &set.matches[i]
+		if match.hasDecodedSource && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
+			match.crossesFragmentBoundary = strings.ContainsRune(source[match.decodedSourceStart:match.decodedSourceEnd], '\n')
+		}
+	}
+	return set
+}
+
+func stripDecodeWhitespace(content string, offset int) (string, []int) {
+	var stripped strings.Builder
+	stripped.Grow(len(content))
+	offsets := make([]int, 0, len(content))
+	for i := 0; i < len(content); i++ {
+		switch content[i] {
+		case ' ', '\n', '\r', '\t':
+			continue
+		default:
+			stripped.WriteByte(content[i])
+			offsets = append(offsets, offset+i)
+		}
+	}
+	return stripped.String(), offsets
+}
+
+func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []int, hexEncoded bool) responseMatchSet {
+	for i := range set.matches {
+		match := &set.matches[i]
+		start, end := 0, len(decoded)
+		if match.hasDecodedSource {
+			start, end = match.decodedSourceStart, match.decodedSourceEnd
+		} else if mappedStart, mappedEnd, ok := normalizedMatchSourceRange(decoded, *match); ok {
+			start, end = mappedStart, mappedEnd
+		}
+		if start < 0 || end <= start || end > len(decoded) {
+			continue
+		}
+		encodedStart, encodedEnd := decodedRangeToEncoded(start, end, hexEncoded)
+		encodedEnd = min(encodedEnd, len(encodedOffsets))
+		if encodedStart < 0 || encodedStart >= encodedEnd {
+			continue
+		}
+		match.decodedSourceStart = encodedOffsets[encodedStart]
+		match.decodedSourceEnd = encodedOffsets[encodedEnd-1] + 1
+		match.hasDecodedSource = true
+	}
+	return set
+}
+
+func normalizedMatchSourceRange(decoded string, match ResponseMatch) (int, int, bool) {
+	transform := func(value string) string {
+		if strings.Contains(match.span.ViewLabel, "invisible_spaced") {
+			value = normalize.ReplaceInvisibleWithSpace(value)
+		}
+		value = normalize.ForMatching(value)
+		if strings.Contains(match.span.ViewLabel, "vowel_fold") {
+			value = normalize.FoldVowels(value)
+		}
+		return value
+	}
+
+	view := transform(decoded)
+	if match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
+		return 0, 0, false
+	}
+	var rebuilt strings.Builder
+	starts := make([]int, 0, len(view))
+	ends := make([]int, 0, len(view))
+	for start := 0; start < len(decoded); {
+		_, size := utf8.DecodeRuneInString(decoded[start:])
+		end := start + size
+		piece := transform(decoded[start:end])
+		rebuilt.WriteString(piece)
+		for range len(piece) {
+			starts = append(starts, start)
+			ends = append(ends, end)
+		}
+		start = end
+	}
+	if rebuilt.String() != view || match.span.ByteEnd > len(starts) {
+		return 0, 0, false
+	}
+	return starts[match.span.ByteStart], ends[match.span.ByteEnd-1], true
+}
+
+func decodedRangeToEncoded(start, end int, hexEncoded bool) (int, int) {
+	if hexEncoded {
+		return start * 2, end * 2
+	}
+	return (start / 3) * 4, ((end + 2) / 3) * 4
 }
 
 // extractEncodedRuns finds contiguous runs of base64/hex alphabet characters
@@ -727,10 +1088,14 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 // part of the alphabet. After each run is collected, up to 2 trailing '='
 // characters are re-attached as base64 padding. This prevents "key=payload"
 // from collapsing into one segment that decoders reject.
-//
+type encodedRunSpan struct {
+	text       string
+	start, end int
+}
+
 //pipelock:provenance-transform encoded_run
-func extractEncodedRuns(content string, minLen int) []string {
-	var runs []string
+func extractEncodedRunSpans(content string, minLen int) []encodedRunSpan {
+	var runs []encodedRunSpan
 	start := -1
 	for i := 0; i < len(content); i++ {
 		c := content[i]
@@ -747,7 +1112,7 @@ func extractEncodedRuns(content string, minLen int) []string {
 				// Re-attach up to 2 trailing '=' for base64 padding.
 				end = attachBase64Padding(content, end)
 				if end-start >= minLen {
-					runs = append(runs, content[start:end])
+					runs = append(runs, encodedRunSpan{text: content[start:end], start: start, end: end})
 				}
 			}
 			start = -1
@@ -757,8 +1122,17 @@ func extractEncodedRuns(content string, minLen int) []string {
 	if start >= 0 {
 		end := len(content)
 		if end-start >= minLen {
-			runs = append(runs, content[start:end])
+			runs = append(runs, encodedRunSpan{text: content[start:end], start: start, end: end})
 		}
+	}
+	return runs
+}
+
+func extractEncodedRuns(content string, minLen int) []string {
+	spans := extractEncodedRunSpans(content, minLen)
+	runs := make([]string, 0, len(spans))
+	for _, span := range spans {
+		runs = append(runs, span.text)
 	}
 	return runs
 }
@@ -796,6 +1170,233 @@ func isPrintableText(data []byte) bool {
 	}
 	// At least 80% printable runes to be considered text.
 	return printable*5 >= total*4
+}
+
+// isTextualResponseBody classifies bytes by what they contain, not by the
+// response's declared media type. Invalid UTF-8 and control bytes count against
+// the body instead of causing an immediate binary verdict, so a small malformed
+// prefix cannot hide an otherwise textual prompt injection. Opaque compressed
+// data stays below the printable threshold and is not fed to prose regexes.
+func isTextualResponseBody(ctx context.Context, data []byte) (bool, error) {
+	if len(data) == 0 {
+		return true, nil
+	}
+	var total uint64
+	var printable uint64
+	nextContextCheck := 0
+	for i := 0; i < len(data); {
+		if i >= nextContextCheck {
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+			}
+			nextContextCheck = i + responseBodyContextCheckBytes
+		}
+		r, size := utf8.DecodeRune(data[i:])
+		total++
+		if isPrintableResponseRune(r, size) {
+			printable++
+		}
+		i += size
+	}
+	return printable*5 >= total*4, nil
+}
+
+// Sixteen bytes is long enough to represent a phrase-level instruction while
+// excluding short token-like coincidences such as the three-byte ISO witness.
+const binaryResponseTextRunMinBytes = 16
+
+// Keep cancellation latency bounded without adding a context lookup per byte.
+const responseBodyContextCheckBytes = 4096
+
+type opaqueResponseTextViews struct {
+	retained   string
+	fragmented string
+	encoded    string
+	decoded    string
+}
+
+// opaqueResponseTextView produces bounded scanner views from an opaque body.
+// Short spans of control or malformed bytes are semantic text boundaries and
+// become a space, so split instructions remain visible. Longer binary spans end
+// the group. Substantive groups retain hard-boundary sentinels, while a second
+// prose-only view reconnects two or more fragments at phrase length so neither
+// binary nor printable punctuation can make attacker-controlled words vanish.
+// A single short accidental token is excluded from both views.
+func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTextViews, error) {
+	var view strings.Builder
+	var proseChain strings.Builder
+	var encodedChain strings.Builder
+	var encodedParts []string
+	var group strings.Builder
+	printableBytes := 0
+	proseFragments := 0
+	proseBytes := 0
+	encodedFragments := 0
+	encodedBytes := 0
+	nextContextCheck := 0
+	checkContext := func(offset int) error {
+		if offset < nextContextCheck {
+			return nil
+		}
+		nextContextCheck = offset + responseBodyContextCheckBytes
+		if ctx == nil {
+			return nil
+		}
+		return ctx.Err()
+	}
+	flush := func() {
+		fragment := group.String()
+		if printableBytes >= binaryResponseTextRunMinBytes {
+			if view.Len() > 0 {
+				view.WriteString("\n\ufffd\n")
+			}
+			view.WriteString(fragment)
+		}
+		if isOpaqueResponseProseFragment(fragment) {
+			if proseFragments > 0 {
+				proseChain.WriteByte('\n')
+			}
+			proseChain.WriteString(strings.Map(func(r rune) rune {
+				if unicode.IsSpace(r) {
+					return ' '
+				}
+				return r
+			}, fragment))
+			proseFragments++
+			proseBytes += printableBytes
+		}
+		if isOpaqueResponseEncodedFragment(fragment) {
+			if encodedFragments > 0 {
+				encodedChain.WriteByte('\n')
+			}
+			encodedChain.WriteString(fragment)
+			encodedFragments++
+			encodedBytes += printableBytes
+			encodedParts = append(encodedParts, fragment)
+		}
+		group.Reset()
+		printableBytes = 0
+	}
+
+	for i := 0; i < len(data); {
+		if err := checkContext(i); err != nil {
+			return opaqueResponseTextViews{}, err
+		}
+		r, size := utf8.DecodeRune(data[i:])
+		if isPrintableResponseRune(r, size) {
+			group.Write(data[i : i+size])
+			printableBytes += size
+			i += size
+			continue
+		}
+
+		separatorStart := i
+		for i < len(data) {
+			if err := checkContext(i); err != nil {
+				return opaqueResponseTextViews{}, err
+			}
+			r, size = utf8.DecodeRune(data[i:])
+			if isPrintableResponseRune(r, size) {
+				break
+			}
+			i += size
+		}
+		if i-separatorStart <= 8 && group.Len() > 0 {
+			group.WriteByte(' ')
+			continue
+		}
+		flush()
+	}
+	flush()
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return opaqueResponseTextViews{}, err
+		}
+	}
+	fragmented := ""
+	if proseFragments >= 2 && proseBytes >= binaryResponseTextRunMinBytes {
+		fragmented = proseChain.String()
+	}
+	encoded := ""
+	if encodedFragments >= 2 && encodedBytes >= binaryResponseTextRunMinBytes {
+		encoded = encodedChain.String()
+	}
+	decoded := decodeOpaqueResponseFragments(encodedParts)
+	return opaqueResponseTextViews{retained: view.String(), fragmented: fragmented, encoded: encoded, decoded: decoded}, nil
+}
+
+func isOpaqueResponseProseFragment(fragment string) bool {
+	hasLetterOrDigit := false
+	for _, r := range fragment {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			hasLetterOrDigit = true
+		case unicode.IsSpace(r), strings.ContainsRune(".,;:!?'-()[]{}\"/", r):
+		default:
+			return false
+		}
+	}
+	return hasLetterOrDigit
+}
+
+func isOpaqueResponseEncodedFragment(fragment string) bool {
+	hasData := false
+	for _, r := range fragment {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), strings.ContainsRune("+/-_", r):
+			hasData = true
+		case r == '=':
+		default:
+			return false
+		}
+	}
+	return hasData
+}
+
+func decodeOpaqueResponseFragments(fragments []string) string {
+	if len(fragments) < 2 {
+		return ""
+	}
+	var joined strings.Builder
+	decodedBytes := 0
+	decodedFragments := 0
+	for _, fragment := range fragments {
+		decoded, ok := decodeOpaqueResponseFragment(fragment)
+		if !ok {
+			continue
+		}
+		if decodedFragments > 0 {
+			joined.WriteByte('\n')
+		}
+		joined.Write(decoded)
+		decodedBytes += len(decoded)
+		decodedFragments++
+	}
+	if decodedFragments < 2 || decodedBytes < binaryResponseTextRunMinBytes {
+		return ""
+	}
+	return joined.String()
+}
+
+func decodeOpaqueResponseFragment(fragment string) ([]byte, bool) {
+	for _, encoding := range []*base64.Encoding{
+		base64.StdEncoding, base64.URLEncoding,
+		base64.RawStdEncoding, base64.RawURLEncoding,
+	} {
+		if decoded, err := encoding.DecodeString(fragment); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			return decoded, true
+		}
+	}
+	if decoded, err := hex.DecodeString(fragment); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+		return decoded, true
+	}
+	return nil, false
+}
+
+func isPrintableResponseRune(r rune, size int) bool {
+	return (r != utf8.RuneError || size != 1) && (unicode.IsPrint(r) || r == '\t' || r == '\n' || r == '\r')
 }
 
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,

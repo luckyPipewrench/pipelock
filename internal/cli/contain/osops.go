@@ -50,9 +50,14 @@ type installEnv struct {
 	// keep the descriptor-based implementation, because a path-based chmod in
 	// an agent-owned directory is redirectable by a swapped symlink.
 	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
-	rename          func(oldPath, newPath string) error
-	chmod           func(path string, mode os.FileMode) error
-	symlink         func(target, linkPath string) error
+
+	// repairLeafMode reads and tightens a file's mode through a single
+	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable
+	// path cannot redirect a privileged chmod. Injectable for tests.
+	repairLeafMode func(path string, mode os.FileMode) (os.FileMode, bool, error)
+	rename         func(oldPath, newPath string) error
+	chmod          func(path string, mode os.FileMode) error
+	symlink        func(target, linkPath string) error
 
 	// lookupUser resolves system users by name. Used to translate the
 	// configured proxy/agent user names into numeric UIDs for nft rules
@@ -174,6 +179,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		chown:                       os.Chown,
 		lchown:                      os.Lchown,
 		ownLeafNoFollow:             applyAgentOwnershipNoFollow,
+		repairLeafMode:              repairLeafModeNoFollow,
 		rename:                      os.Rename,
 		chmod:                       os.Chmod,
 		symlink:                     os.Symlink,

@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -39,12 +41,14 @@ func TestConfigSecretModeSatisfiesAdminCLI(t *testing.T) {
 // when the staged bytes match what is already installed, so the long-running
 // installs that most need the repair are exactly the ones promotion skips.
 func TestRepairManagedConfigMode_TightensExistingLooseConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits, so the loose-mode seed and the mask assertion cannot hold there")
+	}
 	var out bytes.Buffer
 	env := &installEnv{
-		configDir: t.TempDir(),
-		out:       &out,
-		stat:      os.Stat,
-		chmod:     os.Chmod,
+		configDir:      t.TempDir(),
+		out:            &out,
+		repairLeafMode: repairLeafModeNoFollow,
 	}
 
 	dst := managedPipelockConfigPath(env)
@@ -90,7 +94,7 @@ func TestRepairManagedConfigMode_TightensExistingLooseConfig(t *testing.T) {
 // a change.
 func TestRepairManagedConfigMode_NoConfigYet(t *testing.T) {
 	var out bytes.Buffer
-	env := &installEnv{configDir: t.TempDir(), out: &out, stat: os.Stat, chmod: os.Chmod}
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
 
 	applied, err := stepRepairManagedConfigMode().apply(context.Background(), env)
 	if err != nil {
@@ -110,8 +114,9 @@ func TestRepairManagedConfigMode_ChmodFailureSurfaces(t *testing.T) {
 	env := &installEnv{
 		configDir: dir,
 		out:       &out,
-		stat:      os.Stat,
-		chmod:     func(string, os.FileMode) error { return errors.New("read-only filesystem") },
+		repairLeafMode: func(string, os.FileMode) (os.FileMode, bool, error) {
+			return 0, false, errors.New("read-only filesystem")
+		},
 	}
 	dst := managedPipelockConfigPath(env)
 	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
@@ -127,6 +132,120 @@ func TestRepairManagedConfigMode_ChmodFailureSurfaces(t *testing.T) {
 	}
 	if applied {
 		t.Error("failed chmod reported as an applied change")
+	}
+	if !strings.Contains(err.Error(), "read-only filesystem") {
+		t.Errorf("error lost its cause: %v", err)
+	}
+}
+
+// A symlinked leaf must be refused outright. The managed config lives in a
+// directory the proxy account owns, so that account can replace the file
+// between a check and a chmod; a path-resolving repair would then point root's
+// privileged mode change at whatever the link names (CWE-59).
+func TestRepairManagedConfigMode_RefusesSymlinkedLeaf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics and Unix modes differ on Windows")
+	}
+	var out bytes.Buffer
+	dir := t.TempDir()
+	env := &installEnv{configDir: dir, out: &out, repairLeafMode: repairLeafModeNoFollow}
+
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("do not touch\n"), 0o600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	if err := os.Chmod(victim, 0o644); err != nil {
+		t.Fatalf("seed victim mode: %v", err)
+	}
+	if err := os.Symlink(victim, managedPipelockConfigPath(env)); err != nil {
+		t.Fatalf("seed symlink: %v", err)
+	}
+
+	applied, err := stepRepairManagedConfigMode().apply(context.Background(), env)
+	if err == nil {
+		t.Fatal("symlinked config was accepted; a privileged chmod could be redirected")
+	}
+	if applied {
+		t.Error("symlinked config reported as repaired")
+	}
+	info, statErr := os.Stat(victim)
+	if statErr != nil {
+		t.Fatalf("stat victim: %v", statErr)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("victim mode changed to %#o; the repair followed the symlink", got)
+	}
+}
+
+// Rollback must put back the mode the repair found. Without an undo handler a
+// later step's failure leaves the config tightened and the install half applied.
+func TestRepairManagedConfigMode_UndoRestoresPreviousMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	var out bytes.Buffer
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
+	dst := managedPipelockConfigPath(env)
+	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(dst, 0o640); err != nil {
+		t.Fatalf("seed mode: %v", err)
+	}
+
+	s := stepRepairManagedConfigMode()
+	if _, err := s.apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := s.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Errorf("undo left mode %#o, want the 0640 it found", got)
+	}
+}
+
+// undo must be safe to call when apply changed nothing. The step runner calls
+// undo against partial state, so a no-op apply followed by a rollback must not
+// touch a file this step never modified.
+func TestRepairManagedConfigMode_UndoWithoutApplyIsNoOp(t *testing.T) {
+	var out bytes.Buffer
+	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: repairLeafModeNoFollow}
+	if err := stepRepairManagedConfigMode().undo(context.Background(), env); err != nil {
+		t.Errorf("undo without apply: %v", err)
+	}
+}
+
+// A rollback that cannot restore the mode must surface, not report success: the
+// file is left tightened and the operator needs to know.
+func TestRepairManagedConfigMode_UndoFailureSurfaces(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+	var out bytes.Buffer
+	calls := 0
+	env := &installEnv{
+		configDir: t.TempDir(),
+		out:       &out,
+		repairLeafMode: func(path string, mode os.FileMode) (os.FileMode, bool, error) {
+			calls++
+			if calls == 1 {
+				return 0o640, true, nil
+			}
+			return 0, false, errors.New("read-only filesystem")
+		},
+	}
+	s := stepRepairManagedConfigMode()
+	if _, err := s.apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	err := s.undo(context.Background(), env)
+	if err == nil {
+		t.Fatal("undo failure did not surface")
 	}
 	if !strings.Contains(err.Error(), "read-only filesystem") {
 		t.Errorf("error lost its cause: %v", err)

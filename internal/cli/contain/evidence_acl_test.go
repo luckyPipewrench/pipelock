@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -205,6 +206,61 @@ func TestStepGrantEvidenceACLs_Idempotent(t *testing.T) {
 		}
 		seen[d] = true
 	}
+}
+
+// TestStepGrantEvidenceACLs_UndoKeepsPreexistingGrant proves that rolling back
+// a reinstall leaves an operator grant the host already had, while rolling back
+// a first grant still revokes it.
+func TestStepGrantEvidenceACLs_UndoKeepsPreexistingGrant(t *testing.T) {
+	revokes := func(runner *fakeRunner) int {
+		n := 0
+		for _, call := range runner.calls {
+			if call.name == testSetfaclCmd && slices.Contains(call.args, "-x") {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("first grant is revoked", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		step := stepGrantEvidenceACLs()
+		if _, err := step.apply(context.Background(), env); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		if env.evidenceACLPreexisting {
+			t.Fatal("first grant recorded as preexisting")
+		}
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		if revokes(runner) == 0 {
+			t.Fatal("undo of a first grant did not revoke the operator ACL")
+		}
+	})
+
+	t.Run("reinstall keeps the earlier grant", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		if _, err := stepGrantEvidenceACLs().apply(context.Background(), env); err != nil {
+			t.Fatalf("earlier install: %v", err)
+		}
+		if revokes(runner) != 0 {
+			t.Fatal("precondition: earlier install revoked")
+		}
+		step := stepGrantEvidenceACLs()
+		if _, err := step.apply(context.Background(), env); err != nil {
+			t.Fatalf("reinstall apply: %v", err)
+		}
+		if !env.evidenceACLPreexisting {
+			t.Fatal("reinstall did not recognize the earlier grant")
+		}
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		if got := revokes(runner); got != 0 {
+			t.Fatalf("rollback of a reinstall revoked the earlier operator grant (%d setfacl -x calls)", got)
+		}
+	})
 }
 
 // TestStepGrantEvidenceACLs_FailClosedOnUnresolvedOperator proves the ACL step

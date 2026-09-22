@@ -122,21 +122,25 @@ type installEnv struct {
 	workspaceInvPath         string
 	loopbackForwarderInvPath string
 	evidenceACLInvPath       string // operator evidence-read ACL inventory
-	guardScriptPath          string
-	guardServiceUnit         string
-	guardPathUnit            string
-	undiciShimPath           string // node undici proxy shim loaded via NODE_OPTIONS
-	profileScriptPath        string // /etc/profile.d login-shell runtime contract
-	agentHome                string // contained agent home (per-tool config destination)
-	pipelockBinary           string // source binary path passed to --pipelock-binary
-	pipelockTarget           string // destination, default /usr/local/bin/pipelock
-	bashPath                 string
-	nologinPath              string
-	nftPath                  string
-	curlPath                 string
-	proxyPort                int
-	lookPath                 func(string) (string, error)
-	platformFamily           string
+	// evidenceACLPreexisting records that the operator evidence ACL recorded
+	// in the inventory already covered this install's operator and dirs before
+	// the grant step ran, so rolling that step back must leave it in place.
+	evidenceACLPreexisting bool
+	guardScriptPath        string
+	guardServiceUnit       string
+	guardPathUnit          string
+	undiciShimPath         string // node undici proxy shim loaded via NODE_OPTIONS
+	profileScriptPath      string // /etc/profile.d login-shell runtime contract
+	agentHome              string // contained agent home (per-tool config destination)
+	pipelockBinary         string // source binary path passed to --pipelock-binary
+	pipelockTarget         string // destination, default /usr/local/bin/pipelock
+	bashPath               string
+	nologinPath            string
+	nftPath                string
+	curlPath               string
+	proxyPort              int
+	lookPath               func(string) (string, error)
+	platformFamily         string
 
 	prevNFTTableDump             string
 	prevNFTTableStateKnown       bool

@@ -161,6 +161,10 @@ func stepGrantEvidenceACLs() step {
 				}
 			}
 
+			// A reinstall re-asserts a grant that already exists. Remember that,
+			// so a rollback of this install does not strip operator access the
+			// host had before it started.
+			env.evidenceACLPreexisting = evidenceACLInventoryCovers(env, operator, dirs)
 			commands := evidenceACLCommands(operator, env.dataDir, dirs)
 			if err := runWorkspaceCommands(ctx, env, commands); err != nil {
 				return false, fmt.Errorf("apply operator evidence ACL: %w", err)
@@ -171,9 +175,28 @@ func stepGrantEvidenceACLs() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
+			if env.evidenceACLPreexisting {
+				return nil
+			}
 			return revokeEvidenceACLs(ctx, env, false)
 		},
 	}
+}
+
+// evidenceACLInventoryCovers reports whether the recorded inventory already
+// grants operator every dir in dirs. An unreadable or malformed inventory
+// counts as not covered, so rollback revokes what this install applied.
+func evidenceACLInventoryCovers(env *installEnv, operator string, dirs []string) bool {
+	inv, err := loadEvidenceACLInventory(env)
+	if err != nil || inv.Operator != operator {
+		return false
+	}
+	for _, dir := range dirs {
+		if !slices.Contains(inv.Dirs, dir) {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveEvidenceOperator returns the operator username if it is set AND

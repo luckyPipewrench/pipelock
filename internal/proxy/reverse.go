@@ -2109,7 +2109,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
-		if shieldLeavesBodyUnchanged(detectShieldPipeline(resp.Header.Get("Content-Type"), body)) {
+		if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)) {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
 		}

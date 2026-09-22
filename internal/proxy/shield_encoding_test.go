@@ -414,13 +414,94 @@ func TestDetectShieldPipeline_BrowserGenericTypesSniffBody(t *testing.T) {
 	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
 	for _, contentType := range []string{"unknown/unknown", "application/unknown", "*/*"} {
 		t.Run(contentType, func(t *testing.T) {
-			if !contentTypeIsGeneric(contentType) {
-				t.Fatalf("contentTypeIsGeneric(%q) = false", contentType)
+			if !browserContentTypeIsGeneric(contentType) {
+				t.Fatalf("browserContentTypeIsGeneric(%q) = false", contentType)
 			}
 			if got := detectShieldPipeline(contentType, body); got != shield.PipelineHTML {
 				t.Fatalf("pipeline = %v, want HTML body sniff", got)
 			}
 		})
+	}
+}
+
+func TestDetectShieldPipeline_BrowserSniffingRespectsNoSniff(t *testing.T) {
+	t.Parallel()
+	body := []byte(`<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`)
+	headers := http.Header{"X-Content-Type-Options": {"NoSniff"}}
+
+	for _, contentType := range []string{"\u2003application/javascript; charset=utf-8", "unknown/unknown", "application/unknown", "*/*"} {
+		t.Run(contentType, func(t *testing.T) {
+			if got := detectShieldPipelineForResponse(contentType, body, headers); got != shield.PipelineNone {
+				t.Fatalf("pipeline = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestRepairShieldResponseMetadata_PreservesBinaryTypes(t *testing.T) {
+	t.Parallel()
+	for _, contentType := range []string{"application/octet-stream", "binary/octet-stream", "application/binary"} {
+		t.Run(contentType, func(t *testing.T) {
+			headers := http.Header{"Content-Type": {contentType}}
+			repairShieldResponseMetadata(headers, shield.PipelineHTML, []byte("<html></html>"), false)
+			if got := headers.Get("Content-Type"); got != contentType {
+				t.Fatalf("Content-Type = %q, want %q", got, contentType)
+			}
+		})
+	}
+}
+
+func TestProxy_ApplyShield_NoSniffAndBinaryTypesStayInert(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+	body := []byte(`<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`)
+	tests := []struct {
+		name        string
+		contentType string
+		nosniff     bool
+	}{
+		{"invalid type with nosniff", "\u2003application/javascript; charset=utf-8", true},
+		{"unknown type with nosniff", "unknown/unknown", true},
+		{"octet stream", "application/octet-stream", false},
+		{"binary octet stream", "binary/octet-stream", false},
+		{"application binary", "application/binary", false},
+	}
+	for _, tt := range tests {
+		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+			t.Run(tt.name+"/"+transport, func(t *testing.T) {
+				headers := http.Header{"Content-Type": {tt.contentType}}
+				if tt.nosniff {
+					headers.Set("X-Content-Type-Options", "nosniff")
+				}
+				out, summary, blocked := p.applyShield(body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+				if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != tt.contentType {
+					t.Fatalf("outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
+				}
+			})
+		}
+	}
+}
+
+func TestReverseShield_NoSniffInvalidTypeStaysInert(t *testing.T) {
+	body := `<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`
+	contentType := "\u2003application/javascript; charset=utf-8"
+	headers := http.Header{
+		"Content-Type":           {contentType},
+		"X-Content-Type-Options": {"nosniff"},
+	}
+	resp := reverseShieldResponseHarnessWithHeaders(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 4096, headers, body)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(got) != body || resp.Header.Get("Content-Type") != contentType || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("reverse response: status=%d headers=%#v body=%q", resp.StatusCode, resp.Header, got)
 	}
 }
 

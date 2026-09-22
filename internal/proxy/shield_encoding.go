@@ -47,7 +47,7 @@ var (
 // Shield response transport. UTF-16 is decoded strictly before Shield sees it;
 // unchanged content deliberately keeps its original bytes and metadata.
 func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentType string, headers http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) shieldPipelineResult {
-	pipeline := detectShieldPipeline(contentType, body)
+	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
 	if pipeline == shield.PipelineNone {
 		return shieldPipelineResult{body: body, pipeline: pipeline}
 	}
@@ -156,17 +156,24 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 // essence when later parameters are malformed, so recovery is independent of
 // response encoding.
 func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
+	return detectShieldPipelineForResponse(contentType, body, nil)
+}
+
+func detectShieldPipelineForResponse(contentType string, body []byte, headers http.Header) shield.PipelineType {
 	baseType, validBase := shieldMediaTypeEssence(contentType)
 	if validBase {
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err == nil {
 			pipeline := shield.DetectPipeline(mediaType, nil)
-			if pipeline != shield.PipelineNone || (mediaType != "" && !contentTypeIsGeneric(mediaType)) {
+			if pipeline != shield.PipelineNone || (mediaType != "" && !browserContentTypeIsGeneric(mediaType)) {
 				return pipeline
 			}
 		} else if recovered := shield.DetectPipeline(baseType, nil); recovered != shield.PipelineNone {
 			return recovered
 		}
+	}
+	if responseForbidsMIMESniffing(headers) {
+		return shield.PipelineNone
 	}
 	pipeline := shield.DetectPipeline("", shieldSniffHeader(body))
 	if pipeline != shield.PipelineNone {
@@ -176,6 +183,26 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 		return pipeline
 	}
 	return shield.DetectPipeline(baseType, nil)
+}
+
+func browserContentTypeIsGeneric(mediaType string) bool {
+	switch mediaType {
+	case "unknown/unknown", "application/unknown", "*/*":
+		return true
+	default:
+		return false
+	}
+}
+
+func responseForbidsMIMESniffing(headers http.Header) bool {
+	for _, value := range headers.Values("X-Content-Type-Options") {
+		for token := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "nosniff") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func shieldSniffHeader(body []byte) []byte {
@@ -384,7 +411,7 @@ func repairShieldResponseMetadata(headers http.Header, pipeline shield.PipelineT
 	rawContentType := headers.Get("Content-Type")
 	_, browserValidEssence := shieldMediaTypeEssence(rawContentType)
 	mediaType, params, err := mime.ParseMediaType(rawContentType)
-	if !browserValidEssence || err != nil || contentTypeIsGeneric(mediaType) {
+	if !browserValidEssence || err != nil || browserContentTypeIsGeneric(mediaType) {
 		mediaType = shieldMediaType(pipeline)
 		params = map[string]string{}
 	}

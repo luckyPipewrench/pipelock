@@ -405,7 +405,8 @@ func resolvePublicKey(c *config.Config) ed25519.PublicKey {
 
 // MergeAgentProfile creates a new Config by deep-merging profile overrides
 // into a deep copy of the base config. The base config is not modified.
-// If profile is nil, a deep copy of base is returned with no modifications.
+// A nil profile adds no overrides. The YAML round-trip still strips compiled
+// audience hosts, and the restore below puts those hosts back.
 //
 // This is the implementation behind edition.MergeAgentProfileFunc.
 func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*config.Config, error) {

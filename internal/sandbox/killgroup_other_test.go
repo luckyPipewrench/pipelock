@@ -14,3 +14,10 @@ import "errors"
 func killProcessGroup(int) error {
 	return errors.New("process groups are not available on this platform")
 }
+
+// processGone is unavailable off Unix, for the same reason as
+// killProcessGroup. The descendant assertion that calls it is guarded by the
+// same sandbox-primitive requirement, so this only has to compile.
+func processGone(int) bool {
+	return false
+}

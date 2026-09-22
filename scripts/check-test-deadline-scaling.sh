@@ -31,6 +31,7 @@
 # than adding a second pattern beside it.
 #   context.WithTimeout(parent, 30*time.Second)
 #   context.WithTimeout(parent, time.Minute)
+#   context.WithTimeout(parent, time.Hour)
 #   <-time.After(5 * time.Second)
 #   <-time.After(time.Second)
 #   context.WithTimeout(parent, 1500*time.Millisecond)
@@ -72,7 +73,7 @@ while IFS= read -r -d '' file; do
 	scanned=$((scanned + 1))
 
 	# A deadline of a second or more, not already wrapped in the helper.
-	matches=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?([0-9]+[[:space:]]*\*[[:space:]]*)?time\.(Second|Minute)' "$file" || true)
+	matches=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?([0-9]+[[:space:]]*\*[[:space:]]*)?time\.(Second|Minute|Hour)' "$file" || true)
 
 	# Milliseconds of a second or more. Written separately because the bound is
 	# on the NUMBER here, not on the unit: four or more digits, or a leading

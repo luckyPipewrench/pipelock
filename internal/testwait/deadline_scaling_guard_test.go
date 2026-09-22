@@ -87,6 +87,28 @@ func test() {
 			wantText: "Unscaled deadline",
 		},
 		{
+			// Hour-scale deadlines were outside the unit list, so a
+			// subprocess test could take an hour on a loaded runner and the
+			// guard would pass it. The unit list is the guard's coverage, so
+			// extend the list rather than adding a pattern beside it.
+			name: "rejects an hour-scale subprocess deadline",
+			source: `package fixture
+
+import (
+	"context"
+	"os/exec"
+	"time"
+)
+
+func test() {
+	ctx, cancel := context.WithTimeout(context.Background(), ` + "time.Hour" + `)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "true")
+}
+`,
+			wantText: "Unscaled deadline",
+		},
+		{
 			name:     "rejects empty tracked test set",
 			wantText: "no tracked internal test files",
 		},

@@ -481,7 +481,15 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 			return statusSkip, "sudo -n refused (no NOPASSWD rule for operator -> pipelock-agent)"
 		}
 		if code != 0 {
-			bad = append(bad, fmt.Sprintf("%s not readable/traversable by %s: %s", clean, env.agentUserName, oneLine(out)))
+			reason := oneLine(out)
+			if reason == "" {
+				reason = diagnoseWorkspaceACLCause(ctx, env, clean)
+			}
+			if reason == "" {
+				reason = fmt.Sprintf("exit %d", code)
+			}
+			bad = append(bad, fmt.Sprintf("%s not readable/traversable by %s: %s; repair with `pipelock contain grant-workspace %s`",
+				clean, env.agentUserName, reason, clean))
 		}
 	}
 	if len(bad) > 0 {
@@ -489,6 +497,39 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s; %d recorded grant(s) within expiry",
 		len(paths), env.agentUserName, len(env.workspaceGrants))
+}
+
+// diagnoseWorkspaceACLCause explains WHY a workspace-access check failed with
+// no output of its own (POSIX `test` prints nothing on a permission denial).
+// It reads the real ACL via `getfacl` and distinguishes the two drift shapes
+// seen live: a directory mask reset by a later chmod that silently caps an
+// otherwise-correct grant ("#effective:" suffix on the entry), versus a grant
+// recorded without read access at all. Both remedies are the same shipped
+// command, so an empty return here still leaves the caller's fallback message
+// naming it.
+func diagnoseWorkspaceACLCause(ctx context.Context, env *probeEnv, path string) string {
+	out, code, err := env.runCmd(ctx, "getfacl", "-p", path)
+	if err != nil || code != 0 {
+		return ""
+	}
+	prefix := "user:" + env.agentUserName + ":"
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(line, prefix)
+		perms, effective, hasEffective := strings.Cut(rest, "\t")
+		perms = strings.TrimSpace(perms)
+		if hasEffective && strings.Contains(effective, "#effective:") {
+			return fmt.Sprintf("ACL grants %s %q but the directory's ACL mask limits it to a lower effective permission (a later chmod resets the mask); re-apply the grant to recompute the mask", env.agentUserName, perms)
+		}
+		if !strings.Contains(perms, "r") {
+			return fmt.Sprintf("ACL grants %s only %q, no read permission", env.agentUserName, perms)
+		}
+		return fmt.Sprintf("ACL grants %s %q but access still failed", env.agentUserName, perms)
+	}
+	return fmt.Sprintf("no ACL entry for %s on this path", env.agentUserName)
 }
 
 // workspaceProbePaths returns the deduplicated union of ad-hoc --workspace

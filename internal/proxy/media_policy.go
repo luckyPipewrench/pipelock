@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"mime"
 	"strings"
@@ -90,7 +91,6 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 	if !isMediaType(mt) {
 		return MediaPolicyVerdict{Body: body, MediaType: mt}
 	}
-
 	// Build the baseline exposure payload so all branches can share it.
 	exposure := &MediaExposureFields{
 		ContentType: mt,
@@ -166,6 +166,16 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 		}
 	}
 
+	// A zero-byte body cannot carry metadata, so there is nothing to parse and
+	// an absence must not be reported as malformed media. This sits AFTER the
+	// audio and video decisions on purpose: the reverse proxy calls this with a
+	// nil body precisely so those types can be refused without reading the
+	// stream, and exempting empty bodies earlier let declared audio and video
+	// through (TestReverseProxy_MediaPolicyBlocksAudio).
+	if len(body) == 0 {
+		return MediaPolicyVerdict{Body: body, MediaType: mt, Exposure: exposureOrNil(cfg, exposure)}
+	}
+
 	// Metadata surgery on allowed images.
 	outBody := body
 	var stripResult *media.StripResult
@@ -176,7 +186,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 			// potentially booby-trapped content. The error surfaces in the
 			// exposure event for operator visibility.
 			exposure.Blocked = true
-			exposure.BlockReason = fmt.Sprintf("media_policy: image parse error: %v", err)
+			exposure.BlockReason = mediaParseBlockReason(mt, err)
 			return MediaPolicyVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -197,6 +207,13 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 		StripResult: stripResult,
 		Exposure:    exposureOrNil(cfg, exposure),
 	}
+}
+
+func mediaParseBlockReason(mediaType string, err error) string {
+	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+	}
+	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }
 
 // effectiveMediaType treats a declared media type as authoritative only when

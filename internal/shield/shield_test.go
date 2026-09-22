@@ -500,7 +500,10 @@ func TestSVGPipeline(t *testing.T) {
 	cfg := defaultShieldCfg()
 	cfg.InjectFingerprintShims = false
 
-	input := `<svg xmlns="http://www.w3.org/2000/svg">` +
+	// The svg: prefix is declared, so the prefixed element below is a valid
+	// script that a browser executes. Leaving it undeclared made the document
+	// reject before that element could run, so the case proved nothing.
+	input := `<svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">` +
 		`<script>var ext = "` + testExtensionID + `"; fetchExtensions();</script>` +
 		`<svg:script>navigator.sendBeacon('/collect')</svg:script>` +
 		`<script href="app.js"/>` +

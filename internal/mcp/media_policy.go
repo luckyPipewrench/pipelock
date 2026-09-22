@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"strings"
@@ -293,6 +294,11 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	if !isMCPMediaType(mt) {
 		return mcpMediaVerdict{Body: body, MediaType: mt}
 	}
+	// Empty media payloads cannot carry metadata. This also keeps the MCP
+	// policy aligned with the proxy response policy for bodyless content.
+	if len(body) == 0 {
+		return mcpMediaVerdict{Body: body, MediaType: mt}
+	}
 
 	exposure := &audit.MediaExposureInfo{
 		Transport:   transport,
@@ -367,7 +373,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
 			exposure.Blocked = true
-			exposure.BlockReason = fmt.Sprintf("media_policy: image parse error: %v", err)
+			exposure.BlockReason = mcpMediaParseBlockReason(mt, err)
 			return mcpMediaVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -388,6 +394,13 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 		StripResult: stripResult,
 		Exposure:    mcpExposureOrNil(policy, exposure),
 	}
+}
+
+func mcpMediaParseBlockReason(mediaType string, err error) string {
+	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+	}
+	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }
 
 func mcpExposureOrNil(policy *config.MediaPolicy, info *audit.MediaExposureInfo) *audit.MediaExposureInfo {

@@ -688,6 +688,12 @@ func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 
 	jwt := scanner.TextDLPMatch{PatternName: "JWT Token", Severity: config.SeverityCritical}
+	// A JWT recovered from an encoding layer is not an ordinary session cookie.
+	// The narrow warning exists because a site's own session cookie looks like
+	// a JWT; a token someone base64-wrapped inside one does not have that
+	// excuse, so it keeps the hard block.
+	encodedJWT := jwt
+	encodedJWT.Encoded = "base64"
 	aws := scanner.TextDLPMatch{PatternName: "AWS Access ID", Severity: config.SeverityCritical}
 
 	tests := []struct {
@@ -714,6 +720,16 @@ func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
 				Action:     config.ActionBlock,
 				DLPMatches: []scanner.TextDLPMatch{jwt},
 				HeaderName: "Authorization",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "encoded JWT in Cookie still blocks",
+			result: &BodyScanResult{
+				Action:     config.ActionBlock,
+				DLPMatches: []scanner.TextDLPMatch{encodedJWT},
+				HeaderName: "Cookie",
 			},
 			wantAction: config.ActionBlock,
 			wantHard:   true,

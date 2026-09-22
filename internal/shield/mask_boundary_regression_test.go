@@ -6,6 +6,7 @@ package shield
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -77,7 +78,10 @@ func TestRestoreHTMLScripts_ManyScriptsRoundTrip(t *testing.T) {
 	payload := b.String()
 
 	res := e.Rewrite(payload, PipelineHTML, &cfg)
-	if strings.Contains(res.Content, "PIPELOCK") || strings.Contains(res.Content, "placeholder") {
+	// The production placeholder is the prefix below, not the word "PIPELOCK"
+	// and not the word "placeholder", so the earlier substrings could never
+	// match a real leak and this check passed no matter what was emitted.
+	if strings.Contains(res.Content, "\x00pipelock-inline-script-") {
 		t.Errorf("a masking placeholder leaked into output: %s", res.Content[:200])
 	}
 	// At least the 200 originals; the engine may also inject its own shim.
@@ -157,5 +161,148 @@ func TestInlineScriptBytesStillPreserved(t *testing.T) {
 	}
 	if strings.Contains(res.Content, "track.example.com") {
 		t.Error("tracking pixel outside the script was not removed")
+	}
+}
+
+// TestExtensionProbeInXHTMLScriptTagIsStripped is the XHTML counterpart of
+// TestExtensionProbeInScriptTagIsStripped. The HTML masker was corrected to keep
+// script opening tags visible to attribute enforcement and the XHTML masker was
+// not, so the same probe survived on the XHTML path: the instance was fixed and
+// the class was not.
+func TestExtensionProbeInXHTMLScriptTagIsStripped(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+	const probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/probe"
+
+	doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script src="` + probe + `"></script></body></html>`
+	res := e.Rewrite(doc, PipelineXHTML, &cfg)
+	if strings.Contains(res.Content, "chrome-extension://") {
+		t.Errorf("extension probe in an XHTML script src survived: %s", res.Content)
+	}
+	if res.ExtensionHits == 0 {
+		t.Error("ExtensionHits = 0, so the XHTML script tag was never scanned")
+	}
+}
+
+// TestPlaceholderPrefixSearchIsLinear covers a request-path cost: the previous
+// prefix search appended one character per collision and rescanned the whole
+// document each time, so a body carrying the placeholder prefix followed by a
+// long run of the pad character cost time quadratic in its own length.
+func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	// The prefix, then a long run of the pad character the old loop appended.
+	const padLen = 120000
+	hostile := "<html><body>" + "\x00pipelock-inline-script-" + strings.Repeat("x", padLen) +
+		"<script>var a = 1;</script></body></html>"
+
+	// Measure rather than race a goroutine against a timer. Rewrite has no
+	// cancellation, so a timeout that fails the test would leave the call
+	// running against hostile input for the rest of the process. The quadratic
+	// form took time proportional to the square of the pad, so comparing a
+	// doubled pad against a generous multiple of the single-pad time
+	// distinguishes linear from quadratic without an uncancellable wait.
+	start := time.Now()
+	res := e.Rewrite(hostile, PipelineHTML, &cfg)
+	single := time.Since(start)
+
+	doubled := strings.Replace(hostile, strings.Repeat("x", padLen), strings.Repeat("x", padLen*2), 1)
+	start = time.Now()
+	e.Rewrite(doubled, PipelineHTML, &cfg)
+	double := time.Since(start)
+
+	if !strings.Contains(res.Content, "var a = 1;") {
+		t.Errorf("script content was not preserved: %s", res.Content[:80])
+	}
+	// Quadratic would be about four times; allow a wide margin so ordinary
+	// scheduling noise on a loaded runner cannot fail this, while a return to
+	// the quadratic form still stands out.
+	// Measured on this tree at a 120k pad: the linear form gives a ratio near
+	// 1.7 and the quadratic form near 5.8, so three separates them with room on
+	// both sides. Asserting the RATIO rather than an absolute duration keeps the
+	// test meaningful on a slower machine, where both numbers grow together.
+	if single <= 0 {
+		t.Skip("timer resolution too coarse to compare growth")
+	}
+	if ratio := float64(double) / float64(single); ratio > 3 {
+		t.Errorf("doubling the pad multiplied the time by %.2f (single %v, double %v): the placeholder search is superlinear",
+			ratio, single, double)
+	}
+}
+
+// TestXHTMLScriptCDATACloseDoesNotEndMasking covers a JavaScript-corruption
+// path. A closing script tag written INSIDE a CDATA section is legal script
+// content, but the raw close search stopped there, so the rest of the script
+// became visible to the rewrite passes and an extension URL after that point was
+// stripped out of the code the browser would run.
+func TestXHTMLScriptCDATACloseDoesNotEndMasking(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	js := `var s = "</script>"; var probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/p";`
+	doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script><![CDATA[` + js + `]]></script>` +
+		`<img width="1" height="1" src="https://track.example.com/px"/></body></html>`
+
+	res := e.Rewrite(doc, PipelineXHTML, &cfg)
+	if !strings.Contains(res.Content, js) {
+		t.Errorf("script bytes were modified.\nwant substring: %s\ngot: %s", js, res.Content)
+	}
+	// Markup after the real closing tag must still be rewritten, so the fix
+	// cannot be "mask everything to the end of the document".
+	if strings.Contains(res.Content, "track.example.com") {
+		t.Error("tracking pixel after the real closing tag was not removed")
+	}
+}
+
+// TestXHTMLUppercaseContainerIsNotAScript covers the case-sensitivity of XML
+// element names. <SCRIPT> in XHTML is an ordinary unknown element, so its child
+// markup must still be rewritten; matching it case-insensitively masked that
+// markup out of every pass.
+func TestXHTMLUppercaseContainerIsNotAScript(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	pixel := `<img width="1" height="1" src="https://track.example.com/px"/>`
+	xhtml := `<html xmlns="http://www.w3.org/1999/xhtml"><body><SCRIPT>` + pixel + `</SCRIPT></body></html>`
+	if res := e.Rewrite(xhtml, PipelineXHTML, &cfg); strings.Contains(res.Content, "track.example.com") {
+		t.Errorf("child markup of an uppercase XHTML container survived: %s", res.Content)
+	}
+
+	// Positive control for the other direction: in HTML the element name is
+	// case insensitive, so <SCRIPT> IS a script and its content must be left
+	// alone. A fix that simply made everything case sensitive would break this.
+	html := `<html><body><SCRIPT>` + pixel + `</SCRIPT></body></html>`
+	if res := e.Rewrite(html, PipelineHTML, &cfg); !strings.Contains(res.Content, "track.example.com") {
+		t.Errorf("HTML script content was rewritten; case insensitivity is required there: %s", res.Content)
+	}
+}
+
+// TestPrefixedXHTMLScriptBytesPreserved covers the byte-preservation guarantee
+// for a namespace-qualified script. An unprefixed-only matcher left <h:script>
+// unmasked, so its body went through the HTML rewrite passes and an extension
+// URL inside the code was stripped: the JavaScript corruption this branch
+// exists to prevent, on the XHTML path.
+func TestPrefixedXHTMLScriptBytesPreserved(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+	js := `var probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/p";`
+
+	// Positive control: the unprefixed form is already preserved, so a failure
+	// below is about the prefix and not about masking in general.
+	plain := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script>` + js + `</script></body></html>`
+	if res := e.Rewrite(plain, PipelineXHTML, &cfg); !strings.Contains(res.Content, js) {
+		t.Fatalf("control: unprefixed XHTML script was modified: %s", res.Content)
+	}
+
+	prefixed := `<html xmlns:h="http://www.w3.org/1999/xhtml"><body><h:script>` + js +
+		`</h:script><img width="1" height="1" src="https://track.example.com/px"/></body></html>`
+	res := e.Rewrite(prefixed, PipelineXHTML, &cfg)
+	if !strings.Contains(res.Content, js) {
+		t.Errorf("prefixed XHTML script was modified.\nwant substring: %s\ngot: %s", js, res.Content)
+	}
+	// Markup outside the script must still be rewritten.
+	if strings.Contains(res.Content, "track.example.com") {
+		t.Error("tracking pixel outside the prefixed script was not removed")
 	}
 }

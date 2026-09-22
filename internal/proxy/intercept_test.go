@@ -5540,3 +5540,71 @@ func TestInterceptAllowsAllowlistedGitPush(t *testing.T) {
 		t.Fatalf("upstream hits = %d, want 1", hits.Load())
 	}
 }
+
+// TestInterceptTunnel_ExemptDomainKeepsEncodedBytes pins the byte-intact
+// contract for a trusted destination. Decoding used to run before the exempt
+// branch was reached, so a gzip download from a host the operator had
+// explicitly trusted arrived decoded, without its Content-Encoding, and
+// without the ETag, Digest and Content-MD5 validators that describe the
+// encoded form. A client verifying that download against its own manifest
+// then saw bytes that did not match.
+func TestInterceptTunnel_ExemptDomainKeepsEncodedBytes(t *testing.T) {
+	const plain = "trusted download payload"
+
+	var gzipped bytes.Buffer
+	zw := gzip.NewWriter(&gzipped)
+	if _, err := zw.Write([]byte(plain)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	encoded := gzipped.Bytes()
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("ETag", `"encoded-etag"`)
+		w.Header().Set("Digest", "sha-256=encoded")
+		_, _ = w.Write(encoded)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	cfg.ResponseScanning.ExemptDomains = []string{host}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/artifact.bin", nil)
+	// Ask for the encoded form explicitly so the client does not transparently
+	// decompress it and hide what the proxy actually forwarded.
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for exempt domain, got %d; body: %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Errorf("Content-Encoding = %q, want %q: a trusted download must keep its encoding", got, "gzip")
+	}
+	for _, name := range []string{"ETag", "Digest"} {
+		if resp.Header.Get(name) == "" {
+			t.Errorf("%s was dropped; the validators describe the encoded body and must survive", name)
+		}
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(body, encoded) {
+		t.Errorf("body was re-encoded: got %d bytes, want the original %d encoded bytes", len(body), len(encoded))
+	}
+}

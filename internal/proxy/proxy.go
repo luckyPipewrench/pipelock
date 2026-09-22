@@ -3650,7 +3650,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if prefixLen > 512 {
 		prefixLen = 512
 	}
-	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
+	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}
@@ -3893,6 +3893,20 @@ func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary)
 	if value := shieldRewriteHeaderValue(summary); value != "" {
 		headers.Set(shieldRewriteHeader, value)
 	}
+}
+
+// shieldLeavesBodyUnchanged reports whether the shield would return this body
+// byte for byte, so no size ceiling needs to apply to it.
+//
+// PipelineNone is content the shield does not handle at all. PipelineJS is
+// JavaScript, which the shield identifies for reporting and never edits: the
+// response scanner owns that content. Enforcing the oversize ceiling on either
+// one buys no protection and costs availability, and on JavaScript the cost is
+// severe, because a browser application's bundle is routinely larger than
+// max_shield_bytes and oversize_action: block would return 403 for it. Response
+// scanning still runs on both; only the shield's own ceiling is skipped.
+func shieldLeavesBodyUnchanged(pipeline shield.PipelineType) bool {
+	return pipeline == shield.PipelineNone || pipeline == shield.PipelineJS
 }
 
 func shieldPipelineLabel(pipeline shield.PipelineType) string {

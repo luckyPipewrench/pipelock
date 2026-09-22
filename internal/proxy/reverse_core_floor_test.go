@@ -77,9 +77,19 @@ func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
 	cfg.Internal = nil
 	cfg.ResponseScanning.Enabled = false
 
+	// A clean first event, flushed, so the 200 and some body are on the wire
+	// before the floor aborts the copy. Without it the abort can beat the
+	// header flush and the client sees a transport error instead of the
+	// truncated stream this asserts, which made the case fail only under a
+	// loaded parallel run.
+	const sseOpener = "data: quarterly totals\n\n"
 	proxy := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, sseOpener)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		_, _ = io.WriteString(w, "data: "+corePayloadForFloor+"\n\n")
 	})
 
@@ -99,6 +109,9 @@ func TestReverseCoreFloorBlocksSSEWhenParentDisabled(t *testing.T) {
 	}
 	if strings.Contains(string(body), corePayloadForFloor) {
 		t.Fatalf("core injection reached the client on an SSE stream with the optional layer off: %q", body)
+	}
+	if !strings.HasPrefix(string(body), sseOpener) {
+		t.Fatalf("the stream did not open before the floor terminated it: %q", body)
 	}
 }
 

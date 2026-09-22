@@ -81,7 +81,12 @@ type Engine struct {
 	functionStripRe *regexp.Regexp
 	htmlScriptOpen  *regexp.Regexp // locates inline scripts that HTML passes must preserve
 	htmlScriptClose *regexp.Regexp
-	svgScriptRe     *regexp.Regexp // removes whole <script> elements inside SVG
+	// XML element names are case sensitive, so <SCRIPT> in an XHTML document is
+	// an ordinary unknown element whose child markup must still be rewritten.
+	// Matching it case-insensitively masked that child markup out of every pass.
+	xmlScriptOpen  *regexp.Regexp
+	xmlScriptClose *regexp.Regexp
+	svgScriptRe    *regexp.Regexp // removes whole <script> elements inside SVG
 
 	// SVG active content regexes. Kept separate from the HTML/JS set so
 	// a future SVG-only engine variant can initialize only the patterns
@@ -126,6 +131,16 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		// boundary: whitespace, `>`, `/`, or end of input.
 		htmlScriptOpen:  regexp.MustCompile(`(?i)<script(?:[\s/>]|$)`),
 		htmlScriptClose: regexp.MustCompile(`(?is)</script\s*>`),
+		// A namespace-qualified script still executes, so an unprefixed-only
+		// matcher left <h:script> unmasked and its body was rewritten, which
+		// corrupts JavaScript. Accepting any prefix errs toward preserving
+		// bytes. The precise rule is to resolve the expanded name and mask only
+		// {http://www.w3.org/1999/xhtml}script, which needs the XML parsing
+		// tracked separately; until then a prefixed non-script element has its
+		// content preserved rather than rewritten, which is the safer direction
+		// of the two available here.
+		xmlScriptOpen:  regexp.MustCompile(`<(?:[\w.-]+:)?script(?:[\s/>]|$)`),
+		xmlScriptClose: regexp.MustCompile(`(?s)</(?:[\w.-]+:)?script\s*>`),
 		// Attribute values may contain `>`, so `[^>]*` ended the tag early and a
 		// self-closing script element survived. Consume quoted values whole, and
 		// require the same element-name boundary as above.
@@ -269,7 +284,24 @@ func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce
 // they are SVG-specific and the config knob doesn't map cleanly.
 func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	doc := res.Content
-	doc, res.SVGScriptHits = countReplace(e.svgScriptRe, doc)
+	// Remove script elements by parsing the document. A pattern cannot decide
+	// this: the namespace prefix is an XML Name rather than an ASCII word, the
+	// element name is case sensitive, and a closing-tag sequence inside CDATA
+	// is character data. Each of those defeated the pattern separately. The
+	// pattern remains as the fallback for a document XML cannot parse, which a
+	// browser rendering SVG as XML also refuses.
+	if spans, ok := xmlScriptSpans(doc); ok {
+		var out strings.Builder
+		prev := 0
+		for _, span := range spans {
+			out.WriteString(doc[prev:span.start])
+			prev = span.end
+		}
+		out.WriteString(doc[prev:])
+		doc, res.SVGScriptHits = out.String(), len(spans)
+	} else {
+		doc, res.SVGScriptHits = countReplace(e.svgScriptRe, doc)
+	}
 
 	// SVG active content stripping: foreignObject, event handlers, external
 	// xlink:href / href references, and hidden text (both style= and
@@ -332,11 +364,33 @@ type maskedHTMLScript struct {
 	content     string
 }
 
-func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
-	prefix := "\x00pipelock-inline-script-"
-	for strings.Contains(doc, prefix) {
-		prefix += "x"
+// uniqueScriptPlaceholderPrefix returns a prefix the document does not already
+// contain. The previous form appended one character per collision and rescanned
+// the whole document each time, so a body carrying the prefix followed by a long
+// run of the pad character cost time quadratic in its own length, on the request
+// path. Counting the longest existing run finds a free prefix in one scan.
+func uniqueScriptPlaceholderPrefix(doc string) string {
+	const base = "\x00pipelock-inline-script-"
+	longest := 0
+	for i := 0; ; {
+		j := strings.Index(doc[i:], base)
+		if j < 0 {
+			break
+		}
+		i += j + len(base)
+		run := 0
+		for i+run < len(doc) && doc[i+run] == 'x' {
+			run++
+		}
+		if run+1 > longest {
+			longest = run + 1
+		}
 	}
+	return base + strings.Repeat("x", longest)
+}
+
+func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
+	prefix := uniqueScriptPlaceholderPrefix(doc)
 
 	var masked, script strings.Builder
 	var scripts []maskedHTMLScript
@@ -395,14 +449,66 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 	return masked.String(), scripts
 }
 
+// scriptCloseIndex returns the offset of the closing script tag, skipping over
+// complete CDATA sections and comments. A raw search stops at a `</script>`
+// written inside CDATA, which is legal script content; masking then ended
+// early, the remaining script bytes became visible to every rewrite pass, and
+// an extension URL after that point was stripped out of the JavaScript.
+func scriptCloseIndex(re *regexp.Regexp, body string) int {
+	for i := 0; i < len(body); {
+		rest := body[i:]
+		if strings.HasPrefix(rest, "<![CDATA[") {
+			if end := strings.Index(rest, "]]>"); end >= 0 {
+				i += end + len("]]>")
+				continue
+			}
+			return -1 // Unterminated: no closing tag is reachable.
+		}
+		if strings.HasPrefix(rest, "<!--") {
+			if end := strings.Index(rest, "-->"); end >= 0 {
+				i += end + len("-->")
+				continue
+			}
+			return -1
+		}
+		next := strings.IndexAny(rest, "<")
+		if next < 0 {
+			return -1
+		}
+		if loc := re.FindStringIndex(rest[next:]); loc != nil && loc[0] == 0 {
+			return i + next
+		}
+		i += next + 1
+	}
+	return -1
+}
+
 func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScripts bool) (string, []maskedHTMLScript) {
 	if !allowSelfClosingScripts {
 		return e.maskHTMLScripts(doc)
 	}
 
-	prefix := "\x00pipelock-inline-script-"
-	for strings.Contains(doc, prefix) {
-		prefix += "x"
+	prefix := uniqueScriptPlaceholderPrefix(doc)
+
+	// Prefer the parsed answer. XHTML is XML, so the namespace prefix, the case
+	// of the element name and CDATA content all decide what is a script, and
+	// none of them can be settled by scanning text. The scan below stays as the
+	// fallback for a document XML cannot parse, which a browser parsing XHTML
+	// as XML also refuses.
+	if spans, ok := xmlScriptSpans(doc); ok {
+		var out strings.Builder
+		var parsed []maskedHTMLScript
+		prev := 0
+		for _, span := range spans {
+			out.WriteString(doc[prev:span.content])
+			placeholder := prefix + strconv.Itoa(len(parsed)) + "\x00"
+			parsed = append(parsed, maskedHTMLScript{placeholder: placeholder, content: doc[span.content:span.closing]})
+			out.WriteString(placeholder)
+			out.WriteString(doc[span.closing:span.end])
+			prev = span.end
+		}
+		out.WriteString(doc[prev:])
+		return out.String(), parsed
 	}
 
 	var masked strings.Builder
@@ -422,14 +528,30 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 			openTag := strings.TrimSpace(fromOpen[:openTagEnd-1])
 			if allowSelfClosingScripts && strings.HasSuffix(openTag, "/") {
 				end = openTagEnd
-			} else if closeTag := e.htmlScriptClose.FindStringIndex(fromOpen[openTagEnd:]); closeTag != nil {
-				end = openTagEnd + closeTag[1]
+			} else if closeAt := scriptCloseIndex(e.xmlScriptClose, fromOpen[openTagEnd:]); closeAt >= 0 {
+				closeTag := e.xmlScriptClose.FindStringIndex(fromOpen[openTagEnd+closeAt:])
+				end = openTagEnd + closeAt + closeTag[1]
 			}
 		}
 
+		// Keep the opening and closing tags in the document. They are markup, and
+		// masking the opening tag hid script attributes from extension stripping
+		// on this path exactly as it did on the HTML path: a probe written as a
+		// script src survived. Only the character data between them is masked,
+		// byte for byte, and this mirrors maskHTMLScripts so the two paths cannot
+		// drift apart again.
+		contentStart, contentEnd := 0, end
+		if openTagEnd := htmlTagEnd(fromOpen); openTagEnd >= 0 && openTagEnd <= end {
+			contentStart = openTagEnd
+			if closeAt := scriptCloseIndex(e.xmlScriptClose, fromOpen[openTagEnd:end]); closeAt >= 0 {
+				contentEnd = openTagEnd + closeAt
+			}
+		}
+		masked.WriteString(fromOpen[:contentStart])
 		placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
-		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[:end]})
+		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[contentStart:contentEnd]})
 		masked.WriteString(placeholder)
+		masked.WriteString(fromOpen[contentEnd:end])
 		remaining = fromOpen[end:]
 	}
 
@@ -465,7 +587,13 @@ func (e *Engine) findHTMLScriptOpenWithCDATA(doc string, allowCDATA bool) int {
 			continue
 		}
 
-		if match := e.htmlScriptOpen.FindStringIndex(rest); match != nil && match[0] == 0 {
+		// allowCDATA marks the XHTML caller, where element names are case
+		// sensitive: <SCRIPT> there is an ordinary element, not a script.
+		opener := e.htmlScriptOpen
+		if allowCDATA {
+			opener = e.xmlScriptOpen
+		}
+		if match := opener.FindStringIndex(rest); match != nil && match[0] == 0 {
 			return candidate
 		}
 		end := htmlTagEnd(rest)

@@ -1835,38 +1835,14 @@ func newInterceptHandler(
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
 		}
 
-		// Origins sometimes ignore the explicit identity request. Decode bounded,
-		// buffered response formats before scanning; streaming and unsupported
-		// encodings remain fail-closed because they cannot safely enter the body
-		// scanners as opaque bytes.
-		compressedResponseErr := error(nil)
-		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
-			if HasSingleSSEContentType(resp.Header) {
-				compressedResponseErr = errors.New("compressed streaming response cannot be scanned")
-			} else {
-				compressedResponseErr = responseencoding.DecodeResponse(resp)
-			}
-		}
-		if compressedResponseErr != nil {
-			ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
-			ic.Metrics.RecordTLSResponseBlocked("compressed")
-			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     "tls_response_blocked",
-				Pattern:   "compressed response cannot be scanned",
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			}))
-			writeBlockedError(w,
-				blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
-				"blocked: compressed response cannot be scanned", http.StatusForbidden)
-			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
-			return
-		}
+		// Decoding happens at the buffered path below, NOT here. A response
+		// that never enters a body scanner must keep its bytes: an exempt
+		// destination streams through untouched, and DecodeResponse drops
+		// Content-Encoding along with the ETag, Digest and Content-MD5
+		// validators that describe the encoded form. Decoding before that
+		// decision handed a trusted download a body its own validators no
+		// longer matched. The compressed-SSE refusal lives in the SSE branch
+		// below, where the stream layer is known and can be named.
 
 		// SSE streaming: activate on Content-Type alone. The dispatcher's
 		// passthrough branches honor each child Enabled flag and keep
@@ -2078,6 +2054,34 @@ func newInterceptHandler(
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 			return
+		}
+
+		// Origins sometimes ignore the explicit identity request. This response
+		// is entering the body scanners, so decode the bounded, buffered
+		// formats now; an unsupported encoding stays fail-closed because it
+		// cannot be inspected as opaque bytes. Everything that returns above
+		// keeps its original bytes.
+		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+			if decodeErr := responseencoding.DecodeResponse(resp); decodeErr != nil {
+				ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
+				ic.Metrics.RecordTLSResponseBlocked("compressed")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "tls_response_blocked",
+					Pattern:   "compressed response cannot be scanned",
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
+					"blocked: compressed response cannot be scanned", http.StatusForbidden)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
+				return
+			}
 		}
 
 		// Buffer response for scanning (scan-then-send, fail-closed).

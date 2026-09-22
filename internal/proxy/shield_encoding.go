@@ -17,7 +17,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
-const shieldUninspectableLayer = "shield_uninspectable"
+const (
+	shieldUninspectableLayer       = "shield_uninspectable"
+	shieldUTF16ScanHeadBlockReason = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip"
+)
 
 type shieldPipelineResult struct {
 	body                []byte
@@ -36,15 +39,14 @@ const (
 
 var (
 	xmlEncodingDeclarationRE = regexp.MustCompile(`(?is)^\s*<\?xml\s+[^>]*\bencoding\s*=\s*["']\s*([^"'\s?>]+)\s*["'][^>]*\?>`)
-	htmlCharsetDeclarationRE = regexp.MustCompile(`(?is)<meta\b[^>]*\bcharset\s*=\s*["']?\s*([a-z0-9._-]+)`)
+	charsetParameterRE       = regexp.MustCompile(`(?i)(?:^|;)\s*charset\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\s]*))`)
 )
 
 // runShieldPipelineWithEncoding is the common byte boundary for every Browser
 // Shield response transport. UTF-16 is decoded strictly before Shield sees it;
 // unchanged content deliberately keeps its original bytes and metadata.
 func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentType string, headers http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) shieldPipelineResult {
-	prefixLen := min(len(body), 512)
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
+	pipeline := detectShieldPipeline(contentType, body)
 	if pipeline == shield.PipelineNone {
 		return shieldPipelineResult{body: body, pipeline: pipeline}
 	}
@@ -94,11 +96,7 @@ func recordShieldRewriteMetrics(m *metrics.Metrics, result shield.Result, transp
 // It does not use the scanner's lossy decoder: malformed code units are a
 // refusal, not replacement characters that could hide Shield evidence.
 func decodeShieldUTF16(body []byte, contentType string, pipeline shield.PipelineType) (string, bool, error) {
-	_, params, parseErr := mime.ParseMediaType(contentType)
-	declared := ""
-	if parseErr == nil {
-		declared = strings.ToLower(strings.TrimSpace(params["charset"]))
-	}
+	declared, parseErr := shieldDeclaredCharset(contentType)
 	bomOrder, bom := shieldUTF16BOM(body)
 	signatureOrder, signature := shieldUTF16Signature(body)
 	declaresUTF16 := isUTF16Charset(declared)
@@ -148,6 +146,47 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 	return decoded, true, nil
 }
 
+// detectShieldPipeline keeps Browser Shield classification aligned with a
+// browser when Go's stricter MIME parser rejects parameters after a supported
+// media type. The fallback is narrow: it only applies to a response whose
+// bytes or first charset parameter identify UTF-16. The strict decoder then
+// rejects the malformed declaration instead of treating it as a clean skip.
+func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
+	prefixLen := min(len(body), 512)
+	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
+	if pipeline != shield.PipelineNone || !isShieldUTF16Response(body, contentType) {
+		return pipeline
+	}
+	baseType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	mediaType, _, err := mime.ParseMediaType(baseType)
+	if err != nil || mediaType == "" {
+		return pipeline
+	}
+	return shield.DetectPipeline(mediaType, nil)
+}
+
+// shieldDeclaredCharset returns the first charset parameter even when a later
+// MIME parameter makes mime.ParseMediaType reject the field. Browsers retain
+// that earlier parameter; we need it only to classify the response as UTF-16
+// and fail closed. parseErr remains nonnil so the decoder never accepts a
+// malformed declaration.
+func shieldDeclaredCharset(contentType string) (string, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err == nil {
+		return strings.ToLower(strings.TrimSpace(params["charset"])), nil
+	}
+	match := charsetParameterRE.FindStringSubmatch(contentType)
+	if len(match) == 0 {
+		return "", err
+	}
+	for _, candidate := range match[1:] {
+		if candidate != "" {
+			return strings.ToLower(strings.TrimSpace(candidate)), err
+		}
+	}
+	return "", err
+}
+
 // isShieldUTF16Response classifies an oversize response without decoding it.
 // Scan-head mode cannot safely inspect a partial UTF-16 character stream, so
 // the caller only needs the encoding class before refusing the response.
@@ -158,11 +197,8 @@ func isShieldUTF16Response(body []byte, contentType string) bool {
 	if _, signature := shieldUTF16Signature(body); signature {
 		return true
 	}
-	_, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-	return isUTF16Charset(strings.ToLower(strings.TrimSpace(params["charset"])))
+	declared, _ := shieldDeclaredCharset(contentType)
+	return isUTF16Charset(declared)
 }
 
 func shieldUTF16BOM(body []byte) (shieldUTF16Order, bool) {
@@ -250,11 +286,6 @@ func embeddedCharsetDeclaration(body string, pipeline shield.PipelineType) strin
 			return strings.ToLower(match[1])
 		}
 		return ""
-	}
-	if pipeline == shield.PipelineHTML {
-		if match := htmlCharsetDeclarationRE.FindStringSubmatch(body); len(match) == 2 {
-			return strings.ToLower(match[1])
-		}
 	}
 	return ""
 }

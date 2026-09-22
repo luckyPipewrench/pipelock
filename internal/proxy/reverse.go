@@ -2138,7 +2138,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
 			if isShieldUTF16Response(body, resp.Header.Get("Content-Type")) {
-				return blockUninspectable("Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip")
+				return blockUninspectable(shieldUTF16ScanHeadBlockReason)
 			}
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)

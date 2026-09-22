@@ -3673,7 +3673,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
 			if isShieldUTF16Response(body, contentType) {
-				return nil, nil, shieldUninspectableBlock("Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip")
+				return nil, nil, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
 			}
 			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full

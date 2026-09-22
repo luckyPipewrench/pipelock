@@ -71,6 +71,13 @@ func TestShieldUTF16_RewritesAndRepairsMetadata(t *testing.T) {
 			bom:         true,
 		},
 		{
+			name:        "html transport charset overrides stale meta",
+			body:        `<html><head><meta charset="UTF-8"></head><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`,
+			contentType: "text/html; charset=utf-16le",
+			order:       shieldUTF16LE,
+			bom:         true,
+		},
+		{
 			name:        "SVG big endian BOM and XML declaration",
 			body:        `<?xml version="1.0" encoding="UTF-16BE"?><svg xmlns="http://www.w3.org/2000/svg"><image href="https://track.example.com/pixel" width="1" height="1"/></svg>`,
 			contentType: "image/svg+xml; charset=utf-16be",
@@ -166,6 +173,8 @@ func TestShieldUTF16_RejectsUninspectableInputs(t *testing.T) {
 		{"unpaired surrogate", []byte{0xff, 0xfe, 0x00, 0xd8}, "text/html; charset=utf-16le"},
 		{"BOM conflicts with header", []byte{0xff, 0xfe, '<', 0}, "text/html; charset=utf-16be"},
 		{"UTF-16 body conflicts with UTF-8 header", []byte{0xfe, 0xff, 0, '<'}, "text/html; charset=utf-8"},
+		{"duplicate charset parameter", encodeUTF16ForShieldTest(`<html><body>plain</body></html>`, shieldUTF16LE, true), "text/html; charset=utf-16le; charset=UTF-16LE"},
+		{"trailing malformed parameter", encodeUTF16ForShieldTest(` <html><body>plain</body></html>`, shieldUTF16LE, false), "text/html; charset=utf-16le; @"},
 		{"unsupported XML declaration", encodeUTF16ForShieldTest(`<?xml version="1.0" encoding="ISO-8859-1"?><svg/>`, shieldUTF16BE, true), "image/svg+xml; charset=utf-16be"},
 		{"XML declaration byte order conflict", encodeUTF16ForShieldTest(`<?xml version="1.0" encoding="UTF-16LE"?><svg/>`, shieldUTF16BE, true), "image/svg+xml; charset=utf-16be"},
 	}
@@ -214,8 +223,8 @@ func TestShieldUTF16_MetadataFallbackAndDeclarations(t *testing.T) {
 	if got := embeddedCharsetDeclaration(`<?xml version="1.0"?><svg/>`, shield.PipelineSVG); got != "" {
 		t.Fatalf("missing XML charset = %q", got)
 	}
-	if got := embeddedCharsetDeclaration(`<meta charset="UTF-16BE">`, shield.PipelineHTML); got != "utf-16be" {
-		t.Fatalf("HTML charset = %q", got)
+	if got := embeddedCharsetDeclaration(`<meta charset="UTF-16BE">`, shield.PipelineHTML); got != "" {
+		t.Fatalf("HTML transport encoding must not be overridden by meta charset, got %q", got)
 	}
 	if got := embeddedCharsetDeclaration(`plain`, shield.PipelineJS); got != "" {
 		t.Fatalf("JavaScript charset = %q", got)
@@ -226,6 +235,40 @@ func TestShieldUTF16_MetadataFallbackAndDeclarations(t *testing.T) {
 		if headers.Get("Content-Type") == "" || headers.Get("Content-Length") != "2" {
 			t.Fatalf("pipeline %d metadata = %#v", pipeline, headers)
 		}
+	}
+}
+
+func TestShieldUTF16_MalformedContentTypeCannotSkipPipeline(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults().BrowserShield
+	cfg.Enabled = true
+	cfg.InjectFingerprintShims = false
+	cfg.StripExtensionProbing = false
+	cfg.StripTrackingPixels = true
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{
+			name:        "duplicate charset with BOM",
+			contentType: "text/html; charset=utf-16le; charset=UTF-16LE",
+			body:        encodeUTF16ForShieldTest(`<html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`, shieldUTF16LE, true),
+		},
+		{
+			name:        "trailing junk with leading whitespace",
+			contentType: "text/html; charset=utf-16le; @",
+			body:        encodeUTF16ForShieldTest(` <html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`, shieldUTF16LE, false),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runShieldPipelineWithEncoding(shield.NewEngine(nil), tt.body, tt.contentType, http.Header{"Content-Type": {tt.contentType}}, &cfg, metrics.New(), TransportFetch)
+			if result.pipeline != shield.PipelineHTML || result.uninspectableReason == "" {
+				t.Fatalf("malformed UTF-16 result = %+v, want HTML pipeline and fail-closed refusal", result)
+			}
+		})
 	}
 }
 

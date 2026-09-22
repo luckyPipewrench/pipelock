@@ -131,8 +131,16 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		// boundary: whitespace, `>`, `/`, or end of input.
 		htmlScriptOpen:  regexp.MustCompile(`(?i)<script(?:[\s/>]|$)`),
 		htmlScriptClose: regexp.MustCompile(`(?is)</script\s*>`),
-		xmlScriptOpen:   regexp.MustCompile(`<script(?:[\s/>]|$)`),
-		xmlScriptClose:  regexp.MustCompile(`(?s)</script\s*>`),
+		// A namespace-qualified script still executes, so an unprefixed-only
+		// matcher left <h:script> unmasked and its body was rewritten, which
+		// corrupts JavaScript. Accepting any prefix errs toward preserving
+		// bytes. The precise rule is to resolve the expanded name and mask only
+		// {http://www.w3.org/1999/xhtml}script, which needs the XML parsing
+		// tracked separately; until then a prefixed non-script element has its
+		// content preserved rather than rewritten, which is the safer direction
+		// of the two available here.
+		xmlScriptOpen:  regexp.MustCompile(`<(?:[\w.-]+:)?script(?:[\s/>]|$)`),
+		xmlScriptClose: regexp.MustCompile(`(?s)</(?:[\w.-]+:)?script\s*>`),
 		// Attribute values may contain `>`, so `[^>]*` ended the tag early and a
 		// self-closing script element survived. Consume quoted values whole, and
 		// require the same element-name boundary as above.

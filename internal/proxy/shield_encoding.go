@@ -96,6 +96,9 @@ func recordShieldRewriteMetrics(m *metrics.Metrics, result shield.Result, transp
 // It does not use the scanner's lossy decoder: malformed code units are a
 // refusal, not replacement characters that could hide Shield evidence.
 func decodeShieldUTF16(body []byte, contentType string, pipeline shield.PipelineType) (string, bool, error) {
+	if hasShieldUTF8BOM(body) {
+		return "", false, nil
+	}
 	declared, parseErr := shieldDeclaredCharset(contentType)
 	bomOrder, bom := shieldUTF16BOM(body)
 	signatureOrder, signature := shieldUTF16Signature(body)
@@ -120,7 +123,7 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 	if order == 0 {
 		return "", true, fmt.Errorf("UTF-16 byte order is ambiguous")
 	}
-	if bom && charsetUTF16Order(declared) != 0 && charsetUTF16Order(declared) != bomOrder {
+	if bom && declared != "utf-16" && charsetUTF16Order(declared) != 0 && charsetUTF16Order(declared) != bomOrder {
 		return "", true, fmt.Errorf("BOM and Content-Type charset disagree")
 	}
 	if declared == "utf-8" || declared == "utf8" {
@@ -139,7 +142,7 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 		if !isUTF16Charset(declaration) {
 			return "", true, fmt.Errorf("unsupported or contradictory document charset %q", declaration)
 		}
-		if declaredOrder := charsetUTF16Order(declaration); declaredOrder != 0 && declaredOrder != order {
+		if declaredOrder := charsetUTF16Order(declaration); declaration != "utf-16" && declaredOrder != 0 && declaredOrder != order {
 			return "", true, fmt.Errorf("document charset and UTF-16 byte order disagree")
 		}
 	}
@@ -173,7 +176,7 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 func shieldDeclaredCharset(contentType string) (string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err == nil {
-		return strings.ToLower(strings.TrimSpace(params["charset"])), nil
+		return normalizeShieldCharset(params["charset"]), nil
 	}
 	match := charsetParameterRE.FindStringSubmatch(contentType)
 	if len(match) == 0 {
@@ -181,7 +184,7 @@ func shieldDeclaredCharset(contentType string) (string, error) {
 	}
 	for _, candidate := range match[1:] {
 		if candidate != "" {
-			return strings.ToLower(strings.TrimSpace(candidate)), err
+			return normalizeShieldCharset(candidate), err
 		}
 	}
 	return "", err
@@ -191,6 +194,9 @@ func shieldDeclaredCharset(contentType string) (string, error) {
 // Scan-head mode cannot safely inspect a partial UTF-16 character stream, so
 // the caller only needs the encoding class before refusing the response.
 func isShieldUTF16Response(body []byte, contentType string) bool {
+	if hasShieldUTF8BOM(body) {
+		return false
+	}
 	if _, bom := shieldUTF16BOM(body); bom {
 		return true
 	}
@@ -199,6 +205,14 @@ func isShieldUTF16Response(body []byte, contentType string) bool {
 	}
 	declared, _ := shieldDeclaredCharset(contentType)
 	return isUTF16Charset(declared)
+}
+
+func hasShieldUTF8BOM(body []byte) bool {
+	return len(body) >= 3 && body[0] == 0xef && body[1] == 0xbb && body[2] == 0xbf
+}
+
+func normalizeShieldCharset(charset string) string {
+	return strings.ToLower(strings.Trim(charset, " \t\n\f\r"))
 }
 
 func shieldUTF16BOM(body []byte) (shieldUTF16Order, bool) {

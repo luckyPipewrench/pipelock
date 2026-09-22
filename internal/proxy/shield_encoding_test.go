@@ -203,6 +203,8 @@ func TestShieldUTF16_DecoderBoundaries(t *testing.T) {
 		{"little endian signature", encodeUTF16ForShieldTest(`<html>plain</html>`, shieldUTF16LE, false), "text/html; charset=utf-16le", shield.PipelineHTML, true, `<html>plain</html>`, false},
 		{"big endian signature", encodeUTF16ForShieldTest(`<html>plain</html>`, shieldUTF16BE, false), "text/html; charset=utf-16be", shield.PipelineHTML, true, `<html>plain</html>`, false},
 		{"generic charset uses WHATWG little endian mapping", encodeUTF16ForShieldTest(" plain", shieldUTF16LE, false), "text/html; charset=utf-16", shield.PipelineHTML, true, " plain", false},
+		{"generic charset lets big endian BOM win", encodeUTF16ForShieldTest(" plain", shieldUTF16BE, true), "text/html; charset=utf-16", shield.PipelineHTML, true, " plain", false},
+		{"UTF-8 BOM overrides UTF-16 label", append([]byte{0xef, 0xbb, 0xbf}, []byte(`<html>plain</html>`)...), "text/html; charset=utf-16le", shield.PipelineHTML, false, "", false},
 		{"malformed content type", []byte{0xff, 0xfe, '<', 0}, "text/html; charset=\"", shield.PipelineHTML, true, "", true},
 		{"unsupported declared charset", []byte{0xff, 0xfe, '<', 0}, "text/html; charset=windows-1252", shield.PipelineHTML, true, "", true},
 		{"unpaired low surrogate", []byte{0xff, 0xfe, 0x00, 0xdc}, "text/html; charset=utf-16le", shield.PipelineHTML, true, "", true},
@@ -253,6 +255,37 @@ func TestProxy_ApplyShield_WHATWGUTF16Labels(t *testing.T) {
 	}
 }
 
+func TestProxy_ApplyShield_BOMPrecedence(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+	html := `<html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`
+
+	t.Run("generic UTF-16 lets big endian BOM win", func(t *testing.T) {
+		body := encodeUTF16ForShieldTest(html, shieldUTF16BE, true)
+		out, summary, blocked := p.applyShield(body, "text/html; charset=utf-16", "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+		if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
+			t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
+		}
+	})
+
+	t.Run("UTF-8 BOM overrides UTF-16 label", func(t *testing.T) {
+		body := append([]byte{0xef, 0xbb, 0xbf}, []byte(html)...)
+		contentType := "text/html; charset=utf-16le"
+		if isShieldUTF16Response(body, contentType) {
+			t.Fatal("UTF-8 BOM response classified as UTF-16")
+		}
+		out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+		if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
+			t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
+		}
+	})
+}
+
 func TestShieldUTF16_MetadataFallbackAndDeclarations(t *testing.T) {
 	t.Parallel()
 	if got := embeddedCharsetDeclaration(`<?xml version="1.0"?><svg/>`, shield.PipelineSVG); got != "" {
@@ -270,6 +303,34 @@ func TestShieldUTF16_MetadataFallbackAndDeclarations(t *testing.T) {
 		if headers.Get("Content-Type") == "" || headers.Get("Content-Length") != "2" {
 			t.Fatalf("pipeline %d metadata = %#v", pipeline, headers)
 		}
+	}
+}
+
+func TestShieldUTF16_GenericXMLDeclarationLetsBOMWin(t *testing.T) {
+	t.Parallel()
+	body := encodeUTF16ForShieldTest(`<?xml version="1.0" encoding="UTF-16"?><svg/>`, shieldUTF16BE, true)
+	got, utf16, err := decodeShieldUTF16(body, "image/svg+xml; charset=utf-16", shield.PipelineSVG)
+	if err != nil || !utf16 || got != `<?xml version="1.0" encoding="UTF-16"?><svg/>` {
+		t.Fatalf("decode = (%q, %t, %v)", got, utf16, err)
+	}
+}
+
+func TestShieldUTF16_CharsetNormalizationUsesASCIIWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		label string
+		want  bool
+	}{
+		{"ASCII whitespace", " \tutf-16le\r\n", true},
+		{"vertical tab", "utf-16le\v", false},
+		{"nonbreaking space", "utf-16le\u00a0", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUTF16Charset(normalizeShieldCharset(tt.label)); got != tt.want {
+				t.Fatalf("classified = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -773,8 +773,11 @@ func stepInstallNetworkNamespace() step {
 func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.ContainmentLoopbackService) step {
 	var previousSockets map[string]unitRuntimeState
 	var previousNamespace unitRuntimeState
+	var previousNamespaceForwarders map[string]unitRuntimeState
 	var previousLegacyAnchor unitRuntimeState
 	var legacyAnchorTouched bool
+	var namespaceDefinitionChanged bool
+	var changedNamespaceForwarders map[string]bool
 	var touched []string
 	var retired map[string][]byte
 	return step{
@@ -851,7 +854,21 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 			previousNamespace = systemdUnitRuntimeState(ctx, env, filepath.Base(env.networkNamespaceUnitPath))
+			previousNamespaceForwarders = make(map[string]unitRuntimeState, len(services)+len(oldInventory.Services)+1)
+			previousNamespaceForwarders[containedNamespaceForwarderUnit] = systemdUnitRuntimeState(ctx, env, containedNamespaceForwarderUnit)
+			for _, record := range oldInventory.Services {
+				unit := record.Unit + "-netns.service"
+				previousNamespaceForwarders[unit] = systemdUnitRuntimeState(ctx, env, unit)
+			}
+			for unit := range desiredUnits {
+				namespaceForwarder := unit + "-netns.service"
+				if _, ok := previousNamespaceForwarders[namespaceForwarder]; !ok {
+					previousNamespaceForwarders[namespaceForwarder] = systemdUnitRuntimeState(ctx, env, namespaceForwarder)
+				}
+			}
 			legacyAnchorTouched = false
+			namespaceDefinitionChanged = false
+			changedNamespaceForwarders = make(map[string]bool)
 			retired = make(map[string][]byte)
 			if env.ownedLoopbackAnchorUnitPath != "" {
 				previousLegacyAnchor = systemdUnitRuntimeState(ctx, env, filepath.Base(env.ownedLoopbackAnchorUnitPath))
@@ -866,6 +883,14 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
+				}
+				if item.path == env.networkNamespaceUnitPath {
+					namespaceDefinitionChanged = true
+				}
+				if item.path == env.namespaceForwarderServicePath {
+					changedNamespaceForwarders[containedNamespaceForwarderUnit] = true
+				} else if strings.HasSuffix(item.path, "-netns.service") {
+					changedNamespaceForwarders[filepath.Base(item.path)] = true
 				}
 				touched = append(touched, item.path)
 			}
@@ -901,6 +926,22 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				return len(touched) > 0, fmt.Errorf("reload systemd after installing contained network namespace: %w", err)
+			}
+			if namespaceDefinitionChanged && previousNamespace.active {
+				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.networkNamespaceUnitPath)); err != nil {
+					return true, fmt.Errorf("restart updated contained network namespace: %w", err)
+				}
+			}
+			for unit, state := range previousNamespaceForwarders {
+				if !state.active || (!namespaceDefinitionChanged && !changedNamespaceForwarders[unit]) {
+					continue
+				}
+				if unit != containedNamespaceForwarderUnit && !desiredUnits[strings.TrimSuffix(unit, "-netns.service")] {
+					continue
+				}
+				if err := runOrErr(ctx, env, "systemctl", "restart", unit); err != nil {
+					return true, fmt.Errorf("restart updated contained namespace forwarder %s: %w", unit, err)
+				}
 			}
 			for socket := range previousSockets {
 				if strings.HasPrefix(socket, "pipelock-agent-loopback-") && !desiredUnits[strings.TrimSuffix(socket, ".socket")] {
@@ -958,6 +999,11 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			changed := len(touched) > 0 || len(retired) > 0 || !previousNamespace.active
 			for socket, state := range previousSockets {
 				if socket == proxySocket || desiredUnits[strings.TrimSuffix(socket, ".socket")] {
+					changed = changed || !state.enabled || !state.active
+				}
+			}
+			for unit, state := range previousNamespaceForwarders {
+				if unit == containedNamespaceForwarderUnit || desiredUnits[strings.TrimSuffix(unit, "-netns.service")] {
 					changed = changed || !state.enabled || !state.active
 				}
 			}
@@ -1020,6 +1066,18 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 				if state.active {
 					if err := runOrErr(ctx, env, "systemctl", "start", socket); err != nil {
+						errs = append(errs, err)
+					}
+				}
+			}
+			for unit, state := range previousNamespaceForwarders {
+				if state.enabled {
+					if err := runOrErr(ctx, env, "systemctl", "enable", unit); err != nil {
+						errs = append(errs, err)
+					}
+				}
+				if state.active {
+					if err := runOrErr(ctx, env, "systemctl", "start", unit); err != nil {
 						errs = append(errs, err)
 					}
 				}

@@ -194,6 +194,63 @@ func TestInstallNetworkNamespaceRollbackAfterStartFailure(t *testing.T) {
 	}
 }
 
+func TestInstallNetworkNamespaceRestartsUpdatedNamespaceAndForwarders(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+	unit := loopbackForwarderUnitBase(service.Host, service.Port)
+	inv, err := json.Marshal(desiredLoopbackForwarders([]config.ContainmentLoopbackService{service}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, inv, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	oldBodies := map[string]string{
+		env.networkNamespaceUnitPath:                  "old namespace unit\n",
+		env.namespaceForwarderServicePath:             "old namespace forwarder\n",
+		filepath.Join(unitDir, unit+"-netns.service"): "old declared namespace forwarder\n",
+	}
+	for path, body := range oldBodies {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{filepath.Base(env.networkNamespaceUnitPath), containedNamespaceForwarderUnit, unit + "-netns.service"} {
+		runner.on(argvFor(testSystemctl, "is-enabled", name), "enabled\n", 0, nil)
+		runner.on(argvFor(testSystemctl, "is-active", name), "active\n", 0, nil)
+	}
+	laterFailure := step{
+		name: "later-failure",
+		desc: "force namespace rollback",
+		apply: func(context.Context, *installEnv) (bool, error) {
+			return false, errors.New("later install failed")
+		},
+	}
+	services := []config.ContainmentLoopbackService{service}
+	_, err = runSteps(context.Background(), env, out, []step{stepInstallNetworkNamespaceWithServices(&services), laterFailure})
+	if err == nil || !strings.Contains(err.Error(), "later install failed") {
+		t.Fatalf("runSteps error = %v", err)
+	}
+	for _, name := range []string{filepath.Base(env.networkNamespaceUnitPath), containedNamespaceForwarderUnit, unit + "-netns.service"} {
+		if !fakeRunnerCalled(runner, "systemctl restart "+name) {
+			t.Fatalf("updated active unit %s was not restarted: %v", name, runner.calls)
+		}
+		if !fakeRunnerCalled(runner, "systemctl start "+name) {
+			t.Fatalf("rollback did not restore active unit %s: %v", name, runner.calls)
+		}
+	}
+	for path, want := range oldBodies {
+		got, readErr := os.ReadFile(filepath.Clean(path)) //nolint:gosec // test-owned unit path
+		if readErr != nil || string(got) != want {
+			t.Fatalf("rollback restored %s = %q, %v; want %q", path, got, readErr, want)
+		}
+	}
+}
+
 func TestInstallNetworkNamespaceRetiresAndRestoresLegacyAnchor(t *testing.T) {
 	t.Run("successful replacement retires legacy anchor", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)

@@ -6,8 +6,10 @@ package shield
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestXHTMLScriptNameBoundary_DoesNotMaskRestOfDocument covers a fail-open in
@@ -157,5 +159,49 @@ func TestInlineScriptBytesStillPreserved(t *testing.T) {
 	}
 	if strings.Contains(res.Content, "track.example.com") {
 		t.Error("tracking pixel outside the script was not removed")
+	}
+}
+
+// TestExtensionProbeInXHTMLScriptTagIsStripped is the XHTML counterpart of
+// TestExtensionProbeInScriptTagIsStripped. The HTML masker was corrected to keep
+// script opening tags visible to attribute enforcement and the XHTML masker was
+// not, so the same probe survived on the XHTML path: the instance was fixed and
+// the class was not.
+func TestExtensionProbeInXHTMLScriptTagIsStripped(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+	const probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/probe"
+
+	doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script src="` + probe + `"></script></body></html>`
+	res := e.Rewrite(doc, PipelineXHTML, &cfg)
+	if strings.Contains(res.Content, "chrome-extension://") {
+		t.Errorf("extension probe in an XHTML script src survived: %s", res.Content)
+	}
+	if res.ExtensionHits == 0 {
+		t.Error("ExtensionHits = 0, so the XHTML script tag was never scanned")
+	}
+}
+
+// TestPlaceholderPrefixSearchIsLinear covers a request-path cost: the previous
+// prefix search appended one character per collision and rescanned the whole
+// document each time, so a body carrying the placeholder prefix followed by a
+// long run of the pad character cost time quadratic in its own length.
+func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	// The prefix, then a long run of the pad character the old loop appended.
+	hostile := "<html><body>" + "\x00pipelock-inline-script-" + strings.Repeat("x", 20000) +
+		"<script>var a = 1;</script></body></html>"
+
+	done := make(chan Result, 1)
+	go func() { done <- e.Rewrite(hostile, PipelineHTML, &cfg) }()
+	select {
+	case res := <-done:
+		if !strings.Contains(res.Content, "var a = 1;") {
+			t.Errorf("script content was not preserved: %s", res.Content[:80])
+		}
+	case <-time.After(testwait.Deadline(20 * time.Second)):
+		t.Fatal("rewrite did not finish: the placeholder search is still superlinear")
 	}
 }

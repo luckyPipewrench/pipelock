@@ -332,11 +332,33 @@ type maskedHTMLScript struct {
 	content     string
 }
 
-func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
-	prefix := "\x00pipelock-inline-script-"
-	for strings.Contains(doc, prefix) {
-		prefix += "x"
+// uniqueScriptPlaceholderPrefix returns a prefix the document does not already
+// contain. The previous form appended one character per collision and rescanned
+// the whole document each time, so a body carrying the prefix followed by a long
+// run of the pad character cost time quadratic in its own length, on the request
+// path. Counting the longest existing run finds a free prefix in one scan.
+func uniqueScriptPlaceholderPrefix(doc string) string {
+	const base = "\x00pipelock-inline-script-"
+	longest := 0
+	for i := 0; ; {
+		j := strings.Index(doc[i:], base)
+		if j < 0 {
+			break
+		}
+		i += j + len(base)
+		run := 0
+		for i+run < len(doc) && doc[i+run] == 'x' {
+			run++
+		}
+		if run+1 > longest {
+			longest = run + 1
+		}
 	}
+	return base + strings.Repeat("x", longest)
+}
+
+func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
+	prefix := uniqueScriptPlaceholderPrefix(doc)
 
 	var masked, script strings.Builder
 	var scripts []maskedHTMLScript
@@ -400,10 +422,7 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 		return e.maskHTMLScripts(doc)
 	}
 
-	prefix := "\x00pipelock-inline-script-"
-	for strings.Contains(doc, prefix) {
-		prefix += "x"
-	}
+	prefix := uniqueScriptPlaceholderPrefix(doc)
 
 	var masked strings.Builder
 	var scripts []maskedHTMLScript
@@ -427,8 +446,16 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 			}
 		}
 
+		// Keep the opening tag in the document. It is markup, and masking it hid
+		// script attributes from extension stripping on this path exactly as it
+		// did on the HTML path: a probe written as a script src survived.
+		contentStart := 0
+		if openTagEnd := htmlTagEnd(fromOpen); openTagEnd >= 0 && openTagEnd <= end {
+			contentStart = openTagEnd
+		}
+		masked.WriteString(fromOpen[:contentStart])
 		placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
-		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[:end]})
+		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[contentStart:end]})
 		masked.WriteString(placeholder)
 		remaining = fromOpen[end:]
 	}

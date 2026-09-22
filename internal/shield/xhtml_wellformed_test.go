@@ -45,9 +45,14 @@ func TestXHTMLInjectionStaysWellFormed(t *testing.T) {
 		t.Fatalf("control: fixture is not well-formed XML to begin with: %v", err)
 	}
 
+	// Ask for the injection explicitly rather than depending on what the
+	// default config happens to enable. Skipping when nothing was injected let
+	// this test pass without ever exercising the CDATA path it exists to cover.
+	cfg.InjectFingerprintShims = true
+
 	res := e.Rewrite(doc, PipelineXHTML, &cfg)
 	if !res.ShimInjected {
-		t.Skip("no shim injected under default config; nothing to check")
+		t.Fatal("expected XHTML shim injection, so the CDATA guard is unverified")
 	}
 	if !strings.Contains(res.Content, "CDATA") {
 		t.Error("injected XHTML script is not CDATA-guarded")

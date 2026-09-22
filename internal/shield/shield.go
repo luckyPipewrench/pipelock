@@ -129,7 +129,7 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		// Attribute values may contain `>`, so `[^>]*` ended the tag early and a
 		// self-closing script element survived. Consume quoted values whole, and
 		// require the same element-name boundary as above.
-		svgScriptRe:             regexp.MustCompile(`(?is)<(?:[\w-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?>.*?</(?:[\w-]+:)?script\s*>|<(?:[\w-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?/\s*>`),
+		svgScriptRe:             regexp.MustCompile(`(?is)<(?:[\w.-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?>.*?</(?:[\w.-]+:)?script\s*>|<(?:[\w.-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?/\s*>`),
 		svgForeignObjectRe:      svgForeignRe,
 		svgEventHandlerRe:       svgEventRe,
 		svgXlinkExternalRe:      svgXlinkRe,
@@ -246,6 +246,10 @@ func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce
 	shims := e.buildShimList(cfg)
 	if len(shims) > 0 {
 		block := buildShimBlockWithNonce(shims, originalDoc, headerNonce)
+		if allowSelfClosingScripts {
+			// XHTML is parsed as XML, so the injected code needs CDATA guards.
+			block = buildShimBlockXML(shims, originalDoc, headerNonce)
+		}
 		doc = injectShim(doc, block)
 		res.ShimInjected = true
 	}
@@ -360,19 +364,28 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 		}
 
 		if inScript {
-			script.WriteString(raw)
 			if tokenType == html.EndTagToken && isScript {
 				placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
 				scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: script.String()})
 				masked.WriteString(placeholder)
+				// The closing tag is markup, so it stays in the document for the
+				// HTML passes to see, exactly like the opening tag.
+				masked.WriteString(raw)
 				script.Reset()
 				inScript = false
+				continue
 			}
+			script.WriteString(raw)
 			continue
 		}
 
 		if (tokenType == html.StartTagToken || tokenType == html.SelfClosingTagToken) && isScript {
-			script.WriteString(raw)
+			// Only the SCRIPT CONTENT is masked. The opening tag is markup, not
+			// JavaScript, so it stays visible: masking it hid attributes from
+			// every HTML pass, and an extension probe written as
+			// <script src="chrome-extension://..."> survived because
+			// StripExtensionProbing never saw the tag.
+			masked.WriteString(raw)
 			inScript = true
 			continue
 		}

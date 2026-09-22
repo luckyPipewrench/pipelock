@@ -389,6 +389,34 @@ func TestDetectShieldPipeline_MalformedParametersPreferDeclaredEssence(t *testin
 	}
 }
 
+func TestProxy_ApplyShield_MalformedDeclaredEssenceTransportParity(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+		pipeline    string
+	}{
+		{"SVG", "image/svg+xml; a=1; a=2", []byte(`<!doctype html><svg><script>alert(1)</script></svg>`), "svg"},
+	}
+	for _, tt := range tests {
+		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+			t.Run(tt.name+"/"+transport, func(t *testing.T) {
+				out, summary, blocked := p.applyShield(tt.body, tt.contentType, "example.com", http.Header{"Content-Type": {tt.contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+				if blocked != nil || summary == nil || summary.Pipeline != tt.pipeline || strings.Contains(string(out), "alert(1)") {
+					t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
+				}
+			})
+		}
+	}
+}
+
 func TestProxy_ApplyShield_MalformedUTF16ContentTypeFailsClosed(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)

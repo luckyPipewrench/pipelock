@@ -113,3 +113,133 @@ func TestValidateOperatorSessionID_RejectsEmpty(t *testing.T) {
 		t.Fatal("expected refusal for empty session id, got nil")
 	}
 }
+
+func newTestRecorderForAcquire(t *testing.T) *Recorder {
+	t.Helper()
+	rec, err := New(Config{
+		Enabled:            true,
+		Dir:                t.TempDir(),
+		CheckpointInterval: 100,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	return rec
+}
+
+func TestAcquireSession_BindsOnce(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	if err := rec.AcquireSession("proxy.run.aaaa"); err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	if rec.sessionID != "proxy.run.aaaa" {
+		t.Fatalf("sessionID = %q, want %q", rec.sessionID, "proxy.run.aaaa")
+	}
+}
+
+// TestAcquireSession_SameSessionIsNoop proves repeated acquisition with the
+// same session ID does not error - a caller may legitimately call this more
+// than once (e.g. once eagerly at startup, defensively again before first
+// write).
+func TestAcquireSession_SameSessionIsNoop(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	if err := rec.AcquireSession("proxy.run.aaaa"); err != nil {
+		t.Fatalf("first AcquireSession: %v", err)
+	}
+	if err := rec.AcquireSession("proxy.run.aaaa"); err != nil {
+		t.Fatalf("second AcquireSession (same id): %v", err)
+	}
+}
+
+// TestAcquireSession_ForeignSessionRefused is the "one session per recorder"
+// proof at the acquisition boundary: acquiring a second, different session on
+// an already-bound recorder is refused rather than silently rebinding.
+func TestAcquireSession_ForeignSessionRefused(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	if err := rec.AcquireSession("proxy.run.aaaa"); err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	err := rec.AcquireSession("proxy.run.bbbb")
+	if err == nil {
+		t.Fatal("expected refusal acquiring a second session on an already-bound recorder, got nil")
+	}
+	if !strings.Contains(err.Error(), "already bound") {
+		t.Fatalf("error does not explain the refusal: %v", err)
+	}
+}
+
+// TestAcquireSession_ThenRecordMismatchStillRefused proves AcquireSession and
+// the existing per-Record mismatch check agree: once acquired, a Record call
+// under a foreign session id is refused exactly as if the session had been
+// bound implicitly by the first Record call.
+func TestAcquireSession_ThenRecordMismatchStillRefused(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	if err := rec.AcquireSession("proxy.run.aaaa"); err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	err := rec.Record(Entry{
+		SessionID: "proxy.run.bbbb",
+		Type:      "request",
+		Transport: "fetch",
+	})
+	if err == nil {
+		t.Fatal("expected Record under a foreign session to be refused, got nil")
+	}
+	if !strings.Contains(err.Error(), "session_id mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAcquireSession_NilAndNopRecorderAreNoop(t *testing.T) {
+	var nilRec *Recorder
+	if err := nilRec.AcquireSession("anything"); err != nil {
+		t.Fatalf("nil recorder AcquireSession: %v", err)
+	}
+	nop := &Recorder{nop: true}
+	if err := nop.AcquireSession("anything"); err != nil {
+		t.Fatalf("nop recorder AcquireSession: %v", err)
+	}
+}
+
+func TestAcquireRunSession_NilAndNopReturnBaseUnchanged(t *testing.T) {
+	var nilRec *Recorder
+	got, err := AcquireRunSession(nilRec, "proxy")
+	if err != nil {
+		t.Fatalf("AcquireRunSession(nil): %v", err)
+	}
+	if got != "proxy" {
+		t.Fatalf("AcquireRunSession(nil) = %q, want unchanged base %q", got, "proxy")
+	}
+
+	nop := &Recorder{nop: true}
+	got, err = AcquireRunSession(nop, "proxy")
+	if err != nil {
+		t.Fatalf("AcquireRunSession(nop): %v", err)
+	}
+	if got != "proxy" {
+		t.Fatalf("AcquireRunSession(nop) = %q, want unchanged base %q", got, "proxy")
+	}
+}
+
+// TestAcquireRunSession_RealRecorderMintsAndBinds is the end-to-end proof for
+// design point 1+2 together: a real recorder given a base gets back a fresh
+// run session id and is bound to it, so a subsequent Record under that id
+// succeeds and a Record under the base literal is refused.
+func TestAcquireRunSession_RealRecorderMintsAndBinds(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	runSession, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatalf("AcquireRunSession: %v", err)
+	}
+	if !runSessionPattern.MatchString(runSession) {
+		t.Fatalf("run session %q does not match expected shape", runSession)
+	}
+	if err := rec.Record(Entry{SessionID: runSession, Type: "request", Transport: "fetch"}); err != nil {
+		t.Fatalf("Record under acquired run session: %v", err)
+	}
+	err = rec.Record(Entry{SessionID: "proxy", Type: "request", Transport: "fetch"})
+	if err == nil {
+		t.Fatal("expected Record under the bare base literal to be refused after run-session acquisition, got nil")
+	}
+}

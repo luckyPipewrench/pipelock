@@ -33,6 +33,14 @@
 #   context.WithTimeout(parent, time.Minute)
 #   <-time.After(5 * time.Second)
 #   <-time.After(time.Second)
+#   context.WithTimeout(parent, 1500*time.Millisecond)
+#
+# A deadline written in milliseconds is still a deadline once it reaches a
+# second, so the millisecond form is matched from 1000 upward and left alone
+# below that. Forms this still does NOT see, because they need a Go parser
+# rather than a line matcher: a named constant such as seccompChildTimeout, a
+# duration built by arithmetic, and a call split across lines. Those are
+# recorded here rather than implied to be covered.
 
 set -euo pipefail
 
@@ -66,6 +74,15 @@ while IFS= read -r -d '' file; do
 	# A deadline of a second or more, not already wrapped in the helper.
 	matches=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?([0-9]+[[:space:]]*\*[[:space:]]*)?time\.(Second|Minute)' "$file" |
 		grep -v 'testwait\.Deadline' || true)
+
+	# Milliseconds of a second or more. Written separately because the bound is
+	# on the NUMBER here, not on the unit: four or more digits, or a leading
+	# digit followed by three, is >= 1000ms.
+	ms=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?[0-9]{4,}[[:space:]]*\*[[:space:]]*time\.Millisecond' "$file" |
+		grep -v 'testwait\.Deadline' || true)
+	if [ -n "$ms" ]; then
+		matches=$(printf '%s\n%s' "$matches" "$ms" | grep -v '^$' || true)
+	fi
 
 	if [ -n "$matches" ]; then
 		while IFS= read -r line; do

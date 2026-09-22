@@ -22,6 +22,11 @@ func TestDeadlineScalingGuard(t *testing.T) {
 		wantText string
 	}{
 		{
+			// The duration is concatenated rather than written inline: this file is
+			// itself a tracked _test.go containing exec.CommandContext, so a
+			// contiguous violating line would make the guard flag its own fixture.
+			// Splitting it keeps the scan universal instead of needing a
+			// file exclusion that real code could later hide behind.
 			name: "rejects raw subprocess deadline",
 			source: `package fixture
 
@@ -32,7 +37,7 @@ import (
 )
 
 func test() {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ` + "time.Second" + `)
 	defer cancel()
 	_ = exec.CommandContext(ctx, "true")
 }

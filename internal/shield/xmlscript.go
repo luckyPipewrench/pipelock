@@ -110,10 +110,9 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 		}
 	}
 
-	// An element left open at the end means the parser recovered its way to EOF
-	// rather than reading a complete document. Reporting success there would
-	// claim coverage this did not have: an unclosed script would be missed and
-	// the fallback scan suppressed.
+	// An element left open at EOF has no matching source end tag. Reporting
+	// success would claim coverage this did not have: an unclosed script would
+	// be missed and the fallback scan suppressed.
 	if len(stack) != 0 {
 		return nil, false
 	}

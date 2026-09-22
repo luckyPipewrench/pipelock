@@ -574,19 +574,41 @@ func TestStripMetadata_ErrorsSurface(t *testing.T) {
 func TestStripMetadata_SignatureMismatch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		ct   string
-		data []byte
-		want error
+		name    string
+		ct      string
+		data    []byte
+		want    error
+		notWant error
 	}{
 		{name: "jpeg", ct: "image/jpeg", data: []byte{0x00, 0x01}, want: ErrJPEGSignatureMismatch},
 		{name: "png", ct: "image/png", data: []byte{0x00, 0x01}, want: ErrPNGSignatureMismatch},
+		// Bytes that DO match the signature but stop short are truncated
+		// content, not a mistyped response, so they must not be reported as a
+		// mismatch. Without this case the classification branch is only tested
+		// on the side that returns the new error.
+		{
+			name:    "png truncated matching prefix",
+			ct:      "image/png",
+			data:    append([]byte(nil), pngSignature[:2]...),
+			want:    ErrInvalidPNG,
+			notWant: ErrPNGSignatureMismatch,
+		},
+		{
+			name:    "jpeg truncated matching prefix",
+			ct:      "image/jpeg",
+			data:    []byte{0xFF},
+			want:    ErrInvalidJPEG,
+			notWant: ErrJPEGSignatureMismatch,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := StripMetadata(tt.ct, tt.data)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("StripMetadata(%q) error = %v, want %v", tt.ct, err, tt.want)
+			}
+			if tt.notWant != nil && errors.Is(err, tt.notWant) {
+				t.Fatalf("StripMetadata(%q) error = %v, must not be %v: truncated content is not a declared-type mismatch", tt.ct, err, tt.notWant)
 			}
 		})
 	}

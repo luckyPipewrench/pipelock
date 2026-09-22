@@ -658,6 +658,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateContainmentLoopbackServices(); err != nil {
 		return warnings, err
 	}
+	if number := c.Containment.Display.Number; number != nil && (*number < 0 || *number > 999) {
+		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
+	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err
 	}

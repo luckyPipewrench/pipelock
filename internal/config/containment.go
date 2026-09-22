@@ -34,6 +34,41 @@ func ValidateContainmentMetricsListen(listen string, proxyPort int) error {
 type ContainmentConfig struct {
 	MetricsExposure  *ContainmentMetricsExposure  `yaml:"metrics_exposure"`
 	LoopbackServices []ContainmentLoopbackService `yaml:"loopback_services"`
+	Display          ContainmentDisplay           `yaml:"display"`
+}
+
+// ContainmentDisplay configures the private Xvfb display installed for the
+// contained agent.
+//
+// Enabled is a POINTER so an omitted value is distinguishable from an
+// explicit false. Omitted means "provision where it is possible": a
+// contained agent cannot run a browser without a display, the browser tools
+// agents actually use have no headless mode, and requiring an operator to
+// discover this knob means the capability silently does not work out of the
+// box. An explicit false still turns it off, and a host without Xvfb
+// installed is left alone rather than failing its install.
+type ContainmentDisplay struct {
+	Enabled *bool `yaml:"enabled"`
+	Number  *int  `yaml:"number"`
+}
+
+// IsEnabled resolves the three states: explicitly on, explicitly off, and
+// omitted. Only the omitted case consults the host, and it provisions
+// exactly where a display can actually be created.
+func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
+	if d.Enabled != nil {
+		return *d.Enabled
+	}
+	return xvfbPresent
+}
+
+// EffectiveNumber returns the configured display number, or the conventional
+// fallback used when display provisioning is enabled.
+func (d ContainmentDisplay) EffectiveNumber() int {
+	if d.Number == nil {
+		return 99
+	}
+	return *d.Number
 }
 
 // ContainmentLoopbackService declares a second loopback destination the

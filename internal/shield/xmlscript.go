@@ -48,6 +48,13 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 		body  int
 	}
 	var stack []open
+	// Index in the stack of the OUTERMOST script currently open, or -1. A script
+	// element may legally contain another one, and recording both produced spans
+	// in closing order: the inner span came first and the outer span started
+	// before it ended, so slicing the document walked backwards and panicked.
+	// Only the outermost element is recorded, which is also the correct unit to
+	// remove or mask, since it contains the inner one.
+	outermostScript := -1
 
 	for {
 		tokenStart := int(dec.InputOffset())
@@ -64,16 +71,21 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if outermostScript < 0 && isScriptName(t.Name) {
+				outermostScript = len(stack)
+			}
 			stack = append(stack, open{name: t.Name, start: tokenStart, body: int(dec.InputOffset())})
 		case xml.EndElement:
 			if len(stack) == 0 {
 				continue
 			}
-			top := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if !isScriptName(top.name) {
+			depth := len(stack) - 1
+			top := stack[depth]
+			stack = stack[:depth]
+			if !isScriptName(top.name) || depth != outermostScript {
 				continue
 			}
+			outermostScript = -1
 			end := int(dec.InputOffset())
 			closing := end
 			// Find where the closing tag starts so the caller can keep it, or
@@ -87,6 +99,14 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 			}
 			spans = append(spans, scriptSpan{start: top.start, content: top.body, closing: closing, end: end})
 		}
+	}
+
+	// An element left open at the end means the parser recovered its way to EOF
+	// rather than reading a complete document. Reporting success there would
+	// claim coverage this did not have: an unclosed script would be missed and
+	// the fallback scan suppressed.
+	if len(stack) != 0 {
+		return nil, false
 	}
 
 	return spans, true

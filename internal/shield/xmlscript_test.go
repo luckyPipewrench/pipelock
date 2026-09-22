@@ -148,3 +148,48 @@ func TestMalformedXMLFallsBackToScanning(t *testing.T) {
 		}
 	})
 }
+
+// TestNestedScriptElementsDoNotPanic covers a crash on the request path. A
+// script element may legally contain another one, and recording both produced
+// spans in closing order, so the inner span came first while the outer span
+// started before it ended. Slicing the document then walked backwards and
+// panicked on well-formed, attacker-supplied XML.
+func TestNestedScriptElementsDoNotPanic(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	doc := `<svg xmlns="http://www.w3.org/2000/svg"><script><script>alert(1)</script></script></svg>`
+
+	spans, ok := xmlScriptSpans(doc)
+	if !ok {
+		t.Fatal("control: this document is well formed and must parse")
+	}
+	if len(spans) != 1 {
+		t.Errorf("got %d spans, want 1: only the outermost element is the unit to remove", len(spans))
+	}
+
+	res := e.Rewrite(doc, PipelineSVG, &cfg)
+	if strings.Contains(res.Content, "alert(1)") {
+		t.Errorf("nested script survived: %s", res.Content)
+	}
+
+	// The same shape on the masking path, which slices with the same offsets.
+	xdoc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script><script>var a = 1;</script></script></body></html>`
+	if out := e.Rewrite(xdoc, PipelineXHTML, &cfg); !strings.Contains(out.Content, "var a = 1;") {
+		t.Errorf("nested script content was not preserved on the masking path: %s", out.Content)
+	}
+}
+
+// TestUnclosedElementSuppressesTheParsedAnswer covers the honesty of the ok
+// flag. Permissive parsing recovers its way to EOF, so a document that leaves
+// an element open is not a document this read completely, and claiming success
+// would miss an unclosed script while suppressing the fallback scan.
+func TestUnclosedElementSuppressesTheParsedAnswer(t *testing.T) {
+	if _, ok := xmlScriptSpans(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)`); ok {
+		t.Error("an unclosed element reported a complete parse")
+	}
+	// Control: the closed form of the same document parses.
+	if _, ok := xmlScriptSpans(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`); !ok {
+		t.Error("control: the well-formed form must parse")
+	}
+}

@@ -52,6 +52,40 @@ func TestMarkBuiltInCredentialAudienceHosts_OnlyExactBuiltins(t *testing.T) {
 	}
 }
 
+// TestMarkBuiltInCredentialAudienceHosts_ActionIsPartOfIdentity pins the action
+// as part of what makes a pattern the shipped one.
+//
+// The scanner sets its warn flag as "the action is warn AND the pattern carries
+// no audience", because an audience narrows enforcement rather than softening
+// it. So restoring an audience onto a pattern an operator marked warn does not
+// merely add metadata: it clears the warn flag and sends every non-audience
+// match to the blocking branch. A profile that changes only the action is a
+// customized pattern like any other, and must not be handed the built-in
+// audience back.
+func TestMarkBuiltInCredentialAudienceHosts_ActionIsPartOfIdentity(t *testing.T) {
+	builtIn := DefaultDLPPatterns()[0]
+	builtIn.CredentialAudienceHosts = nil
+
+	// Control: untouched, the audience comes back.
+	exact := []DLPPattern{builtIn}
+	markBuiltInCredentialAudienceHosts(exact)
+	if len(exact[0].CredentialAudienceHosts) == 0 {
+		t.Fatal("control: an unmodified built-in must keep its audience")
+	}
+
+	warned := builtIn
+	warned.Action = ActionWarn
+	if builtIn.Action == ActionWarn {
+		t.Fatal("control: the shipped pattern already warns, so this case proves nothing")
+	}
+	patterns := []DLPPattern{warned}
+	markBuiltInCredentialAudienceHosts(patterns)
+	if got := patterns[0].CredentialAudienceHosts; len(got) != 0 {
+		t.Fatalf("a pattern the operator set to warn received immutable audience hosts %#v; "+
+			"the scanner would then drop its warn flag and block every non-audience match", got)
+	}
+}
+
 func TestLoad_CredentialAudienceLegacySubsetControlsWarn(t *testing.T) {
 	const legacy = `version: 1
 mode: balanced

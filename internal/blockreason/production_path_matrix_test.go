@@ -192,6 +192,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "CompressedResponse"
 	case blockreason.BrowserShieldOversize:
 		return "BrowserShieldOversize"
+	case blockreason.BrowserShieldUninspectable:
+		return "BrowserShieldUninspectable"
 	case blockreason.ParseError:
 		return "ParseError"
 	case blockreason.Timeout:

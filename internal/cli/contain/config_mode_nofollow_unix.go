@@ -25,11 +25,17 @@ import (
 // the fstat and fchmod both target the object that open returned, whatever the
 // path means by then.
 //
+// O_NONBLOCK is not optional here. O_NOFOLLOW refuses a symlink and says
+// nothing about a FIFO, and opening a FIFO for reading BLOCKS until a writer
+// appears, which happens before Fstat can reject it. Without it, the account
+// that owns the config directory can hang a privileged install indefinitely by
+// leaving a FIFO at the managed path.
+//
 // It is deliberately mode-only. applyAgentOwnershipNoFollow is the sibling for
 // agent-readable files and also chowns to the agent, which would be wrong here:
 // the managed config is proxy-owned and agent-denied on purpose.
 func setLeafModeNoFollow(path string, mode os.FileMode, onlyWhenTooPermissive bool) (os.FileMode, bool, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, false, fmt.Errorf("open %s without following symlinks: %w", path, err)
 	}

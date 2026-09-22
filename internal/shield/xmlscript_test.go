@@ -91,3 +91,60 @@ func TestXHTMLMaskingIsNamespaceAndCDATAAware(t *testing.T) {
 		}
 	})
 }
+
+// TestMalformedXMLFallsBackToScanning covers the path taken when the document
+// cannot be parsed as XML. The parser is the primary answer, but refusing to
+// touch a malformed document would silently stop shielding it, so the previous
+// scanner remains as the fallback and has to keep working.
+//
+// A browser parsing SVG or XHTML as XML rejects these documents too, so the
+// fallback protects a case the browser will not render rather than one an
+// attacker can rely on. It is exercised here so it cannot rot unnoticed.
+func TestMalformedXMLFallsBackToScanning(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	// A bare `<` in character data is not well-formed, so the decoder stops and
+	// the caller falls back.
+	if _, ok := xmlScriptSpans(`<svg><text>1 < 2</text></svg>`); ok {
+		t.Fatal("control: this document was expected to defeat the XML parser")
+	}
+	if _, ok := xmlScriptSpans(`<svg xmlns="http://www.w3.org/2000/svg"><script>ok()</script></svg>`); !ok {
+		t.Fatal("control: a well-formed document must parse, or the test below proves nothing")
+	}
+
+	t.Run("svg removal still strips the script", func(t *testing.T) {
+		doc := `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><text>1 < 2</text></svg>`
+		res := e.Rewrite(doc, PipelineSVG, &cfg)
+		if strings.Contains(res.Content, "alert(1)") {
+			t.Errorf("script survived the fallback path: %s", res.Content)
+		}
+		if res.SVGScriptHits == 0 {
+			t.Error("SVGScriptHits = 0 on the fallback path")
+		}
+	})
+
+	t.Run("xhtml masking still preserves script bytes", func(t *testing.T) {
+		js := `var probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/p";`
+		doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script>` + js + `</script>` +
+			`<p>1 < 2</p>` +
+			`<img width="1" height="1" src="https://track.example.com/px"/></body></html>`
+		res := e.Rewrite(doc, PipelineXHTML, &cfg)
+		if !strings.Contains(res.Content, js) {
+			t.Errorf("script bytes were modified on the fallback path: %s", res.Content)
+		}
+		if strings.Contains(res.Content, "track.example.com") {
+			t.Errorf("tracking pixel survived on the fallback path: %s", res.Content)
+		}
+	})
+
+	t.Run("closing tag inside CDATA is still honoured by the fallback", func(t *testing.T) {
+		js := `var s = "</script>"; var a = 1;`
+		doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script><![CDATA[` + js + `]]></script>` +
+			`<p>1 < 2</p></body></html>`
+		res := e.Rewrite(doc, PipelineXHTML, &cfg)
+		if !strings.Contains(res.Content, js) {
+			t.Errorf("CDATA content was modified on the fallback path: %s", res.Content)
+		}
+	})
+}

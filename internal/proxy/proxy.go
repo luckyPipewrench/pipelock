@@ -596,6 +596,7 @@ type editionSnapshot struct{ edition.Edition }
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
 	cfgPtr               atomic.Pointer[config.Config]
+	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
 	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
@@ -808,6 +809,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		p.captureObs = capture.NopObserver{}
 	}
 	p.cfgPtr.Store(cfg)
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: newIssuerBoundCookieStore()})
 	p.scannerPtr.Store(sc)
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
@@ -2366,6 +2368,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: newIssuerBoundCookieStore()})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
 	if p.wd != nil {
@@ -5249,6 +5252,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
 	// hadFinding is true even in audit/warn mode so RecordClean is not applied
 	// when a header DLP match was detected.
+	if store := p.issuerCookieStore(cfg, id.Auth); store != nil {
+		store.observeHTTPRequest(sessionKeyFor(agent, clientIP, id.Auth), r, displayURL, nil, r.Body == nil || r.Body == http.NoBody)
+	}
 	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: log, actx: actx,
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,

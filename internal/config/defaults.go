@@ -462,15 +462,16 @@ func Defaults() *Config {
 			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
 		},
 		RequestBodyScanning: RequestBodyScanning{
-			Enabled:                 true,
-			Action:                  ActionWarn,
-			MaxBodyBytes:            5 * 1024 * 1024, // 5MB
-			ScanHeaders:             true,
-			HeaderMode:              HeaderModeSensitive,
-			ContentEntropyEnabled:   true,
-			ContentEntropyAction:    ActionWarn,
-			ContentEntropyThreshold: 4.5,
-			ContentEntropyMinLength: 32,
+			Enabled:                   true,
+			Action:                    ActionWarn,
+			MaxBodyBytes:              5 * 1024 * 1024, // 5MB
+			ScanHeaders:               true,
+			IssuerBoundSessionCookies: false,
+			HeaderMode:                HeaderModeSensitive,
+			ContentEntropyEnabled:     true,
+			ContentEntropyAction:      ActionWarn,
+			ContentEntropyThreshold:   4.5,
+			ContentEntropyMinLength:   32,
 			SensitiveHeaders: []string{
 				"Authorization",
 				"Cookie",

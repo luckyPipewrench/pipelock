@@ -712,6 +712,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agent = resolvedIdentity.Name
 		agentAuth = string(resolvedIdentity.Auth)
 	}
+	// This transport does not contribute complete outbound evidence to the
+	// issuer-cookie window. It must not be a reflection route for a later
+	// intercepted Set-Cookie in the same identity session.
+	if rp.owner != nil {
+		if store := rp.owner.issuerCookieStore(cfg, envelope.NormalizeActorAuth(agentAuth)); store != nil {
+			store.taintSession(sessionKeyFor(agent, clientIP, envelope.NormalizeActorAuth(agentAuth)))
+		}
+	}
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())

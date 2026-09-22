@@ -869,6 +869,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Agent:              agent,
 			Profile:            id.Profile,
 			ActorAuth:          id.Auth,
+			IssuerRuntime:      p.issuerCookieRuntime.Load(),
 			UpstreamRT:         p.tlsTransport,
 			SafeDial:           p.ssrfSafeDialContext,
 			EntropyTracker:     p.entropyTrackerPtr.Load(),
@@ -890,6 +891,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Opaque tunnels cannot contribute complete outbound evidence. A later
+	// intercepted Set-Cookie must not turn their unseen bytes into an allowance.
+	if store := p.issuerCookieStore(cfg, id.Auth); store != nil {
+		store.taintSession(sessionKeyFor(agent, clientIP, id.Auth))
+	}
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
 	var airlockCancelled atomic.Bool
@@ -1754,6 +1760,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
+	if store := p.issuerCookieStore(cfg, id.Auth); store != nil {
+		bodyComplete := forwardBodyBytes != nil || r.Body == nil || r.Body == http.NoBody
+		store.observeHTTPRequest(sessionKeyFor(agent, clientIP, id.Auth), r, targetURL, forwardBodyBytes, bodyComplete)
+	}
 	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,

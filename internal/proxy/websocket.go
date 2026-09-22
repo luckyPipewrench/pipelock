@@ -220,6 +220,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// WebSocket frames can carry unobserved values, so a handshake ends this
+	// session's issuer-evidence window. WSS receives no cookie allowance.
+	if store := p.issuerCookieStore(cfg, id.Auth); store != nil {
+		store.taintSession(sessionKeyFor(agent, clientIP, id.Auth))
+	}
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))

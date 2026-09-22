@@ -94,11 +94,12 @@ type InterceptContext struct {
 	Logger    *audit.Logger
 	Metrics   *metrics.Metrics
 
-	ClientIP  string
-	RequestID string
-	Agent     string
-	Profile   string
-	ActorAuth envelope.ActorAuth
+	ClientIP      string
+	RequestID     string
+	Agent         string
+	Profile       string
+	ActorAuth     envelope.ActorAuth
+	IssuerRuntime *issuerCookieRuntime
 
 	UpstreamRT http.RoundTripper
 	SafeDial   dialFunc
@@ -1340,8 +1341,26 @@ func newInterceptHandler(
 		}
 
 		// Request header DLP scanning.
+		issuerStore := ic.issuerCookieStore()
+		if issuerStore != nil {
+			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+				issuerStore.taintSession(sessionKey)
+				issuerStore = nil
+			} else {
+				bodyComplete := interceptBodyBytes != nil || r.Body == nil || r.Body == http.NoBody
+				issuerStore.observeHTTPRequest(sessionKey, r, targetURL, interceptBodyBytes, bodyComplete)
+			}
+		}
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
+			scanHeaders := r.Header
+			if issuerStore != nil {
+				scanHeaders = issuerCookieScanHeaders(r.Context(), r.Header, ic.Config, ic.Scanner, issuerStore,
+					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now(), func(pattern string) {
+						ic.Proxy.recordIssuerCookieAllow(actx, pattern, targetURL, ic.RequestID, ic.Agent, r.Method)
+					})
+			}
+			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), scanHeaders, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
 				if ic.Logger != nil {
 					ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", reason)
 				}
@@ -1939,6 +1958,9 @@ func newInterceptHandler(
 
 			flusher, _ := w.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, w, flusher, ic.Scanner, sseOpts)
+			if streamErr == nil {
+				recordDeliveredIssuerCookies(ic, r, resp, true)
+			}
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
 				// warn mode, A2A findings are logged as anomalies but don't
@@ -2032,7 +2054,8 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
-			written, _ := io.Copy(w, resp.Body)
+			written, copyErr := io.Copy(w, resp.Body)
+			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, "complete")
 			// Account streamed bytes against the per-domain data budget so a
@@ -2150,7 +2173,8 @@ func newInterceptHandler(
 					}
 					removeHopByHopHeaders(w.Header())
 					w.WriteHeader(resp.StatusCode)
-					written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					written, copyErr := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, "unscannable_passthrough")
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
@@ -2574,7 +2598,8 @@ func newInterceptHandler(
 		}
 		removeHopByHopHeaders(w.Header())
 		w.WriteHeader(resp.StatusCode)
-		written, _ := w.Write(respBody)
+		written, writeErr := w.Write(respBody)
+		recordDeliveredIssuerCookies(ic, r, resp, writeErr == nil && written == len(respBody))
 		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), "complete")
 	})
 }

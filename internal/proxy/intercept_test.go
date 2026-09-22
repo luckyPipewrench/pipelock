@@ -35,6 +35,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -871,6 +872,8 @@ type interceptRequestOptions struct {
 	Request    *http.Request
 	Recorder   session.Recorder
 	Proxy      *Proxy
+	Agent      string
+	ActorAuth  envelope.ActorAuth
 }
 
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
@@ -907,6 +910,8 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 			UpstreamRT: upstreamRT,
 			Recorder:   opts.Recorder,
 			Proxy:      opts.Proxy,
+			Agent:      opts.Agent,
+			ActorAuth:  opts.ActorAuth,
 		})
 	}()
 

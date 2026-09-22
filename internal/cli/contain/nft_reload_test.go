@@ -55,6 +55,61 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 	}
 }
 
+func TestReloadNFTManagedChainRemovesReceiverlessOwnedLoopbackMarks(t *testing.T) {
+	const (
+		operatorUID = 1000
+		proxyUID    = 967
+		agentUID    = 966
+		proxyPort   = 8888
+	)
+	live := strings.Join([]string{
+		`table inet pipelock_containment {`,
+		`  chain output_filter { type filter hook output priority filter; policy accept;`,
+		`    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 70`,
+		`    meta skuid 966 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 71`,
+		`  }`,
+		`}`,
+	}, "\n")
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	env, _, _ := newFakeEnv(t)
+	var script string
+	env.writeFile = func(path string, data []byte, _ os.FileMode) error {
+		if path == env.nftRulesPath+".reload" {
+			script = string(data)
+		}
+		return nil
+	}
+	env.removeFile = func(string) error { return nil }
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != testNFT {
+			t.Fatalf("command = %s %v, want nft", name, args)
+		}
+		switch strings.Join(args, " ") {
+		case "-n -a list chain inet pipelock_containment output_filter":
+			return live, 0, nil
+		case "-n list chain inet pipelock_containment " + legacyOwnedLoopbackInputChain:
+			return "No such file or directory", 1, nil
+		case "-c -f " + env.nftRulesPath + ".reload", "-f " + env.nftRulesPath + ".reload":
+			return "", 0, nil
+		default:
+			t.Fatalf("unexpected nft arguments %v", args)
+			return "", -1, nil
+		}
+	}
+
+	if err := reloadNFTManagedChain(context.Background(), env, body, operatorUID, proxyUID, agentUID); err != nil {
+		t.Fatalf("reload managed chain: %v", err)
+	}
+	for _, handle := range []int{70, 71} {
+		if !strings.Contains(script, "delete rule inet pipelock_containment output_filter handle "+itoa(handle)) {
+			t.Fatalf("reload script did not remove stale mark handle %d:\n%s", handle, script)
+		}
+	}
+	if strings.Contains(script, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) || !strings.HasSuffix(script, body) {
+		t.Fatalf("receiverless migration did not retain one canonical ruleset:\n%s", script)
+	}
+}
+
 func TestLegacyManagedNFTRuleBlockHandlesDoesNotDeleteIncompleteLookalike(t *testing.T) {
 	t.Parallel()
 	live := strings.Join([]string{

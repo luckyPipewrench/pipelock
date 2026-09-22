@@ -2398,7 +2398,8 @@ func liveNFTContainmentLooksManaged(out, chainName string, operatorUID, proxyUID
 	if err != nil {
 		return false
 	}
-	return chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines, proxyPort) ||
+	return len(legacyOwnedLoopbackMarkRuleHandles(out, agentUID)) > 0 ||
+		chainLinesHaveManagedAgentLoopbackBeforeCatchAllDrop(lines, proxyPort) ||
 		chainLinesHaveSkuidAcceptForUID(lines, operatorUID) &&
 			chainLinesHaveSkuidAcceptForUID(lines, proxyUID) &&
 			chainLinesHaveAgentCatchAllDrop(lines, agentUID) &&

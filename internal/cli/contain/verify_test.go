@@ -577,6 +577,13 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "skuid drop rule",
 		},
 		{
+			name:       "stale owned-loopback mark is a failure",
+			stdout:     strings.Replace(goodNFTContainmentOutput, "\t\tmeta skuid 987 drop", "\t\tmeta skuid 987 oifname \"lo\" ip daddr 127.0.0.1 socket cgroupv2 level 1 \"pipelock_contained.slice\" ct state new ct mark set 0x504c4b01 accept # handle 70\n\t\tmeta skuid 987 drop", 1),
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "stale owned-loopback cgroup mark rule",
+		},
+		{
 			name: "established server reply remains compatible",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {

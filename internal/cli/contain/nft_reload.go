@@ -503,6 +503,7 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // established-reply allows.
 func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
 	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
+	handles = append(handles, legacyOwnedLoopbackMarkRuleHandles(live, agentUID)...)
 	var script strings.Builder
 	if receiverChainLive {
 		// The cgroup receiver design is replaced, not layered beside the
@@ -517,6 +518,40 @@ func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, ope
 	}
 	script.WriteString(rulesBody)
 	return script.String()
+}
+
+// legacyOwnedLoopbackMarkRuleHandles finds only the superseded cgroup-mark
+// rules. They can remain after an interrupted upgrade whose receiver chain was
+// already removed, and are no longer meaningful under the namespace boundary.
+func legacyOwnedLoopbackMarkRuleHandles(live string, agentUID int) []int {
+	var handles []int
+	for _, rule := range nftRulesWithHandles(live) {
+		if !lineHasLegacyOwnedLoopbackMark(rule.line, agentUID) {
+			continue
+		}
+		handles = append(handles, rule.handle)
+	}
+	return handles
+}
+
+func lineHasLegacyOwnedLoopbackMark(line string, agentUID int) bool {
+	fields := nftLineFields(line)
+	if len(fields) != 21 || fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
+		fields[3] != "oifname" || fields[4] != `"lo"` || fields[6] != "daddr" ||
+		(fields[5] != "ip" && fields[5] != "ip6") ||
+		(fields[5] == "ip" && fields[7] != "127.0.0.1") ||
+		(fields[5] == "ip6" && fields[7] != "::1") {
+		return false
+	}
+	want := []string{"socket", "cgroupv2", "level", "1", `"` + legacyOwnedLoopbackSlice + `"`, "ct", "state"}
+	for i, token := range want {
+		if fields[i+8] != token {
+			return false
+		}
+	}
+	return (fields[15] == "new" || fields[15] == "0x1") &&
+		fields[16] == "ct" && fields[17] == "mark" && fields[18] == "set" &&
+		fields[19] == legacyOwnedLoopbackMark && fields[20] == "accept"
 }
 
 type nftRuleWithHandle struct {

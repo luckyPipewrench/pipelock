@@ -1642,6 +1642,9 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
 	}
+	if handles := legacyOwnedLoopbackMarkRuleHandles(out, current.agentUID); len(handles) > 0 {
+		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; rerun `pipelock contain install`", len(handles), legacyOwnedLoopbackMark)
+	}
 	// Within a hooked chain that has the drop, a definite bypass outranks every
 	// missing canonical rule: reporting "proxy accept rule missing" for a chain
 	// that also admits all agent traffic would let the doctor downgrade the

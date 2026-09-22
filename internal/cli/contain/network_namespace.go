@@ -221,6 +221,8 @@ const (
 	// and RemoveOnStop= clears it when the socket stops.
 	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy.sock"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
+	legacyOwnedLoopbackMark       = "0x504c4b01"
+	legacyOwnedLoopbackSlice      = "pipelock_contained.slice"
 )
 
 // The contained agent keeps the long-standing 127.0.0.1 proxy contract. That

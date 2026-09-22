@@ -1458,6 +1458,53 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	assertManagedChainReload(t, runner, env)
 }
 
+func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	live := `table inet pipelock_containment {
+	chain output_filter { type filter hook output priority filter; policy accept;
+	meta skuid 987 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 70
+	meta skuid 987 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x1 ct mark set 0x504c4b01 accept # handle 71
+	}
+}`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	runner.on(argvFor(testNFT, "-n", "list", "chain", "inet", defaultNFTTable, legacyOwnedLoopbackInputChain), "No such file or directory", 1, nil)
+
+	var reloadScript string
+	writeFile := env.writeFile
+	env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == managedChainReloadPath(env) {
+			reloadScript = string(data)
+		}
+		return writeFile(path, data, mode)
+	}
+
+	applied, err := stepInstallNFTRules().apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("receiverless owned-loopback marks must trigger canonical rules reload")
+	}
+	for _, handle := range []int{70, 71} {
+		if !strings.Contains(reloadScript, "delete rule inet pipelock_containment output_filter handle "+itoa(handle)) {
+			t.Fatalf("reload script did not remove stale mark handle %d:\n%s", handle, reloadScript)
+		}
+	}
+	if strings.Contains(reloadScript, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) {
+		t.Fatalf("receiverless migration attempted to delete an absent receiver chain:\n%s", reloadScript)
+	}
+	assertManagedChainReload(t, runner, env)
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987

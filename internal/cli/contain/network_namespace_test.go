@@ -321,6 +321,7 @@ func TestContainedLaunchWrapperJoinsPrivateNetworkNamespace(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderContainedLaunchWrapper(env)
 	for _, want := range []string{
+		"--property=PrivateTmp=true",
 		"--property=PrivateNetwork=true",
 		"--property=JoinsNamespaceOf='" + containedNetworkNamespaceUnit + "'",
 	} {

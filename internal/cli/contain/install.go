@@ -430,7 +430,7 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 		// directly and never runs that preflight, so an unconditional flag here
 		// makes every plk-* launch fail on systemd 253 and earlier before
 		// plk-launch even starts. Emit it only where it is supported.
-		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
+		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateTmp=true --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
 		"",
 	}, "\n")
 }

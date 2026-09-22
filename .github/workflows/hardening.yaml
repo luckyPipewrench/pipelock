@@ -18,48 +18,6 @@ permissions:
   contents: read
 
 jobs:
-  model-access-probe:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/fix/review-model-routing'
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - name: Verify review models with repository credential
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-
-          key = os.environ.get('OPENAI_API_KEY')
-          if not key:
-              raise SystemExit('repository OpenAI credential unavailable')
-          for model, effort in (('gpt-6-luna', 'high'), ('gpt-6-sol', 'low')):
-              body = json.dumps({
-                  'model': model,
-                  'messages': [{'role': 'user', 'content': 'Reply OK.'}],
-                  'reasoning_effort': effort,
-                  'max_completion_tokens': 64,
-              }).encode()
-              request = urllib.request.Request(
-                  'https://api.openai.com/v1/chat/completions',
-                  data=body,
-                  headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
-              )
-              try:
-                  with urllib.request.urlopen(request, timeout=45) as response:
-                      payload = json.load(response)
-              except urllib.error.HTTPError as exc:
-                  raise SystemExit(f'{model}/{effort}: HTTP {exc.code}') from None
-              except urllib.error.URLError:
-                  raise SystemExit(f'{model}/{effort}: connection error') from None
-              if not payload.get('choices'):
-                  raise SystemExit(f'{model}/{effort}: missing choices')
-              print(f'{model}/{effort}: PASS')
-          PY
-
   workflow-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 8

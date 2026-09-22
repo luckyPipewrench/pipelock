@@ -202,7 +202,7 @@ func TestShieldUTF16_DecoderBoundaries(t *testing.T) {
 		{"ordinary UTF-8", []byte(`<html>plain</html>`), "text/html", shield.PipelineHTML, false, "", false},
 		{"little endian signature", encodeUTF16ForShieldTest(`<html>plain</html>`, shieldUTF16LE, false), "text/html; charset=utf-16le", shield.PipelineHTML, true, `<html>plain</html>`, false},
 		{"big endian signature", encodeUTF16ForShieldTest(`<html>plain</html>`, shieldUTF16BE, false), "text/html; charset=utf-16be", shield.PipelineHTML, true, `<html>plain</html>`, false},
-		{"generic charset without order", []byte("plain"), "text/html; charset=utf-16", shield.PipelineHTML, true, "", true},
+		{"generic charset uses WHATWG little endian mapping", encodeUTF16ForShieldTest(" plain", shieldUTF16LE, false), "text/html; charset=utf-16", shield.PipelineHTML, true, " plain", false},
 		{"malformed content type", []byte{0xff, 0xfe, '<', 0}, "text/html; charset=\"", shield.PipelineHTML, true, "", true},
 		{"unsupported declared charset", []byte{0xff, 0xfe, '<', 0}, "text/html; charset=windows-1252", shield.PipelineHTML, true, "", true},
 		{"unpaired low surrogate", []byte{0xff, 0xfe, 0x00, 0xdc}, "text/html; charset=utf-16le", shield.PipelineHTML, true, "", true},
@@ -213,6 +213,41 @@ func TestShieldUTF16_DecoderBoundaries(t *testing.T) {
 			got, utf16, err := decodeShieldUTF16(tt.body, tt.contentType, tt.pipeline)
 			if utf16 != tt.wantUTF16 || (err != nil) != tt.wantErr || (!tt.wantErr && got != tt.want) {
 				t.Fatalf("decode = (%q, %t, %v), want (%q, %t, err=%t)", got, utf16, err, tt.want, tt.wantUTF16, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestProxy_ApplyShield_WHATWGUTF16Labels(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+
+	tests := []struct {
+		label string
+		order shieldUTF16Order
+	}{
+		{"csunicode", shieldUTF16LE},
+		{"iso-10646-ucs-2", shieldUTF16LE},
+		{"ucs-2", shieldUTF16LE},
+		{"unicode", shieldUTF16LE},
+		{"unicodefeff", shieldUTF16LE},
+		{"utf-16", shieldUTF16LE},
+		{"utf-16le", shieldUTF16LE},
+		{"unicodefffe", shieldUTF16BE},
+		{"utf-16be", shieldUTF16BE},
+	}
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			body := encodeUTF16ForShieldTest(` <html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`, tt.order, false)
+			contentType := "text/html; charset=" + tt.label
+			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
+				t.Fatalf("label %q outcome: blocked=%+v summary=%+v body=%q", tt.label, blocked, summary, out)
 			}
 		})
 	}

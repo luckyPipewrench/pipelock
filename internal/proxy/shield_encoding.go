@@ -229,14 +229,14 @@ func shieldUTF16Signature(body []byte) (shieldUTF16Order, bool) {
 }
 
 func isUTF16Charset(charset string) bool {
-	return charset == "utf-16" || charset == "utf-16le" || charset == "utf-16be"
+	return charsetUTF16Order(charset) != 0
 }
 
 func charsetUTF16Order(charset string) shieldUTF16Order {
 	switch charset {
-	case "utf-16le":
+	case "csunicode", "iso-10646-ucs-2", "ucs-2", "unicode", "unicodefeff", "utf-16", "utf-16le":
 		return shieldUTF16LE
-	case "utf-16be":
+	case "unicodefffe", "utf-16be":
 		return shieldUTF16BE
 	default:
 		return 0

@@ -25,8 +25,9 @@ type ReloadWarning struct {
 type ReloadWarningDisposition string
 
 const (
-	// ReloadWarningDispositionAdvisory marks a warning that restores coverage
-	// and therefore does not weaken an already-required security contract.
+	// ReloadWarningDispositionAdvisory marks a warning that does not weaken a
+	// required security contract, including restart-only notices and changes
+	// that restore coverage.
 	ReloadWarningDispositionAdvisory ReloadWarningDisposition = "advisory"
 )
 

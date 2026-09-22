@@ -27,6 +27,50 @@ const (
 	suffix = ".jsonl"
 )
 
+// RunInfix marks a per-process-start recorder session, e.g.
+// "proxy.run.3a7c...". It is reserved: a run session is minted internally
+// (see recorder.NewRunSessionID) from crypto/rand and must never collide with
+// an operator-chosen session ID, because two writers landing on the same
+// session name is exactly the hash-chain fork this reservation exists to
+// prevent. ValidateOperatorSessionID refuses any operator-supplied ID that
+// contains it.
+const RunInfix = ".run."
+
+// ErrReservedSessionID means an operator-supplied session ID is unusable
+// because it collides with reserved recorder session-naming syntax.
+var ErrReservedSessionID = errors.New("session id uses reserved recorder syntax")
+
+// ValidateOperatorSessionID refuses a session ID reachable from operator
+// input (CLI flags, config, environment) that could collide with or subvert
+// recorder session naming:
+//
+//   - the reserved run-session infix ".run.", which is minted only by
+//     recorder.NewRunSessionID from crypto/rand and must stay unambiguous;
+//   - a path separator ("/" or "\"), which the recorder never expects inside
+//     a session ID (evidence filenames embed the session as one path
+//     component) and which a malicious or mistaken value could otherwise use
+//     to escape the evidence directory the writer computes it into;
+//   - an empty ID, which is not a valid session or base name.
+//
+// It fails closed: an operator session ID that trips any of these is
+// refused, with a message that names exactly what to change, rather than
+// silently rewritten or accepted and left to fail later in a less legible
+// way.
+func ValidateOperatorSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: session id must not be empty", ErrReservedSessionID)
+	}
+	if strings.Contains(id, RunInfix) {
+		return fmt.Errorf("%w: session id %q contains the reserved run-session infix %q; "+
+			"choose a session id that does not contain %q", ErrReservedSessionID, id, RunInfix, RunInfix)
+	}
+	if strings.ContainsAny(id, "/\\") {
+		return fmt.Errorf("%w: session id %q contains a path separator; "+
+			"choose a session id with no %q or %q characters", ErrReservedSessionID, id, "/", "\\")
+	}
+	return nil
+}
+
 // Parse splits a recorder evidence shard filename into its session ID and
 // starting sequence. It accepts a bare name or a full path.
 //

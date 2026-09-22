@@ -576,61 +576,9 @@ func TestEmitter_EmitSessionOpenFirstChainBoundGenesis(t *testing.T) {
 	}
 }
 
-func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	pub, priv := generateTestKey(t)
-	rec1 := newTestRecorder(t, dir, priv)
-	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
-	if err := e1.EmitSessionOpen(); err != nil {
-		t.Fatalf("run1 open: %v", err)
-	}
-	if err := e1.Emit(EmitOpts{
-		ActionID:  NewActionID(),
-		Target:    testTarget,
-		Verdict:   config.ActionAllow,
-		Transport: testTransport,
-		Method:    http.MethodGet,
-	}); err != nil {
-		t.Fatalf("run1 Emit: %v", err)
-	}
-	if err := rec1.Close(); err != nil {
-		t.Fatalf("Close run1: %v", err)
-	}
-
-	before := readAllReceiptsFromDir(t, dir, pub)
-	priorTail := before[len(before)-1]
-	priorHash := mustHash(t, priorTail)
-
-	rec2 := newTestRecorder(t, dir, priv)
-	e2 := NewEmitter(EmitterConfig{Recorder: rec2, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
-	if err := e2.EmitSessionOpen(); err != nil {
-		t.Fatalf("run2 open: %v", err)
-	}
-	if err := rec2.Close(); err != nil {
-		t.Fatalf("Close run2: %v", err)
-	}
-
-	receipts := readAllReceiptsFromDir(t, dir, pub)
-	restart := receipts[len(receipts)-1].ActionRecord
-	open := restart.SessionControl.Open
-	if restart.ChainPrevHash != priorHash {
-		t.Fatalf("restart chain_prev_hash = %q, want prior tail %q", restart.ChainPrevHash, priorHash)
-	}
-	if open.PriorChainHead != priorHash {
-		t.Fatalf("prior_chain_head = %q, want %q", open.PriorChainHead, priorHash)
-	}
-	if open.PriorChainSeq != priorTail.ActionRecord.ChainSeq {
-		t.Fatalf("prior_chain_seq = %d, want %d", open.PriorChainSeq, priorTail.ActionRecord.ChainSeq)
-	}
-	if open.GenesisHash != "" {
-		t.Fatalf("restart genesis_hash = %q, want empty", open.GenesisHash)
-	}
-	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
-		t.Fatalf("VerifyChain: %s", res.Error)
-	}
-}
+// TestEmitter_EmitSessionOpenRestartLinksPriorTail now lives in
+// chain_link_test.go, rewritten to assert a bound genesis session_open plus a
+// signed chain_link instead of a prior_chain_head inside the receipt.
 
 func TestEmitter_Emit_TaintFields(t *testing.T) {
 	t.Parallel()

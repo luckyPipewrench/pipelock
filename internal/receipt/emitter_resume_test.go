@@ -105,51 +105,9 @@ func TestInitError_CleanResumeIsNil(t *testing.T) {
 	}
 }
 
-// TestResume_SameKeyValidTail_ResumesUnchanged is case 1: a tail signed by the
-// current key with a valid signature resumes the same chain segment.
-func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
-	dir := t.TempDir()
-	_, priv := generateTestKey(t)
-
-	rec1 := newTestRecorder(t, dir, priv)
-	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
-	emitOne(t, e1)
-	emitOne(t, e1)
-	if err := rec1.Close(); err != nil {
-		t.Fatalf("close rec1: %v", err)
-	}
-
-	// Reopen with the SAME key. Resume should continue the chain.
-	rec2 := newTestRecorder(t, dir, priv)
-	e2 := NewEmitter(EmitterConfig{Recorder: rec2, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
-	if err := e2.InitError(); err != nil {
-		t.Fatalf("InitError after same-key reopen: %v", err)
-	}
-	if e2.chainSeq != 2 {
-		t.Fatalf("chainSeq = %d, want 2 (resumed)", e2.chainSeq)
-	}
-	if e2.pendingTransition != nil {
-		t.Fatalf("same-key resume must not set a transition marker: %+v", e2.pendingTransition)
-	}
-	emitOne(t, e2)
-	if err := rec2.Close(); err != nil {
-		t.Fatalf("close rec2: %v", err)
-	}
-
-	receipts := allReceiptsRaw(t, dir)
-	if len(receipts) != 3 {
-		t.Fatalf("receipt count = %d, want 3", len(receipts))
-	}
-	// Seq monotonic 0,1,2 and no transition markers anywhere.
-	for i, r := range receipts {
-		if r.ActionRecord.ChainSeq != uint64(i) {
-			t.Errorf("receipt %d chain_seq = %d, want %d", i, r.ActionRecord.ChainSeq, i)
-		}
-		if r.ActionRecord.KeyTransition != nil {
-			t.Errorf("receipt %d unexpectedly carries a key transition marker", i)
-		}
-	}
-}
+// TestResume_SameKeyValidTail_ResumesUnchanged now lives in
+// chain_link_test.go, rewritten to assert the explicit chain_link that
+// replaced implicit same-session resume across process restarts.
 
 // TestResume_EvidenceReadFailuresFailClosed verifies that a complete, valid
 // tail never permits resume to silently reset when earlier evidence cannot be

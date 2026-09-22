@@ -26,12 +26,32 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type fakeProvider struct{}
+
+func TestBuildBrokerVerifyKitUsesShippedBinaryPaths(t *testing.T) {
+	binaries := brokerVerifyKitBinaries()
+	for osName, want := range map[playground.VerifyKitOS]string{
+		playground.VerifyKitOSLinux:   "/usr/local/bin/pipelock-verifier-linux",
+		playground.VerifyKitOSMacOS:   "/usr/local/bin/pipelock-verifier-macos",
+		playground.VerifyKitOSWindows: "/usr/local/bin/pipelock-verifier-windows.exe",
+	} {
+		t.Run(string(osName), func(t *testing.T) {
+			if got := binaries.Path(osName); got != want {
+				t.Fatalf("verifier path = %q, want %q", got, want)
+			}
+			_, _, err := buildBrokerVerifyKit(osName, []byte("invalid bundle"))
+			if err == nil {
+				t.Fatal("expected invalid bundle or missing verifier to fail")
+			}
+		})
+	}
+}
 
 func (fakeProvider) CreateMachine(_ context.Context, _ broker.MachineSpec) (*broker.Machine, error) {
 	return nil, errors.New("not used")

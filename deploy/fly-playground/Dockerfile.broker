@@ -29,6 +29,12 @@ COPY . .
 ARG VERSION=dev
 ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-broker ./cmd/pipelock-playground-broker
+RUN go install github.com/randall77/makefat@v0.0.0-20260406194835-1b91746796b7
+RUN GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-linux ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-amd64 ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-arm64 ./cmd/pipelock-verifier \
+ && makefat /out/pipelock-verifier-macos /out/pipelock-verifier-macos-amd64 /out/pipelock-verifier-macos-arm64 \
+ && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-windows.exe ./cmd/pipelock-verifier
 
 # Stage the static UI here (a shell-having stage) and normalize perms with a real
 # chmod. The broker runs as nonroot, so served assets MUST be world-readable or
@@ -40,6 +46,9 @@ RUN chmod -R a+rX /srv-ui
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 COPY --from=build /out/pipelock-playground-broker /usr/local/bin/pipelock-playground-broker
+COPY --from=build /out/pipelock-verifier-linux /usr/local/bin/pipelock-verifier-linux
+COPY --from=build /out/pipelock-verifier-macos /usr/local/bin/pipelock-verifier-macos
+COPY --from=build /out/pipelock-verifier-windows.exe /usr/local/bin/pipelock-verifier-windows.exe
 # Bundle the static playground viewer at /srv/ui (served at / via --static-dir),
 # taking the perm-normalized copy from the build stage above. Copying between
 # stages preserves the chmod'd (world-readable) perms, so the nonroot broker can

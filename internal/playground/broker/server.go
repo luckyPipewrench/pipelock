@@ -161,17 +161,22 @@ type ServerConfig struct {
 	// broker can actually reach its machine provider. Nil reports the provider
 	// as "unknown", preserving the previous response shape's meaning.
 	ProviderHealth *ProviderHealth
+	// KitBuilder creates a requested OS kit from a sealed raw bundle after the
+	// visitor has been released. The production broker supplies shipped verifier
+	// binaries; nil leaves that download unavailable.
+	KitBuilder func(playground.VerifyKitOS, []byte) ([]byte, string, error)
 }
 
 // Server is the broker HTTP front door. It is safe for concurrent use.
 type Server struct {
-	cfg      ServerConfig
-	ipRate   *livechat.RateLimiter
-	codeRate *livechat.RateLimiter
-	perIP    *livechat.KeyedDailyBudget
-	perCode  *livechat.KeyedDailyBudget
-	global   *livechat.DailyBudget
-	client   *http.Client
+	cfg           ServerConfig
+	ipRate        *livechat.RateLimiter
+	codeRate      *livechat.RateLimiter
+	perIP         *livechat.KeyedDailyBudget
+	perCode       *livechat.KeyedDailyBudget
+	global        *livechat.DailyBudget
+	client        *http.Client
+	kitBuildSlots chan struct{}
 
 	vmReadyTimeout time.Duration
 	signingReady   bool
@@ -442,6 +447,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		perCode:        livechat.NewKeyedDailyBudget(cfg.PerCodeDailyBudget, 0),
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
+		kitBuildSlots:  make(chan struct{}, 1),
 		vmReadyTimeout: vmReadyTimeout,
 		signingReady:   signingVerified,
 		bundleCache:    newArtifactCache(artifactCacheTTL),
@@ -864,6 +870,41 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(cached.body)
 		return
 	}
+	// Browser verification requests the raw bundle before the user downloads
+	// an OS kit. Build that kit from the retained signed bundle on demand, so
+	// the visitor need not stay leased and unused kits consume no broker memory.
+	if osParam != "" {
+		if raw := s.bundleCache.get(artifactCacheKey{token: queryToken}); raw != nil {
+			if s.cfg.KitBuilder == nil {
+				writeBrokerErr(w, http.StatusServiceUnavailable, "verify kit is not available")
+				return
+			}
+			if r.Context().Err() != nil {
+				return
+			}
+			select {
+			case s.kitBuildSlots <- struct{}{}:
+			case <-r.Context().Done():
+				return
+			}
+			if r.Context().Err() != nil {
+				<-s.kitBuildSlots
+				return
+			}
+			kit, filename, err := s.cfg.KitBuilder(playground.VerifyKitOS(osParam), raw.body)
+			<-s.kitBuildSlots
+			if err != nil {
+				writeBrokerErr(w, http.StatusServiceUnavailable, "verify kit is not available")
+				return
+			}
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(kit)
+			return
+		}
+	}
 
 	// Cache MISS: the VM must still be alive to fetch the artifact.
 	binding := s.lookupToken(queryToken)
@@ -884,11 +925,11 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Coalesce concurrent identical (token, os) misses so only ONE request reads
-	// a full artifact from the VM into memory; the others serialize on this
-	// per-variant lock and then read the cache the leader populated.
-	fm := s.bundleFetchLock(cacheKey)
-	defer s.bundleFetchUnlock(cacheKey, fm)
+	// Fill a session's artifact family under one lock. Per-variant locks would
+	// deadlock when simultaneous raw and kit requests each prefetch the other.
+	fetchKey := artifactCacheKey{token: queryToken}
+	fm := s.bundleFetchLock(fetchKey)
+	defer s.bundleFetchUnlock(fetchKey, fm)
 	if cached := s.bundleCache.get(cacheKey); cached != nil {
 		w.Header().Set("Content-Type", cached.contentType)
 		w.Header().Set("Content-Disposition", cached.contentDisposition)
@@ -922,36 +963,39 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the successfully fetched artifact in the cache and mark the token
-	// sealed so the VM may be released once all in-flight requests finish.
-	s.bundleCache.put(cacheKey, &artifactCacheEntry{
-		body:               fetched.body,
-		contentType:        fetched.contentType,
-		contentDisposition: fetched.contentDisposition,
-		insertedAt:         time.Now(),
-	})
-
-	// Also prefetch the raw bundle (os="") into the cache so a later
-	// raw-bundle download succeeds even after the VM is gone.
+	// Keep the raw bundle after a kit-first download. Do not cache a kit until
+	// the raw bundle is retained: otherwise a kit cache hit can skip a failed
+	// raw prefetch forever and leave the visitor leased until expiry.
 	sealToken := true
+	var prefetchedRaw *vmArtifact
 	if osParam != "" {
 		rawKey := artifactCacheKey{token: queryToken, os: ""}
 		if s.bundleCache.get(rawKey) == nil {
 			if raw, rawErr := s.fetchVMArtifact(fetchCtx, binding.lease, queryToken, ""); rawErr == nil && raw.status == http.StatusOK {
-				s.bundleCache.put(rawKey, &artifactCacheEntry{
-					body:               raw.body,
-					contentType:        raw.contentType,
-					contentDisposition: raw.contentDisposition,
-					insertedAt:         time.Now(),
-				})
+				prefetchedRaw = &raw
 			} else {
 				sealToken = false
-				s.bundleMarkFailed(queryToken)
 			}
 		}
 	}
 	if sealToken {
+		s.bundleCache.put(cacheKey, &artifactCacheEntry{
+			body:               fetched.body,
+			contentType:        fetched.contentType,
+			contentDisposition: fetched.contentDisposition,
+			insertedAt:         time.Now(),
+		})
+		if prefetchedRaw != nil {
+			s.bundleCache.put(artifactCacheKey{token: queryToken}, &artifactCacheEntry{
+				body:               prefetchedRaw.body,
+				contentType:        prefetchedRaw.contentType,
+				contentDisposition: prefetchedRaw.contentDisposition,
+				insertedAt:         time.Now(),
+			})
+		}
 		s.bundleSeal(queryToken)
+	} else {
+		s.bundleMarkFailed(queryToken)
 	}
 
 	// Serve the fetched artifact to the client. VM release happens in the
@@ -975,8 +1019,8 @@ func (s *Server) bundleEnter(token string) {
 	s.mu.Unlock()
 }
 
-// bundleFetchLock locks the per-(token, os) mutex used to coalesce concurrent
-// identical cache misses so only one request fetches the artifact from the VM.
+// bundleFetchLock locks the per-token mutex used to coalesce concurrent
+// artifact-family cache misses so only one request fetches from the VM.
 // The returned lock must be released with bundleFetchUnlock.
 func (s *Server) bundleFetchLock(key artifactCacheKey) *artifactFetchLock {
 	s.mu.Lock()
@@ -1012,6 +1056,7 @@ func (s *Server) bundleSeal(token string) {
 		s.bundleSealed = make(map[string]bool)
 	}
 	s.bundleSealed[token] = true
+	delete(s.bundleFailed, token)
 	s.mu.Unlock()
 }
 

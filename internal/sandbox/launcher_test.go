@@ -382,9 +382,14 @@ func TestLaunchSandboxed_ChildCleanup(t *testing.T) {
 	})
 	defer cancel()
 
-	// Kill the child process.
+	// Kill the whole process group, not just the direct child. The command
+	// runs beneath an intermediate parent, so signalling only the child leaves
+	// its descendants running: this test's `sleep` outlived the test binary and
+	// failed the job through the CI descendant check while every package passed.
 	if cmd.Process != nil {
-		_ = cmd.Process.Signal(os.Kill)
+		if err := killProcessGroup(cmd.Process.Pid); err != nil {
+			t.Fatalf("kill process group: %v", err)
+		}
 	}
 
 	err := cmd.Wait()

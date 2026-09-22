@@ -111,7 +111,8 @@ func test() { _ = exec.CommandContext }
 				tt.mutate(t, root)
 			}
 
-			cmd := exec.Command("bash", filepath.Join(root, "scripts", "check-test-deadline-scaling.sh"))
+			// #nosec G204 -- the path is built from t.TempDir() and a fixed name.
+			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "check-test-deadline-scaling.sh"))
 			cmd.Dir = root
 			cmd.Env = os.Environ()
 			var output bytes.Buffer
@@ -145,7 +146,7 @@ func newDeadlineScalingGuardFixture(t *testing.T, source string) string {
 	if err != nil {
 		t.Fatalf("read deadline scaling guard: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "scripts", "check-test-deadline-scaling.sh"), script, 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "scripts", "check-test-deadline-scaling.sh"), script, 0o600); err != nil {
 		t.Fatalf("write deadline scaling guard: %v", err)
 	}
 	if source != "" {
@@ -154,12 +155,12 @@ func newDeadlineScalingGuardFixture(t *testing.T, source string) string {
 		}
 	}
 
-	init := exec.Command("git", "init", "--quiet")
+	init := exec.CommandContext(t.Context(), "git", "init", "--quiet")
 	init.Dir = root
 	if output, err := init.CombinedOutput(); err != nil {
 		t.Fatalf("init fixture repository: %v\n%s", err, output)
 	}
-	add := exec.Command("git", "add", "scripts/check-test-deadline-scaling.sh", "internal")
+	add := exec.CommandContext(t.Context(), "git", "add", "scripts/check-test-deadline-scaling.sh", "internal")
 	add.Dir = root
 	if output, err := add.CombinedOutput(); err != nil {
 		t.Fatalf("track fixture files: %v\n%s", err, output)

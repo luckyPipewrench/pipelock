@@ -1,12 +1,16 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !windows
+//go:build unix && !aix && !js && !wasip1
 
 // A runtime.GOOS skip does not stop COMPILATION: syscall.Mkfifo does not exist
 // on Windows, so keeping this case in the shared test file broke the Windows
 // build of the package even though the test would have skipped there. The
 // build tag is the only thing that actually excludes it.
+//
+// The constraint matches internal/securefile/mkfifo_unix_test.go rather than a
+// bare !windows, because Plan 9, js and wasip1 are also not-windows and also
+// lack Mkfifo.
 
 package contain
 

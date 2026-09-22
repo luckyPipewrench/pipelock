@@ -106,10 +106,19 @@ func TestVisitorEntrypointRejectsDurableRootAliases(t *testing.T) {
 		}
 		baseEnv = append(baseEnv, item)
 	}
-	for _, name := range []string{envOrchestratorKey, envOrchestratorRoot} {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: envOrchestratorKey, value: "sentinel-value-must-not-appear"},
+		{name: envOrchestratorKey + "_empty", value: ""},
+		{name: envOrchestratorRoot, value: "sentinel-value-must-not-appear"},
+		{name: envOrchestratorRoot + "_empty", value: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := strings.TrimSuffix(tc.name, "_empty")
 			cmd := exec.CommandContext(t.Context(), "sh", entrypoint) // #nosec G204 -- fixed repository script path assembled portably for this test
-			cmd.Env = append(baseEnv, name+"=sentinel-value-must-not-appear")
+			cmd.Env = append(baseEnv, name+"="+tc.value)
 			output, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("entrypoint accepted durable root alias %s", name)

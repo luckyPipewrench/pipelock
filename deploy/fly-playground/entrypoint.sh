@@ -37,9 +37,9 @@ log() { printf '[entrypoint] %s\n' "$*" >&2; }
 # by visitor VMs, so reject both the retired guest-facing name and the current
 # broker-only name before doing any other boot work.
 FORBIDDEN_ROOT_NAME=""
-if [ -n "${PLAYGROUND_ORCHESTRATOR_KEY:-}" ]; then
+if [ "${PLAYGROUND_ORCHESTRATOR_KEY+x}" = x ]; then
 	FORBIDDEN_ROOT_NAME=PLAYGROUND_ORCHESTRATOR_KEY
-elif [ -n "${PLAYGROUND_ORCHESTRATOR_ROOT:-}" ]; then
+elif [ "${PLAYGROUND_ORCHESTRATOR_ROOT+x}" = x ]; then
 	FORBIDDEN_ROOT_NAME=PLAYGROUND_ORCHESTRATOR_ROOT
 fi
 if [ -n "${FORBIDDEN_ROOT_NAME}" ]; then

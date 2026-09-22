@@ -154,6 +154,15 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 // media type. The browser retains the valid media-type essence even when later
 // parameters are malformed, so recovery is independent of response encoding.
 func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
+	if _, _, err := mime.ParseMediaType(contentType); err != nil {
+		baseType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+		mediaType, _, baseErr := mime.ParseMediaType(baseType)
+		if baseErr == nil && mediaType != "" {
+			if recovered := shield.DetectPipeline(mediaType, nil); recovered != shield.PipelineNone {
+				return recovered
+			}
+		}
+	}
 	prefixLen := min(len(body), 512)
 	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
 	if pipeline != shield.PipelineNone {

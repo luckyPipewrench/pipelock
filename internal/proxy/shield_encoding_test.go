@@ -368,6 +368,27 @@ func TestShieldUTF16_MalformedContentTypeCannotSkipPipeline(t *testing.T) {
 	}
 }
 
+func TestDetectShieldPipeline_MalformedParametersPreferDeclaredEssence(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+		want        shield.PipelineType
+	}{
+		{"JavaScript over HTML sniff", "application/javascript; a=1; a=2", []byte(`<!doctype html><script>alert(1)</script>`), shield.PipelineJS},
+		{"SVG over HTML sniff", "image/svg+xml; a=1; a=2", []byte(`<!doctype html><svg><script>alert(1)</script></svg>`), shield.PipelineSVG},
+		{"XHTML over HTML sniff", "application/xhtml+xml; a=1; a=2", []byte(`<!doctype html><html><script>alert(1)</script></html>`), shield.PipelineXHTML},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectShieldPipeline(tt.contentType, tt.body); got != tt.want {
+				t.Fatalf("pipeline = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProxy_ApplyShield_MalformedUTF16ContentTypeFailsClosed(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)
@@ -557,6 +578,11 @@ func TestPartialShieldSummary_MalformedUTF16ContentTypeUsesRecoveredPipeline(t *
 	utf8Summary := partialShieldSummary(nil, utf8Body, "text/html; foo=1; foo=2", len(utf8Body), len(utf8Body))
 	if utf8Summary.Pipeline != "html" {
 		t.Fatalf("UTF-8 BOM pipeline = %q, want html", utf8Summary.Pipeline)
+	}
+	jsBody := []byte(`<!doctype html><script>alert(1)</script>`)
+	jsSummary := partialShieldSummary(nil, jsBody, "application/javascript; a=1; a=2", len(jsBody), len(jsBody))
+	if jsSummary.Pipeline != "javascript" {
+		t.Fatalf("malformed JavaScript pipeline = %q, want javascript", jsSummary.Pipeline)
 	}
 }
 

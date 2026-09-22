@@ -328,7 +328,7 @@ func claimPredecessor(dir, base, self string, notice io.Writer) (*predecessorTai
 		if hashErr != nil {
 			continue
 		}
-		f, createErr := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		f, createErr := os.OpenFile(filepath.Clean(marker), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if createErr != nil {
 			continue // EEXIST: another process claimed it first
 		}

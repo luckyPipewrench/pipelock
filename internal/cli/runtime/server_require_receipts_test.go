@@ -188,7 +188,6 @@ func TestNewServer_RequireReceiptsWithBrickedEmitterFailsLegacy(t *testing.T) {
 	}
 }
 
-
 func TestNewServer_RequireReceiptsSessionOpenEmitFailureFailsClosed(t *testing.T) {
 	recorderDir := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")

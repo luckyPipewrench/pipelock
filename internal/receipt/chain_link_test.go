@@ -8,7 +8,6 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -706,7 +705,7 @@ func TestChainLink_TwelveProcessesShareOneDirectory(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			cmd := exec.Command(os.Args[0], "-test.run=^TestChainLinkHelperProcess$", "-test.count=1") //nolint:gosec // re-exec of this test binary
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestChainLinkHelperProcess$", "-test.count=1") //nolint:gosec // re-exec of this test binary
 			cmd.Env = append(os.Environ(), helperDirEnv+"="+dir, helperKeyEnv+"="+hex.EncodeToString(priv),
 				helperIDEnv+"="+strconv.Itoa(i), helperNEnv+"="+strconv.Itoa(helperProcs))
 			outs[i], errs[i] = cmd.CombinedOutput()
@@ -745,8 +744,7 @@ func TestChainLink_TwelveProcessesShareOneDirectory(t *testing.T) {
 		}
 	}
 	report := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pub)}})
-	if !report.Healthy() {
-		t.Fatalf("findings: %+v", report.Findings)
+	if !report.Healthy() || report.LinkCount() != 0 {
+		t.Fatalf("concurrent live runs must neither fork nor link each other: links=%d findings=%+v", report.LinkCount(), report.Findings)
 	}
-	fmt.Fprintf(io.Discard, "%d", report.LinkCount())
 }

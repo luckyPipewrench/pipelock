@@ -95,6 +95,16 @@ func TestIssuerBoundCookieScopeAndCapacity(t *testing.T) {
 			t.Fatalf("illegal domain %q issued an allowance", domain)
 		}
 	}
+	publicSuffixOrigin, _ := url.Parse("https://app.co.uk/login")
+	publicSuffixTarget, _ := url.Parse("https://app.co.uk/account")
+	publicSuffixStore := newIssuerBoundCookieStore()
+	publicSuffixStore.observeOutbound("agent-one", []byte("GET /login"))
+	publicSuffixStore.observeResponse("agent-one", publicSuffixOrigin, http.Header{"Set-Cookie": {
+		"sid=" + value + "; Domain=co.uk; Path=/; Secure; Max-Age=60",
+	}}, true, now)
+	if publicSuffixStore.allows("agent-one", publicSuffixTarget, "sid", value, now.Add(time.Second)) {
+		t.Fatal("public-suffix domain issued an allowance")
+	}
 	full := newIssuerBoundCookieStore()
 	full.observeOutbound("agent-one", []byte("GET /login/start"))
 	full.observeOutbound("agent-one", []byte(strings.Repeat("x", issuerCookieMaxRequestBytes+1)))

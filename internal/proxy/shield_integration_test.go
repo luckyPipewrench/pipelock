@@ -398,6 +398,28 @@ func TestProxy_RunShieldPipeline_HTMLRewrite(t *testing.T) {
 	}
 }
 
+func TestProxy_RunShieldPipeline_XHTMLSelfClosingScript(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	headers := http.Header{}
+	body := []byte(`<html xmlns="http://www.w3.org/1999/xhtml"><head><script src="app.js"/></head><body><img width="1" height="1" src="https://track.example.com/px"/></body></html>`)
+
+	result, summary := p.runShieldPipelineResult(body, "application/xhtml+xml", headers, &cfg.BrowserShield, p.metrics, audit.LogContext{}, "127.0.0.1", "req-xhtml", TransportFetch)
+	if strings.Contains(string(result), `width="1" height="1"`) {
+		t.Fatalf("tracking element survived XHTML rewrite: %q", result)
+	}
+	if !strings.Contains(string(result), `<script src="app.js"/>`) {
+		t.Fatalf("self-closing XHTML script changed: %q", result)
+	}
+	if summary == nil || summary.Pipeline != "html" {
+		t.Fatalf("XHTML shield summary = %+v, want html pipeline", summary)
+	}
+}
+
 func TestProxy_RunShieldPipeline_ShieldSummary(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)

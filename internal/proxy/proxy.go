@@ -3896,7 +3896,7 @@ func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary)
 
 func shieldPipelineLabel(pipeline shield.PipelineType) string {
 	switch pipeline {
-	case shield.PipelineHTML:
+	case shield.PipelineHTML, shield.PipelineXHTML:
 		return "html"
 	case shield.PipelineJS:
 		return "javascript"

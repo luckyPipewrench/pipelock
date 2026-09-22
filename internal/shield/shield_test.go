@@ -77,7 +77,7 @@ func TestDetectPipeline(t *testing.T) {
 		want        PipelineType
 	}{
 		{name: "text/html", contentType: "text/html; charset=utf-8", want: PipelineHTML},
-		{name: "xhtml", contentType: "application/xhtml+xml", want: PipelineHTML},
+		{name: "xhtml", contentType: "application/xhtml+xml", want: PipelineXHTML},
 		{name: "text/javascript", contentType: "text/javascript", want: PipelineJS},
 		{name: "application/javascript", contentType: "application/javascript", want: PipelineJS},
 		{name: "svg", contentType: "image/svg+xml", want: PipelineSVG},
@@ -603,9 +603,10 @@ func TestHTMLScriptMaskingBoundaries(t *testing.T) {
 	cfg.InjectFingerprintShims = false
 
 	tests := []struct {
-		name   string
-		script string
-		suffix string
+		name     string
+		script   string
+		suffix   string
+		pipeline PipelineType
 	}{
 		{
 			name:   "quoted closing tag in attribute",
@@ -617,9 +618,10 @@ func TestHTMLScriptMaskingBoundaries(t *testing.T) {
 			script: `<SCRIPT>const pixel='<img width="1" height="1">';navigator.sendBeacon('/x')`,
 		},
 		{
-			name:   "self-closing XHTML script",
-			script: `<script src="app.js" />`,
-			suffix: testPixel,
+			name:     "self-closing XHTML script",
+			script:   `<script src="app.js" />`,
+			suffix:   testPixel,
+			pipeline: PipelineXHTML,
 		},
 		{
 			name:   "script text inside attribute",
@@ -640,8 +642,12 @@ func TestHTMLScriptMaskingBoundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			pipeline := tt.pipeline
+			if pipeline == PipelineNone {
+				pipeline = PipelineHTML
+			}
 			input := testHTMLPrefix + tt.script + tt.suffix + testHTMLSuffix
-			res := e.Rewrite(input, PipelineHTML, cfg)
+			res := e.Rewrite(input, pipeline, cfg)
 			if !strings.Contains(res.Content, tt.script) {
 				t.Fatalf("script changed: %q", res.Content)
 			}
@@ -650,6 +656,116 @@ func TestHTMLScriptMaskingBoundaries(t *testing.T) {
 			}
 			if tt.suffix != "" && strings.Contains(res.Content, tt.suffix) {
 				t.Fatalf("HTML tracking element survived after script: %q", res.Content)
+			}
+		})
+	}
+}
+
+func TestHTMLScriptMaskingDoesNotTreatSelfClosingSyntaxAsHTMLScriptEnd(t *testing.T) {
+	e := NewEngine(nil)
+	cfg := defaultShieldCfg()
+	cfg.InjectFingerprintShims = false
+
+	// In text/html, the self-closing flag on a script start tag is ignored. The
+	// following bytes are script data until the matching end tag, so HTML rewrite
+	// patterns must not see or alter them.
+	script := `<script/>const extensionURL="` + testExtensionID + `/manifest.json";`
+	input := testHTMLPrefix + script + `</script>` + testPixel + testHTMLSuffix
+	res := e.Rewrite(input, PipelineHTML, cfg)
+
+	if !strings.Contains(res.Content, script) {
+		t.Fatalf("text/html script bytes changed after self-closing syntax: %q", res.Content)
+	}
+	if strings.Contains(res.Content, testPixel) {
+		t.Fatalf("tracking element after script survived: %q", res.Content)
+	}
+}
+
+func TestHTMLScriptMaskingDoesNotTreatCDATAAsTextHTML(t *testing.T) {
+	e := NewEngine(nil)
+	cfg := defaultShieldCfg()
+	cfg.InjectFingerprintShims = false
+
+	// In text/html, <![CDATA[ starts a bogus comment that ends at its first
+	// greater-than sign. The later script is real browser script data.
+	script := `<script>const extensionURL="` + testExtensionID + `/manifest.json";</script>`
+	input := testHTMLPrefix + "<![CDATA[not XML>" + script + testPixel + testHTMLSuffix
+	res := e.Rewrite(input, PipelineHTML, cfg)
+
+	if !strings.Contains(res.Content, script) {
+		t.Fatalf("script after HTML bogus comment changed: %q", res.Content)
+	}
+	if strings.Contains(res.Content, testPixel) {
+		t.Fatalf("tracking element after script survived: %q", res.Content)
+	}
+}
+
+func TestHTMLScriptMaskingFollowsEscapedScriptData(t *testing.T) {
+	e := NewEngine(nil)
+	cfg := defaultShieldCfg()
+	cfg.InjectFingerprintShims = false
+
+	// The first end-tag-like sequence only leaves the HTML tokenizer's double
+	// escaped script state. The second one closes the script element.
+	script := `<script><!--<script></script>const extensionURL="` + testExtensionID + `/manifest.json";</script>`
+	input := testHTMLPrefix + script + testPixel + testHTMLSuffix
+	res := e.Rewrite(input, PipelineHTML, cfg)
+
+	if !strings.Contains(res.Content, script) {
+		t.Fatalf("escaped script data changed: %q", res.Content)
+	}
+	if strings.Contains(res.Content, testPixel) {
+		t.Fatalf("tracking element after script survived: %q", res.Content)
+	}
+}
+
+func TestHTMLScriptMaskingTokenizerBoundaries(t *testing.T) {
+	e := NewEngine(nil)
+	cfg := defaultShieldCfg()
+	cfg.InjectFingerprintShims = false
+
+	tests := []struct {
+		name           string
+		input          string
+		preserve       string
+		preservesPixel bool
+	}{
+		{
+			name:     "case-insensitive end tag with whitespace",
+			input:    testHTMLPrefix + `<SCRIPT>const extensionURL="` + testExtensionID + `/manifest.json";</SCRIPT >` + testPixel + testHTMLSuffix,
+			preserve: `<SCRIPT>const extensionURL="` + testExtensionID + `/manifest.json";</SCRIPT >`,
+		},
+		{
+			name:     "literal end tag in JavaScript string",
+			input:    testHTMLPrefix + `<script>const value="</script>";` + testPixel + `</script>` + testHTMLSuffix,
+			preserve: `<script>const value="</script>`,
+		},
+		{
+			name:           "incomplete end tag owns remainder",
+			input:          testHTMLPrefix + `<script>const markup='` + testPixel + `';</script`,
+			preserve:       `<script>const markup='` + testPixel + `';</script`,
+			preservesPixel: true,
+		},
+		{
+			name:     "script source with self-closing syntax",
+			input:    testHTMLPrefix + `<script src=app.js/>const extensionURL="` + testExtensionID + `/manifest.json";</script>` + testPixel + testHTMLSuffix,
+			preserve: `<script src=app.js/>const extensionURL="` + testExtensionID + `/manifest.json";</script>`,
+		},
+		{
+			name:     "non-executable script data block",
+			input:    testHTMLPrefix + `<script type="application/json">{"extensionURL":"` + testExtensionID + `/manifest.json"}</script>` + testPixel + testHTMLSuffix,
+			preserve: `<script type="application/json">{"extensionURL":"` + testExtensionID + `/manifest.json"}</script>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := e.Rewrite(tt.input, PipelineHTML, cfg)
+			if !strings.Contains(res.Content, tt.preserve) {
+				t.Fatalf("script data changed: %q", res.Content)
+			}
+			if !tt.preservesPixel && strings.Contains(res.Content, testPixel) {
+				t.Fatalf("tracking element after script survived: %q", res.Content)
 			}
 		})
 	}
@@ -863,7 +979,7 @@ func TestMediaTypeToPipeline(t *testing.T) {
 		want PipelineType
 	}{
 		{"text/html", PipelineHTML},
-		{"application/xhtml+xml", PipelineHTML},
+		{"application/xhtml+xml", PipelineXHTML},
 		{"text/javascript", PipelineJS},
 		{"application/javascript", PipelineJS},
 		{"image/svg+xml", PipelineSVG},
@@ -1005,6 +1121,9 @@ func TestPipelineTypeValues(t *testing.T) {
 	}
 	if PipelineSVG != 3 {
 		t.Error("PipelineSVG should be 3")
+	}
+	if PipelineXHTML != 4 {
+		t.Error("PipelineXHTML should be 4")
 	}
 }
 

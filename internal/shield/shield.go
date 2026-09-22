@@ -7,14 +7,16 @@
 // existing inline HTML scripts are never edited.
 //
 // The engine compiles all detection patterns once at construction and reuses
-// them across requests.  Three pipelines are supported:
+// them across requests. Four pipelines are supported:
 //
 //   - PipelineHTML: structural stripping outside scripts, plus optional shim injection
+//   - PipelineXHTML: XML-compatible structural stripping outside scripts
 //   - PipelineJS:   pass-through; scanning is owned by the response scanner
 //   - PipelineSVG:  whole-element active-content removal
 package shield
 
 import (
+	"bytes"
 	"mime"
 	"net/http"
 	"regexp"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/media"
+	"golang.org/x/net/html"
 )
 
 // PipelineType determines which rewriting pipeline applies to a response.
@@ -38,6 +41,10 @@ const (
 	PipelineJS
 	// PipelineSVG removes active-content elements rather than editing script bodies.
 	PipelineSVG
+	// PipelineXHTML applies HTML rewriting with XML self-closing-element rules.
+	// It is distinct from PipelineHTML because <script/> is a script start tag in
+	// text/html but an empty script element in application/xhtml+xml.
+	PipelineXHTML
 )
 
 // Result holds the outcome of a shield rewrite.
@@ -156,8 +163,10 @@ func DetectPipeline(contentType string, bodyPrefix []byte) PipelineType {
 // mediaTypeToPipeline maps a parsed media type string to a pipeline.
 func mediaTypeToPipeline(mt string) PipelineType {
 	switch {
-	case mt == "text/html" || mt == "application/xhtml+xml":
+	case mt == "text/html":
 		return PipelineHTML
+	case mt == "application/xhtml+xml":
+		return PipelineXHTML
 	// RFC 9239 section 6: historical JavaScript registrations are aliases
 	// with equivalent processing requirements. The table is shared with
 	// internal/config's unscannable-passthrough classifier so the two
@@ -193,7 +202,9 @@ func (e *Engine) RewriteWithNonce(content string, pipeline PipelineType, cfg *co
 
 	switch pipeline {
 	case PipelineHTML:
-		e.rewriteHTML(&res, cfg, headerNonce)
+		e.rewriteHTML(&res, cfg, headerNonce, false)
+	case PipelineXHTML:
+		e.rewriteHTML(&res, cfg, headerNonce, true)
 	case PipelineSVG:
 		e.rewriteSVG(&res, cfg)
 	}
@@ -205,9 +216,9 @@ func (e *Engine) RewriteWithNonce(content string, pipeline PipelineType, cfg *co
 // rewriteHTML applies the full pipeline: regex stripping, trap removal, and
 // optional shim injection. headerNonce overrides body-extracted nonce when
 // non-empty (from CSP response header).
-func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce string) {
+func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce string, allowSelfClosingScripts bool) {
 	originalDoc := res.Content
-	doc, scripts := e.maskHTMLScripts(res.Content)
+	doc, scripts := e.maskHTMLScriptsWithSelfClosing(res.Content, allowSelfClosingScripts)
 
 	// Extension probing.
 	if cfg.StripExtensionProbing {
@@ -316,11 +327,69 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 		prefix += "x"
 	}
 
+	var masked, script strings.Builder
+	var scripts []maskedHTMLScript
+	inScript := false
+	z := html.NewTokenizer(strings.NewReader(doc))
+	for {
+		tokenType := z.Next()
+		raw := string(z.Raw())
+		if tokenType == html.ErrorToken {
+			if inScript {
+				script.WriteString(raw)
+				placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
+				scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: script.String()})
+				masked.WriteString(placeholder)
+			} else {
+				masked.WriteString(raw)
+			}
+			break
+		}
+
+		isScript := false
+		if tokenType == html.StartTagToken || tokenType == html.SelfClosingTagToken || tokenType == html.EndTagToken {
+			name, _ := z.TagName()
+			isScript = bytes.EqualFold(name, []byte("script"))
+		}
+
+		if inScript {
+			script.WriteString(raw)
+			if tokenType == html.EndTagToken && isScript {
+				placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
+				scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: script.String()})
+				masked.WriteString(placeholder)
+				script.Reset()
+				inScript = false
+			}
+			continue
+		}
+
+		if (tokenType == html.StartTagToken || tokenType == html.SelfClosingTagToken) && isScript {
+			script.WriteString(raw)
+			inScript = true
+			continue
+		}
+		masked.WriteString(raw)
+	}
+
+	return masked.String(), scripts
+}
+
+func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScripts bool) (string, []maskedHTMLScript) {
+	if !allowSelfClosingScripts {
+		return e.maskHTMLScripts(doc)
+	}
+
+	prefix := "\x00pipelock-inline-script-"
+	for strings.Contains(doc, prefix) {
+		prefix += "x"
+	}
+
 	var masked strings.Builder
 	var scripts []maskedHTMLScript
 	remaining := doc
 	for {
-		open := e.findHTMLScriptOpen(remaining)
+		open := e.findHTMLScriptOpenWithCDATA(remaining, allowSelfClosingScripts)
 		if open < 0 {
 			masked.WriteString(remaining)
 			break
@@ -331,7 +400,7 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 		end := len(fromOpen)
 		if openTagEnd := htmlTagEnd(fromOpen); openTagEnd >= 0 {
 			openTag := strings.TrimSpace(fromOpen[:openTagEnd-1])
-			if strings.HasSuffix(openTag, "/") {
+			if allowSelfClosingScripts && strings.HasSuffix(openTag, "/") {
 				end = openTagEnd
 			} else if closeTag := e.htmlScriptClose.FindStringIndex(fromOpen[openTagEnd:]); closeTag != nil {
 				end = openTagEnd + closeTag[1]
@@ -348,6 +417,10 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 }
 
 func (e *Engine) findHTMLScriptOpen(doc string) int {
+	return e.findHTMLScriptOpenWithCDATA(doc, false)
+}
+
+func (e *Engine) findHTMLScriptOpenWithCDATA(doc string, allowCDATA bool) int {
 	for offset := 0; offset < len(doc); {
 		relative := strings.IndexByte(doc[offset:], '<')
 		if relative < 0 {
@@ -363,7 +436,7 @@ func (e *Engine) findHTMLScriptOpen(doc string) int {
 			}
 			offset = candidate + 4 + end + len("-->")
 			continue
-		case strings.HasPrefix(rest, "<![CDATA["):
+		case allowCDATA && strings.HasPrefix(rest, "<![CDATA["):
 			end := strings.Index(rest[9:], "]]>")
 			if end < 0 {
 				return -1

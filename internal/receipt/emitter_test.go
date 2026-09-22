@@ -1293,7 +1293,7 @@ func TestRecorderFiles_IgnoresForeignSessionSharingPrefix(t *testing.T) {
 		}
 	}
 
-	files, err := recorderFiles(dir)
+	files, err := recorderFiles(dir, recorderSessionID)
 	if err != nil {
 		t.Fatalf("recorderFiles: %v", err)
 	}
@@ -1319,7 +1319,7 @@ func TestRecorderFiles_SortsUint64SequenceStarts(t *testing.T) {
 		}
 	}
 
-	files, err := recorderFiles(dir)
+	files, err := recorderFiles(dir, recorderSessionID)
 	if err != nil {
 		t.Fatalf("recorderFiles: %v", err)
 	}
@@ -1336,7 +1336,7 @@ func TestRecorderFiles_EmptyDir(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	files, err := recorderFiles(dir)
+	files, err := recorderFiles(dir, recorderSessionID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1348,7 +1348,7 @@ func TestRecorderFiles_EmptyDir(t *testing.T) {
 func TestRecorderFiles_EmptyDirString(t *testing.T) {
 	t.Parallel()
 
-	files, err := recorderFiles("")
+	files, err := recorderFiles("", recorderSessionID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1360,7 +1360,7 @@ func TestRecorderFiles_EmptyDirString(t *testing.T) {
 func TestRecorderFiles_BadDir(t *testing.T) {
 	t.Parallel()
 
-	_, err := recorderFiles("/nonexistent/dir")
+	_, err := recorderFiles("/nonexistent/dir", recorderSessionID)
 	if err == nil {
 		t.Fatal("expected error for nonexistent dir")
 	}
@@ -1498,5 +1498,86 @@ func TestMergeReceiptExtensions_RejectionPaths(t *testing.T) {
 		if string(got[k]) != v {
 			t.Fatalf("control failed: merged[%q] = %s, want %s", k, got[k], v)
 		}
+	}
+}
+
+// TestNewEmitter_CustomSessionHonoredEndToEnd is the wiring proof for
+// EmitterConfig.Session: a caller-supplied session (the shape a minted run
+// session takes) must actually be the session the emitter records under, in
+// the on-disk shard name, in the recorded entry, and in the receipt's own
+// RecorderSession field - not silently overridden by the historical "proxy"
+// default.
+func TestNewEmitter_CustomSessionHonoredEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	defer func() { _ = rec.Close() }()
+
+	const customSession = "proxy.run.deadbeefdeadbeefdeadbeefdeadbeef"
+	if err := rec.AcquireSession(customSession); err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+		Session:    customSession,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter returned nil")
+	}
+	if e.InitError() != nil {
+		t.Fatalf("InitError: %v", e.InitError())
+	}
+	emitSessionOpenForTest(t, e)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var sawCustom bool
+	for _, de := range entries {
+		if strings.Contains(de.Name(), customSession) {
+			sawCustom = true
+		}
+		if strings.HasPrefix(de.Name(), "evidence-"+recorderSessionID+"-") {
+			t.Fatalf("found a shard under the default session %q; custom Session was not honored: %s",
+				recorderSessionID, de.Name())
+		}
+	}
+	if !sawCustom {
+		t.Fatalf("no on-disk shard named for custom session %q; entries: %v", customSession, entries)
+	}
+}
+
+// TestNewEmitter_DefaultSessionUnchangedWhenUnset is the compatibility half
+// of the same proof: leaving EmitterConfig.Session unset must still produce
+// the historical literal "proxy" session, so every existing direct-
+// construction caller and test is unaffected.
+func TestNewEmitter_DefaultSessionUnchangedWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	defer func() { _ = rec.Close() }()
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter returned nil")
+	}
+	if e.session != recorderSessionID {
+		t.Fatalf("session = %q, want default %q", e.session, recorderSessionID)
 	}
 }

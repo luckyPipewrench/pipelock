@@ -112,6 +112,16 @@ type Emitter struct {
 	runNonce               string
 	nativeAEL              *aelpkg.Emitter
 
+	// session is the recorder session ID this emitter records under. It
+	// defaults to recorderSessionID for callers that do not set
+	// EmitterConfig.Session (every production caller now sets it to a
+	// process-unique run session minted by recorder.AcquireRunSession; tests
+	// that construct an Emitter directly keep the historical literal
+	// default). Every Record call in this file must use this field, never
+	// the bare recorderSessionID constant, so a caller-supplied run session
+	// is actually honored end to end.
+	session string
+
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
 	chainSeq      uint64
@@ -187,6 +197,14 @@ type EmitterConfig struct {
 	// expected liveness interval off the run anchor. 0 (the default) means the
 	// cadence is unset / heartbeats disabled.
 	HeartbeatSeconds int
+	// Session is the recorder session ID this emitter records under. Every
+	// production caller sets this to the SAME run session ID that
+	// recorder.AcquireRunSession returned for cfg.Recorder, so every writer
+	// sharing that recorder agrees on one session and the recorder's
+	// one-session-per-recorder enforcement never sees a mismatch between
+	// siblings. Empty defaults to the historical literal "proxy" so existing
+	// direct-construction tests are unaffected.
+	Session string
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -208,6 +226,10 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		return nil
 	}
 	runNonce, nonceErr := newRunNonce()
+	session := cfg.Session
+	if session == "" {
+		session = recorderSessionID
+	}
 	e := &Emitter{
 		recorder:            cfg.Recorder,
 		privKey:             cfg.PrivKey,
@@ -221,6 +243,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		postureBinding:      cfg.PostureBinding,
 		postureAvailability: cfg.PostureAvailability,
 		heartbeatSeconds:    cfg.HeartbeatSeconds,
+		session:             session,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -401,7 +424,7 @@ func (e *Emitter) EmitSessionOpen() error {
 			Open: &SessionOpen{
 				RunNonce:             e.runNonce,
 				OpenNonce:            openNonce,
-				RecorderSession:      recorderSessionID,
+				RecorderSession:      e.session,
 				HeartbeatSeconds:     e.heartbeatSeconds,
 				PolicyHash:           configHashString(e.configHash.Load()),
 				SignerKeyEpoch:       fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
@@ -716,7 +739,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	closeControl := isSessionCloseControl(sessionControl)
 
 	entry := recorder.Entry{
-		SessionID: recorderSessionID,
+		SessionID: e.session,
 		Type:      recorderEntryType,
 		EventKind: string(ar.ActionType),
 		Transport: opts.Transport,
@@ -1022,7 +1045,7 @@ func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionContr
 	out := cloneSessionControl(in)
 	open := out.Open
 	open.RunNonce = e.runNonce
-	open.RecorderSession = recorderSessionID
+	open.RecorderSession = e.session
 	open.PolicyHash = configHashString(e.configHash.Load())
 	open.SignerKeyEpoch = fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
 	open.ChainOpenSeq = e.chainSeq
@@ -1075,7 +1098,7 @@ func (e *Emitter) receiptHashRecorded(wantHash string) bool {
 	if e == nil || e.recorder == nil || wantHash == "" {
 		return false
 	}
-	files, err := recorderFiles(e.recorder.Dir())
+	files, err := recorderFiles(e.recorder.Dir(), e.session)
 	if err != nil {
 		return false
 	}
@@ -1199,7 +1222,7 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 	}
 
 	if err := e.recorder.Record(recorder.Entry{
-		SessionID: recorderSessionID,
+		SessionID: e.session,
 		Type:      transcriptRootEntryType,
 		EventKind: transcriptRootEntryType,
 		Summary:   fmt.Sprintf("transcript_root: %d receipts, root=%s", root.ReceiptCount, root.RootHash[:16]),
@@ -1292,7 +1315,7 @@ func (e *Emitter) resumeChain() error {
 		return nil
 	}
 
-	files, err := recorderFiles(e.recorder.Dir())
+	files, err := recorderFiles(e.recorder.Dir(), e.session)
 	if err != nil {
 		return err
 	}
@@ -1441,7 +1464,7 @@ func receiptBytesFromEntry(entry recorder.Entry) ([]byte, error) {
 	return detailJSON, nil
 }
 
-func recorderFiles(dir string) ([]string, error) {
+func recorderFiles(dir, session string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -1472,7 +1495,7 @@ func recorderFiles(dir string) ([]string, error) {
 			continue
 		}
 		parsedSession, seqStart, ok := recorder.ParseEvidenceFilename(name)
-		if !ok || parsedSession != recorderSessionID {
+		if !ok || parsedSession != session {
 			continue
 		}
 		shards = append(shards, shard{

@@ -1472,7 +1472,7 @@ func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T
 	live := `table inet pipelock_containment {
 	chain output_filter { type filter hook output priority filter; policy accept;
 	meta skuid 987 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 70
-	meta skuid 987 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x1 ct mark set 0x504c4b01 accept # handle 71
+	meta skuid 987 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 ct mark set 0x504c4b01 accept # handle 71
 	}
 }`
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)

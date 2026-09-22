@@ -580,7 +580,10 @@ func lineHasLegacyOwnedLoopbackMark(line string, agentUID int) bool {
 			return false
 		}
 	}
-	return (fields[15] == "new" || fields[15] == "0x1") &&
+	// `nft -n` prints conntrack state as its bitmask: new is 0x8 (invalid 0x1,
+	// established 0x2, related 0x4). The reload reads the chain with -n, so the
+	// numeric form is the one that decides whether these rules are removed.
+	return (fields[15] == "new" || fields[15] == "0x8") &&
 		fields[16] == "ct" && fields[17] == "mark" && fields[18] == "set" &&
 		fields[19] == legacyOwnedLoopbackMark && fields[20] == "accept"
 }

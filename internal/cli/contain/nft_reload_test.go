@@ -665,3 +665,66 @@ func TestRenderNFTManagedChainReloadScriptMigratesLiveInterleavedOwnedLoopbackBl
 		t.Fatalf("verify rejects the migrated chain:\n%s", strings.Join(migrated, "\n"))
 	}
 }
+
+// TestRenderNFTManagedChainReloadScriptMigratesNumericLiveChain replays the
+// same host chain as the reload actually reads it (`nft -n -a list chain`),
+// after an earlier reload had already removed the established-mark rules. In
+// this form conntrack state prints as a bitmask, so `ct state new` is 0x8.
+func TestRenderNFTManagedChainReloadScriptMigratesNumericLiveChain(t *testing.T) {
+	t.Parallel()
+	const (
+		operatorUID = 1000
+		proxyUID    = 967
+		agentUID    = 966
+		proxyPort   = 8888
+	)
+	live := strings.Join([]string{
+		`table inet pipelock_containment {`,
+		`        chain output_filter { # handle 1`,
+		`                type filter hook output priority 0; policy accept;`,
+		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state 0x2 ct direction 1 accept # handle 617`,
+		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state 0x2 ct direction 1 accept # handle 616`,
+		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 counter packets 16002 bytes 960120 comment "probe-exact" # handle 538`,
+		`                meta skuid 966 oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" counter packets 230998 bytes 66920070 comment "probe-cgroup" # handle 537`,
+		`                meta skuid 966 oifname "lo" counter packets 325562 bytes 80069204 comment "probe-uid-lo" # handle 536`,
+		`                meta skuid 1000 accept # handle 560`,
+		`                meta skuid 967 accept # handle 561`,
+		`                meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 562`,
+		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9222 accept # handle 563`,
+		`                meta skuid 966 oifname "lo" ip saddr 127.0.0.1 tcp sport 9222 ct state 0x2 ct direction 1 accept # handle 564`,
+		`                meta skuid 966 oifname "lo" ip6 daddr ::1 tcp dport 9222 accept # handle 565`,
+		`                meta skuid 966 oifname "lo" ip6 saddr ::1 tcp sport 9222 ct state 0x2 ct direction 1 accept # handle 566`,
+		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 ct mark set 0x504c4b01 accept # handle 567`,
+		`                meta skuid 966 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 ct mark set 0x504c4b01 accept # handle 568`,
+		`                meta skuid 966 udp dport 53 counter packets 188 bytes 11920 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 571`,
+		`                meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 572`,
+		`                meta skuid 966 counter packets 11359 bytes 780840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 573`,
+		`                meta skuid 1000 accept # handle 702`,
+		`                meta skuid 967 accept # handle 703`,
+		`                meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 704`,
+		`                meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 705`,
+		`                meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop # handle 706`,
+		`                meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop # handle 707`,
+		`        }`,
+		`}`,
+	}, "\n")
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID, false)
+	const deletePrefix = "delete rule inet pipelock_containment output_filter handle "
+	for _, handle := range []int{560, 561, 562, 563, 564, 565, 566, 567, 568, 571, 572, 573, 702, 703, 704, 705, 706, 707} {
+		if n := strings.Count(script, deletePrefix+itoa(handle)+"\n"); n != 1 {
+			t.Fatalf("reload script deletes managed or superseded handle %d %d times, want once:\n%s", handle, n, script)
+		}
+	}
+	for _, handle := range []int{536, 537, 538, 616, 617} {
+		if strings.Contains(script, deletePrefix+itoa(handle)+"\n") {
+			t.Fatalf("reload script removed operator handle %d:\n%s", handle, script)
+		}
+	}
+	if !strings.HasSuffix(script, body) {
+		t.Fatalf("reload script does not finish by loading one canonical ruleset:\n%s", script)
+	}
+	if liveNFTContainmentMatches(live, defaultNFTChain, operatorUID, proxyUID, agentUID, proxyPort) {
+		t.Fatal("install drift check accepted the live chain, so install would skip the reload")
+	}
+}

@@ -161,6 +161,9 @@ func executeDeferApprovalResolver(
 	args := append([]string(nil), profile.Exec[1:]...)
 	cmd := configValidatedCommand(ctx, profile.Exec[0], args...)
 	setupChildProcessGroup(cmd)
+	// Bound Go's output-copy wait even when an escaped writer isn't adopted.
+	// Set this before Start, which also starts CommandContext's watcher.
+	cmd.WaitDelay = defaultParentExitGrace
 	cmd.Env = safeEnv()
 	if integrityCfg != nil && integrityCfg.Enabled {
 		if err := VerifyBinaryIntegrity(profile.Exec, integrityCfg, logW); err != nil {
@@ -195,12 +198,19 @@ func executeDeferApprovalResolver(
 	stderr.limit = maxDeferResolverOutputBytes
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// Resolver commands share the proxy's process-wide descendant cleanup.
+	// Start and claim together so a sibling cannot kill or reap this child.
+	unlockStart := lockChildStart()
 	if err := cmd.Start(); err != nil {
+		unlockStart()
 		if ctx.Err() != nil {
 			return config.ActionBlock, ctx.Err()
 		}
 		return config.ActionBlock, fmt.Errorf("defer resolver failed to start: %w", err)
 	}
+	releaseChild := protectDirectChild(cmd.Process.Pid)
+	unlockStart()
+	defer releaseChild()
 	pgid := captureChildPgid(cmd.Process.Pid)
 	processExit := &processExitHandoff{}
 	waitErr := waitForCommandWithProcessGroup(ctx, cmd, pgid, processExit)

@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -17,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "scripts" / "ci-test-with-retry.sh"
+SUPERVISOR = ROOT / "scripts" / "ci_process_supervisor.py"
 SIGTERM_DESCENDANT_SCRIPT = r'''
 state=${CI_RETRY_STATE:?}
 descendant_file="${state}.descendant"
@@ -59,6 +62,9 @@ def run_wrapper(
     packages: str = "example.com/p/pkg",
     args: list[str] | None = None,
     env_overrides: dict[str, str] | None = None,
+    attempt_timeout_seconds: str | None = None,
+    harness_timeout_seconds: float = 30,
+    cwd: Path = ROOT,
 ) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         env = os.environ.copy()
@@ -70,6 +76,8 @@ def run_wrapper(
             str(WRAPPER),
             "--packages",
             packages,
+            *(["--attempt-timeout-seconds", attempt_timeout_seconds]
+              if attempt_timeout_seconds is not None else []),
             "--",
             "bash",
             "-c",
@@ -77,23 +85,311 @@ def run_wrapper(
             "fake-go",
             *(args or []),
         ]
-        return subprocess.run(
-            cmd,
-            cwd=ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
+        launch = cmd
+        if sys.platform == "linux":
+            launch = [sys.executable, str(SUPERVISOR), "--status-file",
+                      str(Path(tmp) / "harness-supervision.json"), "--", *cmd]
+        process = subprocess.Popen(
+            launch, cwd=cwd, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=harness_timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                # The harness supervisor owns the whole wrapper tree, including
+                # capture readers that detached after the command completed.
+                process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=5)
+                raise AssertionError(
+                    f"ci-test-with-retry did not finish within {harness_timeout_seconds:g} seconds"
+                ) from exc
+            return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+        finally:
+            # Popen.__exit__ performs an unbounded wait, including after an
+            # unsuccessful kill. Close our streams without adding that wait.
+            process.stdout.close()
+            process.stderr.close()
 
 
 def terminate_and_reap(process: subprocess.Popen[str]) -> None:
     if process.poll() is None:
-        process.kill()
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
     process.wait(timeout=5)
 
 
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_helpers_preserve_another_command_directory(self) -> None:
+        scripts = {
+            "success": "pwd -P",
+            "timeout_retry": r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"panic: test timed out after 15m0s\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":900}'
+  exit 1
+fi
+pwd -P
+''',
+        }
+        for name, script in scripts.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                result = run_wrapper(
+                    script, cwd=Path(tmp), attempt_timeout_seconds="5",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.splitlines()[-1], str(Path(tmp).resolve()))
+                self.assertNotIn("can't open file", result.stderr)
+                if name == "timeout_retry":
+                    self.assertIn("Go test package timing", result.stderr)
+                    self.assertIn("failed then passed on rerun", result.stderr)
+                    self.assertNotIn("failed to summarize", result.stderr)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
+    def test_completed_supervision_does_not_probe_reaped_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "signal-calls"
+            bash_env = Path(tmp) / "bash-env"
+            bash_env.write_text(
+                'kill() { printf "%s\\n" "$*" >> "$SIGNAL_PROBE"; '
+                'builtin kill "$@"; }\n', encoding="utf-8",
+            )
+            result = run_wrapper(
+                "exit 0", attempt_timeout_seconds="5",
+                env_overrides={"BASH_ENV": str(bash_env), "SIGNAL_PROBE": str(calls)},
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(calls.exists(), "completed supervision used a reusable process group")
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
+    def test_supervisor_reaps_detached_children_before_returning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            holder = Path(tmp) / "holder-pid"
+            status = Path(tmp) / "status.json"
+            try:
+                with (Path(tmp) / "output").open("w") as output:
+                    result = subprocess.run(
+                        [sys.executable, str(SUPERVISOR), "--status-file", str(status),
+                         "--", sys.executable, "-c",
+                         "import pathlib, subprocess, sys; "
+                         "child = subprocess.Popen([sys.executable, '-c', "
+                         "'import time; time.sleep(60)'], start_new_session=True); "
+                         "pathlib.Path(sys.argv[1]).write_text(str(child.pid))",
+                         str(holder)],
+                        stdout=output, stderr=output, timeout=10, check=False,
+                    )
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(holder.read_text()), 0)
+                self.assertEqual(result.returncode, 125)
+                report = json.loads(status.read_text())
+                self.assertTrue(report["cleanup_complete"])
+                self.assertTrue(report["unexpected_live_descendants"])
+            finally:
+                if holder.exists():
+                    try:
+                        os.kill(int(holder.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
+    def test_harness_deadline_reaps_detached_capture_readers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_tee = Path(tmp) / "tee"
+            fake_tee.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib, time\n"
+                "os.setsid()\n"
+                "pathlib.Path(os.environ['HOLDER_DIRECTORY'], "
+                "str(os.getpid()) + '.pid').write_text(str(os.getpid()))\n"
+                "time.sleep(60)\n",
+                encoding="utf-8",
+            )
+            fake_tee.chmod(0o700)
+            try:
+                with self.assertRaisesRegex(AssertionError, "did not finish within 3 seconds"):
+                    run_wrapper(
+                        "printf captured", attempt_timeout_seconds="120",
+                        harness_timeout_seconds=3,
+                        env_overrides={"HOLDER_DIRECTORY": tmp,
+                                       "PATH": f"{tmp}:{os.environ['PATH']}"},
+                    )
+                holders = list(Path(tmp).glob("*.pid"))
+                self.assertEqual(len(holders), 2)
+                for holder in holders:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(int(holder.read_text()), 0)
+            finally:
+                for holder in Path(tmp).glob("*.pid"):
+                    try:
+                        os.kill(int(holder.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
+    def test_harness_deadline_reports_an_assertion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            holder_file = Path(tmp) / "holder-pids"
+            try:
+                with self.assertRaisesRegex(AssertionError, "did not finish within 3 seconds"):
+                    run_wrapper(
+                        r'''exec python3 -c 'import json, os, subprocess, sys, time; child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True); open(os.environ["HOLDER_FILE"], "w").write(json.dumps([os.getpid(), child.pid])); time.sleep(60)' ''',
+                        env_overrides={"HOLDER_FILE": str(holder_file)},
+                        harness_timeout_seconds=3,
+                    )
+                for pid in json.loads(holder_file.read_text()):
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+            finally:
+                if holder_file.exists():
+                    for pid in json.loads(holder_file.read_text()):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
+    def test_command_exit_reaps_escaped_fifo_writers(self) -> None:
+        unrelated = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(terminate_and_reap, unrelated)
+        with tempfile.TemporaryDirectory() as tmp:
+            holder_file = Path(tmp) / "holder-pid"
+
+            def cleanup_holder() -> None:
+                if holder_file.exists():
+                    try:
+                        os.kill(int(holder_file.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+            try:
+                result = run_wrapper(
+                    r'''
+exec python3 -c 'import os, subprocess, sys; child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True); open(os.environ["HOLDER_FILE"], "w").write(str(child.pid)); print("command completed", flush=True)'
+''',
+                    attempt_timeout_seconds="1",
+                    env_overrides={"HOLDER_FILE": str(holder_file)},
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("command completed", result.stdout)
+                self.assertIn("did not complete with clean descendants", result.stderr)
+                self.assertNotIn("FLAKE RETRY", result.stderr)
+                # The production supervisor must reap the holder before the
+                # fixture cleanup below can supply the missing termination.
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(holder_file.read_text()), 0)
+                self.assertIsNone(unrelated.poll(), "cleanup terminated an unrelated command")
+            finally:
+                cleanup_holder()
+
+    def test_attempt_deadline_bounds_all_packages_and_cleans_the_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            group_file = Path(tmp) / "group"
+            result = run_wrapper(
+                r'''
+printf '%s\n' '{"Action":"pass","Package":"example.com/p/first"}'
+printf '%s\n' '{"Action":"start","Package":"example.com/p/second"}'
+exec python3 -c 'import os, time; open(os.environ["GROUP_FILE"], "w").write(str(os.getpgrp())); time.sleep(30)'
+''',
+                packages="example.com/p/first example.com/p/second",
+                attempt_timeout_seconds="1",
+                env_overrides={"GROUP_FILE": str(group_file)},
+            )
+            self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+            self.assertIn('"Package":"example.com/p/first"', result.stdout)
+            self.assertIn('"Package":"example.com/p/second"', result.stdout)
+            self.assertIn("first pass exceeded the whole-command deadline", result.stderr)
+            self.assertNotIn("FLAKE RETRY", result.stderr)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(int(group_file.read_text()), 0)
+
+    def test_attempt_deadline_cannot_retry_only_the_completed_failed_package(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ -e "$state" ]; then
+  echo 'incorrect partial retry'
+  exit 0
+fi
+: >"$state"
+printf '%s\n' '{"Action":"run","Package":"example.com/p/first","Test":"TestSlow"}'
+printf '%s\n' '{"Action":"output","Package":"example.com/p/first","Test":"TestSlow","Output":"panic: test timed out after 1s\n"}'
+printf '%s\n' '{"Action":"fail","Package":"example.com/p/first"}'
+printf '%s\n' '{"Action":"start","Package":"example.com/p/second"}'
+exec python3 -c 'import time; time.sleep(30)'
+''',
+            packages="example.com/p/first example.com/p/second",
+            attempt_timeout_seconds="1",
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertNotIn("incorrect partial retry", result.stdout)
+        self.assertNotIn("FLAKE RETRY", result.stderr)
+
+    def test_retry_has_its_own_whole_command_deadline(self) -> None:
+        result = run_wrapper(
+            r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"start","Package":"example.com/p/pkg"}'
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"panic: test timed out after 1s\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg"}'
+  exit 1
+fi
+printf '%s\n' 'retry started'
+exec python3 -c 'import time; time.sleep(30)'
+''',
+            attempt_timeout_seconds="1",
+        )
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertIn("retry started", result.stdout)
+        self.assertIn("retry pass exceeded the whole-command deadline", result.stderr)
+        self.assertIn("rerunning failed package(s) once", result.stderr)
+        self.assertNotIn("failed then passed", result.stderr)
+
+    def test_attempt_deadline_preserves_arguments_and_success(self) -> None:
+        result = run_wrapper(
+            'printf "%s\\n" "$@"',
+            packages="example.com/p/first example.com/p/second",
+            args=["-race", "-parallel=2"],
+            attempt_timeout_seconds="5",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "-race", "-parallel=2", "example.com/p/first", "example.com/p/second",
+        ])
+
+    def test_maximum_attempt_deadline_preserves_success(self) -> None:
+        result = run_wrapper("printf complete", attempt_timeout_seconds="86400")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "complete")
+
+    def test_invalid_attempt_deadline_refuses_before_execution(self) -> None:
+        for value in (
+            "0", "-1", "invalid", "", "01", "1+1", "1e3", "86401",
+            "9223372036854775807", "9" * 100,
+        ):
+            with self.subTest(value=value):
+                result = run_wrapper('echo executed', attempt_timeout_seconds=value)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn("executed", result.stdout)
+
     def test_process_cleanup_terminates_and_reaps_wrapper(self) -> None:
         process = subprocess.Popen(
             ["python3", "-c", "import time; time.sleep(3600)"],
@@ -161,7 +457,7 @@ wait
             with self.assertRaises(ProcessLookupError):
                 os.killpg(command_pid, 0)
             self.assertIn("interrupted pass", stderr)
-            self.assertIn("confirmed empty after KILL", stderr)
+            self.assertIn("sending TERM", stderr)
 
     def test_waits_for_capture_before_inspecting_race_output(self) -> None:
         real_tee = shutil.which("tee")
@@ -324,8 +620,7 @@ exit 0
         result = run_wrapper(SIGTERM_DESCENDANT_SCRIPT)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("sending KILL", result.stderr)
-        self.assertIn("confirmed empty after KILL", result.stderr)
+        self.assertIn("confirmed empty before rerun", result.stderr)
         self.assertNotIn("TestOverlap", result.stdout)
 
     def test_sigterm_descendant_readiness_failure_is_bounded(self) -> None:
@@ -450,7 +745,8 @@ exit 143
         with tempfile.TemporaryDirectory() as tmp:
             bash_env = Path(tmp) / "bash-env"
             bash_env.write_text(
-                r'''kill() {
+                r'''uname() { printf '%s\n' Darwin; }
+kill() {
   if [ "$1" = "-0" ]; then
     return 0
   fi
@@ -489,7 +785,8 @@ exit 0
             stdout_file = tmp_path / "stdout"
             stderr_file = tmp_path / "stderr"
             bash_env.write_text(
-                r'''kill() {
+                r'''uname() { printf '%s\n' Darwin; }
+kill() {
   if [ "$1" = "-0" ]; then
     return 0
   fi
@@ -838,7 +1135,7 @@ printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
 case " $* " in
   *" --sanitize-raw "*) exec "{real_python}" "$@" ;;
 esac
-if [ "$1" = "scripts/summarize_go_test_json.py" ]; then
+if [ "$1" = "{ROOT}/scripts/summarize_go_test_json.py" ]; then
   exit 1
 fi
 exec "{real_python}" "$@"

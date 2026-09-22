@@ -386,6 +386,27 @@ func TestProxy_ApplyShield_MalformedUTF16ContentTypeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProxy_ApplyShield_MalformedContentTypeWithUTF8BOMStillShields(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+	body := append([]byte{0xef, 0xbb, 0xbf}, []byte(`<html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`)...)
+	contentType := "text/html; charset=utf-16le; charset=UTF-16LE"
+
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+		t.Run(transport, func(t *testing.T) {
+			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
+				t.Fatalf("malformed UTF-8 BOM outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
+			}
+		})
+	}
+}
+
 func TestShieldUTF16_HelperFailureBranches(t *testing.T) {
 	t.Parallel()
 	if _, ok := shieldUTF16BOM([]byte{0}); ok {
@@ -510,6 +531,19 @@ func TestReverseShieldUTF16_BufferedAndScanHeadPaths(t *testing.T) {
 			t.Fatalf("reverse malformed scan-head response: status=%d body=%q", resp.StatusCode, body)
 		}
 	})
+	t.Run("malformed content type with UTF-8 BOM rewrites", func(t *testing.T) {
+		contentType := "text/html; charset=utf-16le; charset=UTF-16LE"
+		page := string(append([]byte{0xef, 0xbb, 0xbf}, []byte(`<html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`)...))
+		resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 4096, contentType, page)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "track.example.com") || resp.Header.Get("Content-Type") != "text/html" {
+			t.Fatalf("reverse malformed UTF-8 BOM response: status=%d content-type=%q body=%q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		}
+	})
 }
 
 func TestPartialShieldSummary_MalformedUTF16ContentTypeUsesRecoveredPipeline(t *testing.T) {
@@ -518,6 +552,11 @@ func TestPartialShieldSummary_MalformedUTF16ContentTypeUsesRecoveredPipeline(t *
 	summary := partialShieldSummary(nil, body, "text/html; charset=utf-16le; charset=UTF-16LE", len(body), len(body))
 	if summary.Pipeline != "html" {
 		t.Fatalf("pipeline = %q, want html", summary.Pipeline)
+	}
+	utf8Body := append([]byte{0xef, 0xbb, 0xbf}, []byte(`<html><body>plain</body></html>`)...)
+	utf8Summary := partialShieldSummary(nil, utf8Body, "text/html; foo=1; foo=2", len(utf8Body), len(utf8Body))
+	if utf8Summary.Pipeline != "html" {
+		t.Fatalf("UTF-8 BOM pipeline = %q, want html", utf8Summary.Pipeline)
 	}
 }
 

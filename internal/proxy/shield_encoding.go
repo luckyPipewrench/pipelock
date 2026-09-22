@@ -151,13 +151,12 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 
 // detectShieldPipeline keeps Browser Shield classification aligned with a
 // browser when Go's stricter MIME parser rejects parameters after a supported
-// media type. The fallback is narrow: it only applies to a response whose
-// bytes or first charset parameter identify UTF-16. The strict decoder then
-// rejects the malformed declaration instead of treating it as a clean skip.
+// media type. The browser retains the valid media-type essence even when later
+// parameters are malformed, so recovery is independent of response encoding.
 func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 	prefixLen := min(len(body), 512)
 	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
-	if pipeline != shield.PipelineNone || !isShieldUTF16Response(body, contentType) {
+	if pipeline != shield.PipelineNone {
 		return pipeline
 	}
 	baseType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])

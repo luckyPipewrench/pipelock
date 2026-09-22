@@ -2749,3 +2749,41 @@ func TestReverseProxy_ShieldEnabled(t *testing.T) {
 		t.Fatal("expected clean JSON passthrough with shield engine active")
 	}
 }
+
+func TestReverseProxy_ShieldSniffsPastNonHTTPWhitespace(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+	contentType := "\u00a0application/javascript; a=1; a=2"
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		_, _ = w.Write([]byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`))
+	}
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(upstream))
+	t.Cleanup(upstreamSrv.Close)
+	upstreamURL, err := url.Parse(upstreamSrv.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	resp := testGet(t, proxy.URL+"/page")
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "track.example.com") {
+		t.Fatalf("status=%d content-type=%q body=%q, want shielded HTML response", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+}

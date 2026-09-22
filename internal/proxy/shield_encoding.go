@@ -150,30 +150,72 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 }
 
 // detectShieldPipeline keeps Browser Shield classification aligned with a
-// browser when Go's stricter MIME parser rejects parameters after a supported
-// media type. The browser retains the valid media-type essence even when later
-// parameters are malformed, so recovery is independent of response encoding.
+// browser when Go's MIME parser disagrees on whitespace or rejects parameters
+// after a supported media type. The browser retains a valid ASCII media-type
+// essence when later parameters are malformed, so recovery is independent of
+// response encoding.
 func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
-	if _, _, err := mime.ParseMediaType(contentType); err != nil {
-		baseType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
-		mediaType, _, baseErr := mime.ParseMediaType(baseType)
-		if baseErr == nil && mediaType != "" {
-			if recovered := shield.DetectPipeline(mediaType, nil); recovered != shield.PipelineNone {
-				return recovered
+	baseType, validBase := shieldMediaTypeEssence(contentType)
+	if validBase {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err == nil {
+			pipeline := shield.DetectPipeline(mediaType, nil)
+			if pipeline != shield.PipelineNone || (mediaType != "" && mediaType != contentTypeOctetStream) {
+				return pipeline
 			}
+		} else if recovered := shield.DetectPipeline(baseType, nil); recovered != shield.PipelineNone {
+			return recovered
 		}
 	}
 	prefixLen := min(len(body), 512)
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
+	pipeline := shield.DetectPipeline("", body[:prefixLen])
 	if pipeline != shield.PipelineNone {
 		return pipeline
 	}
-	baseType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
-	mediaType, _, err := mime.ParseMediaType(baseType)
-	if err != nil || mediaType == "" {
+	if !validBase {
 		return pipeline
 	}
-	return shield.DetectPipeline(mediaType, nil)
+	return shield.DetectPipeline(baseType, nil)
+}
+
+// shieldMediaTypeEssence accepts only the ASCII token grammar and HTTP
+// whitespace used by browsers. Go's MIME parser trims Unicode whitespace,
+// which can turn a browser-invalid field into an authoritative active type.
+func shieldMediaTypeEssence(contentType string) (string, bool) {
+	baseType := contentType
+	if idx := strings.IndexByte(baseType, ';'); idx >= 0 {
+		baseType = baseType[:idx]
+	}
+	baseType = strings.TrimFunc(baseType, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	typeName, subtype, ok := strings.Cut(baseType, "/")
+	if !ok || typeName == "" || subtype == "" || strings.Contains(subtype, "/") {
+		return "", false
+	}
+	for i := 0; i < len(typeName); i++ {
+		if !shieldMIMETypeTokenByte(typeName[i]) {
+			return "", false
+		}
+	}
+	for i := 0; i < len(subtype); i++ {
+		if !shieldMIMETypeTokenByte(subtype[i]) {
+			return "", false
+		}
+	}
+	return strings.ToLower(baseType), true
+}
+
+func shieldMIMETypeTokenByte(b byte) bool {
+	if b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' {
+		return true
+	}
+	switch b {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
 }
 
 // shieldDeclaredCharset returns the first charset parameter even when a later

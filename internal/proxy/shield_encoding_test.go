@@ -389,6 +389,26 @@ func TestDetectShieldPipeline_MalformedParametersPreferDeclaredEssence(t *testin
 	}
 }
 
+func TestDetectShieldPipeline_NonHTTPWhitespaceDoesNotAuthorizeEssence(t *testing.T) {
+	t.Parallel()
+	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
+	tests := []struct {
+		name        string
+		contentType string
+	}{
+		{"non-breaking space with duplicate parameters", "\u00a0application/javascript; a=1; a=2"},
+		{"em space with valid parameters", "\u2003application/javascript; charset=utf-8"},
+		{"raw non-breaking space byte", "\xa0application/javascript; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectShieldPipeline(tt.contentType, body); got != shield.PipelineHTML {
+				t.Fatalf("pipeline = %v, want HTML body sniff", got)
+			}
+		})
+	}
+}
+
 func TestProxy_ApplyShield_MalformedDeclaredEssenceTransportParity(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)
@@ -414,6 +434,27 @@ func TestProxy_ApplyShield_MalformedDeclaredEssenceTransportParity(t *testing.T)
 				}
 			})
 		}
+	}
+}
+
+func TestProxy_ApplyShield_NonHTTPWhitespaceTransportParity(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.StripExtensionProbing = false
+	cfg.BrowserShield.StripTrackingPixels = true
+	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
+	contentType := "\u00a0application/javascript; a=1; a=2"
+
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+		t.Run(transport, func(t *testing.T) {
+			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked != nil || summary == nil || summary.Pipeline != "html" || strings.Contains(string(out), "track.example.com") {
+				t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
+			}
+		})
 	}
 }
 

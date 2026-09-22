@@ -115,14 +115,21 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 	}
 	svgForeignRe, svgEventRe, svgXlinkRe, svgHrefRe, svgHiddenStyleRe, svgHiddenAttrRe, svgAnimRe := compileSVGActivePatterns()
 	return &Engine{
-		extensionRe:             extRe,
-		trackingPixelRe:         trackRe,
-		hiddenTrapRe:            trapRe,
-		commentTrapRe:           commentRe,
-		functionStripRe:         funcRe,
-		htmlScriptOpen:          regexp.MustCompile(`(?i)<script\b`),
-		htmlScriptClose:         regexp.MustCompile(`(?is)</script\s*>`),
-		svgScriptRe:             regexp.MustCompile(`(?is)<(?:[\w-]+:)?script\b[^>]*>.*?</(?:[\w-]+:)?script\s*>|<(?:[\w-]+:)?script\b[^>]*/\s*>`),
+		extensionRe:     extRe,
+		trackingPixelRe: trackRe,
+		hiddenTrapRe:    trapRe,
+		commentTrapRe:   commentRe,
+		functionStripRe: funcRe,
+		// `\b` also matches before `-` and `:`, so `<script-proxy>` read as a
+		// script start, no `</script>` was found, and the rest of the document
+		// was masked out of every rewrite pass. Require a real element-name
+		// boundary: whitespace, `>`, `/`, or end of input.
+		htmlScriptOpen:  regexp.MustCompile(`(?i)<script(?:[\s/>]|$)`),
+		htmlScriptClose: regexp.MustCompile(`(?is)</script\s*>`),
+		// Attribute values may contain `>`, so `[^>]*` ended the tag early and a
+		// self-closing script element survived. Consume quoted values whole, and
+		// require the same element-name boundary as above.
+		svgScriptRe:             regexp.MustCompile(`(?is)<(?:[\w-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?>.*?</(?:[\w-]+:)?script\s*>|<(?:[\w-]+:)?script(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?/\s*>`),
 		svgForeignObjectRe:      svgForeignRe,
 		svgEventHandlerRe:       svgEventRe,
 		svgXlinkExternalRe:      svgXlinkRe,
@@ -473,10 +480,18 @@ func htmlTagEnd(tag string) int {
 }
 
 func restoreHTMLScripts(doc string, scripts []maskedHTMLScript) string {
-	for _, script := range scripts {
-		doc = strings.ReplaceAll(doc, script.placeholder, script.content)
+	if len(scripts) == 0 {
+		return doc
 	}
-	return doc
+	// One pass over the document rather than one per script. Replacing in a
+	// loop costs document size times script count, which a response full of
+	// tiny scripts can turn into real proxy CPU while staying under the
+	// shield's size limit.
+	replacements := make([]string, 0, len(scripts)*2)
+	for _, script := range scripts {
+		replacements = append(replacements, script.placeholder, script.content)
+	}
+	return strings.NewReplacer(replacements...).Replace(doc)
 }
 
 // stripTraps removes hidden DOM traps and comment traps.

@@ -81,7 +81,12 @@ type Engine struct {
 	functionStripRe *regexp.Regexp
 	htmlScriptOpen  *regexp.Regexp // locates inline scripts that HTML passes must preserve
 	htmlScriptClose *regexp.Regexp
-	svgScriptRe     *regexp.Regexp // removes whole <script> elements inside SVG
+	// XML element names are case sensitive, so <SCRIPT> in an XHTML document is
+	// an ordinary unknown element whose child markup must still be rewritten.
+	// Matching it case-insensitively masked that child markup out of every pass.
+	xmlScriptOpen  *regexp.Regexp
+	xmlScriptClose *regexp.Regexp
+	svgScriptRe    *regexp.Regexp // removes whole <script> elements inside SVG
 
 	// SVG active content regexes. Kept separate from the HTML/JS set so
 	// a future SVG-only engine variant can initialize only the patterns
@@ -126,6 +131,8 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		// boundary: whitespace, `>`, `/`, or end of input.
 		htmlScriptOpen:  regexp.MustCompile(`(?i)<script(?:[\s/>]|$)`),
 		htmlScriptClose: regexp.MustCompile(`(?is)</script\s*>`),
+		xmlScriptOpen:   regexp.MustCompile(`<script(?:[\s/>]|$)`),
+		xmlScriptClose:  regexp.MustCompile(`(?s)</script\s*>`),
 		// Attribute values may contain `>`, so `[^>]*` ended the tag early and a
 		// self-closing script element survived. Consume quoted values whole, and
 		// require the same element-name boundary as above.
@@ -417,6 +424,40 @@ func (e *Engine) maskHTMLScripts(doc string) (string, []maskedHTMLScript) {
 	return masked.String(), scripts
 }
 
+// scriptCloseIndex returns the offset of the closing script tag, skipping over
+// complete CDATA sections and comments. A raw search stops at a `</script>`
+// written inside CDATA, which is legal script content; masking then ended
+// early, the remaining script bytes became visible to every rewrite pass, and
+// an extension URL after that point was stripped out of the JavaScript.
+func scriptCloseIndex(re *regexp.Regexp, body string) int {
+	for i := 0; i < len(body); {
+		rest := body[i:]
+		if strings.HasPrefix(rest, "<![CDATA[") {
+			if end := strings.Index(rest, "]]>"); end >= 0 {
+				i += end + len("]]>")
+				continue
+			}
+			return -1 // Unterminated: no closing tag is reachable.
+		}
+		if strings.HasPrefix(rest, "<!--") {
+			if end := strings.Index(rest, "-->"); end >= 0 {
+				i += end + len("-->")
+				continue
+			}
+			return -1
+		}
+		next := strings.IndexAny(rest, "<")
+		if next < 0 {
+			return -1
+		}
+		if loc := re.FindStringIndex(rest[next:]); loc != nil && loc[0] == 0 {
+			return i + next
+		}
+		i += next + 1
+	}
+	return -1
+}
+
 func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScripts bool) (string, []maskedHTMLScript) {
 	if !allowSelfClosingScripts {
 		return e.maskHTMLScripts(doc)
@@ -441,8 +482,9 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 			openTag := strings.TrimSpace(fromOpen[:openTagEnd-1])
 			if allowSelfClosingScripts && strings.HasSuffix(openTag, "/") {
 				end = openTagEnd
-			} else if closeTag := e.htmlScriptClose.FindStringIndex(fromOpen[openTagEnd:]); closeTag != nil {
-				end = openTagEnd + closeTag[1]
+			} else if closeAt := scriptCloseIndex(e.xmlScriptClose, fromOpen[openTagEnd:]); closeAt >= 0 {
+				closeTag := e.xmlScriptClose.FindStringIndex(fromOpen[openTagEnd+closeAt:])
+				end = openTagEnd + closeAt + closeTag[1]
 			}
 		}
 
@@ -455,8 +497,8 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 		contentStart, contentEnd := 0, end
 		if openTagEnd := htmlTagEnd(fromOpen); openTagEnd >= 0 && openTagEnd <= end {
 			contentStart = openTagEnd
-			if closeTag := e.htmlScriptClose.FindStringIndex(fromOpen[openTagEnd:end]); closeTag != nil {
-				contentEnd = openTagEnd + closeTag[0]
+			if closeAt := scriptCloseIndex(e.xmlScriptClose, fromOpen[openTagEnd:end]); closeAt >= 0 {
+				contentEnd = openTagEnd + closeAt
 			}
 		}
 		masked.WriteString(fromOpen[:contentStart])
@@ -499,7 +541,13 @@ func (e *Engine) findHTMLScriptOpenWithCDATA(doc string, allowCDATA bool) int {
 			continue
 		}
 
-		if match := e.htmlScriptOpen.FindStringIndex(rest); match != nil && match[0] == 0 {
+		// allowCDATA marks the XHTML caller, where element names are case
+		// sensitive: <SCRIPT> there is an ordinary element, not a script.
+		opener := e.htmlScriptOpen
+		if allowCDATA {
+			opener = e.xmlScriptOpen
+		}
+		if match := opener.FindStringIndex(rest); match != nil && match[0] == 0 {
 			return candidate
 		}
 		end := htmlTagEnd(rest)

@@ -205,3 +205,50 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 		t.Fatal("rewrite did not finish: the placeholder search is still superlinear")
 	}
 }
+
+// TestXHTMLScriptCDATACloseDoesNotEndMasking covers a JavaScript-corruption
+// path. A closing script tag written INSIDE a CDATA section is legal script
+// content, but the raw close search stopped there, so the rest of the script
+// became visible to the rewrite passes and an extension URL after that point was
+// stripped out of the code the browser would run.
+func TestXHTMLScriptCDATACloseDoesNotEndMasking(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	js := `var s = "</script>"; var probe = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/p";`
+	doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body><script><![CDATA[` + js + `]]></script>` +
+		`<img width="1" height="1" src="https://track.example.com/px"/></body></html>`
+
+	res := e.Rewrite(doc, PipelineXHTML, &cfg)
+	if !strings.Contains(res.Content, js) {
+		t.Errorf("script bytes were modified.\nwant substring: %s\ngot: %s", js, res.Content)
+	}
+	// Markup after the real closing tag must still be rewritten, so the fix
+	// cannot be "mask everything to the end of the document".
+	if strings.Contains(res.Content, "track.example.com") {
+		t.Error("tracking pixel after the real closing tag was not removed")
+	}
+}
+
+// TestXHTMLUppercaseContainerIsNotAScript covers the case-sensitivity of XML
+// element names. <SCRIPT> in XHTML is an ordinary unknown element, so its child
+// markup must still be rewritten; matching it case-insensitively masked that
+// markup out of every pass.
+func TestXHTMLUppercaseContainerIsNotAScript(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	e := NewEngine(nil)
+
+	pixel := `<img width="1" height="1" src="https://track.example.com/px"/>`
+	xhtml := `<html xmlns="http://www.w3.org/1999/xhtml"><body><SCRIPT>` + pixel + `</SCRIPT></body></html>`
+	if res := e.Rewrite(xhtml, PipelineXHTML, &cfg); strings.Contains(res.Content, "track.example.com") {
+		t.Errorf("child markup of an uppercase XHTML container survived: %s", res.Content)
+	}
+
+	// Positive control for the other direction: in HTML the element name is
+	// case insensitive, so <SCRIPT> IS a script and its content must be left
+	// alone. A fix that simply made everything case sensitive would break this.
+	html := `<html><body><SCRIPT>` + pixel + `</SCRIPT></body></html>`
+	if res := e.Rewrite(html, PipelineHTML, &cfg); !strings.Contains(res.Content, "track.example.com") {
+		t.Errorf("HTML script content was rewritten; case insensitivity is required there: %s", res.Content)
+	}
+}

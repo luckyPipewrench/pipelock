@@ -78,14 +78,24 @@ func TestXHTMLNonceWithAngleBracketStaysWellFormed(t *testing.T) {
 	cfg.InjectFingerprintShims = true
 	e := NewEngine(nil)
 
+	// The two sources differ in what they can carry, so both are exercised.
+	// A body nonce cannot hold a literal `>` at all: nonceRe matches the start
+	// tag with [^>]+, so the pattern simply does not reach a nonce written that
+	// way. The CSP RESPONSE HEADER has no such limit, which makes it the source
+	// that can actually deliver the character that breaks the start-tag
+	// boundary, and it is reached only through RewriteWithNonce.
 	for _, tc := range []struct {
-		name      string
-		nonce     string
-		wantNonce bool
+		name        string
+		nonce       string
+		headerNonce string
+		wantNonce   bool
 	}{
-		{name: "base64 nonce is kept", nonce: "abc123+/=", wantNonce: true},
-		{name: "nonce carrying a close bracket is dropped", nonce: "a&gt;b"},
-		{name: "nonce carrying a space is dropped", nonce: "a b"},
+		{name: "base64 body nonce is kept", nonce: "abc123+/=", wantNonce: true},
+		{name: "base64 header nonce is kept", headerNonce: "abc123+/=", wantNonce: true},
+		{name: "header nonce carrying a close bracket is dropped", headerNonce: "a>b"},
+		{name: "header nonce carrying a quote is dropped", headerNonce: `a"b`},
+		{name: "body nonce carrying an ampersand entity is dropped", nonce: "a&gt;b"},
+		{name: "body nonce carrying a space is dropped", nonce: "a b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := `<html xmlns="http://www.w3.org/1999/xhtml"><head><script nonce="` + tc.nonce +
@@ -97,7 +107,7 @@ func TestXHTMLNonceWithAngleBracketStaysWellFormed(t *testing.T) {
 				t.Fatalf("control: fixture is not well-formed XML to begin with: %v", err)
 			}
 
-			res := e.Rewrite(doc, PipelineXHTML, &cfg)
+			res := e.RewriteWithNonce(doc, PipelineXHTML, &cfg, tc.headerNonce)
 			if !res.ShimInjected {
 				t.Fatal("expected XHTML shim injection, so the nonce path is unverified")
 			}
@@ -109,6 +119,17 @@ func TestXHTMLNonceWithAngleBracketStaysWellFormed(t *testing.T) {
 			gotNonce := strings.Contains(injected, "nonce=")
 			if gotNonce != tc.wantNonce {
 				t.Errorf("injected start tag %q carries a nonce = %v, want %v", injected, gotNonce, tc.wantNonce)
+			}
+			// The rejected value must not appear anywhere in the injected tag,
+			// not merely fail to look like an attribute.
+			if !tc.wantNonce {
+				unsafe := tc.headerNonce
+				if unsafe == "" {
+					unsafe = tc.nonce
+				}
+				if strings.Contains(injected, unsafe) {
+					t.Errorf("rejected nonce %q still reached the injected start tag %q", unsafe, injected)
+				}
 			}
 		})
 	}

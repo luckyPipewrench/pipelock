@@ -2760,6 +2760,7 @@ func TestReverseProxy_ShieldSniffsPastNonHTTPWhitespace(t *testing.T) {
 		{"duplicate parameters", "\u00a0application/javascript; a=1; a=2", html},
 		{"successful Go parse", "\u2003application/javascript; charset=utf-8", html},
 		{"doctype beyond Go sniff window", "\u00a0application/javascript; charset=utf-8", strings.Repeat(" ", 600) + html},
+		{"browser generic type", "unknown/unknown", html},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

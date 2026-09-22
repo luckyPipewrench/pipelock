@@ -409,6 +409,21 @@ func TestDetectShieldPipeline_NonHTTPWhitespaceDoesNotAuthorizeEssence(t *testin
 	}
 }
 
+func TestDetectShieldPipeline_BrowserGenericTypesSniffBody(t *testing.T) {
+	t.Parallel()
+	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
+	for _, contentType := range []string{"unknown/unknown", "application/unknown", "*/*"} {
+		t.Run(contentType, func(t *testing.T) {
+			if !contentTypeIsGeneric(contentType) {
+				t.Fatalf("contentTypeIsGeneric(%q) = false", contentType)
+			}
+			if got := detectShieldPipeline(contentType, body); got != shield.PipelineHTML {
+				t.Fatalf("pipeline = %v, want HTML body sniff", got)
+			}
+		})
+	}
+}
+
 func TestProxy_ApplyShield_MalformedDeclaredEssenceTransportParity(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)
@@ -454,6 +469,7 @@ func TestProxy_ApplyShield_NonHTTPWhitespaceTransportParity(t *testing.T) {
 		{"duplicate parameters", "\u00a0application/javascript; a=1; a=2", []byte(html)},
 		{"successful Go parse", "\u2003application/javascript; charset=utf-8", []byte(html)},
 		{"doctype beyond Go sniff window", "\u00a0application/javascript; charset=utf-8", []byte(strings.Repeat(" ", 600) + html)},
+		{"browser generic type", "unknown/unknown", []byte(html)},
 	}
 	for _, tt := range tests {
 		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {

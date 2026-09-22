@@ -161,7 +161,7 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err == nil {
 			pipeline := shield.DetectPipeline(mediaType, nil)
-			if pipeline != shield.PipelineNone || (mediaType != "" && mediaType != contentTypeOctetStream) {
+			if pipeline != shield.PipelineNone || (mediaType != "" && !contentTypeIsGeneric(mediaType)) {
 				return pipeline
 			}
 		} else if recovered := shield.DetectPipeline(baseType, nil); recovered != shield.PipelineNone {
@@ -384,7 +384,7 @@ func repairShieldResponseMetadata(headers http.Header, pipeline shield.PipelineT
 	rawContentType := headers.Get("Content-Type")
 	_, browserValidEssence := shieldMediaTypeEssence(rawContentType)
 	mediaType, params, err := mime.ParseMediaType(rawContentType)
-	if !browserValidEssence || err != nil || mediaType == "" {
+	if !browserValidEssence || err != nil || contentTypeIsGeneric(mediaType) {
 		mediaType = shieldMediaType(pipeline)
 		params = map[string]string{}
 	}

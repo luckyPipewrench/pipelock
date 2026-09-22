@@ -272,7 +272,7 @@ func isMediaType(mt string) bool {
 // sniffer is allowed to override.
 func contentTypeIsGeneric(mt string) bool {
 	switch mt {
-	case "", contentTypeOctetStream, "binary/octet-stream", "application/binary", "application/unknown":
+	case "", contentTypeOctetStream, "binary/octet-stream", "application/binary", "application/unknown", "unknown/unknown", "*/*":
 		return true
 	}
 	return false

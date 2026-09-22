@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -4825,7 +4827,7 @@ func TestRunProxy_ResponseTimeoutTerminatesHungUpstream(t *testing.T) {
 	select {
 	case <-done:
 		// Returned: the hung child was killed before cmd.Wait(). Good.
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after upstream response timeout (cmd.Wait blocked on a live child)")
 	}
 
@@ -4863,7 +4865,7 @@ func TestRunProxy_ResponseTimeoutReturnsWithOpenClientInput(t *testing.T) {
 		if !errors.Is(err, transport.ErrResponseTimeout) {
 			t.Fatalf("RunProxy error = %v, want ErrResponseTimeout", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after timeout while client input stayed open")
 	}
 

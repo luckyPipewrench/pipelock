@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -37,7 +39,7 @@ func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
 				name = transport + "/admitted-control"
 			}
 			t.Run(name, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
 				defer cancel()
 				store := &capacityTestStore{}
 				if admit {

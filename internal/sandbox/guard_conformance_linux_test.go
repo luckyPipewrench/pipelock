@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -306,7 +308,7 @@ func TestIntegration_GuardHostileConformance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("broker: %v", err)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("same-UID broker was not reached")
 		}
 		assertGuardClaimBoundary(t)
@@ -376,7 +378,7 @@ func TestIntegration_GuardHostileConformance(t *testing.T) {
 
 func runGuardBinary(t *testing.T, binary string, environment []string, stdin io.Reader, args ...string) (string, string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(15*time.Second))
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- controlled conformance command.

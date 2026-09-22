@@ -916,6 +916,9 @@ jobs:
       - name: Clock-dependent literal policy
         run: bash scripts/check-clock-literals.sh
 
+      - name: Subprocess test deadline scaling policy
+        run: bash scripts/check-test-deadline-scaling.sh
+
       - name: Install documentation search dependency
         run: bash scripts/ci-apt-install.sh ripgrep
 

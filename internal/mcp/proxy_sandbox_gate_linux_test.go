@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
@@ -58,7 +60,7 @@ func TestRunProxyWithSandbox_RefusesMappedCommand(t *testing.T) {
 			// a failure rather than as a hang: without the refusal this call
 			// proceeds into the full proxy flow and blocks on stdin, which would
 			// stall CI instead of naming the defect.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 			defer cancel()
 
 			errCh := make(chan error, 1)
@@ -92,7 +94,7 @@ func TestRunProxyWithSandbox_AllowsUnmappedCommand(t *testing.T) {
 	t.Parallel()
 
 	cmd := exec.CommandContext(t.Context(), "/bin/true")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	type completion struct {
 		err         error

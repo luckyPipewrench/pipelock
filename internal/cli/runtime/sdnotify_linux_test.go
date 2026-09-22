@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -68,7 +70,7 @@ func receiveNotify(t *testing.T, messages <-chan string) string {
 	select {
 	case message := <-messages:
 		return message
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timed out waiting for systemd notification")
 		return ""
 	}
@@ -159,7 +161,7 @@ func TestSDNotify(t *testing.T) {
 			if err == nil {
 				t.Fatal("sdNotify unreachable socket = nil error")
 			}
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("sdNotify exceeded its bounded deadline")
 		}
 	})
@@ -189,7 +191,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Start returned %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("Start did not return after shutdown")
 		}
 	})
@@ -326,7 +328,7 @@ func TestStartupReadinessGate(t *testing.T) {
 	}
 	select {
 	case <-s.startupNotified():
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("readiness channel did not close")
 	}
 
@@ -408,7 +410,7 @@ func TestConsumeReloadsAbortsWhenStartupNeverSettles(t *testing.T) {
 			tc.abort(cancel, settled)
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("the reload consumer did not stop when startup never settled")
 			}
 			if s.proxy.CurrentConfig() != before {
@@ -457,7 +459,7 @@ func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.Start(context.Background()) }()
 
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testwait.Deadline(10 * time.Second))
 	for !s.startupNotifiedAlready() {
 		select {
 		case <-deadline:
@@ -487,7 +489,7 @@ func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 	}()
 	select {
 	case <-reloadDone:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("a SIGHUP-triggered reload never completed on a host with no systemd")
 	}
 	if got := s.proxy.CurrentConfig().Mode; got != next.Mode {
@@ -503,7 +505,7 @@ func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("Start did not return after shutdown")
 	}
 

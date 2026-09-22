@@ -11,10 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -374,22 +377,79 @@ func TestLaunchSandboxed_ChildCleanup(t *testing.T) {
 	// This verifies the child process is cleanly terminable.
 	// (True Pdeathsig testing requires an intermediate parent process
 	// which is tested end-to-end in the private security test suite.)
+	// The command backgrounds a sleep and records ITS pid, so the test owns a
+	// real grandchild. Measured first: with the command exec'ing the sleep
+	// directly, the recorded pid equalled cmd.Process.Pid, so there was no
+	// descendant and any descendant assertion passed for free. A grandchild is
+	// what the process-group kill exists for, so the test has to create one.
+	pidPath := filepath.Join(workspace, "descendant.pid")
+
 	var stderr bytes.Buffer
 	cmd, cancel := launchSandboxedStarted(t, LaunchConfig{
-		Command:   []string{"sleep", "300"},
+		Command:   []string{"sh", "-c", `sleep 300 & echo $! > "$1"; wait`, "sh", pidPath},
 		Workspace: workspace,
 		Stderr:    &stderr,
 	})
 	defer cancel()
 
-	// Kill the child process.
+	descendant := waitForRecordedPID(t, pidPath)
+
+	// Kill the whole process group, not just the direct child. The command
+	// runs beneath an intermediate parent, so signalling only the child leaves
+	// its descendants running: this test's `sleep` outlived the test binary and
+	// failed the job through the CI descendant check while every package passed.
 	if cmd.Process != nil {
-		_ = cmd.Process.Signal(os.Kill)
+		if err := killProcessGroup(cmd.Process.Pid); err != nil {
+			t.Fatalf("kill process group: %v", err)
+		}
+	}
+
+	// The descendant is checked BEFORE Wait, and the order matters. A surviving
+	// grandchild still holds the inherited stderr pipe, so cmd.Wait blocks on
+	// it forever: with the group kill removed this test hung instead of
+	// failing, which in CI is a job that burns its whole timeout and reports
+	// nothing useful. Observing the descendant first turns that into a named
+	// failure in a bounded time.
+	//
+	// cmd.Wait alone would not catch this at all. It reports on the process
+	// this test started; the defect is the one left behind.
+	deadline := time.After(testwait.Deadline(5 * time.Second))
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for !processGone(descendant) {
+		select {
+		case <-deadline:
+			t.Fatalf("descendant %d survived the process-group kill", descendant)
+		case <-tick.C:
+		}
 	}
 
 	err := cmd.Wait()
 	if err == nil {
 		t.Error("expected child to exit with error after kill")
+	}
+}
+
+// waitForRecordedPID reads the PID the launched command wrote for itself. The
+// command needs a moment to start, so this polls rather than assuming the file
+// is already there.
+func waitForRecordedPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.After(testwait.Deadline(5 * time.Second))
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("command never recorded its PID at %s", path)
+		case <-tick.C:
+		}
 	}
 }
 

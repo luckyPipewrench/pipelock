@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type initChildResult struct {
@@ -41,7 +43,7 @@ func runNamespacedInitChildFailureCase(t *testing.T, binary string, env []string
 func runInitChildFailureCaseWithNamespaces(t *testing.T, binary string, env []string, namespaced bool) initChildResult {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 
 	var stderr bytes.Buffer
@@ -494,7 +496,7 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 				data, _ := os.ReadFile(stderrFile.Name())
 				t.Fatalf("wrapper exit = %v, want code 42\nstderr: %s", err, data)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			_ = cmd.Process.Kill()
 			<-waitDone
 			t.Fatal("sandbox init child did not exit after SIGTERM")

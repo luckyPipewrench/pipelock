@@ -42,6 +42,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -299,7 +301,7 @@ func buildPipelock(t *testing.T) string {
 		}
 		buildBin = filepath.Join(buildBinDir, "pipelock")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(2*time.Minute))
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "build", "-o", buildBin, "./cmd/pipelock")
 		cmd.Dir = repoRoot(t)
@@ -455,7 +457,7 @@ func (p *liveMCPProxy) stop(t *testing.T) {
 		p.cancel()
 		select {
 		case <-p.errCh:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatalf("mcp proxy process did not exit after cancellation\nstderr:\n%s", p.stderr.String())
 		}
 	})
@@ -609,7 +611,7 @@ func (p *liveProxy) stop(t *testing.T) {
 		}
 		select {
 		case <-p.errCh:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("pipelock process did not exit after cancellation")
 		}
 	})
@@ -638,7 +640,7 @@ func startLiveHTTPServer(t *testing.T, handler http.Handler) liveServer {
 		errCh <- srv.Serve(ln)
 	}()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 		err := <-errCh
@@ -709,7 +711,7 @@ func waitForHTTP(t *testing.T, label, target string, errCh <-chan error, stderr 
 func ratifyBaseline(t *testing.T, bin, cfgPath, apiAddr, agent string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	out, err := runPipelock(ctx, bin,
 		"baseline",
@@ -732,7 +734,7 @@ func runPipelock(ctx context.Context, bin string, args ...string) (string, error
 
 func runDeferredCLI(t *testing.T, bin, apiAddr string, args ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	fullArgs := append([]string{
 		"session",
@@ -762,13 +764,13 @@ type liveDeferredHeld struct {
 
 func waitDeferredList(t *testing.T, bin, apiAddr string, wantCount int) (liveDeferredList, string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var lastRaw string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(2*time.Second))
 		out, err := runPipelock(ctx, bin,
 			"session",
 			"--api-url", "http://"+apiAddr,
@@ -1066,7 +1068,7 @@ type liveDeferredJournalEntry struct {
 
 func waitDeferredJournalSource(t *testing.T, path, deferID, source string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var last []liveDeferredJournalEntry
@@ -1110,7 +1112,7 @@ func readDeferredJournal(t *testing.T, path string) []liveDeferredJournalEntry {
 
 func waitFlightRecorderResolutionSource(t *testing.T, dir, source string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var last []string

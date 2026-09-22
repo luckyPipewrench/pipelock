@@ -264,12 +264,28 @@ func TestXMLScriptSpanEdgeShapes(t *testing.T) {
 func TestXHTMLScriptMaskingPreservesEveryByte(t *testing.T) {
 	cfg := config.Defaults().BrowserShield
 	cfg.InjectFingerprintShims = false
-	cfg.StripExtensionProbing = false
-	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
+	// Tracking and extension stripping stay ON deliberately. With every rewrite
+	// disabled this test asserted that unchanged input produces unchanged
+	// output, which a no-op satisfies: masking was never exercised. The passes
+	// have to be running for "the script survived" to mean anything.
+	cfg.StripExtensionProbing = true
+	cfg.StripTrackingPixels = true
 
-	doc := `<html><body><script><![CDATA[var s = "</script>";]]></script><script></script><script src="app.js"/></body></html>`
-	if out := NewEngine(nil).Rewrite(doc, PipelineXHTML, &cfg); out.Content != doc {
-		t.Errorf("XHTML script masking did not restore the original bytes:\n got: %q\nwant: %q", out.Content, doc)
+	const scripts = `<script><![CDATA[var s = "</script>"; var p = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/x";]]></script>` +
+		`<script></script><script src="app.js"/>`
+	const pixel = `<img width="1" height="1" src="https://track.example.com/px"/>`
+
+	doc := `<html xmlns="http://www.w3.org/1999/xhtml"><body>` + scripts + pixel + `</body></html>`
+	out := NewEngine(nil).Rewrite(doc, PipelineXHTML, &cfg)
+
+	// Every script byte survives, including an extension URL that the enabled
+	// pass would have stripped had masking not protected it.
+	if !strings.Contains(out.Content, scripts) {
+		t.Errorf("XHTML script masking did not restore the original bytes:\n got: %q\nwant substring: %q", out.Content, scripts)
+	}
+	// And the enabled pass really did run, on the markup outside the scripts.
+	if strings.Contains(out.Content, "track.example.com") {
+		t.Errorf("tracking pixel outside the scripts was not removed, so the rewrite passes did not run: %q", out.Content)
 	}
 }

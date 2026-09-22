@@ -445,16 +445,26 @@ func TestProxy_ApplyShield_NonHTTPWhitespaceTransportParity(t *testing.T) {
 	cfg.BrowserShield.InjectFingerprintShims = false
 	cfg.BrowserShield.StripExtensionProbing = false
 	cfg.BrowserShield.StripTrackingPixels = true
-	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
-	contentType := "\u00a0application/javascript; a=1; a=2"
-
-	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
-		t.Run(transport, func(t *testing.T) {
-			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
-			if blocked != nil || summary == nil || summary.Pipeline != "html" || strings.Contains(string(out), "track.example.com") {
-				t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
-			}
-		})
+	html := `<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{"duplicate parameters", "\u00a0application/javascript; a=1; a=2", []byte(html)},
+		{"successful Go parse", "\u2003application/javascript; charset=utf-8", []byte(html)},
+		{"doctype beyond Go sniff window", "\u00a0application/javascript; charset=utf-8", []byte(strings.Repeat(" ", 600) + html)},
+	}
+	for _, tt := range tests {
+		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+			t.Run(tt.name+"/"+transport, func(t *testing.T) {
+				headers := http.Header{"Content-Type": {tt.contentType}}
+				out, summary, blocked := p.applyShield(tt.body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+				if blocked != nil || summary == nil || summary.Pipeline != "html" || strings.Contains(string(out), "track.example.com") || headers.Get("Content-Type") != "text/html" {
+					t.Fatalf("outcome: blocked=%+v summary=%+v content-type=%q body=%q", blocked, summary, headers.Get("Content-Type"), out)
+				}
+			})
+		}
 	}
 }
 

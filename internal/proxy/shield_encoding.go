@@ -20,6 +20,7 @@ import (
 const (
 	shieldUninspectableLayer       = "shield_uninspectable"
 	shieldUTF16ScanHeadBlockReason = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip"
+	browserMIMESniffHeaderBytes    = 1445
 )
 
 type shieldPipelineResult struct {
@@ -167,8 +168,7 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 			return recovered
 		}
 	}
-	prefixLen := min(len(body), 512)
-	pipeline := shield.DetectPipeline("", body[:prefixLen])
+	pipeline := shield.DetectPipeline("", shieldSniffHeader(body))
 	if pipeline != shield.PipelineNone {
 		return pipeline
 	}
@@ -176,6 +176,19 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 		return pipeline
 	}
 	return shield.DetectPipeline(baseType, nil)
+}
+
+func shieldSniffHeader(body []byte) []byte {
+	header := body[:min(len(body), browserMIMESniffHeaderBytes)]
+	for len(header) > 0 {
+		switch header[0] {
+		case '\t', '\n', '\f', '\r', ' ':
+			header = header[1:]
+		default:
+			return header
+		}
+	}
+	return header
 }
 
 // shieldMediaTypeEssence accepts only the ASCII token grammar and HTTP
@@ -368,8 +381,10 @@ func repairXMLUTF8Declaration(body string) string {
 // response representation self-consistent and removes validators for the
 // upstream bytes, without touching an unchanged response.
 func repairShieldResponseMetadata(headers http.Header, pipeline shield.PipelineType, body []byte, convertedToUTF8 bool) {
-	mediaType, params, err := mime.ParseMediaType(headers.Get("Content-Type"))
-	if err != nil || mediaType == "" {
+	rawContentType := headers.Get("Content-Type")
+	_, browserValidEssence := shieldMediaTypeEssence(rawContentType)
+	mediaType, params, err := mime.ParseMediaType(rawContentType)
+	if !browserValidEssence || err != nil || mediaType == "" {
 		mediaType = shieldMediaType(pipeline)
 		params = map[string]string{}
 	}

@@ -3654,11 +3654,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	// on the rewrite path; we short-circuit here for binary bodies so the
 	// oversize ceiling only applies to content the shield would actually
 	// rewrite (HTML, JS, SVG).
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	if shieldLeavesBodyUnchanged(detectShieldPipeline(contentType, body[:prefixLen])) {
+	if shieldLeavesBodyUnchanged(detectShieldPipeline(contentType, body)) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}

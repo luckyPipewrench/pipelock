@@ -128,7 +128,7 @@ Values must name models available through the direct OpenAI API.
 - Uses explicit token budgets; deep mode splits an oversized hunk into complete
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
-- `/review deep` is opt-in for the xhigh adversarial pass
+- `/review deep` is opt-in for GPT-6 Sol at low reasoning
 - Re-running a command against an unchanged head does not review again; it
   links the review that already covered it
 

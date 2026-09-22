@@ -266,7 +266,16 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 	// Complement to the non-shieldable bypass test: verify the oversize
 	// ceiling still fires for content the shield would rewrite. Ensures
 	// the Content-Type gate did not accidentally disable fail-closed
-	// behavior on HTML, JS, or SVG.
+	// behavior on HTML or SVG.
+	//
+	// JavaScript was in this list and is now covered by
+	// TestProxy_ApplyShield_JavaScriptBypassesOversize instead. It belonged
+	// here while the shield rewrote script bodies. It no longer does:
+	// RewriteWithNonce has no PipelineJS branch, so the shield returns
+	// JavaScript byte for byte and an oversize block withheld no inspection.
+	// What it did withhold was the response, and a browser bundle is routinely
+	// over the ceiling. Response scanning still reads the body under its own
+	// limits, so this is not a scanning gap.
 	t.Parallel()
 
 	shieldable := []struct {
@@ -275,7 +284,6 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 		bodyHead    []byte
 	}{
 		{"html", "text/html", []byte("<!DOCTYPE html><html>")},
-		{"js", "application/javascript", []byte("function run() {")},
 		{"svg", "image/svg+xml", []byte("<svg xmlns='http://www.w3.org/2000/svg'>")},
 	}
 	for _, tc := range shieldable {

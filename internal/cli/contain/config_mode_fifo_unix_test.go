@@ -31,8 +31,12 @@ import (
 func TestRepairManagedConfigMode_RefusesFifoWithoutBlocking(t *testing.T) {
 	var out bytes.Buffer
 	env := &installEnv{configDir: t.TempDir(), out: &out, repairLeafMode: setLeafModeNoFollow}
+	// Fail rather than skip. The build tag above already excludes every
+	// platform without Mkfifo, so an error here is a broken environment, not an
+	// unsupported one, and skipping would silently retire the only coverage of
+	// the nonblocking refusal. This matches internal/securefile/open_unix_test.go.
 	if err := syscall.Mkfifo(managedPipelockConfigPath(env), 0o600); err != nil {
-		t.Skipf("cannot create FIFO here: %v", err)
+		t.Fatalf("mkfifo: %v", err)
 	}
 
 	type result struct {

@@ -291,6 +291,173 @@ func credentialAudienceURLCases() []credentialAudienceURLCase {
 	}
 }
 
+// TestFilterTextDLPMatchesForDestination_OtherCoreCredentialsStayBlocked proves
+// the core-floor audience exception is pattern-specific. Every other immutable
+// credential still blocks at Slack, at a host that looks like its own issuer,
+// and on an unrelated host. The Slack token in the same text is the control:
+// if the scanner blocked everything, this test would not show that the floor
+// stayed closed for the other classes.
+func TestFilterTextDLPMatchesForDestination_OtherCoreCredentialsStayBlocked(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+
+	slack := "xoxb-" + strings.Repeat("a", 24)
+	cores := []struct {
+		name  string
+		value string
+		host  string
+	}{
+		{name: "AWS Access ID", value: "AKIA" + "ZZZZZZZZZZZZZZZZ", host: "https://sts.amazonaws.com/"},
+		{name: "GitHub Token", value: "ghp_" + strings.Repeat("a", 36), host: "https://github.com/"},
+		{name: "GitHub Fine-Grained PAT", value: "github_pat_" + strings.Repeat("a", 36), host: "https://github.com/"},
+		{name: "GitLab PAT", value: "glpat-" + strings.Repeat("a", 20), host: "https://gitlab.com/"},
+		{name: "Private Key Header", value: "-----BEGIN " + "PRIVATE KEY-----", host: "https://slack.com/api/files.upload"},
+	}
+	for _, core := range cores {
+		t.Run(core.name, func(t *testing.T) {
+			t.Parallel()
+			for _, surface := range []string{"header", "body"} {
+				matches := s.ScanTextForDLP(context.Background(), core.value).Matches
+				for _, target := range []string{core.host, "https://slack.com/api/auth.test", "https://api.vendor.example/v1"} {
+					retained, records := s.FilterTextDLPMatchesForDestination(matches, target, surface)
+					if !matchRetained(retained, core.name) {
+						t.Fatalf("%s %s %q dropped core match, retained=%#v records=%#v", surface, core.name, target, retained, records)
+					}
+					if audienceAllowFor(records, core.name) {
+						t.Fatalf("%s %s %q emitted an audience allow %#v", surface, core.name, target, records)
+					}
+				}
+			}
+			blocked := s.Scan(context.Background(), "https://slack.com/api/auth.test?credential="+urlQueryEscape(core.value))
+			if blocked.Allowed {
+				t.Fatalf("%s in a URL at slack.com was allowed", core.name)
+			}
+		})
+	}
+
+	// Same body, two credentials. Slack may be audience-eligible. The AWS key
+	// must still be retained, or the allow would carry the other core secret.
+	mixed := s.ScanTextForDLP(context.Background(), slack+" AKIA"+"ZZZZZZZZZZZZZZZZ").Matches
+	retained, _ := s.FilterTextDLPMatchesForDestination(mixed, "https://slack.com/api/chat.postMessage", "body")
+	if !matchRetained(retained, "AWS Access ID") {
+		t.Fatalf("AWS key riding with a Slack token was dropped: %#v", retained)
+	}
+	slackOnly := s.ScanTextForDLP(context.Background(), slack).Matches
+	kept, records := s.FilterTextDLPMatchesForDestination(slackOnly, "https://slack.com/api/auth.test", "header")
+	if len(kept) != 0 || !audienceAllowFor(records, "Slack Token") {
+		t.Fatalf("Slack control at its own authority retained=%#v records=%#v", kept, records)
+	}
+}
+
+// TestFilterTextDLPMatchesForDestination_SlackHostIsExactAuthority checks the
+// host comparisons that would hand a workspace token to someone else: a suffix,
+// a label that merely contains the name, a different registrable domain, a
+// userinfo trick, and an IDN lookalike. Case and a single trailing root dot are
+// the same authority. A non-default port stays on that authority; the audience
+// names the host, and the port was already checked to be a real port.
+func TestFilterTextDLPMatchesForDestination_SlackHostIsExactAuthority(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+
+	slack := "xoxb-" + strings.Repeat("b", 24)
+	matches := s.ScanTextForDLP(context.Background(), slack).Matches
+	if len(matches) == 0 {
+		t.Fatal("Slack token did not match")
+	}
+
+	cyrillicA := "sl" + string(rune(0x0430)) + "ck.com"
+	cases := []struct {
+		name  string
+		url   string
+		allow bool
+		host  string
+	}{
+		{name: "suffix", url: "https://slack.com.evil.tld/api", allow: false},
+		{name: "embedded label", url: "https://evil-slack.com/api", allow: false},
+		{name: "prefix collision", url: "https://notslack.com/api", allow: false},
+		{name: "subdomain", url: "https://hooks.slack.com/services/T/B/x", allow: false},
+		{name: "mcp suffix", url: "https://mcp.slack.com.evil.tld/mcp", allow: false},
+		{name: "userinfo on slack", url: "https://" + "user" + ":" + "pass" + "@slack.com/api", allow: false},
+		{name: "userinfo swaps host", url: "https://slack.com@evil.tld/api", allow: false},
+		{name: "cyrillic lookalike", url: "https://" + cyrillicA + "/api", allow: false},
+		{name: "punycode lookalike", url: "https://xn--slck-6cd.com/api", allow: false},
+		{name: "encoded dot", url: "https://slack.com%2eevil.tld/api", allow: false},
+		{name: "uppercase", url: "https://SLACK.COM/api/auth.test", allow: true, host: "slack.com"},
+		{name: "trailing dot", url: "https://slack.com./api/auth.test", allow: true, host: "slack.com"},
+		{name: "non-default port", url: "https://slack.com:8443/api/auth.test", allow: true, host: "slack.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retained, records := s.FilterTextDLPMatchesForDestination(matches, tc.url, "header")
+			if tc.allow {
+				if len(retained) != 0 || len(records) != 1 || records[0].Destination != tc.host {
+					t.Fatalf("url %q retained=%#v records=%#v", tc.url, retained, records)
+				}
+				return
+			}
+			if len(retained) == 0 || len(records) != 0 {
+				t.Fatalf("url %q allowed: retained=%#v records=%#v", tc.url, retained, records)
+			}
+		})
+	}
+}
+
+// TestScanTextForDLP_CustomSameNameCannotBorrowCoreAudience is the fail-closed
+// side of pattern-name dedup. A customized "Slack Token" pattern does not
+// receive the compiled audience. When the real token and the customized text
+// are in one body, dedup must not keep only the core match and then allow both.
+func TestScanTextForDLP_CustomSameNameCannotBorrowCoreAudience(t *testing.T) {
+	t.Parallel()
+	cfg := credentialAudienceTestConfig()
+	cfg.DLP.Patterns = []config.DLPPattern{{
+		Name:     "Slack Token",
+		Regex:    `custom-[A-Za-z]{20}`,
+		Severity: config.SeverityCritical,
+	}}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	slack := "xoxb-" + strings.Repeat("c", 24)
+	custom := "custom-abcdefghijklmnopqrst"
+	matches := s.ScanTextForDLP(context.Background(), custom+" "+slack).Matches
+	retained, records := s.FilterTextDLPMatchesForDestination(matches, "https://slack.com/api/chat.postMessage", "body")
+	if len(retained) == 0 || len(records) != 0 {
+		t.Fatalf("custom same-name text borrowed the core audience: retained=%#v records=%#v", retained, records)
+	}
+
+	// The real token on its own still reaches Slack. This test must not pass
+	// by blocking every Slack token.
+	own := s.ScanTextForDLP(context.Background(), slack).Matches
+	kept, allow := s.FilterTextDLPMatchesForDestination(own, "https://slack.com/api/auth.test", "header")
+	if len(kept) != 0 || !audienceAllowFor(allow, "Slack Token") {
+		t.Fatalf("real Slack token alone was blocked: retained=%#v records=%#v", kept, allow)
+	}
+}
+
+func matchRetained(matches []TextDLPMatch, name string) bool {
+	for _, match := range matches {
+		if match.PatternName == name {
+			return true
+		}
+	}
+	return false
+}
+
+func audienceAllowFor(records []CredentialAudienceAllow, name string) bool {
+	for _, record := range records {
+		if record.PatternName == name {
+			return true
+		}
+	}
+	return false
+}
+
+func urlQueryEscape(value string) string {
+	return strings.NewReplacer(" ", "%20", ":", "%3A", "-", "-").Replace(value)
+}
+
 func assertCredentialAudienceAllow(t *testing.T, result Result, pattern, surface, destination string) {
 	t.Helper()
 	if len(result.CredentialAudienceAllows) != 1 {

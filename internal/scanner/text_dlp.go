@@ -11,6 +11,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -950,7 +951,11 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	return nil
 }
 
-// deduplicateMatches removes duplicate matches with the same pattern name and encoding.
+// deduplicateMatches removes duplicate matches with the same pattern name and
+// encoding. The survivor keeps a compiled audience only when every duplicate
+// carried that same audience. A customized pattern reuses the core name and
+// has no audience; dropping it and keeping the core match's audience would
+// allow the customized text at the core credential's authority.
 func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 	if len(matches) <= 1 {
 		return matches
@@ -960,14 +965,18 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		name    string
 		encoded string
 	}
-	seen := make(map[key]struct{}, len(matches))
+	index := make(map[key]int, len(matches))
 	result := make([]TextDLPMatch, 0, len(matches))
 	for _, m := range matches {
 		k := key{name: m.PatternName, encoded: m.Encoded}
-		if _, ok := seen[k]; !ok {
-			seen[k] = struct{}{}
-			result = append(result, m)
+		if i, ok := index[k]; ok {
+			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) {
+				result[i].credentialAudienceHosts = nil
+			}
+			continue
 		}
+		index[k] = len(result)
+		result = append(result, m)
 	}
 	return result
 }

@@ -1069,6 +1069,9 @@ type BlockDetail struct {
 	// so SIEMs can pivot on dns_timeout / dns_no_such_host /
 	// dns_resolver_error directly.
 	DNSErrorKind string
+	// Header and Patterns identify a header DLP finding without logging its value.
+	Header   string
+	Patterns []string
 }
 
 // Class string constants kept in lockstep with internal/scanner ResultClass.
@@ -1130,12 +1133,16 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("request_id", ctx.requestID).
 		str("scanner", scanner).
 		str("reason", reason).
+		optStr("header", detail.Header).
 		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("display_label", displayLabel).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		optStr("mitre_technique", technique)
+	if len(detail.Patterns) > 0 {
+		e.strs("patterns", detail.Patterns)
+	}
 
 	// includeBlocked gates local audit log only - external emission always fires
 	// so SIEM/webhook consumers see blocked events regardless of local verbosity.

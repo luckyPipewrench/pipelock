@@ -1410,7 +1410,9 @@ func newInterceptHandler(
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
 					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, reason)
-					ic.Logger.LogBlocked(actx, "header_dlp", reason)
+					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
+						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),
+					})
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
 					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,

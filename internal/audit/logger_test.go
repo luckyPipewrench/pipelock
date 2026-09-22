@@ -4581,6 +4581,35 @@ func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestLogBlockedDetailHeaderDLPMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBlockedDetail(LogContext{method: "GET", url: "https://app.vendor.example/", requestID: "req-1"},
+		"header_dlp", "request header contains secret", BlockDetail{
+			Header: "Cookie", Patterns: []string{"Session Token"},
+		})
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["header"] != "Cookie" || entry["scanner"] != "header_dlp" {
+		t.Fatalf("missing header DLP block metadata: %v", entry)
+	}
+	patterns, ok := entry["patterns"].([]any)
+	if !ok || len(patterns) != 1 || patterns[0] != "Session Token" {
+		t.Fatalf("patterns = %v", entry["patterns"])
+	}
+}
+
 func TestEmit_LogBodyDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

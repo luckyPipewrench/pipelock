@@ -36,10 +36,11 @@ type scriptSpan struct {
 // XHTML as XML, so the fallback is not a silent hole.
 func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 	dec := xml.NewDecoder(strings.NewReader(doc))
-	// Unbound prefixes and other real-world sloppiness must not abort the scan:
-	// refusing to look is how content slips past.
+	// Keep the existing tolerant entity handling, but use RawToken plus the
+	// explicit stack below for structural correctness. RawToken bypasses
+	// Decoder.Token's HTML auto-close recovery, which is inappropriate when
+	// these offsets must refer to source bytes.
 	dec.Strict = false
-	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 
 	type open struct {
@@ -58,7 +59,10 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 
 	for {
 		tokenStart := int(dec.InputOffset())
-		tok, err := dec.Token()
+		// Token repairs mismatched end tags in non-strict mode before returning
+		// them. RawToken preserves the source name, letting this stack reject a
+		// recovery that would otherwise turn </svg> into a script close.
+		tok, err := dec.RawToken()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -77,24 +81,29 @@ func xmlScriptSpans(doc string) (spans []scriptSpan, ok bool) {
 			stack = append(stack, open{name: t.Name, start: tokenStart, body: int(dec.InputOffset())})
 		case xml.EndElement:
 			if len(stack) == 0 {
-				continue
+				return nil, false
 			}
 			depth := len(stack) - 1
 			top := stack[depth]
 			stack = stack[:depth]
+			// In permissive mode encoding/xml can return an EndElement that does
+			// not match the opener we recorded. That is not a complete source
+			// element: treating it as one can consume a surrounding closing tag
+			// and corrupt the bytes that the caller is required to preserve.
+			if t.Name != top.name {
+				return nil, false
+			}
 			if !isScriptName(top.name) || depth != outermostScript {
 				continue
 			}
 			outermostScript = -1
 			end := int(dec.InputOffset())
-			closing := end
-			// Find where the closing tag starts so the caller can keep it, or
-			// drop it, without re-scanning. A self-closing element reports the
-			// same offset for both, which leaves an empty content range.
-			if idx := strings.LastIndex(doc[top.body:end], "</"); idx >= 0 {
-				closing = top.body + idx
-			}
-			if closing < top.body {
+			// tokenStart is the byte beginning of the actual closing token. For
+			// a self-closing element the decoder emits a synthetic EndElement
+			// after its start tag, so it equals end and leaves an empty body.
+			closing := tokenStart
+			if closing < top.body || closing > end ||
+				(closing != end && !strings.HasPrefix(doc[closing:end], "</")) {
 				closing = end
 			}
 			spans = append(spans, scriptSpan{start: top.start, content: top.body, closing: closing, end: end})

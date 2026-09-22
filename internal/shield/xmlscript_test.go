@@ -193,3 +193,83 @@ func TestUnclosedElementSuppressesTheParsedAnswer(t *testing.T) {
 		t.Error("control: the well-formed form must parse")
 	}
 }
+
+func TestMismatchedXMLCloseFallsBackWithoutCorruptingSVG(t *testing.T) {
+	// Strict=false lets encoding/xml recover from this input by pairing the
+	// script opener with </svg>. That is not a source script span: dropping it
+	// would also drop the SVG root's closing tag.
+	doc := `<svg><script>alert(1)</svg>`
+	if _, ok := xmlScriptSpans(doc); ok {
+		t.Fatal("a mismatched closing tag reported a trustworthy parsed answer")
+	}
+
+	cfg := config.Defaults().BrowserShield
+	out := NewEngine(nil).Rewrite(doc, PipelineSVG, &cfg)
+	if out.Content != doc {
+		t.Errorf("fallback changed bytes outside a complete script element:\n got: %q\nwant: %q", out.Content, doc)
+	}
+}
+
+func TestXMLScriptSpansAreOrderedAndBounded(t *testing.T) {
+	doc := `<svg><script><![CDATA[var a = "</script>";]]></script><g><script></script></g><script/></svg>`
+	spans, ok := xmlScriptSpans(doc)
+	if !ok {
+		t.Fatal("control: well-formed XML did not parse")
+	}
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans, want 3", len(spans))
+	}
+
+	prev := 0
+	for i, span := range spans {
+		if span.start < prev || span.start > span.content || span.content > span.closing || span.closing > span.end || span.end > len(doc) {
+			t.Fatalf("span %d is not monotonic and bounded: %+v (previous end %d)", i, span, prev)
+		}
+		if span.closing != span.end && !strings.HasPrefix(doc[span.closing:span.end], "</") {
+			t.Fatalf("span %d closing offset does not start a closing tag: %+v", i, span)
+		}
+		prev = span.end
+	}
+
+	cfg := config.Defaults().BrowserShield
+	if out := NewEngine(nil).Rewrite(doc, PipelineSVG, &cfg); out.Content != `<svg><g></g></svg>` {
+		t.Errorf("SVG removal changed non-script bytes:\n got: %q\nwant: %q", out.Content, `<svg><g></g></svg>`)
+	}
+}
+
+func TestXMLScriptSpanEdgeShapes(t *testing.T) {
+	for name, doc := range map[string]string{
+		"script root":         `<script>alert(1)</script>`,
+		"empty script":        `<svg><script></script></svg>`,
+		"self-closing script": `<svg><script src="app.js"/></svg>`,
+		"deep nesting":        `<svg>` + strings.Repeat(`<g>`, 128) + `<script>alert(1)</script>` + strings.Repeat(`</g>`, 128) + `</svg>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			spans, ok := xmlScriptSpans(doc)
+			if !ok || len(spans) != 1 {
+				t.Fatalf("spans = %#v, ok = %v; want one complete span", spans, ok)
+			}
+			span := spans[0]
+			if span.start > span.content || span.content > span.closing || span.closing > span.end {
+				t.Fatalf("span is not monotonic: %+v", span)
+			}
+		})
+	}
+
+	if _, ok := xmlScriptSpans(`<svg><script>alert(1)</svg>`); ok {
+		t.Error("script with no closing tag reported a complete span")
+	}
+}
+
+func TestXHTMLScriptMaskingPreservesEveryByte(t *testing.T) {
+	cfg := config.Defaults().BrowserShield
+	cfg.InjectFingerprintShims = false
+	cfg.StripExtensionProbing = false
+	cfg.StripTrackingPixels = false
+	cfg.StripHiddenTraps = false
+
+	doc := `<html><body><script><![CDATA[var s = "</script>";]]></script><script></script><script src="app.js"/></body></html>`
+	if out := NewEngine(nil).Rewrite(doc, PipelineXHTML, &cfg); out.Content != doc {
+		t.Errorf("XHTML script masking did not restore the original bytes:\n got: %q\nwant: %q", out.Content, doc)
+	}
+}

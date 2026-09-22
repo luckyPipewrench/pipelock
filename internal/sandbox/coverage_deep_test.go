@@ -1152,7 +1152,7 @@ func TestWaitForUserNamespaceProbeChildSuccess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start true child: %v", err)
 	}
-	if !waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+	if !waitForUserNamespaceProbeChild(cmd.Process.Pid, testwait.Deadline(time.Second)) {
 		t.Fatal("expected fast-exiting probe child to be reaped successfully")
 	}
 }
@@ -1169,7 +1169,7 @@ func TestWaitForUserNamespaceProbeChildAlreadyReaped(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run true child: %v", err)
 	}
-	if waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+	if waitForUserNamespaceProbeChild(cmd.Process.Pid, testwait.Deadline(time.Second)) {
 		t.Fatal("expected already-reaped probe child to report false")
 	}
 }

@@ -3105,7 +3105,7 @@ func TestBaseline_HighWaterLockHelperProcess(t *testing.T) {
 			unlock()
 			t.Fatalf("write ready marker: %v", err)
 		}
-		if !waitForPath(releasePath, 5*time.Second) {
+		if !waitForPath(releasePath, testwait.Deadline(5*time.Second)) {
 			unlock()
 			t.Fatal("timed out waiting for release marker")
 		}
@@ -3184,7 +3184,7 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 			_ = hold.Process.Kill()
 		}
 	})
-	if !waitForPath(readyPath, 2*time.Second) {
+	if !waitForPath(readyPath, testwait.Deadline(2*time.Second)) {
 		t.Fatalf("lock holder did not become ready:\n%s", holdOutput.String())
 	}
 
@@ -3212,7 +3212,7 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 		}
 		_ = advance.Wait()
 	})
-	if !waitForPath(startedPath, 2*time.Second) {
+	if !waitForPath(startedPath, testwait.Deadline(2*time.Second)) {
 		t.Fatalf("second manager did not start high-water advance:\n%s", advanceOutput.String())
 	}
 	if waitForPath(acquiredPath, 150*time.Millisecond) {
@@ -3229,7 +3229,7 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 		t.Fatalf("second manager exited with error: %v\n%s", err, advanceOutput.String())
 	}
 	advanceDone = true
-	if !waitForPath(acquiredPath, time.Second) {
+	if !waitForPath(acquiredPath, testwait.Deadline(time.Second)) {
 		t.Fatal("second manager did not advance after lock release")
 	}
 }

@@ -102,9 +102,9 @@ test-cover:
 # network (pip). Behind the hermes_e2e build tag so it never runs in `make test`.
 hermes-e2e:
 	# -timeout must clear the test's own scaled deadline. Its context is
-	testwait.Deadline(6m), which is 24m when CI is set, and go test
-	defaults to 10m: without this the binary panics on the outer timeout
-	before the test can report which step hung.
+	# testwait.Deadline(6m), which is 24m when CI is set, and go test
+	# defaults to 10m: without this the binary panics on the outer timeout
+	# before the test can report which step hung.
 	go test -tags hermes_e2e -timeout 35m -run TestHermesLiveE2E -count=1 -v ./internal/cli/hermes/...
 
 # test-liveproof runs the shipped-binary live-proof harness. It is build-tagged
@@ -112,8 +112,8 @@ hermes-e2e:
 # ephemeral ports, and is slower/portful enough to keep out of default CI.
 test-liveproof:
 	# Same reason as hermes-e2e: the longest scaled deadline here is
-	testwait.Deadline(2m), which is 8m under CI against a 10m default,
-	leaving no room for the rest of the run.
+	# testwait.Deadline(2m), which is 8m under CI against a 10m default,
+	# leaving no room for the rest of the run.
 	go test -tags liveproof -timeout 20m -run TestLiveProof -count=1 -v ./internal/liveproof/...
 
 bench:

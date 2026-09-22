@@ -764,7 +764,7 @@ type liveDeferredHeld struct {
 
 func waitDeferredList(t *testing.T, bin, apiAddr string, wantCount int) (liveDeferredList, string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var lastRaw string
@@ -1068,7 +1068,7 @@ type liveDeferredJournalEntry struct {
 
 func waitDeferredJournalSource(t *testing.T, path, deferID, source string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var last []liveDeferredJournalEntry
@@ -1112,7 +1112,7 @@ func readDeferredJournal(t *testing.T, path string) []liveDeferredJournalEntry {
 
 func waitFlightRecorderResolutionSource(t *testing.T, dir, source string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var last []string

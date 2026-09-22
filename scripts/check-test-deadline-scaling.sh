@@ -72,14 +72,12 @@ while IFS= read -r -d '' file; do
 	scanned=$((scanned + 1))
 
 	# A deadline of a second or more, not already wrapped in the helper.
-	matches=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?([0-9]+[[:space:]]*\*[[:space:]]*)?time\.(Second|Minute)' "$file" |
-		grep -v 'testwait\.Deadline' || true)
+	matches=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?([0-9]+[[:space:]]*\*[[:space:]]*)?time\.(Second|Minute)' "$file" || true)
 
 	# Milliseconds of a second or more. Written separately because the bound is
 	# on the NUMBER here, not on the unit: four or more digits, or a leading
 	# digit followed by three, is >= 1000ms.
-	ms=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?[0-9]{4,}[[:space:]]*\*[[:space:]]*time\.Millisecond' "$file" |
-		grep -v 'testwait\.Deadline' || true)
+	ms=$(grep -nE '(<-time\.After\(|context\.WithTimeout\([^,]+,)[[:space:]]*\(?[0-9]{4,}[[:space:]]*\*[[:space:]]*time\.Millisecond' "$file" || true)
 	if [ -n "$ms" ]; then
 		matches=$(printf '%s\n%s' "$matches" "$ms" | grep -v '^$' || true)
 	fi

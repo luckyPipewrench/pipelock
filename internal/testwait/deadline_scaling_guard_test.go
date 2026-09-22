@@ -65,6 +65,28 @@ func test() {
 			wantPass: true,
 		},
 		{
+			// The line filter this replaced dropped any line MENTIONING the
+			// helper, so naming it in a trailing comment was enough to hide a
+			// raw deadline. The helper call itself never matched the detector,
+			// which is why the filter bought nothing and cost this.
+			name: "rejects raw deadline carrying the helper name in a comment",
+			source: `package fixture
+
+import (
+	"context"
+	"os/exec"
+	"time"
+)
+
+func test() {
+	ctx, cancel := context.WithTimeout(context.Background(), ` + "time.Second" + `) // testwait.Deadline
+	defer cancel()
+	_ = exec.CommandContext(ctx, "true")
+}
+`,
+			wantText: "Unscaled deadline",
+		},
+		{
 			name:     "rejects empty tracked test set",
 			wantText: "no tracked internal test files",
 		},

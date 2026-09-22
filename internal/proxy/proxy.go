@@ -3658,7 +3658,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if prefixLen > 512 {
 		prefixLen = 512
 	}
-	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
+	if shieldLeavesBodyUnchanged(detectShieldPipeline(contentType, body[:prefixLen])) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}

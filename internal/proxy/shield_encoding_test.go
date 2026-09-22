@@ -272,6 +272,24 @@ func TestShieldUTF16_MalformedContentTypeCannotSkipPipeline(t *testing.T) {
 	}
 }
 
+func TestProxy_ApplyShield_MalformedUTF16ContentTypeFailsClosed(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	body := encodeUTF16ForShieldTest(`<html><body>plain</body></html>`, shieldUTF16LE, true)
+	contentType := "text/html; charset=utf-16le; charset=UTF-16LE"
+
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+		t.Run(transport, func(t *testing.T) {
+			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked == nil || blocked.info.Reason != blockreason.BrowserShieldUninspectable || summary != nil || out != nil {
+				t.Fatalf("malformed UTF-16 outcome: blocked=%+v summary=%+v unchanged=%t", blocked, summary, bytes.Equal(out, body))
+			}
+		})
+	}
+}
+
 func TestShieldUTF16_HelperFailureBranches(t *testing.T) {
 	t.Parallel()
 	if _, ok := shieldUTF16BOM([]byte{0}); ok {
@@ -384,6 +402,27 @@ func TestReverseShieldUTF16_BufferedAndScanHeadPaths(t *testing.T) {
 			t.Fatalf("reverse scan-head response: status=%d body=%q", resp.StatusCode, body)
 		}
 	})
+	t.Run("malformed content type scan head blocks", func(t *testing.T) {
+		contentType := "text/html; charset=utf-16be; charset=UTF-16BE"
+		resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, false, 16, contentType, page)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.BrowserShieldUninspectable) {
+			t.Fatalf("reverse malformed scan-head response: status=%d body=%q", resp.StatusCode, body)
+		}
+	})
+}
+
+func TestPartialShieldSummary_MalformedUTF16ContentTypeUsesRecoveredPipeline(t *testing.T) {
+	t.Parallel()
+	body := encodeUTF16ForShieldTest(`<html><body>plain</body></html>`, shieldUTF16LE, true)
+	summary := partialShieldSummary(nil, body, "text/html; charset=utf-16le; charset=UTF-16LE", len(body), len(body))
+	if summary.Pipeline != "html" {
+		t.Fatalf("pipeline = %q, want html", summary.Pipeline)
+	}
 }
 
 func TestForwardAndConnectShieldUTF16RuntimeParity(t *testing.T) {

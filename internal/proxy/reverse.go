@@ -2110,7 +2110,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
 		prefixLen := min(len(body), 512)
-		if shieldLeavesBodyUnchanged(shield.DetectPipeline(resp.Header.Get("Content-Type"), body[:prefixLen])) {
+		if shieldLeavesBodyUnchanged(detectShieldPipeline(resp.Header.Get("Content-Type"), body[:prefixLen])) {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
 		}
@@ -3363,7 +3363,7 @@ func partialShieldSummary(summary *receipt.ShieldSummary, scanned []byte, conten
 	if summary == nil {
 		prefixLen := min(len(scanned), 512)
 		summary = &receipt.ShieldSummary{
-			Pipeline: shieldPipelineLabel(shield.DetectPipeline(contentType, scanned[:prefixLen])),
+			Pipeline: shieldPipelineLabel(detectShieldPipeline(contentType, scanned[:prefixLen])),
 		}
 	}
 	summary.BodyBytes = bodyBytes

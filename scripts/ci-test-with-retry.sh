@@ -28,11 +28,16 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --attempt-timeout-seconds)
-      if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+      if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[1-9][0-9]{0,4}$ ]]; then
         usage
         exit 2
       fi
-      attempt_timeout_seconds="$2"
+      # Bound decimal text before Bash arithmetic can evaluate or overflow it.
+      if [ "$2" -gt 86400 ]; then
+        echo "ci-test-with-retry: attempt deadline must be between 1 and 86400 seconds" >&2
+        exit 2
+      fi
+      attempt_timeout_seconds=$((10#$2))
       shift 2
       ;;
     --)
@@ -163,15 +168,42 @@ run_and_tee() {
   "${capture_command[@]}" "$stderr_file" <"$stderr_fifo" >&2 &
   local stderr_tee_pid=$!
 
-  # Python creates a new session without relying on non-standard setsid(1)
-  # flags. execvp keeps its PID as the session and process-group ID.
-  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+  local supervision_file="${stdout_file}.supervision"
+  local supervised=0
+  # Linux CI uses a dedicated subreaper so setsid children still have an owner.
+  # Other hosts retain the process-group cleanup and bounded capture fallback.
+  if [ "$(uname -s)" = Linux ]; then
+    python3 scripts/ci_process_supervisor.py --status-file "$supervision_file" -- "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+    supervised=1
+  else
+    python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+  fi
   local command_pid=$!
   last_process_group="$command_pid"
   active_process_group="$command_pid"
 
   local command_status=0
   wait "$command_pid" || command_status=$?
+
+  if [ "$supervised" -eq 1 ]; then
+    if ! python3 - "$supervision_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        result = json.load(stream)
+    complete = result.get("cleanup_complete") is True
+    unexpected = result.get("unexpected_live_descendants") is not False
+except (OSError, ValueError, AttributeError):
+    complete, unexpected = False, True
+sys.exit(0 if complete and not unexpected else 1)
+PY
+    then
+      echo "ci-test-with-retry: ${pass_label} did not complete with clean descendants; incomplete attempts are not retried" >&2
+      process_cleanup_failed=1
+    fi
+  fi
 
   if [ -n "$attempt_timeout_seconds" ]; then
     case "$command_status" in
@@ -186,13 +218,16 @@ run_and_tee() {
     esac
   fi
 
-  # Descendants can inherit the FIFO writers. Clean the process group before
-  # waiting for tee, or an orphan could keep capture open indefinitely.
-  if ! cleanup_process_group "$command_pid" "$pass_label"; then
-    process_cleanup_failed=1
-    active_process_group=""
-    rm -f -- "$stdout_fifo" "$stderr_fifo"
-    return "$command_status"
+  # The supervisor has already reaped its tree. Do not probe or signal its
+  # now-reusable numeric process group. Legacy hosts still need group cleanup
+  # before waiting for inherited FIFO writers to close.
+  if [ "$supervised" -eq 0 ]; then
+    if ! cleanup_process_group "$command_pid" "$pass_label"; then
+      process_cleanup_failed=1
+      active_process_group=""
+      rm -f -- "$stdout_fifo" "$stderr_fifo"
+      return "$command_status"
+    fi
   fi
   active_process_group=""
 

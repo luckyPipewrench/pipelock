@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,7 +39,7 @@ const (
 
 // recorderSessionID is the session ID used for all recorder entries from the emitter.
 // The recorder pins to the first session ID it sees, so all entries must use the same value.
-const recorderSessionID = "proxy"
+const recorderSessionID = recorder.DefaultSessionBase
 
 // MetricsSink receives receipt-emission observability signals. The proxy's
 // metrics package implements it; tests can supply a stub. A nil sink is a
@@ -121,6 +122,8 @@ type Emitter struct {
 	// the bare recorderSessionID constant, so a caller-supplied run session
 	// is actually honored end to end.
 	session string
+	// chainLink is the signed continuity link recorded at startup, or nil.
+	chainLink *ChainLink
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -205,6 +208,10 @@ type EmitterConfig struct {
 	// siblings. Empty defaults to the historical literal "proxy" so existing
 	// direct-construction tests are unaffected.
 	Session string
+	// Notices receives operator-facing startup lines about cross-run chain
+	// linking (for example a corrupt predecessor tail that was skipped).
+	// Nil writes to os.Stderr.
+	Notices io.Writer
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -254,8 +261,76 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if e.initErr != nil {
 		return e
 	}
+	notices := cfg.Notices
+	if notices == nil {
+		notices = os.Stderr
+	}
+	e.linkPredecessor(notices)
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
+}
+
+// linkPredecessor runs once at construction, before the first emit. When this
+// emitter owns a brand-new run session (no receipts yet), it claims the most
+// recent finished chain of the same base and records a signed chain_link as
+// the run session's first entry. Any failure here leaves the run unlinked and
+// never disables emission: a missing link costs cross-run continuity, which a
+// verifier reports as an unlinked chain, while bricking would cost all
+// evidence for the run.
+func (e *Emitter) linkPredecessor(notices io.Writer) {
+	if e.hasPriorTail || e.chainSeq != 0 || e.recorder.Dir() == "" {
+		return
+	}
+	base, ok := RunSessionBase(e.session)
+	if !ok {
+		return
+	}
+	pred, err := claimPredecessor(e.recorder.Dir(), base, e.session, notices)
+	if err != nil {
+		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
+		return
+	}
+	if pred == nil {
+		return
+	}
+	link, err := SignChainLink(ChainLink{
+		PredecessorSession:   pred.session,
+		PredecessorTailSeq:   pred.tail.ActionRecord.ChainSeq,
+		PredecessorTailHash:  pred.tailHash,
+		PredecessorSignerKey: pred.tail.SignerKey,
+		SuccessorSession:     e.session,
+		LinkedAt:             e.now().UTC().Format(time.RFC3339Nano),
+	}, e.privKey)
+	if err != nil {
+		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: signing chain link: %v\n", e.session, err)
+		return
+	}
+	body, err := json.Marshal(link)
+	if err != nil {
+		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: encoding chain link: %v\n", e.session, err)
+		return
+	}
+	if err := e.recorder.RecordDurable(recorder.Entry{
+		SessionID: e.session,
+		Type:      ChainLinkEntryType,
+		EventKind: ChainLinkEntryType,
+		Summary:   fmt.Sprintf("chain_link: continues %s at seq %d", link.PredecessorSession, link.PredecessorTailSeq),
+		Detail:    json.RawMessage(body),
+	}); err != nil {
+		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: recording chain link: %v\n", e.session, err)
+		return
+	}
+	e.chainLink = &link
+}
+
+// ChainLink returns the continuity link this emitter recorded at startup, or
+// nil when the run started unlinked. Safe on a nil emitter.
+func (e *Emitter) ChainLink() *ChainLink {
+	if e == nil || e.chainLink == nil {
+		return nil
+	}
+	l := *e.chainLink
+	return &l
 }
 
 // InitError returns the error (if any) that occurred while resuming the chain
@@ -315,6 +390,14 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 // SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
 // signs. It is used by reload code to distinguish a policy-only reload from a
 // signer rotation without replacing a live emitter unnecessarily.
+// Session returns the recorder session this emitter records under. Nil-safe.
+func (e *Emitter) Session() string {
+	if e == nil {
+		return ""
+	}
+	return e.session
+}
+
 func (e *Emitter) SignerKeyHex() string {
 	if e == nil || len(e.privKey) != ed25519.PrivateKeySize {
 		return ""

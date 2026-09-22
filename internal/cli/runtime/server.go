@@ -578,7 +578,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 		runFlightRecorderExpiryOnce(rec, opts.Stderr, opts.expiry())
 		s.recorder = rec
-		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
+		runSession, sessErr := acquireRunSession(rec)
+		if sessErr != nil {
+			s.cleanup()
+			return nil, sessErr
+		}
+		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec), proxy.WithSession(runSession))
 		postureResult, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
 			ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
 			RequireContainmentEvidence: cfg.FlightRecorder.RequireContainmentEvidence,
@@ -609,6 +614,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			PostureBinding:      postureResult.Binding,
 			PostureAvailability: string(postureResult.Availability),
 			HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+			Session:             runSession,
 		})
 		if s.receiptEmitter != nil {
 			// Loud, one-time startup signal when the chain could not be
@@ -652,6 +658,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
 				Principal: "local",
 				Actor:     "pipelock",
+				Session:   runSession,
 			}); v2Emitter != nil {
 				proxyOpts = append(proxyOpts, proxy.WithV2ReceiptEmitter(v2Emitter))
 				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: v2 proxy_decision dual-emit enabled\n")

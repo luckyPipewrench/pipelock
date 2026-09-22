@@ -368,7 +368,15 @@ func emitShadowReceipts(flags shadowFlags, body contract.Contract, report shadow
 		return 0, fmt.Errorf("learn shadow: open recorder: %w", err)
 	}
 	defer func() { _ = rec.Close() }()
+	// Record under a fresh per-run session so a shadow replay can never
+	// resume, and fork, a chain another process is writing in the same
+	// recorder directory.
+	runSession, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		return 0, fmt.Errorf("learn shadow: acquire recorder session: %w", err)
+	}
 	emitter := shadow.NewEmitter(shadow.EmitterConfig{
+		SessionID: runSession,
 		Recorder:  rec,
 		Signer:    signer,
 		Principal: "learn",

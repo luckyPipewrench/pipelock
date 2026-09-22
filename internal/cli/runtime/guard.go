@@ -335,7 +335,12 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		return nil, fmt.Errorf("creating Guard flight recorder: %w", err)
 	}
 	evidence.recorder = rec
-	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec))
+	runSession, err := acquireRunSession(rec)
+	if err != nil {
+		evidence.close()
+		return nil, err
+	}
+	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec), proxy.WithSession(runSession))
 
 	postureResult, err := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
 		ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
@@ -352,6 +357,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		Principal: "local", Actor: "pipelock", Metrics: m, PostureBinding: postureResult.Binding,
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		Session:             runSession,
 	})
 	if !receiptEmitterReady(emitter) {
 		if cfg.FlightRecorder.RequireReceipts {
@@ -369,7 +375,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	if v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
 		Recorder: rec, Signer: proxydecision.NewKeyedSigner(privateKey),
 		Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-		Principal: "local", Actor: "pipelock",
+		Principal: "local", Actor: "pipelock", Session: runSession,
 	}); v2 != nil {
 		evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithV2ReceiptEmitter(v2))
 	}

@@ -110,7 +110,7 @@ func startStandaloneReceiptLifecycle(
 	return func() {
 		cancel()
 		wg.Wait()
-		if err := emitSessionCloseAndTranscriptRoot(e, transcriptRootSessionID, sessionCloseReasonGracefulShutdown); err != nil && logW != nil {
+		if err := emitSessionCloseAndTranscriptRoot(e, e.Session(), sessionCloseReasonGracefulShutdown); err != nil && logW != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: receipt shutdown seal failed: %v\n", err)
 		}
 	}

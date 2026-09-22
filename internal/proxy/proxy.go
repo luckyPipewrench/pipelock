@@ -628,6 +628,7 @@ type Proxy struct {
 	captureObs           capture.CaptureObserver
 	sizeExemptScanBudget sizeExemptScanBudget
 	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
+	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptKeyPath       string                                // active signing key path, for reload comparison
@@ -682,6 +683,16 @@ func WithCaptureObserver(obs capture.CaptureObserver) Option {
 // evidence log. Pass nil to disable (default).
 func WithRecorder(rec *recorder.Recorder) Option {
 	return func(p *Proxy) { p.recorder = rec }
+}
+
+// WithSession sets the recorder session this process records its own
+// decision entries under. Callers set this to the SAME run session ID
+// returned by recorder.AcquireRunSession for the recorder passed to
+// WithRecorder, so this proxy's own decision entries land in the same
+// chain as the receipt and proxy_decision emitters built from that
+// recorder. Leaving it unset keeps the historical literal "proxy".
+func WithSession(session string) Option {
+	return func(p *Proxy) { p.session = session }
 }
 
 // WithReceiptEmitter sets the action receipt emitter. When non-nil, the proxy
@@ -1416,8 +1427,21 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 		summary += " (" + pattern + ")"
 	}
 
-	_ = p.recorder.Record(recorder.Entry{
-		SessionID: "proxy",
+	session := p.session
+	if session == "" {
+		session = recorder.DefaultSessionBase
+	}
+
+	// The comment above this method already promised these errors are
+	// "logged but never block the proxy hot path". They were discarded
+	// instead (`_ =`), which meant a recorder write failure here - most
+	// notably a session_id mismatch when this entry's session and the
+	// recorder's acquired session disagree - was invisible. Actually log
+	// it, at audit-error severity like every other post-decision recorder
+	// failure in this file, rather than silently dropping tamper-evident
+	// coverage of a real enforcement verdict.
+	if err := p.recorder.Record(recorder.Entry{
+		SessionID: session,
 		Type:      "decision",
 		Transport: transport,
 		Summary:   summary,
@@ -1427,7 +1451,10 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 			"pattern":    pattern,
 			"request_id": requestID,
 		},
-	})
+	}); err != nil && p.logger != nil {
+		p.logger.LogError(audit.NewRequestLogContext(requestID),
+			fmt.Errorf("recording decision entry (verdict=%s layer=%s transport=%s): %w", verdict, layer, transport, err))
+	}
 }
 
 // emitReceipt creates and records a signed action receipt for a proxy decision.
@@ -1768,6 +1795,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 				Actor:          "pipelock",
 				ResumeSeq:      resumeSeq,
 				ResumePrevHash: resumePrev,
+				Session:        p.session,
 			})
 		}
 		return receiptEmitterStage{
@@ -1797,6 +1825,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PostureBinding:      postureResult.Binding,
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		Session:             p.session,
 	})
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {
@@ -1814,6 +1843,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			Actor:          "pipelock",
 			ResumeSeq:      resumeSeq,
 			ResumePrevHash: resumePrev,
+			Session:        p.session,
 		}),
 		keyPath: keyPath,
 	}, nil

@@ -5733,3 +5733,109 @@ func TestProxy_recordDecision_NilRecorderNoOp(t *testing.T) {
 	// Should not panic.
 	p.recordDecision(config.ActionBlock, "test", "pattern", "fetch", "req-1")
 }
+
+// TestProxy_recordDecision_RecordErrorIsLogged proves the "logged but never
+// block the proxy hot path" contract recordDecision's own doc comment
+// promises. It used to discard the error with `_ =`, so a real failure -
+// here a recorder session mismatch, the exact defect class this file's
+// chain-continuity work exists to prevent - was silently invisible. Force
+// that mismatch deterministically (acquire the recorder to one session, then
+// have the Proxy think it is a different one) and assert the failure reaches
+// the audit log.
+func TestProxy_recordDecision_RecordErrorIsLogged(t *testing.T) {
+	t.Parallel()
+
+	evidenceDir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                evidenceDir,
+		CheckpointInterval: 100,
+		MaxEntriesPerFile:  1000,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+
+	// Bind the recorder to one session up front, as production now does via
+	// recorder.AcquireRunSession, but give the Proxy a DIFFERENT session via
+	// WithSession, reproducing exactly the sibling-writer-disagreement class
+	// this file's design guards against.
+	if err := rec.AcquireSession("proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	var stream bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &stream)
+	if err != nil {
+		t.Fatalf("audit.NewWithStream: %v", err)
+	}
+
+	sc := scanner.MustNew(cfg)
+	p, pErr := New(cfg, logger, sc, metrics.New(),
+		WithRecorder(rec),
+		WithSession("proxy.run.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+
+	p.recordDecision(config.ActionBlock, "blocklist", "example.com", "fetch", "req-mismatch")
+
+	if !strings.Contains(stream.String(), "recording decision entry") {
+		t.Fatalf("expected the discarded Record error to be logged; audit stream: %s", stream.String())
+	}
+	if !strings.Contains(stream.String(), "session_id mismatch") {
+		t.Fatalf("expected the underlying session_id mismatch to be visible in the logged error; audit stream: %s", stream.String())
+	}
+}
+
+// TestProxy_recordDecision_SharedRunSessionRecords is the positive control for
+// TestProxy_recordDecision_RecordErrorIsLogged: when the proxy records under
+// the SAME run session the recorder acquired (the production wiring), the
+// decision entry lands and nothing is logged as an error.
+func TestProxy_recordDecision_SharedRunSessionRecords(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                t.TempDir(),
+		CheckpointInterval: 100,
+		MaxEntriesPerFile:  1000,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+	runSession, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatalf("AcquireRunSession: %v", err)
+	}
+
+	var stream bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &stream)
+	if err != nil {
+		t.Fatalf("audit.NewWithStream: %v", err)
+	}
+	p, err := New(cfg, logger, scanner.MustNew(cfg), metrics.New(), WithRecorder(rec), WithSession(runSession))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	p.recordDecision(config.ActionBlock, "blocklist", "example.com", "fetch", "req-shared")
+	if strings.Contains(stream.String(), "recording decision entry") {
+		t.Fatalf("shared run session must record cleanly; audit stream: %s", stream.String())
+	}
+	sessions, err := recorder.ListSessions(rec.Dir())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0] != runSession {
+		t.Fatalf("sessions = %v, want only %q", sessions, runSession)
+	}
+}

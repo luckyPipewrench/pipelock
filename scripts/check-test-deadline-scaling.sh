@@ -40,10 +40,26 @@ cd "$(dirname "$0")/.."
 
 violations=0
 scanned=0
+file_list=$(mktemp)
+trap 'rm -f "$file_list"' EXIT
 
 # git ls-files quotes a path containing a newline, so a file could otherwise be
 # skipped in silence. -z keeps the names intact.
+if ! git ls-files -z 'internal/**/*_test.go' >"$file_list"; then
+	echo "check-test-deadline-scaling: could not enumerate tracked test files" >&2
+	exit 1
+fi
+
+if [ ! -s "$file_list" ]; then
+	echo "check-test-deadline-scaling: no tracked internal test files found; refusing to pass" >&2
+	exit 1
+fi
+
 while IFS= read -r -d '' file; do
+	if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+		printf 'check-test-deadline-scaling: cannot read tracked test file: %s\n' "$file" >&2
+		exit 1
+	fi
 	grep -q 'exec\.CommandContext' "$file" || continue
 	scanned=$((scanned + 1))
 
@@ -55,9 +71,14 @@ while IFS= read -r -d '' file; do
 		while IFS= read -r line; do
 			printf '%s:%s\n' "$file" "$line"
 			violations=$((violations + 1))
-		done <<<"$matches"
+	done <<<"$matches"
 	fi
-done < <(git ls-files -z 'internal/**/*_test.go')
+done <"$file_list"
+
+if [ "$scanned" -eq 0 ]; then
+	echo "check-test-deadline-scaling: no subprocess test files found; refusing to pass" >&2
+	exit 1
+fi
 
 if [ "$violations" -gt 0 ]; then
 	cat >&2 <<'MSG'

@@ -412,6 +412,7 @@ request_body_scanning:
   disable_patterns: []      # optional exact DLP pattern names to skip on this surface
   max_body_bytes: 5242880   # 5MB; fail-closed above this
   scan_headers: true        # scan request headers for DLP
+  issuer_bound_session_cookies: false # optional intercepted HTTPS cookie allowance
   header_mode: sensitive    # "sensitive" (listed headers) or "all" (everything except ignore list)
   sensitive_headers:
     - Authorization
@@ -453,6 +454,7 @@ request_body_scanning:
 | `disable_patterns` | `[]` | Exact DLP pattern names to skip for request body/header DLP only. Unknown names are rejected at config load. Immutable core DLP patterns cannot be disabled. Disabling one pattern does not suppress other DLP matches in the same body or header set. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
 | `scan_headers` | `true` | Scan request headers for DLP patterns |
+| `issuer_bound_session_cookies` | `false` | On intercepted HTTPS, allow a single DLP-matching Cookie value only after its issuing response was delivered to the same trusted agent session. The value must return to the exact issuer host and port over HTTPS, within its cookie path and expiry. Other headers, multi-cookie requests, cleartext HTTP, CONNECT passthrough, and WebSocket upgrades keep ordinary header DLP enforcement. Requires TLS interception, `header_mode: sensitive`, and Cookie header scanning. Evidence is memory-only and cleared on reload. |
 | `header_mode` | `sensitive` | `sensitive`: scan only listed headers. `all`: scan all headers except ignore list |
 | `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
 | `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |

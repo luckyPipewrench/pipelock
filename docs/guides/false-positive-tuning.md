@@ -109,6 +109,31 @@ findings by scanner name and pattern. It applies only to non-core rules; core
 DLP and core response floor names fail config validation. See the
 [suppression guide](suppression.md).
 
+### Browser session cookies on intercepted HTTPS
+
+For a headed browser that signs in through Pipelock's TLS interception, set
+`request_body_scanning.issuer_bound_session_cookies: true` if header DLP blocks
+the site's own session cookie. This option is off by default. It requires
+`tls_interception.enabled`, request body and header scanning,
+`header_mode: sensitive`, and `Cookie` in `sensitive_headers`.
+
+Pipelock records a keyed digest only after an allowed HTTPS response carrying
+`Set-Cookie` reaches the browser. A later request may carry one matching cookie
+back to the exact issuing host and port over HTTPS, within its path and expiry.
+The audit event `dlp_issuer_cookie_allow` names the matched pattern and
+destination without logging the cookie value. Evidence expires within 24 hours
+and is cleared on reload. A cookie value previously sent outbound in the same
+session is ineligible, including one reflected by a different site. If the
+proxy cannot fully observe outbound data, it stops granting this allowance for
+that session. If the bounded global evidence store fills, it stops granting
+allowances until reload. A restart clears the evidence too, so the browser may
+need to sign in again.
+
+Authorization bearer tokens have no observed issuance proof and remain subject
+to header DLP. Forward HTTP, opaque CONNECT tunnels, WebSocket upgrades, and
+requests with multiple cookies do not receive this allowance. Keep normal
+header DLP enabled; this setting does not suppress other matches.
+
 ### Presigned URLs inside request bodies
 
 An API may accept an AWS SigV4 presigned URL in a request body so it can fetch an attachment. That URL contains an AWS access-key ID, so the immutable DLP floor blocks it even though the full URL is a scoped capability. Do not add a core-pattern suppression.

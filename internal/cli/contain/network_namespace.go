@@ -375,7 +375,7 @@ func managedDoorwaySocketNames(proxySocketPath string, services []config.Contain
 func probeManagedDoorwaySockets(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) (string, string) {
 	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
 		if out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlEnabled {
-			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); run `systemctl reset-failed %s && systemctl start %s`", socket, oneLine(out), socket, socket)
+			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); run `systemctl enable --now %s`", socket, oneLine(out), socket)
 		}
 		if out, code, err := env.runCmd(ctx, "systemctl", "is-active", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
 			return statusFail, fmt.Sprintf("managed doorway socket %s is %s; run `systemctl reset-failed %s && systemctl start %s`", socket, oneLine(out), socket, socket)

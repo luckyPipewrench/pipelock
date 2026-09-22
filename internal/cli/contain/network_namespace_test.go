@@ -340,6 +340,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 		boundaryStatus       string
 		missingNamespaceUnit bool
 		doorwayState         string
+		doorwayEnabled       string
 		wantStatus           string
 		wantDetail           string
 	}{
@@ -379,6 +380,22 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			doorwayState:   "failed",
 			wantStatus:     statusFail,
 			wantDetail:     "systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket",
+		},
+		{
+			name:           "disabled doorway socket names the enable remedy",
+			agentNamespace: "net:[200]",
+			boundaryStatus: statusPass,
+			doorwayEnabled: "disabled",
+			wantStatus:     statusFail,
+			wantDetail:     "systemctl enable --now pipelock-agent-proxy.socket",
+		},
+		{
+			name:           "runtime-only enabled doorway socket is not persistent",
+			agentNamespace: "net:[200]",
+			boundaryStatus: statusPass,
+			doorwayEnabled: "enabled-runtime",
+			wantStatus:     statusFail,
+			wantDetail:     "not persistently enabled",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -421,6 +438,9 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 				joined := strings.Join(args, " ")
 				switch {
 				case strings.HasPrefix(joined, "is-enabled "):
+					if tt.doorwayEnabled != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderSocketPath)) {
+						return tt.doorwayEnabled + "\n", 0, nil
+					}
 					return systemctlEnabled + "\n", 0, nil
 				case strings.HasPrefix(joined, "is-active "):
 					if tt.doorwayState != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderSocketPath)) {

@@ -37,9 +37,17 @@ import (
 // SOI marker or is truncated before the start-of-scan segment.
 var ErrInvalidJPEG = errors.New("media: invalid or truncated JPEG")
 
+// ErrJPEGSignatureMismatch identifies non-empty bytes that do not start with
+// the JPEG SOI marker claimed by the Content-Type header.
+var ErrJPEGSignatureMismatch = fmt.Errorf("%w: signature mismatch", ErrInvalidJPEG)
+
 // ErrInvalidPNG is returned when a byte stream does not begin with the PNG
 // signature or a chunk length overruns the input buffer.
 var ErrInvalidPNG = errors.New("media: invalid or truncated PNG")
+
+// ErrPNGSignatureMismatch identifies non-empty bytes that do not start with
+// the PNG signature claimed by the Content-Type header.
+var ErrPNGSignatureMismatch = fmt.Errorf("%w: signature mismatch", ErrInvalidPNG)
 
 // StripResult describes the outcome of a metadata-strip pass.
 type StripResult struct {
@@ -138,7 +146,13 @@ const (
 // scan data that follows has no length and runs until the next FFxx marker
 // that is not a restart marker (RSTn, 0xD0-0xD7) or byte-stuffing (FF00).
 func stripJPEG(data []byte) (*StripResult, error) {
-	if len(data) < 4 || data[0] != 0xFF || data[1] != jpegSOI {
+	if len(data) < 2 {
+		return nil, ErrInvalidJPEG
+	}
+	if data[0] != 0xFF || data[1] != jpegSOI {
+		return nil, ErrJPEGSignatureMismatch
+	}
+	if len(data) < 4 {
 		return nil, ErrInvalidJPEG
 	}
 	result := &StripResult{Format: "jpeg"}
@@ -307,8 +321,14 @@ var pngStripChunks = map[string]struct{}{
 // Each chunk: 4-byte length (big-endian, data bytes only), 4-byte type,
 // N bytes of data, 4-byte CRC. Total per chunk: 12 + length bytes.
 func stripPNG(data []byte) (*StripResult, error) {
-	if len(data) < len(pngSignature) || !bytes.Equal(data[:len(pngSignature)], pngSignature) {
+	if len(data) < len(pngSignature) {
+		if !bytes.Equal(data, pngSignature[:len(data)]) {
+			return nil, ErrPNGSignatureMismatch
+		}
 		return nil, ErrInvalidPNG
+	}
+	if !bytes.Equal(data[:len(pngSignature)], pngSignature) {
+		return nil, ErrPNGSignatureMismatch
 	}
 	result := &StripResult{Format: "png"}
 

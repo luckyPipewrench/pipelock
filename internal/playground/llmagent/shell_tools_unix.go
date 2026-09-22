@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build !windows
+//go:build aix || android || darwin || dragonfly || freebsd || illumos || ios || linux || netbsd || openbsd || solaris
 
 package llmagent
 
@@ -18,13 +18,15 @@ import (
 // the tool call.
 const processGroupWaitDelay = 3 * time.Second
 
-// boundToProcessGroup makes cmd lead its own process group and, on context
+const runCommandSupported = true
+
+// configureRunCommand makes cmd lead its own process group and, on context
 // cancellation/timeout, kills that group rather than just the direct
 // child. exec.CommandContext's default only signals cmd.Process, so a command
 // that ordinarily forks or backgrounds work ("sleep 100 &") would outlive a
 // run_command timeout. Setpgid puts the shell and ordinary descendants in one
 // group; killing the negative pid (-pgid) reaps that group.
-func boundToProcessGroup(cmd *exec.Cmd) {
+func configureRunCommand(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -38,4 +40,5 @@ func boundToProcessGroup(cmd *exec.Cmd) {
 		return nil
 	}
 	cmd.WaitDelay = processGroupWaitDelay
+	return nil
 }

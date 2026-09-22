@@ -6,8 +6,8 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 
 | Command | Model | Use When |
 |---------|-------|----------|
-| `/review` | Efficient discovery (default: gpt-5.6-luna, low reasoning) with a balanced candidate judge (default: gpt-5.6-terra, high reasoning) | Quick check, most PRs |
-| `/review deep` | Balanced (default: gpt-5.6-terra, xhigh reasoning) | Adversarial static-diff review (findings-first) |
+| `/review` | GPT-6 Luna at high reasoning for discovery; GPT-6 Sol at low reasoning judges candidates | Quick check, most PRs |
+| `/review deep` | GPT-6 Sol at low reasoning | Adversarial static-diff review (findings-first) |
 
 ## What It Reviews
 
@@ -94,8 +94,8 @@ when intentionally overriding the reviewed defaults:
 
 | Variable | Default | Used By |
 |----------|---------|---------|
-| `PR_REVIEW_MODEL_FAST` | `gpt-5.6-luna` | `/review` |
-| `PR_REVIEW_MODEL_DEEP` | `gpt-5.6-terra` | `/review deep` |
+| `PR_REVIEW_MODEL_FAST` | `gpt-6-luna` | `/review` |
+| `PR_REVIEW_MODEL_DEEP` | `gpt-6-sol` | `/review deep` and candidate judging |
 
 The defaults live in `.github/actions/pr-review/pr_review.py`; the composite
 action passes optional repository variables through without maintaining another
@@ -110,8 +110,8 @@ Set `OPENAI_API_KEY`. The reviewer calls `api.openai.com` directly.
 Override the model via repository variables:
 
 ```text
-PR_REVIEW_MODEL_FAST=gpt-5.6-luna
-PR_REVIEW_MODEL_DEEP=gpt-5.6-terra
+PR_REVIEW_MODEL_FAST=gpt-6-luna
+PR_REVIEW_MODEL_DEEP=gpt-6-sol
 ```
 
 Values must name models available through the direct OpenAI API.

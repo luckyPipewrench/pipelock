@@ -1801,8 +1801,9 @@ class JudgeEvidenceTest(unittest.TestCase):
         self.assertLess(pr_review.llm_timeout_for("deep", "judge-repair"), pr_review.DEEP_LLM_TIMEOUT_SECONDS)
 
     def test_deep_judge_reserves_reasoning_and_visible_output_tokens(self) -> None:
-        payload = pr_review.build_llm_payload("gpt-5.6-terra", "system", "user", "deep", "judge")
-        self.assertEqual(payload["reasoning_effort"], "xhigh")
+        payload = pr_review.build_llm_payload("gpt-6-sol", "system", "user", "deep", "judge")
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertNotIn("temperature", payload)
         self.assertEqual(payload["max_completion_tokens"], 32_768)
         self.assertGreaterEqual(payload["max_completion_tokens"], 25_000)
 
@@ -2194,12 +2195,12 @@ class WallClockBudgetTest(unittest.TestCase):
 
 class FailureDirectionTest(unittest.TestCase):
     def test_default_uses_cheaper_discovery_model_and_stronger_candidate_judgment(self) -> None:
-        self.assertEqual(pr_review.model_for_phase("default", "review-chunk-1"), "gpt-5.6-luna")
+        self.assertEqual(pr_review.model_for_phase("default", "review-chunk-1"), "gpt-6-luna")
         self.assertEqual(pr_review.reasoning_for_phase("default", "review-chunk-1"), "high")
-        self.assertEqual(pr_review.model_for_phase("default", "judge"), "gpt-5.6-terra")
-        self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "high")
-        self.assertEqual(pr_review.model_for_phase("deep", "judge"), "gpt-5.6-terra")
-        self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "xhigh")
+        self.assertEqual(pr_review.model_for_phase("default", "judge"), "gpt-6-sol")
+        self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "low")
+        self.assertEqual(pr_review.model_for_phase("deep", "judge"), "gpt-6-sol")
+        self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "low")
 
     def test_discovery_output_budget_covers_its_reasoning_effort(self) -> None:
         """Reasoning tokens are drawn from the same allowance as the findings JSON.
@@ -2264,8 +2265,8 @@ class FailureDirectionTest(unittest.TestCase):
             result = pr_review.call_model("system", "user", "default", "judge", "correlation")
 
         self.assertEqual(result, {"findings": []})
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-terra")
-        self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "high")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-6-sol")
+        self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "low")
         usage_calls = [call for call in log_phase.call_args_list if call.args and call.args[0] == "judge-usage"]
         self.assertEqual(len(usage_calls), 1)
         self.assertEqual(usage_calls[0].kwargs["correlation"], "correlation")

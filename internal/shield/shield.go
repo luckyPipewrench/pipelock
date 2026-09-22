@@ -284,7 +284,24 @@ func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce
 // they are SVG-specific and the config knob doesn't map cleanly.
 func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	doc := res.Content
-	doc, res.SVGScriptHits = countReplace(e.svgScriptRe, doc)
+	// Remove script elements by parsing the document. A pattern cannot decide
+	// this: the namespace prefix is an XML Name rather than an ASCII word, the
+	// element name is case sensitive, and a closing-tag sequence inside CDATA
+	// is character data. Each of those defeated the pattern separately. The
+	// pattern remains as the fallback for a document XML cannot parse, which a
+	// browser rendering SVG as XML also refuses.
+	if spans, ok := xmlScriptSpans(doc); ok {
+		var out strings.Builder
+		prev := 0
+		for _, span := range spans {
+			out.WriteString(doc[prev:span.start])
+			prev = span.end
+		}
+		out.WriteString(doc[prev:])
+		doc, res.SVGScriptHits = out.String(), len(spans)
+	} else {
+		doc, res.SVGScriptHits = countReplace(e.svgScriptRe, doc)
+	}
 
 	// SVG active content stripping: foreignObject, event handlers, external
 	// xlink:href / href references, and hidden text (both style= and
@@ -472,6 +489,27 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 	}
 
 	prefix := uniqueScriptPlaceholderPrefix(doc)
+
+	// Prefer the parsed answer. XHTML is XML, so the namespace prefix, the case
+	// of the element name and CDATA content all decide what is a script, and
+	// none of them can be settled by scanning text. The scan below stays as the
+	// fallback for a document XML cannot parse, which a browser parsing XHTML
+	// as XML also refuses.
+	if spans, ok := xmlScriptSpans(doc); ok {
+		var out strings.Builder
+		var parsed []maskedHTMLScript
+		prev := 0
+		for _, span := range spans {
+			out.WriteString(doc[prev:span.content])
+			placeholder := prefix + strconv.Itoa(len(parsed)) + "\x00"
+			parsed = append(parsed, maskedHTMLScript{placeholder: placeholder, content: doc[span.content:span.closing]})
+			out.WriteString(placeholder)
+			out.WriteString(doc[span.closing:span.end])
+			prev = span.end
+		}
+		out.WriteString(doc[prev:])
+		return out.String(), parsed
+	}
 
 	var masked strings.Builder
 	var scripts []maskedHTMLScript

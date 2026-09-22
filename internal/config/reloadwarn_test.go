@@ -282,6 +282,9 @@ func TestValidateReload_QueryEntropyParamExclusionsAdded(t *testing.T) {
 		if !strings.Contains(w.Message, "only query-value entropy coverage is reduced") {
 			t.Fatalf("reload warning message = %q, want query-value-only warning", w.Message)
 		}
+		if w.Disposition != "" {
+			t.Fatalf("addition disposition = %q, want rejectable zero value", w.Disposition)
+		}
 	}
 	if !found {
 		t.Fatal("expected query entropy param exclusion reload warning")
@@ -351,9 +354,24 @@ func TestValidateReload_QueryEntropyParamExclusionsRemoved(t *testing.T) {
 		if !strings.Contains(w.Message, "again be subject to query-value entropy blocks") {
 			t.Fatalf("reload warning message = %q, want restored entropy-block warning", w.Message)
 		}
+		if w.Disposition != ReloadWarningDispositionAdvisory {
+			t.Fatalf("removal disposition = %q, want advisory", w.Disposition)
+		}
 	}
 	if !found {
 		t.Fatal("expected query entropy param exclusion removal reload warning")
+	}
+}
+
+func TestReloadWarningDispositionDefaultsRejectable(t *testing.T) {
+	unknown := ReloadWarning{Field: "future.warning", Message: "unclassified"}
+	if unknown.Disposition != "" {
+		t.Fatalf("unknown disposition = %q, want rejectable zero value", unknown.Disposition)
+	}
+
+	advisory := advisoryReloadWarning("startup.only", "requires restart")
+	if advisory.Disposition != ReloadWarningDispositionAdvisory {
+		t.Fatalf("advisory disposition = %q, want %q", advisory.Disposition, ReloadWarningDispositionAdvisory)
 	}
 }
 

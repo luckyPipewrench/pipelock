@@ -132,6 +132,14 @@ func TestPathEntropyExclusionsReloadWarnings(t *testing.T) {
 			if !strings.Contains(joined, tt.want) {
 				t.Fatalf("expected a warning containing %q (%s), got:\n%s", tt.want, tt.why, joined)
 			}
+			for _, warning := range got {
+				if strings.Contains(warning.Message, "coverage restored") && warning.Disposition != ReloadWarningDispositionAdvisory {
+					t.Fatalf("coverage-restoring warning disposition = %q, want advisory", warning.Disposition)
+				}
+				if strings.Contains(warning.Message, "coverage reduced") && warning.Disposition != "" {
+					t.Fatalf("coverage-reducing warning disposition = %q, want rejectable zero value", warning.Disposition)
+				}
+			}
 		})
 	}
 }

@@ -3980,8 +3980,9 @@ func TestServer_Reload_MediationVerifyInboundRejectsDowngrade(t *testing.T) {
 func TestReloadDowngradeRejectReason(t *testing.T) {
 	downgrade := []config.ReloadWarning{{Field: "enforce", Message: "enforcement disabled"}}
 	restartOnly := []config.ReloadWarning{{
-		Field:   "health_watchdog",
-		Message: "health_watchdog config changes require restart — ignored on reload",
+		Field:       "health_watchdog",
+		Message:     "health_watchdog config changes require restart — ignored on reload",
+		Disposition: config.ReloadWarningDispositionAdvisory,
 	}}
 
 	for _, tt := range []struct {

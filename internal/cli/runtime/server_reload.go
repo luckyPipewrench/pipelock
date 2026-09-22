@@ -1084,23 +1084,7 @@ func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {
 }
 
 func reloadWarningIsAdvisory(w config.ReloadWarning) bool {
-	msg := strings.ToLower(w.Message)
-	if strings.Contains(msg, "requires restart") ||
-		strings.Contains(msg, "require restart") ||
-		strings.Contains(msg, "ignored on reload") ||
-		strings.Contains(msg, "uses init-time") ||
-		strings.Contains(msg, "cannot change at runtime") {
-		return true
-	}
-
-	switch w.Field {
-	case "mediation_envelope.key_id":
-		return true
-	case "dlp.secrets_file":
-		return !strings.Contains(msg, "removed")
-	default:
-		return false
-	}
+	return w.Disposition == config.ReloadWarningDispositionAdvisory
 }
 
 // trustExpansionReloadFields identifies trust fields for a rejected reload's

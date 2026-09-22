@@ -122,12 +122,12 @@ Pipelock records a keyed digest only after an allowed HTTPS response carrying
 back to the exact issuing host and port over HTTPS, within its path and expiry.
 The audit event `dlp_issuer_cookie_allow` names the matched pattern and
 destination without logging the cookie value. Evidence expires within 24 hours
-and is cleared on reload. A cookie value previously sent outbound in the same
-session is ineligible, including one reflected by a different site. If the
-proxy cannot fully observe outbound data, it stops granting this allowance for
-that session. If the bounded global evidence store fills, it stops granting
-allowances until reload. A restart clears the evidence too, so the browser may
-need to sign in again.
+and is cleared on reload. A cookie value is ineligible if its exact bytes
+previously appeared in an outbound request from that session, including one
+reflected by a different site. If a supported path cannot fully observe outbound
+data, it stops granting this allowance for that session. If the bounded global
+evidence store fills, it stops granting allowances until reload. A restart
+also clears the evidence, so the browser may need to sign in again.
 
 Authorization bearer tokens have no observed issuance proof and remain subject
 to header DLP. Forward HTTP, opaque CONNECT tunnels, WebSocket upgrades, and

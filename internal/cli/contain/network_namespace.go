@@ -680,7 +680,6 @@ func managedNamespaceRuntimeUnits(env *installEnv) ([]managedNamespaceRuntimeUni
 		return nil, err
 	}
 	units := []managedNamespaceRuntimeUnit{
-		{name: filepath.Base(env.networkNamespaceUnitPath)},
 		{name: filepath.Base(env.proxyForwarderSocketPath), socket: true},
 		{name: filepath.Base(env.proxyForwarderServicePath), socketActivated: true},
 		{name: filepath.Base(env.namespaceForwarderServicePath)},

@@ -271,26 +271,27 @@ func TestMCPContractBlockReasonHelpers(t *testing.T) {
 		t.Fatalf("default scanner reason = %s", got)
 	}
 	for _, tt := range []struct {
-		scanner string
-		want    blockreason.Reason
+		result scanner.Result
+		want   blockreason.Reason
 	}{
-		{scanner.ScannerScheme, blockreason.SchemeBlocked},
-		{scanner.ScannerBlocklist, blockreason.DomainBlocklist},
-		{scanner.ScannerSSRFMetadata, blockreason.SSRFMetadata},
-		{scanner.ScannerSSRF, blockreason.SSRFPrivateIP},
-		{scanner.ScannerCoreSSRF, blockreason.SSRFPrivateIP},
-		{scanner.ScannerEntropy, blockreason.PathEntropy},
-		{scanner.ScannerSubdomainEntropy, blockreason.SubdomainEntropy},
-		{scanner.ScannerLength, blockreason.URLLength},
-		{scanner.ScannerRateLimit, blockreason.RateLimit},
-		{scanner.ScannerDataBudget, blockreason.DataBudget},
-		{scanner.ScannerDLP, blockreason.DLPMatch},
-		{scanner.ScannerCoreDLP, blockreason.DLPMatch},
-		{"unknown", blockreason.ParseError},
+		{scanner.Result{Scanner: scanner.ScannerScheme}, blockreason.SchemeBlocked},
+		{scanner.Result{Scanner: scanner.ScannerBlocklist}, blockreason.DomainBlocklist},
+		{scanner.Result{Scanner: scanner.ScannerSSRFMetadata}, blockreason.SSRFMetadata},
+		{scanner.Result{Scanner: scanner.ScannerSSRF}, blockreason.SSRFPrivateIP},
+		{scanner.Result{Scanner: scanner.ScannerCoreSSRF}, blockreason.SSRFPrivateIP},
+		{scanner.Result{Scanner: scanner.ScannerEntropy}, blockreason.PathEntropy},
+		{scanner.Result{Scanner: scanner.ScannerEntropy, Reason: `high entropy query param "sig"`}, blockreason.QueryEntropy},
+		{scanner.Result{Scanner: scanner.ScannerSubdomainEntropy}, blockreason.SubdomainEntropy},
+		{scanner.Result{Scanner: scanner.ScannerLength}, blockreason.URLLength},
+		{scanner.Result{Scanner: scanner.ScannerRateLimit}, blockreason.RateLimit},
+		{scanner.Result{Scanner: scanner.ScannerDataBudget}, blockreason.DataBudget},
+		{scanner.Result{Scanner: scanner.ScannerDLP}, blockreason.DLPMatch},
+		{scanner.Result{Scanner: scanner.ScannerCoreDLP}, blockreason.DLPMatch},
+		{scanner.Result{Scanner: "unknown"}, blockreason.ParseError},
 	} {
-		t.Run("url_reason_"+tt.scanner, func(t *testing.T) {
-			if got := mcpURLBlockReason(tt.scanner); got != tt.want {
-				t.Fatalf("mcpURLBlockReason(%q) = %s, want %s", tt.scanner, got, tt.want)
+		t.Run("url_reason_"+tt.result.Scanner+"_"+string(tt.want), func(t *testing.T) {
+			if got := mcpURLBlockReason(tt.result); got != tt.want {
+				t.Fatalf("mcpURLBlockReason(%#v) = %s, want %s", tt.result, got, tt.want)
 			}
 		})
 	}

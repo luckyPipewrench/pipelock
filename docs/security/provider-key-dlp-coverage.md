@@ -20,6 +20,8 @@ Each row has a compiled credential-audience host set. Pipelock allows the matchi
 | Web Research API Key | `tvly-` + 20+ token chars | `*.tavily.com` | [Tavily quickstart](https://docs.tavily.com/documentation/quickstart) |
 | Google API Key | `AIza` + 35 token chars | `*.googleapis.com` | [Google API keys](https://cloud.google.com/docs/authentication/api-keys) |
 | Discord Bot Token | three base64url segments | `discord.com` | [Discord developer reference](https://docs.discord.com/developers/reference) |
+| Slack Token | `xox[bpras]-` + 15+ token chars | `slack.com`, `mcp.slack.com` | [Slack Web API](https://docs.slack.dev/apis/web-api/), [Slack MCP server](https://docs.slack.dev/ai/slack-mcp-server/) |
+| Slack App Token | `xapp-` multi-segment | `slack.com` | [apps.connections.open](https://docs.slack.dev/reference/methods/apps.connections.open/) |
 | Hugging Face Token | `hf_` + bounded alphanumeric suffix | `*.huggingface.co` | [Hugging Face tokens](https://huggingface.co/docs/hub/security-tokens) |
 | Databricks Token | `dapi` + 32+ hex chars | `*.databricks.com` | [Databricks PAT authentication](https://docs.databricks.com/aws/en/dev-tools/auth/pat) |
 | Replicate API Token | `r8_` + 40 hex chars | `*.replicate.com` | [Replicate authentication](https://replicate.com/docs/topics/authentication); unverified binding carried from prior defaults |
@@ -64,7 +66,7 @@ suppress:
 
 `exempt_domains` prevents URL DLP from blocking a custom key on the provider's own host. `suppress` covers request-body and request-header findings on the same provider route. The same key remains blocked on every other destination.
 
-The compiled audience entries do not use suppressions. Immutable core DLP names cannot be suppressed.
+The compiled audience entries do not use suppressions. Immutable core DLP names cannot be suppressed. A core DLP name can still carry a compiled audience: `Slack Token` is on the immutable floor, so it is allowed only at Slack's exact encrypted API authorities (`slack.com` and `mcp.slack.com`) and stays blocked on every other destination, and no operator YAML can suppress it, set it to warn, widen its audience, or add `exempt_domains`.
 
 ## Provider-Opaque Fields
 

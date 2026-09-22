@@ -31,6 +31,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | `ssrf_metadata` | DNS resolves to a cloud metadata endpoint (169.254.169.254, etc.). |
 | `ssrf_dns_rebind` | Hostname's DNS answer differs between resolution and connect, indicating rebinding. |
 | `path_entropy` | URL path triggers the high-entropy detector. |
+| `query_entropy` | URL query key or value triggers the high-entropy detector. |
 | `subdomain_entropy` | Subdomain triggers the high-entropy detector. |
 | `url_length` | URL exceeds `monitoring.max_url_length`. |
 | `rate_limit` | Per-session or per-target rate ceiling exceeded. |

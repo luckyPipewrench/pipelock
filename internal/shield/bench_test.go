@@ -38,11 +38,11 @@ func BenchmarkRewrite_CleanHTML(b *testing.B) {
 	}
 }
 
-func BenchmarkRewrite_BrowserGateJS(b *testing.B) {
+func BenchmarkRewrite_JavaScriptPassThrough(b *testing.B) {
 	e := NewEngine(nil)
 	cfg := benchCfg()
 
-	// Realistic ~100 KB JS with extension probing patterns scattered throughout.
+	// Realistic ~100 KB JS with former rewrite targets scattered throughout.
 	var sb strings.Builder
 	sb.WriteString("(function(){\n")
 	// Pad to ~100 KB with realistic JS-like content.

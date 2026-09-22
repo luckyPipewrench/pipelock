@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -294,7 +296,7 @@ func TestWaitReceiptsSettle_CatchesLateReceipt(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("settle-wait did not return after the matching receipt arrived")
 	}
 
@@ -1269,7 +1271,7 @@ func main() {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Close did not cancel and reap the stuck subprocess")
 	}
 }

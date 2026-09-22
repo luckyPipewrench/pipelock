@@ -77,11 +77,11 @@ const (
 	// guests are one Fly app and share app-level secrets, so a root stored
 	// here is delivered to every visitor VM. That sharing is what put the
 	// durable key on the guests before 2026-09-03. It survives only as the
-	// name checked when refusing to leak a root through SessionEnv.
+	// legacy alias rejected in broker and visitor environment guards.
 	envOrchestratorKey = "PLAYGROUND_ORCHESTRATOR_" + "KEY"
 	// envOrchestratorRoot is the broker-only name for the durable signing
-	// root. The guest entrypoint does not read it and refuses to boot if the
-	// guest-facing name is present at all.
+	// root. The guest entrypoint refuses to boot if either durable-root name is
+	// present, including this one inherited from an app-level secret.
 	envOrchestratorRoot = "PLAYGROUND_ORCHESTRATOR_" + "ROOT"
 
 	// warmPoolVMCodeBytes mirrors broker.vmInviteCodeBytes for warm-pool VM
@@ -2030,11 +2030,11 @@ func resolveSessionEnv(f *serveFlags) (map[string]string, error) {
 	return env, nil
 }
 
-// refuseGuestFacingRootSecret fails closed while the guest-facing signing-key
-// variable is set in the broker own environment. Broker and visitor VMs are
-// one Fly app and share app-level secrets, so a value under that name reaches
-// every guest and turns delegation off with no other signal. Refusing here
-// makes that deployment state impossible to hold silently.
+// refuseGuestFacingRootSecret fails closed while the retired guest-facing
+// signing-key variable is set in the broker's own environment. Broker and
+// visitor VMs are one Fly app and share app-level secrets, so a value under
+// that name reaches every guest and turns delegation off with no other signal.
+// Refusing here makes that deployment state impossible to hold silently.
 func refuseGuestFacingRootSecret() error {
 	if strings.TrimSpace(os.Getenv(envOrchestratorKey)) == "" {
 		return nil

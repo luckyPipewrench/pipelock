@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -134,7 +136,7 @@ func runMCPEnvironProof(t *testing.T, binary, mode string) {
 	}
 	config := filepath.Join(t.TempDir(), "pipelock.yaml")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(30*time.Second))
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIntegration_McpSandboxProxyEnvironDenied$") // #nosec G204 G702 -- test re-execs its own binary with a fixed run filter
@@ -179,7 +181,7 @@ func requireAmbientProcEnvironReadable(t *testing.T) {
 		"    print('permission-denied')\n" +
 		"except OSError as err:\n" +
 		"    print(f'error-{err.errno}')\n"
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	out, err := exec.CommandContext(ctx, python, "-c", probe, strconv.Itoa(os.Getpid())).CombinedOutput() // #nosec G204 G702 -- fixed interpreter path and script; PID is decimal test state
 	if err != nil {

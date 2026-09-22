@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -511,6 +512,104 @@ func TestMergeAgentProfile_DLPReplaceDefaults(t *testing.T) {
 	}
 	if len(merged.DLP.Patterns) != 1 {
 		t.Errorf("expected 1 pattern (replace mode), got %d", len(merged.DLP.Patterns))
+	}
+}
+
+func TestMergeAgentProfile_RestoresExactCredentialAudienceMetadata(t *testing.T) {
+	cfg := testConfig()
+	expected := make(map[string][]string)
+	var serialized []config.DLPPattern
+	for _, pattern := range config.DefaultDLPPatterns() {
+		if len(pattern.CredentialAudienceHosts) > 0 {
+			expected[pattern.Name] = append([]string(nil), pattern.CredentialAudienceHosts...)
+			pattern.CredentialAudienceHosts = nil // YAML profile form
+			serialized = append(serialized, pattern)
+		}
+	}
+	if len(expected) == 0 {
+		t.Fatal("built-in credential audience registry is empty")
+	}
+
+	profile := &config.AgentProfile{DLP: &config.AgentDLP{
+		Patterns: serialized,
+	}}
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(expected))
+	for _, pattern := range merged.DLP.Patterns {
+		want, ok := expected[pattern.Name]
+		if !ok {
+			continue
+		}
+		seen[pattern.Name] = true
+		if !slices.Equal(pattern.CredentialAudienceHosts, want) {
+			t.Errorf("merged %q audience = %#v, want %#v", pattern.Name, pattern.CredentialAudienceHosts, want)
+		}
+	}
+	if len(seen) != len(expected) {
+		t.Fatalf("restored %d of %d audience patterns", len(seen), len(expected))
+	}
+}
+
+func TestMergeAgentProfile_RestoresCredentialAudiencesWithoutDLPOverride(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile *config.AgentProfile
+	}{
+		{name: "nil profile"},
+		{name: "listener-only profile", profile: &config.AgentProfile{Listeners: []string{"127.0.0.1:8889"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			merged, err := MergeAgentProfile(cfg, tt.profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var found bool
+			for _, pattern := range merged.DLP.Patterns {
+				if pattern.Name != "Slack App Token" {
+					continue
+				}
+				found = true
+				if !slices.Contains(pattern.CredentialAudienceHosts, "slack.com") {
+					t.Fatalf("Slack App Token audience = %#v, want slack.com", pattern.CredentialAudienceHosts)
+				}
+			}
+			if !found {
+				t.Fatal("Slack App Token pattern missing")
+			}
+		})
+	}
+}
+
+func TestMergeAgentProfile_CustomSameNameDoesNotGainCredentialAudience(t *testing.T) {
+	cfg := testConfig()
+	profile := &config.AgentProfile{DLP: &config.AgentDLP{Patterns: []config.DLPPattern{{
+		Name:     "Slack App Token",
+		Regex:    `custom-[A-Za-z]{20}`,
+		Severity: config.SeverityCritical,
+	}}}}
+
+	merged, err := MergeAgentProfile(cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, pattern := range merged.DLP.Patterns {
+		if pattern.Name == "Slack App Token" {
+			found = true
+			if len(pattern.CredentialAudienceHosts) != 0 {
+				t.Fatalf("custom same-name pattern gained audience %#v", pattern.CredentialAudienceHosts)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("custom Slack App Token pattern missing")
 	}
 }
 

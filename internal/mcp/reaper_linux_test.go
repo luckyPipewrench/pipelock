@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -42,7 +44,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// that's this test process. The outer helper then sleeps so the
 	// direct child stays alive while the grandchild becomes a zombie.
 	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30`
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", helper)
 	if err := cmd.Start(); err != nil {
@@ -97,7 +99,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 		if isReaperStoleExitError(err) {
 			t.Fatalf("cmd.Wait() returned a stolen-exit error — reaper consumed the direct child: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("cmd.Wait() hung — reaper likely consumed the direct child's exit status")
 	}
 
@@ -349,7 +351,7 @@ func TestReaper_SweepsExcludedDuringChildStart(t *testing.T) {
 	unlock()
 	select {
 	case <-swept:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("descendant sweep did not resume after the child start completed")
 	}
 }
@@ -376,7 +378,7 @@ func TestKillAdoptedDescendants_ExcludedDuringChildStart(t *testing.T) {
 	unlock()
 	select {
 	case <-swept:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("descendant kill sweep did not resume after the child start completed")
 	}
 }

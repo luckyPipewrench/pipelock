@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -2244,6 +2245,13 @@ func TestA2AHeaderBlockReason(t *testing.T) {
 			want: blockreason.SSRFMetadata,
 		},
 		{
+			name: "query_entropy",
+			in: A2AScanResult{
+				URLFindings: []scanner.Result{{Scanner: scanner.ScannerEntropy, Reason: `high entropy query param "sig"`}},
+			},
+			want: blockreason.QueryEntropy,
+		},
+		{
 			name: "infrastructure_timeout",
 			in: A2AScanResult{
 				URLFindings: []scanner.Result{{
@@ -2465,4 +2473,94 @@ func TestHTTPListener_GETAndDELETEFailClosedWhenScannerUnavailable(t *testing.T)
 			}
 		})
 	}
+}
+
+// TestHTTPListener_POSTDecodesCompressedJSONUpstream pins the listener to the
+// same answer the MCP HTTP client already gives. A gzip JSON-RPC response is
+// legal and the client in internal/mcp/transport decodes it, but the listener
+// refused every non-identity encoding, so one upstream worked through one path
+// and returned 403 through the other. Decoding is also what makes the body
+// scannable: the injection case below proves the decoded bytes reach the
+// scanner rather than passing through as opaque ones.
+func TestHTTPListener_POSTDecodesCompressedJSONUpstream(t *testing.T) {
+	gz := func(t *testing.T, s string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write([]byte(s)); err != nil {
+			t.Fatalf("gzip write: %v", err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatalf("gzip close: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	t.Run("clean body is decoded and delivered", func(t *testing.T) {
+		const upstreamBody = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"quarterly totals"}]}}`
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(gz(t, upstreamBody))
+		}))
+		defer upstream.Close()
+
+		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallBare))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+		}
+		if !bytes.Contains(body, []byte("quarterly totals")) {
+			t.Fatalf("decoded upstream body did not reach the client: %s", body)
+		}
+	})
+
+	t.Run("a malformed stream stays fail-closed", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write([]byte("this is not a gzip stream, and must not be forwarded"))
+		}))
+		defer upstream.Close()
+
+		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallBare))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.CompressedResponse) {
+			t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.CompressedResponse)
+		}
+		if bytes.Contains(body, []byte("must not be forwarded")) {
+			t.Fatalf("undecodable upstream body leaked: %s", body)
+		}
+	})
 }

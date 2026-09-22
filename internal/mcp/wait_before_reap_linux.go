@@ -16,8 +16,9 @@ import (
 // signals the original process group while its leader still owns the numeric
 // PID, then lets exec.Cmd reap the child. The shared handoff also makes the
 // cancellation path safe if reaping wins the race: then only cmd.Process.Kill
-// may run. A deferred approval resolver is short-lived, so descendants that
-// survive after their leader exits are not a valid completion state.
+// may run. This helper terminates the original process group; it cannot assign
+// process-wide adopted children to a resolver. Callers must bound inherited
+// output waits separately, and proxy teardown owns adopted-child cleanup.
 func waitForCommandWithProcessGroup(ctx context.Context, cmd *exec.Cmd, pgid int, handoff *processExitHandoff) error {
 	if handoff == nil {
 		handoff = &processExitHandoff{}

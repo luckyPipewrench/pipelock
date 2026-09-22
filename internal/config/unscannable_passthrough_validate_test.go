@@ -335,8 +335,8 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 // "application/x-javascript" and "application/x-ecmascript" fell through:
 // they carry no "text/" prefix and were absent from the switch, so a response
 // declaring one of them could sit in an explicit unscanned-download exception
-// even though internal/shield.mediaTypeToPipeline already treats it as
-// JavaScript needing the browser shield's rewrite pipeline.
+// even though internal/shield.mediaTypeToPipeline already classifies it as
+// JavaScript that must remain on the normal scanned response path.
 func TestValidateUnscannablePassthroughRefusesJavaScriptAliases(t *testing.T) {
 	for _, alias := range media.JavaScriptMediaTypes {
 		t.Run(alias, func(t *testing.T) {

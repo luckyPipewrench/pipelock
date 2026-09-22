@@ -5,6 +5,8 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -109,6 +111,41 @@ func TestHTTPClient_JSONResponse(t *testing.T) {
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF after single JSON message, got %v", err)
+	}
+}
+
+func TestHTTPClient_GzipJSONResponseDecodedBeforeScanning(t *testing.T) {
+	const response = `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(zw, response); err != nil {
+		t.Fatalf("write gzip body: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close gzip body: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept-Encoding"); got != "identity" {
+			t.Errorf("upstream Accept-Encoding = %q, want identity", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, http.Header{"Accept-Encoding": {"gzip, deflate, br, zstd"}})
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	got, err := reader.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if string(got) != response {
+		t.Fatalf("decoded response = %s, want %s", got, response)
 	}
 }
 

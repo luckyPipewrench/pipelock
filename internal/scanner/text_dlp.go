@@ -11,6 +11,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -319,8 +320,9 @@ type TextDLPMatch struct {
 	// environment/file secret) found when the whole value was absent. Zero
 	// means a whole-value match. It lives in its own field so PatternName stays
 	// stable for suppression rules and core-pattern checks that match by name.
-	PartialLen int `json:"partial_len,omitempty"`
-	span       MatchSpan
+	PartialLen              int `json:"partial_len,omitempty"`
+	span                    MatchSpan
+	credentialAudienceHosts []string
 }
 
 // Span returns retained coordinates for this match in the normalized scanner
@@ -561,12 +563,13 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		p := s.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInView(cleaned, text); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName:   p.name,
-				Severity:      p.severity,
-				Bundle:        p.bundle,
-				BundleVersion: p.bundleVersion,
-				Warn:          p.warn,
-				span:          newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
+				PatternName:             p.name,
+				Severity:                p.severity,
+				Bundle:                  p.bundle,
+				BundleVersion:           p.bundleVersion,
+				Warn:                    p.warn,
+				credentialAudienceHosts: p.credentialAudienceHosts,
+				span:                    newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -725,13 +728,14 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 		p := s.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName:   p.name,
-				Severity:      p.severity,
-				Encoded:       encoding,
-				Bundle:        p.bundle,
-				BundleVersion: p.bundleVersion,
-				Warn:          p.warn,
-				span:          newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
+				PatternName:             p.name,
+				Severity:                p.severity,
+				Encoded:                 encoding,
+				Bundle:                  p.bundle,
+				BundleVersion:           p.bundleVersion,
+				Warn:                    p.warn,
+				credentialAudienceHosts: p.credentialAudienceHosts,
+				span:                    newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -753,13 +757,14 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				continue
 			}
 			matches = append(matches, TextDLPMatch{
-				PatternName:   p.name,
-				Severity:      p.severity,
-				Encoded:       "whitespace",
-				Bundle:        p.bundle,
-				BundleVersion: p.bundleVersion,
-				Warn:          p.warn,
-				span:          newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
+				PatternName:             p.name,
+				Severity:                p.severity,
+				Encoded:                 "whitespace",
+				Bundle:                  p.bundle,
+				BundleVersion:           p.bundleVersion,
+				Warn:                    p.warn,
+				credentialAudienceHosts: p.credentialAudienceHosts,
+				span:                    newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -946,7 +951,11 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	return nil
 }
 
-// deduplicateMatches removes duplicate matches with the same pattern name and encoding.
+// deduplicateMatches removes duplicate matches with the same pattern name and
+// encoding. The survivor keeps a compiled audience only when every duplicate
+// carried that same audience. A customized pattern reuses the core name and
+// has no audience; dropping it and keeping the core match's audience would
+// allow the customized text at the core credential's authority.
 func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 	if len(matches) <= 1 {
 		return matches
@@ -956,14 +965,18 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		name    string
 		encoded string
 	}
-	seen := make(map[key]struct{}, len(matches))
+	index := make(map[key]int, len(matches))
 	result := make([]TextDLPMatch, 0, len(matches))
 	for _, m := range matches {
 		k := key{name: m.PatternName, encoded: m.Encoded}
-		if _, ok := seen[k]; !ok {
-			seen[k] = struct{}{}
-			result = append(result, m)
+		if i, ok := index[k]; ok {
+			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) {
+				result[i].credentialAudienceHosts = nil
+			}
+			continue
 		}
+		index[k] = len(result)
+		result = append(result, m)
 	}
 	return result
 }

@@ -78,7 +78,7 @@ const (
 	denialOfWalletRetriesOperatorKnob   = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
 	responseScanOperatorKnob            = "For a non-core false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. Core response floor matches cannot be suppressed; fix the core pattern's precision. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
 	headerDLPOperatorKnob               = "For a non-core false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
-	bodyPromptInjectionOperatorKnob     = "Correct the outbound request body. The only destination carve-out this hard-block path consults is `response_scanning.exempt_domains`; adding a host there also disables injection scanning for every inbound response from that host, so it is a broad trust decision rather than a single-finding suppression."
+	bodyPromptInjectionOperatorKnob     = "Correct the outbound request body. For a verified destination that must receive this content, add only that host to `request_body_scanning.trusted_hosts`; request-body scanning and its configured action still apply, but prompt-injection findings no longer force a block. An explicit `block` action still blocks."
 	addressProtectionOperatorKnob       = "After independently verifying the intended destination, add the exact address to `address_protection.allowed_addresses` (or the matched `agents.<name>.allowed_addresses`). Do not weaken similarity thresholds to approve one address."
 	chainDetectionOperatorKnob          = "If the event's named chain is expected, set that exact key under `tool_chain_detection.pattern_overrides` to `warn`; for a custom pattern, narrow its `sequence` or `action`. This changes only that named pattern."
 	provenanceOperatorKnob              = "In `pipelock` mode, sign the tool metadata with an Ed25519 key present in `mcp_tool_provenance.trusted_keys`. `mcp_tool_provenance.action: warn` downgrades unsigned tools only; invalid signatures, verification errors, and malformed tools/list responses always fail closed. Sigstore trust fields are not consumed by this verifier, so they are not a remediation path."
@@ -135,7 +135,7 @@ const (
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
 	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
 
-	// Query entropy shares the ScannerEntropy label with path/subdomain entropy
+	// Query entropy shares the ScannerEntropy label with path entropy
 	// but is a distinct gate with a distinct knob. The table is keyed by label
 	// alone, so this variant is selected by GuidanceForResult from the scan
 	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
@@ -361,7 +361,7 @@ func OperatorHintFor(label string) string {
 }
 
 // GuidanceForResult returns guidance using the scan Reason to disambiguate
-// same-label variants. ScannerEntropy distinguishes query from path/subdomain
+// same-label variants. ScannerEntropy distinguishes query from path
 // entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
@@ -396,6 +396,19 @@ func stripNestedURLReasonPrefix(reason string) string {
 		return reason
 	}
 	return reason
+}
+
+// IsQueryEntropyResult reports whether an entropy finding came from a query
+// key or value. ScannerEntropy intentionally remains the shared audit/metrics
+// layer; this predicate gives public reason-code and remediation consumers the
+// narrower gate identity without parsing broad prose fragments independently.
+func IsQueryEntropyResult(result Result) bool {
+	return result.Scanner == ScannerEntropy && isQueryEntropyReason(stripNestedURLReasonPrefix(result.Reason))
+}
+
+func isQueryEntropyReason(reason string) bool {
+	return strings.HasPrefix(reason, queryEntropyKeyReasonPrefix) ||
+		strings.HasPrefix(reason, queryEntropyParamReasonPrefix)
 }
 
 func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
@@ -615,7 +628,7 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			}, true
 		}
 	}
-	if label == ScannerEntropy && strings.Contains(reason, "query ") {
+	if label == ScannerEntropy && isQueryEntropyReason(reason) {
 		return RemediationGuidance{
 			OperatorKnob:    queryEntropyOperatorKnob,
 			OperatorBroader: queryEntropyOperatorBroader,

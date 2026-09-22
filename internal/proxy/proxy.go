@@ -30,6 +30,8 @@ import (
 	"time"
 
 	readability "github.com/go-shiori/go-readability"
+	"golang.org/x/net/html"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -47,12 +49,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -309,40 +313,178 @@ func redirectReceiptTarget(blockedErr *blockedRequestError, fallback string) str
 	return fallback
 }
 
-// Regex patterns for extracting content from HTML hiding spots that
-// readability strips (comments, script bodies, style bodies). We scan
-// only these extracted fragments for injection, not the full HTML markup,
-// to avoid false positives on legitimate HTML tags and attributes.
-var (
-	reHTMLComment   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
-	reScriptBody    = regexp.MustCompile(`(?si)<script[^>]*>(.*?)</script>`)
-	reStyleBody     = regexp.MustCompile(`(?si)<style[^>]*>(.*?)</style>`)
-	reHiddenElement = regexp.MustCompile(`(?si)<[a-z][a-z0-9]*\b` +
-		`(?:[^>]*?(?:display\s*:\s*none|visibility\s*:\s*hidden)|[^>]*?\shidden)` +
-		`[^>]*>(.*?)</`)
-)
+// The hidden-content surface: text an HTML page can keep away from a human
+// reader while still aiming it at a model. Comments, style and noscript
+// bodies, non-executable data script bodies, and elements the page renders
+// invisible all qualify. Only those fragments reach the injection scanner,
+// never the whole markup, so ordinary tags and attributes do not trip it.
+//
+// Executable JavaScript bodies are deliberately off this surface.
+// Fetch hands the agent readability text, so a minified JS bundle reaches
+// neither the rendered page nor the agent, and scanning it blocked clean
+// responses (~858KB of HTML behind ~6.6KB of rendered text). Injection living
+// only in executable JS is still covered when readability yields nothing: the
+// follow-up scan then runs against the raw HTML body.
+//
+// The surface is computed from a real parse tree, never from regexes or
+// hand-rolled tag scanning over the source. That is a security property
+// rather than a tidiness one. This code decides what NOT to scan, so every
+// construct it models differently from a browser is a fail-open, and in
+// hand-rolled scanning that set has no bound: script-data escape states,
+// foreign-content namespaces, HTML integration points, self-closing rules and
+// attribute quoting each hid a payload during review of this change.
+// html.Parse resolves all of them the way a browser does. It also retires the
+// decoy class by construction, because markup written inside a JavaScript
+// string is a text node in the tree and can never re-enter the surface as a
+// comment, a style body or a hidden element.
 
-// extractHiddenContent pulls text from HTML elements that readability
-// strips: comments, script bodies, and style bodies. Returns the
-// concatenated text from these hiding spots (empty if none found).
-func extractHiddenContent(html string) string {
+// isExecutableJavaScriptMIME reports whether a <script type="..."> value is
+// executable JavaScript. Empty/default and the exact HTML special "module"
+// (ASCII case-insensitive, before any MIME parameters) are executable.
+// Parameterized values such as "module;charset=utf-8" are data blocks per
+// WHATWG HTML. MIME aliases join media.IsJavaScriptMediaType (RFC 9239 §6)
+// so historical aliases are not under-covered. Unknown types are treated as
+// data carriers, which fails closed because their bodies stay scanned.
+func isExecutableJavaScriptMIME(typeAttr string) bool {
+	t := strings.ToLower(strings.TrimSpace(typeAttr))
+	if t == "" {
+		return true
+	}
+	// Exact "module" token only — check before stripping ;params.
+	if t == "module" {
+		return true
+	}
+	if i := strings.IndexByte(t, ';'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return media.IsJavaScriptMediaType(t)
+}
+
+// nodeAttr returns the value of the first attribute named key (the one the
+// parser resolved as authoritative) and whether it was present at all.
+// Presence matters on its own for boolean attributes such as hidden.
+func nodeAttr(n *html.Node, key string) (string, bool) {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val, true
+		}
+	}
+	return "", false
+}
+
+// isExecutableScriptNode reports whether n is a <script> element whose body
+// the browser executes rather than exposes as data. Namespace is irrelevant:
+// an SVG script executes by the same rule an HTML one does.
+func isExecutableScriptNode(n *html.Node) bool {
+	if n.Data != "script" {
+		return false
+	}
+	typ, _ := nodeAttr(n, "type")
+	return isExecutableJavaScriptMIME(typ)
+}
+
+// elementConcealsText reports whether n keeps its text out of the rendered
+// page: a raw-text carrier readability strips (style, noscript, and the data
+// scripts that reach here), or an element the page hides.
+//
+// Hiding is read from parsed attributes, so only the boolean hidden attribute
+// counts and a value cannot change that (HTML defines hidden="false" as
+// hidden). An unrelated attribute that merely ends in the word, such as
+// aria-hidden, is not a match, matching the behavior this replaced.
+func elementConcealsText(n *html.Node) bool {
+	switch n.Data {
+	case "script", "style", "noscript":
+		return true
+	}
+	if _, ok := nodeAttr(n, "hidden"); ok {
+		return true
+	}
+	style, ok := nodeAttr(n, "style")
+	if !ok {
+		return false
+	}
+	// Collapse whitespace so "display : none" reads the same as "display:none".
+	var sb strings.Builder
+	for i := 0; i < len(style); i++ {
+		if c := style[i]; !isASCIISpace(c) {
+			sb.WriteByte(c)
+		}
+	}
+	flat := strings.ToLower(sb.String())
+	return strings.Contains(flat, "display:none") ||
+		strings.Contains(flat, "visibility:hidden")
+}
+
+// isASCIISpace reports whether b is ASCII whitespace.
+func isASCIISpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+// collectHiddenContent walks the parse tree appending every fragment on the
+// hidden surface. concealed carries down from an ancestor that hides its
+// subtree, so text nested inside a display:none container is collected too.
+//
+// Comments are always collected wherever they sit. A comment inside an
+// executable script is impossible by construction: the tokenizer makes that
+// region raw text, so the walk never reaches it as a comment node.
+func collectHiddenContent(b *strings.Builder, n *html.Node, concealed bool) {
+	switch n.Type {
+	case html.CommentNode:
+		writeHiddenFragment(b, n.Data)
+		return
+	case html.TextNode:
+		if concealed {
+			writeHiddenFragment(b, n.Data)
+		}
+		return
+	case html.ElementNode:
+		if isExecutableScriptNode(n) {
+			// The executed body itself leaves the surface, so stop concealing
+			// and let the text children fall through unwritten. Children are
+			// still walked: in SVG and MathML a script body is parsed as
+			// markup, so a nested <script type="application/json"> is a real
+			// element whose data the browser never executes. Returning here
+			// instead would drop that data block from the scan.
+			concealed = false
+		} else if !concealed && elementConcealsText(n) {
+			concealed = true
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		collectHiddenContent(b, c, concealed)
+	}
+}
+
+// writeHiddenFragment appends one fragment and the newline that keeps
+// adjacent fragments from fusing into a match that exists in neither.
+func writeHiddenFragment(b *strings.Builder, s string) {
+	if s == "" {
+		return
+	}
+	b.WriteString(s)
+	b.WriteByte('\n')
+}
+
+// extractHiddenContent returns the concatenated hidden surface of an HTML
+// document for injection scanning.
+//
+// The error branch fails closed by handing the scanner the whole document. It
+// is unreachable as called: html.Parse reports only reader errors and a
+// strings.Reader has none, and the HTML parsing algorithm is defined to
+// recover from any byte sequence rather than reject one. It stays because the
+// failure direction has to be right if this ever reads from a network body.
+func extractHiddenContent(doc string) string {
+	root, err := html.Parse(strings.NewReader(doc))
+	if err != nil {
+		return doc
+	}
 	var b strings.Builder
-	for _, m := range reHTMLComment.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
-		b.WriteByte('\n')
-	}
-	for _, m := range reScriptBody.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
-		b.WriteByte('\n')
-	}
-	for _, m := range reStyleBody.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
-		b.WriteByte('\n')
-	}
-	for _, m := range reHiddenElement.FindAllStringSubmatch(html, -1) {
-		b.WriteString(m[1])
-		b.WriteByte('\n')
-	}
+	collectHiddenContent(&b, root, false)
 	return b.String()
 }
 
@@ -3508,7 +3650,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if prefixLen > 512 {
 		prefixLen = 512
 	}
-	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
+	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}
@@ -3632,6 +3774,7 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 		result.TrackingHits +
 		result.TrapHits +
 		result.SVGForeignObjectHits +
+		result.SVGScriptHits +
 		result.SVGEventHandlerHits +
 		result.SVGXlinkExternalHits +
 		result.SVGHiddenTextHits +
@@ -3644,7 +3787,7 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 		TotalRewrites:           total,
 		ExtensionProbes:         result.ExtensionHits,
 		TrackingBeacons:         result.TrackingHits,
-		AgentTraps:              result.TrapHits,
+		AgentTraps:              result.TrapHits + result.SVGScriptHits,
 		FingerprintShimInjected: result.ShimInjected,
 		SVGForeignObjects:       result.SVGForeignObjectHits,
 		SVGEventHandlers:        result.SVGEventHandlerHits,
@@ -3752,9 +3895,23 @@ func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary)
 	}
 }
 
+// shieldLeavesBodyUnchanged reports whether the shield would return this body
+// byte for byte, so no size ceiling needs to apply to it.
+//
+// PipelineNone is content the shield does not handle at all. PipelineJS is
+// JavaScript, which the shield identifies for reporting and never edits: the
+// response scanner owns that content. Enforcing the oversize ceiling on either
+// one buys no protection and costs availability, and on JavaScript the cost is
+// severe, because a browser application's bundle is routinely larger than
+// max_shield_bytes and oversize_action: block would return 403 for it. Response
+// scanning still runs on both; only the shield's own ceiling is skipped.
+func shieldLeavesBodyUnchanged(pipeline shield.PipelineType) bool {
+	return pipeline == shield.PipelineNone || pipeline == shield.PipelineJS
+}
+
 func shieldPipelineLabel(pipeline shield.PipelineType) string {
 	switch pipeline {
-	case shield.PipelineHTML:
+	case shield.PipelineHTML, shield.PipelineXHTML:
 		return "html"
 	case shield.PipelineJS:
 		return "javascript"
@@ -4873,6 +5030,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolver timeouts) from the finding classification - neither is evidence
 	// of threat.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
+	fetchReceiptVerdict := config.ActionAllow
+	fetchReceiptLayer := ""
+	fetchReceiptPattern := ""
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
@@ -4924,7 +5084,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() {
 				resp.Hint = result.Hint
 			}
-			writeBlockedJSON(w, blockInfo(result.Scanner), status, resp)
+			writeBlockedJSON(w, blockInfoForResult(result), status, resp)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -5089,6 +5249,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if headerHadFinding {
 		hasFinding = true
+		if !headerBlocked {
+			fetchReceiptVerdict = config.ActionWarn
+			fetchReceiptLayer = "dlp_header"
+			fetchReceiptPattern = "request_header_secret"
+		}
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
 			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
 			headerSignal := session.SignalNearMiss
@@ -5584,7 +5749,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// emit is skipped when require_receipts is on to avoid a duplicate.
 	fetchAllowReceipt := receipt.EmitOpts{
 		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
+		Verdict:             fetchReceiptVerdict,
+		Layer:               fetchReceiptLayer,
+		Pattern:             fetchReceiptPattern,
 		Transport:           "fetch",
 		Method:              http.MethodGet,
 		Target:              displayURL,
@@ -5627,6 +5794,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.emitOutcomeReceipt(cfg, fetchAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 	}()
 
+	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
@@ -5727,14 +5895,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 
-	// Fail closed on compressed responses before reading the body. p.client
-	// is shared between forward proxy and /fetch and now sets
-	// DisableCompression: true so the upstream Content-Encoding survives
-	// transparent decompression. Without this guard, a gzip/br/zstd response
-	// would flow into readability extraction and the response scanner as
-	// binary garbage, bypassing both. Forward proxy already runs the same
-	// guard in forward.go; this completes parity on the fetch surface.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	// Decode supported single-layer encodings before the existing decoded-body
+	// size limit and scanners. Unsupported, stacked, and malformed encodings
+	// remain fail-closed instead of reaching readability as opaque bytes.
+	if err := responseencoding.DecodeResponse(resp); err != nil {
 		log.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
 		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
@@ -5928,9 +6092,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
 
-	// Extract text from HTML hiding spots (comments, script/style bodies)
-	// that readability strips. Scan only those fragments for injection,
-	// not the full HTML markup, to avoid false positives on legitimate tags.
+	// Extract text from HTML hiding spots that readability strips (comments,
+	// non-executable data scripts, style, hidden elements). Scan only those
+	// fragments for injection, not the full HTML markup / executable JS
+	// bundles, to avoid false positives on legitimate tags and SPA payloads.
 	// Use the final response origin after redirects, not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
@@ -6002,7 +6167,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fail-closed: if hidden injection was detected in HTML comments/script/
+	// Fail-closed: if hidden injection was detected in comments/data-scripts/
 	// style/hidden elements but readability failed to strip them, block rather
 	// than delivering raw HTML with embedded injection. The pre-scan's
 	// TransformedContent cannot map back to the full HTML (it operates on

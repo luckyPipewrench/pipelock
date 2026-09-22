@@ -740,7 +740,7 @@ func explainTargetView(result scanner.Result, rawURL string) string {
 		}
 		return explainViewURL
 	case scanner.ScannerEntropy:
-		if strings.Contains(result.Reason, "query ") {
+		if scanner.IsQueryEntropyResult(result) {
 			return explainViewURLQuery
 		}
 		return explainViewPath

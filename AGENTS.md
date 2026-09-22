@@ -42,7 +42,7 @@ The code-checked capability manifest is docs/security/capability-manifest.json. 
 | Adaptive enforcement | Free | adaptive_enforcement |  |
 | TLS interception | Free | tls_interception | Requires a configured local CA that the intercepted client trusts; passthrough traffic remains encrypted and cannot be body-scanned. |
 | A2A protocol scanning | Free | a2a_scanning | Applies to A2A traffic carried on Pipelock's supported forward-proxy and MCP HTTP paths. |
-| Browser shield | Free | browser_shield | Applies only to supported browser response traffic that flows through Pipelock. |
+| Browser shield | Free | browser_shield | Applies only to supported browser response traffic that flows through Pipelock. JavaScript responses are scanned but not rewritten. |
 | Offline receipt verification | Free | pipelock verify-receipt |  |
 | Verdict explanations | Free | pipelock explain |  |
 | Deployment diagnostics | Free | pipelock doctor |  |

@@ -29,7 +29,7 @@ The optional `X-Pipelock-Block-Reason-Layer` header reuses `internal/scanner/` `
 | `scheme` | `scanner.ScannerScheme` | `scheme_blocked` |
 | `blocklist` | `scanner.ScannerBlocklist` | `domain_blocklist` |
 | `dlp` | `scanner.ScannerDLP` | `dlp_match`, `redaction_failure` |
-| `entropy` | `scanner.ScannerEntropy` | `path_entropy` |
+| `entropy` | `scanner.ScannerEntropy` | `path_entropy`, `query_entropy` |
 | `body_entropy` | `scanner.AuditBodyEntropy` / proxy body layer | `body_entropy` |
 | `subdomain_entropy` | `scanner.ScannerSubdomainEntropy` | `subdomain_entropy` |
 | `ssrf` | `scanner.ScannerSSRF` | `ssrf_private_ip`, `ssrf_metadata`, `ssrf_dns_rebind` |
@@ -54,6 +54,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `ssrf_metadata` | Resolved IP is a cloud metadata endpoint (169.254.169.254, etc.). | `critical` | `none` |
 | `ssrf_dns_rebind` | DNS resolution flipped between scan and dial (TOCTOU). | `critical` | `transient` |
 | `path_entropy` | URL path entropy exceeded configured ceiling (covert channel signal). | `warn` | `policy` |
+| `query_entropy` | URL query key or value entropy exceeded the configured ceiling. | `warn` | `policy` |
 | `subdomain_entropy` | Hostname subdomain entropy exceeded configured ceiling. | `warn` | `policy` |
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
 | `rate_limit` | Per-session or per-host rate limit exceeded. | `warn` | `transient` |

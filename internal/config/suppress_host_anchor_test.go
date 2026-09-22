@@ -79,6 +79,12 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		"Groq API Key":          {"*.groq.com"},
 		"xAI API Key":           {"*.x.ai"},
 		"Discord Bot Token":     {"discord.com", "gateway.discord.gg"},
+		// Slack bot/user tokens are presented to the Web API and hosted MCP server;
+		// app-level tokens are presented only to the Web API. Slack Token is also a
+		// core-floor pattern, so these prove a compiled audience attaches to a core
+		// pattern (its issuing authorities) while YAML still cannot reach the floor.
+		"Slack Token":     {"slack.com", "mcp.slack.com"},
+		"Slack App Token": {"slack.com"},
 	}
 	for name, hosts := range expected {
 		t.Run(name, func(t *testing.T) {

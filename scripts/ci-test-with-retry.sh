@@ -11,11 +11,15 @@
 # SIGTERM rerun does not prove the terminated attempt had no unflushed failure.
 set -euo pipefail
 
+# Resolve our helpers without changing where the requested command runs.
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+
 usage() {
-  echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" -- go test [flags]" >&2
+  echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" [--attempt-timeout-seconds N] -- go test [flags]" >&2
 }
 
 packages=""
+attempt_timeout_seconds=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --packages)
@@ -24,6 +28,19 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       packages="$2"
+      shift 2
+      ;;
+    --attempt-timeout-seconds)
+      if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[1-9][0-9]{0,4}$ ]]; then
+        usage
+        exit 2
+      fi
+      # Bound decimal text before Bash arithmetic can evaluate or overflow it.
+      if [ "$2" -gt 86400 ]; then
+        echo "ci-test-with-retry: attempt deadline must be between 1 and 86400 seconds" >&2
+        exit 2
+      fi
+      attempt_timeout_seconds=$((10#$2))
       shift 2
       ;;
     --)
@@ -42,6 +59,11 @@ if [ "$#" -eq 0 ] || [ -z "$packages" ]; then
   exit 2
 fi
 
+if [ -n "$attempt_timeout_seconds" ] && ! command -v timeout >/dev/null 2>&1; then
+  echo "ci-test-with-retry: timeout is required for an attempt deadline" >&2
+  exit 2
+fi
+
 read -r -a package_args <<<"$packages"
 if [ "${#package_args[@]}" -eq 0 ]; then
   echo "ci-test-with-retry: no packages were provided" >&2
@@ -54,6 +76,9 @@ capture_failed=0
 process_cleanup_failed=0
 last_process_group=""
 active_process_group=""
+active_supervisor_pid=""
+active_capture_readers=()
+attempt_incomplete=0
 
 process_group_is_alive() {
   local process_group="$1"
@@ -106,12 +131,31 @@ cleanup_process_group() {
 cleanup_on_exit() {
   local status=$?
 
-  trap - EXIT INT TERM
-  if [ -n "$active_process_group" ]; then
+  trap - EXIT
+  trap '' INT TERM
+  if [ -n "$active_supervisor_pid" ]; then
+    # This child may not have established its process group yet. Ask the
+    # supervisor itself to stop, then collect it before returning to the caller.
+    echo "PROCESS CLEANUP: interrupted pass supervisor ${active_supervisor_pid}; sending TERM" >&2
+    kill -TERM "$active_supervisor_pid" 2>/dev/null || true
+    wait "$active_supervisor_pid" 2>/dev/null || true
+    active_supervisor_pid=""
+    active_process_group=""
+  elif [ -n "$active_process_group" ]; then
     if ! cleanup_process_group "$active_process_group" "interrupted pass"; then
       status=1
     fi
   fi
+  # Readers may still be opening their FIFO when startup is interrupted. They
+  # have no writer to supply EOF, so terminate and collect each owned reader.
+  local reader_pid
+  for reader_pid in "${active_capture_readers[@]}"; do
+    kill -TERM "$reader_pid" 2>/dev/null || true
+  done
+  for reader_pid in "${active_capture_readers[@]}"; do
+    wait "$reader_pid" 2>/dev/null || true
+  done
+  active_capture_readers=()
   rm -rf "$tmpdir"
   exit "$status"
 }
@@ -126,43 +170,121 @@ run_and_tee() {
   local stderr_file="$3"
   shift 3
 
+  local startup_interrupt=0
+  # Record cancellation before any capture or command child can start, until
+  # all their PIDs are assigned to cleanup ownership.
+  trap 'startup_interrupt=130' INT
+  trap 'startup_interrupt=143' TERM
+
+  # Go's -timeout applies to each package binary, not to all package waves.
+  # Bound the complete command independently on both the first and retry pass.
+  if [ -n "$attempt_timeout_seconds" ]; then
+    set -- timeout --kill-after=10s "${attempt_timeout_seconds}s" "$@"
+  fi
+
   local stdout_fifo="${stdout_file}.fifo"
   local stderr_fifo="${stderr_file}.fifo"
   mkfifo "$stdout_fifo" "$stderr_fifo"
 
-  tee "$stdout_file" <"$stdout_fifo" &
+  # A setsid descendant may retain a writer outside the command's group.
+  # Bound both capture readers from startup, allowing the command's KILL
+  # grace to finish first. An expired capture remains an incomplete failure.
+  local capture_command=(tee)
+  if [ -n "$attempt_timeout_seconds" ]; then
+    capture_command=(timeout --kill-after=10s "$((attempt_timeout_seconds + 10))s" tee)
+  fi
+  "${capture_command[@]}" "$stdout_file" <"$stdout_fifo" &
   local stdout_tee_pid=$!
-  tee "$stderr_file" <"$stderr_fifo" >&2 &
+  active_capture_readers=("$stdout_tee_pid")
+  "${capture_command[@]}" "$stderr_file" <"$stderr_fifo" >&2 &
   local stderr_tee_pid=$!
+  active_capture_readers+=("$stderr_tee_pid")
 
-  # Python creates a new session without relying on non-standard setsid(1)
-  # flags. execvp keeps its PID as the session and process-group ID.
-  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+  local supervision_file="${stdout_file}.supervision"
+  local supervised=0
+  # Linux CI uses a dedicated subreaper so setsid children still have an owner.
+  # Other hosts retain the process-group cleanup and bounded capture fallback.
+  if [ "$(uname -s)" = Linux ]; then
+    python3 "$script_dir/ci_process_supervisor.py" --status-file "$supervision_file" -- "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+    supervised=1
+  else
+    python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+  fi
   local command_pid=$!
   last_process_group="$command_pid"
   active_process_group="$command_pid"
+  if [ "$supervised" -eq 1 ]; then
+    active_supervisor_pid="$command_pid"
+  fi
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ "$startup_interrupt" -ne 0 ]; then
+    exit "$startup_interrupt"
+  fi
 
   local command_status=0
   wait "$command_pid" || command_status=$?
-
-  # Descendants can inherit the FIFO writers. Clean the process group before
-  # waiting for tee, or an orphan could keep capture open indefinitely.
-  if ! cleanup_process_group "$command_pid" "$pass_label"; then
-    process_cleanup_failed=1
+  active_supervisor_pid=""
+  if [ "$supervised" -eq 1 ]; then
     active_process_group=""
-    rm -f -- "$stdout_fifo" "$stderr_fifo"
-    return "$command_status"
+  fi
+
+  if [ "$supervised" -eq 1 ]; then
+    if ! python3 - "$supervision_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        result = json.load(stream)
+    complete = result.get("cleanup_complete") is True
+    unexpected = result.get("unexpected_live_descendants") is not False
+except (OSError, ValueError, AttributeError):
+    complete, unexpected = False, True
+sys.exit(0 if complete and not unexpected else 1)
+PY
+    then
+      echo "ci-test-with-retry: ${pass_label} did not complete with clean descendants; incomplete attempts are not retried" >&2
+      process_cleanup_failed=1
+    fi
+  fi
+
+  if [ -n "$attempt_timeout_seconds" ]; then
+    case "$command_status" in
+      124)
+        echo "ci-test-with-retry: ${pass_label} exceeded the whole-command deadline (${attempt_timeout_seconds}s); incomplete attempts are not retried" >&2
+        attempt_incomplete=1
+        ;;
+      137)
+        echo "ci-test-with-retry: ${pass_label} was killed before a complete result; incomplete attempts are not retried" >&2
+        attempt_incomplete=1
+        ;;
+    esac
+  fi
+
+  # The supervisor has already reaped its tree. Do not probe or signal its
+  # now-reusable numeric process group. Legacy hosts still need group cleanup
+  # before waiting for inherited FIFO writers to close.
+  if [ "$supervised" -eq 0 ]; then
+    if ! cleanup_process_group "$command_pid" "$pass_label"; then
+      process_cleanup_failed=1
+      active_process_group=""
+      rm -f -- "$stdout_fifo" "$stderr_fifo"
+      return "$command_status"
+    fi
   fi
   active_process_group=""
 
   local stdout_tee_status=0
   local stderr_tee_status=0
   wait "$stdout_tee_pid" || stdout_tee_status=$?
+  active_capture_readers=("$stderr_tee_pid")
   wait "$stderr_tee_pid" || stderr_tee_status=$?
+  active_capture_readers=()
   rm -f -- "$stdout_fifo" "$stderr_fifo"
 
   if [ "$stdout_tee_status" -ne 0 ] || [ "$stderr_tee_status" -ne 0 ]; then
-    echo "ci-test-with-retry: failed to capture complete test output" >&2
+    echo "ci-test-with-retry: failed to capture complete test output (stdout=${stdout_tee_status}, stderr=${stderr_tee_status})" >&2
     capture_failed=1
   fi
   return "$command_status"
@@ -390,6 +512,10 @@ if [ "$capture_failed" -ne 0 ] || [ "$process_cleanup_failed" -ne 0 ]; then
   exit 1
 fi
 
+if [ "$attempt_incomplete" -ne 0 ]; then
+  exit "$first_status"
+fi
+
 if [ "$first_status" -eq 0 ]; then
   exit 0
 fi
@@ -458,11 +584,11 @@ if [ "$retry_kind" = "timeout" ]; then
   echo "GO TEST TIMEOUT DIAGNOSTICS: first-attempt output follows before retry" >&2
   # The live formatter intentionally suppresses raw JSON output. Print this
   # summary before retry can overwrite its JSON file or the job can be canceled.
-  python3 scripts/summarize_go_test_json.py --allow-failed-packages --full-failed-output --label "first-attempt timeout" <"$first_stdout" >&2 || {
+  python3 "$script_dir/summarize_go_test_json.py" --allow-failed-packages --full-failed-output --label "first-attempt timeout" <"$first_stdout" >&2 || {
     summary_status=$?
     echo "ci-test-with-retry: failed to summarize first-attempt timeout diagnostics (status ${summary_status})" >&2
     echo "GO TEST TIMEOUT DIAGNOSTICS: sanitized raw first-attempt JSON follows" >&2
-    if ! python3 scripts/summarize_go_test_json.py --sanitize-raw <"$first_stdout" >&2; then
+    if ! python3 "$script_dir/summarize_go_test_json.py" --sanitize-raw <"$first_stdout" >&2; then
       echo "ci-test-with-retry: failed to sanitize first-attempt timeout diagnostics" >&2
     fi
   }

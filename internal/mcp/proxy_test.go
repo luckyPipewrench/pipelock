@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -1731,6 +1733,26 @@ func TestRunProxy_AskAction(t *testing.T) {
 	}
 }
 
+// recordingEchoCommand records upstream delivery independently of response
+// scanning, which might otherwise hide an incorrectly forwarded request.
+func recordingEchoCommand(t *testing.T, wantInput string) []string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "upstream-input.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		got, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read upstream input: %v", err)
+		}
+		if string(got) != wantInput {
+			t.Errorf("upstream received %q, want %q", got, wantInput)
+		}
+	})
+	return []string{"tee", path}
+}
+
 func TestRunProxy_InputScanningBlocksDirtyRequest(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("echo subprocess test requires unix")
@@ -1750,17 +1772,16 @@ func TestRunProxy_InputScanningBlocksDirtyRequest(t *testing.T) {
 		OnParseError: "block",
 	}
 
-	// echo outputs a clean server response regardless of stdin.
-	err := RunProxy(context.Background(), strings.NewReader(dirtyReq), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+	// The child echoes only input that actually reaches it.
+	err := RunProxy(context.Background(), strings.NewReader(dirtyReq), &out, logBuf, recordingEchoCommand(t, ""), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	outStr := out.String()
 
-	// Should contain the clean server response forwarded by ForwardScanned.
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected clean server response in output, got: %s", outStr)
+	if strings.Contains(outStr, secret) {
+		t.Errorf("blocked input reached the echo child: %s", outStr)
 	}
 
 	// Should contain a block error response for the dirty request (code -32001).
@@ -1793,16 +1814,16 @@ func TestRunProxy_InputScanningForwardsCleanRequest(t *testing.T) {
 		OnParseError: "block",
 	}
 
-	err := RunProxy(context.Background(), strings.NewReader(cleanReq), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+	err := RunProxy(context.Background(), strings.NewReader(cleanReq), &out, logBuf, recordingEchoCommand(t, cleanReq), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	outStr := out.String()
 
-	// Should contain the server response.
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected server response in output, got: %s", outStr)
+	// Output proves delivery to the child, not an unsolicited canned reply.
+	if outStr != cleanReq {
+		t.Errorf("forwarded request = %q, want %q", outStr, cleanReq)
 	}
 
 	// Should NOT contain any block error (clean request forwarded fine).
@@ -2274,16 +2295,15 @@ func TestRunProxy_InputScanningBlocksNotification(t *testing.T) {
 		OnParseError: "block",
 	}
 
-	err := RunProxy(context.Background(), strings.NewReader(notification), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+	err := RunProxy(context.Background(), strings.NewReader(notification), &out, logBuf, recordingEchoCommand(t, ""), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	outStr := out.String()
 
-	// Should contain the clean server response (echo output).
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected clean server response, got: %s", outStr)
+	if outStr != "" {
+		t.Errorf("blocked notification produced output: %s", outStr)
 	}
 
 	// Notification block should NOT produce a -32001 error response
@@ -2969,16 +2989,15 @@ func TestRunProxy_PolicyBlocksDangerousToolCall(t *testing.T) {
 		},
 	})
 
-	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, recordingEchoCommand(t, ""), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	outStr := out.String()
 
-	// Should contain the clean server response (echo output).
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected clean server response, got: %s", outStr)
+	if strings.Contains(outStr, strings.TrimSpace(req)) {
+		t.Errorf("blocked tool call reached the echo child: %s", outStr)
 	}
 
 	// Should contain a policy block error response (code -32002).
@@ -3022,16 +3041,17 @@ func TestRunProxy_PolicyWarnForwardsToolCall(t *testing.T) {
 		},
 	})
 
-	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, recordingEchoCommand(t, req), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	outStr := out.String()
 
-	// Should contain the server response (warn mode forwards).
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected server response, got: %s", outStr)
+	// A canned reply can arrive before request registration and prove nothing
+	// about forwarding. The child must echo the actual warn-mode request.
+	if outStr != req {
+		t.Errorf("forwarded request = %q, want %q", outStr, req)
 	}
 
 	// Should NOT contain a block error (warn forwards).
@@ -3071,7 +3091,7 @@ func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
 	})
 
 	// inputCfg is nil - only policy engine is active.
-	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, recordingEchoCommand(t, ""), MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3083,9 +3103,8 @@ func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
 		t.Errorf("expected -32002 policy block when inputCfg=nil, got: %s", outStr)
 	}
 
-	// Server response should still be present (echo output).
-	if !strings.Contains(outStr, "The weather is sunny today.") {
-		t.Errorf("expected server response, got: %s", outStr)
+	if strings.Contains(outStr, strings.TrimSpace(req)) {
+		t.Errorf("blocked tool call reached the echo child: %s", outStr)
 	}
 }
 
@@ -3116,7 +3135,7 @@ func TestRunProxy_PolicyOnlyMalformedJSONBlocked(t *testing.T) {
 	})
 
 	// inputCfg is nil - only policy engine is active.
-	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
+	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, recordingEchoCommand(t, ""), MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4808,7 +4827,7 @@ func TestRunProxy_ResponseTimeoutTerminatesHungUpstream(t *testing.T) {
 	select {
 	case <-done:
 		// Returned: the hung child was killed before cmd.Wait(). Good.
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after upstream response timeout (cmd.Wait blocked on a live child)")
 	}
 
@@ -4846,7 +4865,7 @@ func TestRunProxy_ResponseTimeoutReturnsWithOpenClientInput(t *testing.T) {
 		if !errors.Is(err, transport.ErrResponseTimeout) {
 			t.Fatalf("RunProxy error = %v, want ErrResponseTimeout", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after timeout while client input stayed open")
 	}
 

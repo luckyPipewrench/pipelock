@@ -394,13 +394,10 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 	return false
 }
 
-// shouldHardBlockBodyPromptInjection returns true when a prompt-injection
-// match appears in an outbound request body to a non-provider destination.
-// Prompts sent to the configured response-scan exemption set can naturally
-// discuss injection attempts; non-exempt publish/API destinations should not
-// receive those instructions in warn/balanced mode.
-// This path has no response body stream, so the over-cap response exemption
-// observability signal is not applicable here.
+// shouldHardBlockBodyPromptInjection forces a block for an outbound injection
+// finding unless its destination is in request_body_scanning.trusted_hosts.
+// Trusted destinations retain request scanning and the configured action.
+// Response-scanning exemptions do not affect this request-side decision.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if len(result.InjectionMatches) == 0 {
 		return false
@@ -454,6 +451,43 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 		return true
 	}
 	return false
+}
+
+const jwtTokenPatternName = "JWT Token"
+
+// headerDLPDecision resolves request-header enforcement after scanning. A
+// direct JWT match in Cookie is warning-only because JWT session cookies are
+// ordinary browser authentication state. The exception is deliberately
+// narrow: transformed/encoded JWT findings, JWTs in any other header, and any
+// additional credential pattern retain their normal enforcement.
+func headerDLPDecision(result *BodyScanResult, cfg *config.Config) (string, bool) {
+	if result == nil {
+		return "", false
+	}
+	action := result.Action
+	if action == "" && cfg != nil {
+		action = cfg.RequestBodyScanning.Action
+	}
+	if jwtOnlyCookieHeader(result) {
+		return config.ActionWarn, false
+	}
+	hardBlock := shouldHardBlockRequestDLP(result.DLPMatches, cfg)
+	if hardBlock {
+		action = config.ActionBlock
+	}
+	return action, hardBlock
+}
+
+func jwtOnlyCookieHeader(result *BodyScanResult) bool {
+	if result == nil || !strings.EqualFold(result.HeaderName, "Cookie") || len(result.DLPMatches) == 0 {
+		return false
+	}
+	for _, match := range result.DLPMatches {
+		if match.PatternName != jwtTokenPatternName || match.Encoded != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
@@ -2116,14 +2150,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 	if headerResult == nil {
 		return false, false
 	}
-	action := headerResult.Action
-	if action == "" {
-		action = e.cfg.RequestBodyScanning.Action
-	}
-	headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, e.cfg)
-	if headerHardBlock {
-		action = config.ActionBlock
-	}
+	action, headerHardBlock := headerDLPDecision(headerResult, e.cfg)
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 

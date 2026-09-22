@@ -502,12 +502,13 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			warn:                           p.Action == config.ActionWarn && len(p.CredentialAudienceHosts) == 0,
 			credentialURLWhitespaceGrammar: p.CredentialURLWhitespaceGrammar,
 		}
-		// Audience hosts are populated only from the compiled built-in registry;
-		// YAML excludes the field. A custom pattern reusing a built-in name has
-		// no hosts to copy, and core floors never receive one.
-		if !cp.core {
-			cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
-		}
+		// Audience hosts are populated only from the compiled built-in registry:
+		// the field is yaml:"-", and normalize re-derives it solely from an exact
+		// built-in match, so a custom pattern reusing a built-in name carries
+		// none. A core-floor pattern may carry a compiled audience; it narrows
+		// where that immutable credential is enforced (its own issuing authority
+		// over an encrypted scheme) without letting operator YAML reach it.
+		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {
@@ -3806,6 +3807,11 @@ func buildPathEntropyExempt(cfg *config.Config) *reqpolicy.Matcher {
 	return m
 }
 
+const (
+	queryEntropyKeyReasonPrefix   = "high entropy query key "
+	queryEntropyParamReasonPrefix = "high entropy query param "
+)
+
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
@@ -3865,7 +3871,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			if entropy > s.entropyThreshold {
 				return Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}
@@ -3886,7 +3892,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					}
 					return Result{
 						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
 					}
@@ -3916,7 +3922,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 			if entropy > s.entropyThreshold {
 				return Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}, true
@@ -3935,7 +3941,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if entropy > s.entropyThreshold {
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 				Scanner: ScannerEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}, true

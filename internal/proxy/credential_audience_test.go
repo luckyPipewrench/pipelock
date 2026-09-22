@@ -144,7 +144,7 @@ func assertCredentialAudienceWebSocketMetric(t *testing.T, m *metrics.Metrics, p
 	}
 }
 
-func TestCredentialAudienceHosts_CorePatternStillBlocksAtAudience(t *testing.T) {
+func TestCredentialAudienceHosts_CorePatternWithoutAudienceStillBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.MustNew(cfg)
@@ -274,7 +274,13 @@ func credentialAudienceCarrierCases() []credentialAudienceCarrierCase {
 		{name: "OpenAI", pattern: "OpenAI API Key", credential: "sk-" + "proj-" + strings.Repeat("a", 24), target: "https://api.openai.com/v1/responses"},
 		{name: "Anthropic", pattern: "Anthropic API Key", credential: "sk-" + "ant-" + strings.Repeat("a", 24), target: "https://api.anthropic.com/v1/messages"},
 		{name: "Discord", pattern: "Discord Bot Token", credential: "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), target: "https://discord.com/api/v10"},
+		{name: "Slack bot", pattern: "Slack Token", credential: fakeSlackBotToken(), target: "https://slack.com:443/api/auth.test"},
+		{name: "Slack app", pattern: "Slack App Token", credential: "xapp-1-" + strings.Repeat("a", 11) + "-" + strings.Repeat("2", 14) + "-" + strings.Repeat("b", 64), target: "https://slack.com:443/api/apps.connections.open"},
 	}
+}
+
+func fakeSlackBotToken() string {
+	return strings.Join([]string{"xoxb", "123456789012", "123456789012", strings.Repeat("a", 24)}, "-")
 }
 
 // An allow at the declared audience must reach the receipt channel with its
@@ -789,6 +795,87 @@ func TestInterceptTunnel_CredentialAudienceAllowIsRecorded(t *testing.T) {
 	// request succeeded, not that the decision was accounted for.
 	assertMetricSampleValue(t, m,
 		`pipelock_dlp_credential_audience_allows_total{pattern="Test Audience Key",surface="header"}`, 1)
+}
+
+// These are production-shaped Slack regressions: each CONNECT authority is
+// evaluated as its real Slack host while a local dial override supplies the
+// test socket. The tokens are detected by the immutable core scanner and the
+// configurable DLP list is absent.
+func TestInterceptTunnel_CoreSlackAudienceWithNoConfiguredPattern(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		host        string
+		path        string
+		token       string
+		tokenPrefix string
+	}{
+		{name: "Web API bot token", host: "slack.com", path: "/api/auth.test", token: fakeSlackBotToken(), tokenPrefix: "xoxb-"},
+		{name: "hosted MCP user token", host: "mcp.slack.com", path: "/mcp", token: "xoxp-" + strings.Repeat("a", 24), tokenPrefix: "xoxp-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHits atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHits.Add(1)
+				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+tc.tokenPrefix) {
+					t.Error("upstream did not receive the expected Slack Authorization header")
+				}
+				_, _ = fmt.Fprint(w, `{"ok":false,"error":"invalid_auth"}`)
+			}))
+			defer upstream.Close()
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			addr := upstream.Listener.Addr().String()
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("SplitHostPort: %v", err)
+			}
+
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+			cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+			cfg.DLP.Patterns = nil
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+
+			target := "https://" + tc.host + ":" + port + tc.path
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, target, nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+
+			dialer := &net.Dialer{}
+			upstreamRT := upstream.Client().Transport.(*http.Transport).Clone()
+			upstreamRT.TLSClientConfig = upstreamRT.TLSClientConfig.Clone()
+			upstreamRT.TLSClientConfig.InsecureSkipVerify = false
+			upstreamRT.TLSClientConfig.ServerName = upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			upstreamRT.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			}
+			t.Cleanup(upstreamRT.CloseIdleConnections)
+
+			proxy := &Proxy{captureObs: capture.NopObserver{}, metrics: m}
+			resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+				Upstream:   upstream,
+				TargetHost: tc.host,
+				UpstreamRT: upstreamRT,
+				Cache:      cache,
+				Pool:       pool,
+				Config:     cfg,
+				Scanner:    sc,
+				Logger:     logger,
+				Metrics:    m,
+				Request:    req,
+				Proxy:      proxy,
+			})
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK || upstreamHits.Load() != 1 {
+				t.Fatalf("core Slack credential blocked before upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
+			}
+			assertMetricSampleValue(t, m,
+				`pipelock_dlp_credential_audience_allows_total{pattern="Slack Token",surface="header"}`, 1)
+		})
+	}
 }
 
 // Control for the CONNECT case: outside its audience the same credential must

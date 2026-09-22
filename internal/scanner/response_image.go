@@ -30,6 +30,11 @@ func responseImageMetadata(body []byte) ([]byte, bool, error) {
 	}
 }
 
+func hasResponseImageSignature(body []byte) bool {
+	return bytes.HasPrefix(body, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) ||
+		bytes.HasPrefix(body, []byte{0xff, 0xd8})
+}
+
 func pngResponseMetadata(body []byte) ([]byte, error) {
 	var metadata bytes.Buffer
 	for pos := 8; pos < len(body); {

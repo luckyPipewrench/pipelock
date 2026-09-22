@@ -114,6 +114,11 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	sandboxCmd.Stderr = safeLogW
+	// Bound Cmd.Wait's stderr copier even if an escaped writer survives cleanup.
+	// Preserve a caller's shorter bound and configure it before Start.
+	if sandboxCmd.WaitDelay <= 0 || sandboxCmd.WaitDelay > defaultParentExitGrace {
+		sandboxCmd.WaitDelay = defaultParentExitGrace
+	}
 	// The sandbox launch preserves other SysProcAttr settings, but it must run
 	// in its own process group before session teardown can safely signal its
 	// subprocess tree.

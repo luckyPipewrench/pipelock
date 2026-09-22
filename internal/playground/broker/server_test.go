@@ -416,26 +416,31 @@ func TestNewServerValidationDefaultsAndClose(t *testing.T) {
 	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, RequireDelegatedSigning: true}); err == nil {
 		t.Fatal("required delegated signing without a root should error")
 	}
-	if _, err := NewServer(ServerConfig{
-		Leases:     lm,
-		Gate:       gate,
-		SessionEnv: map[string]string{"PLAYGROUND_ORCHESTRATOR_" + "KEY": "durable-root"},
-	}); err == nil {
-		t.Fatal("SessionEnv carrying the durable orchestrator key should error")
-	}
-	leaseWithRoot, err := NewLeaseManager(LeaseConfig{
-		Provider:    &serverFakeProvider{},
-		Concurrency: livechat.NewConcurrencyLimiter(brokerTestCapacity),
-		Image:       brokerTestImage,
-		BaseEnv:     map[string]string{"PLAYGROUND_ORCHESTRATOR_" + "KEY": "durable-root"},
-	})
-	if err != nil {
-		t.Fatalf("NewLeaseManager with durable base environment: %v", err)
-	}
-	if _, err := NewServer(ServerConfig{Leases: leaseWithRoot, Gate: gate}); err == nil {
-		t.Fatal("LeaseConfig.BaseEnv carrying the durable orchestrator key should error")
-	} else if !strings.Contains(err.Error(), "LeaseConfig.BaseEnv") {
-		t.Fatalf("error = %v, want the BaseEnv source named", err)
+	for _, name := range []string{
+		"PLAYGROUND_ORCHESTRATOR_" + "KEY",
+		"PLAYGROUND_ORCHESTRATOR_" + "ROOT",
+	} {
+		if _, err := NewServer(ServerConfig{
+			Leases:     lm,
+			Gate:       gate,
+			SessionEnv: map[string]string{name: "durable-root"},
+		}); err == nil {
+			t.Fatalf("SessionEnv carrying %s should error", name)
+		}
+		leaseWithRoot, err := NewLeaseManager(LeaseConfig{
+			Provider:    &serverFakeProvider{},
+			Concurrency: livechat.NewConcurrencyLimiter(brokerTestCapacity),
+			Image:       brokerTestImage,
+			BaseEnv:     map[string]string{name: "durable-root"},
+		})
+		if err != nil {
+			t.Fatalf("NewLeaseManager with durable base environment: %v", err)
+		}
+		if _, err := NewServer(ServerConfig{Leases: leaseWithRoot, Gate: gate}); err == nil {
+			t.Fatalf("LeaseConfig.BaseEnv carrying %s should error", name)
+		} else if !strings.Contains(err.Error(), "LeaseConfig.BaseEnv") || !strings.Contains(err.Error(), name) {
+			t.Fatalf("error = %v, want the BaseEnv source and variable named", err)
+		}
 	}
 	if _, err := NewServer(ServerConfig{
 		Leases:           lm,

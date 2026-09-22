@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -672,6 +673,7 @@ func newInterceptHandler(
 		// RecordClean is only applied when the request was fully clean so that
 		// warn/strip findings do not contribute to score decay.
 		hasFinding := false
+		interceptHeaderWarningPattern := ""
 		var interceptRedactionReport *redact.Report
 		var interceptGate ContractGateOutput
 		withInterceptRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
@@ -824,7 +826,7 @@ func newInterceptHandler(
 				if ic.Config.ExplainBlocksEnabled() && urlResult.Hint != "" {
 					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
 				}
-				writeBlockedError(w, blockInfo(urlResult.Scanner),
+				writeBlockedError(w, blockInfoForResult(urlResult),
 					"blocked: "+urlResult.Reason, status)
 				return
 			}
@@ -860,7 +862,7 @@ func newInterceptHandler(
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				})
-				writeBlockedError(w, blockInfo(urlResult.Scanner),
+				writeBlockedError(w, blockInfoForResult(urlResult),
 					"blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}
@@ -949,9 +951,9 @@ func newInterceptHandler(
 			}
 		}
 
-		// Strip Accept-Encoding to force identity encoding upstream.
-		// This ensures responses arrive uncompressed so we can scan them.
-		r.Header.Del("Accept-Encoding")
+		// Prefer identity upstream. Some origins ignore this request; the
+		// response path decodes supported encodings before scanning.
+		responseencoding.RequestIdentity(r.Header)
 
 		// Request body DLP scanning. interceptBodyBytes is hoisted out
 		// of the scanner block so the envelope inject site below can
@@ -1352,13 +1354,7 @@ func newInterceptHandler(
 				hdrHasFinding := headerResult != nil && !headerResult.Clean
 				hdrAction := config.ActionAllow
 				if hdrHasFinding {
-					hdrAction = headerResult.Action
-					if hdrAction == "" {
-						hdrAction = ic.Config.RequestBodyScanning.Action
-					}
-					if shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config) {
-						hdrAction = config.ActionBlock
-					}
+					hdrAction, _ = headerDLPDecision(headerResult, ic.Config)
 					hdrAction = decide.UpgradeAction(hdrAction, interceptEscalationLevel(ic), &ic.Config.AdaptiveEnforcement)
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
@@ -1380,14 +1376,7 @@ func newInterceptHandler(
 
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
-				action := headerResult.Action
-				if action == "" {
-					action = ic.Config.RequestBodyScanning.Action
-				}
-				headerHardBlock := shouldHardBlockRequestDLP(headerResult.DLPMatches, ic.Config)
-				if headerHardBlock {
-					action = config.ActionBlock
-				}
+				action, headerHardBlock := headerDLPDecision(headerResult, ic.Config)
 				originalAction := action
 				level := interceptEscalationLevel(ic)
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
@@ -1408,6 +1397,7 @@ func newInterceptHandler(
 						RequestID:  ic.RequestID,
 					})
 				}
+				ic.Logger.LogHeaderDLP(actx, headerResult.HeaderName, action, dlpMatchNames(headerResult.DLPMatches), dlpBundleRules(headerResult.DLPMatches))
 				reason := "request header contains secret"
 				if escalatedBlock && !ic.Config.EnforceEnabled() {
 					reason += " (escalated)"
@@ -1435,6 +1425,7 @@ func newInterceptHandler(
 				}
 				// Audit mode: log but forward.
 				ic.Logger.LogAnomaly(actx, "header_dlp", reason, 0.8) // 0.8: high confidence DLP match
+				interceptHeaderWarningPattern = strings.Join(dlpMatchNames(headerResult.DLPMatches), ", ")
 			}
 		}
 
@@ -1770,6 +1761,10 @@ func newInterceptHandler(
 			receiptVerdict = config.ActionWarn
 			receiptLayer = scannerLabelBodyEntropy
 			receiptPattern = interceptEntropyWarningPattern
+		} else if interceptHeaderWarningPattern != "" {
+			receiptVerdict = config.ActionWarn
+			receiptLayer = "dlp_header"
+			receiptPattern = interceptHeaderWarningPattern
 		}
 		allowReceipt := withInterceptRedaction(receipt.EmitOpts{
 			ActionID:  actionID,
@@ -1840,28 +1835,14 @@ func newInterceptHandler(
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
 		}
 
-		// Fail-closed on compressed responses: DLP regex can't match
-		// compressed content. Block rather than forward unscanned data.
-		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
-			ic.Metrics.RecordTLSResponseBlocked("compressed")
-			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     "tls_response_blocked",
-				Pattern:   "compressed response cannot be scanned",
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			}))
-			writeBlockedError(w,
-				blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
-				"blocked: compressed response cannot be scanned", http.StatusForbidden)
-			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
-			return
-		}
+		// Decoding happens at the buffered path below, NOT here. A response
+		// that never enters a body scanner must keep its bytes: an exempt
+		// destination streams through untouched, and DecodeResponse drops
+		// Content-Encoding along with the ETag, Digest and Content-MD5
+		// validators that describe the encoded form. Decoding before that
+		// decision handed a trusted download a body its own validators no
+		// longer matched. The compressed-SSE refusal lives in the SSE branch
+		// below, where the stream layer is known and can be named.
 
 		// SSE streaming: activate on Content-Type alone. The dispatcher's
 		// passthrough branches honor each child Enabled flag and keep
@@ -2073,6 +2054,34 @@ func newInterceptHandler(
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 			return
+		}
+
+		// Origins sometimes ignore the explicit identity request. This response
+		// is entering the body scanners, so decode the bounded, buffered
+		// formats now; an unsupported encoding stays fail-closed because it
+		// cannot be inspected as opaque bytes. Everything that returns above
+		// keeps its original bytes.
+		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+			if decodeErr := responseencoding.DecodeResponse(resp); decodeErr != nil {
+				ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
+				ic.Metrics.RecordTLSResponseBlocked("compressed")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "tls_response_blocked",
+					Pattern:   "compressed response cannot be scanned",
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
+					"blocked: compressed response cannot be scanned", http.StatusForbidden)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
+				return
+			}
 		}
 
 		// Buffer response for scanning (scan-then-send, fail-closed).

@@ -290,13 +290,40 @@ func TestApplyMediaPolicy_AudioVideoAllowed(t *testing.T) {
 func TestApplyMediaPolicy_ParseErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	// Wrong prefix - media.StripMetadata returns ErrInvalidJPEG.
-	v := applyMediaPolicy(cfg, "image/jpeg", []byte{0x00, 0x01, 0x02, 0x03})
+	// Valid JPEG signature followed by a truncated marker. This is malformed
+	// media, not a declared-type/actual-bytes mismatch.
+	v := applyMediaPolicy(cfg, "image/jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0})
 	if !v.Blocked {
 		t.Fatal("malformed jpeg must be blocked (fail-closed)")
 	}
 	if !strings.Contains(v.BlockReason, "parse error") {
 		t.Errorf("block reason = %q, want parse error", v.BlockReason)
+	}
+}
+
+func TestApplyMediaPolicy_EmptyImagePasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	for _, body := range [][]byte{nil, {}} {
+		v := applyMediaPolicy(cfg, "image/png", body)
+		if v.Blocked {
+			t.Fatalf("empty image response blocked: %s", v.BlockReason)
+		}
+		if v.StripResult != nil {
+			t.Fatal("empty image response must not enter metadata surgery")
+		}
+	}
+}
+
+func TestApplyMediaPolicy_SignatureMismatchIsDiagnosed(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	v := applyMediaPolicy(cfg, "image/png", []byte{0x00, 0x01})
+	if !v.Blocked {
+		t.Fatal("declared PNG with non-PNG bytes must be blocked")
+	}
+	if !strings.Contains(v.BlockReason, `declared image type "image/png" does not match response bytes`) {
+		t.Errorf("block reason = %q, want declared-type mismatch", v.BlockReason)
 	}
 }
 
@@ -1019,6 +1046,35 @@ func TestCanonicalContentType(t *testing.T) {
 			got := canonicalContentType(tt.in)
 			if got != tt.want {
 				t.Errorf("canonicalContentType(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// The reverse proxy calls applyMediaPolicy with a NIL body on purpose, so that
+// declared audio and video can be refused without reading the stream. An
+// empty-body exemption placed before those decisions therefore turns a refusal
+// into an allow, which is how declared audio started returning 200 on the
+// reverse path while the forward and fetch paths (which pass the bytes they
+// read) kept returning 403. Ordering is the invariant here, so assert the
+// verdict for a nil body of each media class rather than the code's shape.
+func TestApplyMediaPolicy_NilBodyStillRefusesAudioVideo(t *testing.T) {
+	cfg := config.Defaults()
+
+	for _, tt := range []struct {
+		name        string
+		contentType string
+		wantBlocked bool
+	}{
+		{"nil audio body is refused", "audio/mpeg", true},
+		{"nil video body is refused", "video/mp4", true},
+		{"nil image body is allowed, nothing to parse", "image/png", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := applyMediaPolicy(cfg, tt.contentType, nil)
+			if verdict.Blocked != tt.wantBlocked {
+				t.Errorf("applyMediaPolicy(%s, nil).Blocked = %v, want %v (reason %q)",
+					tt.contentType, verdict.Blocked, tt.wantBlocked, verdict.BlockReason)
 			}
 		})
 	}

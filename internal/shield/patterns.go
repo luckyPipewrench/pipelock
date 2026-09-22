@@ -23,7 +23,7 @@ const extensionRuntimePattern = `(?i)chrome\.runtime\.sendMessage`
 // extensionFuncPattern matches known probing function names.
 const extensionFuncPattern = `(?i)\b(?:fetchExtensions|scanDOMForPrefix|fireExtensionDetectedEvents)\b`
 
-// Tracking pixel / beacon patterns.
+// Tracking element patterns.
 
 // trackingPixelPattern matches 1x1 image tags where width=1 and height=1
 // appear anywhere in the tag (not necessarily adjacent, other attributes
@@ -31,9 +31,6 @@ const extensionFuncPattern = `(?i)\b(?:fetchExtensions|scanDOMForPrefix|fireExte
 const trackingPixelPattern = `(?i)<img[^>]+\bwidth\s*=\s*["']?1["']?[^>]+\bheight\s*=\s*["']?1["']?[^>]*>` +
 	`|` +
 	`(?i)<img[^>]+\bheight\s*=\s*["']?1["']?[^>]+\bwidth\s*=\s*["']?1["']?[^>]*>`
-
-// sendBeaconPattern matches navigator.sendBeacon() calls.
-const sendBeaconPattern = `(?i)navigator\.sendBeacon\s*\(`
 
 // prefetchPattern matches <link rel="prefetch"> tags.
 const prefetchPattern = `(?i)<link[^>]+rel\s*=\s*["']?prefetch["']?[^>]*>`
@@ -64,18 +61,21 @@ const ariaHiddenTrapPattern = `(?i)<[^>]+aria-hidden\s*=\s*["']true["'][^>]*>[^<
 // tags - inside SVG, turning a nominally-image response into active web
 // content. Strip the whole element with its children.
 //
-// The optional `[\w-]+:` prefix matches namespace-prefixed element names
+// The optional `[\w.-]+:` prefix matches namespace-prefixed element names.
+// The grammar includes a dot because an XML NCName permits one: a document
+// declaring xmlns:x.y and writing <x.y:script> is valid and executes, and a
+// prefix pattern without the dot left that element in place.
 // like `<svg:foreignObject>` and `<s:foreignObject>`. SVG documents that
 // declare the svg namespace as a prefix rather than the default namespace
 // use this form, and omitting it would leave the attack surface open to a
 // trivial xmlns:svg="http://www.w3.org/2000/svg" relabeling.
-const svgForeignObjectPattern = `(?is)<(?:[\w-]+:)?foreignObject\b[^>]*>.*?</(?:[\w-]+:)?foreignObject>`
+const svgForeignObjectPattern = `(?is)<(?:[\w.-]+:)?foreignObject\b[^>]*>.*?</(?:[\w.-]+:)?foreignObject>`
 
 // svgSelfClosingForeignObjectPattern catches the self-closing variant
 // <foreignObject .../> which some writers produce when the element has no
 // children. Covered separately because the greedy non-self-closing match
 // wouldn't catch it.
-const svgSelfClosingForeignObjectPattern = `(?i)<(?:[\w-]+:)?foreignObject\b[^>]*/>`
+const svgSelfClosingForeignObjectPattern = `(?i)<(?:[\w.-]+:)?foreignObject\b[^>]*/>`
 
 // svgEventHandlerPattern matches DOM event handler attributes on any SVG
 // element (onload, onclick, onerror, onmouseover, onfocus, etc.). The
@@ -103,10 +103,10 @@ const svgExternalHrefPattern = `(?i)\s+href\s*=\s*(?:"[^"#][^"]*"|'[^'#][^']*')`
 
 // svgHiddenTextStylePattern matches <text> elements whose inline style
 // makes them invisible to visual rendering while remaining in the DOM for
-// LLM consumption. The `(?:[\w-]+:)?` prefix covers namespace-prefixed
+// LLM consumption. The `(?:[\w.-]+:)?` prefix covers namespace-prefixed
 // element names like `<svg:text ...>` that would otherwise bypass the
 // bare-name match.
-const svgHiddenTextStylePattern = `(?is)<(?:[\w-]+:)?text\b[^>]*style\s*=\s*["'][^"']*(?:opacity\s*:\s*0(?:\.0+)?|display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>.*?</(?:[\w-]+:)?text>`
+const svgHiddenTextStylePattern = `(?is)<(?:[\w.-]+:)?text\b[^>]*style\s*=\s*["'][^"']*(?:opacity\s*:\s*0(?:\.0+)?|display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>.*?</(?:[\w.-]+:)?text>`
 
 // svgHiddenTextAttrPattern matches <text> elements that use SVG
 // presentation attributes (display, visibility, opacity) directly on the
@@ -114,7 +114,7 @@ const svgHiddenTextStylePattern = `(?is)<(?:[\w-]+:)?text\b[^>]*style\s*=\s*["']
 // class attributes, so relying only on style="..." would miss the simplest
 // form of the attack: <text display="none">payload</text>. Same
 // namespace-prefix handling as svgHiddenTextStylePattern.
-const svgHiddenTextAttrPattern = `(?is)<(?:[\w-]+:)?text\b[^>]*(?:\bdisplay\s*=\s*["']none["']|\bvisibility\s*=\s*["']hidden["']|\bopacity\s*=\s*["']0(?:\.0+)?["'])[^>]*>.*?</(?:[\w-]+:)?text>`
+const svgHiddenTextAttrPattern = `(?is)<(?:[\w.-]+:)?text\b[^>]*(?:\bdisplay\s*=\s*["']none["']|\bvisibility\s*=\s*["']hidden["']|\bopacity\s*=\s*["']0(?:\.0+)?["'])[^>]*>.*?</(?:[\w.-]+:)?text>`
 
 // svgAnimationInjectionPattern matches SVG animation elements that target
 // event handler attributes. <set attributeName="onload" to="alert(1)"/> and
@@ -123,7 +123,7 @@ const svgHiddenTextAttrPattern = `(?is)<(?:[\w-]+:)?text\b[^>]*(?:\bdisplay\s*=\
 // sets the attribute at runtime. The pattern matches <animate>, <set>,
 // <animateTransform>, and <animateMotion> elements where attributeName
 // points to an event handler (on*). Namespace-prefixed forms included.
-const svgAnimationInjectionPattern = `(?is)<(?:[\w-]+:)?(?:animate|set|animateTransform|animateMotion)\b[^>]*\battributeName\s*=\s*(?:"on[a-z]+"|'on[a-z]+'|on[a-z]+)[^>]*/?>(?:.*?</(?:[\w-]+:)?(?:animate|set|animateTransform|animateMotion)>)?`
+const svgAnimationInjectionPattern = `(?is)<(?:[\w.-]+:)?(?:animate|set|animateTransform|animateMotion)\b[^>]*\battributeName\s*=\s*(?:"on[a-z]+"|'on[a-z]+'|on[a-z]+)[^>]*/?>(?:.*?</(?:[\w.-]+:)?(?:animate|set|animateTransform|animateMotion)>)?`
 
 // compilePatterns compiles all shield patterns into regexp objects.
 // Called once from NewEngine; panics on invalid regex (programming error).
@@ -135,7 +135,7 @@ func compilePatterns() (
 	functionStripRe *regexp.Regexp,
 ) {
 	extensionRe = regexp.MustCompile(extensionURLPattern + `|` + extensionRuntimePattern)
-	trackingPixelRe = regexp.MustCompile(trackingPixelPattern + `|` + sendBeaconPattern + `|` + prefetchPattern)
+	trackingPixelRe = regexp.MustCompile(trackingPixelPattern + `|` + prefetchPattern)
 	hiddenTrapRe = regexp.MustCompile(hiddenElementPattern + `|` + ariaHiddenTrapPattern)
 	commentTrapRe = regexp.MustCompile(commentTrapPattern)
 	functionStripRe = regexp.MustCompile(extensionFuncPattern)

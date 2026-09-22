@@ -58,9 +58,9 @@ func enableSubreaper() error {
 // that set its own session via setsid. Either way, it is not a child of the
 // original process group and the earlier -pid SIGKILL would not have reached it.
 //
-// Concurrent RunProxy calls in the same process also have direct children whose
-// PPID is our PID. Those are active MCP servers, not adopted descendants, and
-// must not be killed by another proxy's teardown sweep.
+// Concurrent proxies and approval resolvers also have direct children whose
+// PPID is our PID. Their registered children must not be killed by another
+// session's teardown sweep.
 //
 // We don't return errors - best-effort. A process we can't signal
 // (ESRCH because it already died, EPERM because of a namespace boundary)

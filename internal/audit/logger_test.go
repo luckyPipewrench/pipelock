@@ -3752,7 +3752,7 @@ func TestEmit_RemediationHintSweep(t *testing.T) {
 				logger.LogBodyScan(ctx, EventBodyPromptInjection, actionBlock, 1, []string{"Prompt Injection"})
 			},
 			wantEvent: EventBodyPromptInjection,
-			wantHint:  "response_scanning.exempt_domains",
+			wantHint:  "request_body_scanning.trusted_hosts",
 		},
 		{
 			name: "chain detection",

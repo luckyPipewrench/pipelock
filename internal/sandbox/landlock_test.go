@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	guardruntime "github.com/luckyPipewrench/pipelock/internal/guard"
 	"github.com/luckyPipewrench/pipelock/internal/testposture"
 )
@@ -96,7 +98,7 @@ func TestMain(m *testing.M) {
 		}
 		if errMCPEnvironProofBuild == nil {
 			mcpEnvironProofBinaryPath = filepath.Join(proofBuildDir, "pipelock-mcp-environ-proof")
-			buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
+			buildCtx, cancelBuild := context.WithTimeout(context.Background(), testwait.Deadline(2*time.Minute))
 			cmd := exec.CommandContext(buildCtx, "go", "build", "-tags=mcp_hardening_test", "-o", mcpEnvironProofBinaryPath, "./cmd/pipelock/") // #nosec G204 G702 -- fixed repository build for the integration proof
 			cmd.Dir = filepath.Join("..", "..")
 			mcpEnvironProofBuildOutput, errMCPEnvironProofBuild = cmd.CombinedOutput()

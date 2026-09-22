@@ -835,11 +835,11 @@ dlp:
         - "api.provider.example"
 ```
 
-Built-in provider-key patterns and the Discord bot-token pattern carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority, URL, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. The same credential stays blocked for every other destination, including lookalike hosts. The set itself is not YAML configuration: it cannot be extended or cleared. The ordinary operator controls still apply to these patterns, so `suppress`, `disable_patterns`, and a `warn` action all continue to work and each one warns at config load, naming the entry and the audience it widens. That is a deliberate choice: refusing the config instead would stop a previously valid deployment from starting on upgrade. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+Built-in provider-key patterns and the messaging-platform token patterns (Discord and Slack) carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority over an encrypted scheme, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. For a non-core pattern the allowance also covers URL DLP; a core-floor credential (`Slack Token`) placed in a URL query stays blocked, because the immutable core URL floor is evaluated first and a URL leaks the token into logs and history in ways a header does not. The same credential stays blocked for every other destination, including lookalike hosts. The set itself is not YAML configuration: it cannot be extended or cleared. For the non-core patterns the ordinary operator controls still apply, so `suppress`, `disable_patterns`, and a `warn` action all continue to work and each one warns at config load, naming the entry and the audience it widens; a core-floor member (`Slack Token`) keeps its compiled audience but still refuses all three controls, as the core-floor note below describes. That is a deliberate choice: refusing the config instead would stop a previously valid deployment from starting on upgrade. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
 
 Top-level `suppress`, `request_body_scanning.disable_patterns`, and a `warn` entry in `request_body_scanning.pattern_actions` remain operator controls and DO apply to built-in provider-key patterns. They do not edit the compiled audience set; they decide whether a match that falls outside it is enforced. Widening this way is a real security decision, so each one warns at load naming the entry and every match is audited. `exempt_domains` behaves differently on these patterns and is stricter: an entry naming any host outside the compiled audience is REJECTED at load, and an entry that only repeats compiled audience hosts loads with a warning and is ignored. For a custom provider-key pattern that you own, use a narrowly scoped pattern and the controls appropriate to the carrier: `exempt_domains` for URL DLP and `suppress` for request-body or request-header DLP.
 
-Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted this way. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through, so a core credential class is blocked on every destination regardless of overrides.
+Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted, suppressed, or downgraded by operator configuration. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through. A core pattern may still carry a compiled audience: `Slack Token` is allowed at Slack's exact encrypted API authorities (`slack.com` and `mcp.slack.com`) and blocked on every other destination. That audience is compiled into the binary, not an operator override, so it cannot be widened, cleared, or reached from YAML, and the core credential class stays blocked everywhere its compiled audience does not name.
 
 ### Built-in DLP Patterns (65)
 
@@ -3566,12 +3566,13 @@ Browser Shield is opt-in. By default, `browser_shield.enabled` is `false`.
 The other Browser Shield defaults are populated so operators can enable the
 feature with a small config change instead of defining every rewrite knob.
 
-Browser Shield rewrites shieldable HTML, JavaScript, and SVG responses before
-they reach the agent browser. It strips browser-extension probes, hidden
-agent-trap content, tracking pixels/beacons, and SVG active content covered by
-the shield pipeline. It does not attempt to solve CAPTCHAs, bypass bot
-management, forge browser integrity telemetry, or make unsupported websites
-accessible to automation.
+Browser Shield sanitizes shieldable HTML and SVG responses before they reach
+the agent browser. It removes hidden agent traps, tracking image elements,
+prefetch links, and SVG active content. Existing inline scripts and standalone
+JavaScript responses keep their original bytes. JavaScript still goes through
+normal response scanning. Browser Shield doesn't attempt to solve CAPTCHAs,
+bypass bot management, forge browser integrity telemetry, or make unsupported
+websites accessible to automation.
 
 ```yaml
 browser_shield:
@@ -3603,10 +3604,10 @@ browser_shield:
 | `max_shield_bytes` | int | `5242880` (5 MiB) | Normal maximum shieldable response body size before `oversize_action` applies. On forward, TLS-intercepted, and reverse traffic, matching `response_scanning.size_exempt_domains` use the bounded `size_exempt_scan_max_bytes` ceiling for whole-body shielding. |
 | `oversize_action` | string | `scan_head` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
 | `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that bypass Browser Shield entirely |
-| `strip_extension_probing` | bool | `true` | Remove browser-extension probing URLs and runtime probes |
+| `strip_extension_probing` | bool | `true` | Remove browser-extension URLs outside existing scripts and inject an HTML extension-defense shim |
 | `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
-| `strip_tracking_pixels` | bool | `true` | Remove tracking pixels and beacon-style calls |
-| `inject_fingerprint_shims` | bool | `false` | Inject browser fingerprinting defense shims where supported |
+| `strip_tracking_pixels` | bool | `true` | Remove 1x1 tracking images and prefetch links outside existing scripts |
+| `inject_fingerprint_shims` | bool | `false` | Inject an HTML browser-fingerprinting shim where supported; the shim suppresses `sendBeacon` at runtime but doesn't rewrite the page's JavaScript |
 | `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine. Exact hostnames only: entries are matched literally, so a wildcard is refused at load rather than accepted and silently never matched. |
 
 For production soak, start with:

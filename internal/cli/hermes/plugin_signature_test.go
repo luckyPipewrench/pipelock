@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestPluginHookSignatures_AcceptHermesKwargs is the signature regression guard.
@@ -48,7 +50,7 @@ func TestPluginHookSignatures_AcceptHermesKwargs(t *testing.T) {
 		t.Fatalf("resolve harness path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(30*time.Second))
 	defer cancel()
 
 	//nolint:gosec // G204: args are the LookPath-resolved python3, a fixed

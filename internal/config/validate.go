@@ -1510,7 +1510,7 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 		// never grants. Refuse it at load and reload instead of shipping a knob
 		// that silently does nothing for that credential class.
 		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
-			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential classes are blocked on every destination", p.Name)
+			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential destinations are controlled only by immutable compiled policy", p.Name)
 		}
 		// Gate on the pattern's OWN compiled audience, matching the warn-action
 		// branch above. A customized pattern that merely reuses a built-in name

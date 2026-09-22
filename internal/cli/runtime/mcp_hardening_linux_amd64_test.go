@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -36,7 +38,7 @@ func TestMCPProxyCmdMakesProxyProcessNonDumpable(t *testing.T) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPProxyCmdMakesProxyProcessNonDumpable$") // #nosec G204 G702 -- test re-execs its own binary with fixed arguments
 	child.Env = append(os.Environ(), "PIPELOCK_MCP_HARDEN_HELPER=1")

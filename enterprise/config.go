@@ -405,7 +405,8 @@ func resolvePublicKey(c *config.Config) ed25519.PublicKey {
 
 // MergeAgentProfile creates a new Config by deep-merging profile overrides
 // into a deep copy of the base config. The base config is not modified.
-// If profile is nil, a deep copy of base is returned with no modifications.
+// A nil profile adds no overrides. The YAML round-trip still strips compiled
+// audience hosts, and the restore below puts those hosts back.
 //
 // This is the implementation behind edition.MergeAgentProfileFunc.
 func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*config.Config, error) {
@@ -415,7 +416,7 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	}
 
 	if profile == nil {
-		return merged, nil
+		profile = &config.AgentProfile{}
 	}
 
 	if profile.Mode != "" {
@@ -500,6 +501,12 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 			merged.Sandbox.FS.AllowWrite = append(merged.Sandbox.FS.AllowWrite, profile.Sandbox.FS.AllowWrite...)
 		}
 	}
+
+	// deepCopyConfig uses a YAML round-trip, which necessarily strips the
+	// yaml-excluded audience metadata even when this profile does not override
+	// DLP at all. Restore exact shipped pattern identities after every profile
+	// merge; custom same-name patterns remain ineligible.
+	config.RestoreBuiltInCredentialAudienceHosts(merged.DLP.Patterns)
 
 	return merged, nil
 }

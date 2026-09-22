@@ -975,10 +975,17 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 // stanza is ignored instead of making a shipped config fail on upgrade.
 func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	// Clear every candidate ONCE, before matching. A clone carries the audience
-	// field, so a pattern whose regex, severity or validator was customized
-	// would otherwise keep the built-in audience and earn an allow it no longer
-	// qualifies for. Fail closed: only a candidate that passes the identity
-	// checks below gets an audience back.
+	// field, so a pattern whose regex, severity, validator or action was
+	// customized would otherwise keep the built-in audience and earn an allow it
+	// no longer qualifies for. Fail closed: only a candidate that passes the
+	// identity checks below gets an audience back.
+	//
+	// The ACTION belongs in that list even though it softens rather than widens
+	// enforcement. The scanner sets its warn flag as "action is warn AND no
+	// audience", so handing an audience back to a pattern the operator marked
+	// warn does not just add metadata: it clears the warn flag and sends every
+	// non-audience match to the blocking branch, which is the operator's stated
+	// intent reversed.
 	//
 	// This cannot move inside the loop over built-ins: that runs once per
 	// built-in pattern, so a later iteration would wipe the audience an earlier
@@ -994,13 +1001,22 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate := &patterns[i]
 			if candidate.Bundle != "" || candidate.Name != builtIn.Name ||
 				candidate.Regex != builtIn.Regex || candidate.Severity != builtIn.Severity ||
-				candidate.Validator != builtIn.Validator ||
+				candidate.Validator != builtIn.Validator || candidate.Action != builtIn.Action ||
 				!credentialAudienceExemptDomainsSubset(candidate.ExemptDomains, builtIn.CredentialAudienceHosts) {
 				continue
 			}
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
 		}
 	}
+}
+
+// RestoreBuiltInCredentialAudienceHosts re-derives immutable runtime audience
+// metadata after a trusted config transformation, such as an Enterprise agent
+// profile merge. Serialized profile patterns cannot carry this yaml-excluded
+// field, so callers must restore it from exact shipped pattern identity before
+// constructing a scanner.
+func RestoreBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
+	markBuiltInCredentialAudienceHosts(patterns)
 }
 
 func credentialAudienceExemptDomainsSubset(domains, audience []string) bool {

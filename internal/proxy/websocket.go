@@ -392,7 +392,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"WebSocket blocked: "+result.Reason, status)
 			return
 		}
@@ -415,7 +415,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeBlockedError(w, blockInfo(result.Scanner),
+			writeBlockedError(w, blockInfoForResult(result),
 				"WebSocket "+adaptiveBlockedReason, status)
 			return
 		}
@@ -1287,8 +1287,13 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		for i, m := range allMatches {
 			names[i] = m.PatternName
 		}
-		action := requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions)
-		return true, shouldHardBlockRequestDLP(allMatches, cfg), action, fmt.Sprintf("DLP match in %s header: %s", wsHeaderDLPSource(matchedHeaders), strings.Join(names, ", "))
+		result := &BodyScanResult{
+			Action:     requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
+			DLPMatches: allMatches,
+			HeaderName: wsHeaderDLPSource(matchedHeaders),
+		}
+		action, hardBlock := headerDLPDecision(result, cfg)
+		return true, hardBlock, action, fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
 	}
 	return false, false, "", ""
 }

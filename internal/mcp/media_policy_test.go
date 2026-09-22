@@ -786,6 +786,30 @@ func TestApplyMCPMediaPolicy_ExplicitTextPreserved(t *testing.T) {
 	}
 }
 
+func TestApplyMCPMediaPolicy_EmptyImagePasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", nil, testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Fatalf("empty MCP image payload blocked: %s", verdict.BlockReason)
+	}
+	if verdict.StripResult != nil {
+		t.Fatal("empty MCP image payload must not enter metadata surgery")
+	}
+}
+
+func TestApplyMCPMediaPolicy_SignatureMismatchIsDiagnosed(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", []byte{0x00, 0x01}, testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Fatal("declared MCP PNG with non-PNG bytes must be blocked")
+	}
+	if !strings.Contains(verdict.BlockReason, `declared image type "image/png" does not match response bytes`) {
+		t.Errorf("block reason = %q, want declared-type mismatch", verdict.BlockReason)
+	}
+}
+
 func TestCanonicalMCPContentType(t *testing.T) {
 	t.Parallel()
 

@@ -157,7 +157,8 @@ jobs:
     needs: [security-scan]
     runs-on: ubuntu-latest
     name: test-oss (1.25, ${{ matrix.shard }})
-    timeout-minutes: 20
+    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 48
     strategy:
       fail-fast: false
       matrix:
@@ -196,8 +197,8 @@ jobs:
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
-          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-oss-${TEST_SHARD}.out" -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-oss-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -228,7 +229,8 @@ jobs:
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
     name: test-oss (1.26, ${{ matrix.shard }})
-    timeout-minutes: 20
+    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 48
     strategy:
       fail-fast: false
       matrix:
@@ -261,8 +263,8 @@ jobs:
           if [ "$TEST_SHARD" = "proxy" ]; then
             package_parallelism=1
           fi
-          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -276,7 +278,8 @@ jobs:
     needs: [security-scan]
     runs-on: ubuntu-latest
     name: test-enterprise (1.25, ${{ matrix.shard }})
-    timeout-minutes: 20
+    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 48
     strategy:
       fail-fast: false
       matrix:
@@ -315,8 +318,8 @@ jobs:
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
-          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -349,7 +352,8 @@ jobs:
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
     name: test-enterprise (1.26, ${{ matrix.shard }})
-    timeout-minutes: 20
+    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 48
     strategy:
       fail-fast: false
       matrix:
@@ -382,8 +386,8 @@ jobs:
           if [ "$TEST_SHARD" = "proxy" ]; then
             package_parallelism=1
           fi
-          bash scripts/ci-test-with-retry.sh --packages "$packages" -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -455,7 +459,7 @@ jobs:
     # single cheap job's real success unconditionally. It is also five minutes
     # of "make test-replay-harness" with no shard fan-out, so skipping it on
     # ordinary PRs was never where the runner-queue contention came from --
-    # that was the twelve 20-minute race-test shard jobs below.
+    # that was the twelve race-test shard jobs below.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -911,6 +915,9 @@ jobs:
 
       - name: Clock-dependent literal policy
         run: bash scripts/check-clock-literals.sh
+
+      - name: Subprocess test deadline scaling policy
+        run: bash scripts/check-test-deadline-scaling.sh
 
       - name: Install documentation search dependency
         run: bash scripts/ci-apt-install.sh ripgrep

@@ -50,9 +50,14 @@ type installEnv struct {
 	// keep the descriptor-based implementation, because a path-based chmod in
 	// an agent-owned directory is redirectable by a swapped symlink.
 	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
-	rename          func(oldPath, newPath string) error
-	chmod           func(path string, mode os.FileMode) error
-	symlink         func(target, linkPath string) error
+
+	// repairLeafMode reads and tightens a file's mode through a single
+	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable
+	// path cannot redirect a privileged chmod. Injectable for tests.
+	repairLeafMode func(path string, mode os.FileMode, onlyWhenTooPermissive bool) (os.FileMode, bool, error)
+	rename         func(oldPath, newPath string) error
+	chmod          func(path string, mode os.FileMode) error
+	symlink        func(target, linkPath string) error
 
 	// lookupUser resolves system users by name. Used to translate the
 	// configured proxy/agent user names into numeric UIDs for nft rules
@@ -205,6 +210,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
 		ownLeafNoFollow:               applyAgentOwnershipNoFollow,
+		repairLeafMode:                setLeafModeNoFollow,
 		// The reconcile lock lives beside the nft rules file under
 		// /etc/nftables.d/, a directory only root writes, NOT under
 		// dataDir: dataDir is recursively chowned to pipelock-proxy by
@@ -293,13 +299,18 @@ const (
 	// tool names/paths only. Mutation remains gated by root-owned directories.
 	modeCAReadable        os.FileMode = 0o644 // public CA certs, read by pipelock-agent
 	modeAllowListReadable os.FileMode = 0o644 // runtime policy metadata, read by pipelock-agent
-	modeConfigSecret      os.FileMode = 0o640 // /etc/pipelock/pipelock.yaml - pipelock-proxy reads, pipelock-agent denied
-	modePinSecret         os.FileMode = 0o600 // integrity pin - pipelock-proxy only
-	modeSudoers           os.FileMode = 0o440 // /etc/sudoers.d/*
-	modeWrapperExec       os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
-	modeUnitFile          os.FileMode = 0o644
-	modeNFTFile           os.FileMode = 0o644
-	modeNFTMainConfig     os.FileMode = 0o600
+	// 0o600, not 0o640: pipelock-proxy OWNS these files, so the group bit
+	// grants nothing (the installer never adds a member to that group) while
+	// the admin CLI refuses any config carrying group bits, because this file
+	// holds the admin API token. Installing 0o640 made every shipped admin
+	// command fail against the shipped config with "restrict to 0o600".
+	modeConfigSecret  os.FileMode = 0o600 // pipelock.yaml, license.token, roster.json, integrity manifest, tls/ca.pem - pipelock-proxy only
+	modePinSecret     os.FileMode = 0o600 // integrity pin - pipelock-proxy only
+	modeSudoers       os.FileMode = 0o440 // /etc/sudoers.d/*
+	modeWrapperExec   os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
+	modeUnitFile      os.FileMode = 0o644
+	modeNFTFile       os.FileMode = 0o644
+	modeNFTMainConfig os.FileMode = 0o600
 	// Directory modes. modeDirTraversable is intentionally world-traversable
 	// because pipelock-agent is a separate UID and must walk into
 	// /etc/pipelock/contain; modeDirPrivate is for dirs containing only

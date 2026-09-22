@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // ---------------------------------------------------------------------------
@@ -1085,7 +1087,7 @@ func TestSetChildSubreaper_Deep(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("linux only")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), deepSubreapTestEnv+"=set-subreaper")
@@ -1099,7 +1101,7 @@ func TestReapOrphans_Deep(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("linux only")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), deepSubreapTestEnv+"=reap-orphans")
@@ -1126,7 +1128,7 @@ func TestWaitForUserNamespaceProbeChildTimeout(t *testing.T) {
 		t.Skip("linux only")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(time.Second))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sleep", "5")
@@ -1143,14 +1145,14 @@ func TestWaitForUserNamespaceProbeChildSuccess(t *testing.T) {
 		t.Skip("linux only")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(time.Second))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "true")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start true child: %v", err)
 	}
-	if !waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+	if !waitForUserNamespaceProbeChild(cmd.Process.Pid, testwait.Deadline(time.Second)) {
 		t.Fatal("expected fast-exiting probe child to be reaped successfully")
 	}
 }
@@ -1160,14 +1162,14 @@ func TestWaitForUserNamespaceProbeChildAlreadyReaped(t *testing.T) {
 		t.Skip("linux only")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(time.Second))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "true")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run true child: %v", err)
 	}
-	if waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+	if waitForUserNamespaceProbeChild(cmd.Process.Pid, testwait.Deadline(time.Second)) {
 		t.Fatal("expected already-reaped probe child to report false")
 	}
 }

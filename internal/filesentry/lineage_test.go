@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -111,13 +112,18 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 	}
 
 	l := NewLineage()
-	// "sleep 30 & wait" forces bash to stay alive as the parent of sleep.
-	// Plain "sleep 30" gets exec'd in place (no grandchild).
-	cmd := exec.CommandContext(t.Context(), "bash", "-c", "sleep 30 & wait")
+	// The background command keeps bash alive as the parent. Its lifetime is
+	// longer than the CI attempt so natural expiry cannot conceal failed cleanup.
+	cmd := exec.CommandContext(t.Context(), "bash", "-c", "sleep 3600 & wait")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+	defer func() {
+		// Signal the whole fixture while the unreaped parent still owns its ID.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	}()
 
 	l.TrackPID(cmd.Process.Pid)
 

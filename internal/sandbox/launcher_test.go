@@ -386,7 +386,7 @@ func TestLaunchSandboxed_ChildCleanup(t *testing.T) {
 
 	var stderr bytes.Buffer
 	cmd, cancel := launchSandboxedStarted(t, LaunchConfig{
-		Command:   []string{"sh", "-c", "sleep 300 & echo $! > " + pidPath + "; wait"},
+		Command:   []string{"sh", "-c", `sleep 300 & echo $! > "$1"; wait`, "sh", pidPath},
 		Workspace: workspace,
 		Stderr:    &stderr,
 	})

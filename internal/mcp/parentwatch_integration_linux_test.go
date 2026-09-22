@@ -109,7 +109,7 @@ func TestRunProxy_ResponseTimeoutReapsEscapedPipeHolder(t *testing.T) {
 		if !errors.Is(err, transport.ErrResponseTimeout) {
 			t.Fatalf("RunProxy error = %v, want ErrResponseTimeout", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after response timeout with an escaped pipe holder")
 	}
 
@@ -171,7 +171,7 @@ func TestWaitForCommandWithProcessGroupSignalsBeforeReap(t *testing.T) {
 		if err == nil {
 			t.Fatal("resolver tree exited cleanly after forced teardown")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("resolver tree was not reaped after cancellation")
 	}
 
@@ -585,7 +585,7 @@ func TestRunProxyWithSandbox_CancellationReapsEscapedStderrHolder(t *testing.T) 
 // Ordinary EOF must wait for that exit rather than turning it into SIGTERM,
 // then clean up group descendants even when subreaper setup is unavailable.
 func TestRunProxyWithSandbox_ResponseEOFPreservesCleanChildExit(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 
 	dir := t.TempDir()
@@ -708,7 +708,7 @@ func TestRunProxyWithSandbox_SubreaperFailureDirections(t *testing.T) {
 // this session reaping it, which is narrow and load-dependent, and is why this
 // reproduced on a loaded CI runner rather than on a development host.
 func TestRunProxyWithSandbox_BestEffortChildSurvivesSiblingReaper(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(20*time.Second))
 	defer cancel()
 
 	opts := testOpts(testScannerWithAction(t, config.ActionWarn))
@@ -813,7 +813,7 @@ func TestDescribeSandboxLifecycleFailure(t *testing.T) {
 }
 
 func TestRunProxyWithSandbox_OrphanedParentStaysInert(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	var logBuf syncBuffer
 	opts := testOpts(testScannerWithAction(t, config.ActionWarn))

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // buildTestBinary builds the pipelock binary for integration testing.
@@ -68,7 +70,7 @@ func buildTestBinaryWithoutSandboxProbe(t *testing.T) string {
 
 func runSandboxBinary(t *testing.T, binary string, args ...string) (string, string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
@@ -235,7 +237,7 @@ func TestIntegration_McpProxy_Sandbox(t *testing.T) {
 		t.Fatalf("write MCP server fixture: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 
 	input := `{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}` + "\n"

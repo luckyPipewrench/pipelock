@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -3159,7 +3161,7 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 	startedPath := filepath.Join(markers, "started")
 	acquiredPath := filepath.Join(markers, "acquired")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 
 	holdOutput := &bytes.Buffer{}

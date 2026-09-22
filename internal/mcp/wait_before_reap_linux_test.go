@@ -172,7 +172,7 @@ func TestWaitForCommandWithProcessGroup_CancellationAfterReapingUsesStableHandle
 		_ = cmd.Process.Kill()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 		}
 	})
 
@@ -182,7 +182,7 @@ func TestWaitForCommandWithProcessGroup_CancellationAfterReapingUsesStableHandle
 		if err == nil {
 			t.Fatal("resolver command exited cleanly after forced teardown")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("resolver teardown did not use the stable process handle after reaping began")
 	}
 }

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestIntegration_StandaloneInitRejectsMalformedDeveloperEnvironmentPipe(t *testing.T) {
@@ -62,7 +64,7 @@ func runStandaloneInitWithDeveloperPipe(t *testing.T, binary string, payload []b
 	defer func() { _ = reader.Close() }()
 	defer func() { _ = writer.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary)

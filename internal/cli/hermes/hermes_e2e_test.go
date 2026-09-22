@@ -39,6 +39,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // hermesE2EVersion is the Hermes version this e2e validates against. Bumping it
@@ -66,7 +68,7 @@ func TestHermesLiveE2E(t *testing.T) {
 	}
 
 	// Generous ceiling: the pip install dominates and needs network.
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(6*time.Minute))
 	defer cancel()
 
 	run := func(name string, env []string, args ...string) {

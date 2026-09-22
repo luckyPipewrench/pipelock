@@ -3773,6 +3773,7 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 		result.TrackingHits +
 		result.TrapHits +
 		result.SVGForeignObjectHits +
+		result.SVGScriptHits +
 		result.SVGEventHandlerHits +
 		result.SVGXlinkExternalHits +
 		result.SVGHiddenTextHits +
@@ -3785,7 +3786,7 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 		TotalRewrites:           total,
 		ExtensionProbes:         result.ExtensionHits,
 		TrackingBeacons:         result.TrackingHits,
-		AgentTraps:              result.TrapHits,
+		AgentTraps:              result.TrapHits + result.SVGScriptHits,
 		FingerprintShimInjected: result.ShimInjected,
 		SVGForeignObjects:       result.SVGForeignObjectHits,
 		SVGEventHandlers:        result.SVGEventHandlerHits,
@@ -3895,7 +3896,7 @@ func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary)
 
 func shieldPipelineLabel(pipeline shield.PipelineType) string {
 	switch pipeline {
-	case shield.PipelineHTML:
+	case shield.PipelineHTML, shield.PipelineXHTML:
 		return "html"
 	case shield.PipelineJS:
 		return "javascript"

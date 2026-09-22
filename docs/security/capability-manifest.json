@@ -1149,7 +1149,7 @@
     {
       "id": "browser-shield",
       "name": "Browser shield",
-      "summary": "Rewrites proxied HTML and JavaScript to remove configured browser traps and tracking code.",
+      "summary": "Sanitizes proxied HTML and SVG while leaving JavaScript response bytes unchanged.",
       "tier": "Free",
       "visibility": "operator",
       "gate": {
@@ -1157,7 +1157,7 @@
       },
       "availability": {
         "scope": "mediated_traffic",
-        "qualifier": "Applies only to supported browser response traffic that flows through Pipelock."
+        "qualifier": "Applies only to supported browser response traffic that flows through Pipelock. JavaScript responses are scanned but not rewritten."
       },
       "implementation": {
         "file": "internal/shield/shield.go",

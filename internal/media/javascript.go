@@ -9,11 +9,11 @@ package media
 //
 // This table is shared by two consumers that must never drift apart: the
 // browser shield's response-pipeline classifier (internal/shield) picks the
-// JS rewrite pipeline from it, and the unscannable-passthrough classifier
+// byte-preserving JS pipeline from it, and the unscannable-passthrough classifier
 // (internal/config, used again at request time by internal/proxy) refuses an
 // opaque-download exception for anything on this list, because an exempted
-// alias would let an equivalent JavaScript response skip both the shield and
-// response-body scanning. A table edited in only one of those two places is
+// alias would let an equivalent JavaScript response skip response-body scanning.
+// A table edited in only one of those two places is
 // exactly the drift this file exists to prevent; see the parity test in
 // internal/shield and internal/config for the mechanical check.
 var JavaScriptMediaTypes = []string{

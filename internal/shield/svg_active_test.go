@@ -166,6 +166,9 @@ func TestRewriteSVG_CombinedAttackVectors(t *testing.T) {
 	if res.SVGForeignObjectHits != 1 {
 		t.Errorf("ForeignObjectHits = %d, want 1", res.SVGForeignObjectHits)
 	}
+	if res.SVGScriptHits != 1 {
+		t.Errorf("SVGScriptHits = %d, want 1", res.SVGScriptHits)
+	}
 	if res.SVGEventHandlerHits < 1 {
 		t.Errorf("EventHandlerHits = %d, want >= 1", res.SVGEventHandlerHits)
 	}
@@ -175,11 +178,10 @@ func TestRewriteSVG_CombinedAttackVectors(t *testing.T) {
 	if res.SVGHiddenTextHits != 1 {
 		t.Errorf("HiddenTextHits = %d, want 1", res.SVGHiddenTextHits)
 	}
-	// The <script> body is handled by the existing rewriteJS pass and may
-	// not be fully emptied (depends on existing patterns), but active
-	// attack artifacts must be gone.
+	// The complete script element is removed; its JavaScript is never edited.
 	for _, needle := range []string{
 		"HTML embedded attack",
+		"evil_pipe()",
 		"evil.com",
 		"prompt injection reading LLM",
 		"ping()",
@@ -436,11 +438,11 @@ func TestRewriteSVG_CleanSVGPassthrough(t *testing.T) {
 <text x="10" y="90" fill="black">label</text>
 </svg>`
 	res := e.Rewrite(svg, PipelineSVG, svgTestCfg())
-	if res.SVGForeignObjectHits != 0 || res.SVGEventHandlerHits != 0 ||
+	if res.SVGForeignObjectHits != 0 || res.SVGScriptHits != 0 || res.SVGEventHandlerHits != 0 ||
 		res.SVGXlinkExternalHits != 0 || res.SVGHiddenTextHits != 0 ||
 		res.SVGAnimationInjectionHits != 0 {
-		t.Errorf("clean SVG triggered strip: foreign=%d event=%d xlink=%d hidden=%d anim=%d",
-			res.SVGForeignObjectHits, res.SVGEventHandlerHits,
+		t.Errorf("clean SVG triggered strip: foreign=%d script=%d event=%d xlink=%d hidden=%d anim=%d",
+			res.SVGForeignObjectHits, res.SVGScriptHits, res.SVGEventHandlerHits,
 			res.SVGXlinkExternalHits, res.SVGHiddenTextHits,
 			res.SVGAnimationInjectionHits)
 	}

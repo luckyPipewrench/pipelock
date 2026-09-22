@@ -89,6 +89,27 @@ func buildShimBlockWithNonce(shims []string, doc, headerNonce string) string {
 	return "<script" + nonceAttr + ">" + code + "</script>"
 }
 
+// buildShimBlockXML wraps the injected JavaScript in a CDATA section. An XHTML
+// document is parsed as XML, where a raw `&` or `<` inside a script element is
+// not well-formed and makes the whole page fail to render. The shim code
+// contains both (`&&`, and comparisons), so injecting the HTML form into XHTML
+// breaks the document the shield is supposed to be protecting. The `//` guards
+// keep the CDATA delimiters from being read as JavaScript by any parser that
+// treats the element as HTML instead.
+func buildShimBlockXML(shims []string, doc, headerNonce string) string {
+	block := buildShimBlockWithNonce(shims, doc, headerNonce)
+	if block == "" {
+		return ""
+	}
+	open := strings.Index(block, ">")
+	closeTag := strings.LastIndex(block, "</script>")
+	if open < 0 || closeTag < 0 || closeTag <= open {
+		return block
+	}
+	code := block[open+1 : closeTag]
+	return block[:open+1] + "//<![CDATA[\n" + code + "\n//]]>" + block[closeTag:]
+}
+
 // headRe matches the first <head...> tag in the document.
 var headRe = regexp.MustCompile(`(?i)<head[^>]*>`)
 

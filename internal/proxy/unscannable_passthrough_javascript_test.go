@@ -63,8 +63,8 @@ func TestJavaScriptMediaTypesMatchRFC9239Section6(t *testing.T) {
 // match) must treat every RFC 9239 section 6 JavaScript alias as textual,
 // not only the two that used to be spelled out in the switch. A response
 // declaring "application/x-javascript" is equivalent JavaScript to one
-// declaring "text/javascript", and internal/shield.mediaTypeToPipeline
-// already routes both through the JS rewrite pipeline.
+// declaring "text/javascript", and both must remain on the normal scanned
+// response path even though Browser Shield no longer edits their bytes.
 func TestConfigTextualPassthroughTypeRefusesEveryJavaScriptAlias(t *testing.T) {
 	for _, alias := range media.JavaScriptMediaTypes {
 		if !configTextualPassthroughType(alias) {

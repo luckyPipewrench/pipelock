@@ -3564,12 +3564,13 @@ Browser Shield is opt-in. By default, `browser_shield.enabled` is `false`.
 The other Browser Shield defaults are populated so operators can enable the
 feature with a small config change instead of defining every rewrite knob.
 
-Browser Shield rewrites shieldable HTML, JavaScript, and SVG responses before
-they reach the agent browser. It strips browser-extension probes, hidden
-agent-trap content, tracking pixels/beacons, and SVG active content covered by
-the shield pipeline. It does not attempt to solve CAPTCHAs, bypass bot
-management, forge browser integrity telemetry, or make unsupported websites
-accessible to automation.
+Browser Shield sanitizes shieldable HTML and SVG responses before they reach
+the agent browser. It removes hidden agent traps, tracking image elements,
+prefetch links, and SVG active content. Existing inline scripts and standalone
+JavaScript responses keep their original bytes. JavaScript still goes through
+normal response scanning. Browser Shield doesn't attempt to solve CAPTCHAs,
+bypass bot management, forge browser integrity telemetry, or make unsupported
+websites accessible to automation.
 
 ```yaml
 browser_shield:
@@ -3601,10 +3602,10 @@ browser_shield:
 | `max_shield_bytes` | int | `5242880` (5 MiB) | Normal maximum shieldable response body size before `oversize_action` applies. On forward, TLS-intercepted, and reverse traffic, matching `response_scanning.size_exempt_domains` use the bounded `size_exempt_scan_max_bytes` ceiling for whole-body shielding. |
 | `oversize_action` | string | `scan_head` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
 | `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that bypass Browser Shield entirely |
-| `strip_extension_probing` | bool | `true` | Remove browser-extension probing URLs and runtime probes |
+| `strip_extension_probing` | bool | `true` | Remove browser-extension URLs outside existing scripts and inject an HTML extension-defense shim |
 | `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
-| `strip_tracking_pixels` | bool | `true` | Remove tracking pixels and beacon-style calls |
-| `inject_fingerprint_shims` | bool | `false` | Inject browser fingerprinting defense shims where supported |
+| `strip_tracking_pixels` | bool | `true` | Remove 1x1 tracking images and prefetch links outside existing scripts |
+| `inject_fingerprint_shims` | bool | `false` | Inject an HTML browser-fingerprinting shim where supported; the shim suppresses `sendBeacon` at runtime but doesn't rewrite the page's JavaScript |
 | `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine. Exact hostnames only: entries are matched literally, so a wildcard is refused at load rather than accepted and silently never matched. |
 
 For production soak, start with:

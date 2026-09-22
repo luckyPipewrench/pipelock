@@ -52,6 +52,9 @@ func TestDecodeResponse(t *testing.T) {
 		encoding string
 		body     func(*testing.T) []byte
 		wantErr  string
+		// wantReadErr marks a stream whose header is valid, so DecodeResponse
+		// succeeds, and whose failure only surfaces when the caller reads it.
+		wantReadErr bool
 	}{
 		{name: "identity", encoding: "identity", body: func(*testing.T) []byte { return []byte(plain) }},
 		{name: "gzip", encoding: "gzip", body: func(t *testing.T) []byte { return gzipBody(t, plain) }},
@@ -60,6 +63,10 @@ func TestDecodeResponse(t *testing.T) {
 		{name: "unsupported", encoding: "br", body: func(*testing.T) []byte { return []byte("encoded") }, wantErr: "unsupported content encoding"},
 		{name: "stacked", encoding: "gzip, deflate", body: func(*testing.T) []byte { return []byte("encoded") }, wantErr: "unsupported stacked content encodings"},
 		{name: "malformed gzip", encoding: "gzip", body: func(*testing.T) []byte { return []byte("not gzip") }, wantErr: "decode gzip response"},
+		{name: "truncated gzip", encoding: "gzip", body: func(t *testing.T) []byte {
+			body := gzipBody(t, plain)
+			return body[:len(body)-1]
+		}, wantReadErr: true},
 	}
 
 	for _, tt := range tests {
@@ -84,6 +91,19 @@ func TestDecodeResponse(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("DecodeResponse() error = %v", err)
+			}
+			if tt.wantReadErr {
+				// A gzip header is valid on its own, so the truncation is only
+				// discovered mid-read. A caller that checks DecodeResponse and
+				// then ignores the read error would treat a partial body as the
+				// whole response and scan less than was delivered.
+				if _, err := io.ReadAll(resp.Body); err == nil {
+					t.Fatal("reading a truncated decoded body succeeded; the truncation must surface as a read error")
+				}
+				if err := resp.Body.Close(); err != nil {
+					t.Fatalf("close decoded body: %v", err)
+				}
+				return
 			}
 			got, err := io.ReadAll(resp.Body)
 			if err != nil {

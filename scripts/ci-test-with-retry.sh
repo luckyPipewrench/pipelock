@@ -11,6 +11,9 @@
 # SIGTERM rerun does not prove the terminated attempt had no unflushed failure.
 set -euo pipefail
 
+# Resolve our helpers without changing where the requested command runs.
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 usage() {
   echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" [--attempt-timeout-seconds N] -- go test [flags]" >&2
 }
@@ -73,6 +76,7 @@ capture_failed=0
 process_cleanup_failed=0
 last_process_group=""
 active_process_group=""
+active_supervisor_pid=""
 attempt_incomplete=0
 
 process_group_is_alive() {
@@ -126,8 +130,17 @@ cleanup_process_group() {
 cleanup_on_exit() {
   local status=$?
 
-  trap - EXIT INT TERM
-  if [ -n "$active_process_group" ]; then
+  trap - EXIT
+  trap '' INT TERM
+  if [ -n "$active_supervisor_pid" ]; then
+    # This child may not have established its process group yet. Ask the
+    # supervisor itself to stop, then collect it before returning to the caller.
+    echo "PROCESS CLEANUP: interrupted pass supervisor ${active_supervisor_pid}; sending TERM" >&2
+    kill -TERM "$active_supervisor_pid" 2>/dev/null || true
+    wait "$active_supervisor_pid" 2>/dev/null || true
+    active_supervisor_pid=""
+    active_process_group=""
+  elif [ -n "$active_process_group" ]; then
     if ! cleanup_process_group "$active_process_group" "interrupted pass"; then
       status=1
     fi
@@ -170,10 +183,15 @@ run_and_tee() {
 
   local supervision_file="${stdout_file}.supervision"
   local supervised=0
+  local startup_interrupt=0
+  # Record cancellation until the background child has an assigned owner.
+  # Otherwise a signal between launch and assigning $! loses that child.
+  trap 'startup_interrupt=130' INT
+  trap 'startup_interrupt=143' TERM
   # Linux CI uses a dedicated subreaper so setsid children still have an owner.
   # Other hosts retain the process-group cleanup and bounded capture fallback.
   if [ "$(uname -s)" = Linux ]; then
-    python3 scripts/ci_process_supervisor.py --status-file "$supervision_file" -- "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
+    python3 "$script_dir/ci_process_supervisor.py" --status-file "$supervision_file" -- "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
     supervised=1
   else
     python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_fifo" 2>"$stderr_fifo" &
@@ -181,9 +199,21 @@ run_and_tee() {
   local command_pid=$!
   last_process_group="$command_pid"
   active_process_group="$command_pid"
+  if [ "$supervised" -eq 1 ]; then
+    active_supervisor_pid="$command_pid"
+  fi
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ "$startup_interrupt" -ne 0 ]; then
+    exit "$startup_interrupt"
+  fi
 
   local command_status=0
   wait "$command_pid" || command_status=$?
+  active_supervisor_pid=""
+  if [ "$supervised" -eq 1 ]; then
+    active_process_group=""
+  fi
 
   if [ "$supervised" -eq 1 ]; then
     if ! python3 - "$supervision_file" <<'PY'
@@ -538,11 +568,11 @@ if [ "$retry_kind" = "timeout" ]; then
   echo "GO TEST TIMEOUT DIAGNOSTICS: first-attempt output follows before retry" >&2
   # The live formatter intentionally suppresses raw JSON output. Print this
   # summary before retry can overwrite its JSON file or the job can be canceled.
-  python3 scripts/summarize_go_test_json.py --allow-failed-packages --full-failed-output --label "first-attempt timeout" <"$first_stdout" >&2 || {
+  python3 "$script_dir/summarize_go_test_json.py" --allow-failed-packages --full-failed-output --label "first-attempt timeout" <"$first_stdout" >&2 || {
     summary_status=$?
     echo "ci-test-with-retry: failed to summarize first-attempt timeout diagnostics (status ${summary_status})" >&2
     echo "GO TEST TIMEOUT DIAGNOSTICS: sanitized raw first-attempt JSON follows" >&2
-    if ! python3 scripts/summarize_go_test_json.py --sanitize-raw <"$first_stdout" >&2; then
+    if ! python3 "$script_dir/summarize_go_test_json.py" --sanitize-raw <"$first_stdout" >&2; then
       echo "ci-test-with-retry: failed to sanitize first-attempt timeout diagnostics" >&2
     fi
   }

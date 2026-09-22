@@ -64,6 +64,7 @@ def run_wrapper(
     env_overrides: dict[str, str] | None = None,
     attempt_timeout_seconds: str | None = None,
     harness_timeout_seconds: float = 30,
+    cwd: Path = ROOT,
 ) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         env = os.environ.copy()
@@ -89,7 +90,7 @@ def run_wrapper(
             launch = [sys.executable, str(SUPERVISOR), "--status-file",
                       str(Path(tmp) / "harness-supervision.json"), "--", *cmd]
         process = subprocess.Popen(
-            launch, cwd=ROOT, env=env, text=True,
+            launch, cwd=cwd, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
         try:
@@ -129,6 +130,34 @@ def terminate_and_reap(process: subprocess.Popen[str]) -> None:
 
 
 class TestCiTestWithRetry(unittest.TestCase):
+    def test_helpers_preserve_another_command_directory(self) -> None:
+        scripts = {
+            "success": "pwd -P",
+            "timeout_retry": r'''
+state=${CI_RETRY_STATE:?}
+if [ ! -e "$state" ]; then
+  : >"$state"
+  printf '%s\n' '{"Action":"run","Package":"example.com/p/pkg","Test":"TestSlow"}'
+  printf '%s\n' '{"Action":"output","Package":"example.com/p/pkg","Test":"TestSlow","Output":"panic: test timed out after 15m0s\n"}'
+  printf '%s\n' '{"Action":"fail","Package":"example.com/p/pkg","Elapsed":900}'
+  exit 1
+fi
+pwd -P
+''',
+        }
+        for name, script in scripts.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                result = run_wrapper(
+                    script, cwd=Path(tmp), attempt_timeout_seconds="5",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.splitlines()[-1], str(Path(tmp).resolve()))
+                self.assertNotIn("can't open file", result.stderr)
+                if name == "timeout_retry":
+                    self.assertIn("Go test package timing", result.stderr)
+                    self.assertIn("failed then passed on rerun", result.stderr)
+                    self.assertNotIn("failed to summarize", result.stderr)
+
     @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
     def test_completed_supervision_does_not_probe_reaped_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,7 +457,7 @@ wait
             with self.assertRaises(ProcessLookupError):
                 os.killpg(command_pid, 0)
             self.assertIn("interrupted pass", stderr)
-            self.assertIn("confirmed empty after", stderr)
+            self.assertIn("sending TERM", stderr)
 
     def test_waits_for_capture_before_inspecting_race_output(self) -> None:
         real_tee = shutil.which("tee")
@@ -1106,7 +1135,7 @@ printf '%s\n' '{"Action":"pass","Package":"example.com/p/pkg","Elapsed":1}'
 case " $* " in
   *" --sanitize-raw "*) exec "{real_python}" "$@" ;;
 esac
-if [ "$1" = "scripts/summarize_go_test_json.py" ]; then
+if [ "$1" = "{ROOT}/scripts/summarize_go_test_json.py" ]; then
   exit 1
 fi
 exec "{real_python}" "$@"

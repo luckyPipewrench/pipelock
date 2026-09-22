@@ -94,6 +94,47 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	}
 }
 
+// Fly app-level secrets are inherited by visitor VMs outside the broker's
+// explicit machine environment. The VM entrypoint is the final backstop and
+// must reject both names ever used for the durable signing root before boot.
+func TestVisitorEntrypointRejectsDurableRootAliases(t *testing.T) {
+	entrypoint := filepath.Join("..", "..", "deploy", "fly-playground", "entrypoint.sh")
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, envOrchestratorKey+"=") || strings.HasPrefix(item, envOrchestratorRoot+"=") {
+			continue
+		}
+		baseEnv = append(baseEnv, item)
+	}
+	for _, name := range []string{envOrchestratorKey, envOrchestratorRoot} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), "sh", entrypoint) // #nosec G204 -- fixed repository script path assembled portably for this test
+			cmd.Env = append(baseEnv, name+"=sentinel-value-must-not-appear")
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("entrypoint accepted durable root alias %s", name)
+			}
+			if !strings.Contains(string(output), "FATAL: "+name+" is set on this guest") {
+				t.Fatalf("entrypoint output = %q, want refusal naming %s", output, name)
+			}
+			if strings.Contains(string(output), "sentinel-value-must-not-appear") {
+				t.Fatalf("entrypoint leaked the durable root value: %q", output)
+			}
+		})
+	}
+	t.Run("clean_environment_reaches_later_boot_check", func(t *testing.T) {
+		cmd := exec.CommandContext(t.Context(), "sh", entrypoint) // #nosec G204 -- fixed repository script path assembled portably for this test
+		cmd.Env = append(baseEnv, "PLAYGROUND_AGENT_USER=pipelock-entrypoint-test-user-does-not-exist")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatal("entrypoint unexpectedly completed with a nonexistent agent user")
+		}
+		if strings.Contains(string(output), "durable signing root") || strings.Contains(string(output), "FATAL: PLAYGROUND_ORCHESTRATOR_") {
+			t.Fatalf("clean environment stopped at the durable-root guard: %q", output)
+		}
+	})
+}
+
 // A malformed root must fail closed. Serving with an unusable signing root
 // would mint delegations nothing can verify.
 func TestResolveOrchestratorRoot_MalformedFailsClosed(t *testing.T) {

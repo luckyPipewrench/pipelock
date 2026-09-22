@@ -214,9 +214,8 @@ func TestMergeSessionAndBaseEnvLayersSessionOverBase(t *testing.T) {
 		"PLAYGROUND_DAILY_TURN_BUDGET": "20",
 	}
 	sessionEnv := map[string]string{
-		"PLAYGROUND_MODEL":            "session-model",
-		"PLAYGROUND_MODEL_KEY":        "session-key",
-		"PLAYGROUND_ORCHESTRATOR_KEY": "orchestrator-key",
+		"PLAYGROUND_MODEL":     "session-model",
+		"PLAYGROUND_MODEL_KEY": "session-key",
 	}
 
 	got := mergeSessionAndBaseEnv(sessionEnv, baseEnv, "visitor-code")

@@ -79,6 +79,11 @@ with the same immutable digest of the VM image you published. The broker checks
 that the image reference and `--vm-image-digest` agree before it creates a
 delegation.
 
+Provide `PLAYGROUND_ORCHESTRATOR_ROOT` only through configuration scoped to the
+broker machine. Do not store it as a Fly app-level secret: app secrets are also
+inherited by visitor VMs, and the visitor entrypoint will refuse to boot when
+either durable-root variable is present.
+
 This example uses Turnstile as the public authorization step and therefore
 needs no invite codes. When no `--code` values are configured, the broker
 creates an unguessable process-local gate value that is never logged or sent to

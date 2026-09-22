@@ -32,6 +32,24 @@ NFT_BIN=/usr/sbin/nft
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
+# The durable orchestrator root stays on the broker. Each session is authorized
+# by a short-lived key the broker mints and signs. Fly app secrets are inherited
+# by visitor VMs, so reject both the retired guest-facing name and the current
+# broker-only name before doing any other boot work.
+FORBIDDEN_ROOT_NAME=""
+if [ -n "${PLAYGROUND_ORCHESTRATOR_KEY:-}" ]; then
+	FORBIDDEN_ROOT_NAME=PLAYGROUND_ORCHESTRATOR_KEY
+elif [ -n "${PLAYGROUND_ORCHESTRATOR_ROOT:-}" ]; then
+	FORBIDDEN_ROOT_NAME=PLAYGROUND_ORCHESTRATOR_ROOT
+fi
+if [ -n "${FORBIDDEN_ROOT_NAME}" ]; then
+	log "FATAL: ${FORBIDDEN_ROOT_NAME} is set on this guest"
+	log "The durable signing root must never reach a visitor VM. Remove this"
+	log "name from app-level secrets; the broker must receive its root through"
+	log "machine-specific configuration and mint a per-session delegated key."
+	exit 1
+fi
+
 ACTUAL_AGENT_UID="$(id -u "${AGENT_USER}")"
 if [ "${AGENT_USER}" != "pipelock-agent" ] || [ "${AGENT_UID}" != "${ACTUAL_AGENT_UID}" ]; then
 	log "agent identity mismatch: deployment requires pipelock-agent uid 10001 (got ${AGENT_USER} uid ${ACTUAL_AGENT_UID}, configured uid ${AGENT_UID})"
@@ -56,19 +74,6 @@ fi
 SECRET_DIR=/run/playground
 mkdir -p "${SECRET_DIR}"
 chmod 0700 "${SECRET_DIR}"
-
-# The durable orchestrator root stays on the broker. Each session is authorized
-# by a short-lived key the broker mints and signs, delivered on the session
-# request. A guest that still receives the durable key is the pre-rotation shape
-# that leaked, so refuse to boot rather than silently accept it: an inherited
-# app-level secret would otherwise turn delegation off with everything green.
-if [ -n "${PLAYGROUND_ORCHESTRATOR_KEY:-}" ]; then
-	log "FATAL: PLAYGROUND_ORCHESTRATOR_KEY is set on this guest"
-	log "The durable signing root must never reach a visitor VM. Unset the secret"
-	log "(fly secrets unset PLAYGROUND_ORCHESTRATOR_KEY) and redeploy; the broker"
-	log "mints a per-session delegated key instead."
-	exit 1
-fi
 
 MODEL_KEY_ARGS=""
 if [ -n "${PLAYGROUND_MODEL_KEY:-}" ]; then

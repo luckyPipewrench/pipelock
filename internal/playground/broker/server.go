@@ -385,8 +385,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		{name: "SessionEnv", env: cfg.SessionEnv},
 		{name: "LeaseConfig.BaseEnv", env: cfg.Leases.cfg.BaseEnv},
 	} {
-		if _, found := source.env["PLAYGROUND_ORCHESTRATOR_"+"KEY"]; found {
-			return nil, fmt.Errorf("broker: %s must not carry the durable orchestrator key", source.name)
+		for _, name := range []string{
+			"PLAYGROUND_ORCHESTRATOR_" + "KEY",
+			"PLAYGROUND_ORCHESTRATOR_" + "ROOT",
+		} {
+			if _, found := source.env[name]; found {
+				return nil, fmt.Errorf("broker: %s must not carry the durable orchestrator key %s", source.name, name)
+			}
 		}
 	}
 	if cfg.RequireDelegatedSigning && len(cfg.OrchestratorRoot) == 0 {

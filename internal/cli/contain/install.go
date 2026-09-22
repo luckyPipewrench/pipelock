@@ -308,6 +308,7 @@ func installSteps(opts installOpts) []step {
 		stepStagePipelockConfig(opts),
 		stepPreflightPipelockConfig(opts),
 		stepPromotePipelockConfig(opts),
+		stepRepairManagedConfigMode(),
 		stepChownToProxy("config", func(e *installEnv) string { return e.configDir }),
 		stepChownToProxy("data", func(e *installEnv) string { return e.dataDir }),
 		// Grant the human operator a user-scoped read+traverse ACL on the
@@ -1158,6 +1159,75 @@ func stepStagePipelockConfig(opts installOpts) step {
 				}
 			}
 			return errors.Join(stagedErr, cleanupMigratedConfigArtifacts(env, migrated))
+		},
+	}
+}
+
+// stepRepairManagedConfigMode tightens an already-installed config that carries
+// a mode the admin CLI refuses. Promotion cannot do this: it returns early when
+// install runs without --config, and again when the staged bytes are identical
+// to what is already there, so an upgrade over a config written by an older
+// version keeps that version's mode forever. The admin CLI reads this file for
+// its API token and rejects any group, world or owner-execute bit, so leaving
+// the mode alone leaves every shipped admin command broken on exactly the
+// installs that have been running longest.
+// configModeRepairer returns the descriptor-based mode repair, letting a test
+// inject a failure. One accessor for both apply and undo keeps the two halves
+// using the same operation.
+func configModeRepairer(env *installEnv) func(string, os.FileMode, bool) (os.FileMode, bool, error) {
+	if env.repairLeafMode != nil {
+		return env.repairLeafMode
+	}
+	return setLeafModeNoFollow
+}
+
+func stepRepairManagedConfigMode() step {
+	var (
+		repaired     bool
+		previousMode os.FileMode
+		repairedPath string
+	)
+	return step{
+		name: "repair-config-mode",
+		desc: "tighten an existing pipelock.yaml that carries a mode the admin CLI rejects",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			repaired = false
+			dst := managedPipelockConfigPath(env)
+
+			// The descriptor-based repair reads and changes the mode through one
+			// O_NOFOLLOW open, so there is no path-based stat to race and no
+			// separate existence probe to get wrong.
+			prev, changed, err := configModeRepairer(env)(dst, modeConfigSecret, true)
+			if err != nil {
+				// Absence is the ordinary first-install case: promotion owns
+				// creating the file. Every OTHER error, including a permission
+				// or I/O failure and a symlinked leaf, must surface, or install
+				// reports success while leaving a config the admin CLI refuses.
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				return false, fmt.Errorf("repair %s mode: %w", dst, err)
+			}
+			if !changed {
+				return false, nil
+			}
+			repaired, previousMode, repairedPath = true, prev, dst
+			_, _ = fmt.Fprintf(env.out,
+				"  tightened %s from %#o to %#o so the admin API commands can read it\n",
+				dst, prev, modeConfigSecret)
+			return true, nil
+		},
+		undo: func(_ context.Context, env *installEnv) error {
+			if !repaired {
+				return nil
+			}
+			// Rollback must put back the mode this step found, or a later step's
+			// failure leaves the file tightened and the install half-applied.
+			if _, _, err := configModeRepairer(env)(repairedPath, previousMode, false); err != nil {
+				return fmt.Errorf("restore %s mode: %w", repairedPath, err)
+			}
+			repaired = false
+			return nil
 		},
 	}
 }

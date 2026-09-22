@@ -446,17 +446,24 @@ func (e *Engine) maskHTMLScriptsWithSelfClosing(doc string, allowSelfClosingScri
 			}
 		}
 
-		// Keep the opening tag in the document. It is markup, and masking it hid
-		// script attributes from extension stripping on this path exactly as it
-		// did on the HTML path: a probe written as a script src survived.
-		contentStart := 0
+		// Keep the opening and closing tags in the document. They are markup, and
+		// masking the opening tag hid script attributes from extension stripping
+		// on this path exactly as it did on the HTML path: a probe written as a
+		// script src survived. Only the character data between them is masked,
+		// byte for byte, and this mirrors maskHTMLScripts so the two paths cannot
+		// drift apart again.
+		contentStart, contentEnd := 0, end
 		if openTagEnd := htmlTagEnd(fromOpen); openTagEnd >= 0 && openTagEnd <= end {
 			contentStart = openTagEnd
+			if closeTag := e.htmlScriptClose.FindStringIndex(fromOpen[openTagEnd:end]); closeTag != nil {
+				contentEnd = openTagEnd + closeTag[0]
+			}
 		}
 		masked.WriteString(fromOpen[:contentStart])
 		placeholder := prefix + strconv.Itoa(len(scripts)) + "\x00"
-		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[contentStart:end]})
+		scripts = append(scripts, maskedHTMLScript{placeholder: placeholder, content: fromOpen[contentStart:contentEnd]})
 		masked.WriteString(placeholder)
+		masked.WriteString(fromOpen[contentEnd:end])
 		remaining = fromOpen[end:]
 	}
 

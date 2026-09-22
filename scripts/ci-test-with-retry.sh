@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Resolve our helpers without changing where the requested command runs.
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 usage() {
   echo "usage: ci-test-with-retry.sh --packages \"./pkg ...\" [--attempt-timeout-seconds N] -- go test [flags]" >&2
@@ -77,6 +77,7 @@ process_cleanup_failed=0
 last_process_group=""
 active_process_group=""
 active_supervisor_pid=""
+active_capture_readers=()
 attempt_incomplete=0
 
 process_group_is_alive() {
@@ -145,6 +146,16 @@ cleanup_on_exit() {
       status=1
     fi
   fi
+  # Readers may still be opening their FIFO when startup is interrupted. They
+  # have no writer to supply EOF, so terminate and collect each owned reader.
+  local reader_pid
+  for reader_pid in "${active_capture_readers[@]}"; do
+    kill -TERM "$reader_pid" 2>/dev/null || true
+  done
+  for reader_pid in "${active_capture_readers[@]}"; do
+    wait "$reader_pid" 2>/dev/null || true
+  done
+  active_capture_readers=()
   rm -rf "$tmpdir"
   exit "$status"
 }
@@ -158,6 +169,12 @@ run_and_tee() {
   local stdout_file="$2"
   local stderr_file="$3"
   shift 3
+
+  local startup_interrupt=0
+  # Record cancellation before any capture or command child can start, until
+  # all their PIDs are assigned to cleanup ownership.
+  trap 'startup_interrupt=130' INT
+  trap 'startup_interrupt=143' TERM
 
   # Go's -timeout applies to each package binary, not to all package waves.
   # Bound the complete command independently on both the first and retry pass.
@@ -178,16 +195,13 @@ run_and_tee() {
   fi
   "${capture_command[@]}" "$stdout_file" <"$stdout_fifo" &
   local stdout_tee_pid=$!
+  active_capture_readers=("$stdout_tee_pid")
   "${capture_command[@]}" "$stderr_file" <"$stderr_fifo" >&2 &
   local stderr_tee_pid=$!
+  active_capture_readers+=("$stderr_tee_pid")
 
   local supervision_file="${stdout_file}.supervision"
   local supervised=0
-  local startup_interrupt=0
-  # Record cancellation until the background child has an assigned owner.
-  # Otherwise a signal between launch and assigning $! loses that child.
-  trap 'startup_interrupt=130' INT
-  trap 'startup_interrupt=143' TERM
   # Linux CI uses a dedicated subreaper so setsid children still have an owner.
   # Other hosts retain the process-group cleanup and bounded capture fallback.
   if [ "$(uname -s)" = Linux ]; then
@@ -264,7 +278,9 @@ PY
   local stdout_tee_status=0
   local stderr_tee_status=0
   wait "$stdout_tee_pid" || stdout_tee_status=$?
+  active_capture_readers=("$stderr_tee_pid")
   wait "$stderr_tee_pid" || stderr_tee_status=$?
+  active_capture_readers=()
   rm -f -- "$stdout_fifo" "$stderr_fifo"
 
   if [ "$stdout_tee_status" -ne 0 ] || [ "$stderr_tee_status" -ne 0 ]; then

@@ -33,6 +33,75 @@ def await_file(path: Path, process: subprocess.Popen) -> None:
 
 @unittest.skipUnless(sys.platform == "linux", "Linux child adoption")
 class TestCiProcessSupervisor(unittest.TestCase):
+    def test_wrapper_helpers_ignore_cdpath(self) -> None:
+        """Relative invocation must select helpers beside the actual wrapper."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            alternate = directory / "scripts"
+            alternate.mkdir()
+            marker = directory / "alternate-helper-ran"
+            (alternate / SUPERVISOR.name).write_text(
+                "import os, pathlib\n"
+                "pathlib.Path(os.environ['ALTERNATE_HELPER_MARKER']).touch()\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", str(WRAPPER.relative_to(ROOT)), "--packages", "example.com/p/pkg",
+                 "--attempt-timeout-seconds", "5", "--", "bash", "-c", "pwd -P"],
+                cwd=ROOT,
+                env=dict(os.environ, CDPATH=str(directory), ALTERNATE_HELPER_MARKER=str(marker)),
+                text=True, capture_output=True, timeout=10, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.strip(), str(ROOT.resolve()))
+            self.assertFalse(marker.exists(), "wrapper selected an alternate helper")
+
+    def test_wrapper_interruption_during_first_capture_reader_startup(self) -> None:
+        """An interrupt between reader launch and PID assignment cannot leak it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reader_file = directory / "reader-pid"
+            bash_env = directory / "bash-env"
+            bash_env.write_text(
+                'set -T\n'
+                'trap \'if [[ ${reader_probe_sent:-0} == 0 && '
+                '$BASH_COMMAND == "local stdout_tee_pid="* ]]; then '
+                'reader_probe_sent=1; printf "%s\\n" "$!" > "$READER_PID_FILE"; '
+                'kill -TERM "$BASHPID"; fi\' DEBUG\n', encoding="utf-8",
+            )
+            reader_pid = None
+            with (directory / "output").open("w") as output:
+                process = subprocess.Popen(
+                    ["bash", str(WRAPPER), "--packages", "example.com/p/pkg",
+                     "--", "bash", "-c", "printf completed"],
+                    cwd=ROOT, env=dict(os.environ, BASH_ENV=str(bash_env),
+                                      READER_PID_FILE=str(reader_file)),
+                    stdout=output, stderr=output, start_new_session=True,
+                )
+                try:
+                    self.assertEqual(process.wait(timeout=8), 143)
+                    self.assertTrue(reader_file.exists(), "startup interrupt was not exercised")
+                    reader_pid = int(reader_file.read_text())
+                    deadline = time.monotonic() + 2
+                    while True:
+                        try:
+                            os.kill(reader_pid, 0)
+                        except ProcessLookupError:
+                            break
+                        if time.monotonic() >= deadline:
+                            self.fail("capture reader survived wrapper cancellation")
+                        time.sleep(0.01)
+                finally:
+                    if reader_file.exists():
+                        reader_pid = int(reader_file.read_text())
+                        try:
+                            os.kill(reader_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    if process.poll() is None:
+                        process.terminate()
+                    process.wait(timeout=8)
+
     def test_reaps_exited_orphans_while_command_is_running(self) -> None:
         """The still-running command observes its exited orphan disappear."""
         script = r'''

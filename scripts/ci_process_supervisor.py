@@ -63,7 +63,9 @@ def interrupt_command(process: subprocess.Popen[bytes], signum: int) -> None:
         time.sleep(0.01)
 
 
-def cleanup_children(process: subprocess.Popen[bytes]) -> tuple[bool, bool]:
+def cleanup_children(
+    process: subprocess.Popen[bytes], cleanup_processes: dict[int, str],
+) -> tuple[bool, bool]:
     """Kill and reap only our children until adoption has exposed the entire tree."""
     deadline = time.monotonic() + CLEANUP_SECONDS
     had_live_descendants = False
@@ -77,6 +79,12 @@ def cleanup_children(process: subprocess.Popen[bytes]) -> tuple[bool, bool]:
             if exited is None:
                 if pid != process.pid:
                     had_live_descendants = True
+                if pid not in cleanup_processes:
+                    try:
+                        name = Path(f"/proc/{pid}/comm").read_text(errors="replace").strip()
+                    except OSError:
+                        name = "unavailable"
+                    cleanup_processes[pid] = name
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -113,6 +121,7 @@ def supervise(command: list[str], status_file: Path) -> int:
     returncode = 125
     complete = False
     had_live_descendants = False
+    cleanup_processes: dict[int, str] = {}
     try:
         while not received_signal:
             # Adopted zombies need collecting during the command as well as at
@@ -127,18 +136,26 @@ def supervise(command: list[str], status_file: Path) -> int:
     finally:
         if received_signal:
             interrupt_command(process, received_signal)
-        complete, had_live_descendants = cleanup_children(process)
+        complete, had_live_descendants = cleanup_children(process, cleanup_processes)
         if received_signal:
             returncode = 128 + received_signal
         unexpected_descendants = returncode == 0 and had_live_descendants
         if not complete or unexpected_descendants:
             returncode = 125
-        status_file.write_text(json.dumps({
+        report = {
             "cleanup_complete": complete,
             "live_descendants_after_command": had_live_descendants,
             "unexpected_live_descendants": unexpected_descendants,
             "exit_code": returncode,
-        }) + "\n", encoding="utf-8")
+            "cleanup_processes": [
+                {"pid": pid, "name": name} for pid, name in sorted(cleanup_processes.items())
+            ],
+        }
+        status_file.write_text(json.dumps(report) + "\n", encoding="utf-8")
+        if not complete or unexpected_descendants:
+            # Preserve diagnosis before the wrapper removes its temporary report.
+            # JSON escapes process-name controls; arguments and environment stay private.
+            print("ci-process-supervisor: " + json.dumps(report), file=sys.stderr)
     return returncode
 
 

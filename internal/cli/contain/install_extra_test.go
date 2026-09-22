@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // Extra coverage for the install step builders that hit error / undo paths
@@ -601,6 +604,69 @@ func TestChangedRuntimeArtifacts_RollbackRestoresAndRestartsPriorService(t *test
 			t.Fatalf("unit rollback did not reload systemd: %v", runner.calls)
 		}
 	})
+}
+
+func TestStepInstallPipelockBinaryQuiescesAndRestoresManagedDoorways(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	if err := os.WriteFile(filepath.Clean(env.pipelockTarget), []byte("old binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := json.Marshal(desiredLoopbackForwarders([]config.ContainmentLoopbackService{declared}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, inv, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	units, err := managedNamespaceRuntimeUnits(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range units {
+		runner.on(argvFor("systemctl", "is-enabled", unit.name), "enabled\n", 0, nil)
+		runner.on(argvFor("systemctl", "is-active", unit.name), "active\n", 0, nil)
+	}
+
+	step := stepInstallPipelockBinary()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v), want changed", applied, err)
+	}
+	for _, unit := range units {
+		if !fakeRunnerCalled(runner, "systemctl reset-failed "+unit.name) {
+			t.Fatalf("successful replacement did not reset failed state for %s: %v", unit.name, runner.calls)
+		}
+		if unit.socketActivated {
+			if fakeRunnerCalled(runner, "systemctl start "+unit.name) {
+				t.Fatalf("socket-activated service %s was started without its socket", unit.name)
+			}
+			continue
+		}
+		if !fakeRunnerCalled(runner, "systemctl start "+unit.name) {
+			t.Fatalf("successful replacement did not restore active unit %s: %v", unit.name, runner.calls)
+		}
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+
+	for _, unit := range units {
+		if !fakeRunnerCalled(runner, "systemctl reset-failed "+unit.name) {
+			t.Fatalf("rollback did not reset failed state for %s: %v", unit.name, runner.calls)
+		}
+		if unit.socketActivated {
+			if fakeRunnerCalled(runner, "systemctl start "+unit.name) {
+				t.Fatalf("socket-activated service %s was started without its socket", unit.name)
+			}
+			continue
+		}
+		if !fakeRunnerCalled(runner, "systemctl start "+unit.name) {
+			t.Fatalf("rollback did not restore active unit %s: %v", unit.name, runner.calls)
+		}
+	}
 }
 
 func assertRestoredFileAndRestart(t *testing.T, path, want string, runner *fakeRunner) {

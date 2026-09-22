@@ -1430,10 +1430,12 @@ func walkAndChown(env *installEnv, root string, uid, gid int) error {
 // ---------------------------------------------------------------------------
 
 func stepInstallPipelockBinary() step {
+	var managedUnits []managedNamespaceRuntimeUnit
+	var managedStates map[string]unitRuntimeState
 	return step{
 		name: "install-pipelock-binary",
 		desc: "install pipelock binary to /usr/local/bin/pipelock (0o755)",
-		apply: func(_ context.Context, env *installEnv) (bool, error) {
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			env.serviceBinaryChanged = false
 			if env.preflightBinaryHash != "" {
 				srcHash, err := env.hashFile(env.pipelockBinary)
@@ -1468,17 +1470,38 @@ func stepInstallPipelockBinary() step {
 					return false, nil
 				}
 			}
+			managedUnits, err = managedNamespaceRuntimeUnits(env)
+			if err != nil {
+				return false, fmt.Errorf("read managed namespace units before binary replacement: %w", err)
+			}
+			managedStates = captureManagedNamespaceRuntimeState(ctx, env, managedUnits)
+			if err := quiesceManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
+				return true, err
+			}
 			if err := backupAndWrite(env, env.pipelockTarget, data, modeWrapperExec); err != nil {
-				return false, err
+				return true, err
 			}
 			env.serviceBinaryChanged = true
+			if err := restoreManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
+				return true, fmt.Errorf("restore managed namespace units after binary replacement: %w", err)
+			}
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			if err := restoreBackup(env, env.pipelockTarget); err != nil {
-				return err
+			var errs []error
+			if err := quiesceManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
+				errs = append(errs, err)
 			}
-			return restartRestoredServiceIfNeeded(ctx, env)
+			if err := restoreBackup(env, env.pipelockTarget); err != nil {
+				errs = append(errs, err)
+			}
+			if err := restartRestoredServiceIfNeeded(ctx, env); err != nil {
+				errs = append(errs, err)
+			}
+			if err := restoreManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
+				errs = append(errs, err)
+			}
+			return errors.Join(errs...)
 		},
 	}
 }

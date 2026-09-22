@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -305,21 +306,10 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 				return statusFail, fmt.Sprintf("declared loopback forwarder %s is missing or drifted; run `pipelock contain reload-nft-rules`", path)
 			}
 		}
-		socket := unit + ".socket"
-		if out, code, stateErr := env.runCmd(ctx, "systemctl", "is-enabled", socket); stateErr != nil || code != 0 || strings.TrimSpace(out) != systemctlEnabled {
-			return statusFail, fmt.Sprintf("declared loopback forwarder %s is not persistently enabled", socket)
-		}
-		if out, code, stateErr := env.runCmd(ctx, "systemctl", "is-active", socket); stateErr != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
-			return statusFail, fmt.Sprintf("declared loopback forwarder %s is not active", socket)
-		}
 	}
 
-	socketUnit := filepath.Base(env.proxyForwarderSocketPath)
-	if out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", socketUnit); err != nil || code != 0 || strings.TrimSpace(out) != systemctlEnabled {
-		return statusFail, fmt.Sprintf("contained proxy socket %s is not persistently enabled (%s)", socketUnit, oneLine(out))
-	}
-	if out, code, err := env.runCmd(ctx, "systemctl", "is-active", socketUnit); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
-		return statusFail, fmt.Sprintf("contained proxy socket %s is not active (%s)", socketUnit, oneLine(out))
+	if socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services); socketStatus != statusPass {
+		return socketStatus, socketDetail
 	}
 	namespaceUnit := filepath.Base(env.networkNamespaceUnitPath)
 	if out, code, err := env.runCmd(ctx, "systemctl", "is-active", namespaceUnit); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
@@ -365,6 +355,31 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 		return processStatus, processDetail
 	}
 	return statusPass, boundaryDetail + "; " + processDetail
+}
+
+func managedDoorwaySocketNames(proxySocketPath string, services []config.ContainmentLoopbackService) []string {
+	units := make([]string, 0, len(services)+1)
+	units = append(units, filepath.Base(proxySocketPath))
+	for _, service := range services {
+		units = append(units, loopbackForwarderUnitBase(service.Host, service.Port)+".socket")
+	}
+	sort.Strings(units)
+	return units
+}
+
+// probeManagedDoorwaySockets makes a failed or inactive socket an explicit
+// containment failure. Socket-activated forwarder services can be inactive
+// between connections; the socket is the continuously active doorway.
+func probeManagedDoorwaySockets(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) (string, string) {
+	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
+		if out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlEnabled {
+			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); run `systemctl reset-failed %s && systemctl start %s`", socket, oneLine(out), socket, socket)
+		}
+		if out, code, err := env.runCmd(ctx, "systemctl", "is-active", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
+			return statusFail, fmt.Sprintf("managed doorway socket %s is %s; run `systemctl reset-failed %s && systemctl start %s`", socket, oneLine(out), socket, socket)
+		}
+	}
+	return statusPass, "all managed doorway sockets are enabled and active"
 }
 
 // probeAgentProcessNamespaces catches services installed before the namespace
@@ -645,6 +660,93 @@ ProtectSystem=strict
 type unitRuntimeState struct {
 	enabled bool
 	active  bool
+}
+
+// managedNamespaceRuntimeUnit describes every unit that can execute the
+// installed binary while it is being replaced. Socket-activated services are
+// intentionally restored by starting their socket, never directly: they need
+// systemd's listener file descriptor and are normally inactive between calls.
+type managedNamespaceRuntimeUnit struct {
+	name            string
+	socket          bool
+	socketActivated bool
+}
+
+func managedNamespaceRuntimeUnits(env *installEnv) ([]managedNamespaceRuntimeUnit, error) {
+	inv, err := readLoopbackForwarderInventory(env)
+	if err != nil {
+		return nil, err
+	}
+	units := []managedNamespaceRuntimeUnit{
+		{name: filepath.Base(env.networkNamespaceUnitPath)},
+		{name: filepath.Base(env.proxyForwarderSocketPath), socket: true},
+		{name: filepath.Base(env.proxyForwarderServicePath), socketActivated: true},
+		{name: filepath.Base(env.namespaceForwarderServicePath)},
+	}
+	for _, record := range inv.Services {
+		units = append(units,
+			managedNamespaceRuntimeUnit{name: record.Unit + ".socket", socket: true},
+			managedNamespaceRuntimeUnit{name: record.Unit + ".service", socketActivated: true},
+			managedNamespaceRuntimeUnit{name: record.Unit + "-netns.service"},
+		)
+	}
+	sort.Slice(units, func(i, j int) bool { return units[i].name < units[j].name })
+	return units, nil
+}
+
+func captureManagedNamespaceRuntimeState(ctx context.Context, env *installEnv, units []managedNamespaceRuntimeUnit) map[string]unitRuntimeState {
+	states := make(map[string]unitRuntimeState, len(units))
+	for _, unit := range units {
+		states[unit.name] = systemdUnitRuntimeState(ctx, env, unit.name)
+	}
+	return states
+}
+
+// quiesceManagedNamespaceRuntimeUnits closes doorway sockets before a binary
+// swap. Stopping their services first prevents a still-active accepted
+// connection from using the replacement before its matching command surface is
+// installed.
+func quiesceManagedNamespaceRuntimeUnits(ctx context.Context, env *installEnv, units []managedNamespaceRuntimeUnit, states map[string]unitRuntimeState) error {
+	for _, unit := range units {
+		if !unit.socket && states[unit.name].active {
+			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
+				return fmt.Errorf("stop managed forwarder %s before binary replacement: %w", unit.name, err)
+			}
+		}
+	}
+	for _, unit := range units {
+		if unit.socket && states[unit.name].active {
+			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
+				return fmt.Errorf("stop managed doorway socket %s before binary replacement: %w", unit.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// restoreManagedNamespaceRuntimeUnits clears systemd start limits before
+// restoring active doorway sockets and ordinary forwarders. A failed restore is
+// returned to the installer so rollback cannot claim containment recovered.
+func restoreManagedNamespaceRuntimeUnits(ctx context.Context, env *installEnv, units []managedNamespaceRuntimeUnit, states map[string]unitRuntimeState) error {
+	var errs []error
+	for _, unit := range units {
+		if err := runSystemctlCleanupUnit(ctx, env, "reset-failed", unit.name); err != nil {
+			errs = append(errs, fmt.Errorf("reset failed managed unit %s: %w", unit.name, err))
+		}
+	}
+	for _, unit := range units {
+		if states[unit.name].enabled {
+			if err := runOrErr(ctx, env, "systemctl", "enable", unit.name); err != nil {
+				errs = append(errs, fmt.Errorf("enable managed unit %s: %w", unit.name, err))
+			}
+		}
+		if states[unit.name].active && !unit.socketActivated {
+			if err := runOrErr(ctx, env, "systemctl", "start", unit.name); err != nil {
+				errs = append(errs, fmt.Errorf("start managed unit %s: %w", unit.name, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func systemdUnitRuntimeState(ctx context.Context, env *installEnv, unit string) unitRuntimeState {

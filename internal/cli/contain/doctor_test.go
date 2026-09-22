@@ -40,6 +40,9 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	env.chainStructure = func(context.Context) doctorResult {
 		return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
 	}
+	env.doorwaySockets = func(context.Context) doctorResult {
+		return pass("all managed doorway sockets are enabled and active")
+	}
 	env.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 		return &fakeConn{}, nil
 	}
@@ -475,7 +478,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "7 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "8 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -494,7 +497,8 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 		t.Fatalf("unexpected json:\n%s", out)
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
-		!strings.Contains(out, `"total":7`) {
+		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
+		!strings.Contains(out, `"total":8`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 }

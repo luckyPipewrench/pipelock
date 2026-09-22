@@ -58,6 +58,7 @@ type doctorEnv struct {
 	// contain verify. Nil means attribution is unavailable, never PASS.
 	dropCounter    func(ctx context.Context) (uint64, error)
 	chainStructure func(ctx context.Context) doctorResult
+	doorwaySockets func(ctx context.Context) doctorResult
 	dialCtx        dialFunc
 	readFile       func(path string) ([]byte, error)
 	stat           func(path string) (os.FileInfo, error)
@@ -88,6 +89,7 @@ func defaultDoctorEnv() *doctorEnv {
 	}
 	env.dropCounter = doctorDropCounterReader(counterEnv, env)
 	env.chainStructure = doctorChainStructureReader(counterEnv, env)
+	env.doorwaySockets = doctorDoorwaySocketReader(counterEnv, env)
 	return env
 }
 
@@ -133,6 +135,21 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
 		}
+	}
+}
+
+func doctorDoorwaySocketReader(base *probeEnv, env *doctorEnv) func(context.Context) doctorResult {
+	return func(ctx context.Context) doctorResult {
+		probe := doctorCounterProbeEnv(base, env)
+		services, problem, unusable := declaredContainmentLoopbackServicesForVerify(&probe, probe.port)
+		if unusable {
+			return fail(classInfra, "containment.loopback_services cannot be honored: "+problem, "correct the managed containment configuration and rerun `pipelock contain install`")
+		}
+		status, detail := probeManagedDoorwaySockets(ctx, &probe, services)
+		if status != statusPass {
+			return fail(classInfra, detail, "reset and start the named managed doorway socket")
+		}
+		return pass(detail)
 	}
 }
 
@@ -186,6 +203,7 @@ func allDoctorChecks() []doctorCheck {
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
+		{8, "managed_doorway_sockets", "managed containment doorway sockets are active", checkManagedDoorwaySockets},
 	}
 }
 
@@ -460,6 +478,13 @@ func checkManagedChainStructure(ctx context.Context, env *doctorEnv) doctorResul
 		return unknownInfra("managed chain structure reader is unavailable")
 	}
 	return env.chainStructure(ctx)
+}
+
+func checkManagedDoorwaySockets(ctx context.Context, env *doctorEnv) doctorResult {
+	if env.doorwaySockets == nil {
+		return unknownInfra("managed doorway socket inspection is unavailable")
+	}
+	return env.doorwaySockets(ctx)
 }
 
 // curlDirectArgs builds the bounded DNS-free direct-egress probe.

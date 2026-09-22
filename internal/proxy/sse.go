@@ -13,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -42,7 +43,7 @@ func HasSingleSSEContentType(header http.Header) bool {
 // sites in forward.go, intercept.go, and reverse.go all reach the same
 // conclusion about what counts as compressed.
 func IsSSECompressed(h http.Header) bool {
-	return hasNonIdentityEncoding(h.Get("Content-Encoding"))
+	return responseencoding.HasNonIdentityContentEncoding(h)
 }
 
 // SSEDispatchOptions selects which streaming scanner runs for an SSE

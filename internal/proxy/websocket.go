@@ -1287,8 +1287,13 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		for i, m := range allMatches {
 			names[i] = m.PatternName
 		}
-		action := requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions)
-		return true, shouldHardBlockRequestDLP(allMatches, cfg), action, fmt.Sprintf("DLP match in %s header: %s", wsHeaderDLPSource(matchedHeaders), strings.Join(names, ", "))
+		result := &BodyScanResult{
+			Action:     requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
+			DLPMatches: allMatches,
+			HeaderName: wsHeaderDLPSource(matchedHeaders),
+		}
+		action, hardBlock := headerDLPDecision(result, cfg)
+		return true, hardBlock, action, fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
 	}
 	return false, false, "", ""
 }

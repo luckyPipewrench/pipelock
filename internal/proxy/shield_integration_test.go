@@ -266,7 +266,16 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 	// Complement to the non-shieldable bypass test: verify the oversize
 	// ceiling still fires for content the shield would rewrite. Ensures
 	// the Content-Type gate did not accidentally disable fail-closed
-	// behavior on HTML, JS, or SVG.
+	// behavior on HTML or SVG.
+	//
+	// JavaScript was in this list and is now covered by
+	// TestProxy_ApplyShield_JavaScriptBypassesOversize instead. It belonged
+	// here while the shield rewrote script bodies. It no longer does:
+	// RewriteWithNonce has no PipelineJS branch, so the shield returns
+	// JavaScript byte for byte and an oversize block withheld no inspection.
+	// What it did withhold was the response, and a browser bundle is routinely
+	// over the ceiling. Response scanning still reads the body under its own
+	// limits, so this is not a scanning gap.
 	t.Parallel()
 
 	shieldable := []struct {
@@ -275,7 +284,6 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 		bodyHead    []byte
 	}{
 		{"html", "text/html", []byte("<!DOCTYPE html><html>")},
-		{"js", "application/javascript", []byte("function run() {")},
 		{"svg", "image/svg+xml", []byte("<svg xmlns='http://www.w3.org/2000/svg'>")},
 	}
 	for _, tc := range shieldable {
@@ -755,4 +763,48 @@ func findSubstring(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestProxy_ApplyShield_JavaScriptBypassesOversize(t *testing.T) {
+	// A browser application's JavaScript bundle is routinely larger than
+	// max_shield_bytes. The shield identifies JavaScript for reporting and
+	// never edits it, so the oversize ceiling protected nothing there and
+	// oversize_action: block returned 403 for the bundle, which stops the page
+	// loading at all. Response scanning still inspects the body; only the
+	// shield's own ceiling is skipped.
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		head        string
+	}{
+		{"declared javascript", "application/javascript", "export function boot() {"},
+		{"text javascript", "text/javascript; charset=utf-8", "(function(){var a=1;"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestProxy(t)
+			cfg := config.Defaults()
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.MaxShieldBytes = 100
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+			// Exceeds both MaxShieldBytes and the 512-byte detection prefix.
+			body := []byte(tc.head + strings.Repeat(" /* bundle */", 200))
+			if len(body) <= 512 {
+				t.Fatalf("fixture is %d bytes; it must exceed the 512-byte detection prefix", len(body))
+			}
+
+			result, summary, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch, "act1")
+			if blocked != nil {
+				t.Fatalf("%s: an oversized script must not be blocked as shield_oversize", tc.contentType)
+			}
+			if summary != nil {
+				t.Fatalf("%s: an unedited script must not return a shield summary", tc.contentType)
+			}
+			if string(result) != string(body) {
+				t.Fatalf("%s: script body was modified; the shield must return JavaScript byte for byte", tc.contentType)
+			}
+		})
+	}
 }

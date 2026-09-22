@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -103,6 +104,12 @@ type mcpListenerBlockDecision struct {
 //     SSRF posture at the call site. Matches the parity of the forward,
 //     reverse, and TLS-intercept transports, which all dial the configured
 //     upstream directly with a nil Proxy.
+
+// errCompressedUpstreamStream marks a compressed SSE upstream response. A
+// stream is consumed incrementally, so there is no buffered body to decode
+// before the scanners see it, and it stays fail-closed.
+var errCompressedUpstreamStream = errors.New("compressed streaming response cannot be scanned")
+
 func newReverseUpstreamTransport(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableCompression = true
@@ -980,6 +987,7 @@ func RunHTTPListenerProxy(
 			}
 			upReq.Header.Set("Accept", "text/event-stream")
 			forwardListenerUpstreamHeaders(upReq, r, true)
+			responseencoding.RequestIdentity(upReq.Header)
 
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
@@ -1124,6 +1132,7 @@ func RunHTTPListenerProxy(
 				}
 			}
 			forwardListenerUpstreamHeaders(upReq, r, false)
+			responseencoding.RequestIdentity(upReq.Header)
 
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
@@ -1582,6 +1591,7 @@ func RunHTTPListenerProxy(
 		upReq.Header.Set("Accept", "application/json, text/event-stream")
 
 		forwardListenerUpstreamHeaders(upReq, r, false)
+		responseencoding.RequestIdentity(upReq.Header)
 
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
@@ -1644,6 +1654,10 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// errCompressedUpstreamStream marks the one encoding case that cannot
+		// be resolved by decoding: a stream is consumed incrementally, so
+		// there is no buffered body to decode before scanning it.
+		//
 		// Fail closed on compressed upstream bodies before wrapping in
 		// SingleMessageReader. ForwardScanned only ever sees the reader,
 		// so a gzip/br/zstd response would be fed to the body scanners as
@@ -1652,17 +1666,33 @@ func RunHTTPListenerProxy(
 		// guard is authoritative; the same fail-closed pattern lives in
 		// internal/proxy/forward.go and reverse.go, completing transport
 		// parity for compressed responses on the MCP HTTP listener.
-		if contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ","); hasNonIdentityEncoding(contentEncoding) {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
-			info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
-			if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
-				info = withLayer
+		//
+		// A buffered JSON response is DECODED rather than refused. The spec
+		// permits a compressed JSON-RPC response, the MCP HTTP client in
+		// internal/mcp/transport already decodes one, and refusing it here
+		// meant the same upstream worked through one path and returned 403
+		// through the other. Only what cannot be decoded is refused: a
+		// compressed SSE stream, an unsupported encoding, and a malformed one.
+		if responseencoding.HasNonIdentityContentEncoding(upResp.Header) {
+			var compressedErr error
+			if transport.HasSingleSSEContentType(upResp.Header) {
+				compressedErr = errCompressedUpstreamStream
+			} else {
+				compressedErr = responseencoding.DecodeResponse(upResp)
 			}
-			info.SetHeaders(w.Header())
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("compressed response cannot be scanned")))
-			return
+			if compressedErr != nil {
+				contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ",")
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
+				info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
+				if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
+					info = withLayer
+				}
+				info.SetHeaders(w.Header())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("compressed response cannot be scanned")))
+				return
+			}
 		}
 
 		// Route the upstream body reader by Content-Type. The MCP Streamable

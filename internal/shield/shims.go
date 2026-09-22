@@ -62,6 +62,16 @@ const FingerprintShim = `(function(){` +
 // nonceRe extracts the nonce attribute from the first <script nonce="..."> tag.
 var nonceRe = regexp.MustCompile(`(?i)<script[^>]+nonce\s*=\s*["']([^"']+)["']`)
 
+// safeNonce reports whether a nonce can be written into an attribute without
+// changing the structure of the markup around it. A CSP nonce is a base64
+// token, so anything outside that alphabet is not a nonce worth echoing. The
+// character that matters is `>`: buildShimBlockXML finds the end of the start
+// tag by looking for the first one, so a nonce carrying `>` moves that boundary
+// into the middle of the attribute value and the CDATA guard lands inside the
+// quotes. The document then stops parsing as XML and the browser refuses to
+// render it, an availability failure caused by echoing upstream input.
+var safeNonce = regexp.MustCompile(`^[A-Za-z0-9+/\-_=]+$`)
+
 // buildShimBlock returns a <script> tag wrapping the given shim code.
 // If a CSP nonce is present in the document, it is applied to the tag so the
 // browser does not reject the injected script.
@@ -79,10 +89,14 @@ func buildShimBlockWithNonce(shims []string, doc, headerNonce string) string {
 	}
 	code := strings.Join(shims, "\n")
 
+	// An unusable nonce is dropped rather than echoed. Losing the attribute
+	// means the browser's own CSP refuses the injected shim, which costs one
+	// hardening layer on that single response; writing it through unchecked
+	// breaks the whole document instead.
 	var nonceAttr string
-	if headerNonce != "" {
+	if headerNonce != "" && safeNonce.MatchString(headerNonce) {
 		nonceAttr = ` nonce="` + headerNonce + `"`
-	} else if m := nonceRe.FindStringSubmatch(doc); len(m) > 1 {
+	} else if m := nonceRe.FindStringSubmatch(doc); len(m) > 1 && safeNonce.MatchString(m[1]) {
 		nonceAttr = ` nonce="` + m[1] + `"`
 	}
 

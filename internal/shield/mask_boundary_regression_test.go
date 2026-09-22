@@ -78,7 +78,10 @@ func TestRestoreHTMLScripts_ManyScriptsRoundTrip(t *testing.T) {
 	payload := b.String()
 
 	res := e.Rewrite(payload, PipelineHTML, &cfg)
-	if strings.Contains(res.Content, "PIPELOCK") || strings.Contains(res.Content, "placeholder") {
+	// The production placeholder is the prefix below, not the word "PIPELOCK"
+	// and not the word "placeholder", so the earlier substrings could never
+	// match a real leak and this check passed no matter what was emitted.
+	if strings.Contains(res.Content, "\x00pipelock-inline-script-") {
 		t.Errorf("a masking placeholder leaked into output: %s", res.Content[:200])
 	}
 	// At least the 200 originals; the engine may also inject its own shim.

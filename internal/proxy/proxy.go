@@ -56,6 +56,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -3649,7 +3650,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if prefixLen > 512 {
 		prefixLen = 512
 	}
-	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
+	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}
@@ -3892,6 +3893,20 @@ func setShieldRewriteHeader(headers http.Header, summary *receipt.ShieldSummary)
 	if value := shieldRewriteHeaderValue(summary); value != "" {
 		headers.Set(shieldRewriteHeader, value)
 	}
+}
+
+// shieldLeavesBodyUnchanged reports whether the shield would return this body
+// byte for byte, so no size ceiling needs to apply to it.
+//
+// PipelineNone is content the shield does not handle at all. PipelineJS is
+// JavaScript, which the shield identifies for reporting and never edits: the
+// response scanner owns that content. Enforcing the oversize ceiling on either
+// one buys no protection and costs availability, and on JavaScript the cost is
+// severe, because a browser application's bundle is routinely larger than
+// max_shield_bytes and oversize_action: block would return 403 for it. Response
+// scanning still runs on both; only the shield's own ceiling is skipped.
+func shieldLeavesBodyUnchanged(pipeline shield.PipelineType) bool {
+	return pipeline == shield.PipelineNone || pipeline == shield.PipelineJS
 }
 
 func shieldPipelineLabel(pipeline shield.PipelineType) string {
@@ -5015,6 +5030,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolver timeouts) from the finding classification - neither is evidence
 	// of threat.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
+	fetchReceiptVerdict := config.ActionAllow
+	fetchReceiptLayer := ""
+	fetchReceiptPattern := ""
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
@@ -5231,6 +5249,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if headerHadFinding {
 		hasFinding = true
+		if !headerBlocked {
+			fetchReceiptVerdict = config.ActionWarn
+			fetchReceiptLayer = "dlp_header"
+			fetchReceiptPattern = "request_header_secret"
+		}
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
 			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
 			headerSignal := session.SignalNearMiss
@@ -5726,7 +5749,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// emit is skipped when require_receipts is on to avoid a duplicate.
 	fetchAllowReceipt := receipt.EmitOpts{
 		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
+		Verdict:             fetchReceiptVerdict,
+		Layer:               fetchReceiptLayer,
+		Pattern:             fetchReceiptPattern,
 		Transport:           "fetch",
 		Method:              http.MethodGet,
 		Target:              displayURL,
@@ -5769,6 +5794,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.emitOutcomeReceipt(cfg, fetchAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 	}()
 
+	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
@@ -5869,14 +5895,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 
-	// Fail closed on compressed responses before reading the body. p.client
-	// is shared between forward proxy and /fetch and now sets
-	// DisableCompression: true so the upstream Content-Encoding survives
-	// transparent decompression. Without this guard, a gzip/br/zstd response
-	// would flow into readability extraction and the response scanner as
-	// binary garbage, bypassing both. Forward proxy already runs the same
-	// guard in forward.go; this completes parity on the fetch surface.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	// Decode supported single-layer encodings before the existing decoded-body
+	// size limit and scanners. Unsupported, stacked, and malformed encodings
+	// remain fail-closed instead of reaching readability as opaque bytes.
+	if err := responseencoding.DecodeResponse(resp); err != nil {
 		log.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
 		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
 // ErrStreamNotSupported indicates the upstream server returned HTTP 405 for
@@ -45,21 +47,6 @@ var ErrUpstreamRequestFailed = errors.New("upstream request failed")
 var ErrInvalidPipelockSessionToken = errors.New("invalid Pipelock session token")
 
 const pipelockSessionTokenHeader = "Pipelock-Session-Token"
-
-// hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
-// Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
-func hasNonIdentityEncoding(ce string) bool {
-	if ce == "" {
-		return false
-	}
-	for _, enc := range strings.Split(ce, ",") {
-		enc = strings.TrimSpace(strings.ToLower(enc))
-		if enc != "" && enc != "identity" {
-			return true
-		}
-	}
-	return false
-}
 
 func validPipelockSessionToken(token string) bool {
 	if len(token) != 43 {
@@ -185,6 +172,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	responseencoding.RequestIdentity(req.Header)
 
 	// Always remove any caller-supplied Mcp-Session-Id BEFORE the conditional
 	// Set below: on the first request c.sessionID is empty and Set is skipped,
@@ -267,15 +255,17 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil, err
 	}
 
-	// Fail closed on compressed responses before wrapping the body in
-	// SingleMessageReader or SSEReader. Both readers see opaque bytes
-	// after this point; gzip/br/zstd would otherwise reach downstream
-	// scanners as binary garbage and never trigger the body-scan guards.
-	// DisableCompression on the transport guarantees the encoding header
-	// survives transparent decompression, so this check is authoritative.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-		_ = resp.Body.Close()
-		return nil, ErrCompressedResponse
+	// Decode supported buffered JSON responses before scanning. Compressed SSE,
+	// unsupported encodings, and malformed streams stay fail-closed.
+	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+		if HasSingleSSEContentType(resp.Header) {
+			_ = resp.Body.Close()
+			return nil, ErrCompressedResponse
+		}
+		if err := responseencoding.DecodeResponse(resp); err != nil {
+			_ = resp.Body.Close()
+			return nil, ErrCompressedResponse
+		}
 	}
 
 	// Route based on Content-Type.
@@ -380,6 +370,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		}
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	responseencoding.RequestIdentity(req.Header)
 
 	c.sessionMu.Lock()
 	req.Header.Del("Mcp-Session-Id")
@@ -424,7 +415,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	// SSEReader receives opaque bytes and would silently fail to parse a
 	// gzipped event stream, which is a bypass vector against the streaming
 	// scanners.
-	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 		_ = resp.Body.Close()
 		return nil, ErrCompressedResponse
 	}
@@ -473,6 +464,7 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 			req.Header.Add(key, v)
 		}
 	}
+	responseencoding.RequestIdentity(req.Header)
 	req.Header.Del("Mcp-Session-Id")
 	req.Header.Del(pipelockSessionTokenHeader)
 	if sid != "" {

@@ -5342,7 +5342,7 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 		t.Fatalf("test invariant broken: shim length %d <= prefix length %d", shimLen, len(extPrefix))
 	}
 	extURL := extPrefix + strings.Repeat("a", shimLen-len(extPrefix))
-	body := []byte(`<html><head></head><body><script>fetch("` + extURL + `")</script></body></html>`)
+	body := []byte(`<html><head></head><body><a href="` + extURL + `">extension</a></body></html>`)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"upstream-etag"`)
@@ -5383,7 +5383,7 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 		t.Fatalf("test must exercise same-length rewrite: got body len %d, original %d", len(got), len(body))
 	}
 	if bytes.Equal(got, body) {
-		t.Fatal("intercept shield should rewrite the extension probe")
+		t.Fatal("intercept shield should rewrite the HTML extension URL")
 	}
 	if resp.Header.Get("ETag") != "" {
 		t.Fatalf("ETag should be cleared after same-length shield rewrite, got %q", resp.Header.Get("ETag"))

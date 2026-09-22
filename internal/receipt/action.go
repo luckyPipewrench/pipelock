@@ -250,8 +250,8 @@ type ShieldSummary struct {
 	Pipeline                 string `json:"pipeline,omitempty"`
 	TotalRewrites            int    `json:"total_rewrites,omitempty"`
 	ExtensionProbes          int    `json:"extension_probes,omitempty"`
-	TrackingBeacons          int    `json:"tracking_beacons,omitempty"`
-	AgentTraps               int    `json:"agent_traps,omitempty"`
+	TrackingBeacons          int    `json:"tracking_beacons,omitempty"` // Compatibility field: tracking image and prefetch removals.
+	AgentTraps               int    `json:"agent_traps,omitempty"`      // Hidden HTML traps and whole SVG script removals.
 	FingerprintShimInjected  bool   `json:"fingerprint_shim_injected,omitempty"`
 	SVGForeignObjects        int    `json:"svg_foreign_objects,omitempty"`
 	SVGEventHandlers         int    `json:"svg_event_handlers,omitempty"`

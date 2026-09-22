@@ -23,7 +23,7 @@ const extensionRuntimePattern = `(?i)chrome\.runtime\.sendMessage`
 // extensionFuncPattern matches known probing function names.
 const extensionFuncPattern = `(?i)\b(?:fetchExtensions|scanDOMForPrefix|fireExtensionDetectedEvents)\b`
 
-// Tracking pixel / beacon patterns.
+// Tracking element patterns.
 
 // trackingPixelPattern matches 1x1 image tags where width=1 and height=1
 // appear anywhere in the tag (not necessarily adjacent, other attributes
@@ -31,9 +31,6 @@ const extensionFuncPattern = `(?i)\b(?:fetchExtensions|scanDOMForPrefix|fireExte
 const trackingPixelPattern = `(?i)<img[^>]+\bwidth\s*=\s*["']?1["']?[^>]+\bheight\s*=\s*["']?1["']?[^>]*>` +
 	`|` +
 	`(?i)<img[^>]+\bheight\s*=\s*["']?1["']?[^>]+\bwidth\s*=\s*["']?1["']?[^>]*>`
-
-// sendBeaconPattern matches navigator.sendBeacon() calls.
-const sendBeaconPattern = `(?i)navigator\.sendBeacon\s*\(`
 
 // prefetchPattern matches <link rel="prefetch"> tags.
 const prefetchPattern = `(?i)<link[^>]+rel\s*=\s*["']?prefetch["']?[^>]*>`
@@ -135,7 +132,7 @@ func compilePatterns() (
 	functionStripRe *regexp.Regexp,
 ) {
 	extensionRe = regexp.MustCompile(extensionURLPattern + `|` + extensionRuntimePattern)
-	trackingPixelRe = regexp.MustCompile(trackingPixelPattern + `|` + sendBeaconPattern + `|` + prefetchPattern)
+	trackingPixelRe = regexp.MustCompile(trackingPixelPattern + `|` + prefetchPattern)
 	hiddenTrapRe = regexp.MustCompile(hiddenElementPattern + `|` + ariaHiddenTrapPattern)
 	commentTrapRe = regexp.MustCompile(commentTrapPattern)
 	functionStripRe = regexp.MustCompile(extensionFuncPattern)

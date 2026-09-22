@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -502,8 +503,12 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
 func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
-	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
-	handles = append(handles, legacyOwnedLoopbackMarkRuleHandles(live, agentUID)...)
+	// A superseded owned-loopback rule can be found both inside a managed block
+	// and by the standalone scan. Deleting one handle twice fails the whole
+	// atomic nft transaction, so each handle is emitted once, in chain order.
+	handles := slices.Concat(legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID), legacyOwnedLoopbackMarkRuleHandles(live, agentUID))
+	slices.Sort(handles)
+	handles = slices.Compact(handles)
 	var script strings.Builder
 	if receiverChainLive {
 		// The cgroup receiver design is replaced, not layered beside the
@@ -526,12 +531,38 @@ func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, ope
 func legacyOwnedLoopbackMarkRuleHandles(live string, agentUID int) []int {
 	var handles []int
 	for _, rule := range nftRulesWithHandles(live) {
-		if !lineHasLegacyOwnedLoopbackMark(rule.line, agentUID) {
+		if !lineIsLegacyOwnedLoopbackRule(rule.line, agentUID) {
 			continue
 		}
 		handles = append(handles, rule.handle)
 	}
 	return handles
+}
+
+// lineIsLegacyOwnedLoopbackRule matches any of the four rules the cgroup
+// loopback design rendered: the IPv4 and IPv6 marking accepts, and the two
+// established accepts keyed on that mark.
+func lineIsLegacyOwnedLoopbackRule(line string, agentUID int) bool {
+	return lineHasLegacyOwnedLoopbackMark(line, agentUID) || lineHasLegacyOwnedLoopbackEstablished(line)
+}
+
+// lineHasLegacyOwnedLoopbackEstablished matches
+// `ct mark <mark> ct state established oifname "lo" socket cgroupv2 level 1
+// "<slice>" ct direction original|reply accept`, in named or numeric form.
+func lineHasLegacyOwnedLoopbackEstablished(line string) bool {
+	fields := nftLineFields(line)
+	want := []string{"ct", "mark", legacyOwnedLoopbackMark, "ct", "state", "", "oifname", `"lo"`, "socket", "cgroupv2", "level", "1", `"` + legacyOwnedLoopbackSlice + `"`, "ct", "direction", "", "accept"}
+	if len(fields) != len(want) {
+		return false
+	}
+	for i, token := range want {
+		if token != "" && fields[i] != token {
+			return false
+		}
+	}
+	state, direction := fields[5], fields[15]
+	return (state == "established" || state == "0x2") &&
+		(direction == "original" || direction == "reply" || direction == "0" || direction == "1")
 }
 
 func lineHasLegacyOwnedLoopbackMark(line string, agentUID int) bool {
@@ -611,6 +642,14 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 			return partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
 		}
 		tailStart += 2
+	}
+	// Blocks written by the superseded cgroup loopback design carry its marking
+	// and established-mark rules here, between the service pairs and the DNS
+	// drops. They belong to the managed block and are removed with it; without
+	// this the whole block reads as foreign and a reload appends the canonical
+	// rules behind its catch-all drop, where they never match.
+	for tailStart < len(rules) && lineIsLegacyOwnedLoopbackRule(rules[tailStart].line, agentUID) {
+		tailStart++
 	}
 	if tailStart+2 >= len(rules) {
 		return 0, nil

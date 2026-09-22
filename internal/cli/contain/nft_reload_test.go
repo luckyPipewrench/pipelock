@@ -574,3 +574,94 @@ func TestLineHasManagedDNSDropRejectsShortAndMismatchedLines(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderNFTManagedChainReloadScriptMigratesLiveInterleavedOwnedLoopbackBlock
+// replays a chain captured from a real host after an upgrade from the cgroup
+// loopback design. The managed block there carries the four owned-loopback
+// rules between the declared-service pairs and the DNS drops, and a later
+// install had appended a second canonical block behind the old catch-all drop.
+// Reload must remove both managed blocks and every owned-loopback rule while
+// keeping the operator's own reply allowances and counter-only diagnostics.
+func TestRenderNFTManagedChainReloadScriptMigratesLiveInterleavedOwnedLoopbackBlock(t *testing.T) {
+	t.Parallel()
+	const (
+		operatorUID = 1000
+		proxyUID    = 967
+		agentUID    = 966
+		proxyPort   = 8888
+	)
+	chainRules := []string{
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new counter packets 16002 bytes 960120 comment "probe-exact"`,
+		`meta skuid 966 oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" counter packets 230998 bytes 66920070 comment "probe-cgroup"`,
+		`meta skuid 966 oifname "lo" counter packets 325521 bytes 80053096 comment "probe-uid-lo"`,
+		`meta skuid 1000 accept`,
+		`meta skuid 967 accept`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp dport 9222 accept`,
+		`meta skuid 966 oifname "lo" ip saddr 127.0.0.1 tcp sport 9222 ct state established ct direction reply accept`,
+		`meta skuid 966 oifname "lo" ip6 daddr ::1 tcp dport 9222 accept`,
+		`meta skuid 966 oifname "lo" ip6 saddr ::1 tcp sport 9222 ct state established ct direction reply accept`,
+		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept`,
+		`meta skuid 966 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept`,
+		`ct mark 0x504c4b01 ct state established oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" ct direction original accept`,
+		`ct mark 0x504c4b01 ct state established oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" ct direction reply accept`,
+		`meta skuid 966 udp dport 53 counter packets 188 bytes 11920 log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`meta skuid 966 counter packets 11357 bytes 780720 log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
+		`meta skuid 1000 accept`,
+		`meta skuid 967 accept`,
+		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept`,
+		`meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`meta skuid 966 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`meta skuid 966 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
+	}
+	lines := []string{
+		`table inet pipelock_containment {`,
+		`  chain output_filter { # handle 1`,
+		`    type filter hook output priority filter; policy accept;`,
+	}
+	for i, rule := range chainRules {
+		lines = append(lines, "    "+rule+" # handle "+itoa(100+i))
+	}
+	lines = append(lines, `  }`, `}`)
+	live := strings.Join(lines, "\n")
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+
+	script := renderNFTManagedChainReloadScript(live, body, defaultNFTTable, defaultNFTChain, operatorUID, proxyUID, agentUID, false)
+	const deletePrefix = "delete rule inet pipelock_containment output_filter handle "
+	for i := 5; i < len(chainRules); i++ {
+		if n := strings.Count(script, deletePrefix+itoa(100+i)+"\n"); n > 1 {
+			t.Fatalf("reload script deletes handle %d %d times, which aborts the nft transaction:\n%s", 100+i, n, script)
+		}
+		if !strings.Contains(script, deletePrefix+itoa(100+i)+"\n") {
+			t.Fatalf("reload script kept managed or superseded rule %d (%s):\n%s", 100+i, chainRules[i], script)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if strings.Contains(script, deletePrefix+itoa(100+i)+"\n") {
+			t.Fatalf("reload script removed operator rule %d (%s):\n%s", 100+i, chainRules[i], script)
+		}
+	}
+	if !strings.HasSuffix(script, body) {
+		t.Fatalf("reload script does not finish by loading one canonical ruleset:\n%s", script)
+	}
+
+	// Verify's structure probe must reject the live chain and accept the chain
+	// this reload produces: the operator's reply allowances and counter-only
+	// rules, followed by the canonical block.
+	uids := containmentUIDs{operatorUID: operatorUID, operatorKnown: true, proxyUID: proxyUID, agentUID: agentUID}
+	if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(chainRules, uids, proxyPort) {
+		t.Fatal("verify accepted the pre-migration chain carrying owned-loopback accepts before the agent drop")
+	}
+	migrated := append([]string{}, chainRules[:5]...)
+	for _, line := range strings.Split(body, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "meta ") {
+			migrated = append(migrated, line)
+		}
+	}
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(migrated, uids, proxyPort) {
+		t.Fatalf("verify rejects the migrated chain:\n%s", strings.Join(migrated, "\n"))
+	}
+}

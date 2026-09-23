@@ -152,7 +152,7 @@ fetch_proxy:
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
-| `monitoring.path_entropy_exclusions` | 5 document-sharing routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes; override to replace the defaults, or set an empty list to disable them |
+| `monitoring.path_entropy_exclusions` | 6 vendor routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes and the Cloudflare challenge route; your own entries are added to the shipped routes, and an empty list disables them |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply. Optional `expires` is temporary and capped at 180 days |
 
 **Entropy guidance:**
@@ -193,7 +193,7 @@ fetch_proxy:
 
 An entry asserts that on that exact route the opaque segment is a service-issued resource identifier. It is a policy assertion rather than a classifier, and it does not make the route safe: before exempting one, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. `https` only, and an entry with no host, no path prefix, or the bare root prefix `/` is refused at load rather than treated as a wildcard, because each of those three would exempt far more than one route. The prefix must be a canonical path: an encoded slash or backslash, a query or fragment delimiter in either literal or percent-encoded form, a wildcard, a dot segment, and a traversal segment are all refused. Matching compares the prefix against the request's escaped path, so a request that spells the route differently, such as `/document%2Fd/`, is a different route and stays subject to path entropy. **End `path_prefix` with `/` when you mean one path segment.** The prefix is matched literally, so `/document/d` also exempts `/document/de`, `/document/detail`, and every other path starting with those characters, while `/document/d/` does not. Dropping one character widens the exemption. `reason`, `owner` and `expires` are governance metadata. When supplied, `expires` is a temporary incident control and may be at most 180 days ahead; shorten it, or use an exact `request_policy` route for a permanent governed path. Editing governance metadata does not change the policy hash a receipt carries.
 
-**Shipped defaults.** Five document-sharing routes ship enabled, because an ordinary Google Docs, Sheets, Slides, Forms or Drive link carries an opaque service-issued file ID by construction and was otherwise blocked on a fresh install:
+**Shipped defaults.** Six vendor routes ship enabled. Five are document-sharing routes, because an ordinary Google Docs, Sheets, Slides, Forms or Drive link carries an opaque service-issued file ID by construction and was otherwise blocked on a fresh install. The sixth is Cloudflare's challenge route: Turnstile and the managed challenge load from `challenges.cloudflare.com` and put per-challenge tokens in path segments under the reserved `/cdn-cgi/` path, so without it a browser workload loops on the bot check of every Cloudflare-fronted site. The host is Cloudflare's own, so a value placed in that path reaches Cloudflare rather than a site the agent chose, and the same path on any other host stays subject to path entropy:
 
 ```yaml
 - host: docs.google.com
@@ -206,9 +206,11 @@ An entry asserts that on that exact route the opaque segment is a service-issued
   path_prefix: /forms/d/e/
 - host: drive.google.com
   path_prefix: /file/d/
+- host: challenges.cloudflare.com
+  path_prefix: /cdn-cgi/challenge-platform/
 ```
 
-What a shipped entry encodes is the vendor's published route shape, never the identifier format. Google documents these product URL shapes; it documents the file ID itself as opaque, with no charset or length, so keying on the ID would be an invented value. A vendor route enters the shipped defaults only on that basis. Setting the field to an empty list removes them; setting your own list replaces them.
+What a shipped entry encodes is the vendor's published route shape, never the identifier format. Google documents these product URL shapes; it documents the file ID itself as opaque, with no charset or length, so keying on the ID would be an invented value. A vendor route enters the shipped defaults only on that basis. Your own entries are applied in addition to the shipped routes, so adding one route never drops the others. Setting the field to an explicitly empty list removes the shipped routes.
 
 Each entry still exempts only the path-entropy gate for that one host and prefix. It does not make the route safe to send secrets to, and the warning above applies with equal force to a shipped entry: an agent that can place a chosen opaque segment on one of these routes and read it back later can carry data out over it.
 

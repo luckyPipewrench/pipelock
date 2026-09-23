@@ -1153,11 +1153,12 @@ type Monitoring struct {
 	// SubdomainEntropyExclusions for a path false positive: that list governs
 	// BOTH the path and subdomain gates, so it gives up a second detection.
 	// Ships with five document-sharing routes (Google Docs, Sheets, Slides,
-	// Forms and Drive file), because those carry an opaque service-issued file
-	// ID by construction and were otherwise blocked on a fresh install. A route
-	// enters the defaults on the vendor's PUBLISHED ROUTE SHAPE only, never on
-	// the identifier format, which Google documents as opaque. An operator's
-	// own list replaces the shipped set; an explicitly empty list removes it.
+	// Forms and Drive file) and Cloudflare's challenge route, because those
+	// carry opaque service-issued tokens by construction and were otherwise
+	// blocked on a fresh install. A route enters the defaults on the vendor's
+	// ROUTE SHAPE only, never on the identifier format. The scanner applies an
+	// operator's own list IN ADDITION to the shipped set; an explicitly empty
+	// list removes the shipped set.
 	PathEntropyExclusions []PathEntropyExclusion `yaml:"path_entropy_exclusions"`
 
 	// QueryEntropyParamExclusions lists exact HTTPS endpoint+parameter tuples

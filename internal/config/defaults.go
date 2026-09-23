@@ -240,6 +240,18 @@ const (
 
 const defaultGoogleDocsPathPrefix = "/document/d/"
 
+const (
+	defaultCloudflareChallengeHost       = "challenges.cloudflare.com"
+	defaultCloudflareChallengePathPrefix = "/cdn-cgi/challenge-platform/"
+)
+
+// ShippedPathEntropyExclusions returns the vendor routes Pipelock maintains.
+// The scanner applies them alongside an operator's own list; only an
+// explicitly empty list opts out of them.
+func ShippedPathEntropyExclusions() []PathEntropyExclusion {
+	return append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
+}
+
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
@@ -309,6 +321,14 @@ func Defaults() *Config {
 					{Host: "docs.google.com", PathPrefix: "/presentation/d/", Reason: "Google Slides route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},
 					{Host: "drive.google.com", PathPrefix: "/file/d/", Reason: "Google Drive file route; opaque vendor file id"},
+					// Cloudflare's challenge host. Turnstile and the managed
+					// challenge load from challenges.cloudflare.com, and their
+					// requests sit under the reserved /cdn-cgi/ path with
+					// per-challenge tokens in path segments. Blocking them stops
+					// the challenge completing, so any Cloudflare-fronted site
+					// loops on its bot check. The host is Cloudflare's own, so
+					// the exemption reaches no third-party origin.
+					{Host: defaultCloudflareChallengeHost, PathPrefix: defaultCloudflareChallengePathPrefix, Reason: "Cloudflare challenge route; per-challenge tokens in the path"},
 				},
 			},
 		},

@@ -477,7 +477,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
-		pathEntropyExclusions:     buildPathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions),
+		pathEntropyExclusions:     buildPathEntropyExclusions(effectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
 		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
 		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
@@ -4011,6 +4011,17 @@ type pathEntropyExclusion struct {
 	scheme     string
 	host       string
 	pathPrefix string
+}
+
+// effectivePathEntropyExclusions adds the shipped vendor routes to an
+// operator's list. An operator list used to replace the shipped set, so
+// adding one route silently dropped every vendor route. An explicitly empty
+// list still removes them all, which is the documented opt-out.
+func effectivePathEntropyExclusions(entries []config.PathEntropyExclusion) []config.PathEntropyExclusion {
+	if len(entries) == 0 {
+		return entries
+	}
+	return append(append([]config.PathEntropyExclusion(nil), entries...), config.ShippedPathEntropyExclusions()...)
 }
 
 func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEntropyExclusion {

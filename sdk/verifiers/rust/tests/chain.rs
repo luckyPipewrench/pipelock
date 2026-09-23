@@ -481,6 +481,26 @@ fn rotation_endorsement_file_rejects_duplicate_unknown_and_trailing_fields() {
 }
 
 #[test]
+fn g1_rotated_same_key_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-rotated-same-key-invalid.jsonl"))
+            .unwrap();
+    let result = verify_chain(&receipts, &conformance_trusted_keys());
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("key_transition does not change signer key"));
+    let unpinned = verify_chain_with_options(&receipts, "", true);
+    assert!(!unpinned.valid);
+    assert!(unpinned
+        .error
+        .unwrap_or_default()
+        .contains("key_transition does not change signer key"));
+}
+
+#[test]
 fn g1_rotated_close_count_invalid_fixture_is_rejected() {
     let root = common::repo_root();
     let receipts = extract_receipts(

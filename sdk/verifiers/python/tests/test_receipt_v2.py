@@ -417,6 +417,16 @@ def test_v1_g1_rotated_close_count_valid_fixture_verifies() -> None:
     assert report["final_seq"] == 2
 
 
+def test_v1_g1_rotated_same_key_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-rotated-same-key-invalid.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_TRUSTED_KEYS)
+    assert report["valid"] is False
+    assert "key_transition does not change signer key" in report["error"]
+    unpinned = verify_evidence_chain(receipts, "", allow_unpinned=True)
+    assert unpinned["valid"] is False
+    assert "key_transition does not change signer key" in unpinned["error"]
+
+
 def test_v1_g1_rotated_close_count_invalid_fixture_is_rejected() -> None:
     receipts = load_evidence_chain(TESTDATA / "g1-rotated-close-count-invalid.jsonl")
     report = verify_evidence_chain(receipts, TESTDATA_TRUSTED_KEYS)

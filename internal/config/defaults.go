@@ -252,6 +252,21 @@ func ShippedPathEntropyExclusions() []PathEntropyExclusion {
 	return append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
 }
 
+// shippedChallengeProviderHosts are bot-verification services a browser must
+// be able to complete. Their challenge traffic is encrypted, per-challenge
+// data sent to the provider's own host, so it reads as high entropy by
+// construction. It is exempt from the ENTROPY heuristics only (request-body
+// content entropy and the cross-request entropy budget); DLP, SSRF and every
+// other scanner still run on it. A value placed there reaches the provider,
+// not a destination the agent chose.
+var shippedChallengeProviderHosts = []string{defaultCloudflareChallengeHost}
+
+// ShippedChallengeProviderHosts returns a copy of the shipped challenge hosts.
+// They apply in addition to an operator's own exclusion lists.
+func ShippedChallengeProviderHosts() []string {
+	return append([]string(nil), shippedChallengeProviderHosts...)
+}
+
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{

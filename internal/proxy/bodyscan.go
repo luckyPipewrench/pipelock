@@ -1242,7 +1242,7 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	req.ContentEntropyThreshold = cfg.RequestBodyScanning.ContentEntropyThreshold
 	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
 	req.ContentEntropyTrusted = cfg.TrustedDomains
-	req.ContentEntropyExclusions = append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...)
+	req.ContentEntropyExclusions = append(append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...), config.ShippedChallengeProviderHosts()...)
 	req.ContentEntropyWarnRoutes = cfg.RequestBodyScanning.ContentEntropyWarnRoutes
 	for _, exclusions := range extraExclusions {
 		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)

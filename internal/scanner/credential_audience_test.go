@@ -143,6 +143,22 @@ func TestGoogleOAuthToken_CredentialAudience(t *testing.T) {
 	}
 }
 
+func TestMergeJoinedHeaderMatches_PreservesUnrelatedSecrets(t *testing.T) {
+	t.Parallel()
+	original := []TextDLPMatch{
+		{PatternName: "Google OAuth Token", credentialAudienceAuthorizationOnly: true},
+		{PatternName: "AWS Access ID"},
+	}
+	scrubbed := []TextDLPMatch{
+		{PatternName: "Google OAuth Token", credentialAudienceAuthorizationOnly: true},
+		{PatternName: "GitHub Token"},
+	}
+	merged := MergeJoinedHeaderMatches(original, scrubbed)
+	if len(merged) != 2 || merged[0].PatternName != "AWS Access ID" || merged[1].PatternName != "Google OAuth Token" {
+		t.Fatalf("joined-header matches = %#v; unrelated original match must survive while authorization-only match comes from scrubbed copy", merged)
+	}
+}
+
 func TestFilterTextDLPMatchesForDestination_CanonicalAndFailClosed(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())

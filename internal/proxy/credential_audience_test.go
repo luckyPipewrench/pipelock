@@ -182,6 +182,25 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 	if !sawAWS {
 		t.Fatalf("split AWS key not reported: %#v", splitResult.DLPMatches)
 	}
+	// Header names remain scanned in all mode even when a Google token in a
+	// separate Authorization value is allowed for this destination.
+	secretName := "X-AKIA" + strings.Repeat("A", 16)
+	nameResult := scanRequestHeadersForTarget(t.Context(), http.Header{
+		"Authorization": []string{"Bearer " + token},
+		secretName:      []string{"ordinary"},
+	}, cfg, sc, target)
+	if nameResult == nil || nameResult.Clean {
+		t.Fatal("secret in header name was hidden by Google allowance")
+	}
+	sawAWS = false
+	for _, match := range nameResult.DLPMatches {
+		if match.PatternName == "AWS Access ID" {
+			sawAWS = true
+		}
+	}
+	if !sawAWS {
+		t.Fatalf("header-name AWS key not reported: %#v", nameResult.DLPMatches)
+	}
 
 	_, body := scanRequestBody(t.Context(), BodyScanRequest{
 		Body: strings.NewReader(`{"credential":"` + token + `"}`), ContentType: "application/json", MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes,

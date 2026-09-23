@@ -211,8 +211,31 @@ pub fn canonicalize_action_record(action_record: &Value) -> Vec<u8> {
     canonical_json_bytes(&order_struct(action_record, ACTION_RECORD_FIELDS))
 }
 
+/// Reproduces Go's `json.Marshal(Receipt)`, the chain link preimage. Go
+/// appends the unsigned top-level `ext` bag (a `json.RawMessage`) after
+/// `signer_key` whenever it is present, including an explicit `null`, so ext
+/// bytes take part in the link hash even though they never take part in the
+/// signature. Those bytes come from the ext value's source text when the
+/// receipt was read from a recorder line; re-serializing the parsed value is a
+/// fallback for receipts built in memory and matches Go only for ext values
+/// whose Go encoding survives a parse and re-serialize.
 pub fn canonicalize_receipt(receipt: &Value) -> Vec<u8> {
-    canonical_json_bytes(&order_struct(receipt, RECEIPT_FIELDS))
+    let mut out = canonical_json_bytes(&order_struct(receipt, RECEIPT_FIELDS));
+    let Some(ext) = receipt.get("ext") else {
+        return out;
+    };
+    let ext_bytes = match crate::rawjson::ext_source_bytes(receipt) {
+        Some(bytes) => bytes.as_bytes().to_vec(),
+        None => canonical_json_string(ext).into_bytes(),
+    };
+    out.pop();
+    if out.len() > 1 {
+        out.push(b',');
+    }
+    out.extend_from_slice(b"\"ext\":");
+    out.extend_from_slice(&ext_bytes);
+    out.push(b'}');
+    out
 }
 
 pub fn canonical_json_string(value: &Value) -> String {

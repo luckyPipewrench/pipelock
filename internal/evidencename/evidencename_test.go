@@ -5,6 +5,7 @@ package evidencename
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,35 @@ func TestParse(t *testing.T) {
 			}
 			if got := SeqStart(tt.input); got != tt.wantSeq {
 				t.Fatalf("SeqStart(%q) = %d, want %d", tt.input, got, tt.wantSeq)
+			}
+		})
+	}
+}
+
+func TestValidateOperatorSessionID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		id string
+		want string
+	}{
+		{"empty", "", "must not be empty"},
+		{"run infix", "proxy.run.fake", "reserved run-session infix"},
+		{"slash", "a/b", "path separator"},
+		{"backslash", `a\b`, "path separator"},
+		{"ordinary", "proxy-session", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateOperatorSessionID(tc.id)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("valid session rejected: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrReservedSessionID) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateOperatorSessionID(%q) = %v, want reserved-session error containing %q", tc.id, err, tc.want)
 			}
 		})
 	}

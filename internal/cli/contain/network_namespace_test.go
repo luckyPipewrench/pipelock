@@ -128,7 +128,7 @@ func TestInstallNetworkNamespaceWarnsWhenDeclaredHostListenerIsUnavailable(t *te
 	}
 	configPath := filepath.Join(env.configDir, "pipelock.yaml")
 	configBody := "containment:\n  loopback_services:\n    - host: 127.0.0.1\n      port: 9222\n" +
-		"      owner: browser-team\n      reason: browser control\n      expires_at: 2099-01-01T00:00:00Z\n"
+		"      owner: browser-team\n      reason: browser control\n      expires_at: " + futureExpiryForTest + "\n"
 	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -838,12 +838,12 @@ func TestDeclaredLoopbackForwardersInstallAndRevoke(t *testing.T) {
       port: 9200
       owner: search-team
       reason: local retrieval
-      expires_at: 2099-01-01T00:00:00Z
+      expires_at: ` + futureExpiryForTest + `
     - host: ::1
       port: 9300
       owner: index-team
       reason: local index
-      expires_at: 2099-01-01T00:00:00Z
+      expires_at: ` + futureExpiryForTest + `
 `
 	if err := os.WriteFile(configPath, []byte(configured), 0o600); err != nil {
 		t.Fatal(err)
@@ -906,7 +906,7 @@ func TestDeclaredLoopbackForwarderRevokeRollsBack(t *testing.T) {
 		Port:      9200,
 		Owner:     "search-team",
 		Reason:    "local retrieval",
-		ExpiresAt: "2099-01-01T00:00:00Z",
+		ExpiresAt: futureExpiryForTest,
 	}
 	configured := `containment:
   loopback_services:
@@ -914,7 +914,7 @@ func TestDeclaredLoopbackForwarderRevokeRollsBack(t *testing.T) {
       port: 9200
       owner: search-team
       reason: local retrieval
-      expires_at: 2099-01-01T00:00:00Z
+      expires_at: ` + futureExpiryForTest + `
 `
 	if err := os.WriteFile(configPath, []byte(configured), 0o600); err != nil {
 		t.Fatal(err)

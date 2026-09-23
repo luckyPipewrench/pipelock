@@ -87,7 +87,7 @@ func TestActionRemoveNetworkNamespaceRestoresOperatorState(t *testing.T) {
 		Port:      9200,
 		Owner:     "search-team",
 		Reason:    "local retrieval",
-		ExpiresAt: "2099-01-01T00:00:00Z",
+		ExpiresAt: futureExpiryForTest,
 	}
 	data, err := json.MarshalIndent(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}}, "", "  ")
 	if err != nil {

@@ -18,14 +18,31 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-const publishedTestConfig = "containment:\n  published_services:\n" +
+// futureExpiryForTest is an expiry that has not passed whenever the test runs,
+// derived from the clock so no pinned calendar date can turn a passing test red.
+var futureExpiryForTest = time.Now().UTC().AddDate(1, 0, 0).Format(time.RFC3339)
+
+// expiredPublishedTestConfig is publishedTestConfig with an expiry that has
+// already passed. It fails the test if the substitution does not apply, so a
+// fixture change can never leave an "expired" case silently unexpired.
+func expiredPublishedTestConfig(t *testing.T) string {
+	t.Helper()
+	past := time.Now().UTC().AddDate(0, 0, -1).Format(time.RFC3339)
+	expired := strings.Replace(publishedTestConfig, futureExpiryForTest, past, 1)
+	if expired == publishedTestConfig {
+		t.Fatal("expired fixture did not change the expiry")
+	}
+	return expired
+}
+
+var publishedTestConfig = "containment:\n  published_services:\n" +
 	"    - name: viewer\n      agent_port: 5900\n      operator_user: operator\n" +
-	"      owner: ops\n      reason: watch the agent display\n      expires_at: \"2099-01-01T00:00:00Z\"\n"
+	"      owner: ops\n      reason: watch the agent display\n      expires_at: \"" + futureExpiryForTest + "\"\n"
 
 func publishedTestService() config.ContainmentPublishedService {
 	return config.ContainmentPublishedService{
 		Name: "viewer", AgentPort: 5900, OperatorUser: "operator",
-		Owner: "ops", Reason: "watch the agent display", ExpiresAt: "2099-01-01T00:00:00Z",
+		Owner: "ops", Reason: "watch the agent display", ExpiresAt: futureExpiryForTest,
 	}
 }
 
@@ -190,7 +207,7 @@ func TestInstallPublishedServicesRefusesBadOperators(t *testing.T) {
 }
 
 func TestInstallPublishedServicesRefusesExpiredDeclaration(t *testing.T) {
-	env, _ := publishedInstallEnv(t, strings.Replace(publishedTestConfig, "2099", "2001", 1))
+	env, _ := publishedInstallEnv(t, expiredPublishedTestConfig(t))
 	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired declaration: err=%v", err)
 	}
@@ -426,7 +443,7 @@ func TestProbePublishedServicesOutcomes(t *testing.T) {
 			fx.files[fx.env.configPath] = "mode: balanced\n"
 		}, "do not match"},
 		{"expired declaration", func(fx *publishedProbeFixture) {
-			fx.files[fx.env.configPath] = strings.Replace(publishedTestConfig, "2099", "2001", 1)
+			fx.files[fx.env.configPath] = expiredPublishedTestConfig(t)
 		}, "cannot be honored"},
 	}
 	for _, tt := range tests {

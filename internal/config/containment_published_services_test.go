@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// futureExpiryForTest is an expiry that has not passed whenever the test runs;
+// pastExpiryForTest is one that already has. Fixtures derive both from the
+// clock so no pinned calendar date can turn a passing test red.
+var (
+	futureExpiryForTest = time.Now().UTC().AddDate(1, 0, 0).Format(time.RFC3339)
+	pastExpiryForTest   = time.Now().UTC().AddDate(0, 0, -1).Format(time.RFC3339)
+)
+
 func validPublishedService() ContainmentPublishedService {
 	return ContainmentPublishedService{
 		Name:         "viewer",
@@ -18,7 +26,7 @@ func validPublishedService() ContainmentPublishedService {
 		OperatorUser: "operator",
 		Owner:        "ops",
 		Reason:       "watch the agent display",
-		ExpiresAt:    "2099-01-01T00:00:00Z",
+		ExpiresAt:    futureExpiryForTest,
 	}
 }
 
@@ -56,7 +64,7 @@ func TestValidateContainmentPublishedServices(t *testing.T) {
 		{name: "socket proxy doorway", mutate: func(s *ContainmentPublishedService) { s.HostSocket = "/run/pipelock-agent-proxy.sock" }, want: "reserved"},
 		{name: "missing operator", mutate: func(s *ContainmentPublishedService) { s.OperatorUser = "" }, want: "operator_user"},
 		{name: "missing owner", mutate: func(s *ContainmentPublishedService) { s.Owner = "" }, want: "owner is required"},
-		{name: "expired", mutate: func(s *ContainmentPublishedService) { s.ExpiresAt = "2025-01-01T00:00:00Z" }, want: "expired"},
+		{name: "expired", mutate: func(s *ContainmentPublishedService) { s.ExpiresAt = now.AddDate(0, 0, -1).Format(time.RFC3339) }, want: "expired"},
 		{name: "malformed expiry", mutate: func(s *ContainmentPublishedService) { s.ExpiresAt = "tomorrow" }, want: "RFC3339"},
 		{name: "duplicate name", mutate: func(*ContainmentPublishedService) {}, extra: true, want: "declared more than once"},
 	}
@@ -122,7 +130,7 @@ func TestLoadContainmentPublishedServices(t *testing.T) {
 	path := filepath.Join(dir, "pipelock.yaml")
 	body := "containment:\n  published_services:\n" +
 		"    - name: viewer\n      agent_port: 5900\n      operator_user: operator\n" +
-		"      owner: ops\n      reason: watch the display\n      expires_at: \"2099-01-01T00:00:00Z\"\n"
+		"      owner: ops\n      reason: watch the display\n      expires_at: \"" + futureExpiryForTest + "\"\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +147,10 @@ func TestLoadContainmentPublishedServices(t *testing.T) {
 		t.Fatal("clone shares the published services slice")
 	}
 
-	expired := strings.Replace(body, "2099", "2001", 1)
+	expired := strings.Replace(body, futureExpiryForTest, pastExpiryForTest, 1)
+	if expired == body {
+		t.Fatal("expired fixture did not change the expiry")
+	}
 	if err := os.WriteFile(path, []byte(expired), 0o600); err != nil {
 		t.Fatal(err)
 	}

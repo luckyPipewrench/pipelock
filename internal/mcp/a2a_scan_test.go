@@ -34,6 +34,8 @@ func TestA2AEntropyOnlyAdaptiveClassification(t *testing.T) {
 		want   bool
 	}{
 		{"entropy", A2AScanResult{EntropyFinding: finding}, true},
+		{"content and URL entropy", A2AScanResult{EntropyFinding: finding, URLFindings: []scanner.Result{{Class: scanner.ClassHeuristicEntropy}}}, true},
+		{"content entropy and concrete URL", A2AScanResult{EntropyFinding: finding, URLFindings: []scanner.Result{{Scanner: scanner.ScannerDLP}}}, false},
 		{"mixed DLP", A2AScanResult{EntropyFinding: finding, DLPFindings: []scanner.TextDLPMatch{{}}}, false},
 		{"mixed injection", A2AScanResult{EntropyFinding: finding, InjectFindings: []scanner.ResponseMatch{{}}}, false},
 		{"budget failure", A2AScanResult{EntropyFinding: finding, BudgetExceeded: true}, false},

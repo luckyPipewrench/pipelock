@@ -44,6 +44,7 @@ func TestBodyEntropyOnlyAdaptiveClassification(t *testing.T) {
 		{"mixed DLP", BodyScanResult{EntropyFinding: finding, DLPMatches: []scanner.TextDLPMatch{{}}}, false},
 		{"mixed injection", BodyScanResult{EntropyFinding: finding, InjectionMatches: []scanner.ResponseMatch{{}}}, false},
 		{"fail closed", BodyScanResult{EntropyFinding: finding, RedactionBlockReason: "failed"}, false},
+		{"redacted DLP", BodyScanResult{EntropyFinding: finding, RedactedDLPOnly: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

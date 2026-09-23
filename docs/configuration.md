@@ -1741,6 +1741,29 @@ The built-in proxy uses the same shape. `pipelock-agent-proxy.socket` listens on
 
 Run `sudo pipelock contain reload-nft-rules` after every add, removal, or expiry. The command also reconciles the namespace socket units and their root-owned inventory. If the managed config is missing or unreadable, or the set contains a malformed or expired entry, reconciliation removes all declared forwarders and logs the reason. The base namespace and proxy socket stay active. See "Declared loopback services" in `contain-cli.md` for install, verification, and service-launch details.
 
+### Published services (containment)
+
+`containment.loopback_services` lets the agent reach a host service. `containment.published_services` works the other way: it publishes one listener that the agent runs on its own namespace loopback to one operator on the host.
+
+```yaml
+containment:
+  published_services:
+    - name: viewer
+      agent_port: 5900
+      operator_user: operator
+      owner: platform-team
+      reason: operator watches the agent's display through its own viewer
+      expires_at: 2026-12-01T00:00:00Z
+```
+
+`name` is 1 to 32 lowercase letters, digits, or hyphens and names the systemd units. `agent_host` defaults to `127.0.0.1` and may only be `127.0.0.1` or `::1`. `agent_port` can't equal the proxy port, a declared `loopback_services` port, or another publication's port. `operator_user` names the one local account allowed to connect. `owner`, `reason`, and a future RFC3339 `expires_at` value are required, with the same validation and expiry handling as `loopback_services`.
+
+By default the host endpoint is the unix socket `/run/pipelock-contain-published/<name>.sock`, owned by `operator_user` with mode `0600`, so only that account and root can connect. `host_socket` overrides the path; it must be a clean absolute path under `/run/` ending in `.sock`, and Pipelock refuses paths inside its own containment directories. `host_listen: 127.0.0.1:<port>` (or `[::1]:<port>`) adds a loopback TCP endpoint as an explicit opt-in. Any local account can connect to a TCP endpoint, so prefer the socket.
+
+Treat everything that crosses a published service as untrusted agent content. The agent chooses what it shows the operator and sees everything the operator sends. Pipelock provides the endpoint only. It doesn't ship a viewer, and it doesn't serve the endpoint beyond the host. If you need remote access, put your own authenticated service in front of the socket.
+
+See "Published agent services" in `contain-cli.md` for install, verification, and reconciliation details.
+
 ## Kill Switch
 
 Emergency deny-all with six independent activation sources: `enabled`,

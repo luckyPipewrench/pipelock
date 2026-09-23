@@ -299,6 +299,26 @@ An exclusive lock prevents `contain install` and `contain reload-nft-rules` from
 
 `contain verify` compares the declared set with the root-owned forwarder inventory and each managed unit file. It requires every declared socket to be persistently enabled and active. The live namespace probe fails when the namespace is missing, shares the host network namespace, reaches a host loopback canary, can't reach the Pipelock proxy socket, or finds a managed-agent process outside the namespace. The process check catches older and custom services that run under the correct user but never entered the managed namespace.
 
+## Published agent services
+
+`containment.published_services` publishes a listener that the contained agent runs on its own namespace loopback to one operator on the host, for example a viewer the agent runs for its own display. See "Published services (containment)" in `configuration.md` for the fields.
+
+For each entry, `contain install` writes a socket unit, `pipelock-published-<name>.socket`, and a socket-activated relay, `pipelock-published-<name>.service`. systemd creates the host socket owned by `operator_user` with mode `0600`. The relay runs `pipelock contain netns-forward` as the proxy service user and joins the agent's network namespace, so it dials the agent's own loopback. It never runs as `pipelock-agent`, and the agent gets no host-side process and no new outbound route. The nftables rules don't change. An optional `host_listen` adds a `pipelock-published-<name>-tcp` socket and relay pair. `contain install` refuses an `operator_user` that doesn't exist or that names the agent account.
+
+`contain reload-nft-rules`, the boot-time persistence unit, and the expiry timer reconcile publications from the managed config along with loopback services. A removed or expired entry has its socket disabled and its units removed at the next successful reconciliation, including after an earlier successful install. If the managed config declares a publication that Pipelock can't honor, reconciliation closes every publication and logs the reason. A failed install restores the previous units and their runtime state. `contain rollback` closes every recorded publication.
+
+`contain verify` checks publications as part of the private-namespace probe. It reports these failures separately:
+
+- **drift:** a unit file or the root-owned record at `/etc/pipelock/contain/published-services.json` doesn't match the declaration
+- **bridge failed:** the host socket is missing, not persistently enabled, or inactive, or the relay has failed
+- **access denied:** the host path isn't a socket owned by `operator_user` with mode `0600`
+- **wrong namespace:** a running relay isn't in the agent's namespace
+- **absent listener:** nothing in the agent namespace listens on the published address and port
+
+A state the probe can't read counts as a failure. An idle relay is normal, because the next connection starts it.
+
+Published content is untrusted agent content in both directions. Pipelock doesn't ship a viewer or serve the endpoint remotely. Remote access is your job, behind your own authentication.
+
 ### Launching a contained systemd service
 
 Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:

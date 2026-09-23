@@ -3669,6 +3669,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
 			if isShieldUTF16Response(body, contentType) {
+				p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldUTF16ScanHeadBlockReason)
 				return nil, nil, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
 			}
 			p.metrics.RecordShieldOversizeScanHead(transport)
@@ -3700,6 +3701,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, transport)
 	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
 	if result.uninspectableReason != "" {
+		p.logger.LogBlocked(actx, shieldUninspectableLayer, result.uninspectableReason)
 		return nil, nil, shieldUninspectableBlock(result.uninspectableReason)
 	}
 	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
@@ -6026,7 +6028,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType = resp.Header.Get("Content-Type")
-	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
+	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
+	isHTML := validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
 
 	// Media policy on fetched responses. Runs after shield so HTML passes
 	// through unchanged and image/audio/video responses get transport-

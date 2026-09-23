@@ -121,6 +121,9 @@ func decodeShieldUTF16(body []byte, contentType string, pipeline shield.Pipeline
 	if order == 0 {
 		order = signatureOrder
 	}
+	if declared == "utf-16" && signature && signatureOrder != order {
+		return "", true, fmt.Errorf("UTF-16 signature and declared byte order disagree")
+	}
 	if order == 0 {
 		return "", true, fmt.Errorf("UTF-16 byte order is ambiguous")
 	}
@@ -159,7 +162,7 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 	return detectShieldPipelineForResponse(contentType, body, nil)
 }
 
-func detectShieldPipelineForResponse(contentType string, body []byte, headers http.Header) shield.PipelineType {
+func detectShieldPipelineForResponse(contentType string, body []byte, _ http.Header) shield.PipelineType {
 	baseType, validBase := shieldMediaTypeEssence(contentType)
 	if validBase {
 		mediaType, _, err := mime.ParseMediaType(contentType)
@@ -175,9 +178,8 @@ func detectShieldPipelineForResponse(contentType string, body []byte, headers ht
 			}
 		}
 	}
-	if responseForbidsMIMESniffing(headers) {
-		return shield.PipelineNone
-	}
+	// nosniff blocks mismatched script/style subresources, not HTML document
+	// navigation. Without a request destination, an HTML signature remains active.
 	pipeline := shield.DetectPipeline("", shieldSniffHeader(body))
 	if pipeline != shield.PipelineNone {
 		return pipeline
@@ -195,16 +197,6 @@ func browserContentTypeIsGeneric(mediaType string) bool {
 	default:
 		return false
 	}
-}
-
-func responseForbidsMIMESniffing(headers http.Header) bool {
-	values := headers.Values("X-Content-Type-Options")
-	if len(values) == 0 {
-		return false
-	}
-	first, _, _ := strings.Cut(values[0], ",")
-	first = strings.Trim(first, "\t\n\r ")
-	return strings.EqualFold(first, "nosniff")
 }
 
 func shieldSniffHeader(body []byte) []byte {

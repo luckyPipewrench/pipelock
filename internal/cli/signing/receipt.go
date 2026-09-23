@@ -72,7 +72,7 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
-Exit 0 = valid, exit 1 = invalid or malformed.
+Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, or report delivery failed.
 
 Examples:
   pipelock verify-receipt receipt.json
@@ -86,7 +86,7 @@ Examples:
 			return validateReceiptSourceArgs(args, chainDir)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out := cmd.OutOrStdout()
+			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
 			trustedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
@@ -162,21 +162,21 @@ Examples:
 				if cmd.Flags().Changed("session") {
 					return fmt.Errorf("--fleet-report cannot be combined with --session")
 				}
-				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
+				return outputResult(out, verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned))
 			}
 			if resolvedLocation != nil {
 				if cleanReport == "" {
 					if wholeRecorder {
-						return verifyWholeRecorderFromResolvedSessionDir(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts)
+						return outputResult(out, verifyWholeRecorderFromResolvedSessionDir(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
 					}
-					return verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts)
+					return outputResult(out, verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
 					return fmt.Errorf("extracting session receipts: %w", extractErr)
 				}
 				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
-				return verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport)
+				return outputResult(out, verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport))
 			}
 			if locationID != "" {
 				return fmt.Errorf("--location requires --chain")
@@ -191,12 +191,12 @@ Examples:
 					if extractErr != nil {
 						return fmt.Errorf("extracting receipts: %w", extractErr)
 					}
-					return verifyCleanReport(out, path, receipts, trustedKeys, allowUnpinned, cleanReport)
+					return outputResult(out, verifyCleanReport(out, path, receipts, trustedKeys, allowUnpinned, cleanReport))
 				}
 				if wholeRecorder {
-					return verifyWholeRecorderFromFile(out, path, trustedKeys, verifyOpts)
+					return outputResult(out, verifyWholeRecorderFromFile(out, path, trustedKeys, verifyOpts))
 				}
-				return verifyChainFromFileDetailed(out, path, trustedKeys, verifyOpts)
+				return outputResult(out, verifyChainFromFileDetailed(out, path, trustedKeys, verifyOpts))
 			}
 
 			if cleanReport != "" {
@@ -207,7 +207,7 @@ Examples:
 			}
 			// Single receipt JSON file: a lone receipt has no chain to walk,
 			// so it verifies against the first supplied key (or its own).
-			return verifySingleReceiptDetailed(out, path, firstOrEmpty(trustedKeys), verifyOpts)
+			return outputResult(out, verifySingleReceiptDetailed(out, path, firstOrEmpty(trustedKeys), verifyOpts))
 		},
 	}
 
@@ -227,6 +227,36 @@ Examples:
 	cmd.Flags().StringArrayVar(&endorsementPaths, "rotation-endorsement", nil,
 		"old-key-signed rotation endorsement JSON; repeat for each endorsed boundary")
 	return cmd
+}
+
+// firstOutputErrWriter records the first write failure from a command report.
+// Individual renderers intentionally ignore fmt write results so they can emit
+// all diagnostics to healthy streams; the command boundary returns this error
+// only after the requested semantic operation has otherwise succeeded.
+type firstOutputErrWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (w *firstOutputErrWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.err = err
+	}
+	return n, err
+}
+
+func outputResult(out *firstOutputErrWriter, semanticErr error) error {
+	if semanticErr != nil {
+		return semanticErr
+	}
+	return out.err
 }
 
 func firstOrEmpty(keys []string) string {
@@ -1234,7 +1264,7 @@ Examples:
 			if len(resolvedKeys) == 0 {
 				return fmt.Errorf("--key is required: transcript roots must be verified against a trusted signer key")
 			}
-			out := cmd.OutOrStdout()
+			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
 			var label string
 			var receipts []receipt.Receipt
 			if chainDir != "" {
@@ -1282,7 +1312,7 @@ Examples:
 			_, _ = fmt.Fprintf(out, "  Final seq:     %d\n", root.FinalSeq)
 			_, _ = fmt.Fprintf(out, "  Start:         %s\n", root.StartTime.Format("2006-01-02T15:04:05Z"))
 			_, _ = fmt.Fprintf(out, "  End:           %s\n", root.EndTime.Format("2006-01-02T15:04:05Z"))
-			return nil
+			return outputResult(out, nil)
 		},
 	}
 

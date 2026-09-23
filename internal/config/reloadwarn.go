@@ -14,8 +14,29 @@ import (
 
 // ReloadWarning describes a potential security downgrade from a config reload.
 type ReloadWarning struct {
-	Field   string
-	Message string
+	Field       string
+	Message     string
+	Disposition ReloadWarningDisposition
+}
+
+// ReloadWarningDisposition describes whether a reload warning can be accepted
+// by a required security contract. Its zero value is deliberately rejectable:
+// a new or unclassified warning must not weaken a required contract.
+type ReloadWarningDisposition string
+
+const (
+	// ReloadWarningDispositionAdvisory marks a warning that does not weaken a
+	// required security contract, including restart-only notices and changes
+	// that restore coverage.
+	ReloadWarningDispositionAdvisory ReloadWarningDisposition = "advisory"
+)
+
+func advisoryReloadWarning(field, message string) ReloadWarning {
+	return ReloadWarning{
+		Field:       field,
+		Message:     message,
+		Disposition: ReloadWarningDispositionAdvisory,
+	}
 }
 
 func defaultMCPResponseTrust(trust string, existed bool) string {
@@ -432,8 +453,9 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		updated.FetchProxy.Monitoring.PathEntropyExclusions,
 	); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
-			Field:   "fetch_proxy.monitoring.path_entropy_exclusions",
-			Message: fmt.Sprintf("path entropy exclusions removed: %s — path-entropy coverage restored on these routes", strings.Join(removed, ", ")),
+			Field:       "fetch_proxy.monitoring.path_entropy_exclusions",
+			Message:     fmt.Sprintf("path entropy exclusions removed: %s — path-entropy coverage restored on these routes", strings.Join(removed, ", ")),
+			Disposition: ReloadWarningDispositionAdvisory,
 		})
 	}
 	if added := queryEntropyParamExclusionsAdded(
@@ -450,8 +472,9 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		updated.FetchProxy.Monitoring.QueryEntropyParamExclusions,
 	); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
-			Field:   "fetch_proxy.monitoring.query_entropy_param_exclusions",
-			Message: fmt.Sprintf("query entropy parameter exclusions removed: %s — matching requests will again be subject to query-value entropy blocks", strings.Join(removed, ", ")),
+			Field:       "fetch_proxy.monitoring.query_entropy_param_exclusions",
+			Message:     fmt.Sprintf("query entropy parameter exclusions removed: %s — matching requests will again be subject to query-value entropy blocks", strings.Join(removed, ", ")),
+			Disposition: ReloadWarningDispositionAdvisory,
 		})
 	}
 
@@ -646,36 +669,36 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 
 	// Kill switch API listen address changed (requires restart)
 	if old.KillSwitch.APIListen != updated.KillSwitch.APIListen {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "kill_switch.api_listen",
-			Message: "api_listen cannot change at runtime (requires restart) — ignoring",
-		})
+		warnings = append(warnings, advisoryReloadWarning(
+			"kill_switch.api_listen",
+			"api_listen cannot change at runtime (requires restart) — ignoring",
+		))
 	}
 
 	// Metrics listen address changed (requires restart)
 	if old.MetricsListen != updated.MetricsListen {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "metrics_listen",
-			Message: "metrics_listen cannot change at runtime (requires restart) — ignoring",
-		})
+		warnings = append(warnings, advisoryReloadWarning(
+			"metrics_listen",
+			"metrics_listen cannot change at runtime (requires restart) — ignoring",
+		))
 	}
 
 	// Health watchdog settings are startup-only: the goroutine interval and
 	// enabled/disabled wiring are established when the proxy is constructed.
 	if old.HealthWatchdog.Enabled != updated.HealthWatchdog.Enabled ||
 		old.HealthWatchdog.IntervalSeconds != updated.HealthWatchdog.IntervalSeconds {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "health_watchdog",
-			Message: "health_watchdog config changes require restart — ignored on reload",
-		})
+		warnings = append(warnings, advisoryReloadWarning(
+			"health_watchdog",
+			"health_watchdog config changes require restart — ignored on reload",
+		))
 	}
 	if !boolPtrEqual(old.DashboardSnapshot.Enabled, updated.DashboardSnapshot.Enabled) ||
 		old.DashboardSnapshot.Path != updated.DashboardSnapshot.Path ||
 		old.DashboardSnapshot.Interval != updated.DashboardSnapshot.Interval {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "dashboard_snapshot",
-			Message: "dashboard_snapshot config changes require restart — ignored on reload",
-		})
+		warnings = append(warnings, advisoryReloadWarning(
+			"dashboard_snapshot",
+			"dashboard_snapshot config changes require restart — ignored on reload",
+		))
 	}
 
 	// Secrets file changed or removed (security-relevant)
@@ -696,37 +719,25 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 
 	// Sentry DSN changed (requires restart - scrubber is built once at init)
 	if old.Sentry.DSN != updated.Sentry.DSN {
-		warnings = append(warnings, ReloadWarning{Field: "sentry.dsn", Message: "Sentry DSN changes require restart"})
+		warnings = append(warnings, advisoryReloadWarning("sentry.dsn", "Sentry DSN changes require restart"))
 	}
 
 	// Sentry scrubber uses DLP patterns, env secrets, and file secrets from
 	// init time. Warn on ANY change that would affect scrubbing coverage.
 	if dlpPatternsChanged(old.DLP.Patterns, updated.DLP.Patterns) {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "sentry",
-			Message: "DLP patterns changed; Sentry scrubber uses init-time patterns until restart",
-		})
+		warnings = append(warnings, advisoryReloadWarning("sentry", "DLP patterns changed; Sentry scrubber uses init-time patterns until restart"))
 	}
 	if old.DLP.ScanEnv != updated.DLP.ScanEnv {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "sentry",
-			Message: "dlp.scan_env changed; Sentry scrubber uses init-time env secrets until restart",
-		})
+		warnings = append(warnings, advisoryReloadWarning("sentry", "dlp.scan_env changed; Sentry scrubber uses init-time env secrets until restart"))
 	}
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "sentry",
-			Message: "dlp.secrets_file changed; Sentry scrubber uses init-time file secrets until restart",
-		})
+		warnings = append(warnings, advisoryReloadWarning("sentry", "dlp.secrets_file changed; Sentry scrubber uses init-time file secrets until restart"))
 	}
 
 	// File sentry config is startup-only (watches are armed once at init).
 	// ALL fields are reload-immutable, not just enabled/best_effort.
 	if fileSentryChanged(old, updated) {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "file_sentry",
-			Message: "file_sentry config changes require restart — ignored on reload",
-		})
+		warnings = append(warnings, advisoryReloadWarning("file_sentry", "file_sentry config changes require restart — ignored on reload"))
 	}
 
 	// The learn-lock block constructs one coupled runtime: its trust root,
@@ -734,19 +745,13 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// and enforcement mode must all agree. Server reload preserves this block
 	// from the running configuration rather than rebuilding that runtime.
 	if old.LearnLock != updated.LearnLock {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "learn_lock",
-			Message: "learn_lock config changes require restart — ignored on reload",
-		})
+		warnings = append(warnings, advisoryReloadWarning("learn_lock", "learn_lock config changes require restart — ignored on reload"))
 	}
 
 	// Sandbox config is startup-only. Warn if any sandbox fields changed
 	// so operators know the reload had no effect on the running sandbox.
 	if sandboxChanged(old, updated) {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "sandbox",
-			Message: "sandbox config changes require restart — ignored on reload",
-		})
+		warnings = append(warnings, advisoryReloadWarning("sandbox", "sandbox config changes require restart — ignored on reload"))
 	}
 
 	// reverse_proxy.profile is startup-only: the listener binds once and the
@@ -757,10 +762,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// operator restarts rather than trusting a no-op reload. The listen/
 	// upstream addresses are already restart-only for the same reason.
 	if old.ReverseProxy.Profile != updated.ReverseProxy.Profile {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "reverse_proxy",
-			Message: "reverse_proxy.profile change requires restart — dial path and listener are fixed at startup, reload ignored",
-		})
+		warnings = append(warnings, advisoryReloadWarning("reverse_proxy", "reverse_proxy.profile change requires restart — dial path and listener are fixed at startup, reload ignored"))
 	}
 
 	// Media policy downgrades. Each toggle that weakens protection gets a
@@ -869,11 +871,11 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// start emitting signatures no verifier can check. Warn on change.
 	if old.MediationEnvelope.Sign && updated.MediationEnvelope.Sign &&
 		old.MediationEnvelope.KeyID != updated.MediationEnvelope.KeyID {
-		warnings = append(warnings, ReloadWarning{
-			Field: "mediation_envelope.key_id",
-			Message: fmt.Sprintf("mediation envelope signing key_id changed from %q to %q — verifiers must have the new public key published",
+		warnings = append(warnings, advisoryReloadWarning(
+			"mediation_envelope.key_id",
+			fmt.Sprintf("mediation envelope signing key_id changed from %q to %q — verifiers must have the new public key published",
 				old.MediationEnvelope.KeyID, updated.MediationEnvelope.KeyID),
-		})
+		))
 	}
 	if old.MediationEnvelope.Sign && updated.MediationEnvelope.Sign {
 		updatedComponents := make(map[string]struct{}, len(updated.MediationEnvelope.SignedComponents))

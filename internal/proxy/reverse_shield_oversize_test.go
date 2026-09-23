@@ -59,6 +59,11 @@ func reverseShieldResponseHarness(t *testing.T, strictness, action string, respo
 
 func reverseShieldResponseHarnessWithContentType(t *testing.T, strictness, action string, responseScanning bool, maxShieldBytes int, contentType, page string) *http.Response {
 	t.Helper()
+	return reverseShieldResponseHarnessWithHeaders(t, strictness, action, responseScanning, maxShieldBytes, http.Header{"Content-Type": {contentType}}, page)
+}
+
+func reverseShieldResponseHarnessWithHeaders(t *testing.T, strictness, action string, responseScanning bool, maxShieldBytes int, responseHeaders http.Header, page string) *http.Response {
+	t.Helper()
 
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = responseScanning
@@ -69,7 +74,11 @@ func reverseShieldResponseHarnessWithContentType(t *testing.T, strictness, actio
 	cfg.BrowserShield.OversizeAction = action
 
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", contentType)
+		for name, values := range responseHeaders {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
 		w.Header().Set("ETag", `"upstream"`)
 		w.Header().Set("Content-MD5", "upstream-md5")
 		w.Header().Set("Digest", "sha-256=upstream-digest")
@@ -815,7 +824,7 @@ func TestReverseProxy_ShieldRunsWhenResponseScanningDisabled(t *testing.T) {
 
 func TestReverseProxy_ShieldRunsForGenericMIMEWhenResponseScanningDisabled(t *testing.T) {
 	page := "<html><body><img src=\"https://tracker.vendor.example/p.gif\" width=\"1\" height=\"1\"></body></html>"
-	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 1<<20, "application/octet-stream", page)
+	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 1<<20, "unknown/unknown", page)
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

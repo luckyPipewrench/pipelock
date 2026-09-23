@@ -2109,8 +2109,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
-		prefixLen := min(len(body), 512)
-		if shieldLeavesBodyUnchanged(shield.DetectPipeline(resp.Header.Get("Content-Type"), body[:prefixLen])) {
+		if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)) {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
 		}
@@ -2119,8 +2118,27 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		reason := shieldOversizeObservedReason(revHost, max(bodyBytes, len(body)), shieldMaxBytes, bodyBytesExact)
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		rp.metrics.RecordShieldSkipped("oversize")
+		blockUninspectable := func(reason string) reverseShieldOversizeDecision {
+			_ = resp.Body.Close()
+			rp.logger.LogBlocked(actx, shieldUninspectableLayer, reason)
+			rp.metrics.RecordBlocked(revHost, shieldUninspectableLayer, 0, agent)
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, shieldUninspectableLayer)
+			emitReverseReceipt(receipt.EmitOpts{
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldUninspectableLayer,
+				Pattern: reason, Transport: TransportReverse, Method: resp.Request.Method,
+				Target: targetURL, RequestID: requestID, Agent: agent,
+			})
+			replaceWithBlockReason(resp, reason)
+			blockInfoFor(blockreason.BrowserShieldUninspectable, shieldUninspectableLayer).SetHeaders(resp.Header)
+			recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), shieldUninspectableLayer, bodyBytesExact)
+			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
+		}
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
+			if isShieldUTF16Response(body, resp.Header.Get("Content-Type")) {
+				return blockUninspectable(shieldUTF16ScanHeadBlockReason)
+			}
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
 			scanned := body[:shieldMaxBytes]
@@ -2948,7 +2966,19 @@ responseScanning:
 			}
 		} else {
 			originalBodyBytes := len(body)
-			body, shieldSummary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			if shieldResult.uninspectableReason != "" {
+				rp.logger.LogBlocked(newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), shieldUninspectableLayer, shieldResult.uninspectableReason)
+				rp.metrics.RecordBlocked(revHost, shieldUninspectableLayer, 0, agent)
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, shieldUninspectableLayer)
+				emitReverseReceipt(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldUninspectableLayer, Pattern: shieldResult.uninspectableReason, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent})
+				replaceWithBlockReason(resp, shieldResult.uninspectableReason)
+				blockInfoFor(blockreason.BrowserShieldUninspectable, shieldUninspectableLayer).SetHeaders(resp.Header)
+				recordReverseOutcome(http.StatusForbidden, int64(originalBodyBytes), shieldUninspectableLayer)
+				return nil
+			}
+			body, shieldSummary = shieldResult.body, shieldResult.summary
 			if shieldSummary != nil {
 				shieldChanged = true
 				shieldSummary.BodyBytes = originalBodyBytes
@@ -3330,9 +3360,8 @@ func reverseRequestScanMaxBytes(cfg *config.Config) int {
 // that the tail was deliberately left unscanned.
 func partialShieldSummary(summary *receipt.ShieldSummary, scanned []byte, contentType string, bodyBytes, scannedBytes int) *receipt.ShieldSummary {
 	if summary == nil {
-		prefixLen := min(len(scanned), 512)
 		summary = &receipt.ShieldSummary{
-			Pipeline: shieldPipelineLabel(shield.DetectPipeline(contentType, scanned[:prefixLen])),
+			Pipeline: shieldPipelineLabel(detectShieldPipeline(contentType, scanned)),
 		}
 	}
 	summary.BodyBytes = bodyBytes

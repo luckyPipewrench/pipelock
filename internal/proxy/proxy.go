@@ -3623,6 +3623,14 @@ func shieldCapacityBlock() *shieldBlockResult {
 	}
 }
 
+func shieldUninspectableBlock(reason string) *shieldBlockResult {
+	return &shieldBlockResult{
+		info:   blockInfoFor(blockreason.BrowserShieldUninspectable, shieldUninspectableLayer),
+		status: http.StatusForbidden,
+		reason: reason,
+	}
+}
+
 // applyShield runs Browser Shield rewriting on a response body when enabled
 // and the hostname is not exempt. A nonnil block result prevents delivery and
 // supplies the transport's status, reason, and receipt classification.
@@ -3646,11 +3654,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	// on the rewrite path; we short-circuit here for binary bodies so the
 	// oversize ceiling only applies to content the shield would actually
 	// rewrite (HTML, JS, SVG).
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
+	if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(contentType, body, respHeaders)) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, nil
 	}
@@ -3664,6 +3668,10 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
+			if isShieldUTF16Response(body, contentType) {
+				p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldUTF16ScanHeadBlockReason)
+				return nil, nil, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
+			}
 			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
@@ -3689,7 +3697,15 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		}
 	}
 
-	rewritten, summary := p.runShieldPipelineResult(body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+	shieldStart := time.Now()
+	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, transport)
+	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
+	if result.uninspectableReason != "" {
+		p.logger.LogBlocked(actx, shieldUninspectableLayer, result.uninspectableReason)
+		return nil, nil, shieldUninspectableBlock(result.uninspectableReason)
+	}
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
+	rewritten, summary := result.body, result.summary
 	if summary != nil {
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
@@ -3704,66 +3720,30 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 // summary for receipts and adaptive scoring when the response changed.
 func (p *Proxy) runShieldPipelineResult(body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, *receipt.ShieldSummary) {
 	shieldStart := time.Now()
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
-	if pipeline == shield.PipelineNone {
-		return body, nil
-	}
-	// Extract CSP nonce from response headers (preferred over body extraction).
-	headerNonce := shield.ExtractCSPNonce(respHeaders)
-	shieldResult := p.shieldEngine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
-	if shieldResult.Rewritten {
-		body = []byte(shieldResult.Content)
-		if shieldResult.ExtensionHits > 0 {
-			m.RecordShieldRewrite("extension", transport)
-			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.TrackingHits > 0 {
-			m.RecordShieldRewrite("tracking", transport)
-			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.TrapHits > 0 {
-			m.RecordShieldRewrite("trap", transport)
-			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.ShimInjected {
-			m.RecordShieldShimInjected(transport)
-		}
-	}
+	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, cfg, m, transport)
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	m.RecordShieldLatency(transport, time.Since(shieldStart))
-	return body, shieldSummaryFromResult(shieldResult)
+	return result.body, result.summary
+}
+
+func (p *Proxy) logShieldRewriteSummary(summary *receipt.ShieldSummary, actx audit.LogContext, clientIP, requestID, transport string) {
+	if summary == nil {
+		return
+	}
+	if summary.ExtensionProbes > 0 {
+		p.logger.LogShieldRewrite("extension", summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.TrackingBeacons > 0 {
+		p.logger.LogShieldRewrite("tracking", summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.AgentTraps > 0 {
+		p.logger.LogShieldRewrite("trap", summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
+	}
 }
 
 func runShieldPipelineSharedResult(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) ([]byte, *receipt.ShieldSummary) {
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
-	if pipeline == shield.PipelineNone {
-		return body, nil
-	}
-	headerNonce := shield.ExtractCSPNonce(respHeaders)
-	shieldResult := engine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
-	if shieldResult.Rewritten {
-		body = []byte(shieldResult.Content)
-		if shieldResult.ExtensionHits > 0 {
-			m.RecordShieldRewrite("extension", transport)
-		}
-		if shieldResult.TrackingHits > 0 {
-			m.RecordShieldRewrite("tracking", transport)
-		}
-		if shieldResult.TrapHits > 0 {
-			m.RecordShieldRewrite("trap", transport)
-		}
-		if shieldResult.ShimInjected {
-			m.RecordShieldShimInjected(transport)
-		}
-	}
-	return body, shieldSummaryFromResult(shieldResult)
+	result := runShieldPipelineWithEncoding(engine, body, contentType, respHeaders, cfg, m, transport)
+	return result.body, result.summary
 }
 
 func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
@@ -6015,8 +5995,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	contentType := resp.Header.Get("Content-Type")
 	title := ""
 
-	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
-
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
 	// Use the final response origin (after redirects), not the original request
@@ -6049,6 +6027,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = shieldBlocked.info.Layer
 		return
 	}
+	contentType = resp.Header.Get("Content-Type")
+	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
+	isHTML := validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
 
 	// Media policy on fetched responses. Runs after shield so HTML passes
 	// through unchanged and image/audio/video responses get transport-
@@ -6091,6 +6072,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
+	if scanAsHTML && shieldSummary == nil {
+		decoded, utf16, err := decodeShieldUTF16(body, contentType, shield.PipelineHTML)
+		if err != nil {
+			// Keep malformed bytes on the raw scanner path, which reports
+			// incomplete inspection as a failure rather than scanning markup.
+			scanAsHTML = false
+		} else if utf16 {
+			content = decoded
+		}
+	}
 
 	// Extract text from HTML hiding spots that readability strips (comments,
 	// non-executable data scripts, style, hidden elements). Scan only those

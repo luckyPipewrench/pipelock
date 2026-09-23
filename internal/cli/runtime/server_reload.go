@@ -321,7 +321,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// same hash inside 2s skips silently.
 		// Compensation and uncertain applies must execute: a failed restoration
 		// may publish another config without updating the last-success marker.
-		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged {
+		// Hash() identifies source-file bytes, not the effective in-memory
+		// candidate. Direct reload callers can change policy while retaining
+		// the same raw bytes, so only deduplicate an identical candidate.
+		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged && reflect.DeepEqual(oldCfg, newCfg) {
 			return nil
 		}
 
@@ -1084,23 +1087,7 @@ func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {
 }
 
 func reloadWarningIsAdvisory(w config.ReloadWarning) bool {
-	msg := strings.ToLower(w.Message)
-	if strings.Contains(msg, "requires restart") ||
-		strings.Contains(msg, "require restart") ||
-		strings.Contains(msg, "ignored on reload") ||
-		strings.Contains(msg, "uses init-time") ||
-		strings.Contains(msg, "cannot change at runtime") {
-		return true
-	}
-
-	switch w.Field {
-	case "mediation_envelope.key_id":
-		return true
-	case "dlp.secrets_file":
-		return !strings.Contains(msg, "removed")
-	default:
-		return false
-	}
+	return w.Disposition == config.ReloadWarningDispositionAdvisory
 }
 
 // trustExpansionReloadFields identifies trust fields for a rejected reload's

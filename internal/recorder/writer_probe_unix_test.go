@@ -37,3 +37,40 @@ func TestEvidenceWriterGone(t *testing.T) {
 		t.Fatalf("missing file: err=%v; want probe-open error", err)
 	}
 }
+
+// TestEvidenceRunWriterGoneAcrossRotation covers the run-lifetime lock that
+// closes the rotation gap: a shard lock is released while the next shard is
+// opened, so only this lock can answer whether a run has really exited.
+func TestEvidenceRunWriterGoneAcrossRotation(t *testing.T) {
+	dir := t.TempDir()
+	const session = "proxy.run.abc"
+
+	// A run with no lock file at all must fail closed, because an absent lock
+	// cannot prove the writer exited.
+	gone, err := EvidenceRunWriterGone(dir, session)
+	if err == nil || gone {
+		t.Fatalf("absent lock: gone=%v, err=%v; want false and an error", gone, err)
+	}
+
+	held, err := acquireRunPresence(dir, session)
+	if err != nil {
+		t.Fatalf("acquireRunPresence: %v", err)
+	}
+	info, statErr := os.Stat(filepath.Join(dir, "writer-"+session+".lock"))
+	if statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("lock file mode: %v %v", info, statErr)
+	}
+	if gone, err := EvidenceRunWriterGone(dir, session); err != nil || gone {
+		t.Fatalf("live run: gone=%v, err=%v; want false, nil", gone, err)
+	}
+
+	if err := unlockEvidenceFile(held); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := EvidenceRunWriterGone(dir, session); err != nil || !gone {
+		t.Fatalf("exited run: gone=%v, err=%v; want true, nil", gone, err)
+	}
+}

@@ -156,9 +156,14 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			// through "..", names the recorder directory while its cleaned
 			// spelling does not. A parent that cannot be resolved is refused
 			// too, with its cause, rather than assumed to be elsewhere.
-			sameDir, identityErr := cliutil.SamePathIdentity(recorderDir, unresolvedParent(output))
-			if sameDir || identityErr != nil {
-				return errors.Join(fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere (got %s)", label, recorderDir, shadowReceiptsLabel, path), identityErr)
+			// The report writer cleans the path before writing, so the cleaned
+			// parent is checked as well: a symlink inside the recorder
+			// directory that points out, followed by "..", passes the raw
+			// check and then writes here.
+			rawSame, rawErr := cliutil.SamePathIdentity(recorderDir, unresolvedParent(output))
+			cleanSame, cleanErr := cliutil.SamePathIdentity(recorderDir, filepath.Dir(path))
+			if rawSame || cleanSame || rawErr != nil || cleanErr != nil {
+				return errors.Join(fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere (got %s)", label, recorderDir, shadowReceiptsLabel, path), rawErr, cleanErr)
 			}
 		}
 	}
@@ -531,7 +536,9 @@ func readShadowReport(path string) (shadow.Report, error) {
 // filepath.Dir collapses ".." lexically, before any symlink is resolved, so
 // "alias/../name" would lose the directory the kernel actually reaches.
 func unresolvedParent(p string) string {
-	i := strings.LastIndexByte(p, filepath.Separator)
+	// "/" is a separator on every supported platform, including Windows,
+	// where filepath.Separator is "\".
+	i := strings.LastIndexFunc(p, func(r rune) bool { return r == '/' || r == filepath.Separator })
 	switch {
 	case i < 0:
 		return "."

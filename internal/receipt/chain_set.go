@@ -355,8 +355,16 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 
 	// Key trust across links: an endorsed successor key joins the pinned set
 	// for that chain only.
+	//
+	// An endorsement is authority only when the key that signed it is itself
+	// trusted, so a successor counts as endorsed only after its predecessor
+	// chain has verified. Chains are therefore verified in dependency order.
+	// Chains that wait on each other in a cycle never reach a verified root;
+	// they are verified without the endorsement and so report as untrusted,
+	// rather than vouching for each other.
 	endorsed := make(map[string]bool)
 	if !opts.LinksOnly {
+		endorsable := make(map[string]bool)
 		crossUsed := make(map[int]bool)
 		for _, s := range sessions {
 			link := data[s].chain.Link
@@ -365,13 +373,13 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 			}
 			for i, e := range opts.Endorsements {
 				if VerifyCrossChainEndorsement(e, *link) == nil {
-					endorsed[s] = true
+					endorsable[s] = true
 					crossUsed[i] = true
 					break
 				}
 			}
 		}
-		for _, s := range sessions {
+		verify := func(s string) {
 			// In-chain rotation endorsements go only to their own chain, and
 			// never one already consumed across a link: the single-chain
 			// verifier rejects any endorsement it cannot place.
@@ -382,6 +390,30 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 				}
 			}
 			verifyBaseChain(data[s], opts.TrustedKeys, own, endorsed[s], add)
+		}
+		resolved := make(map[string]bool)
+		pending := sessions
+		for progress := true; progress && len(pending) > 0; {
+			progress = false
+			var waiting []string
+			for _, s := range pending {
+				if endorsable[s] {
+					predSession := data[s].chain.Link.PredecessorSession
+					pred, exists := data[predSession]
+					if exists && !resolved[predSession] {
+						waiting = append(waiting, s)
+						continue
+					}
+					endorsed[s] = exists && pred.chain.Valid
+				}
+				verify(s)
+				resolved[s] = true
+				progress = true
+			}
+			pending = waiting
+		}
+		for _, s := range pending {
+			verify(s)
 		}
 	}
 

@@ -182,7 +182,7 @@ The harness produces three artifacts worth looking at:
 The harness verifies the stream inline with Python. For an
 independent check, install the reference verifier:
 
-Choose the run chain being checked, for example the first JSONL file in the example's evidence directory:
+Choose the run chain being checked, for example the first JSONL file in the example's evidence directory. This checks that one shard, which is the whole run for this short example. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>` (see [One chain per process run](flight-recorder.md#one-chain-per-process-run)):
 
 ```bash
 EVIDENCE_FILE="$(find evidence -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"

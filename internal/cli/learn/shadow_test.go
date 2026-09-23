@@ -1068,6 +1068,20 @@ func TestRunShadowRefusesRecorderDirReachedThroughSymlink(t *testing.T) {
 			}
 			return link + string(filepath.Separator) + ".." + string(filepath.Separator) + owned
 		}},
+		// The reverse: a link inside the recorder directory points out, so the
+		// raw parent resolves outside while the cleaned path the writer uses
+		// lands inside.
+		{name: "reverse-dotdot", out: func(dir, recorderDir string) string {
+			outside := filepath.Join(dir, "outside", "deep")
+			if err := os.MkdirAll(outside, 0o750); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			link := filepath.Join(recorderDir, "out")
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return link + string(filepath.Separator) + ".." + string(filepath.Separator) + owned
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

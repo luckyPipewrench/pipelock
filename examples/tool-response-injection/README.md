@@ -93,7 +93,7 @@ Two interchangeable verifiers are available.
 
 The Go CLI ships with pipelock:
 
-Choose one run chain from the demo's evidence directory:
+Choose one run chain from the demo's evidence directory. The commands below check that one shard, which is the whole run for this demo. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>`:
 
 ```bash
 EVIDENCE_FILE="$(find evidence -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"

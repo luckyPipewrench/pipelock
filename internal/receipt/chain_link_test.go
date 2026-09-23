@@ -1524,3 +1524,118 @@ func TestChainLinkFileNameIsRecorderOwned(t *testing.T) {
 		t.Fatalf("recorder.IsRecorderOwnedFile(%q) = false; the link would be unprotected", name)
 	}
 }
+
+// Two chains under keys nobody pinned link to each other and endorse each
+// other's key. Neither traces back to a pinned key, so neither may be trusted:
+// an endorsement is authority only when the key that signed it is itself
+// trusted.
+func TestChainLink_EndorsementCycleIsNotTrusted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pubP, _ := generateTestKey(t)
+	pubX, privX := generateTestKey(t)
+	pubY, privY := generateTestKey(t)
+	x := startRun(t, dir, privX)
+	x.openAndEmit(t, 1)
+	x.close(t)
+	y := startRun(t, dir, privY)
+	y.openAndEmit(t, 1)
+	y.close(t)
+	if y.e.ChainLink() == nil {
+		t.Fatal("Y must link to X")
+	}
+	xs, ys := sessionReceipts(t, dir, x.session), sessionReceipts(t, dir, y.session)
+	xTail, yTail := xs[len(xs)-1], ys[len(ys)-1]
+	xHash, err := ReceiptHash(xTail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yHash, err := ReceiptHash(yTail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the cycle: X claims to continue Y.
+	forgeLink(t, dir, ChainLinkFileName(y.session), ChainLink{
+		PredecessorSession: y.session, PredecessorTailSeq: yTail.ActionRecord.ChainSeq,
+		PredecessorTailHash: yHash, PredecessorSignerKey: hex.EncodeToString(pubY),
+		SuccessorSession: x.session, SuccessorSignerKey: hex.EncodeToString(pubX),
+	}, privX)
+	endorse := func(session string, seq uint64, hash string, newKey ed25519.PublicKey, priv ed25519.PrivateKey) RotationEndorsement {
+		e, eErr := SignRotationEndorsement(RotationEndorsement{
+			SessionID: session, PriorFinalSeq: seq, PriorTailHash: hash,
+			NewSignerKey: hex.EncodeToString(newKey), RotatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}, priv)
+		if eErr != nil {
+			t.Fatal(eErr)
+		}
+		return e
+	}
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{
+		TrustedKeys: []string{hex.EncodeToString(pubP)},
+		Endorsements: []RotationEndorsement{
+			endorse(x.session, xTail.ActionRecord.ChainSeq, xHash, pubY, privX),
+			endorse(y.session, yTail.ActionRecord.ChainSeq, yHash, pubX, privY),
+		},
+	})
+	if r.Healthy() {
+		t.Fatalf("an endorsement cycle rooted in no pinned key must not verify: %+v", r.Chains)
+	}
+	for _, c := range r.Chains {
+		if c.Valid {
+			t.Fatalf("chain %s verified without a pinned root", c.Session)
+		}
+	}
+}
+
+// The positive control for the cycle test: a pinned A endorses B, and B
+// endorses C. C's endorsement is signed by a key that is trusted only because
+// B verified, so it must wait for B and then be accepted.
+func TestChainLink_MultiHopEndorsementFromPinnedRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pubA, privA := generateTestKey(t)
+	pubB, privB := generateTestKey(t)
+	pubC, privC := generateTestKey(t)
+	runs := make([]testRun, 0, 3)
+	for _, priv := range []ed25519.PrivateKey{privA, privB, privC} {
+		r := startRun(t, dir, priv)
+		r.openAndEmit(t, 1)
+		r.close(t)
+		runs = append(runs, r)
+	}
+	endorse := func(pred testRun, newKey ed25519.PublicKey, priv ed25519.PrivateKey) RotationEndorsement {
+		rs := sessionReceipts(t, dir, pred.session)
+		hash, err := ReceiptHash(rs[len(rs)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := SignRotationEndorsement(RotationEndorsement{
+			SessionID: pred.session, PriorFinalSeq: rs[len(rs)-1].ActionRecord.ChainSeq, PriorTailHash: hash,
+			NewSignerKey: hex.EncodeToString(newKey), RotatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	// Listed successor-first, so the verifier cannot rely on input order.
+	opts := BaseVerifyOptions{
+		TrustedKeys:  []string{hex.EncodeToString(pubA)},
+		Endorsements: []RotationEndorsement{endorse(runs[1], pubC, privB), endorse(runs[0], pubB, privA)},
+	}
+	r := mustVerifyBase(t, dir, opts)
+	if !r.Healthy() {
+		t.Fatalf("a multi-hop endorsement from a pinned root must verify: %+v", r.Findings)
+	}
+	for _, c := range r.Chains {
+		if c.Session != runs[0].session && c.LinkTrust != LinkTrustEndorsed {
+			t.Fatalf("chain %s link trust = %q, want endorsed", c.Session, c.LinkTrust)
+		}
+	}
+	// Without the root endorsement, B is untrusted and C's endorsement,
+	// signed by B, must not rescue C.
+	opts.Endorsements = opts.Endorsements[:1]
+	if r := mustVerifyBase(t, dir, opts); r.Healthy() {
+		t.Fatal("an endorsement from an untrusted predecessor must not trust its successor")
+	}
+}

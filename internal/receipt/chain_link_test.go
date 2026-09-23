@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type testRun struct {
@@ -1317,17 +1318,10 @@ func TestChainLinkHelperProcess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ready, os.Getenv(helperIDEnv)), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(60 * time.Second)
-	for {
+	testwait.For(t, 60*time.Second, func() bool {
 		des, _ := os.ReadDir(ready)
-		if len(des) >= n {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("siblings never became live")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return len(des) >= n
+	}, "siblings never became live")
 	for i := 0; i < helperPerProc; i++ {
 		emitOne(t, r.e)
 	}

@@ -1722,5 +1722,11 @@ func TestChainLink_UnusedCrossChainEndorsementDoesNotCorruptPredecessor(t *testi
 		if c.Session == a.session && !c.Valid {
 			t.Fatalf("predecessor must still verify: %+v", c)
 		}
+		if c.Session == b.session && (c.Link != nil || c.LinkTrust != "") {
+			t.Fatalf("successor must report as unlinked once its link file is gone: link=%+v trust=%q", c.Link, c.LinkTrust)
+		}
+	}
+	if r.LinkCount() != 0 {
+		t.Fatalf("link count = %d, want 0", r.LinkCount())
 	}
 }

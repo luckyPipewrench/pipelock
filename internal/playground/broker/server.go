@@ -164,7 +164,7 @@ type ServerConfig struct {
 	// KitBuilder creates a requested OS kit from a sealed raw bundle after the
 	// visitor has been released. The production broker supplies shipped verifier
 	// binaries; nil leaves that download unavailable.
-	KitBuilder func(playground.VerifyKitOS, []byte) ([]byte, string, error)
+	KitBuilder func(context.Context, playground.VerifyKitOS, []byte) ([]byte, string, error)
 }
 
 // Server is the broker HTTP front door. It is safe for concurrent use.
@@ -901,9 +901,12 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 				<-s.kitBuildQueue
 				return
 			}
-			kit, filename, err := s.cfg.KitBuilder(playground.VerifyKitOS(osParam), raw.body)
+			kit, filename, err := s.cfg.KitBuilder(r.Context(), playground.VerifyKitOS(osParam), raw.body)
 			<-s.kitBuildSlots
 			<-s.kitBuildQueue
+			if r.Context().Err() != nil {
+				return
+			}
 			if err != nil {
 				writeBrokerErr(w, http.StatusServiceUnavailable, "verify kit is not available")
 				return

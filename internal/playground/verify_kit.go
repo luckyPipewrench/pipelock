@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -93,24 +94,37 @@ var verifyKitOptionalFiles = []string{
 // kit never derives, extracts, or falls back to a key from the bundle -- a
 // tampered bundle cannot ship its own key.
 func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
-	return buildVerifyKit(osName, verifierPath, sessionTarGz, false)
+	return BuildLiveVerifyKitContext(context.Background(), osName, verifierPath, sessionTarGz)
+}
+
+// BuildLiveVerifyKitContext builds a live kit while honoring caller cancellation.
+func BuildLiveVerifyKitContext(ctx context.Context, osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
+	return buildVerifyKit(ctx, osName, verifierPath, sessionTarGz, false)
 }
 
 // BuildPublishedReplayVerifyKit creates an offline kit for a root-authorized,
 // permanent replay. Its script visibly selects archive verification.
 func BuildPublishedReplayVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
-	return buildVerifyKit(osName, verifierPath, sessionTarGz, true)
+	return buildVerifyKit(context.Background(), osName, verifierPath, sessionTarGz, true)
 }
 
-func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte, archive bool) ([]byte, string, error) {
+func buildVerifyKit(ctx context.Context, osName VerifyKitOS, verifierPath string, sessionTarGz []byte, archive bool) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	if verifierPath == "" {
 		return nil, "", errors.New("verifier binary path is not configured")
 	}
-	verifier, err := os.ReadFile(filepath.Clean(verifierPath))
+	f, err := os.Open(filepath.Clean(verifierPath))
 	if err != nil {
 		return nil, "", fmt.Errorf("read verifier binary: %w", err)
 	}
-	files, err := extractLiveKitFiles(sessionTarGz)
+	verifier, err := io.ReadAll(&kitContextReader{ctx: ctx, reader: f})
+	_ = f.Close()
+	if err != nil {
+		return nil, "", fmt.Errorf("read verifier binary: %w", err)
+	}
+	files, err := extractLiveKitFiles(ctx, sessionTarGz)
 	if err != nil {
 		return nil, "", err
 	}
@@ -121,14 +135,14 @@ func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
-	if err := zipFile(zw, root+"/README.txt", []byte(liveKitReadme(osName)), 0o600); err != nil {
+	if err := zipFile(ctx, zw, root+"/README.txt", []byte(liveKitReadme(osName)), 0o600); err != nil {
 		return nil, "", err
 	}
 	scriptName, scriptBody, err := liveKitScript(osName, trustKey, archive)
 	if err != nil {
 		return nil, "", err
 	}
-	if err := zipFile(zw, root+"/"+scriptName, []byte(scriptBody), 0o700); err != nil {
+	if err := zipFile(ctx, zw, root+"/"+scriptName, []byte(scriptBody), 0o700); err != nil {
 		return nil, "", err
 	}
 
@@ -136,7 +150,7 @@ func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte
 	if osName == VerifyKitOSWindows {
 		binName += ".exe"
 	}
-	if err := zipFile(zw, root+"/app/"+binName, verifier, 0o700); err != nil {
+	if err := zipFile(ctx, zw, root+"/app/"+binName, verifier, 0o700); err != nil {
 		return nil, "", err
 	}
 
@@ -146,7 +160,7 @@ func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte
 		if !ok {
 			return nil, "", fmt.Errorf("session bundle missing %s", name)
 		}
-		if err := zipFile(zw, root+"/app/run/"+name, data, 0o600); err != nil {
+		if err := zipFile(ctx, zw, root+"/app/run/"+name, data, 0o600); err != nil {
 			return nil, "", err
 		}
 	}
@@ -156,7 +170,7 @@ func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte
 		if !ok {
 			continue
 		}
-		if err := zipFile(zw, root+"/app/run/"+name, data, 0o600); err != nil {
+		if err := zipFile(ctx, zw, root+"/app/run/"+name, data, 0o600); err != nil {
 			return nil, "", err
 		}
 	}
@@ -165,23 +179,29 @@ func buildVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte
 		if !ok {
 			return nil, "", fmt.Errorf("published replay bundle missing %s", replayArchiveAuthorizationFile)
 		}
-		if err := zipFile(zw, root+"/app/run/"+replayArchiveAuthorizationFile, data, 0o600); err != nil {
+		if err := zipFile(ctx, zw, root+"/app/run/"+replayArchiveAuthorizationFile, data, 0o600); err != nil {
 			return nil, "", err
 		}
 	}
 
-	if err := zipFile(zw, root+"/app/run/verifier.txt", []byte(liveKitVerifierTxt(trustKey, archive)), 0o600); err != nil {
+	if err := zipFile(ctx, zw, root+"/app/run/verifier.txt", []byte(liveKitVerifierTxt(trustKey, archive)), 0o600); err != nil {
+		return nil, "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
 
 	if err := zw.Close(); err != nil {
 		return nil, "", fmt.Errorf("close verify kit zip: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	return buf.Bytes(), "pipelock-live-verify-" + string(osName) + ".zip", nil
 }
 
-func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
-	gr, err := gzip.NewReader(bytes.NewReader(sessionTarGz))
+func extractLiveKitFiles(ctx context.Context, sessionTarGz []byte) (map[string][]byte, error) {
+	gr, err := gzip.NewReader(&kitContextReader{ctx: ctx, reader: bytes.NewReader(sessionTarGz)})
 	if err != nil {
 		return nil, fmt.Errorf("read session bundle gzip: %w", err)
 	}
@@ -198,7 +218,7 @@ func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 	want[replayArchiveAuthorizationFile] = true
 
 	files := make(map[string][]byte)
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(&kitContextReader{ctx: ctx, reader: gr})
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -217,7 +237,7 @@ func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 		if !want[name] {
 			continue
 		}
-		data, err := io.ReadAll(tr)
+		data, err := io.ReadAll(&kitContextReader{ctx: ctx, reader: tr})
 		if err != nil {
 			return nil, fmt.Errorf("read session bundle file %s: %w", name, err)
 		}
@@ -226,7 +246,19 @@ func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 	return files, nil
 }
 
-func zipFile(zw *zip.Writer, name string, data []byte, mode os.FileMode) error {
+type kitContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *kitContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func zipFile(ctx context.Context, zw *zip.Writer, name string, data []byte, mode os.FileMode) error {
 	h := &zip.FileHeader{
 		Name:     filepath.ToSlash(name),
 		Method:   zip.Deflate,
@@ -237,8 +269,15 @@ func zipFile(zw *zip.Writer, name string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("zip header %s: %w", name, err)
 	}
-	if _, err := w.Write(data); err != nil {
-		return fmt.Errorf("zip write %s: %w", name, err)
+	for len(data) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		chunk := data[:min(len(data), 64*1024)]
+		if _, err := w.Write(chunk); err != nil {
+			return fmt.Errorf("zip write %s: %w", name, err)
+		}
+		data = data[len(chunk):]
 	}
 	return nil
 }

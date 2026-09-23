@@ -312,7 +312,7 @@ func newBrokerTestServer(t *testing.T, provider *serverFakeProvider, cfg ServerC
 		cfg.CodeRate = livechat.RateConfig{RefillPerSec: 1000, Burst: 1000}
 	}
 	if cfg.KitBuilder == nil {
-		cfg.KitBuilder = func(osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
+		cfg.KitBuilder = func(_ context.Context, osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
 			return []byte("kit-" + string(osName) + "-" + strings.TrimPrefix(string(raw), "bundle-")), "kit.zip", nil
 		}
 	}
@@ -2205,7 +2205,7 @@ func TestServer_BundleKitBuildQueueIsBounded(t *testing.T) {
 	}()
 	var calls atomic.Int32
 	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
-		KitBuilder: func(_ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+		KitBuilder: func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
 			if calls.Add(1) == 1 {
 				close(started)
 				<-release
@@ -2262,6 +2262,111 @@ func TestServer_BundleKitBuildQueueIsBounded(t *testing.T) {
 	}
 }
 
+func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "canceled-kit-build-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	started := make(chan struct{})
+	var calls atomic.Int32
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
+		KitBuilder: func(ctx context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-ctx.Done()
+				return nil, "", ctx.Err()
+			}
+			return []byte("kit"), "kit.zip", nil
+		},
+	})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first kit build did not start")
+	}
+	cancel()
+	select {
+	case <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled kit build did not finish")
+	}
+	if len(srv.kitBuildSlots) != 0 || len(srv.kitBuildQueue) != 0 {
+		t.Fatal("canceled kit build retained a build permit")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=linux", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("next kit status = %d, want 200", rec.Code)
+	}
+}
+
+func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "canceled-kit-wait-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+	srv.kitBuildSlots <- struct{}{}
+	defer func() { <-srv.kitBuildSlots }()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for len(srv.kitBuildQueue) != 1 {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("kit request did not wait for occupied build slot")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled kit waiter did not finish")
+	}
+	if len(srv.kitBuildQueue) != 0 {
+		t.Fatal("canceled kit waiter retained a queue permit")
+	}
+}
+
 func TestServer_BundleKitBuildFailureKeepsRawForRetry(t *testing.T) {
 	t.Parallel()
 	vm := newFakeVM(t, "kit-retry-token")
@@ -2270,7 +2375,7 @@ func TestServer_BundleKitBuildFailureKeepsRawForRetry(t *testing.T) {
 	destroyed := make(chan string, 4)
 	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
 	_, ts := newBrokerTestServer(t, provider, ServerConfig{
-		KitBuilder: func(_ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+		KitBuilder: func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
 			if failBuild.Load() {
 				return nil, "", errors.New("test kit build failure")
 			}
@@ -2331,7 +2436,7 @@ func TestServer_BundleKitUnavailableAfterRaw(t *testing.T) {
 		t.Fatalf("missing builder status = %d, want 503", kitResp.StatusCode)
 	}
 
-	srv.cfg.KitBuilder = func(_ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+	srv.cfg.KitBuilder = func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
 		t.Fatal("canceled request must not enter kit builder")
 		return nil, "", nil
 	}
@@ -2415,24 +2520,35 @@ func TestServer_BundleConcurrentRawRetryReleasesVM(t *testing.T) {
 		t.Fatalf("session status = %d, want 200", status)
 	}
 	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
-	kitDone := make(chan int, 1)
+	type requestResult struct {
+		status int
+		err    error
+	}
+	request := func(rawURL string) requestResult {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+		if err != nil {
+			return requestResult{err: err}
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return requestResult{err: err}
+		}
+		_, copyErr := io.Copy(io.Discard, resp.Body)
+		closeErr := resp.Body.Close()
+		return requestResult{status: resp.StatusCode, err: errors.Join(copyErr, closeErr)}
+	}
+	kitDone := make(chan requestResult, 1)
 	go func() {
-		resp := getBroker(t, bundleURL+"&os=linux")
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		kitDone <- resp.StatusCode
+		kitDone <- request(bundleURL + "&os=linux")
 	}()
 	select {
 	case <-vm.bundleHeld:
 	case <-time.After(3 * time.Second):
 		t.Fatal("kit fetch did not reach VM")
 	}
-	rawDone := make(chan int, 1)
+	rawDone := make(chan requestResult, 1)
 	go func() {
-		resp := getBroker(t, bundleURL)
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		rawDone <- resp.StatusCode
+		rawDone <- request(bundleURL)
 	}()
 	deadline := time.After(3 * time.Second)
 	tick := time.NewTicker(time.Millisecond)
@@ -2451,11 +2567,14 @@ func TestServer_BundleConcurrentRawRetryReleasesVM(t *testing.T) {
 		}
 	}
 	releaseHold()
-	for name, done := range map[string]<-chan int{"kit": kitDone, "raw": rawDone} {
+	for name, done := range map[string]<-chan requestResult{"kit": kitDone, "raw": rawDone} {
 		select {
 		case got := <-done:
-			if got != http.StatusOK {
-				t.Fatalf("%s status = %d, want 200", name, got)
+			if got.err != nil {
+				t.Fatalf("%s request: %v", name, got.err)
+			}
+			if got.status != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", name, got.status)
 			}
 		case <-time.After(3 * time.Second):
 			t.Fatalf("%s request did not finish", name)

@@ -577,8 +577,8 @@ func brokerVerifyKitBinaries() playground.VerifyKitBinaries {
 }
 
 // buildBrokerVerifyKit packages a retained live bundle with the shipped verifier.
-func buildBrokerVerifyKit(osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
-	return playground.BuildLiveVerifyKit(osName, brokerVerifyKitBinaries().Path(osName), raw)
+func buildBrokerVerifyKit(ctx context.Context, osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
+	return playground.BuildLiveVerifyKitContext(ctx, osName, brokerVerifyKitBinaries().Path(osName), raw)
 }
 
 func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {

@@ -45,7 +45,7 @@ func TestBuildBrokerVerifyKitUsesShippedBinaryPaths(t *testing.T) {
 			if got := binaries.Path(osName); got != want {
 				t.Fatalf("verifier path = %q, want %q", got, want)
 			}
-			_, _, err := buildBrokerVerifyKit(osName, []byte("invalid bundle"))
+			_, _, err := buildBrokerVerifyKit(t.Context(), osName, []byte("invalid bundle"))
 			if err == nil {
 				t.Fatal("expected invalid bundle or missing verifier to fail")
 			}

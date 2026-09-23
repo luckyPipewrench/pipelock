@@ -3,7 +3,10 @@
 
 package shield
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Extension probing patterns.
 //
@@ -41,10 +44,17 @@ const prefetchPattern = `(?i)<link[^>]+rel\s*=\s*["']?prefetch["']?[^>]*>`
 // that could be prompt injections hidden from rendering.
 const commentTrapPattern = `(?i)<!--[\s\S]*?(?:ignore|disregard|forget|override|instead|instruction)[\s\S]*?-->`
 
-// hiddenElementPattern matches elements hidden via CSS that could contain
-// injected instructions invisible to the user but visible to an AI agent
-// reading the DOM.
-const hiddenElementPattern = `(?i)<(?:div|span|p)[^>]+style\s*=\s*["'][^"']*(?:display\s*:\s*none|font-size\s*:\s*0|visibility\s*:\s*hidden)[^"']*["'][^>]*>[\s\S]*?</(?:div|span|p)>`
+// hiddenElementOpenPattern matches the OPENING tag of a div, span or p hidden
+// via CSS. The element's extent is found by balanced tag counting in
+// stripHiddenElementTraps, not by the regex: a lazy match to the first close
+// tag cut nested markup in half and left the page structurally broken.
+const hiddenElementOpenPattern = `(?i)<(div|span|p)\b[^>]*\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|font-size\s*:\s*0|visibility\s*:\s*hidden)[^"']*["'][^>]*>`
+
+// trapInstructionPattern is the instruction vocabulary every trap rule keys
+// on. A hidden element, comment or aria-hidden node is removed only when its
+// text carries one of these words; ordinary hidden UI (menus, modals,
+// templates) is left intact.
+const trapInstructionPattern = `(?i)ignore|disregard|forget|override|instead|instruction`
 
 // ariaHiddenTrapPattern matches aria-hidden elements containing instruction
 // keywords.
@@ -136,7 +146,7 @@ func compilePatterns() (
 ) {
 	extensionRe = regexp.MustCompile(extensionURLPattern + `|` + extensionRuntimePattern)
 	trackingPixelRe = regexp.MustCompile(trackingPixelPattern + `|` + prefetchPattern)
-	hiddenTrapRe = regexp.MustCompile(hiddenElementPattern + `|` + ariaHiddenTrapPattern)
+	hiddenTrapRe = regexp.MustCompile(ariaHiddenTrapPattern)
 	commentTrapRe = regexp.MustCompile(commentTrapPattern)
 	functionStripRe = regexp.MustCompile(extensionFuncPattern)
 	return
@@ -164,4 +174,103 @@ func compileSVGActivePatterns() (
 	hiddenTextAttrRe = regexp.MustCompile(svgHiddenTextAttrPattern)
 	animationInjectionRe = regexp.MustCompile(svgAnimationInjectionPattern)
 	return
+}
+
+var (
+	hiddenElementOpenRe = regexp.MustCompile(hiddenElementOpenPattern)
+	trapInstructionRe   = regexp.MustCompile(trapInstructionPattern)
+	htmlTagRe           = regexp.MustCompile(`<[^>]*>`)
+)
+
+// stripHiddenElementTraps removes each CSS-hidden div, span or p whose text
+// carries instruction vocabulary. The whole element is removed, from its
+// opening tag to its matching close tag, so the rest of the document keeps
+// its structure. An element with no matching close runs to the end of the
+// document, as a browser would parse it.
+func stripHiddenElementTraps(s string) (string, int) {
+	var b strings.Builder
+	lower := asciiLower(s)
+	hits := 0
+	pos := 0
+	for pos < len(s) {
+		loc := hiddenElementOpenRe.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		start, openEnd := pos+loc[0], pos+loc[1]
+		tag := strings.ToLower(s[pos+loc[2] : pos+loc[3]])
+		end := matchingCloseEnd(lower, openEnd, tag)
+		if !trapInstructionRe.MatchString(htmlTagRe.ReplaceAllString(s[openEnd:end], " ")) {
+			b.WriteString(s[pos:openEnd])
+			pos = openEnd
+			continue
+		}
+		b.WriteString(s[pos:start])
+		pos = end
+		hits++
+	}
+	if hits == 0 {
+		return s, 0
+	}
+	b.WriteString(s[pos:])
+	return b.String(), hits
+}
+
+// matchingCloseEnd returns the offset just past the close tag that balances
+// an element opened before from, counting nested elements of the same name.
+// lower is the document folded by asciiLower, computed once by the caller. It returns len(lower) when
+// the element is never closed.
+func matchingCloseEnd(lower string, from int, tag string) int {
+	depth := 1
+	i := from
+	for {
+		next := strings.Index(lower[i:], "<")
+		if next < 0 {
+			return len(lower)
+		}
+		i += next
+		rest := lower[i:]
+		switch {
+		case strings.HasPrefix(rest, "</"+tag) && tagNameEnds(rest, len(tag)+2):
+			depth--
+			closeEnd := strings.IndexByte(rest, '>')
+			if closeEnd < 0 {
+				return len(lower)
+			}
+			if depth == 0 {
+				return i + closeEnd + 1
+			}
+			i += closeEnd + 1
+		case strings.HasPrefix(rest, "<"+tag) && tagNameEnds(rest, len(tag)+1):
+			depth++
+			i += len(tag) + 1
+		default:
+			i++
+		}
+	}
+}
+
+// tagNameEnds reports whether the tag name in rest stops at offset n, so
+// <p> matches p while <param> and <picture> do not.
+func tagNameEnds(rest string, n int) bool {
+	if n >= len(rest) {
+		return true
+	}
+	switch rest[n] {
+	case '>', '/', ' ', '\t', '\n', '\r', '\f':
+		return true
+	}
+	return false
+}
+
+// asciiLower folds only A-Z. Unicode case folding can change a string's byte
+// length, which would misalign offsets computed on the folded copy.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }

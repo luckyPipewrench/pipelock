@@ -3603,9 +3603,9 @@ browser_shield:
 | `oversize_action` | string | `scan_head` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
 | `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that bypass Browser Shield entirely |
 | `strip_extension_probing` | bool | `true` | Remove browser-extension URLs outside existing scripts and inject an HTML extension-defense shim |
-| `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
+| `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content: a CSS-hidden `div`, `span` or `p`, an `aria-hidden` element, or an HTML comment whose text carries instruction words such as "ignore" or "disregard". A hidden element is removed whole, to its matching close tag, so page structure is preserved; hidden interface markup without those words is left in place |
 | `strip_tracking_pixels` | bool | `true` | Remove 1x1 tracking images and prefetch links outside existing scripts |
-| `inject_fingerprint_shims` | bool | `false` | Inject an HTML browser-fingerprinting shim where supported; the shim suppresses `sendBeacon` at runtime but doesn't rewrite the page's JavaScript |
+| `inject_fingerprint_shims` | bool | `false` | Inject an HTML browser-fingerprinting shim where supported; the shim suppresses `sendBeacon` at runtime but doesn't rewrite the page's JavaScript. The shim returns fixed canvas and WebGL values, which bot-verification services such as Cloudflare Turnstile read as a tampered browser, so leave it off for a browser that must pass those checks |
 | `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine. Exact hostnames only: entries are matched literally, so a wildcard is refused at load rather than accepted and silently never matched. |
 
 For production soak, start with:

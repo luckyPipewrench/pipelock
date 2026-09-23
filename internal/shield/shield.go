@@ -642,7 +642,9 @@ func (e *Engine) stripTraps(s string, strictness string) (string, int) {
 	total := 0
 
 	// Hidden elements are stripped at all strictness levels.
-	s, n := countReplace(e.hiddenTrapRe, s)
+	s, n := stripHiddenElementTraps(s)
+	total += n
+	s, n = countReplace(e.hiddenTrapRe, s)
 	total += n
 
 	// Comment traps are stripped at standard and aggressive.

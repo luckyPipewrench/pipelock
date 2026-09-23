@@ -421,6 +421,9 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 	}
 	checked := 0
 	var outside []string
+	// The initial user namespace, read from PID 1. Unreadable means no
+	// nested-sandbox exemption is granted.
+	initUserNS, _ := env.readLink(filepath.Join(procRoot, "1", "ns", "user"))
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 1 || !entry.IsDir() {
@@ -494,6 +497,20 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 		checked++
 		if namespace == agentNamespace {
 			continue
+		}
+		// A browser's own sandbox (Chromium's namespace sandbox, for one) moves
+		// its helpers into a fresh network namespace created inside a fresh,
+		// unprivileged user namespace. That namespace starts with only a
+		// loopback device, and without privilege in the initial user namespace
+		// it cannot be given a route: its only way out is through its parent,
+		// which is inside the managed namespace. Only that shape is accepted;
+		// a process outside the managed namespace that still shares the
+		// initial user namespace, or whose user namespace cannot be read,
+		// remains a failure.
+		if initUserNS != "" {
+			if userNS, err := env.readLink(filepath.Join(procRoot, entry.Name(), "ns", "user")); err == nil && userNS != "" && userNS != initUserNS {
+				continue
+			}
 		}
 		unit := processSystemdUnit(env.readFile, filepath.Join(procRoot, entry.Name(), "cgroup"))
 		// The managed display runs in the host namespace by design: Xvfb there

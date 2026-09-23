@@ -586,6 +586,8 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 		name       string
 		namespaces map[string]string
 		cgroups    map[string]string
+		userNS     map[string]string
+		initUserNS string
 		unitBody   string
 		wantStatus string
 		wantDetail string
@@ -626,6 +628,29 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 			wantStatus: statusFail,
 			wantDetail: "pid 104 (init.scope)",
 		},
+		{
+			name:       "browser sandbox in its own user and network namespace is accepted",
+			namespaces: map[string]string{"101": "net:[200]", "105": "net:[300]"},
+			userNS:     map[string]string{"101": "user:[1]", "105": "user:[900]"},
+			initUserNS: "user:[1]",
+			wantStatus: statusPass,
+			wantDetail: "2 live pipelock-agent process(es)",
+		},
+		{
+			name:       "other namespace sharing the initial user namespace still fails",
+			namespaces: map[string]string{"101": "net:[200]", "106": "net:[300]"},
+			userNS:     map[string]string{"101": "user:[1]", "106": "user:[1]"},
+			initUserNS: "user:[1]",
+			wantStatus: statusFail,
+			wantDetail: "pid 106",
+		},
+		{
+			name:       "unreadable initial user namespace grants no exemption",
+			namespaces: map[string]string{"101": "net:[200]", "107": "net:[300]"},
+			userNS:     map[string]string{"101": "user:[1]", "107": "user:[900]"},
+			wantStatus: statusFail,
+			wantDetail: "pid 107",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			procRoot := t.TempDir()
@@ -643,10 +668,23 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 				if err := os.Symlink(namespace, filepath.Join(pidRoot, "ns", "net")); err != nil {
 					t.Fatal(err)
 				}
+				if userNS, ok := tc.userNS[pid]; ok {
+					if err := os.Symlink(userNS, filepath.Join(pidRoot, "ns", "user")); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if cgroup, ok := tc.cgroups[pid]; ok {
 					if err := os.WriteFile(filepath.Join(pidRoot, "cgroup"), []byte(cgroup), 0o600); err != nil {
 						t.Fatal(err)
 					}
+				}
+			}
+			if tc.initUserNS != "" {
+				if err := os.MkdirAll(filepath.Join(procRoot, "1", "ns"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(tc.initUserNS, filepath.Join(procRoot, "1", "ns", "user")); err != nil {
+					t.Fatal(err)
 				}
 			}
 			unitPath := filepath.Join(procRoot, "pipelock-agent-display.service")

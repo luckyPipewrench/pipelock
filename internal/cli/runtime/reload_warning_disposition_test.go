@@ -171,13 +171,31 @@ func TestServerReload_EntropyExclusionWarningDisposition(t *testing.T) {
 			change:         func(c *config.Config) { c.FetchProxy.Monitoring.PathEntropyExclusions = nil },
 			wantDiagnostic: "path entropy exclusions removed",
 		},
+		{
+			name: "path addition rejects under required receipts",
+			mode: config.ModeBalanced,
+			change: func(c *config.Config) {
+				c.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{path}
+			},
+			wantRejected:   true,
+			wantDiagnostic: "config reload rejected",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, stderr := newTestServer(t, func(o *ServerOpts) {
-				o.Mode = tc.mode
-				o.ModeChanged = true
-			})
+			var s *Server
+			var stderr *syncBuffer
+			if tc.wantRejected {
+				s, stderr, _ = newRequireReceiptsReloadServerWithAudit(t, true)
+			} else {
+				s, stderr = newTestServer(t, func(o *ServerOpts) {
+					o.Mode = tc.mode
+					o.ModeChanged = true
+				})
+			}
 			baseline := s.proxy.CurrentConfig().Clone()
+			if tc.wantRejected {
+				baseline.FlightRecorder.RequireReceipts = true
+			}
 			if tc.baseline != nil {
 				tc.baseline(baseline)
 			}
@@ -189,11 +207,10 @@ func TestServerReload_EntropyExclusionWarningDisposition(t *testing.T) {
 			if tc.change != nil {
 				tc.change(candidate)
 			}
-
 			err := s.Reload(candidate)
 			if tc.wantRejected {
 				if err == nil || !strings.Contains(err.Error(), "security downgrade") {
-					t.Fatalf("Reload() error = %v, want security downgrade rejection", err)
+					t.Fatalf("Reload() error = %v, want security downgrade rejection; stderr: %s", err, stderr.String())
 				}
 				if s.proxy.CurrentConfig() != oldCfg {
 					t.Fatal("rejected reload changed the live config")

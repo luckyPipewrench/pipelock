@@ -321,7 +321,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// same hash inside 2s skips silently.
 		// Compensation and uncertain applies must execute: a failed restoration
 		// may publish another config without updating the last-success marker.
-		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged {
+		// Hash() identifies source-file bytes, not the effective in-memory
+		// candidate. Direct reload callers can change policy while retaining
+		// the same raw bytes, so only deduplicate an identical candidate.
+		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged && reflect.DeepEqual(oldCfg, newCfg) {
 			return nil
 		}
 

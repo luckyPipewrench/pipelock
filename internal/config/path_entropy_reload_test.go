@@ -54,23 +54,26 @@ func TestPathEntropyExclusionsReloadWarnings(t *testing.T) {
 	second := PathEntropyExclusion{Scheme: "https", Host: "drive.vendor.example", PathPrefix: "/file/d/"}
 
 	tests := []struct {
-		name    string
-		before  []PathEntropyExclusion
-		after   []PathEntropyExclusion
-		want    string
-		wantNil bool
-		why     string
+		name            string
+		before          []PathEntropyExclusion
+		after           []PathEntropyExclusion
+		want            string
+		wantDisposition []ReloadWarningDisposition
+		wantNil         bool
+		why             string
 	}{
 		{
-			name:  "adding an exemption warns that coverage dropped",
-			after: []PathEntropyExclusion{pathEntropyReloadEntry},
-			want:  "path entropy exclusions added: https://docs.vendor.example/document/d/",
-			why:   "a reload that quietly reduces detection is the case this exists for",
+			name:            "adding an exemption warns that coverage dropped",
+			after:           []PathEntropyExclusion{pathEntropyReloadEntry},
+			want:            "path entropy exclusions added: https://docs.vendor.example/document/d/",
+			wantDisposition: []ReloadWarningDisposition{""},
+			why:             "a reload that quietly reduces detection is the case this exists for",
 		},
 		{
-			name:   "removing an exemption reports coverage restored",
-			before: []PathEntropyExclusion{pathEntropyReloadEntry},
-			want:   "path entropy exclusions removed: https://docs.vendor.example/document/d/",
+			name:            "removing an exemption reports coverage restored",
+			before:          []PathEntropyExclusion{pathEntropyReloadEntry},
+			want:            "path entropy exclusions removed: https://docs.vendor.example/document/d/",
+			wantDisposition: []ReloadWarningDisposition{ReloadWarningDispositionAdvisory},
 		},
 		{
 			name:    "an unchanged list is silent",
@@ -111,10 +114,11 @@ func TestPathEntropyExclusionsReloadWarnings(t *testing.T) {
 			why:     "https is the default, so spelling it out is not a policy change",
 		},
 		{
-			name:   "swapping one route for another reports both directions",
-			before: []PathEntropyExclusion{pathEntropyReloadEntry},
-			after:  []PathEntropyExclusion{second},
-			want:   "added: https://drive.vendor.example/file/d/",
+			name:            "swapping one route for another reports both directions",
+			before:          []PathEntropyExclusion{pathEntropyReloadEntry},
+			after:           []PathEntropyExclusion{second},
+			want:            "added: https://drive.vendor.example/file/d/",
+			wantDisposition: []ReloadWarningDisposition{"", ReloadWarningDispositionAdvisory},
 		},
 	}
 
@@ -132,12 +136,12 @@ func TestPathEntropyExclusionsReloadWarnings(t *testing.T) {
 			if !strings.Contains(joined, tt.want) {
 				t.Fatalf("expected a warning containing %q (%s), got:\n%s", tt.want, tt.why, joined)
 			}
-			for _, warning := range got {
-				if strings.Contains(warning.Message, "coverage restored") && warning.Disposition != ReloadWarningDispositionAdvisory {
-					t.Fatalf("coverage-restoring warning disposition = %q, want advisory", warning.Disposition)
-				}
-				if strings.Contains(warning.Message, "coverage reduced") && warning.Disposition != "" {
-					t.Fatalf("coverage-reducing warning disposition = %q, want rejectable zero value", warning.Disposition)
+			if len(got) != len(tt.wantDisposition) {
+				t.Fatalf("warning count = %d, want %d: %s", len(got), len(tt.wantDisposition), joined)
+			}
+			for i, warning := range got {
+				if warning.Disposition != tt.wantDisposition[i] {
+					t.Fatalf("warning %d disposition = %q, want %q", i, warning.Disposition, tt.wantDisposition[i])
 				}
 			}
 		})

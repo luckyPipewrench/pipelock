@@ -3702,6 +3702,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if result.uninspectableReason != "" {
 		return nil, nil, shieldUninspectableBlock(result.uninspectableReason)
 	}
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	rewritten, summary := result.body, result.summary
 	if summary != nil {
 		summary.BodyBytes = len(body)
@@ -3718,19 +3719,24 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 func (p *Proxy) runShieldPipelineResult(body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, *receipt.ShieldSummary) {
 	shieldStart := time.Now()
 	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, cfg, m, transport)
-	if result.summary != nil {
-		if result.summary.ExtensionProbes > 0 {
-			p.logger.LogShieldRewrite("extension", result.summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
-		}
-		if result.summary.TrackingBeacons > 0 {
-			p.logger.LogShieldRewrite("tracking", result.summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
-		}
-		if result.summary.AgentTraps > 0 {
-			p.logger.LogShieldRewrite("trap", result.summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
-		}
-	}
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	m.RecordShieldLatency(transport, time.Since(shieldStart))
 	return result.body, result.summary
+}
+
+func (p *Proxy) logShieldRewriteSummary(summary *receipt.ShieldSummary, actx audit.LogContext, clientIP, requestID, transport string) {
+	if summary == nil {
+		return
+	}
+	if summary.ExtensionProbes > 0 {
+		p.logger.LogShieldRewrite("extension", summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.TrackingBeacons > 0 {
+		p.logger.LogShieldRewrite("tracking", summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.AgentTraps > 0 {
+		p.logger.LogShieldRewrite("trap", summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
+	}
 }
 
 func runShieldPipelineSharedResult(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) ([]byte, *receipt.ShieldSummary) {
@@ -5987,8 +5993,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	contentType := resp.Header.Get("Content-Type")
 	title := ""
 
-	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
-
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
 	// Use the final response origin (after redirects), not the original request
@@ -6022,6 +6026,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType = resp.Header.Get("Content-Type")
+	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
 
 	// Media policy on fetched responses. Runs after shield so HTML passes
 	// through unchanged and image/audio/video responses get transport-
@@ -6064,6 +6069,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
+	if scanAsHTML && shieldSummary == nil {
+		decoded, utf16, err := decodeShieldUTF16(body, contentType, shield.PipelineHTML)
+		if err != nil {
+			// Keep malformed bytes on the raw scanner path, which reports
+			// incomplete inspection as a failure rather than scanning markup.
+			scanAsHTML = false
+		} else if utf16 {
+			content = decoded
+		}
+	}
 
 	// Extract text from HTML hiding spots that readability strips (comments,
 	// non-executable data scripts, style, hidden elements). Scan only those

@@ -580,10 +580,12 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 				auditErr = fmt.Errorf("%w: %s", rejectErr, detail)
 			}
 			switch {
-			case len(trustExpansionReloadFields(warnings)) > 0:
+			case len(trustExpansionReloadFields(warnings)) > 0 && len(requiredModeTeardowns(oldCfg, newCfg)) == 0:
 				// Preserve the existing operator-facing wording for this case:
 				// it already leads with the field and the exact reason it is
-				// rejectable, so it does not repeat the generic prefix.
+				// rejectable, so it does not repeat the generic prefix. A torn-
+				// down contract lives only in rejectErr, so that case falls
+				// through and prints both causes.
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %s; previous configuration remains active; restart Pipelock to apply this change\n", detail)
 			case detail != "":
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v: %s; previous configuration remains active; restart Pipelock to apply this change\n", rejectErr, detail)

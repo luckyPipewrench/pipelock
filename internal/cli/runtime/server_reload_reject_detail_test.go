@@ -179,15 +179,29 @@ func TestRejectableDowngradeReloadWarningFields(t *testing.T) {
 	warnings = append(warnings, warnings...)
 
 	got := rejectableDowngradeReloadWarningFields(warnings)
-	want := map[string]bool{
+	// The message joins fields in this order, so order is part of the contract:
+	// first appearance of each non-advisory field, in emission order.
+	var want []string
+	seen := map[string]bool{}
+	for _, w := range warnings {
+		if w.Field == "mediation_envelope.key_id" || seen[w.Field] {
+			continue
+		}
+		seen[w.Field] = true
+		want = append(want, w.Field)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("fields = %v, want %v in emission order", got, want)
+	}
+	only := map[string]bool{
 		"fetch_proxy.monitoring.query_entropy_param_exclusions": true,
 		"fetch_proxy.monitoring.path_entropy_exclusions":        true,
 	}
-	if len(got) != len(want) {
-		t.Fatalf("fields = %v, want exactly %v", got, want)
+	if len(got) != len(only) {
+		t.Fatalf("fields = %v, want exactly the two entropy-exclusion fields", got)
 	}
 	for _, f := range got {
-		if !want[f] {
+		if !only[f] {
 			t.Fatalf("fields = %v, unexpected %q", got, f)
 		}
 	}
@@ -314,6 +328,58 @@ func TestServer_Reload_RequiredTeardownRejectionNamesRestartRemedy(t *testing.T)
 	for _, want := range []string{
 		"required security mode (flight_recorder.require_receipts)",
 		"previous configuration remains active",
+		"restart Pipelock to apply this change",
+	} {
+		if !stderr.contains(want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+// TestServer_Reload_TrustWideningWithTeardownNamesBoth pins that a reload which
+// both widens trust and tears down a required contract reports BOTH on stderr.
+// The trust-only wording prints just the trust field, so an operator who fixed
+// only that would hit a second rejection the message never predicted.
+func TestServer_Reload_TrustWideningWithTeardownNamesBoth(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  require_receipts: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"",
+	}, "\n"))
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.cleanup() })
+
+	stderr := &syncBuffer{}
+	s.opts.Stderr = stderr
+
+	next := s.proxy.CurrentConfig().Clone()
+	next.FlightRecorder.Enabled = false
+	next.FlightRecorder.RequireReceipts = false
+	next.TrustedDomains = []string{"internal.example"}
+	s.lastReloadAt = time.Time{}
+
+	if err := s.Reload(next); err == nil {
+		t.Fatal("reload applied a trust widening together with a receipt teardown")
+	}
+	for _, want := range []string{
+		"required security mode (flight_recorder.require_receipts)",
+		"trusted_domains cannot widen trust at runtime",
 		"restart Pipelock to apply this change",
 	} {
 		if !stderr.contains(want) {

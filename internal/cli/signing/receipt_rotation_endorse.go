@@ -92,6 +92,12 @@ Example:
 				return fmt.Errorf("lock stopped receipt chain: %w", err)
 			}
 			defer func() { _ = ceremonyLock.Close() }()
+			if !cmd.Flags().Changed("session") {
+				sessionID, err = resolveOneReceiptSession(recorder.EvidenceLocation{Dir: filepath.Clean(chainDir)}, sessionID)
+				if err != nil {
+					return err
+				}
+			}
 
 			priorKey, err := domsigning.LoadPrivateKeyFileForPurpose(
 				filepath.Clean(priorKeyFile),

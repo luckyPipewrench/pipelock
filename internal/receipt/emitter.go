@@ -1549,7 +1549,44 @@ func recorderFiles(dir, session string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
+	ix, err := indexRecorderFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	return ix.files(session)
+}
 
+// evidenceIndex maps each session to its evidence shard paths, in chain order.
+type evidenceIndex map[string][]string
+
+// sessions returns every session in the index, sorted.
+func (ix evidenceIndex) sessions() []string {
+	out := make([]string, 0, len(ix))
+	for s := range ix {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// files returns session's shards, refusing duplicate shard starts.
+func (ix evidenceIndex) files(session string) ([]string, error) {
+	files := ix[session]
+	// Same refusal the recorder applies to its resume candidates. This list
+	// feeds resumeChain, which sets live chain sequence and prev-hash state, so
+	// silently tie-breaking here while the recorder refuses would let the two
+	// derive different chain heads from identical bytes.
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// indexRecorderFiles reads dir once and groups every evidence shard by
+// session. It is uncapped, like the recorder's own resume scan: the capped
+// read ceiling guards query paths that would otherwise present a partial view
+// as complete, while this index must see every shard to be correct at all.
+func indexRecorderFiles(dir string) (evidenceIndex, error) {
 	dirEntries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
@@ -1566,7 +1603,7 @@ func recorderFiles(dir, session string) ([]string, error) {
 		base     string
 		seqStart uint64
 	}
-	shards := make([]shard, 0)
+	bySession := make(map[string][]shard)
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1576,33 +1613,30 @@ func recorderFiles(dir, session string) ([]string, error) {
 			continue
 		}
 		parsedSession, seqStart, ok := recorder.ParseEvidenceFilename(name)
-		if !ok || parsedSession != session {
+		if !ok {
 			continue
 		}
-		shards = append(shards, shard{
+		bySession[parsedSession] = append(bySession[parsedSession], shard{
 			path:     filepath.Join(filepath.Clean(dir), name),
 			base:     name,
 			seqStart: seqStart,
 		})
 	}
-	// Total order: sort.Slice is not stable, so break seqStart ties on basename
-	// rather than leaving the result dependent on directory order.
-	sort.Slice(shards, func(i, j int) bool {
-		if shards[i].seqStart != shards[j].seqStart {
-			return shards[i].seqStart < shards[j].seqStart
+	ix := make(evidenceIndex, len(bySession))
+	for session, shards := range bySession {
+		// Total order: sort.Slice is not stable, so break seqStart ties on
+		// basename rather than leaving the result dependent on directory order.
+		sort.Slice(shards, func(i, j int) bool {
+			if shards[i].seqStart != shards[j].seqStart {
+				return shards[i].seqStart < shards[j].seqStart
+			}
+			return shards[i].base < shards[j].base
+		})
+		files := make([]string, 0, len(shards))
+		for _, s := range shards {
+			files = append(files, s.path)
 		}
-		return shards[i].base < shards[j].base
-	})
-	files := make([]string, 0, len(shards))
-	for _, s := range shards {
-		files = append(files, s.path)
+		ix[session] = files
 	}
-	// Same refusal the recorder applies to its resume candidates. This list
-	// feeds resumeChain, which sets live chain sequence and prev-hash state, so
-	// silently tie-breaking here while the recorder refuses would let the two
-	// derive different chain heads from identical bytes.
-	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
-		return nil, err
-	}
-	return files, nil
+	return ix, nil
 }

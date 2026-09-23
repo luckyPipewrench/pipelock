@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -774,10 +775,8 @@ func TestChainLink_MalformedLinkFileIsFinding(t *testing.T) {
 	}
 }
 
-// A symlinked link file makes the evidence directory unenumerable (the
-// recorder refuses symlinks there), so VerifyBase returns an error, which
-// every caller treats as incomplete, never healthy.
-func TestChainLink_SymlinkedLinkFileFailsClosed(t *testing.T) {
+// A symlinked link file is never followed: it is a finding.
+func TestChainLink_SymlinkedLinkFileIsFinding(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
@@ -790,11 +789,31 @@ func TestChainLink_SymlinkedLinkFileFailsClosed(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := VerifyBase(dir, recorder.DefaultSessionBase, BaseVerifyOptions{}); err == nil {
-		t.Fatal("a symlinked link file must make verification incomplete")
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingInvalidLink] != 1 || r.LinkCount() != 0 {
+		t.Fatalf("a symlinked link file must be a finding and link nothing: %+v", r.Findings)
 	}
-	if _, err := readChainLinkFile(filepath.Join(dir, name)); err == nil {
-		t.Fatal("a symlinked link file must not be read")
+}
+
+// The link path must not inherit the capped query-path ceiling: a directory
+// past it still links on restart and verifies completely.
+func TestChainLink_WorksPastEvidenceReadCeiling(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	for i := 0; i <= recorder.MaxEvidenceReadDirectoryEntries; i++ {
+		writeLinkFile(t, dir, fmt.Sprintf("unrelated-%04d.txt", i), nil)
+	}
+	if _, err := recorder.ListSessions(dir); err == nil {
+		t.Fatal("positive control: the capped listing must refuse this directory")
+	}
+	_, b := linkedPair(t, dir, priv)
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if !r.Healthy() || r.LinkCount() != 1 || slices.Contains(r.Unlinked(), b.session) {
+		t.Fatalf("past the ceiling: links=%d findings=%+v", r.LinkCount(), r.Findings)
+	}
+	if bases, err := ContinuityBases(dir); err != nil || len(bases) != 1 {
+		t.Fatalf("ContinuityBases past the ceiling: %v %v", bases, err)
 	}
 }
 

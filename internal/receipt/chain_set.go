@@ -120,30 +120,36 @@ func (r BaseReport) Unlinked() []string {
 
 // ResolveBaseSessions lists every chain of base in dir: the legacy plain base
 // session an older binary wrote and every run session minted from base.
+//
+// Enumeration is uncapped, like the recorder's resume scan: a continuity
+// verdict over a partial session list would present missing chains as absent.
 func ResolveBaseSessions(dir, base string) ([]string, error) {
-	sessions, err := recorder.ListSessions(dir)
+	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
-	out := make([]string, 0, len(sessions))
-	for _, s := range sessions {
+	return baseSessions(ix, base), nil
+}
+
+func baseSessions(ix evidenceIndex, base string) []string {
+	var out []string
+	for _, s := range ix.sessions() {
 		if isBaseChain(s, base) {
 			out = append(out, s)
 		}
 	}
-	sort.Strings(out)
-	return out, nil
+	return out
 }
 
 // ContinuityBases lists every base in dir that has restart continuity to
 // report: a base with at least one run chain, or one named by a link file.
 func ContinuityBases(dir string) ([]string, error) {
-	sessions, err := recorder.ListSessions(dir)
+	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
 	set := make(map[string]struct{})
-	for _, s := range sessions {
+	for _, s := range ix.sessions() {
 		if b, ok := RunSessionBase(s); ok {
 			set[b] = struct{}{}
 		}
@@ -272,10 +278,11 @@ func readChainLinkFile(path string) (ChainLink, error) {
 // successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	report := BaseReport{Base: base}
-	sessions, err := ResolveBaseSessions(dir, base)
+	ix, err := indexRecorderFiles(dir)
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("listing sessions: %w", err)
 	}
+	sessions := baseSessions(ix, base)
 	links, err := readChainLinkFiles(dir)
 	if err != nil {
 		return report, err
@@ -305,7 +312,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		if opts.LinksOnly && !need[s] {
 			continue
 		}
-		loadBaseChain(dir, d, opts.LinksOnly, add)
+		loadBaseChain(ix, d, opts.LinksOnly, add)
 	}
 
 	// Attach each link file to its successor. Every rejection is a finding:
@@ -397,9 +404,9 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 // loadBaseChain reads one chain's receipts and records its tail. In
 // links-only mode a chain is valid when its tail receipt verifies on its own;
 // otherwise validity is decided later by full chain verification.
-func loadBaseChain(dir string, d *baseChainData, linksOnly bool, add func(kind, session, detail string)) {
+func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(kind, session, detail string)) {
 	s := d.chain.Session
-	entries, readErr := readSessionEntries(dir, s)
+	entries, readErr := readIndexedEntries(ix, s)
 	if readErr != nil {
 		d.chain.Error = readErr.Error()
 		add(FindingCorruptChain, s, readErr.Error())
@@ -532,7 +539,15 @@ func checkLinkedTail(receipts []Receipt, link ChainLink) error {
 
 // readSessionEntries reads every recorder entry of session, in shard order.
 func readSessionEntries(dir, session string) ([]recorder.Entry, error) {
-	files, err := recorderFiles(dir, session)
+	ix, err := indexRecorderFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	return readIndexedEntries(ix, session)
+}
+
+func readIndexedEntries(ix evidenceIndex, session string) ([]recorder.Entry, error) {
+	files, err := ix.files(session)
 	if err != nil {
 		return nil, err
 	}

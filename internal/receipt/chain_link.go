@@ -254,13 +254,9 @@ type predecessorTail struct {
 	tailHash string
 }
 
-// sessionReceiptTail returns the last receipt recorded for session, or nil
-// when the session holds no receipt.
-func sessionReceiptTail(dir, session string) (*Receipt, error) {
-	files, err := recorderFiles(dir, session)
-	if err != nil {
-		return nil, err
-	}
+// sessionReceiptTail returns the last receipt in a session's shard files, or
+// nil when the session holds no receipt.
+func sessionReceiptTail(files []string) (*Receipt, error) {
 	for i := len(files) - 1; i >= 0; i-- {
 		entry, found, readErr := recorder.FindLastEntry(files[i], func(entry recorder.Entry) bool {
 			return entry.Type == recorderEntryType
@@ -362,21 +358,22 @@ type linkRequest struct {
 // wins the name is the signed statement verification reads.
 func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 	dir, base, self := req.dir, req.base, req.self
-	sessions, err := recorder.ListSessions(dir)
+	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing prior chains: %w", err)
 	}
 	type candidate struct {
 		session string
+		files   []string
 		latest  string
 		modTime time.Time
 	}
-	candidates := make([]candidate, 0, len(sessions))
-	for _, s := range sessions {
+	candidates := make([]candidate, 0, len(ix))
+	for _, s := range ix.sessions() {
 		if s == self || !isBaseChain(s, base) {
 			continue
 		}
-		files, filesErr := recorderFiles(dir, s)
+		files, filesErr := ix.files(s)
 		if filesErr != nil || len(files) == 0 {
 			continue
 		}
@@ -385,7 +382,7 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 		if statErr != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{session: s, latest: latest, modTime: info.ModTime()})
+		candidates = append(candidates, candidate{session: s, files: files, latest: latest, modTime: info.ModTime()})
 	}
 	// Prefer the most recent chain: it is the one a restart most plausibly
 	// continues. Break ties on the session name for a total order.
@@ -405,7 +402,7 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 		if probeErr != nil || !gone {
 			continue // a live writer, or its absence cannot be proven
 		}
-		pred, ok := claimableTail(dir, c.session, req.notice)
+		pred, ok := claimableTail(c.files, c.session, req.notice)
 		if !ok {
 			continue
 		}
@@ -437,8 +434,8 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 }
 
 // claimableTail reads session's tail and reports whether it can be linked.
-func claimableTail(dir, session string, notice io.Writer) (predecessorTail, bool) {
-	tail, tailErr := sessionReceiptTail(dir, session)
+func claimableTail(files []string, session string, notice io.Writer) (predecessorTail, bool) {
+	tail, tailErr := sessionReceiptTail(files)
 	if tailErr != nil {
 		_, _ = fmt.Fprintf(notice, "pipelock: receipt chain %s not linked: reading its tail: %v\n", session, tailErr)
 		return predecessorTail{}, false

@@ -127,7 +127,7 @@ func TestEvidenceDoctorContinuityLinkFindingFails(t *testing.T) {
 			}
 		},
 		"wrong tail": func(t *testing.T, path string) {
-			raw, err := os.ReadFile(path)
+			raw, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}

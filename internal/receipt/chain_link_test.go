@@ -589,7 +589,7 @@ func TestChainLink_AlteredLinkFieldFailsSignature(t *testing.T) {
 			_, priv := generateTestKey(t)
 			a, b := linkedPair(t, dir, priv)
 			name := ChainLinkFileName(a.session)
-			raw, err := os.ReadFile(filepath.Join(dir, name))
+			raw, err := os.ReadFile(filepath.Clean(filepath.Join(dir, name)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -735,7 +735,7 @@ func TestChainLink_MalformedLinkFileIsFinding(t *testing.T) {
 	t.Parallel()
 	cases := map[string]func(t *testing.T, dir, name string){
 		"truncated": func(t *testing.T, dir, name string) {
-			raw, err := os.ReadFile(filepath.Join(dir, name))
+			raw, err := os.ReadFile(filepath.Clean(filepath.Join(dir, name)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -904,7 +904,7 @@ func TestChainLink_PublishIsExclusive(t *testing.T) {
 	if won != 1 {
 		t.Fatalf("exactly one publisher must win, got %d", won)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, name))
+	got, err := os.ReadFile(filepath.Clean(filepath.Join(dir, name)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1080,6 +1080,115 @@ func TestChainLink_CrossBaseAndDuplicateSuccessorLinks(t *testing.T) {
 	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
 	if findingKinds(r)[FindingInvalidLink] != 3 {
 		t.Fatalf("want 3 invalid_link findings: %+v", r.Findings)
+	}
+}
+
+func TestChainLink_CrossChainEndorsementMismatches(t *testing.T) {
+	t.Parallel()
+	pubA, privA := generateTestKey(t)
+	pubB, _ := generateTestKey(t)
+	link := ChainLink{
+		PredecessorSession: "proxy.run." + strings.Repeat("a", 32), PredecessorTailSeq: 4,
+		PredecessorTailHash: strings.Repeat("cd", 32), PredecessorSignerKey: hex.EncodeToString(pubA),
+		SuccessorSignerKey: hex.EncodeToString(pubB),
+	}
+	endorse := func(mut func(e *RotationEndorsement)) RotationEndorsement {
+		e := RotationEndorsement{
+			SessionID: link.PredecessorSession, PriorFinalSeq: link.PredecessorTailSeq, PriorTailHash: link.PredecessorTailHash,
+			NewSignerKey: link.SuccessorSignerKey, RotatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		mut(&e)
+		signed, err := SignRotationEndorsement(e, privA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
+	}
+	if err := VerifyCrossChainEndorsement(endorse(func(*RotationEndorsement) {}), link); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	for name, mut := range map[string]func(e *RotationEndorsement){
+		"session": func(e *RotationEndorsement) { e.SessionID = "proxy" },
+		"new key": func(e *RotationEndorsement) { e.NewSignerKey = strings.Repeat("3a", 32) },
+		"seq":     func(e *RotationEndorsement) { e.PriorFinalSeq++ },
+		"hash":    func(e *RotationEndorsement) { e.PriorTailHash = strings.Repeat("ef", 32) },
+	} {
+		if VerifyCrossChainEndorsement(endorse(mut), link) == nil {
+			t.Fatalf("%s mismatch must be refused", name)
+		}
+	}
+	otherPrior := link
+	otherPrior.PredecessorSignerKey = hex.EncodeToString(pubB)
+	if VerifyCrossChainEndorsement(endorse(func(*RotationEndorsement) {}), otherPrior) == nil {
+		t.Fatal("a prior key mismatch must be refused")
+	}
+	bad := endorse(func(*RotationEndorsement) {})
+	bad.RotatedAt = "2000-01-01T00:00:00Z"
+	if VerifyCrossChainEndorsement(bad, link) == nil {
+		t.Fatal("an endorsement altered after signing must be refused")
+	}
+}
+
+// An unreadable predecessor chain is skipped loudly at startup and is a
+// corrupt_chain finding when a link names it.
+func TestChainLink_UnreadablePredecessorChain(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	files, err := recorderFiles(dir, a.session)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files: %v %v", files, err)
+	}
+	good, err := os.ReadFile(filepath.Clean(files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(files[0], []byte("{not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := newTestRecorder(t, dir, priv)
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notices bytes.Buffer
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor, Session: session, Notices: &notices})
+	emitOne(t, e)
+	_ = rec.Close()
+	if e.ChainLink() != nil || !strings.Contains(notices.String(), "reading its tail") {
+		t.Fatalf("an unreadable predecessor must be skipped loudly: link=%v notices=%q", e.ChainLink(), notices.String())
+	}
+	if e.Session() != session {
+		t.Fatalf("Session() = %q, want %q", e.Session(), session)
+	}
+	// Restore A, link to it by hand, then break A again: the link now names
+	// an unreadable chain, which must be a finding in both modes.
+	if err := os.WriteFile(files[0], good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tail := sessionReceipts(t, dir, a.session)
+	forgeLink(t, dir, ChainLinkFileName(a.session), ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: tail[len(tail)-1].ActionRecord.ChainSeq,
+		PredecessorTailHash: mustHash(t, tail[len(tail)-1]), PredecessorSignerKey: tail[0].SignerKey, SuccessorSession: session,
+	}, priv)
+	if err := os.WriteFile(files[0], []byte("{not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, linksOnly := range []bool{false, true} {
+		r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: linksOnly})
+		if findingKinds(r)[FindingCorruptChain] != 1 || findingKinds(r)[FindingPredecessorUnverified] != 1 {
+			t.Fatalf("linksOnly=%v: %+v", linksOnly, r.Findings)
+		}
+	}
+	if _, err := ResolveBaseSessions(filepath.Join(dir, "absent"), recorder.DefaultSessionBase); err == nil {
+		t.Fatal("ResolveBaseSessions on a missing directory must fail")
+	}
+	var nilEmitter *Emitter
+	if nilEmitter.Session() != "" || nilEmitter.ChainLink() != nil {
+		t.Fatal("nil emitter accessors must be safe")
 	}
 }
 

@@ -824,7 +824,7 @@ func TestReverseProxy_ShieldRunsWhenResponseScanningDisabled(t *testing.T) {
 
 func TestReverseProxy_ShieldRunsForGenericMIMEWhenResponseScanningDisabled(t *testing.T) {
 	page := "<html><body><img src=\"https://tracker.vendor.example/p.gif\" width=\"1\" height=\"1\"></body></html>"
-	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 1<<20, "application/octet-stream", page)
+	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 1<<20, "unknown/unknown", page)
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

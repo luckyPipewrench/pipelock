@@ -8,11 +8,17 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +26,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -76,6 +83,9 @@ const (
 	issuerCookieMaxEntries    = 3000
 	issuerCookieMaxSessions   = 32
 	issuerCookieMaxSetCookies = 256
+	issuerCookieMaxStateBytes = 32 << 20
+	issuerCookieStateVersion  = 1
+	issuerCookieWriteInterval = 3 * time.Second
 )
 
 // issuerBoundCookieStore remembers keyed digests of cookies that an
@@ -84,14 +94,19 @@ const (
 // it to the exact issuing host and port over HTTPS. Returning a value to the
 // origin that issued it discloses nothing that origin does not already hold.
 type issuerBoundCookieStore struct {
-	mu       sync.Mutex
-	key      [32]byte
-	sessions map[string]*issuerCookieSession
-	disabled bool
+	mu        sync.Mutex
+	key       [32]byte
+	sessions  map[string]*issuerCookieSession
+	disabled  bool
+	path      string
+	dirty     bool
+	lastWrite time.Time
+	timer     *time.Timer
+	logError  func(error)
 }
 
-// A single atomic pointer ties the evidence window to its exact policy
-// snapshot. A reload publishes a fresh store and cannot revive old cookies.
+// A single atomic pointer ties requests to the current policy snapshot.
+// An enabled reload retains the store; disabling a prerequisite resets it.
 type issuerCookieRuntime struct {
 	cfg   *config.Config
 	store *issuerBoundCookieStore
@@ -151,6 +166,241 @@ func newIssuerBoundCookieStore() *issuerBoundCookieStore {
 		s.disabled = true
 	}
 	return s
+}
+
+// issuerCookieStatePath follows the existing XDG state-home convention.
+func issuerCookieStatePath() (string, error) {
+	root := os.Getenv("XDG_STATE_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(home, ".local", "state")
+	}
+	if !filepath.IsAbs(root) {
+		return "", errors.New("state home must be absolute")
+	}
+	return filepath.Join(root, "pipelock", "proxy", "issuer-cookies.json"), nil
+}
+
+type issuerCookieDisk struct {
+	Version  int                       `json:"version"`
+	Key      string                    `json:"key"`
+	Sessions []issuerCookieDiskSession `json:"sessions"`
+}
+type issuerCookieDiskSession struct {
+	ID       string                  `json:"id"`
+	LastUsed time.Time               `json:"last_used"`
+	Entries  []issuerCookieDiskEntry `json:"entries"`
+}
+type issuerCookieDiskEntry struct {
+	Digest  string    `json:"digest"`
+	Host    string    `json:"host"`
+	Port    string    `json:"port"`
+	Domain  string    `json:"domain,omitempty"`
+	Path    string    `json:"path"`
+	Expires time.Time `json:"expires"`
+}
+
+func (s *issuerBoundCookieStore) report(err error) {
+	if err != nil && s.logError != nil {
+		s.logError(err)
+	}
+}
+
+func newPersistentIssuerCookieStore(logger *audit.Logger) *issuerBoundCookieStore {
+	s := newIssuerBoundCookieStore()
+	s.logError = func(err error) {
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), err)
+		}
+	}
+	path, err := issuerCookieStatePath()
+	if err != nil {
+		s.report(fmt.Errorf("issuer cookie state unavailable: %w", err))
+		return s
+	}
+	s.path = path
+	if err = s.load(time.Now()); err != nil {
+		s.report(fmt.Errorf("issuer cookie state ignored: %w", err))
+		// The generated key and empty map remain authoritative on any load error.
+	}
+	return s
+}
+
+func (s *issuerBoundCookieStore) load(now time.Time) error {
+	if err := issuerCookieCheckDir(filepath.Dir(s.path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	info, err := os.Lstat(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > issuerCookieMaxStateBytes {
+		return errors.New("state file type, permissions, or size invalid")
+	}
+	f, err := os.Open(filepath.Clean(s.path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) || opened.Mode().Perm() != 0o600 {
+		return errors.New("issuer cookie state changed during open")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, issuerCookieMaxStateBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > issuerCookieMaxStateBytes {
+		return errors.New("state file exceeds limit")
+	}
+	var disk issuerCookieDisk
+	if err = json.Unmarshal(raw, &disk); err != nil {
+		return err
+	}
+	if disk.Version != issuerCookieStateVersion || len(disk.Sessions) > issuerCookieMaxSessions {
+		return errors.New("unsupported or oversized issuer cookie state")
+	}
+	key, err := hex.DecodeString(disk.Key)
+	if err != nil || len(key) != len(s.key) {
+		return errors.New("invalid issuer cookie key")
+	}
+	loaded := make(map[string]*issuerCookieSession, len(disk.Sessions))
+	for _, ds := range disk.Sessions {
+		if ds.ID == "" || len(ds.ID) > 1024 || len(ds.Entries) > issuerCookieMaxEntries || loaded[ds.ID] != nil {
+			return errors.New("invalid issuer cookie session")
+		}
+		sess := &issuerCookieSession{lastUsed: ds.LastUsed}
+		for _, de := range ds.Entries {
+			d, decodeErr := hex.DecodeString(de.Digest)
+			if decodeErr != nil || len(d) != 32 || de.Host == "" || len(de.Host) > 253 || de.Port == "" || len(de.Port) > 5 ||
+				de.Path == "" || len(de.Path) > issuerCookieMaxPairBytes || (de.Domain != "" && len(de.Domain) > 253) {
+				return errors.New("invalid issuer cookie entry")
+			}
+			if !de.Expires.IsZero() && !de.Expires.After(now) {
+				continue
+			}
+			var digest [32]byte
+			copy(digest[:], d)
+			sess.entries = append(sess.entries, issuerCookieEntry{digest: digest, host: de.Host, port: de.Port, domain: de.Domain, path: de.Path, expires: de.Expires})
+		}
+		if len(sess.entries) > 0 {
+			loaded[ds.ID] = sess
+		}
+	}
+	copy(s.key[:], key)
+	s.sessions = loaded
+	return nil
+}
+
+func issuerCookieCheckDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm()&^0o750 != 0 {
+		return fmt.Errorf("issuer cookie state directory permissions invalid: %s", info.Mode().Perm())
+	}
+	return nil
+}
+
+func (s *issuerBoundCookieStore) flush(now time.Time, force bool) {
+	if s == nil || s.path == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.path == "" || s.disabled {
+		return
+	}
+	if s.timer != nil && force {
+		s.timer.Stop()
+		s.timer = nil
+	}
+	if !s.dirty && !force {
+		return
+	}
+	if !force && !s.lastWrite.IsZero() && now.Sub(s.lastWrite) < issuerCookieWriteInterval {
+		if s.timer == nil {
+			s.timer = time.AfterFunc(issuerCookieWriteInterval-now.Sub(s.lastWrite), func() { s.flush(time.Now(), true) })
+		}
+		return
+	}
+	// Throttle failed writes as well as successful ones.
+	s.lastWrite = now
+	disk := issuerCookieDisk{Version: issuerCookieStateVersion, Key: hex.EncodeToString(s.key[:])}
+	for id, sess := range s.sessions {
+		ds := issuerCookieDiskSession{ID: id, LastUsed: sess.lastUsed}
+		kept := sess.entries[:0]
+		for _, entry := range sess.entries {
+			if !entry.expires.IsZero() && !entry.expires.After(now) {
+				continue
+			}
+			kept = append(kept, entry)
+			ds.Entries = append(ds.Entries, issuerCookieDiskEntry{Digest: hex.EncodeToString(entry.digest[:]), Host: entry.host, Port: entry.port, Domain: entry.domain, Path: entry.path, Expires: entry.expires})
+		}
+		sess.entries = kept
+		if len(kept) == 0 {
+			delete(s.sessions, id)
+		} else {
+			disk.Sessions = append(disk.Sessions, ds)
+		}
+	}
+	raw, err := json.Marshal(disk)
+	if err != nil {
+		s.invalidateStaleFile(err)
+		return
+	}
+	if len(raw) > issuerCookieMaxStateBytes {
+		s.invalidateStaleFile(errors.New("issuer cookie state exceeds limit"))
+		return
+	}
+	dir := filepath.Dir(s.path)
+	if err = os.MkdirAll(dir, 0o750); err == nil {
+		err = issuerCookieCheckDir(dir)
+	}
+	if err == nil {
+		err = atomicfile.Write(s.path, raw, 0o600)
+	}
+	if err != nil {
+		s.invalidateStaleFile(fmt.Errorf("issuer cookie state write failed: %w", err))
+		return
+	}
+	s.dirty = false
+	s.lastWrite = now
+}
+
+// A prior snapshot can contain an entry evicted from memory. If the newer
+// snapshot cannot be published, discard the prior one so restart scans it.
+func (s *issuerBoundCookieStore) invalidateStaleFile(writeErr error) {
+	s.report(writeErr)
+	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.report(fmt.Errorf("issuer cookie stale state removal failed: %w", err))
+	}
+}
+
+func (s *issuerBoundCookieStore) retire() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
+	}
+	path := s.path
+	s.path = ""
+	s.disabled = true
+	return path
 }
 
 func (s *issuerBoundCookieStore) sessionLocked(id string, create bool, now time.Time) *issuerCookieSession {
@@ -299,7 +549,13 @@ func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, hea
 	}
 	defaultPath := issuerCookieDefaultPath(origin.Path)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	changed := false
+	defer func() {
+		s.mu.Unlock()
+		if changed {
+			s.flush(now, false)
+		}
+	}()
 	var sess *issuerCookieSession
 	for _, line := range lines {
 		cookie, ok := parseIssuerSetCookie(line, defaultPath, now)
@@ -329,6 +585,8 @@ func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, hea
 			}
 		}
 		if replaced {
+			s.dirty = true
+			changed = true
 			continue
 		}
 		if len(sess.entries) >= issuerCookieMaxEntries {
@@ -336,6 +594,8 @@ func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, hea
 			sess.entries = append(sess.entries[:0], sess.entries[1:]...)
 		}
 		sess.entries = append(sess.entries, entry)
+		s.dirty = true
+		changed = true
 	}
 }
 

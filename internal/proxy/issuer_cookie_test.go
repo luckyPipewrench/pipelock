@@ -115,6 +115,216 @@ func TestIssuerBoundCookieStoreScope(t *testing.T) {
 	}
 }
 
+func TestIssuerCookieDiskRoundTripAndFailures(t *testing.T) {
+	value := issuerAWSShapedValue()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "lb="+value+"; Path=/account; Secure; Max-Age=60")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	issuer, err := url.Parse(server.URL + "/account/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, issuer.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	path := filepath.Join(t.TempDir(), "state", "issuer-cookies.json")
+	now := time.Now()
+	store := newIssuerBoundCookieStore()
+	store.path = path
+	store.observeResponse("agent-one", issuer, resp.Header, true, now)
+	store.flush(now, true)
+	loaded := newIssuerBoundCookieStore()
+	loaded.path = path
+	if err := loaded.load(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := url.Parse(server.URL + "/account/home")
+	if !loaded.allows("agent-one", target, "lb", value, now.Add(time.Second)) {
+		t.Fatal("recorded cookie lost on disk reload")
+	}
+	for _, tc := range []struct {
+		name, session, target string
+		at                    time.Time
+	}{
+		{name: "other agent", session: "agent-two", target: target.String(), at: now.Add(time.Second)},
+		{name: "other host", session: "agent-one", target: "https://other.vendor.example/account/home", at: now.Add(time.Second)},
+		{name: "other port", session: "agent-one", target: "https://" + issuer.Hostname() + ":444/account/home", at: now.Add(time.Second)},
+		{name: "cleartext", session: "agent-one", target: "http://" + issuer.Host + "/account/home", at: now.Add(time.Second)},
+		{name: "expired", session: "agent-one", target: target.String(), at: now.Add(61 * time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, _ := url.Parse(tc.target)
+			if loaded.allows(tc.session, u, "lb", value, tc.at) {
+				t.Fatal("unscoped allowance")
+			}
+		})
+	}
+	good, err := os.ReadFile(filepath.Clean(path)) //nolint:gosec // Test-owned temporary state file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		data []byte
+		mode os.FileMode
+	}{
+		{name: "corrupt", data: []byte("broken"), mode: 0o600},
+		{name: "truncated", data: good[:len(good)/2], mode: 0o600},
+		{name: "tampered digest", data: bytes.Replace(good, []byte(`"digest":"`), []byte(`"digest":"zz`), 1), mode: 0o600},
+		{name: "wrong version", data: bytes.Replace(good, []byte(`"version":1`), []byte(`"version":2`), 1), mode: 0o600},
+		{name: "wrong permission", data: good, mode: 0o644},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, tc.data, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			fresh := newIssuerBoundCookieStore()
+			fresh.path = path
+			if err := fresh.load(now); err == nil {
+				t.Fatal("invalid state accepted")
+			}
+			if fresh.allows("agent-one", target, "lb", value, now) {
+				t.Fatal("invalid state allowed cookie")
+			}
+		})
+	}
+}
+
+func TestIssuerCookieProxyRestart(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cfg := config.Defaults()
+	cfg.TLSInterception.Enabled = true
+	cfg.Internal = nil
+	issuer, _ := url.Parse("https://app.vendor.example/account/login")
+	target, _ := url.Parse("https://app.vendor.example/account/home")
+	value := issuerAWSShapedValue()
+	key := sessionKeyFor("agent-one", "192.0.2.10", envelope.ActorAuthBound)
+	makeProxy := func() *Proxy {
+		t.Helper()
+		p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := makeProxy()
+	first.issuerCookieRuntime.Load().store.observeResponse(key, issuer, http.Header{"Set-Cookie": {"lb=" + value + "; Domain=.vendor.example; Path=/account; Max-Age=60; Secure"}}, true, time.Now())
+	first.Close()
+	second := makeProxy()
+	defer second.Close()
+	if !second.issuerCookieRuntime.Load().store.allows(key, target, "lb", value, time.Now()) {
+		t.Fatal("restart lost issuance evidence")
+	}
+	path, err := issuerCookieStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("state file mode: %v, %v", info, err)
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil || parent.Mode().Perm() != 0o750 {
+		t.Fatalf("state directory mode: %v, %v", parent, err)
+	}
+}
+
+func TestIssuerCookiePrerequisiteReloadReset(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		disable func(*config.Config)
+	}{
+		{name: "cookie rule", disable: func(c *config.Config) { c.RequestBodyScanning.IssuerBoundSessionCookies = false }},
+		{name: "TLS interception", disable: func(c *config.Config) { c.TLSInterception.Enabled = false }},
+		{name: "header scanning", disable: func(c *config.Config) { c.RequestBodyScanning.ScanHeaders = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			cfg := config.Defaults()
+			cfg.TLSInterception.Enabled = true
+			cfg.Internal = nil
+			p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			issuer, _ := url.Parse("https://app.vendor.example/account")
+			key := sessionKeyFor("agent-one", "192.0.2.10", envelope.ActorAuthBound)
+			value := issuerAWSShapedValue()
+			p.issuerCookieRuntime.Load().store.observeResponse(key, issuer, http.Header{"Set-Cookie": {"lb=" + value + "; Path=/; Max-Age=60"}}, true, time.Now())
+			off := cfg.Clone()
+			tc.disable(off)
+			if !p.Reload(off, scanner.MustNew(off)) {
+				t.Fatal("disable reload rejected")
+			}
+			if (&InterceptContext{Proxy: p, Config: off, ActorAuth: envelope.ActorAuthBound}).issuerCookieStore() != nil {
+				t.Fatal("disabled prerequisite left allowance enabled")
+			}
+			on := cfg.Clone()
+			if !p.Reload(on, scanner.MustNew(on)) {
+				t.Fatal("re-enable reload rejected")
+			}
+			if p.issuerCookieRuntime.Load().store.allows(key, issuer, "lb", value, time.Now()) {
+				t.Fatal("disabled evidence revived")
+			}
+		})
+	}
+}
+
+func TestIssuerCookieDiskEvictionScans(t *testing.T) {
+	issuer, _ := url.Parse("https://app.vendor.example/account")
+	value := issuerAWSShapedValue()
+	now := time.Now()
+	store := newIssuerBoundCookieStore()
+	store.path = filepath.Join(t.TempDir(), "state", "issuer-cookies.json")
+	for i := 0; i <= issuerCookieMaxEntries; i++ {
+		store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {fmt.Sprintf("c%d=%s; Path=/", i, value)}}, true, now)
+	}
+	store.flush(now, true)
+	reloaded := newIssuerBoundCookieStore()
+	reloaded.path = store.path
+	if err := reloaded.load(now); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.allows("agent-one", issuer, "c0", value, now) {
+		t.Fatal("evicted cookie revived")
+	}
+	if !reloaded.allows("agent-one", issuer, fmt.Sprintf("c%d", issuerCookieMaxEntries), value, now) {
+		t.Fatal("newest cookie lost")
+	}
+}
+
+func TestIssuerCookieWriteFailureDiscardsOldSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "issuer-cookies.json")
+	store := newIssuerBoundCookieStore()
+	store.path = path
+	issuer, _ := url.Parse("https://app.vendor.example/account")
+	now := time.Now()
+	store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {"old=" + issuerAWSShapedValue() + "; Path=/"}}, true, now)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("first snapshot missing:", err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil { //nolint:gosec // Deliberately insecure directory exercises fail-closed storage.
+		t.Fatal(err)
+	}
+	store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {"new=" + issuerAWSShapedValue() + "; Path=/"}}, true, now)
+	store.flush(now.Add(issuerCookieWriteInterval), true)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale snapshot remains: %v", err)
+	}
+}
+
 func TestIssuerBoundCookieStoreSizeAndEviction(t *testing.T) {
 	now := time.Now()
 	issuer, _ := url.Parse("https://app.vendor.example/login")
@@ -418,7 +628,16 @@ func TestIssuerBoundCookieDefaultKnobAndReload(t *testing.T) {
 		t.Fatal("initial issuance absent")
 	}
 
-	off := cfg.Clone()
+	same := cfg.Clone()
+	if !p.Reload(same, scanner.MustNew(same)) {
+		t.Fatal("enabled reload rejected")
+	}
+	retained := (&InterceptContext{Proxy: p, Config: same, ActorAuth: envelope.ActorAuthBound}).issuerCookieStore()
+	if retained != store || !retained.allows(key, issuer, "lb", value, now) {
+		t.Fatal("enabled reload lost issuance")
+	}
+
+	off := same.Clone()
 	off.RequestBodyScanning.IssuerBoundSessionCookies = false
 	if !p.Reload(off, scanner.MustNew(off)) {
 		t.Fatal("reload rejected")

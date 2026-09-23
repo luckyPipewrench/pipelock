@@ -130,6 +130,10 @@ const (
 	// error, server failure) that produce no usable IP. Kept distinct from
 	// timeout because operator alerting may want different treatment.
 	DNSErrorResolver DNSErrorKind = "resolver_error"
+	// DNSErrorSinkhole reports an answer made only of unspecified addresses
+	// (0.0.0.0 or ::), the convention DNS filters use for a blocked name. The
+	// request is still refused; it is not counted as an SSRF probe.
+	DNSErrorSinkhole DNSErrorKind = "sinkhole"
 )
 
 // Result describes the outcome of scanning a URL.
@@ -1384,6 +1388,21 @@ func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) R
 	// unspecified targets can never be exempted, so this pass runs BEFORE the
 	// trusted-domain allow below and wins over it.
 	if hit, found := destination.FirstFloorHit(parsed); found {
+		// A DNS filter answers a blocked name with the unspecified address.
+		// When that is the whole answer, the resolver refused the name, so
+		// the request is refused as an infrastructure result rather than
+		// scored as a probe of an internal host. Any other floor address in
+		// the answer, including cloud metadata, keeps the threat verdict.
+		if destination.AllUnspecified(parsed) {
+			return Result{
+				Allowed:      false,
+				Reason:       fmt.Sprintf("DNS for %s answered %s, the address DNS filters use for a blocked name", hostname, hit.Display),
+				Scanner:      ScannerSSRF,
+				Score:        1.0,
+				Class:        ClassInfrastructureError,
+				DNSErrorKind: DNSErrorSinkhole,
+			}
+		}
 		scannerLabel := ScannerSSRF
 		blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, hit.Display)
 		if isCloudMetadataIP(hit.IP) {

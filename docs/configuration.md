@@ -1595,6 +1595,8 @@ The baseline admin endpoints (list, show, ratify, forget) are only mounted on th
 
 Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades warn and ask actions to block, or denies all traffic.
 
+A block that reports a resolver outcome rather than agent behavior is refused without adding to the score: a DNS timeout, a name that does not exist, a resolver error, and an answer made only of the unspecified address (`0.0.0.0` or `::`), which DNS filters return for a name they block. An answer that includes any other internal or metadata address, and an unspecified address written literally in the URL, still count as SSRF findings.
+
 ```yaml pipelock-fragment
 # pipelock-fragment-id: adaptive-enforcement
 adaptive_enforcement:

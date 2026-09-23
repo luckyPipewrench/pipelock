@@ -51,10 +51,11 @@ type ToolRuntimeConfig struct {
 	// (run_command, read_file relative paths, list_dir default). The deploy mints
 	// this per session and wipes it on teardown.
 	ScratchDir string
-	// AllowExec enables the run_command shell tool. It is OFF by default and must
-	// only be set where the host enforces kernel containment, because an arbitrary
-	// shell's child processes egress through the host stack, not the agent's
-	// proxy-only Go transport. See shellTools for the full rationale.
+	// AllowExec requests the run_command shell tool. It is OFF by default, takes
+	// effect only where the target can kill the command's whole process group,
+	// and must only be set where the host enforces kernel containment. An
+	// arbitrary shell's child processes egress through the host stack, not the
+	// agent's proxy-only Go transport. See shellTools for the full rationale.
 	AllowExec bool
 	// CommandTimeout bounds one run_command execution. 0 => defaultCommandTimeout.
 	CommandTimeout time.Duration
@@ -84,9 +85,10 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 
 // LabToolsWithConfig returns the full lab tool set: the HTTP tools (fetch_url,
 // post_data) bound to the proxy client, plus the shell/filesystem tools rooted
-// at cfg.ScratchDir (run_command gated by cfg.AllowExec). The HTTP tools route
-// through the Pipelock proxy; the shell tools act locally, and any egress a
-// shell command attempts is bounded by host kernel containment.
+// at cfg.ScratchDir (run_command gated by cfg.AllowExec and platform process-
+// group support). The HTTP tools route through the Pipelock proxy; the shell
+// tools act locally, and any egress a shell command attempts is bounded by host
+// kernel containment.
 func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg ToolRuntimeConfig) []Tool {
 	headers := cloneHeaders(reqHeaders)
 	tools := []Tool{

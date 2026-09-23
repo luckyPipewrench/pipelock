@@ -28,8 +28,8 @@ from typing import Any
 import requests
 
 
-DEFAULT_MODEL_FAST = "gpt-5.6-luna"
-DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
+DEFAULT_MODEL_FAST = "gpt-6-luna"
+DEFAULT_MODEL_DEEP = "gpt-6-sol"
 # Discovery recall bounds the entire review: the judge can only keep or drop a
 # candidate, never add one, so anything this phase misses is invisible and the
 # run still publishes as clean. That is the fail-open direction, which is why
@@ -44,8 +44,8 @@ DEFAULT_MODEL_DEEP = "gpt-5.6-terra"
 # against REVIEW_WALL_CLOCK_SECONDS is the read timeout plus one connect attempt,
 # so raising the timeout keeps its chunks as long as the wall clock grows with it.
 FAST_REASONING_EFFORT = "high"
-DEEP_REASONING_EFFORT = "xhigh"
-JUDGE_REASONING_EFFORT = "high"
+DEEP_REASONING_EFFORT = "low"
+JUDGE_REASONING_EFFORT = "low"
 # Reasoning tokens consume the same output allowance as the findings JSON, and
 # discovery now runs at high reasoning, so the former 8K cap could expire before
 # a single finding was emitted and publish that as a clean review. This mirrors
@@ -53,7 +53,7 @@ JUDGE_REASONING_EFFORT = "high"
 DEFAULT_MAX_COMPLETION_TOKENS = 32_768
 DEEP_MAX_COMPLETION_TOKENS = 64_000
 # Reasoning tokens consume the same output allowance as the compact JSON
-# decision. Deep judge calls use xhigh reasoning, so the 8K discovery cap can
+# decision. Judge calls can spend tokens on reasoning, so an 8K cap can
 # expire before any visible decision is produced.
 JUDGE_MAX_COMPLETION_TOKENS = 32_768
 JUDGE_REPAIR_MAX_COMPLETION_TOKENS = 4_096
@@ -886,12 +886,12 @@ def _parse_judge_decisions(
 
 def model_supports_custom_temperature(model: str) -> bool:
     name = model.strip().lower().rsplit("/", 1)[-1]
-    return not name.startswith(("gpt-5", "o1", "o3", "o4"))
+    return not name.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def model_supports_reasoning_effort(model: str) -> bool:
     name = model.strip().lower().rsplit("/", 1)[-1]
-    return name.startswith(("gpt-5", "o1", "o3", "o4"))
+    return name.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def build_llm_payload(model: str, system: str, user: str, mode: str, phase: str = "") -> dict[str, Any]:

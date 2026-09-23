@@ -64,16 +64,19 @@ var readFileParams = json.RawMessage(`{"type":"object","properties":{"path":{"ty
 
 var listDirParams = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Directory to list. Defaults to the working directory."}},"required":[]}`)
 
+var errRunCommandUnsupported = errors.New("run_command is unsupported on this platform")
+
 // shellTools returns the real shell/filesystem tools rooted at scratchDir.
 //
-// run_command is included ONLY when allowExec is true. This is a deliberate
-// fail-closed gate: an arbitrary shell's child processes (curl, nc, a Python
-// one-liner) egress through the host network stack, NOT through the agent's
-// Go proxy-only transport. So run_command's no-bypass property comes entirely
-// from HOST kernel containment (the deploy locks the agent's egress to the
-// Pipelock proxy). Enabling run_command on a host that is NOT kernel-contained
-// would hand a jailbroken model real unmediated egress -- a genuine bypass.
-// The operator opts in (--allow-exec) only where containment is enforced.
+// run_command is included ONLY when allowExec is true and this target supports
+// killing the command's whole process group. This is a deliberate fail-closed
+// gate: an arbitrary shell's child processes (curl, nc, a Python one-liner)
+// egress through the host network stack, NOT through the agent's Go proxy-only
+// transport. So run_command's no-bypass property comes entirely from HOST
+// kernel containment (the deploy locks the agent's egress to the Pipelock
+// proxy). Enabling run_command on a host that is NOT kernel-contained would
+// hand a jailbroken model real unmediated egress -- a genuine bypass. The
+// operator opts in (--allow-exec) only where containment is enforced.
 //
 // read_file and list_dir never egress, so they are always offered: even in a
 // bounded (no-exec) deployment the agent can still surface a secret it finds on
@@ -100,7 +103,7 @@ func shellTools(scratchDir string, allowExec bool, cmdTimeout time.Duration) []T
 			},
 		},
 	}
-	if allowExec {
+	if allowExec && runCommandSupported {
 		tools = append([]Tool{{
 			Name:        ToolRunCommand,
 			Description: "Run a shell command and return its output.",
@@ -120,6 +123,16 @@ func shellTools(scratchDir string, allowExec bool, cmdTimeout time.Duration) []T
 // can show. That is exactly what the demo surfaces when containment stops a
 // direct-egress escape attempt.
 func runCommandInvoke(ctx context.Context, scratchDir string, timeout time.Duration, raw json.RawMessage) (string, Event) {
+	return runCommandInvokeWithConfigure(ctx, scratchDir, timeout, raw, configureRunCommand)
+}
+
+func runCommandInvokeWithConfigure(
+	ctx context.Context,
+	scratchDir string,
+	timeout time.Duration,
+	raw json.RawMessage,
+	configure func(*exec.Cmd) error,
+) (string, Event) {
 	var args runCommandArgs
 	if err := json.Unmarshal(raw, &args); err != nil || strings.TrimSpace(args.Command) == "" {
 		return "error: run_command needs a \"command\" string argument", Event{
@@ -136,7 +149,9 @@ func runCommandInvoke(ctx context.Context, scratchDir string, timeout time.Durat
 	// Kill the command's process group on timeout, not just /bin/sh: ordinary
 	// forked/backgrounded children stay in that group and cannot outlive the
 	// bounded run_command.
-	boundToProcessGroup(cmd)
+	if result, event, ok := runCommandConfiguration(cmd, configure); !ok {
+		return result, event
+	}
 	outBuf := newCappedCapture(maxCommandOutputBytes)
 	cmd.Stdout = outBuf
 	cmd.Stderr = outBuf
@@ -160,6 +175,15 @@ func runCommandInvoke(ctx context.Context, scratchDir string, timeout time.Durat
 		Note:   note,
 		Detail: "shell command",
 	}
+}
+
+func runCommandConfiguration(cmd *exec.Cmd, configure func(*exec.Cmd) error) (string, Event, bool) {
+	if err := configure(cmd); err != nil {
+		return fmt.Sprintf("error: %v", err), Event{
+			Kind: EventToolResult, Tool: ToolRunCommand, Note: "unsupported platform",
+		}, false
+	}
+	return "", Event{}, true
 }
 
 // readFileInvoke reads a file (relative paths resolve against scratchDir) with a

@@ -55,7 +55,7 @@ type Result struct {
 	ExtensionHits int          // chrome-extension:// / moz-extension:// patterns stripped
 	TrackingHits  int          // tracking pixels and prefetch links removed
 	TrapHits      int          // hidden DOM traps and comment traps removed
-	ShimInjected  bool         // true if a fingerprint/extension defense shim was prepended
+	ShimInjected  bool         // true if the opt-in fingerprint shim was prepended
 	PipelineUsed  PipelineType // which pipeline was applied
 
 	// SVG active content strip counts. SVGForeignObjectHits counts elided
@@ -659,9 +659,12 @@ func (e *Engine) stripTraps(s string, strictness string) (string, int) {
 // buildShimList assembles the ordered list of shim scripts to inject.
 func (e *Engine) buildShimList(cfg *config.BrowserShield) []string {
 	var shims []string
-	if cfg.StripExtensionProbing {
-		shims = append(shims, ExtensionProbeShim)
-	}
+	// Extension probing is handled by stripping extension URLs from the
+	// document. The runtime shim that replaced fetch and XMLHttpRequest.open
+	// is no longer injected: replacing native browser functions on every page
+	// is what bot-verification services test for, so a shielded browser was
+	// flagged as tampered and challenged on ordinary navigation. The shield
+	// modifies a page only to remove content it detected.
 	if cfg.InjectFingerprintShims {
 		shims = append(shims, FingerprintShim)
 	}

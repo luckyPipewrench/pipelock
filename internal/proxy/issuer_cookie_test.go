@@ -63,7 +63,13 @@ func TestIssuerBoundCookieStoreScope(t *testing.T) {
 		{name: "same issuer", target: "https://app.vendor.example/account", want: true},
 		{name: "same issuer explicit port", target: "https://app.vendor.example:443/account", want: true},
 		{name: "different host", target: "https://api.other.example/account"},
-		{name: "sibling subdomain with Domain attribute", setCookie: "lb=" + value + "; Domain=vendor.example; Path=/; Max-Age=60", target: "https://b.vendor.example/account"},
+		{name: "sibling subdomain with Domain attribute", setCookie: "lb=" + value + "; Domain=vendor.example; Path=/; Max-Age=60", target: "https://b.vendor.example/account", want: true},
+		{name: "leading-dot Domain reaches the parent", setCookie: "lb=" + value + "; Domain=.Vendor.Example; Path=/; Max-Age=60", target: "https://vendor.example/account", want: true},
+		{name: "host-only cookie at a sibling", target: "https://b.vendor.example/account"},
+		{name: "Domain cookie at a lookalike host", setCookie: "lb=" + value + "; Domain=vendor.example; Path=/; Max-Age=60", target: "https://evilvendor.example/account"},
+		{name: "Domain cookie outside its domain", setCookie: "lb=" + value + "; Domain=vendor.example; Path=/; Max-Age=60", target: "https://api.other.example/account"},
+		{name: "unrelated Domain is not recorded", setCookie: "lb=" + value + "; Domain=other.example; Path=/; Max-Age=60", target: "https://app.other.example/account"},
+		{name: "public suffix Domain is not recorded", setCookie: "lb=" + value + "; Domain=co.uk; Path=/; Max-Age=60", target: "https://b.co.uk/account"},
 		{name: "different port", target: "https://app.vendor.example:8443/account"},
 		{name: "cleartext", target: "http://app.vendor.example/account"},
 		{name: "after Max-Age", target: "https://app.vendor.example/account", at: 61 * time.Second},
@@ -394,5 +400,29 @@ func TestIssuerBoundCookieDefaultKnobAndReload(t *testing.T) {
 	untrusted := &InterceptContext{Proxy: p, Config: on, ActorAuth: envelope.ActorAuthSelfDeclared}
 	if untrusted.issuerCookieStore() != nil {
 		t.Fatal("an untrusted identity must not receive the allowance")
+	}
+}
+
+// TestIssuerCookieScopeRules pins the RFC 6265 section 5.3 Domain checks that
+// decide whether an issuance is recorded at all.
+func TestIssuerCookieScopeRules(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		host, domain, want string
+		ok                 bool
+	}{
+		{host: "app.vendor.example", domain: "", want: "", ok: true},
+		{host: "app.vendor.example", domain: "vendor.example", want: "vendor.example", ok: true},
+		{host: "vendor.example", domain: "vendor.example", want: "vendor.example", ok: true},
+		{host: "app.vendor.example", domain: "other.example"},
+		{host: "app.vendor.co.uk", domain: "co.uk"},
+		{host: "co.uk", domain: "co.uk", want: "", ok: true},
+		{host: "192.0.2.10", domain: "0.2.10"},
+		{host: "evilvendor.example", domain: "vendor.example"},
+	} {
+		got, ok := issuerCookieScope(tc.host, tc.domain)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("issuerCookieScope(%q, %q) = (%q, %t), want (%q, %t)", tc.host, tc.domain, got, ok, tc.want, tc.ok)
+		}
 	}
 }

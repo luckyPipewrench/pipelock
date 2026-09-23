@@ -10,12 +10,15 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -132,9 +135,12 @@ type issuerCookieSession struct {
 
 // issuerCookieEntry holds no cookie name or value, only their keyed digest.
 type issuerCookieEntry struct {
-	digest  [32]byte
-	host    string
-	port    string
+	digest [32]byte
+	host   string
+	port   string
+	// domain is the cookie's Domain scope when the issuer set a valid one;
+	// empty means a host-only cookie, returned only to host.
+	domain  string
 	path    string
 	expires time.Time // zero means a session cookie
 }
@@ -188,6 +194,7 @@ func (s *issuerBoundCookieStore) digest(name, value string) [32]byte {
 // issuerSetCookie is one Set-Cookie line reduced to what the allowance needs.
 type issuerSetCookie struct {
 	name, value, path string
+	domain            string
 	expires           time.Time
 	expired           bool
 }
@@ -245,6 +252,10 @@ func parseIssuerSetCookie(line, defaultPath string, now time.Time) (issuerSetCoo
 				continue
 			}
 			c.expired, c.expires = !at.After(now), at
+		case "domain":
+			// RFC 6265 section 5.2.3: a leading dot is ignored and the
+			// value is compared case-insensitively. The last Domain wins.
+			c.domain = strings.ToLower(strings.TrimPrefix(val, "."))
 		case "path":
 			if val != "" && val[0] == '/' {
 				c.path = val
@@ -266,9 +277,11 @@ func issuerCookieHasCTL(s string) bool {
 }
 
 // observeResponse records cookies from a response delivered to the client.
-// Domain attributes are deliberately ignored: the allowance binds to the
-// exact issuing host, so a sibling host that a browser would also send a
-// domain cookie to receives ordinary header DLP.
+// A cookie with no Domain attribute returns only to its issuing host. A Domain
+// attribute is honoured the way a user agent honours it (RFC 6265 section 5.3
+// steps 5 and 6): it must domain-match the issuing host, must not be a public
+// suffix, and never applies to an IP-literal host; a cookie that fails those
+// rules is one a browser would reject, so it is not recorded.
 func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, headers http.Header, delivered bool, now time.Time) {
 	if s == nil || !delivered {
 		return
@@ -298,14 +311,18 @@ func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, hea
 				return
 			}
 		}
+		domain, ok := issuerCookieScope(host, cookie.domain)
+		if !ok {
+			continue
+		}
 		entry := issuerCookieEntry{
 			digest: s.digest(cookie.name, cookie.value), host: host, port: port,
-			path: cookie.path, expires: cookie.expires,
+			domain: domain, path: cookie.path, expires: cookie.expires,
 		}
 		replaced := false
 		for i := range sess.entries {
 			old := &sess.entries[i]
-			if old.digest == entry.digest && old.host == host && old.port == port && old.path == entry.path {
+			if old.digest == entry.digest && old.host == host && old.port == port && old.domain == entry.domain && old.path == entry.path {
 				*old = entry
 				replaced = true
 				break
@@ -332,6 +349,37 @@ func issuerCookieOrigin(u *url.URL) (host, port string, ok bool) {
 		port = "443"
 	}
 	return host, port, host != ""
+}
+
+// issuerCookieScope validates a Set-Cookie Domain attribute against the
+// issuing host per RFC 6265 section 5.3 steps 5 and 6. It returns the domain
+// scope to record ("" for a host-only cookie) and false when a user agent
+// would ignore the cookie. A Domain equal to a public suffix is accepted only
+// when it equals the host itself, in which case the cookie is host-only.
+func issuerCookieScope(host, domain string) (string, bool) {
+	if domain == "" {
+		return "", true
+	}
+	if suffix, _ := publicsuffix.PublicSuffix(domain); suffix == domain {
+		return "", domain == host
+	}
+	if net.ParseIP(host) != nil {
+		return "", false
+	}
+	if host != domain && !strings.HasSuffix(host, "."+domain) {
+		return "", false
+	}
+	return domain, true
+}
+
+// issuerCookieHostMatches reports whether a request host is one the recorded
+// cookie is sent to: the issuing host for a host-only cookie, otherwise any
+// host that domain-matches the recorded Domain (RFC 6265 section 5.1.3).
+func issuerCookieHostMatches(entry issuerCookieEntry, host string) bool {
+	if entry.domain == "" {
+		return entry.host == host
+	}
+	return host == entry.domain || strings.HasSuffix(host, "."+entry.domain)
 }
 
 // issuerCookieDefaultPath implements the RFC 6265 section 5.1.4 default-path.
@@ -363,7 +411,7 @@ func (s *issuerBoundCookieStore) allows(id string, target *url.URL, name, value 
 	}
 	digest := s.digest(name, value)
 	for _, entry := range sess.entries {
-		if hmac.Equal(entry.digest[:], digest[:]) && entry.host == host && entry.port == port &&
+		if hmac.Equal(entry.digest[:], digest[:]) && issuerCookieHostMatches(entry, host) && entry.port == port &&
 			(entry.expires.IsZero() || entry.expires.After(now)) && issuerCookiePathMatches(entry.path, requestPath) {
 			return true
 		}

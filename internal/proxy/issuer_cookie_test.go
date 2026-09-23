@@ -162,6 +162,8 @@ func TestParseIssuerSetCookieKeepsWireValue(t *testing.T) {
 		{line: "sid=a\x01b"},
 		{line: "sid=v; Max-Age=abc", name: "sid", value: "v", ok: true},
 		{line: "sid=v; Max-Age=-1"},
+		{line: "sid=" + strings.Repeat("A", issuerCookieMaxPairBytes-len("sid")), name: "sid", value: strings.Repeat("A", issuerCookieMaxPairBytes-len("sid")), ok: true},
+		{line: "sid=" + strings.Repeat("A", issuerCookieMaxPairBytes-len("sid")+1)},
 	} {
 		c, ok := parseIssuerSetCookie(tc.line, "/", now)
 		if ok != tc.ok || (ok && (c.name != tc.name || c.value != tc.value)) {

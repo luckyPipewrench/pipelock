@@ -131,6 +131,95 @@ func TestURLHeuristicsDoNotRaiseAdaptiveScore(t *testing.T) {
 	}
 }
 
+func TestForwardHTTP_BoundOpaqueTrafficDoesNotEscalate(t *testing.T) {
+	upstreamHits := 0
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := adaptiveConfig()
+	cfg.DefaultAgentIdentity = "test-browser"
+	cfg.BindDefaultAgentIdentity = true
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	handler := p.buildHandler(http.NewServeMux())
+	opaque := opaqueHighEntropyBodyValue()
+	send := func(h http.Handler, body, stage string) {
+		t.Helper()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/graphql?cursor="+opaque, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200: %s", stage, w.Code, w.Body.String())
+		}
+	}
+	graphqlBody := `{"query":"query Viewer { viewer { id } }","variables":{"cursor":"` + opaque + `"}}`
+	for i, body := range []string{
+		graphqlBody,
+		graphqlBody,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{"cursor":"` + opaque + `"}}}`,
+	} {
+		send(handler, body, fmt.Sprintf("opaque request %d", i))
+	}
+	key := sessionKeyFor("test-browser", adaptiveSessionKeyHTTPTest, envelope.ActorAuthBound)
+	if upstreamHits != 3 {
+		t.Fatalf("upstream hits = %d, want 3", upstreamHits)
+	}
+	if !p.currentCEEEntropy(testCEEIdentity(key)).Exceeded {
+		t.Fatal("bound session did not retain the cross-request entropy finding")
+	}
+	rec := p.sessionMgrPtr.Load().GetOrCreate(key)
+	if rec.ThreatScore() != 0 || rec.EscalationLevel() != 0 {
+		t.Fatalf("opaque traffic raised adaptive state: score=%.1f level=%d", rec.ThreatScore(), rec.EscalationLevel())
+	}
+
+	reloaded := cfg.Clone()
+	newScanner := scanner.MustNew(reloaded)
+	if !p.Reload(reloaded, newScanner) {
+		newScanner.Close()
+		t.Fatal("policy reload failed")
+	}
+	rec = p.sessionMgrPtr.Load().GetOrCreate(key)
+	escalateRec(rec, 1)
+	priorScore := rec.ThreatScore()
+	send(handler, graphqlBody, "elevated session after reload")
+	if rec.ThreatScore() != priorScore || rec.EscalationLevel() != 1 {
+		t.Fatalf("reloaded entropy warning changed adaptive state: score=%.1f level=%d", rec.ThreatScore(), rec.EscalationLevel())
+	}
+
+	freshScanner := scanner.MustNew(cfg)
+	defer freshScanner.Close()
+	fresh, err := New(cfg, audit.NewNop(), freshScanner, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	send(fresh.buildHandler(http.NewServeMux()), graphqlBody, "fresh process")
+	freshRec := fresh.sessionMgrPtr.Load().GetOrCreate(key)
+	if freshRec.ThreatScore() != 0 || freshRec.EscalationLevel() != 0 || upstreamHits != 5 {
+		t.Fatalf("fresh process adaptive state: score=%.1f level=%d upstream hits=%d", freshRec.ThreatScore(), freshRec.EscalationLevel(), upstreamHits)
+	}
+}
+
 // --- handleForwardHTTP tests ---
 
 // TestForwardHTTP_Adaptive_BlockAll verifies that a clean forward HTTP request

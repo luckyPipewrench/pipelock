@@ -1440,7 +1440,7 @@ type RequestBodyScanning struct {
 	DisablePatterns           []string                          `yaml:"disable_patterns"`                                                           // non-core DLP pattern names skipped by request body/header scanning
 	MaxBodyBytes              int                               `yaml:"max_body_bytes"`                                                             // fail-closed above this limit
 	ScanHeaders               bool                              `yaml:"scan_headers"`                                                               // scan request headers for DLP
-	IssuerBoundSessionCookies bool                              `yaml:"issuer_bound_session_cookies" json:"issuer_bound_session_cookies,omitempty"` // allow observed issuer cookies on intercepted HTTPS only
+	IssuerBoundSessionCookies bool                              `yaml:"issuer_bound_session_cookies" json:"issuer_bound_session_cookies,omitempty"` // default true; skip cookie pairs returned to their intercepted HTTPS issuer
 	HeaderMode                string                            `yaml:"header_mode"`                                                                // "sensitive" (listed headers) or "all" (everything except ignore list)
 	SensitiveHeaders          []string                          `yaml:"sensitive_headers"`                                                          // headers to scan in sensitive mode
 	IgnoreHeaders             []string                          `yaml:"ignore_headers"`                                                             // headers to skip in all mode

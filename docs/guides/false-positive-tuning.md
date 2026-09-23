@@ -111,28 +111,19 @@ DLP and core response floor names fail config validation. See the
 
 ### Browser session cookies on intercepted HTTPS
 
-For a headed browser that signs in through Pipelock's TLS interception, set
-`request_body_scanning.issuer_bound_session_cookies: true` if header DLP blocks
-the site's own session cookie. This option is off by default. It requires
-`tls_interception.enabled`, request body and header scanning,
-`header_mode: sensitive`, and `Cookie` in `sensitive_headers`.
+Sites often put values in their own cookies that look like credentials to DLP: a load-balancer cookie containing an AWS-key-shaped run, or a session cookie that is a JWT. When a browser signs in through Pipelock's TLS interception, header DLP would block the site's own cookie on the next request.
 
-Pipelock records a keyed digest only after an allowed HTTPS response carrying
-`Set-Cookie` reaches the browser. A later request may carry one matching cookie
-back to the exact issuing host and port over HTTPS, within its path and expiry.
-The audit event `dlp_issuer_cookie_allow` names the matched pattern and
-destination without logging the cookie value. Evidence expires within 24 hours
-and is cleared on reload. A cookie value is ineligible if its exact bytes
-previously appeared in an outbound request from that session, including one
-reflected by a different site. If a supported path cannot fully observe outbound
-data, it stops granting this allowance for that session. If the bounded global
-evidence store fills, it stops granting allowances until reload. A restart
-also clears the evidence, so the browser may need to sign in again.
+A cookie the destination issued, and that goes back to that exact destination, discloses nothing the destination does not already hold. Pipelock therefore leaves such a cookie out of header DLP. The rule is `request_body_scanning.issuer_bound_session_cookies`, and it is on by default. It takes effect only when `tls_interception.enabled` is true and request body and header scanning are enabled, because intercepted HTTPS responses are the only place Pipelock can see a site issue a cookie. Set it to `false` to scan every cookie as before.
 
-Authorization bearer tokens have no observed issuance proof and remain subject
-to header DLP. Forward HTTP, opaque CONNECT tunnels, WebSocket upgrades, and
-requests with multiple cookies do not receive this allowance. Keep normal
-header DLP enabled; this setting does not suppress other matches.
+How it decides:
+
+- Pipelock records a keyed digest of each cookie name and value from a `Set-Cookie` header on an intercepted HTTPS response that was allowed and delivered to the client. A blocked or undelivered response records nothing. The cookie value itself is never stored.
+- On a later intercepted HTTPS request from the same agent session, Pipelock splits each `Cookie` header into name=value pairs. A pair is left out of the header DLP scan only if that session received exactly that name and value from the same host and port, the request path is within the cookie's path, and the cookie has not expired. Every other pair in the same header is still scanned, and the forwarded request is not changed.
+- The binding is to the exact issuing host. A cookie set with `Domain=vendor.example` by `app.vendor.example` is still scanned when a browser sends it to `api.vendor.example`.
+- Each skipped pair that would have matched a DLP pattern writes a `dlp_issuer_cookie_allow` audit event naming the cookie name, the pattern and the destination host. The value is never logged.
+- Cookies up to 4096 bytes are remembered, per RFC 6265. Evidence is held in memory, bounded per session and across sessions, and cleared on reload or restart. When a bound is reached the oldest evidence is forgotten, and a forgotten cookie is scanned normally again.
+
+What it does not cover: the same value in any other header (including `Authorization`), in the URL or in the body is scanned as usual; so is the value sent to any other host or port, over cleartext HTTP, after it expires, or by a different agent session. CONNECT tunnels that are not intercepted, and the forward proxy's plain HTTP path, never record issuance and never receive the allowance.
 
 ### Presigned URLs inside request bodies
 

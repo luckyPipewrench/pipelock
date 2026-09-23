@@ -1038,3 +1038,115 @@ func lastJSONLine(data []byte) []byte {
 	}
 	return lines[len(lines)-1]
 }
+
+// A report whose parent names the recorder directory only after symlink
+// resolution must be refused too. The "dotdot" case is the one a cleaned
+// comparison misses: alias points into a subdirectory of the recorder
+// directory, so alias/.. is the recorder directory on disk while
+// filepath.Clean turns it into the unrelated parent.
+func TestRunShadowRefusesRecorderDirReachedThroughSymlink(t *testing.T) {
+	const owned = "chain-link-proxy.run.12345678901234567890123456789012.json"
+	for _, tc := range []struct {
+		name string
+		out  func(dir, recorderDir string) string
+	}{
+		{name: "symlinked-parent", out: func(dir, recorderDir string) string {
+			link := filepath.Join(dir, "alias")
+			if err := os.Symlink(recorderDir, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return filepath.Join(link, owned)
+		}},
+		{name: "dotdot", out: func(dir, recorderDir string) string {
+			sub := filepath.Join(recorderDir, "sub")
+			if err := os.Mkdir(sub, 0o750); err != nil {
+				t.Fatalf("Mkdir sub: %v", err)
+			}
+			link := filepath.Join(dir, "alias")
+			if err := os.Symlink(sub, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return link + string(filepath.Separator) + ".." + string(filepath.Separator) + owned
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+			recorderDir := filepath.Join(dir, "receipts")
+			if err := os.Mkdir(recorderDir, 0o750); err != nil {
+				t.Fatalf("Mkdir recorder: %v", err)
+			}
+			target := filepath.Join(recorderDir, owned)
+			if err := os.WriteFile(target, []byte("keep-me\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			out := tc.out(dir, recorderDir)
+			if filepath.Dir(filepath.Clean(out)) == recorderDir && tc.name == "dotdot" {
+				t.Fatal("precondition: the cleaned parent must differ from the recorder directory")
+			}
+			cmd := &cobra.Command{}
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			err := runShadow(cmd, shadowFlags{
+				contractPath:  contractPath,
+				allowUnsigned: true,
+				duration:      time.Hour,
+				recorderDir:   recorderDir,
+				deterministic: true,
+				sessionsDir:   dir,
+				outPath:       out,
+			})
+			if err == nil || !strings.Contains(err.Error(), "--out must not be inside the recorder directory") {
+				t.Fatalf("runShadow error = %v, want recorder-directory refusal", err)
+			}
+			got, readErr := os.ReadFile(filepath.Clean(target))
+			if readErr != nil || string(got) != "keep-me\n" {
+				t.Fatalf("recorder file changed: %q %v", got, readErr)
+			}
+		})
+	}
+}
+
+func TestUnresolvedParent(t *testing.T) {
+	sep := string(filepath.Separator)
+	for in, want := range map[string]string{
+		"report.md":                          ".",
+		sep + "report.md":                    sep,
+		"a" + sep + "b" + sep + "report.md":  "a" + sep + "b",
+		"a" + sep + ".." + sep + "report.md": "a" + sep + "..",
+	} {
+		if got := unresolvedParent(in); got != want {
+			t.Errorf("unresolvedParent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A parent that cannot be resolved, here a symlink loop, is refused with its
+// cause rather than treated as outside the recorder directory.
+func TestRunShadowRefusesUnresolvableReportParent(t *testing.T) {
+	dir := t.TempDir()
+	contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+	recorderDir := filepath.Join(dir, "receipts")
+	if err := os.Mkdir(recorderDir, 0o750); err != nil {
+		t.Fatalf("Mkdir recorder: %v", err)
+	}
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runShadow(cmd, shadowFlags{
+		contractPath:  contractPath,
+		allowUnsigned: true,
+		duration:      time.Hour,
+		recorderDir:   recorderDir,
+		deterministic: true,
+		sessionsDir:   dir,
+		outPath:       filepath.Join(loop, "report.md"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "too many links") {
+		t.Fatalf("runShadow error = %v, want the loop refused", err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -150,9 +151,14 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			// whole directory, rather than a list of names, protects every file
 			// the recorder keeps there, including ones added later, and stops a
 			// stray report from turning the directory into a mixed one that the
-			// compactor then refuses.
-			if filepath.Dir(path) == recorderDir {
-				return fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere", label, recorderDir, shadowReceiptsLabel)
+			// compactor then refuses. Identity is decided by the filesystem on
+			// the parent exactly as written: a symlinked parent, or one reached
+			// through "..", names the recorder directory while its cleaned
+			// spelling does not. A parent that cannot be resolved is refused
+			// too, with its cause, rather than assumed to be elsewhere.
+			sameDir, identityErr := cliutil.SamePathIdentity(recorderDir, unresolvedParent(output))
+			if sameDir || identityErr != nil {
+				return errors.Join(fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere (got %s)", label, recorderDir, shadowReceiptsLabel, path), identityErr)
 			}
 		}
 	}
@@ -519,4 +525,18 @@ func readShadowReport(path string) (shadow.Report, error) {
 		return shadow.Report{}, fmt.Errorf("learn diff: decode report: %w", err)
 	}
 	return report, nil
+}
+
+// unresolvedParent returns the directory part of p without cleaning it.
+// filepath.Dir collapses ".." lexically, before any symlink is resolved, so
+// "alias/../name" would lose the directory the kernel actually reaches.
+func unresolvedParent(p string) string {
+	i := strings.LastIndexByte(p, filepath.Separator)
+	switch {
+	case i < 0:
+		return "."
+	case i == 0:
+		return string(filepath.Separator)
+	}
+	return p[:i]
 }

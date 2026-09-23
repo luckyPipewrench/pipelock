@@ -274,8 +274,8 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	return e
 }
 
-// linkPredecessor runs once, at this emitter's first receipt and before that
-// receipt is written. When the emitter owns a brand-new run session, it
+// linkPredecessor runs once, after this emitter's first receipt was recorded.
+// When the emitter owns a brand-new run session, it
 // publishes a signed link file continuing the most recent finished chain of
 // the same base. The chain file itself never carries the link.
 //
@@ -289,7 +289,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 // link costs cross-run continuity, which a verifier reports as an unlinked
 // run, while bricking would cost all evidence for the run.
 func (e *Emitter) linkPredecessor() {
-	if e.hasPriorTail || e.chainSeq != 0 || e.recorder.Dir() == "" {
+	if e.hasPriorTail || e.chainSeq != 1 || e.recorder.Dir() == "" {
 		return
 	}
 	base, ok := RunSessionBase(e.session)
@@ -652,10 +652,6 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
 	}
-	if !e.linked {
-		e.linked = true
-		e.linkPredecessor()
-	}
 	if buildControl != nil {
 		sessionControl, buildErr := buildControl()
 		if buildErr != nil {
@@ -834,6 +830,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		recordErr = e.recorder.Record(entry)
 	}
 	if recordErr != nil {
+		// A failed first write may leave no successor chain at all. Never
+		// claim its predecessor; later attempts have advanced chain state
+		// and cannot make this failed first position valid.
+		e.linked = true
 		emitErr := fmt.Errorf("recording receipt: %w", recordErr)
 		// Persist failed AFTER the chain state advanced (advance-before-persist,
 		// above). For the single-shot control receipts (open/close) mark the guard
@@ -865,6 +865,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 			e.recordFailure(FailReasonRecord)
 		}
 		return emitErr
+	}
+	if !e.linked {
+		e.linked = true
+		e.linkPredecessor()
 	}
 	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
 		e.recordFailure(FailReasonAEL)

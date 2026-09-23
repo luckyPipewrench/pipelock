@@ -290,6 +290,32 @@ func TestChainLink_NoLinkBeforeFirstReceipt(t *testing.T) {
 	}
 }
 
+func TestChainLink_RejectedFirstReceiptLeavesNoClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	b := startRun(t, dir, priv)
+	if err := b.e.Emit(EmitOpts{ActionID: NewActionID(), PolicyHash: "invalid"}); err == nil {
+		t.Fatal("invalid policy hash must reject the first receipt")
+	}
+	if links := linkFiles(t, dir); len(links) != 0 {
+		t.Fatalf("rejected first receipt claimed a predecessor: %v", links)
+	}
+	if receipts := sessionReceipts(t, dir, b.session); len(receipts) != 0 {
+		t.Fatalf("rejected first receipt wrote %d receipts", len(receipts))
+	}
+	if err := b.e.EmitSessionOpen(); err != nil {
+		t.Fatalf("valid first receipt after rejection: %v", err)
+	}
+	if links := linkFiles(t, dir); len(links) != 1 {
+		t.Fatalf("successful first receipt should claim the predecessor, got %v", links)
+	}
+	b.close(t)
+}
+
 func TestChainLink_CorruptPredecessorSkippedLoudly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

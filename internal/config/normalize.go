@@ -999,6 +999,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	// one had just assigned and every pattern but the last would lose it.
 	for i := range patterns {
 		patterns[i].CredentialAudienceHosts = nil
+		patterns[i].CredentialAudienceAuthorizationOnly = false
 	}
 	for _, builtIn := range defaultDLPPatternSet {
 		if len(builtIn.CredentialAudienceHosts) == 0 {
@@ -1013,6 +1014,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 				continue
 			}
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
+			candidate.CredentialAudienceAuthorizationOnly = builtIn.CredentialAudienceAuthorizationOnly
 		}
 	}
 }

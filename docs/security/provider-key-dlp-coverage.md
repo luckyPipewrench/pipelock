@@ -7,7 +7,7 @@ session IDs, request IDs, and opaque model/provider IDs.
 
 ## Covered By Default
 
-Each row has a compiled credential-audience host set. Pipelock allows the matching credential only when the proxy's verified destination host is in that set. The decision applies to URL, request-body, request-header, and outbound WebSocket-frame DLP, and records `dlp_credential_audience_allow`. A match for the same credential at another host remains blocked. These entries do not trust a whole provider host or use `exempt_domains` or `suppress`.
+Each row has a compiled credential-audience host set. Pipelock allows the matching credential only when the proxy's verified destination host is in that set. The decision applies to URL, request-body, request-header, and outbound WebSocket-frame DLP, and records `dlp_credential_audience_allow`. A match for the same credential at another host remains blocked. Google OAuth tokens have an additional restriction: only the `Authorization` header can earn the allow; URL, body, other-header, and WebSocket-frame matches remain blocked. These entries do not trust a whole provider host or use `exempt_domains` or `suppress`.
 
 | Rule | Shape | Immutable audience hosts | Source |
 |------|-------|--------------------------|--------|
@@ -19,6 +19,7 @@ Each row has a compiled credential-audience host set. Pipelock allows the matchi
 | Answer Engine API Key | `pplx-` + 20+ alphanumeric chars | `*.perplexity.ai` | [Perplexity quickstart](https://docs.perplexity.ai/docs/getting-started/quickstart) |
 | Web Research API Key | `tvly-` + 20+ token chars | `*.tavily.com` | [Tavily quickstart](https://docs.tavily.com/documentation/quickstart) |
 | Google API Key | `AIza` + 35 token chars | `*.googleapis.com` | [Google API keys](https://cloud.google.com/docs/authentication/api-keys) |
+| Google OAuth Token | `ya29.` + 20+ token chars | `*.googleapis.com` | [Gmail API authentication](https://developers.google.com/workspace/gmail/api/auth/scopes) |
 | Discord Bot Token | three base64url segments | `discord.com` | [Discord developer reference](https://docs.discord.com/developers/reference) |
 | Slack Token | `xox[bpras]-` + 15+ token chars | `slack.com`, `mcp.slack.com` | [Slack Web API](https://docs.slack.dev/apis/web-api/), [Slack MCP server](https://docs.slack.dev/ai/slack-mcp-server/) |
 | Slack App Token | `xapp-` multi-segment | `slack.com` | [apps.connections.open](https://docs.slack.dev/reference/methods/apps.connections.open/) |
@@ -66,7 +67,7 @@ suppress:
 
 `exempt_domains` prevents URL DLP from blocking a custom key on the provider's own host. `suppress` covers request-body and request-header findings on the same provider route. The same key remains blocked on every other destination.
 
-The compiled audience entries do not use suppressions. Immutable core DLP names cannot be suppressed. A core DLP name can still carry a compiled audience: `Slack Token` is on the immutable floor, so it is allowed only at Slack's exact encrypted API authorities (`slack.com` and `mcp.slack.com`) and stays blocked on every other destination, and no operator YAML can suppress it, set it to warn, widen its audience, or add `exempt_domains`.
+The compiled audience entries do not use suppressions. Immutable core DLP names cannot be suppressed. A core DLP name can still carry a compiled audience: `Slack Token` is on the immutable floor, so it is allowed only at Slack's exact encrypted API authorities (`slack.com` and `mcp.slack.com`) and stays blocked on every other destination, and no operator YAML can suppress it, set it to warn, widen its audience, or add `exempt_domains`. `Google OAuth Token` is a built-in pattern outside the core floor; its compiled audience allows only a Bearer `Authorization` header at encrypted `*.googleapis.com` destinations.
 
 ## Provider-Opaque Fields
 

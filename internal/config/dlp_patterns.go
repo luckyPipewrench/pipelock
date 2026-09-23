@@ -109,7 +109,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Anchored to common config key names to reduce FPs on arbitrary base64.
 	// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.
 	{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: SeverityCritical},
-	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
+	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
 	// GCP service-account JSON private_key_id. The "service_account"
 	// type marker is already an always-on CORE pattern (see
 	// scanner/core.go), so it is deliberately NOT duplicated here;

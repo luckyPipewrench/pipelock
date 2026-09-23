@@ -1251,7 +1251,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	var allMatches []scanner.TextDLPMatch
 	matchedHeaders := make([]string, 0, 2)
 	for _, key := range []string{
-		"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie",
+		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
 	} {
 		val := headers.Get(key)
@@ -1259,12 +1259,13 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			continue
 		}
 		scanVal := val
-		if key == "Authorization" {
+		if key == headerNameAuthorization {
 			scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
 		}
 		result := sc.ScanTextForDLP(ctx, scanVal)
 		if !result.Clean {
-			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, "header")
+			surface := scanner.CredentialAudienceHeaderSurface(key, scanVal)
+			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, surface)
 			for _, allow := range allows {
 				p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent())
 			}

@@ -34,6 +34,40 @@ dlp:
 	}
 }
 
+func TestGoogleOAuthCredentialAudienceAuthorizationOnly_CompiledMetadata(t *testing.T) {
+	var builtIn DLPPattern
+	for _, pattern := range DefaultDLPPatterns() {
+		if pattern.Name == "Google OAuth Token" {
+			builtIn = pattern
+			break
+		}
+	}
+	if !builtIn.CredentialAudienceAuthorizationOnly || len(builtIn.CredentialAudienceHosts) == 0 {
+		t.Fatalf("Google OAuth compiled carrier policy missing: %#v", builtIn)
+	}
+	builtIn.CredentialAudienceHosts = nil
+	builtIn.CredentialAudienceAuthorizationOnly = false
+	patterns := []DLPPattern{builtIn}
+	markBuiltInCredentialAudienceHosts(patterns)
+	if !patterns[0].CredentialAudienceAuthorizationOnly || len(patterns[0].CredentialAudienceHosts) == 0 {
+		t.Fatalf("exact built-in lost carrier policy: %#v", patterns[0])
+	}
+	patterns[0].Regex += "(?:custom)"
+	markBuiltInCredentialAudienceHosts(patterns)
+	if patterns[0].CredentialAudienceAuthorizationOnly || len(patterns[0].CredentialAudienceHosts) != 0 {
+		t.Fatalf("customized pattern kept compiled carrier policy: %#v", patterns[0])
+	}
+
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	yaml := "version: 1\ndlp:\n  patterns:\n    - name: Google OAuth Token\n      regex: 'ya29\\.[a-zA-Z0-9_-]{20,}'\n      severity: critical\n      credential_audience_authorization_only: true\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "credential_audience_authorization_only") {
+		t.Fatalf("operator carrier override did not fail strict load: %v", err)
+	}
+}
+
 func TestMarkBuiltInCredentialAudienceHosts_OnlyExactBuiltins(t *testing.T) {
 	builtIn := DefaultDLPPatterns()[0]
 	builtIn.CredentialAudienceHosts = nil // generated YAML cannot serialize it.

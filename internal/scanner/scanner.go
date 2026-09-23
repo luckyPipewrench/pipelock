@@ -371,20 +371,21 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	name                           string
-	re                             *regexp.Regexp
-	withoutLeftBoundary            *regexp.Regexp
-	providerKeyPrefix              string
-	severity                       string
-	validate                       func(string) bool // post-match checksum (nil = regex-only)
-	exemptDomains                  []string          // domains where this pattern is skipped (wildcard supported)
-	core                           bool              // name belongs to the immutable floor: exemptDomains is never honored
-	credentialAudienceHosts        []string          // compiled built-ins only; empty means no audience exception
-	bundle                         string            // empty for built-in/config patterns
-	bundleVersion                  string
-	warn                           bool // true when pattern action is "warn" - matches are informational only
-	credentialURLWhitespaceGrammar bool // built-in-only runtime provenance; never configured by operators
-	requiredLiteralsAny            []string
+	name                                string
+	re                                  *regexp.Regexp
+	withoutLeftBoundary                 *regexp.Regexp
+	providerKeyPrefix                   string
+	severity                            string
+	validate                            func(string) bool // post-match checksum (nil = regex-only)
+	exemptDomains                       []string          // domains where this pattern is skipped (wildcard supported)
+	core                                bool              // name belongs to the immutable floor: exemptDomains is never honored
+	credentialAudienceHosts             []string          // compiled built-ins only; empty means no audience exception
+	credentialAudienceAuthorizationOnly bool              // compiled built-ins only; limits the allow to Authorization headers
+	bundle                              string            // empty for built-in/config patterns
+	bundleVersion                       string
+	warn                                bool // true when pattern action is "warn" - matches are informational only
+	credentialURLWhitespaceGrammar      bool // built-in-only runtime provenance; never configured by operators
+	requiredLiteralsAny                 []string
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -509,6 +510,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		// where that immutable credential is enforced (its own issuing authority
 		// over an encrypted scheme) without letting operator YAML reach it.
 		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
+		cp.credentialAudienceAuthorizationOnly = p.CredentialAudienceAuthorizationOnly
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {

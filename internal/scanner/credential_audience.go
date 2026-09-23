@@ -30,8 +30,28 @@ type CredentialAudienceMismatch struct {
 }
 
 type credentialAudienceCandidate struct {
-	patternName string
-	hosts       []string
+	patternName       string
+	hosts             []string
+	authorizationOnly bool
+}
+
+// CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
+// request headers during the decision. Both report the existing "header"
+// telemetry surface.
+const CredentialAudienceAuthorizationHeaderSurface = "authorization_header"
+
+const credentialAudienceAuthorizationHeaderName = "Authorization"
+
+// CredentialAudienceHeaderSurface grants the restricted carrier only to a
+// complete Bearer Authorization value. Other providers still use the normal
+// header audience rule, while an arbitrary Authorization value cannot earn the
+// Google OAuth exception.
+func CredentialAudienceHeaderSurface(headerName, value string) string {
+	fields := strings.Fields(value)
+	if strings.EqualFold(headerName, credentialAudienceAuthorizationHeaderName) && len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+		return CredentialAudienceAuthorizationHeaderSurface
+	}
+	return "header"
 }
 
 // filterCredentialAudience is the one destination-aware filter for compiled
@@ -53,13 +73,20 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
+		if candidate.authorizationOnly && surface != CredentialAudienceAuthorizationHeaderSurface {
+			continue
+		}
 		if len(candidate.hosts) == 0 || !destination.MatchesDomainList(host, candidate.hosts) {
 			continue
 		}
 		keep[i] = false
+		recordSurface := surface
+		if surface == CredentialAudienceAuthorizationHeaderSurface {
+			recordSurface = "header"
+		}
 		allows = append(allows, CredentialAudienceAllow{
 			PatternName: candidate.patternName,
-			Surface:     surface,
+			Surface:     recordSurface,
 			Destination: host,
 		})
 	}
@@ -112,8 +139,9 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 		return CredentialAudienceAllow{}, false
 	}
 	keep, allows := filterCredentialAudience([]credentialAudienceCandidate{{
-		patternName: pattern.name,
-		hosts:       pattern.credentialAudienceHosts,
+		patternName:       pattern.name,
+		hosts:             pattern.credentialAudienceHosts,
+		authorizationOnly: pattern.credentialAudienceAuthorizationOnly,
 	}}, target, surface)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -149,6 +177,7 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 	for i, match := range matches {
 		candidates[i].patternName = match.PatternName
 		candidates[i].hosts = match.credentialAudienceHosts
+		candidates[i].authorizationOnly = match.credentialAudienceAuthorizationOnly
 	}
 	keep, allows := filterCredentialAudience(candidates, target, surface)
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -158,6 +187,49 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		}
 	}
 	return filtered, allows
+}
+
+// ScrubAuthorizedCredentialFromJoinedHeaders removes only raw matches that
+// already qualify for an Authorization-header audience allow. The proxy scans
+// each original header value and also scans a joined copy for split secrets.
+// Without this narrow scrub the joined copy redetects the same allowed token
+// as an unowned header and blocks it. The scrubbed copy decides only the
+// Authorization-only patterns; see MergeJoinedHeaderMatches.
+func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, target string) string {
+	if CredentialAudienceHeaderSurface(headerName, value) != CredentialAudienceAuthorizationHeaderSurface {
+		return value
+	}
+	for _, pattern := range s.dlpPatterns {
+		if !pattern.credentialAudienceAuthorizationOnly {
+			continue
+		}
+		if _, ok := s.credentialAudienceAllows(pattern, target, CredentialAudienceAuthorizationHeaderSurface); !ok {
+			continue
+		}
+		value = pattern.re.ReplaceAllString(value, "[authorized-credential]")
+	}
+	return value
+}
+
+// MergeJoinedHeaderMatches combines the joined-header scan of the original
+// values with the scan of the copy scrubbed by
+// ScrubAuthorizedCredentialFromJoinedHeaders. The greedy token match can
+// swallow the first half of an unrelated secret whose second half sits in
+// another header, so every other pattern is decided on the original text.
+// Only Authorization-only patterns are taken from the scrubbed copy.
+func MergeJoinedHeaderMatches(original, scrubbed []TextDLPMatch) []TextDLPMatch {
+	merged := make([]TextDLPMatch, 0, len(original)+len(scrubbed))
+	for _, match := range original {
+		if !match.credentialAudienceAuthorizationOnly {
+			merged = append(merged, match)
+		}
+	}
+	for _, match := range scrubbed {
+		if match.credentialAudienceAuthorizationOnly {
+			merged = append(merged, match)
+		}
+	}
+	return merged
 }
 
 func deduplicateCredentialAudienceAllows(allows []CredentialAudienceAllow) []CredentialAudienceAllow {

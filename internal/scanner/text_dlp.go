@@ -320,9 +320,10 @@ type TextDLPMatch struct {
 	// environment/file secret) found when the whole value was absent. Zero
 	// means a whole-value match. It lives in its own field so PatternName stays
 	// stable for suppression rules and core-pattern checks that match by name.
-	PartialLen              int `json:"partial_len,omitempty"`
-	span                    MatchSpan
-	credentialAudienceHosts []string
+	PartialLen                          int `json:"partial_len,omitempty"`
+	span                                MatchSpan
+	credentialAudienceHosts             []string
+	credentialAudienceAuthorizationOnly bool
 }
 
 // Span returns retained coordinates for this match in the normalized scanner
@@ -563,13 +564,14 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		p := s.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInView(cleaned, text); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName:             p.name,
-				Severity:                p.severity,
-				Bundle:                  p.bundle,
-				BundleVersion:           p.bundleVersion,
-				Warn:                    p.warn,
-				credentialAudienceHosts: p.credentialAudienceHosts,
-				span:                    newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
+				PatternName:                         p.name,
+				Severity:                            p.severity,
+				Bundle:                              p.bundle,
+				BundleVersion:                       p.bundleVersion,
+				Warn:                                p.warn,
+				credentialAudienceHosts:             p.credentialAudienceHosts,
+				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -728,14 +730,15 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 		p := s.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
 			matches = append(matches, TextDLPMatch{
-				PatternName:             p.name,
-				Severity:                p.severity,
-				Encoded:                 encoding,
-				Bundle:                  p.bundle,
-				BundleVersion:           p.bundleVersion,
-				Warn:                    p.warn,
-				credentialAudienceHosts: p.credentialAudienceHosts,
-				span:                    newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
+				PatternName:                         p.name,
+				Severity:                            p.severity,
+				Encoded:                             encoding,
+				Bundle:                              p.bundle,
+				BundleVersion:                       p.bundleVersion,
+				Warn:                                p.warn,
+				credentialAudienceHosts:             p.credentialAudienceHosts,
+				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -757,14 +760,15 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				continue
 			}
 			matches = append(matches, TextDLPMatch{
-				PatternName:             p.name,
-				Severity:                p.severity,
-				Encoded:                 "whitespace",
-				Bundle:                  p.bundle,
-				BundleVersion:           p.bundleVersion,
-				Warn:                    p.warn,
-				credentialAudienceHosts: p.credentialAudienceHosts,
-				span:                    newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
+				PatternName:                         p.name,
+				Severity:                            p.severity,
+				Encoded:                             "whitespace",
+				Bundle:                              p.bundle,
+				BundleVersion:                       p.bundleVersion,
+				Warn:                                p.warn,
+				credentialAudienceHosts:             p.credentialAudienceHosts,
+				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -973,6 +977,7 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) {
 				result[i].credentialAudienceHosts = nil
 			}
+			result[i].credentialAudienceAuthorizationOnly = result[i].credentialAudienceAuthorizationOnly || m.credentialAudienceAuthorizationOnly
 			continue
 		}
 		index[k] = len(result)

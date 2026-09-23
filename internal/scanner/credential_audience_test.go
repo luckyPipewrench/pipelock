@@ -70,6 +70,79 @@ func TestScan_CredentialAudienceHosts_FailsClosedForLookalikesAndCore(t *testing
 	}
 }
 
+func TestGoogleOAuthToken_CredentialAudience(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	token := "ya29." + strings.Repeat("a", 24)
+	matches := s.ScanTextForDLP(context.Background(), token).Matches
+	if len(matches) != 1 || matches[0].PatternName != "Google OAuth Token" {
+		t.Fatalf("synthetic Google token did not match once: %#v", matches)
+	}
+	header := "Bearer " + token
+	if got := s.ScrubAuthorizedCredentialFromJoinedHeaders("Authorization", header, "https://gmail.googleapis.com/gmail/v1/users/me/profile"); strings.Contains(got, token) {
+		t.Fatalf("qualified token remained in joined header copy: %q", got)
+	}
+	for _, tc := range []struct{ name, target string }{
+		{name: "X-Api-Key", target: "https://gmail.googleapis.com/"},
+		{name: "Authorization", target: "https://evil.example/"},
+	} {
+		if got := s.ScrubAuthorizedCredentialFromJoinedHeaders(tc.name, header, tc.target); got != header {
+			t.Fatalf("non-audience header scrubbed: %q", got)
+		}
+	}
+	for _, target := range []string{
+		"https://gmail.googleapis.com/gmail/v1/users/me/profile",
+		"https://WWW.GOOGLEAPIS.COM./gmail/v1/users/me/profile",
+	} {
+		retained, allows := s.FilterTextDLPMatchesForDestination(matches, target, CredentialAudienceAuthorizationHeaderSurface)
+		if len(retained) != 0 || len(allows) != 1 || allows[0].PatternName != "Google OAuth Token" {
+			t.Fatalf("provider target %q retained=%#v allows=%#v", target, retained, allows)
+		}
+	}
+	for _, target := range []string{
+		"https://gmail.googleapis.com.evil.example/gmail/v1/users/me/profile",
+		"https://gmail.googleapis.com@evil.example/gmail/v1/users/me/profile",
+		"https://googleapis.com.evil.example/gmail/v1/users/me/profile",
+		"https://accounts.google.com/",
+		"http://gmail.googleapis.com/gmail/v1/users/me/profile",
+		"not a URL",
+	} {
+		retained, allows := s.FilterTextDLPMatchesForDestination(matches, target, CredentialAudienceAuthorizationHeaderSurface)
+		if len(retained) != 1 || len(allows) != 0 {
+			t.Fatalf("non-audience target %q retained=%#v allows=%#v", target, retained, allows)
+		}
+	}
+	for _, surface := range []string{"header", "body", "url", "websocket_frame"} {
+		retained, allows := s.FilterTextDLPMatchesForDestination(matches, "https://storage.googleapis.com/upload/storage/v1/b/attacker-bucket/o", surface)
+		if len(retained) != 1 || len(allows) != 0 {
+			t.Fatalf("non-Authorization %s carrier allowed: retained=%#v allows=%#v", surface, retained, allows)
+		}
+	}
+	blockedAtProvider := s.Scan(context.Background(), "https://gmail.googleapis.com/gmail/v1/users/me/profile?access_token="+token)
+	if blockedAtProvider.Allowed {
+		t.Fatal("token in provider-owned URL allowed")
+	}
+	storageURL := s.Scan(context.Background(), "https://storage.googleapis.com/attacker-bucket/"+token)
+	if storageURL.Allowed {
+		t.Fatal("token in attacker-owned storage URL allowed")
+	}
+	blocked := s.Scan(context.Background(), "https://gmail.googleapis.com.evil.example/?access_token="+token)
+	if blocked.Allowed {
+		t.Fatal("lookalike URL allowed")
+	}
+	mixed := s.ScanTextForDLP(context.Background(), token+" AKIA"+strings.Repeat("A", 16)).Matches
+	retained, allows := s.FilterTextDLPMatchesForDestination(mixed, "https://gmail.googleapis.com/gmail/v1/users/me/profile", CredentialAudienceAuthorizationHeaderSurface)
+	if len(retained) == 0 || len(allows) != 1 || allows[0].PatternName != "Google OAuth Token" {
+		t.Fatalf("unrelated secret lost at Google audience: retained=%#v allows=%#v", retained, allows)
+	}
+	for _, match := range retained {
+		if match.PatternName != "AWS Access ID" {
+			t.Fatalf("unexpected retained pattern: %#v", retained)
+		}
+	}
+}
+
 func TestFilterTextDLPMatchesForDestination_CanonicalAndFailClosed(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())

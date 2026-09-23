@@ -168,8 +168,11 @@ func detectShieldPipelineForResponse(contentType string, body []byte, headers ht
 			if pipeline != shield.PipelineNone || (mediaType != "" && !browserContentTypeIsGeneric(mediaType)) {
 				return pipeline
 			}
-		} else if recovered := shield.DetectPipeline(baseType, nil); recovered != shield.PipelineNone {
-			return recovered
+		} else {
+			recovered := shield.DetectPipeline(baseType, nil)
+			if recovered != shield.PipelineNone || !browserContentTypeIsGeneric(baseType) {
+				return recovered
+			}
 		}
 	}
 	if responseForbidsMIMESniffing(headers) {

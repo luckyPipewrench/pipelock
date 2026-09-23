@@ -389,6 +389,25 @@ func TestDetectShieldPipeline_MalformedParametersPreferDeclaredEssence(t *testin
 	}
 }
 
+func TestDetectShieldPipeline_MalformedParametersPreserveNonGenericEssence(t *testing.T) {
+	t.Parallel()
+	body := []byte(`<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`)
+	for _, contentType := range []string{
+		"application/octet-stream; a=1; a=2",
+		"binary/octet-stream; a=1; a=2",
+		"application/binary; a=1; a=2",
+		"image/png; a=1; a=2",
+		"application/pdf; a=1; a=2",
+		"text/plain; a=1; a=2",
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			if got := detectShieldPipeline(contentType, body); got != shield.PipelineNone {
+				t.Fatalf("pipeline = %v, want none", got)
+			}
+		})
+	}
+}
+
 func TestDetectShieldPipeline_NonHTTPWhitespaceDoesNotAuthorizeEssence(t *testing.T) {
 	t.Parallel()
 	body := []byte(`<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`)
@@ -532,6 +551,24 @@ func TestProxy_ApplyShield_InvalidNoSniffStillShields(t *testing.T) {
 	}
 }
 
+func TestProxy_ApplyShield_MalformedNonGenericTypesStayInert(t *testing.T) {
+	t.Parallel()
+	p := newTestProxy(t)
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = true
+	body := []byte(`<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`)
+	contentType := "application/octet-stream; a=1; a=2"
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+		t.Run(transport, func(t *testing.T) {
+			headers := http.Header{"Content-Type": {contentType}}
+			out, summary, blocked := p.applyShield(body, contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != contentType {
+				t.Fatalf("outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
+			}
+		})
+	}
+}
+
 func TestReverseShield_NoSniffInvalidTypeStaysInert(t *testing.T) {
 	body := `<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`
 	contentType := "\u2003application/javascript; charset=utf-8"
@@ -563,6 +600,20 @@ func TestReverseShield_InvalidNoSniffStillShields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK || strings.Contains(string(got), "track.example.com") || resp.Header.Get("Content-Type") != "text/html" {
+		t.Fatalf("reverse response: status=%d headers=%#v body=%q", resp.StatusCode, resp.Header, got)
+	}
+}
+
+func TestReverseShield_MalformedNonGenericTypeStaysInert(t *testing.T) {
+	body := `<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`
+	contentType := "application/octet-stream; a=1; a=2"
+	resp := reverseShieldResponseHarnessWithContentType(t, config.ShieldStrictnessStandard, config.ShieldOversizeBlock, false, 4096, contentType, body)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(got) != body || resp.Header.Get("Content-Type") != contentType {
 		t.Fatalf("reverse response: status=%d headers=%#v body=%q", resp.StatusCode, resp.Header, got)
 	}
 }

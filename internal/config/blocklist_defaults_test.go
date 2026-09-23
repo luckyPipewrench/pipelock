@@ -85,10 +85,16 @@ func TestBlocklistDefaultBlocksThroughTheScanner(t *testing.T) {
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			res := sc.Scan(context.Background(), target)
-			blocked := !res.Allowed && res.Scanner == scanner.ScannerBlocklist
-			if blocked != tc.wantBlocked {
-				t.Fatalf("blocked by blocklist=%v want %v (allowed=%v scanner=%q reason=%q)",
-					blocked, tc.wantBlocked, res.Allowed, res.Scanner, res.Reason)
+			if tc.wantBlocked {
+				if res.Allowed || res.Scanner != scanner.ScannerBlocklist {
+					t.Fatalf("want a blocklist block, got allowed=%v scanner=%q reason=%q", res.Allowed, res.Scanner, res.Reason)
+				}
+				return
+			}
+			// The opt-out must leave the URL allowed outright; a denial by any
+			// other scanner would hide whether the blocklist was really off.
+			if !res.Allowed {
+				t.Fatalf("want allowed, got scanner=%q reason=%q", res.Scanner, res.Reason)
 			}
 		})
 	}
@@ -136,9 +142,16 @@ func TestNoShippedListDefaultIsDroppedByLoad(t *testing.T) {
 	walk = func(path string, def, got reflect.Value) {
 		switch def.Kind() {
 		case reflect.Pointer:
-			if !def.IsNil() && !got.IsNil() {
-				walk(path, def.Elem(), got.Elem())
+			if def.IsNil() {
+				return
 			}
+			// A nil loaded pointer under a populated default drops everything
+			// beneath it, so compare that subtree against its zero value.
+			if got.IsNil() {
+				walk(path, def.Elem(), reflect.Zero(def.Elem().Type()))
+				return
+			}
+			walk(path, def.Elem(), got.Elem())
 		case reflect.Struct:
 			for i := 0; i < def.NumField(); i++ {
 				f := def.Type().Field(i)

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -186,6 +187,7 @@ func allDoctorChecks() []doctorCheck {
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
+		{8, "owned_loopback", "agent reaches its own ephemeral loopback listener in the owned slice", checkOwnedLoopback},
 	}
 }
 
@@ -196,6 +198,60 @@ func allDoctorChecks() []doctorCheck {
 const remediationRunAsRoot = "re-run as root: sudo pipelock contain doctor"
 
 const remediationInstall = "run `pipelock contain install` first"
+
+// The result marker distinguishes a completed network probe from a failure to
+// launch the transient service. The listener uses port zero so the test covers
+// the dynamic-port contract rather than an installed proxy exception.
+const ownedLoopbackProbeScript = `import socket, sys
+try:
+    cgroup = open('/proc/self/cgroup', encoding='ascii').read()
+    if %q not in cgroup:
+        raise RuntimeError('transient service did not enter the owned slice')
+except (OSError, RuntimeError) as exc:
+    print('LOOPBACK_SETUP: ' + str(exc))
+    sys.exit(2)
+try:
+    with socket.socket() as listener:
+        listener.settimeout(3)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        with socket.create_connection(listener.getsockname(), timeout=3):
+            peer, _ = listener.accept()
+            peer.close()
+    print('LOOPBACK_PASS')
+except (OSError, TimeoutError) as exc:
+    print('LOOPBACK_FAIL: ' + str(exc))
+    sys.exit(1)
+`
+
+func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	args := []string{
+		"--wait", "--collect", "--service-type=oneshot", "--property=PrivateTmp=true", "--slice=" + ownedLoopbackSlice,
+		"--uid=" + env.agentUserName, "--gid=" + env.agentUserName, "--pipe", "--",
+		"/usr/bin/python3", "-c", fmt.Sprintf(ownedLoopbackProbeScript, ownedLoopbackSlice),
+	}
+	out, code, err := env.runCmd(ctx, "/usr/bin/systemd-run", args...)
+	if err != nil {
+		return unknown(classInfra, "owned-loopback transient service could not run: "+err.Error(), "check systemd-run and the contained agent identity, then rerun `pipelock contain doctor`")
+	}
+	if strings.Contains(out, "LOOPBACK_FAIL:") {
+		return fail(classInfra, "owned-slice ephemeral loopback connection failed: "+oneLine(out), "run `pipelock contain verify` to inspect the owned-loopback nftables rules and slice, then rerun `pipelock contain install`")
+	}
+	if code == 0 && strings.Contains(out, "LOOPBACK_PASS") {
+		structure := checkManagedChainStructure(ctx, env)
+		if structure.status != statusPass {
+			if strings.Contains(structure.detail, "missing") || strings.Contains(structure.detail, "inactive") ||
+				strings.Contains(structure.detail, "do not reference") || strings.Contains(structure.detail, "unrecognized") {
+				return fail(classInfra, "owned-loopback model is not installed: "+structure.detail, "rerun `pipelock contain install` to restore the owned slice and nftables rules")
+			}
+			return structure
+		}
+		return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
+	}
+	return unknown(classInfra, fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")
+}
 
 const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
 

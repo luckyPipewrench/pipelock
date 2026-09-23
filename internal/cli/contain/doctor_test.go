@@ -31,7 +31,12 @@ func (s scriptedRun) cmd(_ context.Context, _ string, args ...string) (string, i
 func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	t.Helper()
 	env := defaultDoctorEnv()
-	env.runCmd = run.cmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "/usr/bin/systemd-run" {
+			return "LOOPBACK_PASS", 0, nil
+		}
+		return run.cmd(ctx, name, args...)
+	}
 	counter := uint64(10)
 	env.dropCounter = func(context.Context) (uint64, error) {
 		counter++
@@ -168,6 +173,51 @@ func TestCheckGatewayHealth(t *testing.T) {
 	res := checkGatewayHealth(context.Background(), env)
 	if res.status != statusFail || res.class != classInfra {
 		t.Fatalf("dead proxy: got status=%q class=%q", res.status, res.class)
+	}
+}
+
+func TestCheckOwnedLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		name, out, wantStatus, wantReason string
+		code                              int
+		err                               error
+	}{
+		{"same-slice reachable", "LOOPBACK_PASS", statusPass, "ephemeral loopback", 0, nil},
+		{"same-slice blocked", "LOOPBACK_FAIL: timed out", statusFail, "timed out", 1, nil},
+		{"wrong slice", "LOOPBACK_SETUP: transient service did not enter the owned slice", statusUnknown, "did not enter", 2, nil},
+		{"service cannot start", "Failed to start transient service", statusUnknown, "could not complete", 1, nil},
+		{"runner error", "", statusUnknown, "could not run", 0, errors.New("systemd unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "/usr/bin/systemd-run" || !argsContain(args, "--slice="+ownedLoopbackSlice, "--uid="+env.agentUserName, "--pipe", "127.0.0.1", "LOOPBACK_FAIL") {
+					t.Fatalf("probe did not run as a contained transient service: %s %v", name, args)
+				}
+				return tc.out, tc.code, tc.err
+			}
+			res := checkOwnedLoopback(t.Context(), env)
+			if res.status != tc.wantStatus || !strings.Contains(res.detail, tc.wantReason) {
+				t.Fatalf("result = %+v, want %s containing %q", res, tc.wantStatus, tc.wantReason)
+			}
+			if tc.wantStatus != statusPass && res.remediation == "" {
+				t.Fatal("non-pass result needs an operator action")
+			}
+		})
+	}
+}
+
+func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
+	env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
+	env.chainStructure = func(context.Context) doctorResult {
+		return unknownInfra("owned loopback receiver chain is missing")
+	}
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain install") {
+		t.Fatalf("missing model = %+v, want FAIL with cause and install action", got)
+	}
+	env.chainStructure = nil
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "reader is unavailable") {
+		t.Fatalf("unavailable model reader = %+v, want UNKNOWN with cause", got)
 	}
 }
 
@@ -475,7 +525,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "7 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "8 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -494,7 +544,7 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 		t.Fatalf("unexpected json:\n%s", out)
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
-		!strings.Contains(out, `"total":7`) {
+		!strings.Contains(out, `"total":8`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 }
@@ -598,14 +648,14 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 4 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 5 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 4 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "4 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -651,8 +701,8 @@ func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
-		{name: "text aggregate", successfulWrites: 9, want: "writing doctor aggregate"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 7, want: "encoding aggregate JSON"},
+		{name: "text aggregate", successfulWrites: 10, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 8, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {

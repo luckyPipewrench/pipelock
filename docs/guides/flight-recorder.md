@@ -208,9 +208,29 @@ On a **clean shutdown** the recorder writes a `transcript_root` entry naming the
 
 Scope and limits:
 
-- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). An unsealed recorder is reported as incomplete by `--whole-recorder`; this can mean the recorder is still running or that its tail was truncated. The root cannot prove that a trailing checkpoint written after the root is present.
-- **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start by the same writer resumes emission into the same hash-linked chain (a continuous per-writer chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
+- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). Directory-wide verification lists every unsealed run under `INCOMPLETE RUNS` without failing solely for a missing seal; `--require-seal` makes that condition fail. Selecting a run with `--session` or checking a single file with `--whole-recorder` fails on a missing seal. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
+- **A restart starts a new chain.** A transcript root seals one process run. The next start records a new run chain beside it (see [One chain per process run](#one-chain-per-process-run)), so a prior clean shutdown never blocks receipts.
 - **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query, verification, and dashboard paths. Those content-read paths stay bounded so a truncated scan cannot be mistaken for complete evidence. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
+
+### One chain per process run
+
+Each Pipelock process run records its own receipt chain under a session named `<base>.run.<id>`, for example `proxy.run.3f9c...`. Two processes sharing one evidence directory therefore never extend the same chain. Each run chain holds only entry types the shipped verifiers already accept, and it opens with an ordinary genesis `session_open`. Verify the full run with `pipelock verify-receipt --chain DIR --session <session> --whole-recorder --key KEY`, where `DIR` contains all its shards. A single-file command checks only the named shard.
+
+The TypeScript and Rust verifier CLIs default `--dir` to the legacy `proxy` session. For a full run chain, pass `--session-id proxy.run.<id>` with `--dir`. Passing `evidence-proxy.run.<id>-0.jsonl` directly checks only the first shard. Obtain the full session ID from the evidence filename.
+
+Evidence written by older binaries lives in the plain `proxy` session. It is still verified as before.
+
+**Restart continuity is an optional signed link file.** When a run writes its first receipt, it looks for the most recent chain of the same base whose writer has exited and that no run has continued yet. If it finds one, it publishes `chain-link-<predecessor>.json` beside the chains. The file is signed by the new run's key and names the predecessor's exact final receipt (sequence and hash). The name comes from the predecessor, and the file is created atomically and only if absent, so at most one run can continue a given chain. The link lives beside the chain, never inside it.
+
+A run is legitimately *unlinked* when it is the first run, when its predecessor was still running (concurrent processes), when its predecessor's tail was damaged, or when the platform cannot prove the earlier writer has exited. Unlinked runs are reported, not treated as failures.
+
+`pipelock verify-receipt --chain DIR` verifies every run chain of the base, then every link file: its signature, that it names the exact tail of an existing predecessor, that nothing was appended to the predecessor after that tail, that no predecessor has two successors, and that a key change across the link is pinned with `--key` or authorized by a `--rotation-endorsement`. It lists linked runs, unlinked runs, and any finding, and exits nonzero on a finding. `pipelock evidence doctor DIR` checks the same link files, without judging key trust, and reports them separately from structural health.
+
+What this does not prove:
+
+- **Deleting a link file is not detected.** Its successor then looks exactly like an honest unlinked run. The unlinked list shows it, but nothing marks it as tampering.
+- **A structurally clean directory does not prove continuity.** Sequence and hash checks pass for every chain even when a whole run's evidence is missing.
+- Tamper-resistant completeness across runs needs a signed head commitment that a later run or an outside witness can check. Pipelock does not provide one yet. See [hard limits](../evidence/hard-limits.md#l-restart-continuity-deletion---restart-continuity-deletion).
 
 ### Key-free evidence capture (`--capture-output`)
 
@@ -254,10 +274,11 @@ inspect them.
 
 Pipelock **rejects `flight_recorder.signing_key_path` changes at hot-reload time.** If you edit the config and SIGHUP (or rely on fsnotify), pipelock keeps the previously loaded key in memory, logs `WARNING: config reload: flight_recorder.signing_key_path changed — receipt chain cannot rotate at runtime, ignoring (restart required)`, and continues signing with the old key. This is intentional: rotating the key mid-run would break chain verification (consumers would see entries signed with two different public keys under one `chain_id`). To rotate safely:
 
-1. Stop pipelock so the old chain closes cleanly at its last checkpoint.
+1. Stop pipelock so the old run chain closes cleanly at its last checkpoint.
 2. Swap the key file referenced by `signing_key_path`.
-3. Start pipelock. On resume it detects the key change and opens a new chain
-   **segment** that is cryptographically linked to the old one (see below).
+3. Start pipelock. The new run records a new chain signed by the new key, and
+   its link file names the old run's exact tail (see
+   [One chain per process run](#one-chain-per-process-run)).
 
 If you keep the same `signing_key_path` and replace the key file at
 that path, a reload re-reads the file contents. Treat that as an
@@ -265,19 +286,19 @@ advanced operation: the documented operator-safe path is still a
 restart so the old chain closes cleanly before the new key starts
 signing.
 
-The new segment is a linked verifiable unit, not an orphan: its first receipt
-carries a `KeyTransition` marker and links to the prior segment's tail hash, so
 `pipelock verify-receipt --chain DIR --key old.pub --key new.pub` verifies
-continuously across the rotation and lists each segment's signer for you to
-confirm. Earlier builds opened a fully *separate* chain here — and, worse, could
-brick emission entirely when the resume saw the rotation; both are fixed, and a
-rotated chain now stays offline-verifiable. See the
-[receipt verification guide](receipt-verification.md#chains-that-rotated-the-signing-key)
-for the verification flow.
+both run chains and the link between them, and reports the link as
+`trusted_key`. A chain in the legacy `proxy` session that rotated keys in place
+still carries a `KeyTransition` marker and verifies as one segmented chain; see
+the
+[receipt verification guide](receipt-verification.md#chains-that-rotated-the-signing-key).
 
 To let a verifier trust the successor from the original pinned key instead of
-pinning every segment key separately, prepare an old-key-signed rotation
-endorsement while Pipelock is stopped:
+pinning every key separately, prepare an old-key-signed rotation endorsement
+while Pipelock is stopped. Pass `--session` the run session of the process you
+just stopped: the newest `proxy.run.<id>` in the directory, which
+`pipelock verify-receipt --chain DIR` lists. For evidence written only by an
+older binary, the session is `proxy`.
 
 ```bash
 sudo pipelock signing pubkey \
@@ -292,7 +313,7 @@ sudo systemctl stop pipelock
 
 sudo pipelock signing receipt-rotation endorse \
   --chain /var/lib/pipelock/evidence \
-  --session proxy \
+  --session proxy.run.<id-of-the-stopped-run> \
   --prior-key-file /etc/pipelock/keys/flight-recorder-signing.key \
   --new-key-file /etc/pipelock/keys/flight-recorder-signing.next.json \
   --root-key /etc/pipelock/keys/flight-recorder-signing.root.pub \
@@ -334,7 +355,6 @@ root:
 ```bash
 pipelock verify-receipt \
   --chain /var/lib/pipelock/evidence \
-  --session proxy \
   --key /etc/pipelock/keys/flight-recorder-signing.root.pub \
   --rotation-endorsement /etc/pipelock/keys/receipt-rotation-2026-07-30.json
 ```
@@ -412,7 +432,7 @@ V2 inserts `event_kind` after `type`. V3 inserts `chain_kind` and
 `writer_instance_id` after `session_id`. The recorder continues writing v2
 during the reader-first compatibility window.
 
-The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current releases do not reject multiple processes sharing a recorder directory. The whole-corpus auditor installed by `pipelock init` detects the resulting damage; run `pipelock evidence doctor DIR` manually when investigating its alert. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
+The first entry in a writer chain has `prev_hash: "genesis"`. Each subsequent entry's `prev_hash` must equal the `hash` of the previous entry from that writer. Any gap, deletion, modification, or concurrent-writer fork breaks the chain. Current binaries give every process run its own chain, so processes sharing a recorder directory do not fork each other. An older binary writing the legacy `proxy` session alongside another writer still can. The whole-corpus auditor installed by `pipelock init` detects the resulting damage; run `pipelock evidence doctor DIR` manually when investigating its alert. The doctor reports symptoms rather than causes; a concurrent-writer fork and a deliberate edit can produce the same structure.
 
 To verify a chain:
 

@@ -4,7 +4,7 @@
 #
 # Regenerates the verifiable-shadow-rollout example bundle from scratch.
 # All output is deterministic: re-running produces byte-identical artifacts
-# (except recorder/evidence-proxy-0.jsonl whose outer timestamp uses wall
+# (except the recorder JSONL whose outer timestamp uses wall
 # clock; the receipt inside it is deterministic).
 #
 # Prerequisites: Go 1.25+ and the pipelock source tree.
@@ -38,6 +38,11 @@ go build -o "${BUILD_DIR}/gen-shadow-example" ./tools/gen-shadow-example
 # Run it.
 echo "--- generating artifacts ---"
 "${BUILD_DIR}/gen-shadow-example" --out "${OUT_DIR}"
+EVIDENCE_FILE="$(find "${OUT_DIR}/recorder" -maxdepth 1 -type f -name 'evidence-*.jsonl' -print -quit)"
+if [ -z "$EVIDENCE_FILE" ]; then
+  echo "no generated recorder JSONL found" >&2
+  exit 1
+fi
 
 echo ""
 echo "=== Verification command ==="
@@ -47,7 +52,7 @@ echo "To verify independently with the standalone verifier:"
 echo ""
 echo "  go run ./cmd/pipelock-verifier receipt --key ${OUT_DIR}/receipt-signing.pub --expect-payload-kind shadow_delta --expect-contract sha256:example-contract ${OUT_DIR}/shadow-delta-receipt.json"
 echo ""
-echo "  go run ./cmd/pipelock-verifier chain --key ${OUT_DIR}/receipt-signing.pub --expect-payload-kind shadow_delta --expect-contract sha256:example-contract ${OUT_DIR}/recorder/evidence-proxy-0.jsonl"
+echo "  go run ./cmd/pipelock-verifier chain --key ${OUT_DIR}/receipt-signing.pub --expect-payload-kind shadow_delta --expect-contract sha256:example-contract ${EVIDENCE_FILE}"
 echo ""
 echo "Or inspect verification-result.json for the recorded verification outcome."
 echo ""

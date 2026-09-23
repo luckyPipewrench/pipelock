@@ -26,7 +26,7 @@ const (
 	defaultSampleCount    = 3
 
 	evidenceReceiptEntryType = "evidence_receipt"
-	recorderSessionID        = "proxy"
+	recorderSessionID        = recorder.DefaultSessionBase
 	shadowTransport          = "shadow"
 	signatureAlgorithm       = "ed25519"
 	signaturePrefix          = "ed25519:"

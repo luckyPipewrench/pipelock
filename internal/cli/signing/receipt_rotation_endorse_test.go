@@ -85,6 +85,47 @@ func TestReceiptRotationEndorseCmdCreatesVerifiedArtifact(t *testing.T) {
 	}
 }
 
+func TestReceiptRotationEndorseResolvesLoneRun(t *testing.T) {
+	dir := t.TempDir()
+	pubA, privA := generateRotationTestKey(t)
+	_, privB := generateRotationTestKey(t)
+	session := runContinuityChain(t, dir, privA, 1)
+	priorPath := saveRotationTestKey(t, dir, "prior.key", privA)
+	newPath := saveRotationTestKey(t, dir, "new.key", privB)
+	outPath := filepath.Join(dir, "rotation.json")
+	cmd := receiptRotationEndorseCmd(time.Now)
+	cmd.SetArgs([]string{
+		"--chain", dir,
+		"--prior-key-file", priorPath,
+		"--new-key-file", newPath,
+		"--root-key", hex.EncodeToString(pubA),
+		"--out", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("endorse lone run: %v", err)
+	}
+	endorsement, err := receipt.LoadRotationEndorsementFile(outPath)
+	if err != nil || endorsement.SessionID != session {
+		t.Fatalf("endorsement session = %q, err = %v, want %q", endorsement.SessionID, err, session)
+	}
+	_ = runContinuityChain(t, dir, privA, 1)
+	otherOut := filepath.Join(dir, "ambiguous-rotation.json")
+	cmd = receiptRotationEndorseCmd(time.Now)
+	cmd.SetArgs([]string{
+		"--chain", dir,
+		"--prior-key-file", priorPath,
+		"--new-key-file", newPath,
+		"--root-key", hex.EncodeToString(pubA),
+		"--out", otherOut,
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "pass --session") {
+		t.Fatalf("ambiguous run selection must fail: %v", err)
+	}
+	if _, err := os.Stat(otherOut); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous ceremony wrote an artifact: %v", err)
+	}
+}
+
 func TestReceiptRotationEndorseCmd_RefusesOutputNamingRotationKey(t *testing.T) {
 	dir := t.TempDir()
 	pubA, privA := generateRotationTestKey(t)
@@ -201,8 +242,8 @@ func TestReceiptRotationEndorseCmdFailsClosed(t *testing.T) {
 		_, privB := generateRotationTestKey(t)
 
 		err := executeRotationEndorseTestCmd(t, dir, privA, privB, hex.EncodeToString(pubA), filepath.Join(dir, "rotation.json"))
-		if err == nil || !strings.Contains(err.Error(), "receipt chain is empty") {
-			t.Fatalf("error = %v, want empty-chain refusal", err)
+		if err == nil || !strings.Contains(err.Error(), "no receipt chains found") {
+			t.Fatalf("error = %v, want no-chain refusal", err)
 		}
 	})
 

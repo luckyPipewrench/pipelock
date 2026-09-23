@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
@@ -250,6 +251,51 @@ func evidenceFileSessionID(name string) (string, bool) {
 // equality rather than prefix-testing the filename; see that package for why.
 func ParseEvidenceFilename(name string) (sessionID string, seqStart uint64, ok bool) {
 	return evidencename.Parse(name)
+}
+
+// Names of the files the recorder and the receipt chain keep inside an
+// evidence directory besides the JSONL shards themselves. The chain-link and
+// anchor-state names are owned by the receipt and anchor packages, which this
+// package cannot import; parity tests in those packages fail if their names
+// stop being recognized here.
+const (
+	// RunWriterLockPrefix and RunWriterLockSuffix frame a run's lifetime lock.
+	RunWriterLockPrefix = "writer-"
+	RunWriterLockSuffix = ".lock"
+
+	chainLinkPrefix     = "chain-link-"
+	chainLinkSuffix     = ".json"
+	anchorStateMarker   = "anchor-state.json"
+	rawEscrowSuffix     = ".raw.enc"
+	rawEscrowNamePrefix = "evidence-"
+	rawEscrowNameMarker = "-raw-"
+)
+
+// IsRecorderOwnedFile reports whether name is a file the recorder or the
+// receipt chain writes into an evidence directory: a JSONL shard, a raw-escrow
+// sidecar, a restart continuity link, a run's lifetime writer lock, or the
+// anchor-state marker.
+//
+// A command that writes its own output into or beside an evidence directory
+// must refuse every one of these, because an atomic replace destroys evidence
+// another process wrote. It exists as ONE definition so the next file the
+// recorder learns to write is protected by adding it here, rather than by
+// finding every guard that listed the old names.
+func IsRecorderOwnedFile(name string) bool {
+	if _, _, ok := ParseEvidenceFilename(name); ok {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(name, rawEscrowNamePrefix) && strings.Contains(name, rawEscrowNameMarker) && strings.HasSuffix(name, rawEscrowSuffix):
+		return true
+	case strings.HasPrefix(name, chainLinkPrefix) && strings.HasSuffix(name, chainLinkSuffix):
+		return true
+	case strings.HasPrefix(name, RunWriterLockPrefix) && strings.HasSuffix(name, RunWriterLockSuffix):
+		return true
+	case name == anchorStateMarker:
+		return true
+	}
+	return false
 }
 
 // extractSeqStart parses the numeric seqStart from an evidence filename.

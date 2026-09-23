@@ -68,6 +68,13 @@ func TestLiveRunHelperBranches(t *testing.T) {
 	if got != want {
 		t.Fatalf("evidence file = %q, want %q", got, want)
 	}
+	runFile := filepath.Join(evidenceDir, "evidence-proxy.run.12345678901234567890123456789012-0.jsonl")
+	if err := os.WriteFile(runFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := singleLiveEvidenceFile(evidenceDir); err != nil || got != runFile {
+		t.Fatalf("run evidence = %q, %v; want %q", got, err, runFile)
+	}
 
 	cfg := config.Defaults()
 	hash := liveRunConfigHash(cfg)

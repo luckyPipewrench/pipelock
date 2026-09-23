@@ -151,7 +151,7 @@ func (h *evidenceHealthMonitor) checkTail() {
 	if !ok || snap.ChainSeq == 0 || h.recorder == nil || h.recorder.Dir() == "" {
 		return
 	}
-	tail, err := readLastReceiptTail(h.recorder.Dir(), transcriptRootSessionID)
+	tail, err := readLastReceiptTail(h.recorder.Dir(), recorderSessionOf(h.recorder))
 	if err != nil {
 		if !errors.Is(err, errNoReceiptTail) {
 			h.fail("sampler_error", err)
@@ -185,7 +185,8 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	state, found, skipped, err := readAnchorStateForSessionWithSkipped(h.recorder.Dir(), transcriptRootSessionID)
+	session := recorderSessionOf(h.recorder)
+	state, found, skipped, err := readAnchorStateForSessionWithSkipped(h.recorder.Dir(), session)
 	if skipped > 0 && h.metrics != nil {
 		h.metrics.RecordEvidenceAnchorStateSkipped(skipped)
 	}
@@ -203,8 +204,8 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	if state.SessionID != transcriptRootSessionID {
-		h.fail("sampler_error", fmt.Errorf("anchor-state session_id %q does not match %q", state.SessionID, transcriptRootSessionID))
+	if state.SessionID != session {
+		h.fail("sampler_error", fmt.Errorf("anchor-state session_id %q does not match %q", state.SessionID, session))
 		h.setAnchor(nil)
 		return
 	}

@@ -140,13 +140,25 @@ These limits are not loopholes in receipt verification. They are the boundary of
 
 **Category:** recorder-integrity
 
-**Summary:** Concurrent pipelock processes sharing one recorder directory can fork the sequence and produce a structurally unverifiable chain; the verifier may report a prev_hash mismatch that looks like tampering.
+**Summary:** Each process run records its own chain, so current processes sharing one recorder directory no longer fork a shared chain; an older binary writing the shared legacy session alongside another writer still can, and the verifier may report a prev_hash mismatch that looks like tampering.
 
 **Why no rung closes it:** The receipt chain can prove byte integrity, ordering, and signer binding for records it sees. This limit describes a condition outside that in-domain proof.
 
-**Bound:** Single-writer guard / per-writer evidence directories (not yet enforced); detect existing damage with `pipelock evidence doctor DIR`.
+**Bound:** One chain per process run (current binaries); detect legacy-session damage with `pipelock evidence doctor DIR`.
 
 **How the verifier surfaces it:** Passing verification prints `L-CONCURRENT-RECORDER-WRITERS` with this summary when the verified surface is subject to the limit.
+
+## L-RESTART-CONTINUITY-DELETION - Restart Continuity Deletion
+
+**Category:** completeness
+
+**Summary:** Continuity between process runs is recorded only as an optional signed link file beside the chains; deleting a link file makes its successor look like an honest unlinked run and is not detected, so a structurally clean directory does not prove no run's evidence is missing.
+
+**Why no rung closes it:** The receipt chain can prove byte integrity, ordering, and signer binding for records it sees. This limit describes a condition outside that in-domain proof.
+
+**Bound:** A signed head commitment (not yet available); `pipelock verify-receipt --chain` and `pipelock evidence doctor` list every unlinked run.
+
+**How the verifier surfaces it:** Passing verification prints `L-RESTART-CONTINUITY-DELETION` with this summary when the verified surface is subject to the limit.
 
 ## What Pipelock DOES Prove
 

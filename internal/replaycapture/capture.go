@@ -63,7 +63,7 @@ var (
 type CapturedScenario struct {
 	Scenario     Scenario
 	Receipts     []receipt.Receipt
-	EvidenceFile string // recorder JSONL the verifier reads (evidence-proxy-0.jsonl)
+	EvidenceFile string // recorder JSONL the verifier reads (one process run)
 	SignerKeyHex string // ed25519 public key hex
 	PolicyHash   string // "sha256:"-labeled canonical policy hash; action receipts carry the raw form of the same digest
 	RootHash     string // chain root hash after the final receipt
@@ -567,9 +567,15 @@ func newWebSocketEchoBackend() *httptest.Server {
 
 // singleEvidenceFile returns the lone evidence JSONL file the recorder wrote.
 func singleEvidenceFile(dir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(dir, "evidence-proxy.run.*-*.jsonl"))
 	if err != nil {
 		return "", fmt.Errorf("globbing evidence: %w", err)
+	}
+	if len(matches) == 0 {
+		matches, err = filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+		if err != nil {
+			return "", fmt.Errorf("globbing legacy evidence: %w", err)
+		}
 	}
 	if len(matches) != 1 {
 		return "", fmt.Errorf("expected exactly one evidence file, found %d in %s", len(matches), dir)

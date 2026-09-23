@@ -39,7 +39,7 @@ import (
 
 const (
 	evidenceReceiptEntryType = "evidence_receipt"
-	recorderSessionID        = "proxy"
+	recorderSessionID        = recorder.DefaultSessionBase
 	signatureAlgorithm       = "ed25519"
 	signaturePrefix          = "ed25519:"
 	keyPurposeReceiptSigning = "receipt-signing"
@@ -149,6 +149,12 @@ type EmitterConfig struct {
 	// a fresh chain (ResumePrevHash defaults to GenesisHash).
 	ResumeSeq      uint64
 	ResumePrevHash string
+	// Session is the recorder session ID this emitter records under. It
+	// defaults to the historical literal "proxy" when unset. Every
+	// production caller sets this to the same run session ID that
+	// recorder.AcquireRunSession returned for the shared recorder, so every
+	// writer on that recorder agrees on one session.
+	Session string
 }
 
 // Emitter signs proxy_decision receipts and records them.
@@ -160,6 +166,7 @@ type Emitter struct {
 	actor     string
 	clock     func() time.Time
 	eventID   func() (string, error)
+	session   string
 
 	mu            sync.Mutex
 	chainSeq      uint64
@@ -185,6 +192,10 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if prev == "" {
 		prev = recorder.GenesisHash
 	}
+	session := cfg.Session
+	if session == "" {
+		session = recorderSessionID
+	}
 	return &Emitter{
 		recorder:      cfg.Recorder,
 		signer:        cfg.Signer,
@@ -195,6 +206,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		eventID:       eventID,
 		chainSeq:      cfg.ResumeSeq,
 		chainPrevHash: prev,
+		session:       session,
 	}
 }
 
@@ -316,7 +328,7 @@ func (e *Emitter) Emit(d Decision) error {
 	}
 
 	if err := e.recorder.Record(recorder.Entry{
-		SessionID: recorderSessionID,
+		SessionID: e.session,
 		Type:      evidenceReceiptEntryType,
 		EventKind: string(rcpt.PayloadKind),
 		Transport: d.Transport,

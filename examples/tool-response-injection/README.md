@@ -93,15 +93,21 @@ Two interchangeable verifiers are available.
 
 The Go CLI ships with pipelock:
 
+Choose one run chain from the demo's evidence directory. The commands below check that one shard, which is the whole run for this demo. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>`:
+
 ```bash
-pipelock verify-receipt evidence/evidence-proxy-0.jsonl --key <public-key-hex>
+EVIDENCE_FILE="$(find evidence -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"
+```
+
+```bash
+pipelock verify-receipt "$EVIDENCE_FILE" --key <public-key-hex>
 ```
 
 The Python reference verifier is on PyPI as [`pipelock-verify`](https://pypi.org/project/pipelock-verify/) and mirrors the Go output byte-for-byte:
 
 ```bash
 pip install pipelock-verify
-python -m pipelock_verify evidence/evidence-proxy-0.jsonl --key <public-key-hex>
+python -m pipelock_verify "$EVIDENCE_FILE" --key <public-key-hex>
 ```
 
 Both return exit 0 on success, 1 on failure. You can also inspect the public key that `demo.py` prints and verify the JSONL file yourself from any other implementation of the spec.

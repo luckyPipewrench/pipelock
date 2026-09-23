@@ -160,6 +160,7 @@ type Recorder struct {
 	prevHash       string
 	writer         *bufio.Writer
 	file           *os.File
+	runPresence    *os.File
 	ceremonyLock   *os.File
 	ceremonyDir    os.FileInfo
 	evidenceDir    os.FileInfo
@@ -323,6 +324,24 @@ func (r *Recorder) FsyncErrorsGated() uint64 {
 		return 0
 	}
 	return r.fsyncErrorsGated.Load()
+}
+
+// DefaultSessionBase is the one source for the historical recorder session
+// name every production writer used before run sessions existed. It is now
+// the BASE from which a process mints its own run session (see
+// NewRunSessionID), the legacy session an older binary may have written, and
+// the default --session a verifier resolves to every run chain of the base.
+const DefaultSessionBase = "proxy"
+
+// SessionID returns the session this recorder is bound to, or "" when it has
+// not been bound yet (or is nil / no-op).
+func (r *Recorder) SessionID() string {
+	if r == nil || r.nop {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessionID
 }
 
 // Dir returns the recorder evidence directory. Empty for nil or no-op recorders.
@@ -697,6 +716,10 @@ func (r *Recorder) close() (retErr error) {
 
 	r.closed = true
 	defer func() {
+		if r.runPresence != nil {
+			retErr = errors.Join(retErr, unlockEvidenceFile(r.runPresence), r.runPresence.Close())
+			r.runPresence = nil
+		}
 		retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())
 	}()
 

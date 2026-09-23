@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -32,6 +33,8 @@ import (
 
 const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key"
 
+var errUnsealedRecorder = errors.New("whole-recorder verification incomplete: no transcript_root seal")
+
 // VerifyReceiptCmd returns the "verify-receipt" cobra command.
 func VerifyReceiptCmd() *cobra.Command {
 	var expectedKeys []string
@@ -48,6 +51,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var postureKey string
 	var endorsementPaths []string
 	var wholeRecorder bool
+	var requireSeal bool
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -60,6 +64,15 @@ receipt hash chain (prev_hash linkage, seq continuity, signatures). Pass
 --whole-recorder to also verify every recorder entry present, its taxonomy,
 and the transcript_root seal. For a multi-file chain spanning restarts or
 rotations, pass --chain DIR.
+
+Each process run records its own chain ("<base>.run.<id>"). With --chain and
+no --session, every chain of the base is verified, then restart continuity:
+each optional signed link file beside the chains must name the exact tail of
+the run it continues, under a trusted or endorsed key. Runs no link file
+continues are listed as unlinked. That is normal for a first run or for
+concurrent runs, and it is also what a deleted link file looks like, so a
+passing result does not prove no run's evidence is missing. Pass --session
+to verify one chain; continuity for its base is still reported.
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -76,7 +89,7 @@ Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = i
 
 Examples:
   pipelock verify-receipt receipt.json
-  pipelock verify-receipt evidence-proxy-0.jsonl
+  pipelock verify-receipt evidence-proxy.run.<id>-0.jsonl
   pipelock verify-receipt --chain /var/lib/pipelock/evidence
   pipelock verify-receipt receipt.json --key 70b991eb...
   pipelock verify-receipt --chain DIR --key old.key --key new.key
@@ -87,6 +100,9 @@ Examples:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
+			if requireSeal && !wholeRecorder {
+				return errors.New("--require-seal requires --whole-recorder")
+			}
 			trustedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
@@ -167,9 +183,16 @@ Examples:
 			if resolvedLocation != nil {
 				if cleanReport == "" {
 					if wholeRecorder {
-						return outputResult(out, verifyWholeRecorderFromResolvedSessionDir(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
+						verifyOpts.RequireSeal = requireSeal
+						return outputResult(out, verifyWholeRecorderDir(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
 					}
-					return outputResult(out, verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
+					return outputResult(out, verifyChainDirWithContinuity(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
+				}
+				if !cmd.Flags().Changed("session") {
+					sessionID, err = resolveOneReceiptSession(*resolvedLocation, sessionID)
+					if err != nil {
+						return err
+					}
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
@@ -216,6 +239,7 @@ Examples:
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
+	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	cmd.Flags().BoolVar(&allowUnanchoredSeal, "allow-unanchored-seal", false, "with --whole-recorder, accept a recorder whose transcript_root seal is not covered by a signed checkpoint (entries after the last signed checkpoint are then hash-linked but not authenticated)")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
@@ -278,6 +302,7 @@ type receiptPostureOptions struct {
 
 type verifyReceiptOptions struct {
 	AllowUnpinned        bool
+	RequireSeal          bool
 	AllowUnanchoredSeal  bool
 	SessionID            string
 	Print                receiptPrintOptions
@@ -321,6 +346,84 @@ func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.
 	return verifyWholeRecorderDetailed(out, label, query.Entries, result, trustedKeys, opts)
 }
 
+// resolveOneReceiptSession keeps single-chain outputs unambiguous. The clean
+// report has one chain summary, so a base with several runs needs an explicit
+// run session rather than silently reporting only one of them.
+func resolveOneReceiptSession(location recorder.EvidenceLocation, base string) (string, error) {
+	sessions, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return "", fmt.Errorf("listing receipt chains: %w", err)
+	}
+	switch len(sessions) {
+	case 0:
+		return "", fmt.Errorf("no receipt chains found for base %q", base)
+	case 1:
+		return sessions[0], nil
+	default:
+		return "", fmt.Errorf("base %q has %d receipt chains; pass --session with a run session for this single-chain output", base, len(sessions))
+	}
+}
+
+func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	base := sessionID
+	if b, ok := receipt.RunSessionBase(sessionID); ok {
+		base = b
+	}
+	sessions, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return fmt.Errorf("listing receipt chains: %w", err)
+	}
+	if len(sessions) == 0 {
+		return fmt.Errorf("no recorder chains found for base %q", base)
+	}
+	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
+		TrustedKeys: trustedKeys, Endorsements: opts.RotationEndorsements,
+	})
+	if err != nil {
+		return fmt.Errorf("restart continuity check incomplete: %w", err)
+	}
+	if explicit {
+		sessions = []string{sessionID}
+	}
+	var failed []string
+	var incomplete []string
+	var firstErr error
+	for _, session := range sessions {
+		chainOpts, chainKeys := chainScopedTrust(report, session, trustedKeys, opts)
+		if verifyErr := verifyWholeRecorderFromResolvedSessionDir(out, location, session, chainKeys, chainOpts); verifyErr != nil {
+			if errors.Is(verifyErr, errUnsealedRecorder) {
+				incomplete = append(incomplete, session)
+				if opts.RequireSeal || explicit {
+					failed = append(failed, session)
+					if firstErr == nil {
+						firstErr = verifyErr
+					}
+				}
+			} else {
+				failed = append(failed, session)
+				if firstErr == nil {
+					firstErr = verifyErr
+				}
+			}
+		}
+		_, _ = fmt.Fprintln(out)
+	}
+	printRestartContinuity(out, report)
+	if len(incomplete) > 0 {
+		_, _ = fmt.Fprintf(out, "INCOMPLETE RUNS (%d): %s\n", len(incomplete), strings.Join(incomplete, ", "))
+	}
+	if len(failed) > 0 {
+		if len(sessions) == 1 {
+			return firstErr
+		}
+		return fmt.Errorf("whole-recorder verification failed for %d of %d chain(s): %s", len(failed), len(sessions), strings.Join(failed, ", "))
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
+	}
+	return nil
+}
+
 func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder.Entry, whole receipt.WholeRecorderResult, trustedKeys []string, opts verifyReceiptOptions) error {
 	_, _ = fmt.Fprintf(out, "WHOLE-RECORDER: %s\n", label)
 	_, _ = fmt.Fprintf(out, "  Mode:      whole-recorder\n")
@@ -336,7 +439,7 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	}
 	if !found {
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no transcript_root seal (recorder still running or tail truncated)")
-		return fmt.Errorf("whole-recorder verification incomplete: no transcript_root seal")
+		return errUnsealedRecorder
 	}
 	rootReceiptCount := receiptEntriesBefore(entries, rootIndex)
 	if rootReceiptCount == 0 || rootReceiptCount > len(whole.Receipts) {
@@ -777,6 +880,124 @@ func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []strin
 	return verifyChainDetailed(out, path, receipts, trustedKeys, opts)
 }
 
+// verifyChainDirWithContinuity verifies receipt chains in an evidence
+// directory. When the directory holds no run chains of the session's base it
+// is exactly the single-session verification. Otherwise it verifies every
+// chain of the base (or only the named one when --session was given) and then
+// the base's restart continuity, and fails when any chain fails or any link
+// file does not verify.
+func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	base := sessionID
+	if b, ok := receipt.RunSessionBase(sessionID); ok {
+		base = b
+	}
+	chains, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return fmt.Errorf("listing receipt chains: %w", err)
+	}
+	hasRuns := false
+	for _, s := range chains {
+		if _, ok := receipt.RunSessionBase(s); ok {
+			hasRuns = true
+			break
+		}
+	}
+	if !hasRuns {
+		return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, opts)
+	}
+	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
+		TrustedKeys:  trustedKeys,
+		Endorsements: opts.RotationEndorsements,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "RESTART CONTINUITY INCOMPLETE: %s: %v\n", location.Dir, err)
+		return fmt.Errorf("restart continuity check incomplete: %w", err)
+	}
+	targets := chains
+	if explicit {
+		targets = []string{sessionID}
+	}
+	var failed []string
+	for _, s := range targets {
+		chainOpts, chainKeys := chainScopedTrust(report, s, trustedKeys, opts)
+		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, chainKeys, chainOpts); verifyErr != nil {
+			failed = append(failed, s)
+		}
+		_, _ = fmt.Fprintln(out)
+	}
+	printRestartContinuity(out, report)
+	if len(failed) > 0 {
+		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s", len(failed), len(targets), strings.Join(failed, ", "))
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
+	}
+	return nil
+}
+
+// chainScopedTrust narrows the operator's endorsements and keys to one chain.
+// A restart-time key change is authorized by an endorsement bound to the
+// PREDECESSOR run's tail, which only the link check can place; handing it to
+// the single-chain verifier of either run would be rejected as unused. So a
+// chain gets only endorsements for its own in-chain rotations, plus the
+// successor key when the base check verified an endorsed link into it.
+func chainScopedTrust(report receipt.BaseReport, session string, trustedKeys []string, opts verifyReceiptOptions) (verifyReceiptOptions, []string) {
+	chainOpts := opts
+	chainOpts.SessionID = session
+	chainOpts.RotationEndorsements = nil
+	for _, e := range opts.RotationEndorsements {
+		if e.SessionID != session {
+			continue
+		}
+		crossChain := false
+		for _, c := range report.Chains {
+			if c.Link != nil && receipt.VerifyCrossChainEndorsement(e, *c.Link) == nil {
+				crossChain = true
+				break
+			}
+		}
+		if !crossChain {
+			chainOpts.RotationEndorsements = append(chainOpts.RotationEndorsements, e)
+		}
+	}
+	keys := trustedKeys
+	for _, c := range report.Chains {
+		if c.Session == session && c.Link != nil && c.LinkTrust == receipt.LinkTrustEndorsed {
+			keys = append(append([]string(nil), trustedKeys...), c.Link.SuccessorSignerKey)
+		}
+	}
+	return chainOpts, keys
+}
+
+// printRestartContinuity prints a base report. Unlinked runs are always
+// listed, because a passing result must not read as proof of continuity.
+func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
+	label := "RESTART CONTINUITY OK"
+	if !report.Healthy() {
+		label = "RESTART CONTINUITY FAILED"
+	}
+	unlinked := report.Unlinked()
+	_, _ = fmt.Fprintf(out, "%s: base %q: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
+		label, report.Base, len(report.Chains), report.LinkCount(), len(unlinked), len(report.Findings))
+	for _, c := range report.Chains {
+		if c.Link != nil {
+			trust := c.LinkTrust
+			if trust == "" {
+				trust = "untrusted"
+			}
+			_, _ = fmt.Fprintf(out, "  linked:   %s continues %s at seq %d (%s)\n", c.Session, c.Link.PredecessorSession, c.Link.PredecessorTailSeq, trust)
+		}
+	}
+	for _, s := range unlinked {
+		_, _ = fmt.Fprintf(out, "  unlinked: %s\n", s)
+	}
+	for _, f := range report.Findings {
+		_, _ = fmt.Fprintf(out, "  - %s: %s: %s\n", f.Kind, f.Session, f.Detail)
+	}
+	_, _ = fmt.Fprintln(out, "  Note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,")
+	_, _ = fmt.Fprintln(out, "  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.")
+}
+
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 	if err != nil {
@@ -887,6 +1108,9 @@ type cleanActionEntry struct {
 }
 
 func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
+	if len(receipts) == 0 {
+		return fmt.Errorf("no receipts found in %s", label)
+	}
 	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
 	if !result.Valid {
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
@@ -1126,6 +1350,7 @@ func printReceiptLimits(out io.Writer) {
 		evidence.LimitVerifierDrift,
 		evidence.LimitContainmentUnproven,
 		evidence.LimitConcurrentWriters,
+		evidence.LimitRestartContinuity,
 	} {
 		limit, _ := evidence.ByID(id)
 		_, _ = fmt.Fprintf(out, "  Limit:      %s: %s\n", limit.ID, limit.Summary)
@@ -1248,7 +1473,7 @@ rotated its signing key, pass --key once per trusted segment key.
 
 Examples:
   pipelock transcript-root --chain /var/lib/pipelock/evidence --key pub.key
-  pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...
+  pipelock transcript-root evidence-proxy.run.<id>-0.jsonl --key 70b991eb...
   pipelock transcript-root --chain DIR --key old.key --key new.key`,
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)
@@ -1273,6 +1498,12 @@ Examples:
 					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
 				}
 				chainDir = location.Dir
+				if !cmd.Flags().Changed("session") {
+					sessionID, err = resolveOneReceiptSession(location, sessionID)
+					if err != nil {
+						return err
+					}
+				}
 				receipts, err = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 				if err != nil {
 					return fmt.Errorf("extracting session receipts: %w", err)

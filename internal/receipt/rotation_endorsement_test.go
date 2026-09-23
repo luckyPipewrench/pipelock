@@ -195,6 +195,47 @@ func TestVerifyChainWithEndorsements_RequiresPinnedRoot(t *testing.T) {
 	}
 }
 
+func TestVerifyBase_UnpinnedInChainEndorsementIsEvaluated(t *testing.T) {
+	t.Parallel()
+	pubA, privA := generateTestKey(t)
+	_, privB := generateTestKey(t)
+	chain, boundaries := buildSessionBoundRotatedChain(t, privA, privB)
+	endorsement := endorsementForBoundary(t, chain, boundaries[0], privA)
+	dir := t.TempDir()
+	var lines []byte
+	prev := recorder.GenesisHash
+	for i, rcpt := range chain {
+		entry := recorder.Entry{Version: recorder.EntryVersion, Sequence: uint64(i), Timestamp: time.Now().UTC(), SessionID: "proxy", Type: recorderEntryType, Detail: rcpt, PrevHash: prev}
+		entry.Hash = recorder.ComputeHash(entry)
+		prev = entry.Hash
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(append(lines, line...), '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verify := func(keys []string, endorsements []RotationEndorsement) BaseReport {
+		t.Helper()
+		r, err := VerifyBase(dir, "proxy", BaseVerifyOptions{TrustedKeys: keys, Endorsements: endorsements})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := verify(nil, nil); r.Healthy() {
+		t.Fatal("rotation without endorsement was accepted")
+	}
+	if r := verify(nil, []RotationEndorsement{endorsement}); findingKinds(r)[FindingCorruptChain] == 0 || !strings.Contains(r.Findings[0].Detail, "requires at least one trusted root key") {
+		t.Fatalf("unpinned endorsement was ignored instead of requiring a root: %+v", r.Findings)
+	}
+	if r := verify([]string{hex.EncodeToString(pubA)}, []RotationEndorsement{endorsement}); !r.Healthy() {
+		t.Fatalf("pinned endorsement rejected: %+v", r.Findings)
+	}
+}
+
 func TestVerifyChainWithEndorsements_RequiresSignedRecorderOpen(t *testing.T) {
 	t.Parallel()
 	pubA, privA := generateTestKey(t)

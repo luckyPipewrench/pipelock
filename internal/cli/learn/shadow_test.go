@@ -90,11 +90,27 @@ func TestRunShadowRefusesOutAliasingOutJSON(t *testing.T) {
 func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		file string
 		set  func(*shadowFlags, string)
 		want string
 	}{
-		{name: "out", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
-		{name: "out-json", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		// The legacy shard name is caught first by the older alias check.
+		{name: "out", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
+		{name: "out-json", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		{name: "run-out", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "run-out-json", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		{name: "legacy-later-shard", file: "evidence-proxy-1.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "other-run", file: "evidence-other.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		// Every other file the recorder keeps here, none of which parses as an
+		// evidence shard. Before this guard refused the whole directory, each of
+		// these would have been replaced by the report.
+		{name: "chain-link", file: "chain-link-proxy.run.12345678901234567890123456789012.json", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "writer-lock", file: "writer-proxy.run.12345678901234567890123456789012.lock", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		{name: "raw-escrow", file: "evidence-proxy-0-raw-00112233445566778899aabbccddeeff.raw.enc", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "anchor-state", file: "anchor-state.json", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		// A name the recorder never writes is refused too: a report in this
+		// directory makes it a mixed directory that compaction refuses.
+		{name: "plain-report", file: "report.md", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -103,7 +119,7 @@ func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 			if err := os.Mkdir(recorderDir, 0o750); err != nil {
 				t.Fatalf("Mkdir recorder: %v", err)
 			}
-			receiptPath := filepath.Join(recorderDir, shadowRecorderEvidenceFile)
+			receiptPath := filepath.Join(recorderDir, tc.file)
 			if err := os.WriteFile(receiptPath, []byte("keep-me\n"), 0o600); err != nil {
 				t.Fatalf("WriteFile recorder dest: %v", err)
 			}
@@ -1021,4 +1037,130 @@ func lastJSONLine(data []byte) []byte {
 		return nil
 	}
 	return lines[len(lines)-1]
+}
+
+// A report whose parent names the recorder directory only after symlink
+// resolution must be refused too. The "dotdot" case is the one a cleaned
+// comparison misses: alias points into a subdirectory of the recorder
+// directory, so alias/.. is the recorder directory on disk while
+// filepath.Clean turns it into the unrelated parent.
+func TestRunShadowRefusesRecorderDirReachedThroughSymlink(t *testing.T) {
+	const owned = "chain-link-proxy.run.12345678901234567890123456789012.json"
+	for _, tc := range []struct {
+		name string
+		out  func(dir, recorderDir string) string
+	}{
+		{name: "symlinked-parent", out: func(dir, recorderDir string) string {
+			link := filepath.Join(dir, "alias")
+			if err := os.Symlink(recorderDir, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return filepath.Join(link, owned)
+		}},
+		{name: "dotdot", out: func(dir, recorderDir string) string {
+			sub := filepath.Join(recorderDir, "sub")
+			if err := os.Mkdir(sub, 0o750); err != nil {
+				t.Fatalf("Mkdir sub: %v", err)
+			}
+			link := filepath.Join(dir, "alias")
+			if err := os.Symlink(sub, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return link + string(filepath.Separator) + ".." + string(filepath.Separator) + owned
+		}},
+		// The reverse: a link inside the recorder directory points out, so the
+		// raw parent resolves outside while the cleaned path the writer uses
+		// lands inside.
+		{name: "reverse-dotdot", out: func(dir, recorderDir string) string {
+			outside := filepath.Join(dir, "outside", "deep")
+			if err := os.MkdirAll(outside, 0o750); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			link := filepath.Join(recorderDir, "out")
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatalf("Symlink: %v", err)
+			}
+			return link + string(filepath.Separator) + ".." + string(filepath.Separator) + owned
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+			recorderDir := filepath.Join(dir, "receipts")
+			if err := os.Mkdir(recorderDir, 0o750); err != nil {
+				t.Fatalf("Mkdir recorder: %v", err)
+			}
+			target := filepath.Join(recorderDir, owned)
+			if err := os.WriteFile(target, []byte("keep-me\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			out := tc.out(dir, recorderDir)
+			if filepath.Dir(filepath.Clean(out)) == recorderDir && tc.name == "dotdot" {
+				t.Fatal("precondition: the cleaned parent must differ from the recorder directory")
+			}
+			cmd := &cobra.Command{}
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			err := runShadow(cmd, shadowFlags{
+				contractPath:  contractPath,
+				allowUnsigned: true,
+				duration:      time.Hour,
+				recorderDir:   recorderDir,
+				deterministic: true,
+				sessionsDir:   dir,
+				outPath:       out,
+			})
+			if err == nil || !strings.Contains(err.Error(), "--out must not be inside the recorder directory") {
+				t.Fatalf("runShadow error = %v, want recorder-directory refusal", err)
+			}
+			got, readErr := os.ReadFile(filepath.Clean(target))
+			if readErr != nil || string(got) != "keep-me\n" {
+				t.Fatalf("recorder file changed: %q %v", got, readErr)
+			}
+		})
+	}
+}
+
+func TestUnresolvedParent(t *testing.T) {
+	sep := string(filepath.Separator)
+	for in, want := range map[string]string{
+		"report.md":                          ".",
+		sep + "report.md":                    sep,
+		"a" + sep + "b" + sep + "report.md":  "a" + sep + "b",
+		"a" + sep + ".." + sep + "report.md": "a" + sep + "..",
+	} {
+		if got := unresolvedParent(in); got != want {
+			t.Errorf("unresolvedParent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A parent that cannot be resolved, here a symlink loop, is refused with its
+// cause rather than treated as outside the recorder directory.
+func TestRunShadowRefusesUnresolvableReportParent(t *testing.T) {
+	dir := t.TempDir()
+	contractPath := writeCandidateEnvelope(t, dir, testRatifyContract())
+	recorderDir := filepath.Join(dir, "receipts")
+	if err := os.Mkdir(recorderDir, 0o750); err != nil {
+		t.Fatalf("Mkdir recorder: %v", err)
+	}
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runShadow(cmd, shadowFlags{
+		contractPath:  contractPath,
+		allowUnsigned: true,
+		duration:      time.Hour,
+		recorderDir:   recorderDir,
+		deterministic: true,
+		sessionsDir:   dir,
+		outPath:       filepath.Join(loop, "report.md"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "too many links") {
+		t.Fatalf("runShadow error = %v, want the loop refused", err)
+	}
 }

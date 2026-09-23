@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,17 +60,78 @@ type evidenceDoctorReport struct {
 	Truncated     bool
 	ScanTruncated bool
 	FilesSkipped  int
+	// Continuity is the restart-continuity result per evidence location and
+	// base, kept apart from the structural findings above: sequence and hash
+	// structure says nothing about whether one run continues another.
+	Continuity []doctorContinuity
 }
 
+// doctorContinuity is the link-file check for one base in one location.
+type doctorContinuity struct {
+	Dir      string
+	Base     string
+	Chains   int
+	Linked   int
+	Unlinked []string
+	Findings []receipt.BaseFinding
+	// Err means the base could not be enumerated: continuity is unknown.
+	Err string
+}
+
+// Damaged reports structural damage or a restart-continuity link finding.
 func (r evidenceDoctorReport) Damaged() bool {
-	return len(r.Findings) > 0
+	return len(r.Findings) > 0 || r.ContinuityDamaged()
 }
 
-// Conclusive reports whether the scan covered the whole directory. An
-// inconclusive scan must never be presented as healthy: absence of findings
-// over a partial view is not evidence of an intact chain.
+// ContinuityDamaged reports whether any link file failed verification.
+func (r evidenceDoctorReport) ContinuityDamaged() bool {
+	for _, c := range r.Continuity {
+		if len(c.Findings) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Conclusive reports whether the scan covered the whole directory and every
+// continuity check completed. An inconclusive scan must never be presented as
+// healthy: absence of findings over a partial view is not evidence of an
+// intact chain.
 func (r evidenceDoctorReport) Conclusive() bool {
-	return !r.ScanTruncated
+	if r.ScanTruncated {
+		return false
+	}
+	for _, c := range r.Continuity {
+		if c.Err != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// checkDoctorContinuity verifies every link file in dir structurally. It uses
+// links-only mode because the doctor holds no pinned keys: judging key trust
+// here would flag every honest key change. verify-receipt judges key trust.
+func checkDoctorContinuity(dir string) []doctorContinuity {
+	bases, err := receipt.ContinuityBases(dir)
+	if err != nil {
+		return []doctorContinuity{{Dir: dir, Err: err.Error()}}
+	}
+	out := make([]doctorContinuity, 0, len(bases))
+	for _, base := range bases {
+		c := doctorContinuity{Dir: dir, Base: base}
+		report, verifyErr := receipt.VerifyBase(dir, base, receipt.BaseVerifyOptions{LinksOnly: true})
+		if verifyErr != nil {
+			c.Err = verifyErr.Error()
+		} else {
+			c.Chains = len(report.Chains)
+			c.Linked = report.LinkCount()
+			c.Unlinked = report.Unlinked()
+			c.Findings = report.Findings
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 type evidenceDoctorFinding struct {
@@ -119,7 +181,15 @@ func doctorCmd() *cobra.Command {
 The doctor reports duplicate sequence numbers, forked prev_hash values,
 receipt-chain sequence collisions, raw-escrow sidecar collisions, chain gaps,
 and missing genesis records. It exits nonzero when damage is found so operators
-can use it in CI.`,
+can use it in CI.
+
+Restart continuity is reported separately. Each process run writes its own
+chain; a run may leave an optional signed link file naming the exact tail of
+the run it continues. The doctor verifies every link file it finds and lists
+the runs no link file continues. Structural checks do not establish restart
+continuity: deleting a link file is not detected and makes its successor
+appear unlinked. Key trust across a link is judged by verify-receipt --chain,
+not here.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runEvidenceDoctor(args[0])
@@ -134,8 +204,11 @@ can use it in CI.`,
 			if err := writeEvidenceCorpusMetric(prometheusTextfile, healthy); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			if report.Damaged() {
+			if len(report.Findings) > 0 {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found structural damage"))
+			}
+			if report.ContinuityDamaged() {
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found restart-continuity link findings"))
 			}
 			if !report.Conclusive() {
 				// Fail closed: a partial scan cannot certify an intact chain, so
@@ -225,6 +298,7 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 			escrowRefs:   make(map[string][]doctorEntryRef),
 		}
 		d.scan()
+		report.Continuity = append(report.Continuity, checkDoctorContinuity(location.Dir)...)
 		report.FilesRead += d.filesRead
 		report.Findings = append(report.Findings, d.findings...)
 		report.Truncated = report.Truncated || d.truncated
@@ -599,8 +673,13 @@ func printEvidenceDoctorReport(cmd *cobra.Command, report evidenceDoctorReport) 
 		_, _ = fmt.Fprintf(out,
 			"scan incomplete: skipped %d file(s) beyond the %d-file budget; absence of damage is NOT confirmed\n",
 			report.FilesSkipped, maxEvidenceDoctorFiles)
+	} else if len(report.Findings) == 0 {
+		_, _ = fmt.Fprintln(out, "structure: no damage found")
+	} else {
+		_, _ = fmt.Fprintf(out, "structure: %d finding(s)\n", len(report.Findings))
 	}
-	if !report.Damaged() {
+	printDoctorContinuity(out, report.Continuity)
+	if len(report.Findings) == 0 {
 		return
 	}
 
@@ -627,6 +706,32 @@ func printEvidenceDoctorReport(cmd *cobra.Command, report evidenceDoctorReport) 
 	if report.Truncated {
 		_, _ = fmt.Fprintf(out, "- output_truncated: showing first %d findings; more damage exists\n", maxEvidenceDoctorFindings)
 	}
+}
+
+// printDoctorContinuity prints restart continuity apart from structure. It
+// always states the limit, because a clean structural result is the easiest
+// thing to misread as proof that no run's evidence went missing.
+func printDoctorContinuity(out io.Writer, results []doctorContinuity) {
+	if len(results) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "restart continuity:")
+	for _, c := range results {
+		if c.Err != "" {
+			_, _ = fmt.Fprintf(out, "  %s: check incomplete: %s\n", c.Dir, c.Err)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "  base %q in %s: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
+			c.Base, c.Dir, c.Chains, c.Linked, len(c.Unlinked), len(c.Findings))
+		for _, s := range c.Unlinked {
+			_, _ = fmt.Fprintf(out, "    unlinked: %s\n", s)
+		}
+		for _, f := range c.Findings {
+			_, _ = fmt.Fprintf(out, "    - %s: %s: %s\n", f.Kind, f.Session, f.Detail)
+		}
+	}
+	_, _ = fmt.Fprintln(out, "  note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,")
+	_, _ = fmt.Fprintln(out, "  and it is also what a deleted link file looks like: structural checks do not establish restart continuity.")
 }
 
 // summarizeDoctorRefs renders at most maxDoctorRefsPerFinding references and

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,7 +39,7 @@ const (
 
 // recorderSessionID is the session ID used for all recorder entries from the emitter.
 // The recorder pins to the first session ID it sees, so all entries must use the same value.
-const recorderSessionID = "proxy"
+const recorderSessionID = recorder.DefaultSessionBase
 
 // MetricsSink receives receipt-emission observability signals. The proxy's
 // metrics package implements it; tests can supply a stub. A nil sink is a
@@ -111,6 +112,23 @@ type Emitter struct {
 	beforeChainLockForTest func()
 	runNonce               string
 	nativeAEL              *aelpkg.Emitter
+
+	// session is the recorder session ID this emitter records under. It
+	// defaults to recorderSessionID for callers that do not set
+	// EmitterConfig.Session (every production caller now sets it to a
+	// process-unique run session minted by recorder.AcquireRunSession; tests
+	// that construct an Emitter directly keep the historical literal
+	// default). Every Record call in this file must use this field, never
+	// the bare recorderSessionID constant, so a caller-supplied run session
+	// is actually honored end to end.
+	session string
+	// chainLink is the signed continuity link published at the first
+	// receipt, or nil. Written once under chainMu.
+	chainLink *ChainLink
+	// linked guards the one-time link attempt; see linkPredecessor.
+	linked bool
+	// notices receives operator-facing lines about cross-run linking.
+	notices io.Writer
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -187,6 +205,18 @@ type EmitterConfig struct {
 	// expected liveness interval off the run anchor. 0 (the default) means the
 	// cadence is unset / heartbeats disabled.
 	HeartbeatSeconds int
+	// Session is the recorder session ID this emitter records under. Every
+	// production caller sets this to the SAME run session ID that
+	// recorder.AcquireRunSession returned for cfg.Recorder, so every writer
+	// sharing that recorder agrees on one session and the recorder's
+	// one-session-per-recorder enforcement never sees a mismatch between
+	// siblings. Empty defaults to the historical literal "proxy" so existing
+	// direct-construction tests are unaffected.
+	Session string
+	// Notices receives operator-facing startup lines about cross-run chain
+	// linking (for example a corrupt predecessor tail that was skipped).
+	// Nil writes to os.Stderr.
+	Notices io.Writer
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -208,6 +238,10 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		return nil
 	}
 	runNonce, nonceErr := newRunNonce()
+	session := cfg.Session
+	if session == "" {
+		session = recorderSessionID
+	}
 	e := &Emitter{
 		recorder:            cfg.Recorder,
 		privKey:             cfg.PrivKey,
@@ -221,6 +255,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		postureBinding:      cfg.PostureBinding,
 		postureAvailability: cfg.PostureAvailability,
 		heartbeatSeconds:    cfg.HeartbeatSeconds,
+		session:             session,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -231,8 +266,65 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if e.initErr != nil {
 		return e
 	}
+	e.notices = cfg.Notices
+	if e.notices == nil {
+		e.notices = os.Stderr
+	}
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
+}
+
+// linkPredecessor runs once, after this emitter's first receipt was recorded.
+// When the emitter owns a brand-new run session, it
+// publishes a signed link file continuing the most recent finished chain of
+// the same base. The chain file itself never carries the link.
+//
+// It runs at the first receipt rather than at construction because the
+// successor's evidence file only exists once something is written: a process
+// that built its emitter and then failed to start would otherwise leave a
+// link naming a successor that never existed, which verification reports as
+// a dangling link.
+//
+// Any failure leaves the run unlinked and never disables emission: a missing
+// link costs cross-run continuity, which a verifier reports as an unlinked
+// run, while bricking would cost all evidence for the run.
+func (e *Emitter) linkPredecessor() {
+	if e.hasPriorTail || e.chainSeq != 1 || e.recorder.Dir() == "" {
+		return
+	}
+	base, ok := RunSessionBase(e.session)
+	if !ok {
+		return
+	}
+	link, err := publishPredecessorLink(linkRequest{
+		dir:     filepath.Clean(e.recorder.Dir()),
+		base:    base,
+		self:    e.session,
+		privKey: e.privKey,
+		now:     e.now(),
+		notice:  e.notices,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
+		return
+	}
+	e.chainLink = link
+}
+
+// ChainLink returns the continuity link this emitter published at its first
+// receipt, or nil when the run is unlinked or has not emitted yet. Safe on a
+// nil emitter.
+func (e *Emitter) ChainLink() *ChainLink {
+	if e == nil {
+		return nil
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	if e.chainLink == nil {
+		return nil
+	}
+	l := *e.chainLink
+	return &l
 }
 
 // InitError returns the error (if any) that occurred while resuming the chain
@@ -287,6 +379,14 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 		RootEmitted:       e.rootEmitted,
 		RunNonce:          e.runNonce,
 	}, true
+}
+
+// Session returns the recorder session this emitter records under. Nil-safe.
+func (e *Emitter) Session() string {
+	if e == nil {
+		return ""
+	}
+	return e.session
 }
 
 // SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
@@ -401,7 +501,7 @@ func (e *Emitter) EmitSessionOpen() error {
 			Open: &SessionOpen{
 				RunNonce:             e.runNonce,
 				OpenNonce:            openNonce,
-				RecorderSession:      recorderSessionID,
+				RecorderSession:      e.session,
 				HeartbeatSeconds:     e.heartbeatSeconds,
 				PolicyHash:           configHashString(e.configHash.Load()),
 				SignerKeyEpoch:       fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
@@ -716,7 +816,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	closeControl := isSessionCloseControl(sessionControl)
 
 	entry := recorder.Entry{
-		SessionID: recorderSessionID,
+		SessionID: e.session,
 		Type:      recorderEntryType,
 		EventKind: string(ar.ActionType),
 		Transport: opts.Transport,
@@ -730,6 +830,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		recordErr = e.recorder.Record(entry)
 	}
 	if recordErr != nil {
+		// A failed first write may leave no successor chain at all. Never
+		// claim its predecessor; later attempts have advanced chain state
+		// and cannot make this failed first position valid.
+		e.linked = true
 		emitErr := fmt.Errorf("recording receipt: %w", recordErr)
 		// Persist failed AFTER the chain state advanced (advance-before-persist,
 		// above). For the single-shot control receipts (open/close) mark the guard
@@ -761,6 +865,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 			e.recordFailure(FailReasonRecord)
 		}
 		return emitErr
+	}
+	if !e.linked {
+		e.linked = true
+		e.linkPredecessor()
 	}
 	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
 		e.recordFailure(FailReasonAEL)
@@ -1022,7 +1130,7 @@ func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionContr
 	out := cloneSessionControl(in)
 	open := out.Open
 	open.RunNonce = e.runNonce
-	open.RecorderSession = recorderSessionID
+	open.RecorderSession = e.session
 	open.PolicyHash = configHashString(e.configHash.Load())
 	open.SignerKeyEpoch = fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
 	open.ChainOpenSeq = e.chainSeq
@@ -1075,7 +1183,7 @@ func (e *Emitter) receiptHashRecorded(wantHash string) bool {
 	if e == nil || e.recorder == nil || wantHash == "" {
 		return false
 	}
-	files, err := recorderFiles(e.recorder.Dir())
+	files, err := recorderFiles(e.recorder.Dir(), e.session)
 	if err != nil {
 		return false
 	}
@@ -1199,7 +1307,7 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 	}
 
 	if err := e.recorder.Record(recorder.Entry{
-		SessionID: recorderSessionID,
+		SessionID: e.session,
 		Type:      transcriptRootEntryType,
 		EventKind: transcriptRootEntryType,
 		Summary:   fmt.Sprintf("transcript_root: %d receipts, root=%s", root.ReceiptCount, root.RootHash[:16]),
@@ -1292,7 +1400,7 @@ func (e *Emitter) resumeChain() error {
 		return nil
 	}
 
-	files, err := recorderFiles(e.recorder.Dir())
+	files, err := recorderFiles(e.recorder.Dir(), e.session)
 	if err != nil {
 		return err
 	}
@@ -1441,11 +1549,48 @@ func receiptBytesFromEntry(entry recorder.Entry) ([]byte, error) {
 	return detailJSON, nil
 }
 
-func recorderFiles(dir string) ([]string, error) {
+func recorderFiles(dir, session string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
+	ix, err := indexRecorderFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	return ix.files(session)
+}
 
+// evidenceIndex maps each session to its evidence shard paths, in chain order.
+type evidenceIndex map[string][]string
+
+// sessions returns every session in the index, sorted.
+func (ix evidenceIndex) sessions() []string {
+	out := make([]string, 0, len(ix))
+	for s := range ix {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// files returns session's shards, refusing duplicate shard starts.
+func (ix evidenceIndex) files(session string) ([]string, error) {
+	files := ix[session]
+	// Same refusal the recorder applies to its resume candidates. This list
+	// feeds resumeChain, which sets live chain sequence and prev-hash state, so
+	// silently tie-breaking here while the recorder refuses would let the two
+	// derive different chain heads from identical bytes.
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// indexRecorderFiles reads dir once and groups every evidence shard by
+// session. It is uncapped, like the recorder's own resume scan: the capped
+// read ceiling guards query paths that would otherwise present a partial view
+// as complete, while this index must see every shard to be correct at all.
+func indexRecorderFiles(dir string) (evidenceIndex, error) {
 	dirEntries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
@@ -1462,7 +1607,7 @@ func recorderFiles(dir string) ([]string, error) {
 		base     string
 		seqStart uint64
 	}
-	shards := make([]shard, 0)
+	bySession := make(map[string][]shard)
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1472,33 +1617,30 @@ func recorderFiles(dir string) ([]string, error) {
 			continue
 		}
 		parsedSession, seqStart, ok := recorder.ParseEvidenceFilename(name)
-		if !ok || parsedSession != recorderSessionID {
+		if !ok {
 			continue
 		}
-		shards = append(shards, shard{
+		bySession[parsedSession] = append(bySession[parsedSession], shard{
 			path:     filepath.Join(filepath.Clean(dir), name),
 			base:     name,
 			seqStart: seqStart,
 		})
 	}
-	// Total order: sort.Slice is not stable, so break seqStart ties on basename
-	// rather than leaving the result dependent on directory order.
-	sort.Slice(shards, func(i, j int) bool {
-		if shards[i].seqStart != shards[j].seqStart {
-			return shards[i].seqStart < shards[j].seqStart
+	ix := make(evidenceIndex, len(bySession))
+	for session, shards := range bySession {
+		// Total order: sort.Slice is not stable, so break seqStart ties on
+		// basename rather than leaving the result dependent on directory order.
+		sort.Slice(shards, func(i, j int) bool {
+			if shards[i].seqStart != shards[j].seqStart {
+				return shards[i].seqStart < shards[j].seqStart
+			}
+			return shards[i].base < shards[j].base
+		})
+		files := make([]string, 0, len(shards))
+		for _, s := range shards {
+			files = append(files, s.path)
 		}
-		return shards[i].base < shards[j].base
-	})
-	files := make([]string, 0, len(shards))
-	for _, s := range shards {
-		files = append(files, s.path)
+		ix[session] = files
 	}
-	// Same refusal the recorder applies to its resume candidates. This list
-	// feeds resumeChain, which sets live chain sequence and prev-hash state, so
-	// silently tie-breaking here while the recorder refuses would let the two
-	// derive different chain heads from identical bytes.
-	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
-		return nil, err
-	}
-	return files, nil
+	return ix, nil
 }

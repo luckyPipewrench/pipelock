@@ -118,6 +118,11 @@ func doctorCounterProbeEnv(base *probeEnv, env *doctorEnv) probeEnv {
 // managed chain, while check 6 remains the packet-level enforcement proof.
 // A terminal rule owned by another UID cannot match the agent's packets, so
 // it stays outside this check exactly as it does for verify.
+// managedChainNotEstablishedDetail prefixes a chain read that completed and
+// could not establish containment, as opposed to a read that failed. The
+// owned-loopback check keys on it to tell an absent model from an unreadable one.
+const managedChainNotEstablishedDetail = "managed chain structure could not establish containment: "
+
 func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Context) doctorResult {
 	return func(ctx context.Context) doctorResult {
 		probe := doctorCounterProbeEnv(base, env)
@@ -130,7 +135,7 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 			if strings.Contains(detail, containmentBypassDetailPrefix) {
 				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
 			}
-			return unknownInfra("managed chain structure could not establish containment: " + detail)
+			return unknownInfra(managedChainNotEstablishedDetail + detail)
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
 		}
@@ -213,13 +218,17 @@ except (OSError, RuntimeError) as exc:
     print('LOOPBACK_SETUP: ' + str(exc))
     sys.exit(2)
 try:
-    with socket.socket() as listener:
-        listener.settimeout(3)
-        listener.bind(('127.0.0.1', 0))
-        listener.listen(1)
-        with socket.create_connection(listener.getsockname(), timeout=3):
-            peer, _ = listener.accept()
-            peer.close()
+    listener = socket.socket()
+    listener.settimeout(3)
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+except OSError as exc:
+    print('LOOPBACK_SETUP: listener: ' + str(exc))
+    sys.exit(2)
+try:
+    with listener, socket.create_connection(listener.getsockname(), timeout=3):
+        peer, _ = listener.accept()
+        peer.close()
     print('LOOPBACK_PASS')
 except (OSError, TimeoutError) as exc:
     print('LOOPBACK_FAIL: ' + str(exc))
@@ -242,15 +251,19 @@ func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra, "owned-slice ephemeral loopback connection failed: "+oneLine(out), "run `pipelock contain verify` to inspect the owned-loopback nftables rules and slice, then rerun `pipelock contain install`")
 	}
 	if code == 0 && strings.Contains(out, "LOOPBACK_PASS") {
+		// A reachable listener proves the owned model only when the managed
+		// chain is installed; otherwise loopback works because nothing is
+		// contained. Only a chain read that completed and could not establish
+		// containment is a FAIL. A reader or command error stays UNKNOWN.
 		structure := checkManagedChainStructure(ctx, env)
-		if structure.status != statusPass {
-			if strings.Contains(structure.detail, "missing") || strings.Contains(structure.detail, "inactive") ||
-				strings.Contains(structure.detail, "do not reference") || strings.Contains(structure.detail, "unrecognized") {
-				return fail(classInfra, "owned-loopback model is not installed: "+structure.detail, "rerun `pipelock contain install` to restore the owned slice and nftables rules")
-			}
+		switch {
+		case structure.status == statusPass:
+			return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
+		case structure.status == statusUnknown && strings.HasPrefix(structure.detail, managedChainNotEstablishedDetail):
+			return fail(classInfra, "owned-loopback model is not installed: "+strings.TrimPrefix(structure.detail, managedChainNotEstablishedDetail), "rerun `pipelock contain install` to restore the owned slice and nftables rules")
+		default:
 			return structure
 		}
-		return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
 	}
 	return unknown(fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")
 }

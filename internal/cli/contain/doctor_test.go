@@ -185,6 +185,7 @@ func TestCheckOwnedLoopback(t *testing.T) {
 		{"same-slice reachable", "LOOPBACK_PASS", statusPass, "ephemeral loopback", 0, nil},
 		{"same-slice blocked", "LOOPBACK_FAIL: timed out", statusFail, "timed out", 1, nil},
 		{"wrong slice", "LOOPBACK_SETUP: transient service did not enter the owned slice", statusUnknown, "did not enter", 2, nil},
+		{"listener setup error", "LOOPBACK_SETUP: listener: [Errno 98] Address already in use", statusUnknown, "Address already in use", 2, nil},
 		{"service cannot start", "Failed to start transient service", statusUnknown, "could not complete", 1, nil},
 		{"runner error", "", statusUnknown, "could not run", 0, errors.New("systemd unavailable")},
 	} {
@@ -210,10 +211,25 @@ func TestCheckOwnedLoopback(t *testing.T) {
 func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
 	env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
 	env.chainStructure = func(context.Context) doctorResult {
-		return unknownInfra("owned loopback receiver chain is missing")
+		return unknownInfra(managedChainNotEstablishedDetail + "owned loopback receiver chain is missing")
 	}
 	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain install") {
 		t.Fatalf("missing model = %+v, want FAIL with cause and install action", got)
+	}
+	// A chain read that failed is inconclusive, even when its detail contains a
+	// word such as "missing"; it must not become a reinstall FAIL.
+	env.chainStructure = func(context.Context) doctorResult {
+		return unknownInfra("managed chain structure could not be read: nft command is missing")
+	}
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "nft command is missing") {
+		t.Fatalf("unreadable chain = %+v, want UNKNOWN, not FAIL", got)
+	}
+	// A definite bypass from the chain reader keeps its own FAIL and remedy.
+	env.chainStructure = func(context.Context) doctorResult {
+		return fail(classInfra, containmentBypassDetailPrefix+"test rule", "remove the offending nftables rule and rerun `pipelock contain install`")
+	}
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, containmentBypassDetailPrefix) {
+		t.Fatalf("bypass chain = %+v, want the reader's FAIL", got)
 	}
 	env.chainStructure = nil
 	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "reader is unavailable") {
@@ -546,6 +562,23 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
 		!strings.Contains(out, `"total":8`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
+	}
+	ownedLoopback := 0
+	dec := json.NewDecoder(strings.NewReader(out))
+	for dec.More() {
+		var rec doctorRecord
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatalf("decode doctor JSON record: %v\n%s", err, out)
+		}
+		if rec.Name == "owned_loopback" {
+			ownedLoopback++
+			if rec.Status != statusPass {
+				t.Fatalf("owned_loopback status = %q, want %q:\n%s", rec.Status, statusPass, out)
+			}
+		}
+	}
+	if ownedLoopback != 1 {
+		t.Fatalf("owned_loopback records = %d, want exactly 1:\n%s", ownedLoopback, out)
 	}
 }
 

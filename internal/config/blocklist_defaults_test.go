@@ -188,3 +188,58 @@ func TestNoShippedListDefaultIsDroppedByLoad(t *testing.T) {
 		t.Errorf("Defaults() ships %s but a YAML config that omits it loads it empty; default it in ApplyDefaults or name it in intentionallyUndefaultedLists with a reason", p)
 	}
 }
+
+// TestBlocklistReloadRemovalWarns covers the reload direction. Removing a
+// blocklist entry makes a denied destination reachable, so it must produce a
+// non-advisory downgrade warning that strict and required-contract reloads
+// refuse. Adding entries, reordering, or changing case is not a reduction.
+func TestBlocklistReloadRemovalWarns(t *testing.T) {
+	shipped := config.Defaults().FetchProxy.Monitoring.Blocklist
+	cases := []struct {
+		name     string
+		before   string
+		after    string
+		wantWarn bool
+	}{
+		{"omitted to explicit empty", "mode: balanced\n", "fetch_proxy:\n  monitoring:\n    blocklist: []\n", true},
+		{"one entry dropped", "mode: balanced\n", "fetch_proxy:\n  monitoring:\n    blocklist:\n" + yamlList(shipped[1:]), true},
+		{"swap for a different list", "mode: balanced\n", "fetch_proxy:\n  monitoring:\n    blocklist:\n      - \"*.exfil.example\"\n", true},
+		{"unchanged omitted", "mode: balanced\n", "mode: balanced\n", false},
+		{"entry added", "mode: balanced\n", "fetch_proxy:\n  monitoring:\n    blocklist:\n" + yamlList(append(slices.Clone(shipped), "*.exfil.example")), false},
+		{"case change only", "mode: balanced\n", "fetch_proxy:\n  monitoring:\n    blocklist:\n" + yamlList(upperAll(shipped)), false},
+		{"explicit empty to omitted", "fetch_proxy:\n  monitoring:\n    blocklist: []\n", "mode: balanced\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *config.ReloadWarning
+			for _, w := range config.ValidateReload(loadYAML(t, tc.before), loadYAML(t, tc.after)) {
+				if w.Field == "fetch_proxy.monitoring.blocklist" {
+					w := w
+					got = &w
+				}
+			}
+			if (got != nil) != tc.wantWarn {
+				t.Fatalf("blocklist warning present=%v want %v (%+v)", got != nil, tc.wantWarn, got)
+			}
+			if got != nil && got.Disposition == config.ReloadWarningDispositionAdvisory {
+				t.Fatalf("blocklist removal must not be advisory: %+v", got)
+			}
+		})
+	}
+}
+
+func yamlList(items []string) string {
+	var b strings.Builder
+	for _, it := range items {
+		b.WriteString("      - \"" + it + "\"\n")
+	}
+	return b.String()
+}
+
+func upperAll(items []string) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = strings.ToUpper(it)
+	}
+	return out
+}

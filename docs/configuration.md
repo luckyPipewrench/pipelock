@@ -148,7 +148,7 @@ fetch_proxy:
 | `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments. A configured value must be greater than 0; omit the field to take the default. No upper bound is enforced. |
 | `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
-| `monitoring.blocklist` | 6 domains | Blocked exfiltration targets. Omit the field to keep the shipped list; override to replace it, or set an empty list to disable it |
+| `monitoring.blocklist` | 6 domains | Blocked exfiltration targets. Omit the field to keep the shipped list; override to replace it, or set an empty list to disable it. Removing entries on hot reload is a security downgrade: strict mode and required-contract modes refuse it, so apply it with a restart |
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |

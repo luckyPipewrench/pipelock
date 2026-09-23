@@ -417,6 +417,20 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
+	// Blocklist entries removed. The exclusion lists below reduce coverage by
+	// GROWING; the blocklist reduces it by SHRINKING, so the comparison runs the
+	// other way: any entry present before and absent now is a destination that
+	// was denied and is reachable after this reload.
+	if removed := passthroughDomainsAdded(
+		updated.FetchProxy.Monitoring.Blocklist,
+		old.FetchProxy.Monitoring.Blocklist,
+	); len(removed) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.blocklist",
+			Message: fmt.Sprintf("blocklist entries removed: %s — these destinations are no longer denied", strings.Join(removed, ", ")),
+		})
+	}
+
 	// Subdomain entropy exclusions expanded (reduces detection coverage)
 	if added := passthroughDomainsAdded(
 		old.FetchProxy.Monitoring.SubdomainEntropyExclusions,

@@ -1066,9 +1066,11 @@ func TestMigrateTLSCA_FollowsPipelockHome(t *testing.T) {
 		name         string
 		pipelockHome func(home string) string
 		want         string
+		wantErr      string
 	}{
 		{name: "no pipelock home keeps the operator default", pipelockHome: func(string) string { return "" }, want: "OLD-CA\n"},
 		{name: "PIPELOCK_HOME inside the operator home wins", pipelockHome: func(home string) string { return filepath.Join(home, "plhome") }, want: "NEW-CA\n"},
+		{name: "PIPELOCK_HOME outside the operator home is refused", pipelockHome: func(string) string { return filepath.Join(os.TempDir(), "external-plhome") }, wantErr: "set tls_interception.ca_cert and ca_key explicitly"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
@@ -1091,7 +1093,14 @@ func TestMigrateTLSCA_FollowsPipelockHome(t *testing.T) {
 
 			configDir := filepath.Join(home, ".config", "pipelock")
 			data := []byte("tls_interception:\n  enabled: true\n")
-			if _, _, err := migratePipelockConfigForContain(env, filepath.Join(configDir, "pipelock.yaml"), data); err != nil {
+			_, _, err := migratePipelockConfigForContain(env, filepath.Join(configDir, "pipelock.yaml"), data)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("migrate err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("migrate: %v", err)
 			}
 			got, err := os.ReadFile(filepath.Join(env.configDir, "tls", "ca.pem"))

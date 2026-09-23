@@ -686,6 +686,13 @@ func migrateTLSCA(ctx *configMigrationContext, root *yaml.Node) error {
 	caDir := filepath.Join(ctx.operatorHome, signing.DefaultPipelockDir)
 	if home := signing.ResolvedHome(); home != "" {
 		caDir = home
+		// Migration copies only from inside the operator home, so a default
+		// under an external pipelock home would be written into the contained
+		// config without its files. Refuse instead of installing a CA path the
+		// contained proxy may be unable to read.
+		if (certValue == "" || keyValue == "") && !pathWithin(ctx.operatorHome, caDir) {
+			return fmt.Errorf("tls_interception: pipelock home %s is outside the operator home %s; set tls_interception.ca_cert and ca_key explicitly", caDir, ctx.operatorHome)
+		}
 	}
 	if certValue == "" {
 		certValue = filepath.Join(caDir, "ca.pem")

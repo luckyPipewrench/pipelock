@@ -156,19 +156,21 @@ func skip(detail, remediation string) doctorResult {
 	return doctorResult{status: statusSkip, detail: detail, remediation: remediation}
 }
 
-// unknown returns an inconclusive result that must never count as a pass.
-func unknown(class, detail, remediation string) doctorResult {
+// unknown returns an inconclusive result that must never count as a pass. An
+// inconclusive probe is always attributed to infrastructure: doctor could not
+// establish the fact, which is never a policy or proxy-compatibility verdict.
+func unknown(detail, remediation string) doctorResult {
 	return doctorResult{
 		status:      statusUnknown,
 		detail:      detail,
 		remediation: remediation,
-		class:       class,
+		class:       classInfra,
 	}
 }
 
 // unknownInfra returns an inconclusive infrastructure-attribution result.
 func unknownInfra(detail string) doctorResult {
-	return unknown(classInfra, detail, rawEgressAttributionRemediation)
+	return unknown(detail, rawEgressAttributionRemediation)
 }
 
 type doctorCheck struct {
@@ -234,7 +236,7 @@ func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
 	}
 	out, code, err := env.runCmd(ctx, "/usr/bin/systemd-run", args...)
 	if err != nil {
-		return unknown(classInfra, "owned-loopback transient service could not run: "+err.Error(), "check systemd-run and the contained agent identity, then rerun `pipelock contain doctor`")
+		return unknown("owned-loopback transient service could not run: "+err.Error(), "check systemd-run and the contained agent identity, then rerun `pipelock contain doctor`")
 	}
 	if strings.Contains(out, "LOOPBACK_FAIL:") {
 		return fail(classInfra, "owned-slice ephemeral loopback connection failed: "+oneLine(out), "run `pipelock contain verify` to inspect the owned-loopback nftables rules and slice, then rerun `pipelock contain install`")
@@ -250,7 +252,7 @@ func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
 		}
 		return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
 	}
-	return unknown(classInfra, fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")
+	return unknown(fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")
 }
 
 const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
@@ -490,7 +492,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d — a bogus name resolved or DNS was intercepted", connectCode),
 			"investigate DNS interception / captive portal; the agent should never reach "+dnsFailureHost)
 	}
-	return unknown(classInfra,
+	return unknown(
 		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
 			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
 		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")

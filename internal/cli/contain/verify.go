@@ -475,6 +475,7 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 	// --workspace paths AND every recorded grant, deduplicated, so a recorded
 	// grant is never silently skipped when no --workspace flag is given.
 	paths := workspaceProbePaths(env)
+	guardedRoots := credentialGuardConfigRoots(env)
 	var bad []string
 	for _, path := range paths {
 		clean, err := filepath.Abs(filepath.Clean(path))
@@ -490,6 +491,13 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 		args := []string{"-n", "-u", env.agentUserName, "--", "test", "-r", clean}
 		if info.IsDir() {
 			args = []string{"-n", "-u", env.agentUserName, "--", "test", "-r", clean, "-a", "-x", clean}
+			// The credential guard deliberately cuts its config roots back to
+			// traverse-only so the agent can reach granted subpaths but never
+			// list the directory holding credential files. Requiring read there
+			// would fail every install and name a remedy the guard reverts.
+			if guardedRoots[clean] {
+				args = []string{"-n", "-u", env.agentUserName, "--", "test", "-x", clean}
+			}
 		}
 		out, code, err := env.runCmd(ctx, "sudo", args...)
 		if err != nil {
@@ -3583,4 +3591,22 @@ func oneLine(s string) string {
 		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf)
 	})
 	return strings.Join(fields, " ")
+}
+
+// credentialGuardConfigRoots returns the directories the credential guard holds
+// at traverse-only for the operator, from the same list the guard renders. An
+// unknown operator yields no roots, so every path keeps the read requirement.
+func credentialGuardConfigRoots(env *probeEnv) map[string]bool {
+	roots := map[string]bool{}
+	if env.operatorUser == "" || env.lookupUser == nil {
+		return roots
+	}
+	operator, err := env.lookupUser(env.operatorUser)
+	if err != nil || operator.HomeDir == "" {
+		return roots
+	}
+	for _, root := range credentialGuardWatchRoots(filepath.Clean(operator.HomeDir))[1:] {
+		roots[root] = true
+	}
+	return roots
 }

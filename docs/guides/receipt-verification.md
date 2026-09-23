@@ -167,7 +167,7 @@ Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that
 spans restarts or rotations for one recorder session/writer stream) and pin the
 trusted key:
 
-The `evidence-proxy-0.jsonl` filenames in the historical examples below are legacy samples. A current process writes `evidence-proxy.run.<id>-0.jsonl`; substitute its actual filename, or use `--chain DIR` to check every run and link in the directory.
+The `evidence-proxy-0.jsonl` filenames in the historical examples below are legacy samples. A current process writes `evidence-proxy.run.<id>-0.jsonl`. A file argument checks only that shard; use `--chain DIR --session proxy.run.<id>` to check every shard of one run, or omit `--session` to check every run and link in the directory.
 
 ```bash
 pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
@@ -253,7 +253,7 @@ field is therefore not a tamper demonstration for receipt-chain verification.
 
 ### Compacting an over-cap recorder directory
 
-Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
+Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder and isolate the selected session as described below before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
 
 ```bash
 sudo systemctl stop pipelock.service
@@ -261,10 +261,9 @@ sudo pipelock evidence compact \
   --receipt-dir /var/lib/pipelock/recorder \
   --session proxy \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
-sudo systemctl start pipelock.service
 ```
 
-`proxy` is the session older binaries wrote. Current binaries record one chain per process run, so pass the over-cap run session instead, for example `--session proxy.run.<id>`.
+`proxy` is the session older binaries wrote. Current binaries record one chain per process run, so pass the over-cap run session instead, for example `--session proxy.run.<id>`. The compactor requires its input directory to contain only that run's shards: `--session` does not filter a mixed directory. While the recorder is stopped, make a backup of the entire directory, then move every other run's shards and all link files to a separate, protected sibling directory. Check that only the selected run's shards remain before running compaction. After compaction, move the isolated files back into the active directory without replacing any compacted shard, verify the restored run directory and restart continuity, then start the recorder with `sudo systemctl start pipelock.service`. Retain both the full backup and the compactor's archive until verification succeeds. If the isolated files include raw-escrow sidecars, preserve them in the backup and restore them with the same names; the compactor cannot process sidecars in its input directory.
 
 The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and uses bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and signed v1 or v2 receipts before and after compaction. It copies each JSONL record line without changing its bytes and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory then becomes a timestamped sibling archive with SHA-256 digests and byte mappings.
 
@@ -635,7 +634,7 @@ exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
 
-For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a run chain, using the full ID from its evidence filename, or verify that chain's JSONL file directly.
+For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a full run chain, using the full ID from its evidence filename. A direct JSONL file argument checks only that shard.
 
 ## Audit Packet v0 schema
 

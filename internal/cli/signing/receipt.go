@@ -393,7 +393,7 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 		if verifyErr := verifyWholeRecorderFromResolvedSessionDir(out, location, session, chainKeys, chainOpts); verifyErr != nil {
 			if errors.Is(verifyErr, errUnsealedRecorder) {
 				incomplete = append(incomplete, session)
-				if opts.RequireSeal {
+				if opts.RequireSeal || explicit {
 					failed = append(failed, session)
 					if firstErr == nil {
 						firstErr = verifyErr

@@ -208,15 +208,15 @@ On a **clean shutdown** the recorder writes a `transcript_root` entry naming the
 
 Scope and limits:
 
-- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). Directory verification lists every unsealed run under `INCOMPLETE RUNS` without failing solely for a missing seal; `--require-seal` makes that condition fail. A single-file whole-recorder check still fails on a missing seal. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
+- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). Directory-wide verification lists every unsealed run under `INCOMPLETE RUNS` without failing solely for a missing seal; `--require-seal` makes that condition fail. Selecting a run with `--session` or checking a single file with `--whole-recorder` fails on a missing seal. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
 - **A restart starts a new chain.** A transcript root seals one process run. The next start records a new run chain beside it (see [One chain per process run](#one-chain-per-process-run)), so a prior clean shutdown never blocks receipts.
 - **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query, verification, and dashboard paths. Those content-read paths stay bounded so a truncated scan cannot be mistaken for complete evidence. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
 ### One chain per process run
 
-Each Pipelock process run records its own receipt chain under a session named `<base>.run.<id>`, for example `proxy.run.3f9c...`. Two processes sharing one evidence directory therefore never extend the same chain. Each run chain holds only entry types the shipped verifiers already accept, and it opens with an ordinary genesis `session_open`. A run chain verifies on its own with `pipelock verify-receipt evidence-<session>-0.jsonl`.
+Each Pipelock process run records its own receipt chain under a session named `<base>.run.<id>`, for example `proxy.run.3f9c...`. Two processes sharing one evidence directory therefore never extend the same chain. Each run chain holds only entry types the shipped verifiers already accept, and it opens with an ordinary genesis `session_open`. Verify the full run with `pipelock verify-receipt --chain DIR --session <session> --whole-recorder --key KEY`, where `DIR` contains all its shards. A single-file command checks only the named shard.
 
-The TypeScript and Rust verifier CLIs default `--dir` to the legacy `proxy` session. For a run chain, pass `--session-id proxy.run.<id>` with `--dir`, or verify its `evidence-proxy.run.<id>-0.jsonl` file directly. Obtain the full session ID from the evidence filename.
+The TypeScript and Rust verifier CLIs default `--dir` to the legacy `proxy` session. For a full run chain, pass `--session-id proxy.run.<id>` with `--dir`. Passing `evidence-proxy.run.<id>-0.jsonl` directly checks only the first shard. Obtain the full session ID from the evidence filename.
 
 Evidence written by older binaries lives in the plain `proxy` session. It is still verified as before.
 

@@ -98,6 +98,8 @@ func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 		{name: "out-json", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
 		{name: "run-out", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
 		{name: "run-out-json", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		{name: "legacy-later-shard", file: "evidence-proxy-1.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
+		{name: "other-run", file: "evidence-other.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

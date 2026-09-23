@@ -139,12 +139,16 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			return err
 		}
 		for label, output := range map[string]string{"--out": flags.outPath, "--out-json": flags.outJSONPath} {
+			if output == "" {
+				continue
+			}
 			path, pathErr := filepath.Abs(filepath.Clean(output))
 			if pathErr != nil {
 				return pathErr
 			}
 			name := filepath.Base(path)
-			if filepath.Dir(path) == recorderDir && strings.HasPrefix(name, "evidence-proxy.run.") && strings.HasSuffix(name, ".jsonl") {
+			_, _, evidenceFile := recorder.ParseEvidenceFilename(name)
+			if filepath.Dir(path) == recorderDir && evidenceFile {
 				return fmt.Errorf("%s must not name %s", label, shadowReceiptsLabel)
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -315,6 +316,10 @@ func TestWholeRecorderReportsIncompleteRunsWithoutFailing(t *testing.T) {
 	}
 	if !strings.Contains(out, "INCOMPLETE") || !strings.Contains(out, unsealed) {
 		t.Fatalf("unsealed run %q must be named under INCOMPLETE:\n%s", unsealed, out)
+	}
+	explicitOut, explicitErr := runVerifyReceipt(t, "--chain", dir, "--session", unsealed, "--key", pub, "--whole-recorder")
+	if !errors.Is(explicitErr, errUnsealedRecorder) || !strings.Contains(explicitOut, "INCOMPLETE RUNS (1): "+unsealed) {
+		t.Fatalf("explicit unsealed run must fail without --require-seal: %v\n%s", explicitErr, explicitOut)
 	}
 
 	strict, strictErr := runVerifyReceipt(t, "--chain", dir, "--key", pub, "--whole-recorder", "--require-seal")

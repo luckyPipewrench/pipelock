@@ -1760,6 +1760,8 @@ containment:
 
 By default the host endpoint is the unix socket `/run/pipelock-contain-published/<name>.sock`, owned by `operator_user` with mode `0600`, so only that account and root can connect. `host_socket` overrides the path; it must be a clean absolute path under `/run/` ending in `.sock`, and Pipelock refuses paths inside its own containment directories. `host_listen: 127.0.0.1:<port>` (or `[::1]:<port>`) adds a loopback TCP endpoint as an explicit opt-in. Any local account can connect to a TCP endpoint, so prefer the socket.
 
+A reverse proxy in front of the socket can change what the service sees. `tailscale serve unix:<path>` rewrites the request `Host` header to `localhost` and moves the original into `X-Forwarded-Host`, so a service that checks `Host` against the browser's `Origin` or `Referer` refuses every request. Point that proxy at a `host_listen` TCP endpoint instead, which keeps the original `Host`, and rely on the service's own authentication for the wider local reach.
+
 Treat everything that crosses a published service as untrusted agent content. The agent chooses what it shows the operator and sees everything the operator sends. Pipelock provides the endpoint only. It doesn't ship a viewer, and it doesn't serve the endpoint beyond the host. If you need remote access, put your own authenticated service in front of the socket.
 
 See "Published agent services" in `contain-cli.md` for install, verification, and reconciliation details.

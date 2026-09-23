@@ -811,19 +811,6 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 	if !hasRuns {
 		return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, opts)
 	}
-	targets := chains
-	if explicit {
-		targets = []string{sessionID}
-	}
-	var failed []string
-	for _, s := range targets {
-		chainOpts := opts
-		chainOpts.SessionID = s
-		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, trustedKeys, chainOpts); verifyErr != nil {
-			failed = append(failed, s)
-		}
-		_, _ = fmt.Fprintln(out)
-	}
 	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
 		TrustedKeys:  trustedKeys,
 		Endorsements: opts.RotationEndorsements,
@@ -831,6 +818,18 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "RESTART CONTINUITY INCOMPLETE: %s: %v\n", location.Dir, err)
 		return fmt.Errorf("restart continuity check incomplete: %w", err)
+	}
+	targets := chains
+	if explicit {
+		targets = []string{sessionID}
+	}
+	var failed []string
+	for _, s := range targets {
+		chainOpts, chainKeys := chainScopedTrust(report, s, trustedKeys, opts)
+		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, chainKeys, chainOpts); verifyErr != nil {
+			failed = append(failed, s)
+		}
+		_, _ = fmt.Fprintln(out)
 	}
 	printRestartContinuity(out, report)
 	if len(failed) > 0 {
@@ -840,6 +839,40 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
 	}
 	return nil
+}
+
+// chainScopedTrust narrows the operator's endorsements and keys to one chain.
+// A restart-time key change is authorized by an endorsement bound to the
+// PREDECESSOR run's tail, which only the link check can place; handing it to
+// the single-chain verifier of either run would be rejected as unused. So a
+// chain gets only endorsements for its own in-chain rotations, plus the
+// successor key when the base check verified an endorsed link into it.
+func chainScopedTrust(report receipt.BaseReport, session string, trustedKeys []string, opts verifyReceiptOptions) (verifyReceiptOptions, []string) {
+	chainOpts := opts
+	chainOpts.SessionID = session
+	chainOpts.RotationEndorsements = nil
+	for _, e := range opts.RotationEndorsements {
+		if e.SessionID != session {
+			continue
+		}
+		crossChain := false
+		for _, c := range report.Chains {
+			if c.Link != nil && receipt.VerifyCrossChainEndorsement(e, *c.Link) == nil {
+				crossChain = true
+				break
+			}
+		}
+		if !crossChain {
+			chainOpts.RotationEndorsements = append(chainOpts.RotationEndorsements, e)
+		}
+	}
+	keys := trustedKeys
+	for _, c := range report.Chains {
+		if c.Session == session && c.Link != nil && c.LinkTrust == receipt.LinkTrustEndorsed {
+			keys = append(append([]string(nil), trustedKeys...), c.Link.SuccessorSignerKey)
+		}
+	}
+	return chainOpts, keys
 }
 
 // printRestartContinuity prints a base report. Unlinked runs are always
@@ -1220,6 +1253,7 @@ func printReceiptLimits(out io.Writer) {
 		evidence.LimitVerifierDrift,
 		evidence.LimitContainmentUnproven,
 		evidence.LimitConcurrentWriters,
+		evidence.LimitRestartContinuity,
 	} {
 		limit, _ := evidence.ByID(id)
 		_, _ = fmt.Fprintf(out, "  Limit:      %s: %s\n", limit.ID, limit.Summary)

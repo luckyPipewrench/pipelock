@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -40,7 +41,7 @@ func runContinuityChain(t *testing.T, dir string, priv ed25519.PrivateKey, n int
 			t.Fatalf("Emit: %v", err)
 		}
 	}
-	if err := e.EmitSessionClose("test complete"); err != nil {
+	if err := e.EmitSessionClose("graceful_shutdown"); err != nil {
 		t.Fatalf("EmitSessionClose: %v", err)
 	}
 	if err := rec.Close(); err != nil {
@@ -148,6 +149,44 @@ func TestVerifyReceiptChainDirKeyChangeNeedsTrust(t *testing.T) {
 	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pubA, "--key", pubB)
 	if err != nil || !strings.Contains(out, "(trusted_key)") {
 		t.Fatalf("both keys pinned must pass with trusted_key: %v\n%s", err, out)
+	}
+}
+
+// The documented rotation ceremony across a restart: close the run under key
+// A, endorse B with the shipped command against that run session, restart
+// under B, and verify from A alone.
+func TestVerifyReceiptChainDirEndorsedRotationAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	keys := t.TempDir()
+	pubA, privA := continuityKey(t)
+	_, privB := continuityKey(t)
+	a := runContinuityChain(t, dir, privA, 1)
+
+	endorsement := filepath.Join(keys, "rotation.json")
+	cmd := receiptRotationEndorseCmd(time.Now)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--chain", dir, "--session", a,
+		"--prior-key-file", saveRotationTestKey(t, keys, "prior.key", privA),
+		"--new-key-file", saveRotationTestKey(t, keys, "new.key", privB),
+		"--root-key", pubA, "--out", endorsement,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("endorse the closed run session: %v", err)
+	}
+	b := runContinuityChain(t, dir, privB, 1)
+
+	out, err := runVerifyReceipt(t, "--chain", dir, "--key", pubA)
+	if err == nil {
+		t.Fatalf("without the endorsement the successor key is untrusted:\n%s", out)
+	}
+	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pubA, "--rotation-endorsement", endorsement)
+	if err != nil {
+		t.Fatalf("an endorsed restart rotation must verify from the root key: %v\n%s", err, out)
+	}
+	if strings.Count(out, "CHAIN VALID") != 2 || !strings.Contains(out, "linked:   "+b+" continues "+a) || !strings.Contains(out, "(endorsed)") {
+		t.Fatalf("both chains valid and the link endorsed:\n%s", out)
 	}
 }
 

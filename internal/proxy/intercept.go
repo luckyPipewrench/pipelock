@@ -2268,7 +2268,7 @@ func newInterceptHandler(
 		// Media policy on intercepted TLS responses. Runs after shield so
 		// HTML/JS rewriting happens on the original body and image/audio/
 		// video responses get transport-agnostic enforcement.
-		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: ic.TargetHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
 		if mediaVerdict.Blocked {

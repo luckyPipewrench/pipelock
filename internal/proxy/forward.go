@@ -2795,7 +2795,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// media types (audio/video by default, oversized images, disallowed
 		// types). Runs after Browser Shield so HTML responses flow through
 		// unchanged and image responses are handled transport-agnostically.
-		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
 		if mediaVerdict.Blocked {

@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -128,5 +129,37 @@ func TestChallengeProviderBodyEntropyIsExemptButDLPIsNot(t *testing.T) {
 				t.Fatalf("%s DLP matches = %v, want %v", tc.host, result.DLPMatches, tc.wantDLP)
 			}
 		})
+	}
+}
+
+// A bot-verification challenge may read its own images byte for byte, so
+// Pipelock does not strip metadata from a challenge provider's images. Type,
+// size and parse checks still apply, and every other host is still stripped.
+func TestChallengeProviderImagesKeepMetadata(t *testing.T) {
+	cfg := config.Defaults()
+	body := buildValidPNG([]byte("Description\x00challenge-data"))
+	for _, tc := range []struct {
+		host      string
+		wantStrip bool
+	}{
+		{"challenges.cloudflare.com", false},
+		{"cdn.vendor.example", true},
+		{"challenges.cloudflare.com.evil.test", true},
+		{"", true},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			v := applyMediaPolicy(cfg, "image/png", body, mediaPolicyOptions{host: tc.host})
+			if v.Blocked {
+				t.Fatalf("blocked: %s", v.BlockReason)
+			}
+			if stripped := !bytes.Equal(v.Body, body); stripped != tc.wantStrip {
+				t.Fatalf("host %q stripped = %v, want %v", tc.host, stripped, tc.wantStrip)
+			}
+		})
+	}
+	oversize := config.Defaults()
+	oversize.MediaPolicy.MaxImageBytes = 8
+	if v := applyMediaPolicy(oversize, "image/png", body, mediaPolicyOptions{host: "challenges.cloudflare.com"}); !v.Blocked {
+		t.Fatal("size limits must still apply to a challenge provider")
 	}
 }

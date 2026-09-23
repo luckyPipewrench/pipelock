@@ -3658,7 +3658,7 @@ All boolean fields use nil-means-security-default semantics: omitting a field fr
 | `strip_audio` | *bool | `true` | Reject all `audio/*` responses |
 | `strip_video` | *bool | `true` | Reject all `video/*` responses |
 | `allowed_image_types` | []string | `["image/png", "image/jpeg"]` | Image media types allowed when `strip_images` is false |
-| `strip_image_metadata` | *bool | `true` | Remove EXIF/XMP/IPTC/ICC metadata from allowed images |
+| `strip_image_metadata` | *bool | `true` | Remove EXIF/XMP/IPTC/ICC metadata from allowed images. Images from Cloudflare's challenge host `challenges.cloudflare.com` are passed through unmodified, because a bot-verification challenge may read them byte for byte; type and size limits still apply |
 | `max_image_bytes` | int64 | `5242880` (5 MiB) | Reject images larger than this before parsing (decompression bomb defense) |
 | `log_media_exposure` | *bool | `true` | Emit `media_exposure` events for allowed media responses |
 

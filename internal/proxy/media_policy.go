@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/media"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const contentTypeOctetStream = "application/octet-stream"
@@ -170,6 +171,25 @@ type mediaPolicyOptions struct {
 	// headers, when supplied, lets the SVG floor see every Content-Type value
 	// the client will combine, not only the first one.
 	headers http.Header
+	// host is the response host. Image metadata is left intact for a shipped
+	// bot-verification provider, whose challenge may read its images byte for
+	// byte; every type, size and parse check still applies.
+	host string
+}
+
+// isChallengeProviderHost reports whether host is a shipped bot-verification
+// provider. Their challenge assets are consumed byte for byte by the
+// challenge, so Pipelock does not rewrite them.
+func isChallengeProviderHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, provider := range config.ShippedChallengeProviderHosts() {
+		if scanner.MatchDomain(host, provider) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyMediaPolicy evaluates a response body against cfg.MediaPolicy and
@@ -320,7 +340,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	// Metadata surgery on allowed images.
 	outBody := body
 	var stripResult *media.StripResult
-	if cfg.MediaPolicy.ShouldStripImageMetadata() {
+	if cfg.MediaPolicy.ShouldStripImageMetadata() && !isChallengeProviderHost(option.host) {
 		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
 			// Malformed image bytes. Fail closed: block rather than forward

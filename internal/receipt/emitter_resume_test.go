@@ -106,7 +106,7 @@ func TestInitError_CleanResumeIsNil(t *testing.T) {
 }
 
 // TestResume_SameKeyValidTail_ResumesUnchanged now lives in
-// chain_link_test.go, rewritten to assert the explicit chain_link that
+// chain_link_test.go, rewritten to assert the explicit signed link file that
 // replaced implicit same-session resume across process restarts.
 
 // TestResume_EvidenceReadFailuresFailClosed verifies that a complete, valid

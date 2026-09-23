@@ -578,7 +578,8 @@ func TestEmitter_EmitSessionOpenFirstChainBoundGenesis(t *testing.T) {
 
 // TestEmitter_EmitSessionOpenRestartLinksPriorTail now lives in
 // chain_link_test.go, rewritten to assert a bound genesis session_open plus a
-// signed chain_link instead of a prior_chain_head inside the receipt.
+// signed link file beside the chain instead of a prior_chain_head inside the
+// receipt.
 
 func TestEmitter_Emit_TaintFields(t *testing.T) {
 	t.Parallel()

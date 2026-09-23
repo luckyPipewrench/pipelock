@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,19 +26,27 @@ import (
 const (
 	// ChainLinkVersion is the current chain_link schema.
 	ChainLinkVersion = 1
-	// ChainLinkEntryType identifies a continuity link in recorder logs. It is
-	// the first entry of a run session that claimed a predecessor chain.
-	ChainLinkEntryType = "chain_link"
 
 	chainLinkDomain = "pipelock-chain-link-v1\x00"
 
-	// chainClaimPrefix and chainClaimSuffix name the claim marker for one
-	// predecessor session. The name is derived only from the predecessor, so
-	// two processes racing to claim the same chain collide on O_EXCL and at
-	// most one of them links to it. The marker never starts with "evidence-",
-	// so no evidence enumeration mistakes it for a shard.
-	chainClaimPrefix = "chain-claim-"
-	chainClaimSuffix = ".claim"
+	// ChainLinkFilePrefix and ChainLinkFileSuffix name the signed link file
+	// for one predecessor session: "chain-link-<predecessor>.json", beside the
+	// evidence files. The name derives only from the predecessor, so two
+	// processes racing to continue the same chain collide on the same name
+	// and at most one link file per predecessor can exist. The name never
+	// starts with "evidence-", so no evidence enumeration mistakes it for a
+	// shard, and no receipt chain file ever contains a link.
+	ChainLinkFilePrefix = "chain-link-"
+	ChainLinkFileSuffix = ".json"
+
+	// chainLinkTempPattern names the unpublished temp file. It starts with a
+	// dot and ends in .tmp, so a temp file left by a crash never parses as a
+	// link file name.
+	chainLinkTempPattern = ".chain-link-*.tmp"
+
+	// maxChainLinkFileBytes bounds a link file read. A signed link is well
+	// under 1 KiB; anything larger is not a link this code wrote.
+	maxChainLinkFileBytes = 64 << 10
 )
 
 // ChainLink is a run session's signed statement that it continues exactly one
@@ -48,10 +57,13 @@ const (
 // key; a key change is trusted only through the caller's trusted key set or a
 // RotationEndorsement signed by the predecessor key (see VerifyBase).
 //
-// The link lives in the recorder log, never inside a receipt: a run chain
-// opens with an ordinary bound genesis session_open, and every existing
-// single-chain verifier rejects a genesis session_open that carries a prior
-// chain tail.
+// The link lives in its own file beside the chain (see ChainLinkFileName),
+// never inside the chain: a run chain holds only entry types every shipped
+// verifier already accepts and opens with an ordinary bound genesis
+// session_open. The link is OPTIONAL evidence. Deleting a link file makes its
+// successor look like an unlinked run, and nothing detects that deletion;
+// resisting it needs a signed head commitment, which this format does not
+// provide.
 type ChainLink struct {
 	Version              int    `json:"version"`
 	PredecessorSession   string `json:"predecessor_session"`
@@ -216,12 +228,26 @@ func isBaseChain(session, base string) bool {
 	return ok && b == base
 }
 
-// chainClaimMarkerName is the deterministic claim marker for predecessor.
-func chainClaimMarkerName(predecessor string) string {
-	return chainClaimPrefix + predecessor + chainClaimSuffix
+// ChainLinkFileName is the link file name for predecessor.
+func ChainLinkFileName(predecessor string) string {
+	return ChainLinkFilePrefix + predecessor + ChainLinkFileSuffix
 }
 
-// predecessorTail is a claimed predecessor chain and its self-consistent tail.
+// chainLinkFilePredecessor returns the predecessor a link file name was
+// published under, or false when name is not a link file name.
+func chainLinkFilePredecessor(name string) (string, bool) {
+	pred, ok := strings.CutPrefix(name, ChainLinkFilePrefix)
+	if !ok {
+		return "", false
+	}
+	pred, ok = strings.CutSuffix(pred, ChainLinkFileSuffix)
+	if !ok || pred == "" {
+		return "", false
+	}
+	return pred, true
+}
+
+// predecessorTail is a claimable predecessor chain and its self-consistent tail.
 type predecessorTail struct {
 	session  string
 	tail     Receipt
@@ -249,17 +275,93 @@ func sessionReceiptTail(dir, session string) (*Receipt, error) {
 	return nil, nil
 }
 
-// claimPredecessor finds the most recent chain of base whose writer is gone
-// and that nobody has claimed yet, and claims it with an O_CREAT|O_EXCL marker.
-// It never blocks, never holds the marker open, and visits each candidate at
-// most once. Returning (nil, nil) means start unlinked, which is correct when
-// nothing is claimable. notice receives one line per candidate skipped for a
-// reason an operator should see (a corrupt tail).
+// linkFile is the publish primitive, a package variable only so a test can
+// force the non-EEXIST failure path. Production always uses os.Link.
+var linkFile = os.Link
+
+// errLinkNameTaken reports that another process already published a link for
+// this predecessor.
+var errLinkNameTaken = errors.New("chain link name already published")
+
+// publishChainLinkFile writes body to a unique temp file in dir, fsyncs it,
+// and hard-links it to name. os.Link fails with EEXIST when name exists, which
+// makes the publish both atomic (the final name only ever points at a
+// complete, fsynced file) and create-if-absent (at most one publisher wins).
+// The temp file is always removed. The directory is fsynced after a
+// successful link so the new name survives a crash.
+func publishChainLinkFile(dir, name string, body []byte) error {
+	tmp, err := os.CreateTemp(dir, chainLinkTempPattern)
+	if err != nil {
+		return fmt.Errorf("creating chain link temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := writeSyncClose(tmp, body); err != nil {
+		return err
+	}
+	if err := linkFile(tmpName, filepath.Join(dir, name)); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errLinkNameTaken
+		}
+		return fmt.Errorf("publishing chain link: %w", err)
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("syncing evidence directory after chain link: %w", err)
+	}
+	return nil
+}
+
+func writeSyncClose(f *os.File, body []byte) error {
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("setting chain link mode: %w", err)
+	}
+	if _, err := f.Write(body); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("writing chain link: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("syncing chain link: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing chain link: %w", err)
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
+}
+
+// linkRequest carries what publishPredecessorLink needs about the successor.
+type linkRequest struct {
+	dir     string
+	base    string
+	self    string
+	privKey ed25519.PrivateKey
+	now     time.Time
+	notice  io.Writer
+}
+
+// publishPredecessorLink finds the most recent chain of base whose writer is
+// gone and that has no link file yet, signs a link to its exact tail, and
+// publishes it as that predecessor's link file. It never blocks and visits
+// each candidate at most once. (nil, nil) means start unlinked, which is
+// correct when nothing is claimable. A lost publish race (EEXIST) moves on to
+// the next candidate; any other publish failure stops and is returned, so the
+// caller starts unlinked and says why. notice receives one line per candidate
+// skipped for a reason an operator should see (a corrupt tail).
 //
-// The marker is a coordination hint between cooperating Pipelock processes,
-// nothing more: verification never reads it, and trust derives only from the
-// signed link, the predecessor's verified tail, and the key trust rules.
-func claimPredecessor(dir, base, self string, notice io.Writer) (*predecessorTail, error) {
+// The link file IS the claim: there is no separate marker, and the file that
+// wins the name is the signed statement verification reads.
+func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
+	dir, base, self := req.dir, req.base, req.self
 	sessions, err := recorder.ListSessions(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing prior chains: %w", err)
@@ -295,50 +397,70 @@ func claimPredecessor(dir, base, self string, notice io.Writer) (*predecessorTai
 	})
 
 	for _, c := range candidates {
-		marker := filepath.Join(filepath.Clean(dir), chainClaimMarkerName(c.session))
-		if _, statErr := os.Lstat(marker); statErr == nil {
-			continue // already has a successor claim
+		name := ChainLinkFileName(c.session)
+		if _, statErr := os.Lstat(filepath.Join(dir, name)); statErr == nil {
+			continue // already continued by another run
 		}
 		gone, probeErr := recorder.EvidenceWriterGone(c.latest)
 		if probeErr != nil || !gone {
 			continue // a live writer, or its absence cannot be proven
 		}
-		tail, tailErr := sessionReceiptTail(dir, c.session)
-		if tailErr != nil {
-			_, _ = fmt.Fprintf(notice, "pipelock: receipt chain %s not linked: reading its tail: %v\n", c.session, tailErr)
+		pred, ok := claimableTail(dir, c.session, req.notice)
+		if !ok {
 			continue
 		}
-		if tail == nil {
-			continue // nothing to continue
+		link, signErr := SignChainLink(ChainLink{
+			PredecessorSession:   pred.session,
+			PredecessorTailSeq:   pred.tail.ActionRecord.ChainSeq,
+			PredecessorTailHash:  pred.tailHash,
+			PredecessorSignerKey: pred.tail.SignerKey,
+			SuccessorSession:     self,
+			LinkedAt:             req.now.UTC().Format(time.RFC3339Nano),
+		}, req.privKey)
+		if signErr != nil {
+			return nil, fmt.Errorf("signing chain link: %w", signErr)
 		}
-		// A corrupt predecessor tail is NOT claimed and does NOT stop this
-		// run. Before run sessions, a corrupt tail on the shared session
-		// bricked receipt emission until an operator intervened, because the
-		// new receipts would have extended the damaged chain. A run session
-		// owns a fresh chain, so bricking all future evidence over one damaged
-		// old file is an availability failure with no integrity benefit. The
-		// damaged chain stays on disk untouched and `pipelock evidence doctor`
-		// reports it.
-		if verifyErr := VerifyInternalConsistencyOnly(*tail); verifyErr != nil {
-			_, _ = fmt.Fprintf(notice, "pipelock: WARNING receipt chain %s has a corrupt tail (seq %d): %v; starting this run unlinked, the damaged chain is left on disk for inspection\n",
-				c.session, tail.ActionRecord.ChainSeq, verifyErr)
-			continue
+		body, marshalErr := json.Marshal(link)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encoding chain link: %w", marshalErr)
 		}
-		hash, hashErr := ReceiptHash(*tail)
-		if hashErr != nil {
-			continue
+		pubErr := publishChainLinkFile(dir, name, append(body, '\n'))
+		if errors.Is(pubErr, errLinkNameTaken) {
+			continue // another process continued this chain first
 		}
-		f, createErr := os.OpenFile(filepath.Clean(marker), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if createErr != nil {
-			continue // EEXIST: another process claimed it first
+		if pubErr != nil {
+			return nil, pubErr
 		}
-		body, _ := json.Marshal(struct {
-			Predecessor string `json:"predecessor_session"`
-			Successor   string `json:"successor_session"`
-		}{c.session, self})
-		_, _ = f.Write(append(body, '\n'))
-		_ = f.Close()
-		return &predecessorTail{session: c.session, tail: *tail, tailHash: hash}, nil
+		return &link, nil
 	}
 	return nil, nil
+}
+
+// claimableTail reads session's tail and reports whether it can be linked.
+func claimableTail(dir, session string, notice io.Writer) (predecessorTail, bool) {
+	tail, tailErr := sessionReceiptTail(dir, session)
+	if tailErr != nil {
+		_, _ = fmt.Fprintf(notice, "pipelock: receipt chain %s not linked: reading its tail: %v\n", session, tailErr)
+		return predecessorTail{}, false
+	}
+	if tail == nil {
+		return predecessorTail{}, false // nothing to continue
+	}
+	// A corrupt predecessor tail is NOT linked and does NOT stop this run.
+	// Before run sessions, a corrupt tail on the shared session bricked
+	// receipt emission until an operator intervened, because the new receipts
+	// would have extended the damaged chain. A run session owns a fresh chain,
+	// so bricking all future evidence over one damaged old file is an
+	// availability failure with no integrity benefit. The damaged chain stays
+	// on disk untouched and `pipelock evidence doctor` reports it.
+	if verifyErr := VerifyInternalConsistencyOnly(*tail); verifyErr != nil {
+		_, _ = fmt.Fprintf(notice, "pipelock: WARNING receipt chain %s has a corrupt tail (seq %d): %v; starting this run unlinked, the damaged chain is left on disk for inspection\n",
+			session, tail.ActionRecord.ChainSeq, verifyErr)
+		return predecessorTail{}, false
+	}
+	hash, hashErr := ReceiptHash(*tail)
+	if hashErr != nil {
+		return predecessorTail{}, false
+	}
+	return predecessorTail{session: session, tail: *tail, tailHash: hash}, true
 }

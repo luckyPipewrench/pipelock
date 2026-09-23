@@ -122,8 +122,13 @@ type Emitter struct {
 	// the bare recorderSessionID constant, so a caller-supplied run session
 	// is actually honored end to end.
 	session string
-	// chainLink is the signed continuity link recorded at startup, or nil.
+	// chainLink is the signed continuity link published at the first
+	// receipt, or nil. Written once under chainMu.
 	chainLink *ChainLink
+	// linked guards the one-time link attempt; see linkPredecessor.
+	linked bool
+	// notices receives operator-facing lines about cross-run linking.
+	notices io.Writer
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -261,23 +266,29 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if e.initErr != nil {
 		return e
 	}
-	notices := cfg.Notices
-	if notices == nil {
-		notices = os.Stderr
+	e.notices = cfg.Notices
+	if e.notices == nil {
+		e.notices = os.Stderr
 	}
-	e.linkPredecessor(notices)
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
 }
 
-// linkPredecessor runs once at construction, before the first emit. When this
-// emitter owns a brand-new run session (no receipts yet), it claims the most
-// recent finished chain of the same base and records a signed chain_link as
-// the run session's first entry. Any failure here leaves the run unlinked and
-// never disables emission: a missing link costs cross-run continuity, which a
-// verifier reports as an unlinked chain, while bricking would cost all
-// evidence for the run.
-func (e *Emitter) linkPredecessor(notices io.Writer) {
+// linkPredecessor runs once, at this emitter's first receipt and before that
+// receipt is written. When the emitter owns a brand-new run session, it
+// publishes a signed link file continuing the most recent finished chain of
+// the same base. The chain file itself never carries the link.
+//
+// It runs at the first receipt rather than at construction because the
+// successor's evidence file only exists once something is written: a process
+// that built its emitter and then failed to start would otherwise leave a
+// link naming a successor that never existed, which verification reports as
+// a dangling link.
+//
+// Any failure leaves the run unlinked and never disables emission: a missing
+// link costs cross-run continuity, which a verifier reports as an unlinked
+// run, while bricking would cost all evidence for the run.
+func (e *Emitter) linkPredecessor() {
 	if e.hasPriorTail || e.chainSeq != 0 || e.recorder.Dir() == "" {
 		return
 	}
@@ -285,48 +296,31 @@ func (e *Emitter) linkPredecessor(notices io.Writer) {
 	if !ok {
 		return
 	}
-	pred, err := claimPredecessor(e.recorder.Dir(), base, e.session, notices)
+	link, err := publishPredecessorLink(linkRequest{
+		dir:     filepath.Clean(e.recorder.Dir()),
+		base:    base,
+		self:    e.session,
+		privKey: e.privKey,
+		now:     e.now(),
+		notice:  e.notices,
+	})
 	if err != nil {
-		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
+		_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
 		return
 	}
-	if pred == nil {
-		return
-	}
-	link, err := SignChainLink(ChainLink{
-		PredecessorSession:   pred.session,
-		PredecessorTailSeq:   pred.tail.ActionRecord.ChainSeq,
-		PredecessorTailHash:  pred.tailHash,
-		PredecessorSignerKey: pred.tail.SignerKey,
-		SuccessorSession:     e.session,
-		LinkedAt:             e.now().UTC().Format(time.RFC3339Nano),
-	}, e.privKey)
-	if err != nil {
-		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: signing chain link: %v\n", e.session, err)
-		return
-	}
-	body, err := json.Marshal(link)
-	if err != nil {
-		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: encoding chain link: %v\n", e.session, err)
-		return
-	}
-	if err := e.recorder.RecordDurable(recorder.Entry{
-		SessionID: e.session,
-		Type:      ChainLinkEntryType,
-		EventKind: ChainLinkEntryType,
-		Summary:   fmt.Sprintf("chain_link: continues %s at seq %d", link.PredecessorSession, link.PredecessorTailSeq),
-		Detail:    json.RawMessage(body),
-	}); err != nil {
-		_, _ = fmt.Fprintf(notices, "pipelock: receipt chain %s starts unlinked: recording chain link: %v\n", e.session, err)
-		return
-	}
-	e.chainLink = &link
+	e.chainLink = link
 }
 
-// ChainLink returns the continuity link this emitter recorded at startup, or
-// nil when the run started unlinked. Safe on a nil emitter.
+// ChainLink returns the continuity link this emitter published at its first
+// receipt, or nil when the run is unlinked or has not emitted yet. Safe on a
+// nil emitter.
 func (e *Emitter) ChainLink() *ChainLink {
-	if e == nil || e.chainLink == nil {
+	if e == nil {
+		return nil
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	if e.chainLink == nil {
 		return nil
 	}
 	l := *e.chainLink
@@ -387,9 +381,6 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 	}, true
 }
 
-// SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
-// signs. It is used by reload code to distinguish a policy-only reload from a
-// signer rotation without replacing a live emitter unnecessarily.
 // Session returns the recorder session this emitter records under. Nil-safe.
 func (e *Emitter) Session() string {
 	if e == nil {
@@ -398,6 +389,9 @@ func (e *Emitter) Session() string {
 	return e.session
 }
 
+// SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
+// signs. It is used by reload code to distinguish a policy-only reload from a
+// signer rotation without replacing a live emitter unnecessarily.
 func (e *Emitter) SignerKeyHex() string {
 	if e == nil || len(e.privKey) != ed25519.PrivateKeySize {
 		return ""
@@ -657,6 +651,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	if e.rootEmitted {
 		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
+	}
+	if !e.linked {
+		e.linked = true
+		e.linkPredecessor()
 	}
 	if buildControl != nil {
 		sessionControl, buildErr := buildControl()

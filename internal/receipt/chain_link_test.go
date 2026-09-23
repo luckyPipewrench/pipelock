@@ -8,13 +8,16 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -97,12 +100,40 @@ func mustVerifyBase(t *testing.T, dir string, opts BaseVerifyOptions) BaseReport
 	return r
 }
 
+// linkFiles returns the link file names in dir.
+func linkFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	names, err := chainLinkFileNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+// assertNoLinkInChain proves the successor's chain file holds only entry types
+// the shipped verifiers already accept: no link entry ever enters the chain.
+func assertNoLinkInChain(t *testing.T, dir, session string) {
+	t.Helper()
+	entries, err := readSessionEntries(dir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, entry := range entries {
+		if entry.Type != recorderEntryType && !knownRecorderEntryType(entry.Type) {
+			t.Fatalf("%s entry %d has type %q outside the shipped taxonomy", session, i, entry.Type)
+		}
+		if strings.Contains(entry.Type, "link") {
+			t.Fatalf("%s entry %d is a link entry %q", session, i, entry.Type)
+		}
+	}
+}
+
 // TestResume_SameKeyValidTail_ResumesUnchanged was rewritten deliberately.
 // It used to assert implicit continuity: a second process reopened the SAME
 // session and extended its chain from seq 2. That is the behavior that forks
 // when two processes share a session. A restart now owns a fresh run chain
 // starting at genesis, and continuity to the first run is an explicit signed
-// chain_link naming its exact tail.
+// link file naming its exact tail.
 func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
@@ -117,9 +148,14 @@ func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	if b.e.chainSeq != 0 || b.e.hasPriorTail {
 		t.Fatalf("restart must start a fresh chain at genesis, got seq %d prior=%v", b.e.chainSeq, b.e.hasPriorTail)
 	}
+	if b.e.ChainLink() != nil {
+		t.Fatal("the link is published at the first receipt, not at construction")
+	}
+	b.openAndEmit(t, 1)
+	b.close(t)
 	link := b.e.ChainLink()
 	if link == nil {
-		t.Fatal("restart must record a chain_link to the finished run")
+		t.Fatal("restart must publish a link to the finished run")
 	}
 	if link.PredecessorSession != a.session || link.PredecessorTailSeq != aTail.ActionRecord.ChainSeq || link.PredecessorTailHash != mustHash(t, aTail) {
 		t.Fatalf("link %+v does not name A's exact tail (seq %d)", link, aTail.ActionRecord.ChainSeq)
@@ -127,8 +163,6 @@ func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	if link.PredecessorSignerKey != hex.EncodeToString(pub) || link.SuccessorSignerKey != hex.EncodeToString(pub) {
 		t.Fatalf("link keys = %s -> %s", link.PredecessorSignerKey, link.SuccessorSignerKey)
 	}
-	b.openAndEmit(t, 1)
-	b.close(t)
 
 	bReceipts := sessionReceipts(t, dir, b.session)
 	for i, r := range bReceipts {
@@ -140,13 +174,16 @@ func TestResume_SameKeyValidTail_ResumesUnchanged(t *testing.T) {
 	if !report.Healthy() || report.LinkCount() != 1 {
 		t.Fatalf("base report: healthy=%v links=%d findings=%+v", report.Healthy(), report.LinkCount(), report.Findings)
 	}
+	if got := report.Unlinked(); !slices.Equal(got, []string{a.session}) {
+		t.Fatalf("only the first run is unlinked, got %v", got)
+	}
 }
 
 // TestEmitter_EmitSessionOpenRestartLinksPriorTail was rewritten deliberately.
 // It used to assert that a restart's session_open carried prior_chain_head.
 // A run chain now opens with an ordinary bound genesis session_open with NO
 // prior tail (a genesis open with a prior tail is rejected by every verifier),
-// and the link to the prior run lives in a signed chain_link recorder entry.
+// and the link to the prior run lives in a signed file beside the chain.
 func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -155,6 +192,8 @@ func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
 	a := startRun(t, dir, priv)
 	a.openAndEmit(t, 1)
 	a.close(t)
+	aReceipts := sessionReceipts(t, dir, a.session)
+	aTail := aReceipts[len(aReceipts)-1]
 
 	b := startRun(t, dir, priv)
 	b.openAndEmit(t, 0)
@@ -165,11 +204,24 @@ func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
 	if open == nil || open.PriorChainHead != "" || open.PriorChainSeq != 0 || open.GenesisHash == "" {
 		t.Fatalf("restart session_open must be a bound genesis with no prior tail: %+v", open)
 	}
-	if b.e.ChainLink() == nil || b.e.ChainLink().PredecessorSession != a.session {
-		t.Fatal("restart must link to the prior run through chain_link")
+	assertNoLinkInChain(t, dir, b.session)
+
+	// The link file is named for the predecessor and names its exact tail.
+	link, err := readChainLinkFile(filepath.Join(dir, ChainLinkFileName(a.session)))
+	if err != nil {
+		t.Fatalf("reading link file: %v", err)
 	}
-	// Deployed-verifier compatibility: the UNCHANGED single-chain path accepts
-	// the run chain with no link awareness.
+	if link.PredecessorSession != a.session || link.SuccessorSession != b.session ||
+		link.PredecessorTailSeq != aTail.ActionRecord.ChainSeq || link.PredecessorTailHash != mustHash(t, aTail) {
+		t.Fatalf("link file %+v does not name A's exact tail", link)
+	}
+	info, err := os.Stat(filepath.Join(dir, ChainLinkFileName(a.session)))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("link file mode: %v %v", info, err)
+	}
+
+	// Shipped-verifier compatibility: the UNCHANGED extraction and
+	// single-chain paths accept the run chain with no link awareness.
 	if res := VerifyChainTrusted(bReceipts, []string{hex.EncodeToString(pub)}); !res.Valid {
 		t.Fatalf("VerifyChainTrusted on run chain: %s", res.Error)
 	}
@@ -180,6 +232,15 @@ func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
 	if res := VerifyChain(extracted, hex.EncodeToString(pub)); !res.Valid {
 		t.Fatalf("VerifyChain on extracted run chain: %s", res.Error)
 	}
+	files, err := recorderFiles(dir, b.session)
+	if err != nil || len(files) == 0 {
+		t.Fatalf("run chain files: %v", err)
+	}
+	for _, f := range files {
+		if _, err := ExtractReceipts(f); err != nil {
+			t.Fatalf("ExtractReceipts(%s): %v", filepath.Base(f), err)
+		}
+	}
 }
 
 func TestChainLink_FirstRunStartsUnlinked(t *testing.T) {
@@ -187,8 +248,9 @@ func TestChainLink_FirstRunStartsUnlinked(t *testing.T) {
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
 	a := startRun(t, dir, priv)
-	defer a.close(t)
-	if a.e.ChainLink() != nil {
+	a.openAndEmit(t, 1)
+	a.close(t)
+	if a.e.ChainLink() != nil || len(linkFiles(t, dir)) != 0 {
 		t.Fatal("first run has nothing to link")
 	}
 }
@@ -200,11 +262,31 @@ func TestChainLink_LivePredecessorNotClaimed(t *testing.T) {
 	a := startRun(t, dir, priv)
 	a.openAndEmit(t, 1)
 	b := startRun(t, dir, priv) // A is still live
-	if b.e.ChainLink() != nil {
+	b.openAndEmit(t, 1)
+	if b.e.ChainLink() != nil || len(linkFiles(t, dir)) != 0 {
 		t.Fatal("a live writer's chain must not be claimed")
 	}
 	a.close(t)
 	b.close(t)
+}
+
+// A process that builds its emitter and exits before its first receipt must
+// not leave a link naming a successor that never wrote anything.
+func TestChainLink_NoLinkBeforeFirstReceipt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	b := startRun(t, dir, priv)
+	b.close(t)
+	if len(linkFiles(t, dir)) != 0 {
+		t.Fatal("no link may be published before the first receipt")
+	}
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); !r.Healthy() {
+		t.Fatalf("an emitter that never emitted must leave no finding: %+v", r.Findings)
+	}
 }
 
 func TestChainLink_CorruptPredecessorSkippedLoudly(t *testing.T) {
@@ -224,13 +306,13 @@ func TestChainLink_CorruptPredecessorSkippedLoudly(t *testing.T) {
 	if err := e.InitError(); err != nil {
 		t.Fatalf("a corrupt predecessor must not brick the new run: %v", err)
 	}
-	if e.ChainLink() != nil {
+	emitOne(t, e)
+	if e.ChainLink() != nil || len(linkFiles(t, dir)) != 0 {
 		t.Fatal("a corrupt predecessor tail must not be linked")
 	}
 	if !strings.Contains(notices.String(), "corrupt tail") {
 		t.Fatalf("expected a loud corrupt-tail notice, got %q", notices.String())
 	}
-	emitOne(t, e)
 }
 
 // seedTamperedTail writes a legacy "proxy" chain whose last receipt has a
@@ -263,7 +345,7 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
 
-	// Three runs live at once leave three dead, unclaimed chains.
+	// Three runs live at once leave three dead, unlinked chains.
 	dead := make([]testRun, 3)
 	for i := range dead {
 		dead[i] = startRun(t, dir, priv)
@@ -273,7 +355,7 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 		r.close(t)
 	}
 
-	// Five new runs race to claim them.
+	// Five new runs race to continue them, all live at once.
 	var wg sync.WaitGroup
 	runs := make([]testRun, 5)
 	for i := range runs {
@@ -281,6 +363,7 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			runs[i] = startRun(t, dir, priv)
+			runs[i].openAndEmit(t, 1)
 		}(i)
 	}
 	wg.Wait()
@@ -289,20 +372,22 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 		if l := r.e.ChainLink(); l != nil {
 			claimed[l.PredecessorSession]++
 		}
-		r.openAndEmit(t, 1)
 		r.close(t)
 	}
 	if len(claimed) != 3 {
-		t.Fatalf("every dead chain should be claimed once, got %v", claimed)
+		t.Fatalf("every dead chain should be continued once, got %v", claimed)
 	}
 	for p, n := range claimed {
 		if n != 1 {
-			t.Fatalf("predecessor %s claimed %d times", p, n)
+			t.Fatalf("predecessor %s continued %d times", p, n)
 		}
 	}
+	if got := linkFiles(t, dir); len(got) != 3 {
+		t.Fatalf("link files = %v, want 3", got)
+	}
 	report := mustVerifyBase(t, dir, BaseVerifyOptions{})
-	if !report.Healthy() || report.LinkCount() != 3 || len(report.Chains) != 8 {
-		t.Fatalf("healthy=%v links=%d chains=%d findings=%+v", report.Healthy(), report.LinkCount(), len(report.Chains), report.Findings)
+	if !report.Healthy() || report.LinkCount() != 3 || len(report.Chains) != 8 || len(report.Unlinked()) != 5 {
+		t.Fatalf("healthy=%v links=%d chains=%d unlinked=%v findings=%+v", report.Healthy(), report.LinkCount(), len(report.Chains), report.Unlinked(), report.Findings)
 	}
 }
 
@@ -315,11 +400,11 @@ func TestChainLink_MixedVersionLegacyWriter(t *testing.T) {
 	legacyRec := newTestRecorder(t, dir, priv)
 	legacy := NewEmitter(EmitterConfig{Recorder: legacyRec, PrivKey: priv, Principal: testPrincipal, Actor: testActor})
 	emitOne(t, legacy)
-	run := startRun(t, dir, priv) // legacy is live: not claimable
+	run := startRun(t, dir, priv)
+	run.openAndEmit(t, 2) // legacy is live: not claimable
 	if run.e.ChainLink() != nil {
 		t.Fatal("a live legacy writer must not be claimed")
 	}
-	run.openAndEmit(t, 2)
 	emitOne(t, legacy)
 	if err := legacyRec.Close(); err != nil {
 		t.Fatal(err)
@@ -327,10 +412,10 @@ func TestChainLink_MixedVersionLegacyWriter(t *testing.T) {
 	legacyBefore := sessionReceipts(t, dir, recorder.DefaultSessionBase)
 
 	next := startRun(t, dir, priv) // run is still live, legacy is gone
+	next.openAndEmit(t, 1)
 	if l := next.e.ChainLink(); l == nil || l.PredecessorSession != recorder.DefaultSessionBase {
 		t.Fatalf("a run may link to the finished legacy chain, got %+v", next.e.ChainLink())
 	}
-	next.openAndEmit(t, 1)
 	run.close(t)
 	next.close(t)
 	if got := sessionReceipts(t, dir, recorder.DefaultSessionBase); len(got) != len(legacyBefore) {
@@ -396,6 +481,10 @@ func TestChainLink_KeyChangeTrust(t *testing.T) {
 	if r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)}}); !r.Healthy() {
 		t.Fatalf("both keys pinned: %+v", r.Findings)
 	}
+	// Links-only mode (the doctor) does not judge key trust.
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: true}); !r.Healthy() || r.LinkCount() != 1 {
+		t.Fatalf("links-only must not flag an honest key change: %+v", r.Findings)
+	}
 	endorse := func(seq uint64, hash string) RotationEndorsement {
 		e, err := SignRotationEndorsement(RotationEndorsement{
 			SessionID: a.session, PriorFinalSeq: seq, PriorTailHash: hash,
@@ -440,141 +529,121 @@ func linkedPair(t *testing.T, dir string, priv ed25519.PrivateKey) (testRun, tes
 	return a, b
 }
 
-func rewriteSessionFile(t *testing.T, dir, session string, edit func(lines [][]byte) [][]byte) {
-	t.Helper()
-	files, err := recorderFiles(dir, session)
-	if err != nil || len(files) == 0 {
-		t.Fatalf("files for %s: %v", session, err)
-	}
-	data, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
-	out := bytes.Join(edit(lines), []byte("\n"))
-	if err := os.WriteFile(files[0], append(out, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func linkLineIndex(t *testing.T, lines [][]byte) int {
-	t.Helper()
-	for i, l := range lines {
-		if bytes.Contains(l, []byte(`"type":"chain_link"`)) {
-			return i
-		}
-	}
-	t.Fatal("chain_link line not found")
-	return -1
-}
-
-func TestChainLink_TamperDeleteLinkBreaksOuterChain(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	_, priv := generateTestKey(t)
-	_, b := linkedPair(t, dir, priv)
-	rewriteSessionFile(t, dir, b.session, func(lines [][]byte) [][]byte {
-		i := linkLineIndex(t, lines)
-		return append(lines[:i:i], lines[i+1:]...)
-	})
-	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingOuterChainBroken] == 0 {
-		t.Fatalf("deleting the link entry must break the outer chain: %+v", r.Findings)
-	}
-}
-
-// The recorder hash is unkeyed. A reader with write access to evidence can
-// remove the first link and recompute the remaining envelope hashes while
-// leaving the signed receipts untouched. This is a design reproduction, not
-// an assertion that the current verifier should reject the resulting chain.
-func TestChainLink_DeletionAndOuterRehashLooksUnlinked(t *testing.T) {
-	dir := t.TempDir()
-	_, priv := generateTestKey(t)
-	_, successor := linkedPair(t, dir, priv)
-	before := mustVerifyBase(t, dir, BaseVerifyOptions{})
-	if !before.Healthy() || before.LinkCount() != 1 {
-		t.Fatalf("positive control: healthy linked pair required: %+v", before)
-	}
-	rewriteSessionFile(t, dir, successor.session, func(lines [][]byte) [][]byte {
-		link := linkLineIndex(t, lines)
-		lines = append(lines[:link:link], lines[link+1:]...)
-		prev := recorder.GenesisHash
-		for i, line := range lines {
-			var entry recorder.Entry
-			if err := json.Unmarshal(line, &entry); err != nil {
-				t.Fatal(err)
-			}
-			entry.Sequence = uint64(i)
-			entry.PrevHash = prev
-			entry.Hash = recorder.ComputeHash(entry)
-			prev = entry.Hash
-			var err error
-			lines[i], err = json.Marshal(entry)
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		return lines
-	})
-	after := mustVerifyBase(t, dir, BaseVerifyOptions{})
-	if !after.Healthy() || after.LinkCount() != 0 {
-		t.Fatalf("expected deletion to launder into an unlinked healthy pair; findings=%+v links=%d", after.Findings, after.LinkCount())
-	}
-}
-
-func TestChainLink_TamperAlterLinkFailsSignature(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	_, priv := generateTestKey(t)
-	_, b := linkedPair(t, dir, priv)
-	rewriteSessionFile(t, dir, b.session, func(lines [][]byte) [][]byte {
-		i := linkLineIndex(t, lines)
-		lines[i] = bytes.Replace(lines[i], []byte(`"predecessor_tail_seq":2`), []byte(`"predecessor_tail_seq":1`), 1)
-		return lines
-	})
-	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingInvalidLink] == 0 {
-		t.Fatalf("an altered link must fail its signature: %+v", r.Findings)
-	}
-	if _, err := UnmarshalChainLink([]byte(`{}`)); err == nil {
-		t.Fatal("an empty link must not parse")
-	}
-}
-
-// forgeRun records a successor-signed link naming pred's tail with the given
-// hash as the first entry of a new run session, then emits one receipt.
-func forgeRun(t *testing.T, dir string, priv ed25519.PrivateKey, pred string, seq uint64, hash, predKey string) {
-	t.Helper()
-	rec := newTestRecorder(t, dir, priv)
-	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
-	if err != nil {
-		t.Fatal(err)
-	}
-	link, err := SignChainLink(ChainLink{
-		PredecessorSession: pred, PredecessorTailSeq: seq, PredecessorTailHash: hash,
-		PredecessorSignerKey: predKey, SuccessorSession: session,
-		LinkedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := json.Marshal(link)
-	if err := rec.RecordDurable(recorder.Entry{SessionID: session, Type: ChainLinkEntryType, Detail: json.RawMessage(body)}); err != nil {
-		t.Fatal(err)
-	}
-	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor, Session: session, Notices: io.Discard})
-	emitOne(t, e)
-	_ = rec.Close()
-}
-
-func TestChainLink_ForgedSecondSuccessorIsFork(t *testing.T) {
+// TestChainLink_DeletedLinkFileLeavesSuccessorUnlinked replaces the two
+// in-chain tests (TestChainLink_TamperDeleteLinkBreaksOuterChain and
+// TestChainLink_DeletionAndOuterRehashLooksUnlinked). It pins the documented
+// limit: deleting a link file is NOT detected. The successor must then be
+// reported UNLINKED, and must never be presented as a finding-free linked
+// pair.
+func TestChainLink_DeletedLinkFileLeavesSuccessorUnlinked(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
 	a, b := linkedPair(t, dir, priv)
-	l := b.e.ChainLink()
-	forgeRun(t, dir, priv, a.session, l.PredecessorTailSeq, l.PredecessorTailHash, l.PredecessorSignerKey)
-	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingDoubleSuccessor] != 1 {
-		t.Fatalf("two successors of one tail must be a fork finding: %+v", r.Findings)
+	before := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if !before.Healthy() || before.LinkCount() != 1 || slices.Contains(before.Unlinked(), b.session) {
+		t.Fatalf("positive control: a healthy linked pair is required: %+v", before)
 	}
+	if err := os.Remove(filepath.Join(dir, ChainLinkFileName(a.session))); err != nil {
+		t.Fatal(err)
+	}
+	after := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if after.LinkCount() != 0 {
+		t.Fatalf("a deleted link must not still count as linked: %+v", after)
+	}
+	if !slices.Contains(after.Unlinked(), b.session) || !slices.Contains(after.Unlinked(), a.session) {
+		t.Fatalf("both runs must be reported unlinked after deletion, got %v", after.Unlinked())
+	}
+	if !after.Healthy() {
+		t.Fatalf("deletion is the documented undetected limit, not a finding: %+v", after.Findings)
+	}
+}
+
+// writeLinkFile writes raw bytes as a link file under name.
+func writeLinkFile(t *testing.T, dir, name string, body []byte) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestChainLink_AlteredLinkFieldFailsSignature replaces
+// TestChainLink_TamperAlterLinkFailsSignature (which edited the in-chain
+// entry). Every signed field is altered in the sidecar in turn.
+func TestChainLink_AlteredLinkFieldFailsSignature(t *testing.T) {
+	t.Parallel()
+	fields := map[string]any{
+		"predecessor_tail_seq":   float64(1),
+		"predecessor_tail_hash":  strings.Repeat("ab", 32),
+		"predecessor_signer_key": strings.Repeat("11", 32),
+		"successor_session":      recorder.DefaultSessionBase + ".run." + strings.Repeat("e", 32),
+		"successor_signer_key":   strings.Repeat("22", 32),
+		"linked_at":              "2020-01-01T00:00:00Z",
+		"signature":              signaturePrefix + strings.Repeat("00", 64),
+	}
+	for field, value := range fields {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			_, priv := generateTestKey(t)
+			a, b := linkedPair(t, dir, priv)
+			name := ChainLinkFileName(a.session)
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m[field] == value {
+				t.Fatalf("mutation of %s is a no-op", field)
+			}
+			m[field] = value
+			altered, _ := json.Marshal(m)
+			writeLinkFile(t, dir, name, altered)
+			r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+			if findingKinds(r)[FindingInvalidLink] == 0 {
+				t.Fatalf("altering %s must fail the link: %+v", field, r.Findings)
+			}
+			if r.LinkCount() != 0 || !slices.Contains(r.Unlinked(), b.session) {
+				t.Fatalf("an invalid link must not link B: links=%d unlinked=%v", r.LinkCount(), r.Unlinked())
+			}
+		})
+	}
+}
+
+func TestChainLink_RenamedLinkFileIsFinding(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a, b := linkedPair(t, dir, priv)
+	other := recorder.DefaultSessionBase + ".run." + strings.Repeat("c", 32)
+	if err := os.Rename(filepath.Join(dir, ChainLinkFileName(a.session)), filepath.Join(dir, ChainLinkFileName(other))); err != nil {
+		t.Fatal(err)
+	}
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingLinkNameMismatch] != 1 {
+		t.Fatalf("a link file published under another predecessor's name must be a finding: %+v", r.Findings)
+	}
+	for _, f := range r.Findings {
+		if f.Kind == FindingLinkNameMismatch && f.Session != other {
+			t.Fatalf("finding must name the file's claimed predecessor %q, got %+v", other, f)
+		}
+	}
+	_ = b
+}
+
+// forgeLink signs a link with priv and writes it under name.
+func forgeLink(t *testing.T, dir, name string, l ChainLink, priv ed25519.PrivateKey) {
+	t.Helper()
+	l.LinkedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	signed, err := SignChainLink(l, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(signed)
+	writeLinkFile(t, dir, name, body)
 }
 
 func TestChainLink_WrongTailIsMismatch(t *testing.T) {
@@ -585,13 +654,147 @@ func TestChainLink_WrongTailIsMismatch(t *testing.T) {
 	a.openAndEmit(t, 1)
 	a.close(t)
 	tail := sessionReceipts(t, dir, a.session)
-	forgeRun(t, dir, priv, a.session, tail[len(tail)-1].ActionRecord.ChainSeq, strings.Repeat("ab", 32), tail[0].SignerKey)
+	c := startRun(t, dir, priv)
+	// The forged file takes A's name first, so C's own publish finds A taken.
+	forgeLink(t, dir, ChainLinkFileName(a.session), ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: tail[len(tail)-1].ActionRecord.ChainSeq,
+		PredecessorTailHash: strings.Repeat("ab", 32), PredecessorSignerKey: tail[0].SignerKey, SuccessorSession: c.session,
+	}, priv)
+	c.openAndEmit(t, 0)
+	c.close(t)
 	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingLinkTailMismatch] != 1 {
 		t.Fatalf("a link naming the wrong tail must be a mismatch: %+v", r.Findings)
 	}
-	forgeRun(t, dir, priv, recorder.DefaultSessionBase+".run."+strings.Repeat("0", 32), 0, strings.Repeat("ab", 32), tail[0].SignerKey)
-	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingDanglingLink] != 1 {
-		t.Fatalf("a link to a missing chain must be dangling: %+v", r.Findings)
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: true}); findingKinds(r)[FindingLinkTailMismatch] != 1 {
+		t.Fatalf("links-only must catch a wrong tail too: %+v", r.Findings)
+	}
+}
+
+func TestChainLink_DanglingLinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	tail := sessionReceipts(t, dir, a.session)
+	key := tail[0].SignerKey
+	missing := recorder.DefaultSessionBase + ".run." + strings.Repeat("0", 32)
+
+	// Predecessor absent: the successor exists (A), the predecessor does not.
+	forgeLink(t, dir, ChainLinkFileName(missing), ChainLink{
+		PredecessorSession: missing, PredecessorTailHash: strings.Repeat("ab", 32), PredecessorSignerKey: key, SuccessorSession: a.session,
+	}, priv)
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingDanglingLink] != 1 {
+		t.Fatalf("a link to a missing predecessor must be dangling: %+v", r.Findings)
+	}
+	if err := os.Remove(filepath.Join(dir, ChainLinkFileName(missing))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Successor absent: the predecessor (A) exists, the successor never wrote.
+	forgeLink(t, dir, ChainLinkFileName(a.session), ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: tail[len(tail)-1].ActionRecord.ChainSeq,
+		PredecessorTailHash: mustHash(t, tail[len(tail)-1]), PredecessorSignerKey: key, SuccessorSession: missing,
+	}, priv)
+	r = mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingDanglingLink] != 1 {
+		t.Fatalf("a link to a missing successor must be dangling: %+v", r.Findings)
+	}
+	if r = mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: true}); findingKinds(r)[FindingDanglingLink] != 1 {
+		t.Fatalf("links-only must report a dangling successor: %+v", r.Findings)
+	}
+}
+
+func TestChainLink_SecondLinkForOnePredecessorIsDoubleSuccessor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a, b := linkedPair(t, dir, priv)
+	l := b.e.ChainLink()
+	c := startRun(t, dir, priv)
+	c.openAndEmit(t, 0) // C continues B, the only gone and unlinked chain
+	c.close(t)
+	// A second link for A, published under another name.
+	forgeLink(t, dir, ChainLinkFileName(recorder.DefaultSessionBase+".run."+strings.Repeat("f", 32)), ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: l.PredecessorTailSeq, PredecessorTailHash: l.PredecessorTailHash,
+		PredecessorSignerKey: l.PredecessorSignerKey, SuccessorSession: c.session,
+	}, priv)
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingDoubleSuccessor] != 1 {
+		t.Fatalf("two links naming one predecessor must be a double successor: %+v", r.Findings)
+	}
+	if r = mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: true}); findingKinds(r)[FindingDoubleSuccessor] != 1 {
+		t.Fatalf("links-only must report a double successor: %+v", r.Findings)
+	}
+}
+
+func TestChainLink_MalformedLinkFileIsFinding(t *testing.T) {
+	t.Parallel()
+	cases := map[string]func(t *testing.T, dir, name string){
+		"truncated": func(t *testing.T, dir, name string) {
+			raw, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeLinkFile(t, dir, name, raw[:len(raw)/2])
+		},
+		"garbage": func(t *testing.T, dir, name string) { writeLinkFile(t, dir, name, []byte("\x00not json\xff")) },
+		"empty":   func(t *testing.T, dir, name string) { writeLinkFile(t, dir, name, nil) },
+		"oversized": func(t *testing.T, dir, name string) {
+			writeLinkFile(t, dir, name, bytes.Repeat([]byte(" "), maxChainLinkFileBytes+1))
+		},
+		"directory": func(t *testing.T, dir, name string) {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(dir, name), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for label, mutate := range cases {
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			_, priv := generateTestKey(t)
+			a, b := linkedPair(t, dir, priv)
+			mutate(t, dir, ChainLinkFileName(a.session))
+			for _, linksOnly := range []bool{false, true} {
+				r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: linksOnly})
+				if findingKinds(r)[FindingInvalidLink] != 1 {
+					t.Fatalf("linksOnly=%v: a %s link file must be a finding: %+v", linksOnly, label, r.Findings)
+				}
+				if slices.Contains(r.Unlinked(), a.session) && !slices.Contains(r.Unlinked(), b.session) {
+					t.Fatalf("B must not count as linked through a malformed file")
+				}
+			}
+		})
+	}
+}
+
+// A symlinked link file makes the evidence directory unenumerable (the
+// recorder refuses symlinks there), so VerifyBase returns an error, which
+// every caller treats as incomplete, never healthy.
+func TestChainLink_SymlinkedLinkFileFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a, _ := linkedPair(t, dir, priv)
+	name := ChainLinkFileName(a.session)
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.Rename(filepath.Join(dir, name), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyBase(dir, recorder.DefaultSessionBase, BaseVerifyOptions{}); err == nil {
+		t.Fatal("a symlinked link file must make verification incomplete")
+	}
+	if _, err := readChainLinkFile(filepath.Join(dir, name)); err == nil {
+		t.Fatal("a symlinked link file must not be read")
 	}
 }
 
@@ -609,8 +812,255 @@ func TestChainLink_AppendAfterLinkIsFinding(t *testing.T) {
 	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor, Session: a.session, Notices: io.Discard})
 	emitOne(t, e)
 	_ = rec.Close()
-	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); findingKinds(r)[FindingAppendedAfterLink] != 1 {
-		t.Fatalf("appending to a linked predecessor must be a finding: %+v", r.Findings)
+	for _, linksOnly := range []bool{false, true} {
+		if r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: linksOnly}); findingKinds(r)[FindingAppendedAfterLink] != 1 {
+			t.Fatalf("linksOnly=%v: appending to a linked predecessor must be a finding: %+v", linksOnly, r.Findings)
+		}
+	}
+}
+
+func TestChainLink_LinksOnlyCorruptPredecessorTail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a, _ := linkedPair(t, dir, priv)
+	files, err := recorderFiles(dir, a.session)
+	if err != nil || len(files) == 0 {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(files[len(files)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	last := -1
+	for i, line := range lines {
+		if bytes.Contains(line, []byte(`"verdict":"block"`)) {
+			last = i
+		}
+	}
+	if last < 0 {
+		t.Fatal("tamper anchor not found")
+	}
+	tampered := bytes.Replace(lines[last], []byte(`"verdict":"block"`), []byte(`"verdict":"allow"`), 1)
+	lines[last] = tampered
+	if err := os.WriteFile(files[len(files)-1], append(bytes.Join(lines, []byte("\n")), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{LinksOnly: true}); findingKinds(r)[FindingPredecessorUnverified] != 1 {
+		t.Fatalf("a predecessor with a forged tail must not verify a link: %+v", r.Findings)
+	}
+}
+
+// Exclusive publish: many concurrent publishers of one name produce exactly
+// one complete link file and leave no temp file behind.
+func TestChainLink_PublishIsExclusive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const n = 32
+	name := ChainLinkFileName("proxy.run." + strings.Repeat("a", 32))
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			body := bytes.Repeat([]byte{byte('A' + i%26)}, 4096)
+			errs[i] = publishChainLinkFile(dir, name, append(body, byte('0'+i%10)))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	won := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			won++
+		case !errors.Is(err, errLinkNameTaken):
+			t.Fatalf("publisher %d: %v", i, err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("exactly one publisher must win, got %d", won)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4097 || !bytes.Equal(got[:4096], bytes.Repeat(got[:1], 4096)) {
+		t.Fatalf("published file is not one complete body (len %d)", len(got))
+	}
+	des, _ := os.ReadDir(dir)
+	if len(des) != 1 {
+		names := make([]string, 0, len(des))
+		for _, de := range des {
+			names = append(names, de.Name())
+		}
+		t.Fatalf("temp files left behind: %v", names)
+	}
+}
+
+// A temp file left by a crash before os.Link never appears as a link.
+func TestChainLink_LeftoverTempFileIsNotALink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	tail := sessionReceipts(t, dir, a.session)
+	c := startRun(t, dir, priv)
+	signed, err := SignChainLink(ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: tail[len(tail)-1].ActionRecord.ChainSeq,
+		PredecessorTailHash: mustHash(t, tail[len(tail)-1]), PredecessorSignerKey: tail[0].SignerKey,
+		SuccessorSession: c.session, LinkedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(signed)
+	writeLinkFile(t, dir, ".chain-link-123456.tmp", body)
+	if bases, err := ContinuityBases(dir); err != nil || !slices.Equal(bases, []string{recorder.DefaultSessionBase}) {
+		t.Fatalf("ContinuityBases = %v, %v", bases, err)
+	}
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if !r.Healthy() || r.LinkCount() != 0 {
+		t.Fatalf("a leftover temp file must be neither a link nor a finding: links=%d findings=%+v", r.LinkCount(), r.Findings)
+	}
+	// The leftover does not block a real publish either.
+	c.openAndEmit(t, 0)
+	c.close(t)
+	if l := c.e.ChainLink(); l == nil || l.PredecessorSession != a.session {
+		t.Fatalf("a real publish must still succeed past a leftover temp file: %+v", l)
+	}
+}
+
+// A publish failure other than EEXIST starts the run unlinked, says why, and
+// leaves neither a link nor a temp file. Not parallel: it swaps linkFile.
+func TestChainLink_LinkFailureStartsUnlinked(t *testing.T) {
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 1)
+	a.close(t)
+
+	orig := linkFile
+	linkFile = func(string, string) error { return &os.LinkError{Op: "link", Err: syscall.EPERM} }
+	t.Cleanup(func() { linkFile = orig })
+
+	rec := newTestRecorder(t, dir, priv)
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notices bytes.Buffer
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, Principal: testPrincipal, Actor: testActor, Session: session, Notices: &notices})
+	emitOne(t, e)
+	_ = rec.Close()
+	if e.ChainLink() != nil {
+		t.Fatal("a failed publish must leave the run unlinked")
+	}
+	if !strings.Contains(notices.String(), "starts unlinked") || !strings.Contains(notices.String(), "publishing chain link") {
+		t.Fatalf("the failure must be logged, got %q", notices.String())
+	}
+	des, _ := os.ReadDir(dir)
+	for _, de := range des {
+		if strings.Contains(de.Name(), "chain-link") {
+			t.Fatalf("no link or temp file may remain: %s", de.Name())
+		}
+	}
+}
+
+func TestChainLink_PublishErrorPaths(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "absent")
+	if err := publishChainLinkFile(missing, "chain-link-x.json", []byte("{}")); err == nil {
+		t.Fatal("publishing into a missing directory must fail")
+	}
+	if err := syncDir(missing); err == nil {
+		t.Fatal("syncing a missing directory must fail")
+	}
+	if _, err := readChainLinkFiles(missing); err == nil {
+		t.Fatal("listing a missing directory must fail")
+	}
+	if _, err := ContinuityBases(missing); err == nil {
+		t.Fatal("ContinuityBases on a missing directory must fail")
+	}
+	if _, err := VerifyBase(missing, recorder.DefaultSessionBase, BaseVerifyOptions{}); err == nil {
+		t.Fatal("VerifyBase on a missing directory must fail")
+	}
+	f, err := os.CreateTemp(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := writeSyncClose(f, []byte("x")); err == nil {
+		t.Fatal("writing a closed file must fail")
+	}
+	for _, name := range []string{"chain-link-.json", "chain-link-x", "evidence-x.jsonl", ".chain-link-x.tmp"} {
+		if _, ok := chainLinkFilePredecessor(name); ok {
+			t.Fatalf("%q must not parse as a link file name", name)
+		}
+	}
+}
+
+func TestChainLink_ContinuityBases(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	// A legacy-only base has no continuity to report.
+	legacyRec := newTestRecorder(t, dir, priv)
+	emitOne(t, NewEmitter(EmitterConfig{Recorder: legacyRec, PrivKey: priv, Principal: testPrincipal, Actor: testActor}))
+	_ = legacyRec.Close()
+	if bases, err := ContinuityBases(dir); err != nil || len(bases) != 0 {
+		t.Fatalf("legacy-only: %v %v", bases, err)
+	}
+	// A link file naming another base's predecessor surfaces that base.
+	writeLinkFile(t, dir, ChainLinkFileName("other"), []byte("x"))
+	writeLinkFile(t, dir, ChainLinkFileName("third.run."+strings.Repeat("1", 32)), []byte("x"))
+	a := startRun(t, dir, priv)
+	a.openAndEmit(t, 0)
+	a.close(t)
+	bases, err := ContinuityBases(dir)
+	if err != nil || !slices.Equal(bases, []string{"other", recorder.DefaultSessionBase, "third"}) {
+		t.Fatalf("ContinuityBases = %v, %v", bases, err)
+	}
+	// A malformed link file for another base is that base's finding, not this one's.
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{}); !r.Healthy() {
+		t.Fatalf("another base's link file must not affect this base: %+v", r.Findings)
+	}
+	r, err := VerifyBase(dir, "other", BaseVerifyOptions{})
+	if err != nil || findingKinds(r)[FindingInvalidLink] != 1 {
+		t.Fatalf("other base: %+v %v", r.Findings, err)
+	}
+}
+
+func TestChainLink_CrossBaseAndDuplicateSuccessorLinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	a, b := linkedPair(t, dir, priv)
+	l := b.e.ChainLink()
+	// A link whose successor is not a run chain of the base (the legacy name).
+	forgeLink(t, dir, ChainLinkFileName(recorder.DefaultSessionBase+".run."+strings.Repeat("9", 32)), ChainLink{
+		PredecessorSession: recorder.DefaultSessionBase + ".run." + strings.Repeat("9", 32), PredecessorTailHash: l.PredecessorTailHash,
+		PredecessorSignerKey: l.PredecessorSignerKey, SuccessorSession: recorder.DefaultSessionBase,
+	}, priv)
+	// A link naming B as successor of a second predecessor (A is its first).
+	forgeLink(t, dir, ChainLinkFileName(recorder.DefaultSessionBase+".run."+strings.Repeat("8", 32)), ChainLink{
+		PredecessorSession: recorder.DefaultSessionBase + ".run." + strings.Repeat("8", 32), PredecessorTailHash: l.PredecessorTailHash,
+		PredecessorSignerKey: l.PredecessorSignerKey, SuccessorSession: b.session,
+	}, priv)
+	// A link whose predecessor belongs to another base but whose successor is ours.
+	forgeLink(t, dir, ChainLinkFileName("other.run."+strings.Repeat("7", 32)), ChainLink{
+		PredecessorSession: "other.run." + strings.Repeat("7", 32), PredecessorTailHash: l.PredecessorTailHash,
+		PredecessorSignerKey: l.PredecessorSignerKey, SuccessorSession: a.session,
+	}, priv)
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if findingKinds(r)[FindingInvalidLink] != 3 {
+		t.Fatalf("want 3 invalid_link findings: %+v", r.Findings)
 	}
 }
 
@@ -674,6 +1124,9 @@ func TestChainLink_SignVerifyValidation(t *testing.T) {
 	}
 	if _, err := UnmarshalChainLink([]byte(`{"version":1,"version":1}`)); err == nil {
 		t.Fatal("duplicate keys must be refused")
+	}
+	if _, err := UnmarshalChainLink([]byte(`{}`)); err == nil {
+		t.Fatal("an empty link must not parse")
 	}
 	if _, ok := RunSessionBase("proxy"); ok {
 		t.Fatal("plain session is not a run session")
@@ -783,7 +1236,7 @@ func TestChainLink_TwelveProcessesShareOneDirectory(t *testing.T) {
 		}
 	}
 	report := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pub)}})
-	if !report.Healthy() || report.LinkCount() != 0 {
-		t.Fatalf("concurrent live runs must neither fork nor link each other: links=%d findings=%+v", report.LinkCount(), report.Findings)
+	if !report.Healthy() || report.LinkCount() != 0 || len(report.Unlinked()) != helperProcs {
+		t.Fatalf("concurrent live runs must neither fork nor link each other: links=%d unlinked=%d findings=%+v", report.LinkCount(), len(report.Unlinked()), report.Findings)
 	}
 }

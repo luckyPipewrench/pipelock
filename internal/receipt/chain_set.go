@@ -4,9 +4,10 @@
 package receipt
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -19,7 +20,7 @@ const (
 	FindingCorruptChain          = "corrupt_chain"
 	FindingOuterChainBroken      = "outer_chain_broken"
 	FindingInvalidLink           = "invalid_link"
-	FindingMisplacedLink         = "misplaced_link"
+	FindingLinkNameMismatch      = "link_name_mismatch"
 	FindingDanglingLink          = "dangling_link"
 	FindingPredecessorUnverified = "predecessor_unverified"
 	FindingLinkTailMismatch      = "link_tail_mismatch"
@@ -43,6 +44,13 @@ type BaseVerifyOptions struct {
 	// Endorsements authorize a successor key across a link when signed by the
 	// predecessor key and bound to the predecessor session and exact tail.
 	Endorsements []RotationEndorsement
+	// LinksOnly checks link files structurally and skips whole-chain
+	// signature verification and key trust. The link's own signature and the
+	// predecessor tail receipt's own signature are still verified, and the
+	// tail must match exactly. Only chains a link file names are read. This
+	// is the evidence doctor's mode: the doctor takes no trusted keys, so
+	// judging key trust there would flag every honest key change.
+	LinksOnly bool
 }
 
 // BaseChain is one chain of a base: a run session or the legacy base session.
@@ -54,6 +62,7 @@ type BaseChain struct {
 	TailHash  string
 	SignerKey string
 	Link      *ChainLink
+	LinkFile  string
 	LinkTrust string
 	Valid     bool
 	Error     string
@@ -73,10 +82,11 @@ type BaseReport struct {
 	Findings []BaseFinding
 }
 
-// Healthy reports whether every chain verified and every link held.
+// Healthy reports whether every chain verified and every link file held.
+// It says nothing about unlinked runs; see Unlinked.
 func (r BaseReport) Healthy() bool { return len(r.Findings) == 0 }
 
-// LinkCount returns the number of chains carrying a link.
+// LinkCount returns the number of chains with a verified-in-place link file.
 func (r BaseReport) LinkCount() int {
 	n := 0
 	for _, c := range r.Chains {
@@ -87,9 +97,17 @@ func (r BaseReport) LinkCount() int {
 	return n
 }
 
-// Unlinked returns chains that carry no link. An unlinked chain is not a
-// finding: the first run, a run whose predecessor was still live or corrupt,
-// and every chain from an older binary start unlinked.
+// Unlinked returns every chain that no link file continues into.
+//
+// An unlinked chain is REPORTED, never a finding, because honest runs are
+// legitimately unlinked: the first run, a run started while its predecessor
+// was still live (concurrent siblings), a run whose predecessor tail was
+// corrupt, a run on a platform that cannot prove a writer is gone, and every
+// chain an older binary wrote. Failing those would make every multi-process
+// deployment look damaged. The cost of that choice is that deleting a link
+// file is indistinguishable from an honest unlinked restart, so callers must
+// show this list and must not present a healthy report as proof of
+// continuity.
 func (r BaseReport) Unlinked() []string {
 	var out []string
 	for _, c := range r.Chains {
@@ -112,6 +130,39 @@ func ResolveBaseSessions(dir, base string) ([]string, error) {
 		if isBaseChain(s, base) {
 			out = append(out, s)
 		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// ContinuityBases lists every base in dir that has restart continuity to
+// report: a base with at least one run chain, or one named by a link file.
+func ContinuityBases(dir string) ([]string, error) {
+	sessions, err := recorder.ListSessions(dir)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	set := make(map[string]struct{})
+	for _, s := range sessions {
+		if b, ok := RunSessionBase(s); ok {
+			set[b] = struct{}{}
+		}
+	}
+	names, err := chainLinkFileNames(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		pred, _ := chainLinkFilePredecessor(name)
+		if b, ok := RunSessionBase(pred); ok {
+			set[b] = struct{}{}
+		} else {
+			set[pred] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for b := range set {
+		out = append(out, b)
 	}
 	sort.Strings(out)
 	return out, nil
@@ -143,12 +194,89 @@ type baseChainData struct {
 	receipts []Receipt
 }
 
-// VerifyBase verifies every chain of base in dir and every continuity link
-// between them. An error means the base could not be enumerated at all; a
-// caller must treat that as incomplete, never as healthy.
+// chainLinkRecord is one link file as read from disk.
+type chainLinkRecord struct {
+	name     string
+	namePred string
+	link     *ChainLink
+	err      error
+}
+
+// chainLinkFileNames lists link file names in dir, sorted.
+func chainLinkFileNames(dir string) ([]string, error) {
+	des, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return nil, fmt.Errorf("listing chain link files: %w", err)
+	}
+	var out []string
+	for _, de := range des {
+		if _, ok := chainLinkFilePredecessor(de.Name()); ok {
+			out = append(out, de.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// readChainLinkFiles reads and verifies every link file in dir. A file that
+// cannot be read, is not a regular file, is oversized, or fails to parse or
+// verify is returned with err set, never dropped.
+func readChainLinkFiles(dir string) ([]chainLinkRecord, error) {
+	names, err := chainLinkFileNames(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chainLinkRecord, 0, len(names))
+	for _, name := range names {
+		pred, _ := chainLinkFilePredecessor(name)
+		rec := chainLinkRecord{name: name, namePred: pred}
+		link, readErr := readChainLinkFile(filepath.Join(filepath.Clean(dir), name))
+		if readErr != nil {
+			rec.err = readErr
+		} else {
+			rec.link = &link
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func readChainLinkFile(path string) (ChainLink, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return ChainLink{}, fmt.Errorf("stat chain link file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return ChainLink{}, errors.New("chain link file is not a regular file")
+	}
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return ChainLink{}, fmt.Errorf("open chain link file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxChainLinkFileBytes+1))
+	if err != nil {
+		return ChainLink{}, fmt.Errorf("read chain link file: %w", err)
+	}
+	if len(data) > maxChainLinkFileBytes {
+		return ChainLink{}, fmt.Errorf("chain link file exceeds %d bytes", maxChainLinkFileBytes)
+	}
+	return UnmarshalChainLink(data)
+}
+
+// VerifyBase verifies every chain of base in dir and every link file that
+// names a chain of base. An error means the base could not be enumerated at
+// all; a caller must treat that as incomplete, never as healthy.
+//
+// A healthy report does NOT prove continuity: a deleted link file leaves its
+// successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	report := BaseReport{Base: base}
 	sessions, err := ResolveBaseSessions(dir, base)
+	if err != nil {
+		return report, err
+	}
+	links, err := readChainLinkFiles(dir)
 	if err != nil {
 		return report, err
 	}
@@ -156,125 +284,98 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		report.Findings = append(report.Findings, BaseFinding{Kind: kind, Session: session, Detail: detail})
 	}
 
+	scoped := make([]chainLinkRecord, 0, len(links))
+	need := make(map[string]bool)
+	for _, lf := range links {
+		in := isBaseChain(lf.namePred, base)
+		if lf.link != nil {
+			in = in || isBaseChain(lf.link.PredecessorSession, base) || isBaseChain(lf.link.SuccessorSession, base)
+			need[lf.link.PredecessorSession] = true
+			need[lf.link.SuccessorSession] = true
+		}
+		if in {
+			scoped = append(scoped, lf)
+		}
+	}
+
 	data := make(map[string]*baseChainData, len(sessions))
 	for _, s := range sessions {
 		d := &baseChainData{chain: BaseChain{Session: s, Legacy: s == base}}
 		data[s] = d
-		entries, readErr := readSessionEntries(dir, s)
-		if readErr != nil {
-			d.chain.Error = readErr.Error()
-			add(FindingCorruptChain, s, readErr.Error())
+		if opts.LinksOnly && !need[s] {
 			continue
 		}
-		if chainErr := recorder.VerifyChain(entries); chainErr != nil {
-			add(FindingOuterChainBroken, s, chainErr.Error())
+		loadBaseChain(dir, d, opts.LinksOnly, add)
+	}
+
+	// Attach each link file to its successor. Every rejection is a finding:
+	// a link file that cannot be trusted is never silently skipped.
+	successors := make(map[string][]string)
+	for _, lf := range scoped {
+		if lf.err != nil {
+			add(FindingInvalidLink, lf.namePred, fmt.Sprintf("link file %s: %v", lf.name, lf.err))
+			continue
 		}
-		for i, entry := range entries {
-			switch entry.Type {
-			case ChainLinkEntryType:
-				link, linkErr := chainLinkFromEntry(entry)
-				switch {
-				case linkErr != nil:
-					add(FindingInvalidLink, s, linkErr.Error())
-				case i != 0 || d.chain.Link != nil:
-					add(FindingMisplacedLink, s, fmt.Sprintf("chain_link at entry %d; a link must be the first and only link entry", i))
-				case link.SuccessorSession != s:
-					add(FindingInvalidLink, s, fmt.Sprintf("link names successor %q", link.SuccessorSession))
-				default:
-					d.chain.Link = &link
-				}
-			case recorderEntryType:
-				rcpt, rErr := receiptFromEntry(entry)
-				if rErr != nil {
-					d.chain.Error = rErr.Error()
-					add(FindingCorruptChain, s, rErr.Error())
-					continue
-				}
-				d.receipts = append(d.receipts, *rcpt)
-			}
+		link := lf.link
+		if link.PredecessorSession != lf.namePred {
+			add(FindingLinkNameMismatch, lf.namePred, fmt.Sprintf("link file %s names predecessor %q", lf.name, link.PredecessorSession))
 		}
+		successors[link.PredecessorSession] = append(successors[link.PredecessorSession], link.SuccessorSession)
+		if !isBaseChain(link.PredecessorSession, base) {
+			add(FindingInvalidLink, link.SuccessorSession, fmt.Sprintf("link file %s: predecessor %q is not a chain of %q", lf.name, link.PredecessorSession, base))
+			continue
+		}
+		if b, ok := RunSessionBase(link.SuccessorSession); !ok || b != base {
+			add(FindingInvalidLink, link.SuccessorSession, fmt.Sprintf("link file %s: successor is not a run chain of %q", lf.name, base))
+			continue
+		}
+		sd, exists := data[link.SuccessorSession]
+		if !exists {
+			add(FindingDanglingLink, link.SuccessorSession, fmt.Sprintf("link file %s: successor %q not found", lf.name, link.SuccessorSession))
+			continue
+		}
+		if sd.chain.Link != nil {
+			add(FindingInvalidLink, link.SuccessorSession, fmt.Sprintf("link file %s: successor already continues %q", lf.name, sd.chain.Link.PredecessorSession))
+			continue
+		}
+		sd.chain.Link = link
+		sd.chain.LinkFile = lf.name
 	}
 
 	// Key trust across links: an endorsed successor key joins the pinned set
 	// for that chain only.
 	endorsed := make(map[string]bool)
-	for _, s := range sessions {
-		link := data[s].chain.Link
-		if link == nil || link.SuccessorSignerKey == link.PredecessorSignerKey {
-			continue
-		}
-		for _, e := range opts.Endorsements {
-			if VerifyCrossChainEndorsement(e, *link) == nil {
-				endorsed[s] = true
-				break
+	if !opts.LinksOnly {
+		crossUsed := make(map[int]bool)
+		for _, s := range sessions {
+			link := data[s].chain.Link
+			if link == nil || link.SuccessorSignerKey == link.PredecessorSignerKey {
+				continue
 			}
+			for i, e := range opts.Endorsements {
+				if VerifyCrossChainEndorsement(e, *link) == nil {
+					endorsed[s] = true
+					crossUsed[i] = true
+					break
+				}
+			}
+		}
+		for _, s := range sessions {
+			// In-chain rotation endorsements go only to their own chain, and
+			// never one already consumed across a link: the single-chain
+			// verifier rejects any endorsement it cannot place.
+			var own []RotationEndorsement
+			for i, e := range opts.Endorsements {
+				if e.SessionID == s && !crossUsed[i] {
+					own = append(own, e)
+				}
+			}
+			verifyBaseChain(data[s], opts.TrustedKeys, own, endorsed[s], add)
 		}
 	}
 
 	for _, s := range sessions {
-		d := data[s]
-		if d.chain.Error != "" || len(d.receipts) == 0 {
-			d.chain.Valid = d.chain.Error == ""
-			continue
-		}
-		trusted := opts.TrustedKeys
-		if endorsed[s] && len(trusted) > 0 {
-			trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
-		}
-		res := VerifyChainTrusted(d.receipts, trusted)
-		ok := res.Valid || (res.FailureKind == ChainFailureLifecycleOpen && res.IntegrityVerified)
-		d.chain.Receipts = len(d.receipts)
-		d.chain.SignerKey = d.receipts[0].SignerKey
-		last := d.receipts[len(d.receipts)-1]
-		d.chain.FinalSeq = last.ActionRecord.ChainSeq
-		if h, hErr := ReceiptHash(last); hErr == nil {
-			d.chain.TailHash = h
-		}
-		if !ok {
-			d.chain.Error = res.Error
-			add(FindingCorruptChain, s, res.Error)
-			continue
-		}
-		d.chain.Valid = true
-	}
-
-	successors := make(map[string][]string)
-	for _, s := range sessions {
-		d := data[s]
-		link := d.chain.Link
-		if link == nil {
-			continue
-		}
-		successors[link.PredecessorSession] = append(successors[link.PredecessorSession], s)
-		if len(d.receipts) > 0 && d.receipts[0].SignerKey != link.SuccessorSignerKey {
-			add(FindingInvalidLink, s, "link successor key does not sign the chain")
-		}
-		pred, exists := data[link.PredecessorSession]
-		if !exists {
-			add(FindingDanglingLink, s, fmt.Sprintf("predecessor %q not found", link.PredecessorSession))
-			continue
-		}
-		if !pred.chain.Valid || len(pred.receipts) == 0 {
-			add(FindingPredecessorUnverified, s, fmt.Sprintf("predecessor %q did not verify", link.PredecessorSession))
-			continue
-		}
-		if checkErr := checkLinkedTail(pred.receipts, *link); checkErr != nil {
-			kind := FindingLinkTailMismatch
-			if errors.Is(checkErr, errAppendedAfterLink) {
-				kind = FindingAppendedAfterLink
-			}
-			add(kind, link.PredecessorSession, fmt.Sprintf("linked by %s: %v", s, checkErr))
-		}
-		switch {
-		case link.SuccessorSignerKey == link.PredecessorSignerKey:
-			d.chain.LinkTrust = LinkTrustSameKey
-		case slices.Contains(opts.TrustedKeys, link.SuccessorSignerKey):
-			d.chain.LinkTrust = LinkTrustTrustedKey
-		case endorsed[s]:
-			d.chain.LinkTrust = LinkTrustEndorsed
-		default:
-			add(FindingUntrustedSuccessorKey, s, "successor key differs from predecessor key and is neither trusted nor endorsed")
-		}
+		checkBaseLink(data, s, opts, endorsed[s], add)
 	}
 	preds := make([]string, 0, len(successors))
 	for p := range successors {
@@ -283,7 +384,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	sort.Strings(preds)
 	for _, p := range preds {
 		if len(successors[p]) > 1 {
-			add(FindingDoubleSuccessor, p, fmt.Sprintf("claimed by %d successors: %v", len(successors[p]), successors[p]))
+			add(FindingDoubleSuccessor, p, fmt.Sprintf("continued by %d link files: %v", len(successors[p]), successors[p]))
 		}
 	}
 
@@ -291,6 +392,117 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		report.Chains = append(report.Chains, data[s].chain)
 	}
 	return report, nil
+}
+
+// loadBaseChain reads one chain's receipts and records its tail. In
+// links-only mode a chain is valid when its tail receipt verifies on its own;
+// otherwise validity is decided later by full chain verification.
+func loadBaseChain(dir string, d *baseChainData, linksOnly bool, add func(kind, session, detail string)) {
+	s := d.chain.Session
+	entries, readErr := readSessionEntries(dir, s)
+	if readErr != nil {
+		d.chain.Error = readErr.Error()
+		add(FindingCorruptChain, s, readErr.Error())
+		return
+	}
+	if !linksOnly {
+		if chainErr := recorder.VerifyChain(entries); chainErr != nil {
+			add(FindingOuterChainBroken, s, chainErr.Error())
+		}
+	}
+	for _, entry := range entries {
+		if entry.Type != recorderEntryType {
+			continue
+		}
+		rcpt, rErr := receiptFromEntry(entry)
+		if rErr != nil {
+			d.chain.Error = rErr.Error()
+			add(FindingCorruptChain, s, rErr.Error())
+			return
+		}
+		d.receipts = append(d.receipts, *rcpt)
+	}
+	if len(d.receipts) == 0 {
+		d.chain.Valid = true
+		return
+	}
+	d.chain.Receipts = len(d.receipts)
+	d.chain.SignerKey = d.receipts[0].SignerKey
+	last := d.receipts[len(d.receipts)-1]
+	d.chain.FinalSeq = last.ActionRecord.ChainSeq
+	if h, hErr := ReceiptHash(last); hErr == nil {
+		d.chain.TailHash = h
+	}
+	if linksOnly {
+		if tailErr := VerifyInternalConsistencyOnly(last); tailErr != nil {
+			d.chain.Error = tailErr.Error()
+			return
+		}
+		d.chain.Valid = true
+	}
+}
+
+// verifyBaseChain runs full signature and key-trust verification on one chain.
+func verifyBaseChain(d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
+	if d.chain.Error != "" || len(d.receipts) == 0 {
+		return
+	}
+	if endorsed && len(trusted) > 0 {
+		trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
+	}
+	var res ChainResult
+	if len(own) > 0 && len(trusted) > 0 {
+		res = VerifyChainWithEndorsements(d.chain.Session, d.receipts, own, trusted)
+	} else {
+		res = VerifyChainTrusted(d.receipts, trusted)
+	}
+	if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
+		d.chain.Valid = false
+		d.chain.Error = res.Error
+		add(FindingCorruptChain, d.chain.Session, res.Error)
+		return
+	}
+	d.chain.Valid = true
+}
+
+// checkBaseLink matches one chain's link against its predecessor.
+func checkBaseLink(data map[string]*baseChainData, s string, opts BaseVerifyOptions, endorsed bool, add func(kind, session, detail string)) {
+	d := data[s]
+	link := d.chain.Link
+	if link == nil {
+		return
+	}
+	if len(d.receipts) > 0 && d.receipts[0].SignerKey != link.SuccessorSignerKey {
+		add(FindingInvalidLink, s, "link successor key does not sign the chain")
+	}
+	pred, exists := data[link.PredecessorSession]
+	if !exists {
+		add(FindingDanglingLink, s, fmt.Sprintf("predecessor %q not found", link.PredecessorSession))
+		return
+	}
+	if !pred.chain.Valid || len(pred.receipts) == 0 {
+		add(FindingPredecessorUnverified, s, fmt.Sprintf("predecessor %q did not verify", link.PredecessorSession))
+		return
+	}
+	if checkErr := checkLinkedTail(pred.receipts, *link); checkErr != nil {
+		kind := FindingLinkTailMismatch
+		if errors.Is(checkErr, errAppendedAfterLink) {
+			kind = FindingAppendedAfterLink
+		}
+		add(kind, link.PredecessorSession, fmt.Sprintf("linked by %s: %v", s, checkErr))
+	}
+	switch {
+	case link.SuccessorSignerKey == link.PredecessorSignerKey:
+		d.chain.LinkTrust = LinkTrustSameKey
+	case opts.LinksOnly:
+		// Key trust needs pinned keys; links-only mode does not judge it.
+	case slices.Contains(opts.TrustedKeys, link.SuccessorSignerKey):
+		d.chain.LinkTrust = LinkTrustTrustedKey
+	case endorsed:
+		d.chain.LinkTrust = LinkTrustEndorsed
+	default:
+		add(FindingUntrustedSuccessorKey, s, "successor key differs from predecessor key and is neither trusted nor endorsed")
+	}
 }
 
 var errAppendedAfterLink = errors.New("entries were appended to the predecessor after the linked tail")
@@ -316,18 +528,6 @@ func checkLinkedTail(receipts []Receipt, link ChainLink) error {
 	}
 	return fmt.Errorf("link names tail seq %d hash %s, predecessor tail is seq %d hash %s",
 		link.PredecessorTailSeq, link.PredecessorTailHash, last.ActionRecord.ChainSeq, lastHash)
-}
-
-func chainLinkFromEntry(entry recorder.Entry) (ChainLink, error) {
-	raw := entry.RawDetail
-	if len(raw) == 0 {
-		b, err := json.Marshal(entry.Detail)
-		if err != nil {
-			return ChainLink{}, fmt.Errorf("encoding chain link detail: %w", err)
-		}
-		raw = b
-	}
-	return UnmarshalChainLink(raw)
 }
 
 // readSessionEntries reads every recorder entry of session, in shard order.

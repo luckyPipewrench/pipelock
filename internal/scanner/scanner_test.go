@@ -299,6 +299,9 @@ func TestScan_BlocksHighEntropySegments(t *testing.T) {
 	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
+	if !result.IsEntropyOnly() {
+		t.Fatal("path entropy must carry the heuristic classification")
+	}
 }
 
 func TestScan_AllowsLowEntropySegments(t *testing.T) {
@@ -1721,6 +1724,9 @@ func TestScan_HighEntropyQueryKey(t *testing.T) {
 	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
 	}
+	if !result.IsEntropyOnly() {
+		t.Fatal("query-key entropy must carry the heuristic classification")
+	}
 }
 
 // --- Additional Scanner Edge Cases ---
@@ -2171,6 +2177,9 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 	}
 	if result.Scanner != ScannerEntropy {
 		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
+	}
+	if !result.IsEntropyOnly() {
+		t.Fatal("query-value entropy must carry the heuristic classification")
 	}
 }
 
@@ -3950,6 +3959,9 @@ func TestCheckSubdomainEntropy_BlocksHighEntropyLabels(t *testing.T) {
 			if result.Scanner != ScannerSubdomainEntropy {
 				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
 			}
+			if !result.IsEntropyOnly() {
+				t.Fatal("subdomain entropy must carry the heuristic classification")
+			}
 		})
 	}
 }
@@ -4040,6 +4052,9 @@ func TestCheckSubdomainEntropy_BlocksEncodedExfilLabels(t *testing.T) {
 			}
 			if result.Scanner != ScannerSubdomainEntropy {
 				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
+			}
+			if IsHostnameExfilResult(result) && result.IsEntropyOnly() {
+				t.Fatal("structural hostname exfiltration must remain concrete evidence")
 			}
 		})
 	}

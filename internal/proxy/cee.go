@@ -524,7 +524,7 @@ type ceeResult struct {
 	// field instead: a receipt whose Pattern held a sentence carried no
 	// queryable evidence of which control fired.
 	BlockKind   string
-	EntropyHit  bool // entropy budget exceeded (for metrics/signals)
+	EntropyHit  bool // entropy budget exceeded (for metrics/audit; score-neutral)
 	FragmentHit bool // fragment DLP match (for metrics/signals)
 }
 
@@ -881,9 +881,6 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		Session:   sessionKey,
 		ClientIP:  clientIP,
 		RequestID: requestID,
-	}
-	if result.EntropyHit {
-		decide.RecordSignal(sess, session.SignalEntropyBudget, ep)
 	}
 	if result.FragmentHit {
 		// Fragment DLP match is high-confidence (reconstructed secret from fragments).

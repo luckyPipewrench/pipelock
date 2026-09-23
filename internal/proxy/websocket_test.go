@@ -1462,6 +1462,22 @@ func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyWarnAudits(t *testi
 	}
 }
 
+func TestWSRelay_EntropyWarnAtElevatedLevel(t *testing.T) {
+	cfg := adaptiveConfig()
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	m := metrics.New()
+	sm := NewSessionManager(&cfg.SessionProfiling, nil, m)
+	defer sm.Close()
+	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
+	escalateRec(rec, 1)
+	before := rec.ThreatScore()
+	relay := &wsRelay{proxy: &Proxy{metrics: m}, cfg: cfg, rec: rec, hostname: "socket.vendor.example", agent: agentAnonymous, clientIP: adaptiveSessionKeyLoopback, targetURL: "wss://socket.vendor.example/socket"}
+	blocked := relay.handleClientMessageBodyResult(audit.NewNop(), []byte("opaque"), BodyScanResult{Action: config.ActionWarn, EntropyFinding: &ContentEntropyFinding{Entropy: 4.8, Threshold: 4.5, Length: 64}})
+	if blocked || rec.ThreatScore() != before {
+		t.Fatalf("elevated entropy warning blocked=%v score=%.1f, want forward and score %.1f", blocked, rec.ThreatScore(), before)
+	}
+}
+
 func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyBlock(t *testing.T) {
 	rph := newReceiptProxyHelper(t)
 	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}

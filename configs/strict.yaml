@@ -61,7 +61,7 @@ request_body_scanning:
   enabled: true
   action: block
   content_entropy_enabled: true
-  content_entropy_action: block
+  content_entropy_action: block # heuristic finding blocks here; it does not raise adaptive score
   content_entropy_threshold: 3.5
   content_entropy_min_length: 32
   content_entropy_exclusions: []

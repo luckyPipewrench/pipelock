@@ -145,6 +145,8 @@ fetch_proxy:
 
 **Guideline:** If the domain is trusted and uses high-entropy URLs by design (CDNs, object storage, API gateways), exempt it. If the domain is untrusted, keep the threshold and investigate the findings.
 
+Entropy-only URL, body, WebSocket, A2A/MCP content, and cross-request budget findings remain visible but do not raise the adaptive score or get upgraded by an elevated session. A configured `warn` still forwards opaque data, so it cannot prevent opaque exfiltration; choose `block` for an entropy detector that must deny it. Concrete DLP, injection, SSRF, policy, and structural hostname findings still score and upgrade. A session already at `block_all` denies every request.
+
 ### Structural hostname-exfiltration signals
 
 Subdomain scanning also flags two structural patterns that the entropy threshold cannot catch, because encoded data sits *at or below* the entropy ceiling (hex tops out at 4.0 bits/char):

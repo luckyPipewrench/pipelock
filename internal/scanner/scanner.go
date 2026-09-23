@@ -94,6 +94,9 @@ const (
 	// burst of legitimate presigned-URL fetches must not poison the
 	// session score, but should also not earn clean-decay trust.
 	ClassStructuralExemption
+	// ClassHeuristicEntropy marks path, query, or subdomain entropy evidence.
+	// It remains a finding but does not contribute to adaptive enforcement.
+	ClassHeuristicEntropy
 )
 
 // WarnMatch describes a DLP pattern match from a warn-mode pattern.
@@ -202,7 +205,13 @@ func (r Result) IsStructuralExemption() bool {
 // by design so repeated probing of misconfigured allowlists remains visible
 // to scoring.
 func (r Result) IsAdaptiveNeutral() bool {
-	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption()
+	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption() || r.IsEntropyOnly()
+}
+
+// IsEntropyOnly identifies heuristic URL findings. Structural hostname
+// exfiltration uses the subdomain scanner label but remains concrete evidence.
+func (r Result) IsEntropyOnly() bool {
+	return r.Class == ClassHeuristicEntropy
 }
 
 // IsHostnameExfilResult reports whether a URL scan result came from a
@@ -3873,6 +3882,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 						Allowed: false,
 						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
+						Class:   ClassHeuristicEntropy,
 						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 					}
 				}
@@ -3897,6 +3907,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					Allowed: false,
 					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}
 			}
@@ -3918,6 +3929,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 						Allowed: false,
 						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
+						Class:   ClassHeuristicEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
 					}
 				}
@@ -3948,6 +3960,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 					Allowed: false,
 					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}, true
 			}
@@ -3967,6 +3980,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 				Allowed: false,
 				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 				Scanner: ScannerEntropy,
+				Class:   ClassHeuristicEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}, true
 		}
@@ -4586,6 +4600,7 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f > %.2f threshold)", label, entropy, s.subdomainEntropyThreshold),
 				Scanner: ScannerSubdomainEntropy,
+				Class:   ClassHeuristicEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}
 		}

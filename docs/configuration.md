@@ -457,7 +457,7 @@ request_body_scanning:
 | `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
 | `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |
 | `content_entropy_enabled` | `true` | Flag opaque high-entropy body content that matches no credential pattern (data exfiltration with no signature). Applies to request bodies, WebSocket client-to-server frames, and A2A message bodies. |
-| `content_entropy_action` | `warn` | `warn` audits, `block` rejects (requires enforce mode). General presets ship `warn` (observe-first); `strict` and `hostile-model` ship `block`. |
+| `content_entropy_action` | `warn` | `warn` audits and forwards opaque content; it does not prevent opaque exfiltration. `block` rejects (requires enforce mode). General presets ship `warn`; `strict` and `hostile-model` ship `block`. Entropy-only findings never raise the adaptive score or acquire a stronger action. |
 | `content_entropy_threshold` | `4.5` | Shannon entropy (bits/char) above which a value is flagged. A long all-hex value below this is still flagged as opaque-hex content. |
 | `content_entropy_min_length` | `32` | Minimum value length considered; shorter values are ignored to limit false positives on short opaque identifiers. |
 | `content_entropy_exclusions` | `[]` | Destination hosts exempt from per-message content entropy only (not from DLP). Use for endpoints that legitimately carry opaque content (content-addressed uploads, encrypted payloads). WebSocket has a parallel `websocket_proxy.content_entropy_exclusions`. |
@@ -486,7 +486,7 @@ Some APIs accept an AWS presigned URL inside a JSON or form body so the server c
 
 **Adaptive enforcement interaction:** A body/header DLP action of `warn`, including a per-pattern `pattern_actions` downgrade, still enters the existing adaptive enforcement path and can be upgraded to `block` unless the destination is adaptive-exempt. `disable_patterns` removes only the named DLP finding from this request-body/header surface; it does not create a destination exemption and does not affect URL, response, MCP, or file DLP scanning.
 
-An entropy warning produced by `content_entropy_warn_routes` is not promoted back to block and does not add an adaptive signal. It remains a visible finding, so that request does not count as a clean recovery/decay event. Logs and receipts include the configured reason, owner, and expiry. A 307/308 body replay is allowed only while the redirected request still matches the same exact route; leaving that route fails closed.
+An entropy warning produced by `content_entropy_warn_routes` is not promoted back to block and does not add an adaptive signal. This now applies to every entropy-only finding, including routes without an override. It remains a visible finding, so that request does not count as a clean recovery/decay event. Logs and receipts include the configured reason, owner, and expiry for a matched route. A 307/308 body replay is allowed only while the redirected request still matches the same exact route; leaving that route fails closed.
 
 Deploy binaries that understand these route fields across the fleet before publishing shared configuration that uses them. Config parsing rejects unknown fields, so an older process will refuse the new configuration instead of silently ignoring an exception.
 
@@ -1593,7 +1593,7 @@ The baseline admin endpoints (list, show, ratify, forget) are only mounted on th
 
 ## Adaptive Enforcement
 
-Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades warn and ask actions to block, or denies all traffic.
+Per-session threat score that accumulates across concrete scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades eligible warn and ask actions to block, or denies all traffic. URL, body, WebSocket, A2A/MCP content, and cross-request entropy findings remain visible and act at their configured warn or block action; entropy alone does not raise the score or acquire a stronger action. A mixed finding with DLP, injection, SSRF, policy denial, or structural hostname exfiltration remains eligible for scoring and upgrade. A session already at `block_all` because of concrete findings still denies every request, including one with entropy alone.
 
 A block that reports a resolver outcome rather than agent behavior is refused without adding to the score: a DNS timeout, a name that does not exist, a resolver error, and an answer made only of the unspecified address (`0.0.0.0` or `::`), which DNS filters return for a name they block. An answer that includes any other internal or metadata address, and an unspecified address written literally in the URL, still count as SSRF findings.
 
@@ -1628,12 +1628,11 @@ adaptive_enforcement:
 | `level_duration_seconds` | `300` | Time at one adaptive level before time-based recovery drops one level. |
 | `deescalation_check_seconds` | `30` | Background sweep interval for idle-session time-based recovery. |
 | `clean_requests_to_deescalate` | `0` | Consecutive clean requests required to drop one adaptive level. `0` disables this opt-in recovery path. Any block or near-miss resets the clean streak, so an attacker cannot interleave clean traffic to stay under enforcement. A session that runs fully clean for this many requests does earn back one level, so set it conservatively: lower values recover faster but give a patient, fully-clean attacker an easier path back down. |
-| `severity_weighted_signals` | `false` | Opt-in lower score contribution for known noisy low-severity block lanes such as entropy. Unknown, DLP, SSRF, prompt-injection, and other high-risk blocks keep the current hard-block contribution. |
+| `severity_weighted_signals` | `false` | Opt-in lower score contribution for selected low-severity block labels when they represent concrete evidence. Entropy-only findings contribute no score regardless of this setting. DLP, SSRF, prompt-injection, and other concrete blocks retain their signals. |
 | `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. |
 | `levels` | *(see below)* | Per-level enforcement upgrades |
 
-By default, attack containment is unchanged: a hard block contributes the same
-score as before, adaptive levels recover only by time, and the 5-minute level
+Concrete hard blocks retain their score contribution; entropy-only blocks do not. Adaptive levels recover only by time, and the 5-minute level
 duration plus 30-second sweep cadence are preserved. The clean-request recovery
 path is opt-in because it is intended for single interactive-agent
 false-positive recovery; it never advances on mixed traffic because every
@@ -1950,7 +1949,7 @@ Ships with 10 built-in patterns covering reconnaissance, credential theft, data 
 
 ## Cross-Request Exfiltration Detection
 
-Detects secrets split across multiple requests within a session. Two independent mechanisms (entropy budget and fragment reassembly) can run together or separately. Both feed into adaptive enforcement scoring.
+Detects secrets split across multiple requests within a session. Two independent mechanisms (entropy budget and fragment reassembly) can run together or separately. Entropy-budget findings are heuristic and do not feed adaptive scoring; fragment-reassembly DLP findings remain concrete signals.
 
 ```yaml
 cross_request_detection:
@@ -1986,7 +1985,7 @@ Tracks cumulative Shannon entropy of all outbound payloads (URLs, request bodies
 
 **Tuning:** The default 4096 bits per 5-minute window allows roughly 500 characters of random data across URL query parameters and path segments. This is appropriate when scanning URL-level traffic only.
 
-`entropy_budget.action: warn` records a threshold crossing but forwards the request. Set it to `block` to make the budget an enforcement limit. Lower `bits_per_window` or increase `window_minutes` to reduce the amount of opaque data a session can send before a block. Both settings can block legitimate uploads, identifiers, hashes, or encoded media, so tune them against expected traffic before enforcing them.
+`entropy_budget.action: warn` records a threshold crossing but forwards the request, including opaque exfiltration with no concrete detector match. Set it to `block` to make the budget an enforcement limit. Neither action adds adaptive score or gets upgraded by adaptive escalation. Lower `bits_per_window` or increase `window_minutes` to reduce the amount of opaque data a session can send before a block. Both settings can block legitimate uploads, identifiers, hashes, or encoded media, so tune them against expected traffic before enforcing them.
 
 **With TLS interception enabled**, request bodies are also scanned for entropy. A single LLM API call body (conversation context) can contain 100,000+ bits of entropy. Set `bits_per_window` to `500000` or higher when using `tls_interception` with cross-request detection, and add your LLM provider to `exempt_domains`:
 

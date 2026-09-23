@@ -805,6 +805,8 @@ func newInterceptHandler(
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: fail-closed block is still enforced below.
+				case urlResult.IsEntropyOnly():
+					// Heuristic evidence is visible but score-neutral.
 				case urlResult.IsConfigMismatch():
 					interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 				default:
@@ -833,7 +835,10 @@ func newInterceptHandler(
 			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 			baseAction := config.ActionWarn
 			level := interceptEscalationLevel(ic)
-			effectiveAction := decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
+			effectiveAction := baseAction
+			if !urlResult.IsEntropyOnly() {
+				effectiveAction = decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
+			}
 			if effectiveAction == config.ActionBlock {
 				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
@@ -844,6 +849,7 @@ func newInterceptHandler(
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: see scan path above for rationale.
+				case urlResult.IsEntropyOnly():
 				case urlResult.IsConfigMismatch():
 					interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 				default:
@@ -870,7 +876,7 @@ func newInterceptHandler(
 			// errors are score-neutral even here - resolver failures are not
 			// evidence of misbehavior and must not feed adaptive scoring via
 			// the audit path either.
-			if !urlResult.IsInfrastructureError() {
+			if !urlResult.IsAdaptiveNeutral() {
 				interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 			}
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)

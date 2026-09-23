@@ -26,6 +26,27 @@ func testA2AScanner(t *testing.T) *scanner.Scanner {
 	return scanner.MustNew(cfg)
 }
 
+func TestA2AEntropyOnlyAdaptiveClassification(t *testing.T) {
+	finding := &contententropy.Finding{}
+	cases := []struct {
+		name   string
+		result A2AScanResult
+		want   bool
+	}{
+		{"entropy", A2AScanResult{EntropyFinding: finding}, true},
+		{"mixed DLP", A2AScanResult{EntropyFinding: finding, DLPFindings: []scanner.TextDLPMatch{{}}}, false},
+		{"mixed injection", A2AScanResult{EntropyFinding: finding, InjectFindings: []scanner.ResponseMatch{{}}}, false},
+		{"budget failure", A2AScanResult{EntropyFinding: finding, BudgetExceeded: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsEntropyOnly(); got != tc.want {
+				t.Fatalf("IsEntropyOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func enabledA2ACfg() *config.A2AScanning {
 	cfg := config.Defaults().A2AScanning
 	cfg.Enabled = true

@@ -381,7 +381,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// errors) so resolver wobble doesn't taint downstream "finding" behavior like
 	// clean-decay suppression or CEE signal recording. Fail-closed enforcement
 	// still fires below via !result.Allowed.
-	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || connectHeaderHadFinding
+	hasFinding := (!result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())) || connectHeaderHadFinding
 	var connectGate ContractGateOutput
 
 	if !result.Allowed {
@@ -412,7 +412,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
@@ -497,11 +500,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				postCEERec = recorded
 			}
 			ceeAction := ceeEntropy.Config.EntropyBudget.Action
-			originalCEEAction := ceeAction
-			ceeAction = decide.UpgradeAction(ceeAction, sr.Level, &ceeEntropy.AdaptiveConfig)
-			if ceeAction != originalCEEAction {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: originalCEEAction, ToAction: ceeAction, Scanner: "cross_request_entropy", ClientIP: clientIP, RequestID: requestID})
-			}
 			if ceeAction == config.ActionBlock {
 				p.logger.LogBlocked(targetCtx, "cross_request_entropy", detail)
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -1196,7 +1194,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
+	hasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 
 	if !result.Allowed {
 		status := http.StatusForbidden
@@ -1227,7 +1225,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})

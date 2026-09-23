@@ -506,11 +506,17 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 }
 
 func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if scannerLabel == scannerLabelBodyEntropy && result.EntropyWarnRoute != nil {
+	if result.IsEntropyOnly() {
 		return true
 	}
 	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
 		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
+// IsEntropyOnly requires an actual entropy finding and no other body evidence.
+func (r BodyScanResult) IsEntropyOnly() bool {
+	return r.EntropyFinding != nil && len(r.DLPMatches) == 0 && len(r.InjectionMatches) == 0 &&
+		len(r.AddressFindings) == 0 && r.RedactionBlockReason == "" && r.HeaderName == ""
 }
 
 // BodyScanResult describes the outcome of scanning a request body or headers.

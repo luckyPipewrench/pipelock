@@ -61,6 +61,29 @@ func TestIsAdaptiveNeutral(t *testing.T) {
 	}
 }
 
+func TestEntropyOnlyAdaptiveClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		result Result
+		want   bool
+	}{
+		{"path or query", Result{Scanner: ScannerEntropy, Class: ClassHeuristicEntropy, Allowed: false}, true},
+		{"subdomain", Result{Scanner: ScannerSubdomainEntropy, Class: ClassHeuristicEntropy, Allowed: false, Reason: "high entropy label"}, true},
+		{"structural hostname", Result{Scanner: ScannerSubdomainEntropy, Allowed: false, Reason: subdomainEncodedChunksReasonPrefix + " encoded labels"}, false},
+		{"dlp", Result{Scanner: ScannerDLP, Allowed: false}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsEntropyOnly(); got != tc.want {
+				t.Fatalf("IsEntropyOnly() = %v, want %v", got, tc.want)
+			}
+			if got := tc.result.IsAdaptiveNeutral(); got != tc.want {
+				t.Fatalf("IsAdaptiveNeutral() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestScanURL_DNSFailure_ClassifiedAsInfrastructureError verifies that an
 // SSRF check against a hostname the resolver cannot look up returns
 // Result{Allowed: false, Class: ClassInfrastructureError}.

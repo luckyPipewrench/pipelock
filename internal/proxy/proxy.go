@@ -3318,7 +3318,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		}
 	}
 
-	if cfg.AdaptiveEnforcement.Enabled && !result.IsAdaptiveNeutral() && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
+	if cfg.AdaptiveEnforcement.Enabled && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly()) && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
 		cooperativeBurst := (cfg.AdaptiveEnforcement.CooperativeToolDownweight && isCooperativeToolBurstUserAgent(userAgent)) ||
 			opts.ActorAuth.TrustedForIdentity()
 		for _, a := range anomalies {
@@ -5061,7 +5061,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// both protective enforcement (rate limiting) AND infrastructure errors (DNS
 	// resolver timeouts) from the finding classification - neither is evidence
 	// of threat.
-	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
+	hasFinding := (!result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())) || (result.Score > 0 && result.Allowed)
 	fetchReceiptVerdict := config.ActionAllow
 	fetchReceiptLayer := ""
 	fetchReceiptPattern := ""
@@ -5121,7 +5121,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})

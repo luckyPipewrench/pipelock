@@ -1166,6 +1166,9 @@ func (r A2AScanResult) IsAdaptiveNeutral() bool {
 	if r.Clean {
 		return false
 	}
+	if r.IsEntropyOnly() {
+		return true
+	}
 	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
 		return false
 	}
@@ -1178,6 +1181,13 @@ func (r A2AScanResult) IsAdaptiveNeutral() bool {
 		}
 	}
 	return true
+}
+
+// IsEntropyOnly distinguishes opaque content from concrete A2A findings even
+// when both are reported under the same transport label.
+func (r A2AScanResult) IsEntropyOnly() bool {
+	return r.EntropyFinding != nil && len(r.DLPFindings) == 0 && len(r.InjectFindings) == 0 &&
+		len(r.URLFindings) == 0 && !r.BudgetExceeded && r.ScanError == ""
 }
 
 // --- Helpers ---

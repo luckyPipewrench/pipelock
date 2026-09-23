@@ -558,15 +558,15 @@ func TestDetectShieldPipeline_BrowserGenericTypesSniffBody(t *testing.T) {
 	}
 }
 
-func TestDetectShieldPipeline_DocumentSniffingDespiteNoSniff(t *testing.T) {
+func TestDetectShieldPipeline_NoSniffPreventsDocumentPromotion(t *testing.T) {
 	t.Parallel()
 	body := []byte(`<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`)
 	headers := http.Header{"X-Content-Type-Options": {"NoSniff"}}
 
 	for _, contentType := range []string{"\u2003application/javascript; charset=utf-8", "unknown/unknown", "application/unknown", "*/*"} {
 		t.Run(contentType, func(t *testing.T) {
-			if got := detectShieldPipelineForResponse(contentType, body, headers); got != shield.PipelineHTML {
-				t.Fatalf("pipeline = %v, want HTML", got)
+			if got := detectShieldPipelineForResponse(contentType, body, headers); got != shield.PipelineNone {
+				t.Fatalf("pipeline = %v, want none", got)
 			}
 		})
 	}
@@ -613,12 +613,8 @@ func TestProxy_ApplyShield_NoSniffAndBinaryTypesStayInert(t *testing.T) {
 					headers.Set("X-Content-Type-Options", "nosniff")
 				}
 				out, summary, blocked := p.applyShield(body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
-				if tt.nosniff {
-					if blocked != nil || summary == nil || summary.TrackingBeacons != 1 || bytes.Equal(out, body) || headers.Get("Content-Type") != "text/html" {
-						t.Fatalf("nosniff HTML outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
-					}
-				} else if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != tt.contentType {
-					t.Fatalf("binary outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
+				if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != tt.contentType {
+					t.Fatalf("inert outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
 				}
 			})
 		}
@@ -666,7 +662,7 @@ func TestProxy_ApplyShield_MalformedNonGenericTypesStayInert(t *testing.T) {
 	}
 }
 
-func TestReverseShield_NoSniffInvalidTypeStillShieldsHTML(t *testing.T) {
+func TestReverseShield_NoSniffInvalidTypeStaysInert(t *testing.T) {
 	body := `<!doctype html><script>alert(1)</script><img src="https://track.example.com/pixel" width="1" height="1">`
 	contentType := "\u2003application/javascript; charset=utf-8"
 	headers := http.Header{
@@ -679,7 +675,7 @@ func TestReverseShield_NoSniffInvalidTypeStillShieldsHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK || strings.Contains(string(got), "track.example.com") || resp.Header.Get("Content-Type") != "text/html" || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+	if resp.StatusCode != http.StatusOK || string(got) != body || resp.Header.Get("Content-Type") != contentType || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("reverse response: status=%d headers=%#v body=%q", resp.StatusCode, resp.Header, got)
 	}
 }

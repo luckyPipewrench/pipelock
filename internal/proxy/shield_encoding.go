@@ -162,7 +162,7 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 	return detectShieldPipelineForResponse(contentType, body, nil)
 }
 
-func detectShieldPipelineForResponse(contentType string, body []byte, _ http.Header) shield.PipelineType {
+func detectShieldPipelineForResponse(contentType string, body []byte, headers http.Header) shield.PipelineType {
 	baseType, validBase := shieldMediaTypeEssence(contentType)
 	if validBase {
 		mediaType, _, err := mime.ParseMediaType(contentType)
@@ -178,8 +178,10 @@ func detectShieldPipelineForResponse(contentType string, body []byte, _ http.Hea
 			}
 		}
 	}
-	// nosniff blocks mismatched script/style subresources, not HTML document
-	// navigation. Without a request destination, an HTML signature remains active.
+	// Do not promote an inert nosniff response into an active HTML response.
+	if responseForbidsMIMESniffing(headers) {
+		return shield.PipelineNone
+	}
 	pipeline := shield.DetectPipeline("", shieldSniffHeader(body))
 	if pipeline != shield.PipelineNone {
 		return pipeline
@@ -197,6 +199,16 @@ func browserContentTypeIsGeneric(mediaType string) bool {
 	default:
 		return false
 	}
+}
+
+func responseForbidsMIMESniffing(headers http.Header) bool {
+	values := headers.Values("X-Content-Type-Options")
+	if len(values) == 0 {
+		return false
+	}
+	first, _, _ := strings.Cut(values[0], ",")
+	first = strings.Trim(first, "\t\n\r ")
+	return strings.EqualFold(first, "nosniff")
 }
 
 func shieldSniffHeader(body []byte) []byte {

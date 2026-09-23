@@ -1462,11 +1462,11 @@ func (c *Config) validateDLP(warnings *[]Warning) error {
 }
 
 func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
-	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
-	// is not implemented - DLP matches follow the transport-level action
-	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
-	// These fields exist on the struct so YAML doesn't silently drop them;
-	// validation rejects non-empty values with an explicit error.
+	// dlp.action is not supported: DLP matches follow the calling surface's
+	// action (request_body_scanning.action, mcp_input_scanning.action, or
+	// enforce mode). The field exists so YAML doesn't silently drop it, and a
+	// non-empty value is rejected with an explicit error. A per-pattern
+	// action accepts only "warn", and never on a built-in pattern.
 	if c.DLP.Action != "" {
 		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}

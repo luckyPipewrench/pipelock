@@ -1225,14 +1225,15 @@ type DLP struct {
 	Action             string       `yaml:"action,omitempty"` // reserved - not yet implemented; rejected at validation
 }
 
-// DLPPattern is a named regex pattern for detecting secrets in URLs.
+// DLPPattern is a named regex pattern for detecting secrets in URLs, request
+// bodies and headers, and other scanned outbound text.
 type DLPPattern struct {
 	Name                    string   `yaml:"name"`
 	Regex                   string   `yaml:"regex"`
 	Severity                string   `yaml:"severity"`            // critical, high, medium, low
 	Validator               string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
 	ExemptDomains           []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
-	Action                  string   `yaml:"action,omitempty"`    // reserved - not yet implemented; rejected at validation
+	Action                  string   `yaml:"action,omitempty"`    // "" or "warn"; warn is refused for built-in patterns
 	Bundle                  string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion           string   `yaml:"-"`                   // set by rules loader, not from YAML
 	Compiled                bool     `yaml:"-"`                   // true for patterns created in Defaults()

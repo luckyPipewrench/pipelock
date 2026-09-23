@@ -321,13 +321,16 @@ function startRotatedSegment(
       `seq ${seq}: key_transition prior_signer_key does not match prior segment key`,
     );
   }
+  const signerKey = (receipt.signer_key ?? "").toLowerCase();
+  if (signerKey === state.curKey) {
+    return broken(seq, `seq ${seq}: key_transition does not change signer key`);
+  }
   if (marker?.["prior_chain_seq"] !== state.priorSegmentSeq) {
     return broken(
       seq,
       `seq ${seq}: key_transition prior_chain_seq does not match prior segment final seq`,
     );
   }
-  const signerKey = (receipt.signer_key ?? "").toLowerCase();
   if (trustedKeys.size === 0) {
     if (!allowUnpinned || signerKey !== state.curKey) {
       return broken(seq, `seq ${seq}: signer key ${signerKey} is not in the trusted set`);
@@ -555,7 +558,14 @@ function broken(
 
 export function computeTotals(receipts: Receipt[]) {
   type VerdictBucket =
-    "allow" | "block" | "warn" | "ask" | "strip" | "forward" | "redirect" | "other";
+    | "allow"
+    | "block"
+    | "warn"
+    | "ask"
+    | "strip"
+    | "forward"
+    | "redirect"
+    | "other";
   const totals: Record<VerdictBucket, number> = {
     allow: 0,
     block: 0,

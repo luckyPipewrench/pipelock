@@ -34,6 +34,7 @@ const g1AmbiguousOpenClose = "../../conformance/testdata/g1-ambiguous-open-close
 const g1AmbiguousHeartbeatClose = "../../conformance/testdata/g1-ambiguous-heartbeat-close.jsonl";
 const g1RotatedCloseCountValid = "../../conformance/testdata/g1-rotated-close-count-valid.jsonl";
 const g1RotatedTwice = "../../conformance/testdata/g1-rotated-twice-valid.jsonl";
+const g1RotatedSameKey = "../../conformance/testdata/g1-rotated-same-key-invalid.jsonl";
 const g1RotatedCloseCountInvalid =
   "../../conformance/testdata/g1-rotated-close-count-invalid.jsonl";
 const g1RotationEndorsement = "../../conformance/testdata/g1-rotation-endorsement.json";
@@ -374,6 +375,17 @@ test("rotation endorsements cannot be combined with allow-unpinned", () => {
   );
   assert.equal(result.status, 64);
   assert.match(result.stderr, /cannot be combined with --allow-unpinned/u);
+});
+
+test("g1 rotated same-key transition is rejected", async () => {
+  const result = await verifyChain(extractReceipts(g1RotatedSameKey), trustedKeys());
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /key_transition does not change signer key/u);
+  const unpinned = await verifyChain(extractReceipts(g1RotatedSameKey), "", {
+    allowUnpinned: true,
+  });
+  assert.equal(unpinned.valid, false);
+  assert.match(unpinned.error ?? "", /key_transition does not change signer key/u);
 });
 
 test("g1 rotated close receipt_count invalid fixture is rejected", async () => {

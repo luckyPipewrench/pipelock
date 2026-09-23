@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export type JSONValue =
-  null | boolean | number | string | JSONValue[] | { [key: string]: JSONValue };
+  | null
+  | boolean
+  | number
+  | string
+  | JSONValue[]
+  | { [key: string]: JSONValue };
 
 export type JSONObject = { [key: string]: JSONValue };
 

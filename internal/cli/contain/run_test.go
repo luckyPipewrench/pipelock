@@ -191,7 +191,7 @@ func TestRunContainRun_RelativePostureOutputExportsAbsoluteProofPath(t *testing.
 			if err != nil {
 				t.Fatalf("containRunLaunchEvidence: %v", err)
 			}
-			wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, env.port, wantProof)
+			wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, env.port, wantProof, "")
 			wantHash, err := stringSliceSHA256(wantEnv)
 			if err != nil {
 				t.Fatalf("hash wanted env: %v", err)

@@ -329,6 +329,10 @@ func installSteps(opts installOpts) []step {
 		// Establish their per-user trust before containment can report ready.
 		stepEstablishBrowserCATrust(),
 		stepInstallNFTRules(),
+		// Resolves env.displayEnabled/displayNumber before either launch
+		// wrapper renders, so the wrappers bind the display socket that
+		// private /tmp would otherwise hide.
+		stepProvisionAgentDisplay(),
 		stepWriteToolsList(),
 		stepWriteCredentialGuard(),
 		// undici shim must exist before the launch wrapper / profile script
@@ -400,6 +404,25 @@ const (
 	containSystemctlPath = "/usr/bin/systemctl"
 )
 
+// displayBindProperty returns the systemd-run --property=BindReadOnlyPaths
+// argument that exposes the managed display's Unix socket inside an
+// otherwise-private /tmp, or "" when no display is configured. This wrapper
+// is a static script rendered once at install time, so unlike `contain run`
+// (which resolves DISPLAY per invocation, honoring a live operator override)
+// it can only bind the socket for the CONFIGURED managed display; an
+// operator DISPLAY set only in their own shell is not visible here and is
+// not bound.
+func displayBindProperty(env *installEnv) string {
+	if !env.displayEnabled {
+		return ""
+	}
+	socket, ok := localDisplaySocket(displayName(env.displayNumber))
+	if !ok {
+		return ""
+	}
+	return " --property=BindReadOnlyPaths=" + socket
+}
+
 func renderContainedLaunchWrapper(env *installEnv) string {
 	anchor := filepath.Base(env.networkNamespaceUnitPath)
 	launcher := filepath.Join(env.wrapperDir, "plk-launch")
@@ -430,7 +453,7 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 		// directly and never runs that preflight, so an unconditional flag here
 		// makes every plk-* launch fail on systemd 253 and earlier before
 		// plk-launch even starts. Emit it only where it is supported.
-		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateTmp=true --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
+		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateTmp=true --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + displayBindProperty(env) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
 		"",
 	}, "\n")
 }

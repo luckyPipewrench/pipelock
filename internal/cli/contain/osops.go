@@ -104,7 +104,13 @@ type installEnv struct {
 	ownedLoopbackAnchorUnitPath string
 	nftExpiryServicePath        string
 	nftExpiryTimerPath          string
-	reconcileLockPath           string
+	displayUnitPath             string
+	// xvfbPath is the X server binary consulted when display provisioning is
+	// left unset in config. A field rather than a constant so a test host
+	// that happens to have Xvfb installed does not change what the tests
+	// exercise.
+	xvfbPath          string
+	reconcileLockPath string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared
 	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
@@ -153,6 +159,12 @@ type installEnv struct {
 	prevNFTExpiryServiceExisted  bool
 	prevNFTExpiryTimerExisted    bool
 	prevNFTUnitFilesStateKnown   bool
+	prevDisplayUnitExisted       bool
+	prevDisplayEnabled           bool
+	prevDisplayActive            bool
+	prevDisplayStateKnown        bool
+	displayEnabled               bool
+	displayNumber                int
 	preflightBinaryHash          string
 	archivedBackups              map[string][]string
 	serviceBinaryChanged         bool
@@ -213,6 +225,8 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		ownedLoopbackAnchorUnitPath:   defaultOwnedLoopbackAnchorUnitPath,
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
+		displayUnitPath:               defaultDisplayUnitPath,
+		xvfbPath:                      defaultXvfbPath,
 		ownLeafNoFollow:               applyAgentOwnershipNoFollow,
 		repairLeafMode:                setLeafModeNoFollow,
 		// The reconcile lock lives beside the nft rules file under
@@ -270,6 +284,7 @@ const (
 	defaultOwnedLoopbackAnchorUnitPath   = "/etc/systemd/system/pipelock-contained-anchor.service"
 	defaultNFTExpiryServicePath          = "/etc/systemd/system/pipelock-containment-expiry.service"
 	defaultNFTExpiryTimerPath            = "/etc/systemd/system/pipelock-containment-expiry.timer"
+	defaultDisplayUnitPath               = "/etc/systemd/system/pipelock-agent-display.service"
 	containmentExpiryTimerCalendar       = "hourly"
 	containmentExpiryTimerAccuracy       = "1m"
 	containmentExpiryServiceTimeout      = "90"

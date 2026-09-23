@@ -160,6 +160,9 @@ type probeEnv struct {
 	proxyForwarderSocketPath      string
 	proxyForwarderServicePath     string
 	namespaceForwarderServicePath string
+	displayUnitPath               string
+	xvfbPath                      string
+	display                       string
 	agentHome                     string
 	platformFamily                string
 	lookPath                      func(string) (string, error)
@@ -198,6 +201,7 @@ type probeEnv struct {
 	networkNamespaceProbe  func(context.Context, *probeEnv) (string, string)
 	agentProcessNetnsProbe func(context.Context, *probeEnv, string) (string, string)
 	currentCA              func(context.Context, *probeEnv) ([]byte, error)
+	displaySocket          func(int) string
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -252,6 +256,9 @@ func defaultProbeEnv() *probeEnv {
 		proxyForwarderSocketPath:      defaultProxyForwarderSocketPath,
 		proxyForwarderServicePath:     defaultProxyForwarderServicePath,
 		namespaceForwarderServicePath: defaultNamespaceForwarderServicePath,
+		displayUnitPath:               defaultDisplayUnitPath,
+		xvfbPath:                      defaultXvfbPath,
+		display:                       os.Getenv("DISPLAY"),
 		platformFamily:                platform.family,
 		lookPath:                      exec.LookPath,
 	}
@@ -396,6 +403,21 @@ func allProbes() []probe {
 
 func probesForEnv(env *probeEnv) []probe {
 	probes := allProbes()
+	cfg, displayConfigErr := config.LoadForInspection(env.configPath)
+	_, displayUnitErr := env.stat(env.displayUnitPath)
+	displayXvfbPresent := true
+	if env.stat != nil {
+		_, xvfbErr := env.stat(env.xvfbPath)
+		displayXvfbPresent = xvfbErr == nil
+	}
+	// Published as 22, not 17 or 18: `contain run` already publishes those
+	// for its own run-only checks, and a consumer keyed on a probe number
+	// cannot tell two different checks apart when they share one.
+	if (displayConfigErr == nil && cfg.Containment.Display.IsEnabled(displayXvfbPresent)) ||
+		(displayConfigErr != nil && !errors.Is(displayConfigErr, os.ErrNotExist)) ||
+		displayUnitErr == nil || !errors.Is(displayUnitErr, os.ErrNotExist) {
+		probes = append(probes, probe{22, "agent_display", "configured fallback display is agent-owned and locally isolated", probeAgentDisplay})
+	}
 	if !env.verifyRunningImage {
 		for i := range probes {
 			if probes[i].name == "binary_integrity_pin" {
@@ -1062,7 +1084,7 @@ func expectedLaunchEnvNames() []string {
 	for _, v := range runtimeContractVars(&installEnv{}) {
 		names = append(names, v.name)
 	}
-	return append(names, posturebinding.RuntimeProofEnv, "PATH")
+	return append(names, posturebinding.RuntimeProofEnv, "DISPLAY", "PATH")
 }
 
 // diffNameSets returns the names in want but not got (missing) and in got but

@@ -148,6 +148,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveBrowserCATrust(),
 		actionRemoveNetworkNamespace(),
 		actionRemoveNFTRules(),
+		actionRemoveAgentDisplay(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),

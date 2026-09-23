@@ -2251,8 +2251,8 @@ func TestInstallSteps_Count(t *testing.T) {
 	// trust, config-mode repair, and final readiness gate. Changing this count
 	// changes documented dry-run output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 35 {
-		t.Errorf("installSteps count: got %d, want 35", len(steps))
+	if len(steps) != 36 {
+		t.Errorf("installSteps count: got %d, want 36", len(steps))
 	}
 }
 

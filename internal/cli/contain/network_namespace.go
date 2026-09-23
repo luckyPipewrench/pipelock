@@ -482,14 +482,48 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 			continue
 		}
 		checked++
-		if namespace != agentNamespace {
-			outside = append(outside, strconv.Itoa(pid))
+		if namespace == agentNamespace {
+			continue
 		}
+		unit := processSystemdUnit(env.readFile, filepath.Join(procRoot, entry.Name(), "cgroup"))
+		// The managed display runs in the host namespace by design: Xvfb there
+		// listens only on a Unix socket (TCP and abstract transports are off),
+		// so it has no network exposure to account for. It is recognized by
+		// its systemd unit, which only root can place a process into, and by
+		// the managed unit file, never by process name.
+		if unit != "" && env.displayUnitPath != "" && unit == filepath.Base(env.displayUnitPath) &&
+			isManagedDisplayUnitFile(env.readFile, env.displayUnitPath, env.agentUserName) {
+			continue
+		}
+		outside = append(outside, describeOutsideAgentProcess(pid, unit))
 	}
 	if len(outside) > 0 {
-		return statusFail, fmt.Sprintf("%s has live process(es) outside the managed network namespace (pid %s); update or stop the stale agent service", env.agentUserName, strings.Join(outside, ", "))
+		return statusFail, fmt.Sprintf("%s has live process(es) outside the managed network namespace: %s; join each service to the managed namespace or stop it (a user@ session is a lingering login session for the agent user: run `loginctl disable-linger %s` and stop it)", env.agentUserName, strings.Join(outside, ", "), env.agentUserName)
 	}
 	return statusPass, fmt.Sprintf("%d live %s process(es) use the managed network namespace", checked, env.agentUserName)
+}
+
+// processSystemdUnit returns the last component of a process's unified
+// cgroup path, e.g. "pipelock-agent-display.service" or "session-3.scope",
+// or "" when it cannot be read.
+func processSystemdUnit(readFile func(string) ([]byte, error), cgroupPath string) string {
+	data, err := readFile(cgroupPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if path, ok := strings.CutPrefix(strings.TrimSpace(line), "0::"); ok {
+			return filepath.Base(path)
+		}
+	}
+	return ""
+}
+
+func describeOutsideAgentProcess(pid int, unit string) string {
+	if unit == "" {
+		return "pid " + strconv.Itoa(pid)
+	}
+	return fmt.Sprintf("pid %d (%s)", pid, unit)
 }
 
 func processStartTimeFromProcStat(stat []byte) (string, error) {

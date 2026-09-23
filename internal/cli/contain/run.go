@@ -272,6 +272,12 @@ func runContainRun(
 	if runCfgErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
 	}
+	xvfbPresent := false
+	if env.probe.stat != nil {
+		_, xvfbErr := env.probe.stat(env.probe.xvfbPath)
+		xvfbPresent = xvfbErr == nil
+	}
+	env.probe.display = resolveLaunchDisplay(runCfg, env.probe.display, xvfbPresent)
 	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(runCfg)
 	if len(grants) > 0 && workspaceSigningKeyErr != nil {
 		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", workspaceSigningKeyErr)
@@ -775,7 +781,7 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 		return posturepkg.ContainLaunchEvidence{}, err
 	}
 
-	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port, env.postureProofPath)
+	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port, env.postureProofPath, env.display)
 	envVars := make([]string, 0, len(launchEnv))
 	for _, entry := range launchEnv {
 		name, _, ok := strings.Cut(entry, "=")

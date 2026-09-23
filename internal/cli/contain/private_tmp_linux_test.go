@@ -26,7 +26,7 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 		{name: "interactive", interactive: true, want: []string{"--pipe", "--pty"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			args := privateTmpSystemdRunArgs(966, 966, []uint32{966, 1001}, "/home/agent", []string{"HOME=/home/agent"}, []string{defaultLaunchScript, "claude", "$HOME/literal"}, tt.interactive, true, "test-unit")
+			args := privateTmpSystemdRunArgs(966, 966, []uint32{966, 1001}, "/home/agent", "", []string{"HOME=/home/agent"}, []string{defaultLaunchScript, "claude", "$HOME/literal"}, tt.interactive, true, "test-unit")
 			joined := strings.Join(args, " ")
 			for _, want := range []string{
 				"--expand-environment=no",
@@ -54,6 +54,41 @@ func TestPrivateTmpSystemdRunArgs_ProtectsInteractiveAndPipedLaunches(t *testing
 				t.Fatalf("literal tool argument = %q, want $HOME/literal", got)
 			}
 		})
+	}
+}
+
+// TestPrivateTmpSystemdRunArgs_BindsConfiguredDisplaySocket proves the two
+// halves of the display fix together, on the transient-service launch
+// path (privateTmpSystemdRunArgs, used by `contain run`): PrivateTmp is
+// still asserted (the host's /tmp stays hidden) AND the one Unix socket the
+// configured display needs is bound back in read-only. A test that only
+// checked one half could pass while the other silently regressed - e.g.
+// PrivateTmp dropped for display's sake, or the bind omitted entirely.
+func TestPrivateTmpSystemdRunArgs_BindsConfiguredDisplaySocket(t *testing.T) {
+	args := privateTmpSystemdRunArgs(966, 966, nil, "/home/agent", ":99", nil, nil, false, false, "")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--property=PrivateTmp=true") {
+		t.Fatalf("args = %q, PrivateTmp isolation missing when a display is configured", joined)
+	}
+	if !strings.Contains(joined, "--property=BindReadOnlyPaths=/tmp/.X11-unix/X99") {
+		t.Fatalf("args = %q, missing read-only bind for the configured display socket", joined)
+	}
+}
+
+// TestPrivateTmpSystemdRunArgs_NoDisplayNoBind proves the negative: an unset
+// or non-local DISPLAY value must isolate /tmp with no socket carved out of
+// it, so a browser-less contained tool never gets a bonus read path into the
+// host's temporary directory.
+func TestPrivateTmpSystemdRunArgs_NoDisplayNoBind(t *testing.T) {
+	for _, display := range []string{"", "not-a-display", "remote.example:0"} {
+		args := privateTmpSystemdRunArgs(966, 966, nil, "/home/agent", display, nil, nil, false, false, "")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--property=PrivateTmp=true") {
+			t.Fatalf("display=%q: args = %q, PrivateTmp isolation missing", display, joined)
+		}
+		if strings.Contains(joined, "BindReadOnlyPaths") {
+			t.Fatalf("display=%q: args = %q, bound a display socket for a non-local DISPLAY", display, joined)
+		}
 	}
 }
 

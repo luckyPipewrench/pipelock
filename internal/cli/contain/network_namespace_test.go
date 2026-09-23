@@ -334,6 +334,37 @@ func TestContainedLaunchWrapperJoinsPrivateNetworkNamespace(t *testing.T) {
 	}
 }
 
+// TestContainedLaunchWrapperBindsConfiguredDisplaySocket covers the other
+// launch path the private /tmp change must protect: the sudoers-invoked plk-contained-launch
+// wrapper. Isolation (PrivateTmp) and the display-socket bind must both be
+// present together when a display is configured, and PrivateTmp must ship
+// with NO bind when it is not - so a fresh install with display provisioning
+// left off never carves an extra read path out of a supposedly private /tmp.
+func TestContainedLaunchWrapperBindsConfiguredDisplaySocket(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.displayEnabled = true
+	env.displayNumber = 99
+	body := renderContainedLaunchWrapper(env)
+	if !strings.Contains(body, "--property=PrivateTmp=true") {
+		t.Fatalf("contained launch wrapper missing PrivateTmp isolation:\n%s", body)
+	}
+	if !strings.Contains(body, "--property=BindReadOnlyPaths=/tmp/.X11-unix/X99") {
+		t.Fatalf("contained launch wrapper missing display socket bind:\n%s", body)
+	}
+}
+
+func TestContainedLaunchWrapperNoDisplayNoBind(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.displayEnabled = false
+	body := renderContainedLaunchWrapper(env)
+	if !strings.Contains(body, "--property=PrivateTmp=true") {
+		t.Fatalf("contained launch wrapper missing PrivateTmp isolation:\n%s", body)
+	}
+	if strings.Contains(body, "BindReadOnlyPaths") {
+		t.Fatalf("contained launch wrapper bound a display socket with no display configured:\n%s", body)
+	}
+}
+
 func TestProbeAgentNetworkNamespace(t *testing.T) {
 	for _, tt := range []struct {
 		name                 string
@@ -554,6 +585,8 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		namespaces map[string]string
+		cgroups    map[string]string
+		unitBody   string
 		wantStatus string
 		wantDetail string
 	}{
@@ -568,6 +601,30 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 			namespaces: map[string]string{"101": "net:[200]", "102": "net:[100]"},
 			wantStatus: statusFail,
 			wantDetail: "pid 102",
+		},
+		{
+			name:       "managed display unit in host namespace is accounted for",
+			namespaces: map[string]string{"101": "net:[200]", "103": "net:[100]"},
+			cgroups:    map[string]string{"103": "0::/system.slice/pipelock-agent-display.service\n"},
+			unitBody:   renderAgentDisplayUnit(&installEnv{agentUserName: "pipelock-agent", displayNumber: 99, xvfbPath: "/usr/bin/Xvfb"}),
+			wantStatus: statusPass,
+			wantDetail: "2 live pipelock-agent process(es)",
+		},
+		{
+			name:       "display-named unit that is not the managed unit still fails",
+			namespaces: map[string]string{"101": "net:[200]", "103": "net:[100]"},
+			cgroups:    map[string]string{"103": "0::/system.slice/pipelock-agent-display.service\n"},
+			unitBody:   "[Service]\nUser=pipelock-agent\nExecStart=/usr/bin/Xvfb :99\n",
+			wantStatus: statusFail,
+			wantDetail: "pid 103 (pipelock-agent-display.service)",
+		},
+		{
+			name:       "managed display unit file does not cover another unit",
+			namespaces: map[string]string{"101": "net:[200]", "104": "net:[100]"},
+			cgroups:    map[string]string{"104": "0::/user.slice/user-987.slice/user@987.service/init.scope\n"},
+			unitBody:   renderAgentDisplayUnit(&installEnv{agentUserName: "pipelock-agent", displayNumber: 99, xvfbPath: "/usr/bin/Xvfb"}),
+			wantStatus: statusFail,
+			wantDetail: "pid 104 (init.scope)",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -586,6 +643,17 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 				if err := os.Symlink(namespace, filepath.Join(pidRoot, "ns", "net")); err != nil {
 					t.Fatal(err)
 				}
+				if cgroup, ok := tc.cgroups[pid]; ok {
+					if err := os.WriteFile(filepath.Join(pidRoot, "cgroup"), []byte(cgroup), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			unitPath := filepath.Join(procRoot, "pipelock-agent-display.service")
+			if tc.unitBody != "" {
+				if err := os.WriteFile(unitPath, []byte(tc.unitBody), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			otherRoot := filepath.Join(procRoot, "201")
 			if err := os.MkdirAll(otherRoot, 0o750); err != nil {
@@ -596,8 +664,9 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 			}
 
 			env := &probeEnv{
-				agentUserName: "pipelock-agent",
-				procRoot:      procRoot,
+				agentUserName:   "pipelock-agent",
+				procRoot:        procRoot,
+				displayUnitPath: unitPath,
 				lookupUser: func(string) (*user.User, error) {
 					return &user.User{Uid: "987", Username: "pipelock-agent"}, nil
 				},

@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
 	"github.com/luckyPipewrench/pipelock/internal/projectscan"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // ---------- suppress.go ----------
@@ -542,9 +543,9 @@ func TestVersionDefaults(t *testing.T) {
 
 func TestResolvedHome(t *testing.T) {
 	t.Run("flag takes priority", func(t *testing.T) {
-		old := PipelockHome
-		PipelockHome = "/flag-home"
-		t.Cleanup(func() { PipelockHome = old })
+		old := signing.PipelockHome
+		signing.PipelockHome = "/flag-home"
+		t.Cleanup(func() { signing.PipelockHome = old })
 		t.Setenv("PIPELOCK_HOME", "/env-home")
 
 		got := ResolvedHome()
@@ -554,9 +555,9 @@ func TestResolvedHome(t *testing.T) {
 	})
 
 	t.Run("env fallback", func(t *testing.T) {
-		old := PipelockHome
-		PipelockHome = ""
-		t.Cleanup(func() { PipelockHome = old })
+		old := signing.PipelockHome
+		signing.PipelockHome = ""
+		t.Cleanup(func() { signing.PipelockHome = old })
 		t.Setenv("PIPELOCK_HOME", "/env-home")
 
 		got := ResolvedHome()
@@ -566,9 +567,9 @@ func TestResolvedHome(t *testing.T) {
 	})
 
 	t.Run("neither set", func(t *testing.T) {
-		old := PipelockHome
-		PipelockHome = ""
-		t.Cleanup(func() { PipelockHome = old })
+		old := signing.PipelockHome
+		signing.PipelockHome = ""
+		t.Cleanup(func() { signing.PipelockHome = old })
 		t.Setenv("PIPELOCK_HOME", "")
 
 		got := ResolvedHome()

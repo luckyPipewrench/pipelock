@@ -37,6 +37,7 @@ import (
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // extraCommands holds commands registered by enterprise packages via init().
@@ -91,7 +92,7 @@ Quick start:
 	// SilenceUsage on this command keeps cobra from ever emitting it.
 	cmd.SetOut(os.Stdout)
 
-	cmd.PersistentFlags().StringVar(&cliutil.PipelockHome, "home", "",
+	cmd.PersistentFlags().StringVar(&signing.PipelockHome, "home", "",
 		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
 
 	cmd.AddCommand(

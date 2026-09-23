@@ -10,20 +10,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-// PipelockHome holds the --home persistent flag value. Root command binds
-// this via cobra's StringVar so subpackages can read it without importing cli.
-var PipelockHome string
-
 // ResolveKeystoreDir returns the keystore directory using the priority:
 // explicit --keystore flag > --home flag > PIPELOCK_HOME env > default.
+// Delegates to internal/signing, the single source of truth for pipelock
+// home resolution, so internal/config can resolve the same directory
+// without importing this package (which would create an import cycle).
 func ResolveKeystoreDir(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if home := ResolvedHome(); home != "" {
-		return home, nil
-	}
-	return signing.DefaultKeystorePath()
+	return signing.ResolveKeystoreDir(explicit)
 }
 
 // ResolveAgentName returns the agent name from the explicit flag value
@@ -43,11 +36,8 @@ func ResolveAgentName(explicit string) (string, error) {
 }
 
 // ResolvedHome returns the pipelock home directory from the --home flag
-// (PipelockHome) or the PIPELOCK_HOME environment variable. Returns empty
-// string if neither is set.
+// (signing.PipelockHome) or the PIPELOCK_HOME environment variable. Returns
+// empty string if neither is set.
 func ResolvedHome() string {
-	if PipelockHome != "" {
-		return PipelockHome
-	}
-	return os.Getenv("PIPELOCK_HOME")
+	return signing.ResolvedHome()
 }

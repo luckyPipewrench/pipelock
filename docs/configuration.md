@@ -336,8 +336,8 @@ For `pipelock contain`, `contain install` also establishes the interception CA i
 ```yaml
 tls_interception:
   enabled: false
-  ca_cert: ""                    # path to CA cert PEM (default: ~/.pipelock/ca.pem)
-  ca_key: ""                     # path to CA key PEM (default: ~/.pipelock/ca-key.pem)
+  ca_cert: ""                    # path to CA cert PEM (default: <pipelock home>/ca.pem, i.e. --home, PIPELOCK_HOME, or ~/.pipelock)
+  ca_key: ""                     # path to CA key PEM (default: <pipelock home>/ca-key.pem, same precedence)
   passthrough_domains:           # domains to splice (not intercept)
     - "*.googlevideo.com"
   cert_ttl: "24h"
@@ -348,8 +348,8 @@ tls_interception:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
-| `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
-| `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
+| `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `<pipelock home>/ca.pem` (`--home`, `PIPELOCK_HOME`, or `~/.pipelock`) |
+| `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `<pipelock home>/ca-key.pem` (same precedence) |
 | `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over ANY public suffix, ICANN-operated (`*.com`, `*.co.uk`) or private-section (`*.github.io`, `*.s3.amazonaws.com`), is refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every unrelated tenant under the suffix; this is stricter than the public-suffix rule for an ordinary exempt/trusted domain list, which still accepts a private-section wildcard because that list still scans what it exempts. An exact host under a private suffix (`mybucket.s3.amazonaws.com` with no wildcard) or a wildcard one label below it (`*.myorg.github.io`) is unaffected. |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |

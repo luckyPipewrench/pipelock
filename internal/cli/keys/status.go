@@ -159,7 +159,7 @@ Examples:
 			// A --home on this command overrides the root persistent flag for
 			// path resolution, matching keygen/trust ergonomics.
 			if homeDir != "" {
-				cliutil.PipelockHome = homeDir
+				domsigning.PipelockHome = homeDir
 			}
 			cfg, cfgLabel, err := loadStatusConfig(configFile)
 			if err != nil {

@@ -740,9 +740,9 @@ func TestKeygenCmd_HomeFlag(t *testing.T) {
 	homeDir := t.TempDir()
 
 	// Set PipelockHome as cobra would via the persistent flag binding.
-	old := cliutil.PipelockHome
-	cliutil.PipelockHome = homeDir
-	t.Cleanup(func() { cliutil.PipelockHome = old })
+	old := domsigning.PipelockHome
+	domsigning.PipelockHome = homeDir
+	t.Cleanup(func() { domsigning.PipelockHome = old })
 
 	cmd := KeygenCmd()
 	cmd.SilenceUsage = true

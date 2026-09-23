@@ -13,15 +13,15 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
-	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestEmitLicenseExpiryWarningIdempotent(t *testing.T) {
 	home := t.TempDir()
-	oldHome := cliutil.PipelockHome
-	cliutil.PipelockHome = home
-	t.Cleanup(func() { cliutil.PipelockHome = oldHome })
+	oldHome := signing.PipelockHome
+	signing.PipelockHome = home
+	t.Cleanup(func() { signing.PipelockHome = oldHome })
 
 	cfg := config.Defaults()
 	cfg.LicenseID = "lic_runtime"
@@ -51,9 +51,9 @@ func TestEmitLicenseExpiryWarningIdempotent(t *testing.T) {
 
 func TestEmitLicenseExpiryWarningTrialLifetimeAndMessage(t *testing.T) {
 	home := t.TempDir()
-	oldHome := cliutil.PipelockHome
-	cliutil.PipelockHome = home
-	t.Cleanup(func() { cliutil.PipelockHome = oldHome })
+	oldHome := signing.PipelockHome
+	signing.PipelockHome = home
+	t.Cleanup(func() { signing.PipelockHome = oldHome })
 
 	now := time.Now().UTC()
 	atIssuance := config.Defaults()
@@ -124,9 +124,9 @@ func TestEmitLicenseExpiryWarningStateFailuresStillEmit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
-			oldHome := cliutil.PipelockHome
-			cliutil.PipelockHome = home
-			t.Cleanup(func() { cliutil.PipelockHome = oldHome })
+			oldHome := signing.PipelockHome
+			signing.PipelockHome = home
+			t.Cleanup(func() { signing.PipelockHome = oldHome })
 			tt.setup(t, home)
 
 			cfg := config.Defaults()
@@ -177,9 +177,9 @@ func TestEmitLicenseExpiryWarningNoops(t *testing.T) {
 }
 
 func TestLicenseExpiryStatePathEmptyWhenNoHome(t *testing.T) {
-	oldHome := cliutil.PipelockHome
-	cliutil.PipelockHome = ""
-	t.Cleanup(func() { cliutil.PipelockHome = oldHome })
+	oldHome := signing.PipelockHome
+	signing.PipelockHome = ""
+	t.Cleanup(func() { signing.PipelockHome = oldHome })
 	t.Setenv("PIPELOCK_HOME", "")
 	t.Setenv("HOME", "")
 

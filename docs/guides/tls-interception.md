@@ -46,15 +46,17 @@ pipelock run --config pipelock.yaml
 pipelock tls init
 ```
 
-This creates two files in `~/.pipelock/`:
+This creates two files in your pipelock home directory: `~/.pipelock/` by default, or the `--home <dir>` or `PIPELOCK_HOME` directory when either is set:
 - `ca.pem`: the CA certificate (share this, it's public)
 - `ca-key.pem`: the CA private key (protect this, `0600` permissions)
+
+`pipelock run` resolves the default CA path the same way, so the proxy loads the CA that `tls init` wrote as long as both commands use the same `--home` or `PIPELOCK_HOME`. The examples below assume the plain `~/.pipelock` default.
 
 Options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--out` | `~/.pipelock` | Output directory |
+| `--out` | pipelock home (`--home`, `PIPELOCK_HOME`, or `~/.pipelock`) | Output directory |
 | `--org` | `Pipelock` | Organization name in certificate subject |
 | `--validity` | `87600h` (10 years) | How long the CA is valid |
 | `--force` | `false` | Overwrite existing files |
@@ -152,8 +154,8 @@ Full options:
 ```yaml
 tls_interception:
   enabled: true
-  ca_cert: ""                    # default: ~/.pipelock/ca.pem
-  ca_key: ""                     # default: ~/.pipelock/ca-key.pem
+  ca_cert: ""                    # default: <pipelock home>/ca.pem (--home, PIPELOCK_HOME, or ~/.pipelock)
+  ca_key: ""                     # default: <pipelock home>/ca-key.pem (same precedence)
   max_response_bytes: 5242880    # 5MB, block responses larger than this
   passthrough_domains:           # bypass interception for these domains
     - "*.pinned-service.com"

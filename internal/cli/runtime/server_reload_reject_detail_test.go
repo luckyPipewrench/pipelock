@@ -252,7 +252,8 @@ func TestServer_Reload_RejectedDowngradeNamesTriggeringField(t *testing.T) {
 	s.opts.Stderr = stderr
 
 	expires := time.Now().UTC().Add(30 * 24 * time.Hour).Format("2006-01-02")
-	candidate := s.proxy.CurrentConfig().Clone()
+	before := s.proxy.CurrentConfig()
+	candidate := before.Clone()
 	candidate.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
 		Host:    "api.vendor.example",
 		Path:    "/v1/search/recent",
@@ -270,6 +271,7 @@ func TestServer_Reload_RejectedDowngradeNamesTriggeringField(t *testing.T) {
 	if !strings.Contains(reloadErr.Error(), "flight_recorder.require_receipts") {
 		t.Fatalf("rejection = %q, want it to still name the contract in force", reloadErr)
 	}
+	assertRejectedReloadKeptConfig(t, s, before)
 	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
 		t.Fatal("require_receipts was cleared despite the reload being rejected")
 	}
@@ -322,13 +324,18 @@ func TestServer_Reload_RequiredTeardownRejectionNamesRestartRemedy(t *testing.T)
 	stderr := &syncBuffer{}
 	s.opts.Stderr = stderr
 
-	off := s.proxy.CurrentConfig().Clone()
+	before := s.proxy.CurrentConfig()
+	off := before.Clone()
 	off.FlightRecorder.Enabled = false
 	off.FlightRecorder.RequireReceipts = false
 	s.lastReloadAt = time.Time{}
 
 	if err := s.Reload(off); err == nil {
 		t.Fatal("reload silently cleared an active fail-closed receipt requirement")
+	}
+	assertRejectedReloadKeptConfig(t, s, before)
+	if cur := s.proxy.CurrentConfig(); !cur.FlightRecorder.RequireReceipts || !cur.FlightRecorder.Enabled {
+		t.Fatal("rejected reload cleared the receipt requirement")
 	}
 	for _, want := range []string{
 		"required security mode (flight_recorder.require_receipts)",
@@ -373,7 +380,8 @@ func TestServer_Reload_TrustWideningWithTeardownNamesBoth(t *testing.T) {
 	stderr := &syncBuffer{}
 	s.opts.Stderr = stderr
 
-	next := s.proxy.CurrentConfig().Clone()
+	before := s.proxy.CurrentConfig()
+	next := before.Clone()
 	next.FlightRecorder.Enabled = false
 	next.FlightRecorder.RequireReceipts = false
 	next.TrustedDomains = []string{"internal.example"}
@@ -381,6 +389,14 @@ func TestServer_Reload_TrustWideningWithTeardownNamesBoth(t *testing.T) {
 
 	if err := s.Reload(next); err == nil {
 		t.Fatal("reload applied a trust widening together with a receipt teardown")
+	}
+	assertRejectedReloadKeptConfig(t, s, before)
+	cur := s.proxy.CurrentConfig()
+	if !cur.FlightRecorder.RequireReceipts || !cur.FlightRecorder.Enabled {
+		t.Fatal("rejected reload cleared the receipt requirement")
+	}
+	if len(cur.TrustedDomains) != 0 {
+		t.Fatal("rejected reload published trusted_domains")
 	}
 	for _, want := range []string{
 		"required security mode (flight_recorder.require_receipts)",
@@ -422,6 +438,10 @@ func TestServer_Reload_StrictModeRejectionNamesTriggeringField(t *testing.T) {
 	if !strings.Contains(reloadErr.Error(), "strict mode") {
 		t.Fatalf("rejection = %q, want it to still name strict mode", reloadErr)
 	}
+	assertRejectedReloadKeptConfig(t, s, oldCfg)
+	if len(s.proxy.CurrentConfig().FetchProxy.Monitoring.PathEntropyExclusions) != len(oldCfg.FetchProxy.Monitoring.PathEntropyExclusions) {
+		t.Fatal("rejected strict-mode reload still published its path entropy exclusion")
+	}
 	for _, want := range []string{
 		"fetch_proxy.monitoring.path_entropy_exclusions weakens protection and cannot apply at runtime",
 		"previous configuration remains active",
@@ -430,5 +450,15 @@ func TestServer_Reload_StrictModeRejectionNamesTriggeringField(t *testing.T) {
 		if !stderr.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
 		}
+	}
+}
+
+// assertRejectedReloadKeptConfig pins that a rejected reload left the exact
+// previous config object live, so "previous configuration remains active" in
+// the operator message is true rather than merely printed.
+func assertRejectedReloadKeptConfig(t *testing.T, s *Server, before *config.Config) {
+	t.Helper()
+	if s.proxy.CurrentConfig() != before {
+		t.Fatal("rejected reload replaced the live config")
 	}
 }

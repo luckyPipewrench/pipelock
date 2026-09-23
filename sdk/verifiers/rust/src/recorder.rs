@@ -29,10 +29,11 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         .collect())
 }
 
-// read_entry_lines returns each validated entry together with its trimmed
-// source line, which receipt extraction needs to recover the ext bag's exact
-// source bytes.
-fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, String)>> {
+// read_entry_lines returns each validated entry together with the Go-encoded
+// source bytes of an action receipt's ext bag, when it has one. Only that span
+// is kept, never the whole untrusted line, so memory stays proportional to the
+// parsed entries.
+fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, Option<String>)>> {
     let text = fs::read_to_string(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     let mut entries = Vec::new();
@@ -69,7 +70,13 @@ fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, String)>> {
                 index + 1
             )));
         }
-        entries.push((entry, line.to_string()));
+        let ext_bytes =
+            if entry.get("type").and_then(serde_json::Value::as_str) == Some(ACTION_RECEIPT_TYPE) {
+                crate::rawjson::recorder_line_ext_bytes(line)
+            } else {
+                None
+            };
+        entries.push((entry, ext_bytes));
     }
     Ok(entries)
 }
@@ -109,7 +116,7 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
 
 fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
     let mut extracted = ExtractedReceipts::default();
-    for (entry, line) in read_entry_lines(path)? {
+    for (entry, ext_bytes) in read_entry_lines(path)? {
         let entry_type = entry.get("type").and_then(serde_json::Value::as_str);
         let is_receipt =
             entry_type == Some(ACTION_RECEIPT_TYPE) || entry_type == Some(EVIDENCE_RECEIPT_TYPE);
@@ -156,10 +163,7 @@ fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
         }
         let mut receipt = detail.clone();
         if entry_type == Some(ACTION_RECEIPT_TYPE) {
-            if let (Some(bytes), Some(object)) = (
-                crate::rawjson::recorder_line_ext_bytes(&line),
-                receipt.as_object_mut(),
-            ) {
+            if let (Some(bytes), Some(object)) = (ext_bytes, receipt.as_object_mut()) {
                 object.insert(
                     crate::rawjson::EXT_SOURCE_KEY.to_string(),
                     serde_json::Value::String(bytes),

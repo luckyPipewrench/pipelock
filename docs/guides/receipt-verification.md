@@ -198,8 +198,9 @@ Chain verification checks:
   value's source bytes, compacted and HTML-escaped the way Go's
   `encoding/json` re-encodes raw JSON, with key order, number spelling, and
   escape spelling kept as written. An explicit `"ext": null` is included; an
-  absent `ext` adds nothing. Editing ext after the next receipt links it
-  breaks the chain, while whitespace-only edits do not.
+  absent `ext` adds nothing. Editing `ext` after the next receipt links it
+  breaks the chain. Adding or removing whitespace between JSON tokens does
+  not, but whitespace inside a string value is part of the value.
 - Signed v1 objects reject unknown fields. Only the unsigned top-level `ext`
   object may carry advisory forward-compatible metadata. The signature never
   covers it and its value never contributes to a verified claim; only its

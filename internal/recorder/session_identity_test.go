@@ -138,6 +138,29 @@ func TestAcquireSession_BindsOnce(t *testing.T) {
 	}
 }
 
+func TestAcquireSession_RejectsInvalidNamesBeforeBinding(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	for _, tc := range []struct{ id, want string }{
+		{"", "session_id required"},
+		{"a/b", "path separator"},
+		{`a\b`, "path separator"},
+	} {
+		err := rec.AcquireSession(tc.id)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("AcquireSession(%q) = %v, want %q refusal", tc.id, err, tc.want)
+		}
+		if rec.sessionID != "" {
+			t.Fatalf("invalid name %q bound recorder to %q", tc.id, rec.sessionID)
+		}
+	}
+	if id, err := AcquireRunSession(rec, "proxy.run.invalid"); err == nil || id != "" || !strings.Contains(err.Error(), "reserved run-session infix") {
+		t.Fatalf("invalid run base: id=%q, err=%v; want refusal and no id", id, err)
+	}
+	if rec.sessionID != "" {
+		t.Fatalf("invalid run base bound recorder to %q", rec.sessionID)
+	}
+}
+
 // TestAcquireSession_SameSessionIsNoop proves repeated acquisition with the
 // same session ID does not error - a caller may legitimately call this more
 // than once (e.g. once eagerly at startup, defensively again before first

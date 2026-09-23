@@ -1082,6 +1082,15 @@ func TestChainLink_ReadFileRefusesMissingAndOversized(t *testing.T) {
 	}
 }
 
+func TestChainLink_ReadSessionEntriesMissingDirectory(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "missing")
+	entries, err := readSessionEntries(missing, "proxy")
+	if err == nil || len(entries) != 0 || !strings.Contains(err.Error(), "reading evidence directory") {
+		t.Fatalf("missing directory: entries=%v, err=%v; want no entries and directory error", entries, err)
+	}
+}
+
 func TestChainLink_ContinuityBases(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

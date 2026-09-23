@@ -40,6 +40,9 @@ func DecodeResponse(resp *http.Response) error {
 	if len(encodings) == 0 {
 		return nil
 	}
+	if resp.StatusCode == http.StatusPartialContent {
+		return fmt.Errorf("cannot decode a partial response without invalidating Content-Range")
+	}
 	if len(encodings) != 1 {
 		return fmt.Errorf("unsupported stacked content encodings %q", strings.Join(encodings, ", "))
 	}

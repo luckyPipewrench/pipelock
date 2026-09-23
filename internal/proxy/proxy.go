@@ -3631,6 +3631,17 @@ func shieldUninspectableBlock(reason string) *shieldBlockResult {
 	}
 }
 
+// blockShieldPartialResponse refuses shieldable ranges before any rewrite can
+// make their upstream Content-Range metadata misleading.
+func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hostname string, cfg *config.Config, actx audit.LogContext) *shieldBlockResult {
+	active := p.shieldEngine != nil && cfg.BrowserShield.Enabled && !isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains)
+	if !shieldPartialResponseNeedsBlock(resp.StatusCode, resp.Header, body, active) {
+		return nil
+	}
+	p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldPartialResponseBlockReason)
+	return shieldUninspectableBlock(shieldPartialResponseBlockReason)
+}
+
 // applyShield runs Browser Shield rewriting on a response body when enabled
 // and the hostname is not exempt. A nonnil block result prevents delivery and
 // supplies the transport's status, reason, and receipt classification.
@@ -6001,7 +6012,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
 	shieldBodyBytes := int64(len(body))
-	body, shieldSummary, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+	shieldBlocked := p.blockShieldPartialResponse(resp, body, shieldHost, cfg, actx)
+	var shieldSummary *receipt.ShieldSummary
+	if shieldBlocked == nil {
+		body, shieldSummary, shieldBlocked = p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
 		p.metrics.RecordBlocked(shieldHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -6036,6 +6051,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// agnostic enforcement. Blocks yield a structured FetchResponse so the
 	// client sees the policy reason, not a generic 403.
 	mediaVerdict := applyMediaPolicy(cfg, contentType, body)
+	mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
 	if mediaVerdict.Blocked {
 		log.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)

@@ -2615,6 +2615,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if int64(len(respBody)) > maxBytes {
 			if budgetLimited {
+				if resp.StatusCode == http.StatusPartialContent {
+					reason := "byte budget cannot truncate a partial response"
+					p.logger.LogBlocked(actx, "budget", reason)
+					p.metrics.RecordBlocked(r.URL.Hostname(), "budget", time.Since(start), agentLabel)
+					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+						ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method,
+						Target: targetURL, Layer: "budget", Pattern: reason, Taint: forwardTaint,
+					})))
+					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, "budget"), "blocked: "+reason, http.StatusTooManyRequests)
+					outcomeStatus = strconv.Itoa(http.StatusTooManyRequests)
+					outcomeReason = "budget"
+					return
+				}
 				// Data-budget exhaustion, not a scan-cap overrun: preserve the
 				// existing truncation policy. Trim back to the budget and let
 				// the post-write budget_truncated anomaly log fire as before.
@@ -2748,7 +2761,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		shieldBodyBytes := int64(len(respBody))
 		var shieldBlocked *shieldBlockResult
 		var shieldSummary *receipt.ShieldSummary
-		respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
+		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
+		if shieldBlocked == nil {
+			respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
+		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
 			emitForwardReceipt(receipt.EmitOpts{
@@ -2776,6 +2792,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// types). Runs after Browser Shield so HTML responses flow through
 		// unchanged and image responses are handled transport-agnostically.
 		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody)
+		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
 		if mediaVerdict.Blocked {
 			p.logger.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
@@ -3025,7 +3042,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							})
 						}
 					}
-					if scanResult.TransformedContent != "" {
+					if scanResult.TransformedContent != "" && resp.StatusCode != http.StatusPartialContent {
 						respBody = []byte(scanResult.TransformedContent)
 						// Remove body-derived validators that no longer match the stripped content.
 						resp.Header.Del("Etag")
@@ -3033,6 +3050,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						resp.Header.Del("Digest")
 					} else {
 						stripFailureReason := reason + " (strip failed)"
+						if resp.StatusCode == http.StatusPartialContent && scanResult.TransformedContent != "" {
+							stripFailureReason = reason + " (partial response cannot be rewritten)"
+						}
 						p.logger.LogBlocked(actx, responseScanLayer, stripFailureReason)
 						emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 							ActionID:  actionID,

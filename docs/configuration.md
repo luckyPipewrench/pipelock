@@ -3622,6 +3622,10 @@ movement, block deltas, and application breakage before moving to the standard
 fail-closed posture. Use `oversize_action: warn` only for short, explicitly
 scoped diagnostics because it returns oversized shieldable bodies unchanged.
 
+Browser Shield blocks partial (`206`) HTML and SVG responses that it would otherwise rewrite. Rewriting a fragment would leave its upstream byte range inaccurate, even if the new body had the same length. This block also applies when `oversize_action: warn` is set. Request the complete resource, or use `browser_shield.exempt_domains` for a host you intentionally want to pass through Shield unchanged. JavaScript and other content Shield does not rewrite keep their normal response-scanning path.
+
+Other response policies also preserve byte-range integrity: a partial response is blocked if response-scanning strip would change it, if its encoded body would need decoding for inspection, or if an agent byte budget would truncate it. These refusals do not affect complete responses.
+
 When Browser Shield rewrites a response, Pipelock adds `X-Pipelock-Shield-Rewrite` before sending it to the client. Its value lists non-zero rewrite categories in fixed order, for example `extension=1,tracking=1,trap=2`; clean and unchanged responses omit the header. `extension` includes an injected extension-defense shim, and `trap` includes hidden traps plus SVG active-content removals. The fetch endpoint also returns the same value in its `shield_rewrite` JSON field. The header is available on buffered fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses; streaming responses are not rewritten and therefore never carry it.
 
 ## Media Policy (v2.1)
@@ -3654,6 +3658,8 @@ All boolean fields use nil-means-security-default semantics: omitting a field fr
 | `strip_image_metadata` | *bool | `true` | Remove EXIF/XMP/IPTC/ICC metadata from allowed images |
 | `max_image_bytes` | int64 | `5242880` (5 MiB) | Reject images larger than this before parsing (decompression bomb defense) |
 | `log_media_exposure` | *bool | `true` | Emit `media_exposure` events for allowed media responses |
+
+Media policy blocks a partial (`206`) image response only when stripping would change its bytes. An unchanged image keeps its range response. If you need partial images from a trusted source, request the complete image or set `media_policy.strip_image_metadata: false` to pass its metadata through unchanged.
 
 ### Metadata stripping
 

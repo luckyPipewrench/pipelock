@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"net/http"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -15,6 +16,29 @@ import (
 )
 
 const contentTypeOctetStream = "application/octet-stream"
+
+const mediaPartialResponseBlockReason = "media policy cannot safely strip metadata from a partial response; request the complete resource or disable media_policy.strip_image_metadata for intentional passthrough"
+
+// A stripped fragment no longer describes the upstream Content-Range, even if
+// its length happens to match. Route through each transport's existing media
+// block path so status, audit, receipts, and exposure agree on the refusal.
+func refusePartialMediaRewrite(status int, verdict MediaPolicyVerdict) MediaPolicyVerdict {
+	if status != http.StatusPartialContent || verdict.Blocked || verdict.StripResult == nil || !verdict.StripResult.Changed() {
+		return verdict
+	}
+	verdict.Blocked = true
+	verdict.BlockReason = mediaPartialResponseBlockReason
+	verdict.Body = nil
+	if verdict.Exposure != nil {
+		exposure := *verdict.Exposure
+		exposure.Blocked = true
+		exposure.BlockReason = mediaPartialResponseBlockReason
+		exposure.MetadataRemoved = 0
+		exposure.BytesRemoved = 0
+		verdict.Exposure = &exposure
+	}
+	return verdict
+}
 
 // MediaPolicyVerdict is the decision a media policy evaluation produces for
 // one response. Callers use it to route the body: blocked responses return

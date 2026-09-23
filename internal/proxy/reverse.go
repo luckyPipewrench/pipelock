@@ -2108,7 +2108,31 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
 	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
+	blockShieldPartial := func(body []byte, complete bool) bool {
+		if !shieldPartialResponseNeedsBlock(resp.StatusCode, resp.Header, body, shieldActiveForHost) {
+			return false
+		}
+		bodyBytes, bodyBytesExact := reverseObservedBodyBytes(resp.ContentLength, len(body), complete)
+		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
+		_ = resp.Body.Close()
+		rp.logger.LogBlocked(actx, shieldUninspectableLayer, shieldPartialResponseBlockReason)
+		rp.metrics.RecordBlocked(revHost, shieldUninspectableLayer, 0, agent)
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, shieldUninspectableLayer)
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: actionID, Verdict: config.ActionBlock, Layer: shieldUninspectableLayer,
+			Pattern: shieldPartialResponseBlockReason, Transport: TransportReverse,
+			Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		replaceWithBlockReason(resp, shieldPartialResponseBlockReason)
+		blockInfoFor(blockreason.BrowserShieldUninspectable, shieldUninspectableLayer).SetHeaders(resp.Header)
+		recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), shieldUninspectableLayer, bodyBytesExact)
+		return true
+	}
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
+		if blockShieldPartial(body, complete) {
+			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
+		}
 		if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)) {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
@@ -2274,6 +2298,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// if we enter the branch in the first place.
 	mediaCT := resp.Header.Get("Content-Type")
 	mediaCTCanon := canonicalContentType(mediaCT)
+	shieldSVG := shieldActiveForHost && mediaCTCanon == "image/svg+xml"
 	mediaCTForPolicy := mediaCT
 	detectedMedia := false
 	if cfg.MediaPolicy.IsEnabled() && !isBinaryMIME(mediaCT) && !contentTypeIsGeneric(mediaCTCanon) && !HasSingleSSEContentType(resp.Header) {
@@ -2383,6 +2408,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			oversize := int64(len(body)) > maxRead
 			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body)
+			verdict = refusePartialMediaRewrite(resp.StatusCode, verdict)
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
 			// fires for oversize images.
@@ -2409,10 +2435,10 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				recordReverseOutcome(http.StatusForbidden, int64(len(body)), "media_policy")
 				return nil
 			}
-			if !isMediaType(verdict.MediaType) {
-				// A generic declaration can sniff as ordinary text. The media
-				// policy deliberately leaves that content alone, so preserve the
-				// bytes already read and continue into response scanning below.
+			if !isMediaType(verdict.MediaType) || shieldSVG {
+				// Generic declarations may sniff as text, and SVG is shieldable
+				// even though its MIME type begins with image/. Preserve the
+				// buffered bytes and continue into response scanning and Shield.
 				// Returning here would forward instruction-bearing text without
 				// applying the operator's response policy.
 				if oversize {
@@ -2483,7 +2509,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 
 responseScanning:
-	// Stream declared media (image/audio/video) without text-injection
+	// Stream declared non-SVG media (image/audio/video) without text-injection
 	// scanning. isBinaryMIME matches only image/audio/video, so every response
 	// reaching here is media: declared audio/video that passed media policy
 	// above, or any declared media type when media policy is disabled. The body
@@ -2492,7 +2518,7 @@ responseScanning:
 	// scanned/clean/complete coverage. An upstream can serve instruction-bearing
 	// text under an audio/* or video/* Content-Type, and this label makes clear
 	// Pipelock did not inspect the streamed bytes.
-	if isBinaryMIME(mediaCT) {
+	if isBinaryMIME(mediaCT) && !shieldSVG {
 		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(responseBodyLimit)+1)
@@ -2936,6 +2962,9 @@ responseScanning:
 		recordReverseOutcome(resp.StatusCode, 0, "complete")
 		return nil
 	}
+	if blockShieldPartial(body, true) {
+		return nil
+	}
 
 	// Browser Shield on reverse proxy responses - uses shared pipeline.
 	shieldChanged := false
@@ -3122,7 +3151,7 @@ responseScanning:
 	}
 
 	if action == config.ActionStrip {
-		if result.TransformedContent != "" {
+		if result.TransformedContent != "" && resp.StatusCode != http.StatusPartialContent {
 			// Replace body with redacted content. Remove body-derived
 			// validators that no longer match the stripped content
 			// (matches forward.go:860-863).
@@ -3143,6 +3172,9 @@ responseScanning:
 		// Unconditional block regardless of enforce - forwarding injected
 		// content is a security bypass. Matches forward.go:865-869.
 		reason := fmt.Sprintf("response injection: %s (strip failed)", strings.Join(patternNames, ", "))
+		if resp.StatusCode == http.StatusPartialContent && result.TransformedContent != "" {
+			reason = fmt.Sprintf("response injection: %s (partial response cannot be rewritten)", strings.Join(patternNames, ", "))
+		}
 		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,

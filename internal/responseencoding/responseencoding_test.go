@@ -141,6 +141,27 @@ func TestDecodeResponseNilAndEmpty(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseRejectsEncodedPartial(t *testing.T) {
+	body := gzipBody(t, "range fragment")
+	resp := &http.Response{
+		StatusCode: http.StatusPartialContent,
+		Header: http.Header{
+			"Content-Encoding": {"gzip"},
+			"Content-Range":    {"bytes 0-13/100"},
+		},
+		Body: io.NopCloser(bytes.NewReader(body)),
+	}
+	if err := DecodeResponse(resp); err == nil || !strings.Contains(err.Error(), "partial response") {
+		t.Fatalf("encoded partial response error = %v, want refusal", err)
+	}
+	if resp.Header.Get("Content-Encoding") != "gzip" || resp.Header.Get("Content-Range") == "" {
+		t.Fatal("refusal changed upstream representation metadata")
+	}
+	if got, err := io.ReadAll(resp.Body); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("refusal changed upstream body: bytes=%d err=%v", len(got), err)
+	}
+}
+
 func gzipBody(t *testing.T, text string) []byte {
 	t.Helper()
 	var body bytes.Buffer

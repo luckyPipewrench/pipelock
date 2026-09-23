@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	shieldUninspectableLayer       = "shield_uninspectable"
-	shieldUTF16ScanHeadBlockReason = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip"
-	browserMIMESniffHeaderBytes    = 1445
+	shieldUninspectableLayer         = "shield_uninspectable"
+	shieldUTF16ScanHeadBlockReason   = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip"
+	shieldPartialResponseBlockReason = "Browser Shield cannot safely rewrite a partial response; request the complete resource or use browser_shield.exempt_domains for an intentional whole-host skip"
+	browserMIMESniffHeaderBytes      = 1445
 )
 
 type shieldPipelineResult struct {
@@ -29,6 +30,17 @@ type shieldPipelineResult struct {
 	uninspectableReason string
 	utf16               bool
 	pipeline            shield.PipelineType
+}
+
+// A 206 range refers to bytes of the upstream representation. Shield cannot
+// rewrite even an equal-length fragment without invalidating those offsets.
+// Shield leaves JavaScript and non-shieldable media unchanged; other enabled
+// response policies may still inspect or transform them.
+func shieldPartialResponseNeedsBlock(status int, headers http.Header, body []byte, active bool) bool {
+	if !active || status != http.StatusPartialContent || len(body) == 0 {
+		return false
+	}
+	return !shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(headers.Get("Content-Type"), body, headers))
 }
 
 type shieldUTF16Order uint8

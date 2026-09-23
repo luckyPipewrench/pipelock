@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -150,6 +151,9 @@ func TestReverseSVGPartialResponse(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" {
 				t.Fatalf("SVG status=%d range=%q, want Shield refusal", resp.StatusCode, resp.Header.Get("Content-Range"))
+			}
+			if !mediaEnabled && resp.Header.Get(blockreason.HeaderReason) != string(blockreason.BrowserShieldUninspectable) {
+				t.Fatalf("SVG reason=%q, want Shield refusal", resp.Header.Get(blockreason.HeaderReason))
 			}
 		})
 	}

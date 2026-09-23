@@ -19,7 +19,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
-	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -341,9 +340,9 @@ func TestResolveCompileOutputsRejectsManifestReviewOverlap(t *testing.T) {
 
 func TestContractsCandidateDirUsesResolvedHome(t *testing.T) {
 	home := t.TempDir()
-	oldHomeFlag := cliutil.PipelockHome
-	cliutil.PipelockHome = filepath.Join(home, "flag-home")
-	t.Cleanup(func() { cliutil.PipelockHome = oldHomeFlag })
+	oldHomeFlag := signing.PipelockHome
+	signing.PipelockHome = filepath.Join(home, "flag-home")
+	t.Cleanup(func() { signing.PipelockHome = oldHomeFlag })
 	t.Setenv("PIPELOCK_HOME", filepath.Join(home, "env-home"))
 
 	got, err := contractsCandidateDir()

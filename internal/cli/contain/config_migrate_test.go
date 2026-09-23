@@ -1057,3 +1057,59 @@ func assertContainFlightRecorderPublicKeySidecar(t *testing.T, keyPath string) {
 		}
 	}
 }
+
+// TestMigrateTLSCA_FollowsPipelockHome pins that contain migration copies the
+// CA the operator's proxy actually loads. With PIPELOCK_HOME set, that is the
+// CA under PIPELOCK_HOME, not an older one left in ~/.pipelock.
+func TestMigrateTLSCA_FollowsPipelockHome(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		pipelockHome func(home string) string
+		want         string
+		wantErr      string
+	}{
+		{name: "no pipelock home keeps the operator default", pipelockHome: func(string) string { return "" }, want: "OLD-CA\n"},
+		{name: "PIPELOCK_HOME inside the operator home wins", pipelockHome: func(home string) string { return filepath.Join(home, "plhome") }, want: "NEW-CA\n"},
+		{name: "PIPELOCK_HOME outside the operator home is refused", pipelockHome: func(string) string { return filepath.Join(os.TempDir(), "external-plhome") }, wantErr: "set tls_interception.ca_cert and ca_key explicitly"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			home := t.TempDir()
+			origLookup := env.lookupUser
+			env.lookupUser = func(name string) (*user.User, error) {
+				if name == containInstallOperatorUser {
+					return &user.User{Uid: "1000", Gid: "1000", Username: name, HomeDir: home}, nil
+				}
+				return origLookup(name)
+			}
+			mustWriteFile(t, filepath.Join(home, ".pipelock", "ca.pem"), "OLD-CA\n")
+			mustWriteFile(t, filepath.Join(home, ".pipelock", "ca-key.pem"), "OLD-KEY\n")
+			mustWriteFile(t, filepath.Join(home, "plhome", "ca.pem"), "NEW-CA\n")
+			mustWriteFile(t, filepath.Join(home, "plhome", "ca-key.pem"), "NEW-KEY\n")
+			orig := signing.PipelockHome
+			signing.PipelockHome = ""
+			t.Cleanup(func() { signing.PipelockHome = orig })
+			t.Setenv("PIPELOCK_HOME", tc.pipelockHome(home))
+
+			configDir := filepath.Join(home, ".config", "pipelock")
+			data := []byte("tls_interception:\n  enabled: true\n")
+			_, _, err := migratePipelockConfigForContain(env, filepath.Join(configDir, "pipelock.yaml"), data)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("migrate err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(env.configDir, "tls", "ca.pem"))
+			if err != nil {
+				t.Fatalf("read migrated CA: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("migrated CA = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

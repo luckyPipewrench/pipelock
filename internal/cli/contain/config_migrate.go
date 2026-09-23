@@ -678,12 +678,28 @@ func migrateTLSCA(ctx *configMigrationContext, root *yaml.Node) error {
 	if certValue == "" && keyValue == "" && !yamlBool(getMappingPath(tlsNode, []string{"enabled"})) {
 		return nil
 	}
+	// Empty CA fields resolve the way the proxy resolves them: --home or
+	// PIPELOCK_HOME when set, otherwise the operator's ~/.pipelock. Using a
+	// different default here would copy a different CA than the one the
+	// operator's proxy was running with. resolveMigratablePath still refuses
+	// to copy anything outside the operator's home.
+	caDir := filepath.Join(ctx.operatorHome, signing.DefaultPipelockDir)
+	if home := signing.ResolvedHome(); home != "" {
+		caDir = home
+		// Migration copies only from inside the operator home, so a default
+		// under an external pipelock home would be written into the contained
+		// config without its files. Refuse instead of installing a CA path the
+		// contained proxy may be unable to read.
+		if (certValue == "" || keyValue == "") && !pathWithin(ctx.operatorHome, caDir) {
+			return fmt.Errorf("tls_interception: pipelock home %s is outside the operator home %s; set tls_interception.ca_cert and ca_key explicitly", caDir, ctx.operatorHome)
+		}
+	}
 	if certValue == "" {
-		certValue = filepath.Join(ctx.operatorHome, ".pipelock", "ca.pem")
+		certValue = filepath.Join(caDir, "ca.pem")
 		certNode = setMappingScalar(tlsNode, "ca_cert", certValue)
 	}
 	if keyValue == "" {
-		keyValue = filepath.Join(ctx.operatorHome, ".pipelock", "ca-key.pem")
+		keyValue = filepath.Join(caDir, "ca-key.pem")
 		keyNode = setMappingScalar(tlsNode, "ca_key", keyValue)
 	}
 	if err := migrateScalarFileValue(ctx, certNode, certValue, filepath.Join(ctx.env.configDir, "tls", "ca.pem"), modeConfigSecret); err != nil {

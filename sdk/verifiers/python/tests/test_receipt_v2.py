@@ -629,23 +629,28 @@ def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
     assert "record observed after session_close" in report["error"]
 
 
-def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> None:
-    action_line = (TESTDATA / "g1-valid-chain.jsonl").read_text().splitlines()[0]
+def test_mixed_action_and_evidence_chain_verifies_action_subsequence(
+    tmp_path: Path,
+) -> None:
+    # Go's receipt-chain mode verifies the action_receipt subsequence and skips
+    # evidence_receipt entries; a default Pipelock run interleaves both.
+    lines = (TESTDATA / "g1-valid-chain.jsonl").read_text().splitlines()
     evidence = json.loads(VALID_PLAIN_V2.read_text())
+    evidence_line = json.dumps({"type": "evidence_receipt", "detail": evidence})
     mixed = tmp_path / "mixed.jsonl"
-    mixed.write_text(
-        action_line
-        + "\n"
-        + json.dumps({"type": "evidence_receipt", "detail": evidence})
-        + "\n"
-    )
+    mixed.write_text("\n".join([lines[0], evidence_line, *lines[1:]]) + "\n")
 
-    try:
-        load_evidence_chain(mixed)
-    except ReceiptError as exc:
-        assert "mixed action/evidence receipt chains are not supported" in str(exc)
-    else:
-        raise AssertionError("mixed chain unexpectedly loaded")
+    receipts = load_evidence_chain(mixed)
+    assert len(receipts) == len(lines)
+    assert all(receipt.get("record_type") is None for receipt in receipts)
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report
+
+    evidence_only = tmp_path / "evidence-only.jsonl"
+    evidence_only.write_text(evidence_line + "\n")
+    only = load_evidence_chain(evidence_only)
+    assert len(only) == 1
+    assert only[0]["record_type"] == "evidence_receipt_v2"
 
 
 def test_jsonl_chain_rejects_number_outside_cross_language_range(
@@ -724,3 +729,101 @@ def _sign_v1_action_receipt(receipt: dict[str, object]) -> None:
     sig = key.sign(digest)
     receipt["signature"] = f"ed25519:{sig.hex()}"
     receipt["signer_key"] = TESTDATA_KEY
+
+
+# Root hash the Go reference verifier reports for g1-ext-chain.jsonl. Every
+# verifier pins the same value, so a divergence in ext link bytes fails here.
+EXT_CHAIN_ROOT_HASH = "19805bc704923ef6a602abdfa3dc4982134997a69e3fff7a627b3f1805511d1b"
+
+
+def test_ext_chain_vector_verifies_with_go_root_hash() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-ext-chain.jsonl")
+    assert len(receipts) == 5
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report
+    assert report["root_hash"] == EXT_CHAIN_ROOT_HASH
+
+
+def test_ext_bytes_edited_after_linking_break_chain_at_seq_one() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-ext-tampered-invalid.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 1
+    assert "chain_prev_hash mismatch" in report["error"]
+
+
+def test_removing_or_changing_ext_in_memory_breaks_link() -> None:
+    removed = load_evidence_chain(TESTDATA / "g1-ext-chain.jsonl")
+    del removed[0]["ext"]
+    assert verify_evidence_chain(removed, TESTDATA_KEY)["valid"] is False
+
+    changed = load_evidence_chain(TESTDATA / "g1-ext-chain.jsonl")
+    changed[0]["ext"]["posture_proof_availability"] = "readable"
+    assert verify_evidence_chain(changed, TESTDATA_KEY)["valid"] is False
+
+
+def test_receipt_hash_covers_explicit_null_ext() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-ext-chain.jsonl")
+    with_null = receipts[2]
+    assert "ext" in with_null and with_null["ext"] is None
+    without = {k: v for k, v in with_null.items() if k != "ext"}
+    assert receipt_hash(with_null) != receipt_hash(without)
+
+
+def test_go_raw_message_bytes_compacts_and_html_escapes() -> None:
+    from pipelock_aarp_verify.rawjson import go_raw_message_bytes, object_member_span
+
+    line_sep = chr(0x2028)
+    esc_a = "\\" + "u0041"
+    raw = '{ "10" : [ 1.0 , 1E+2 ] ,\t"a" : "<&> ' + esc_a + '\\/ ' + line_sep + '" }'
+    assert go_raw_message_bytes(raw) == (
+        '{"10":[1.0,1E+2],"a":"\\u003c\\u0026\\u003e ' + esc_a + '\\/ \\u2028"}'
+    )
+    line = '{"detail" : {"ext" : { "x" : "}" } , "version":1}}'
+    detail = object_member_span(line, 0, "detail")
+    assert detail is not None
+    ext = object_member_span(line, detail[0], "ext")
+    assert ext is not None
+    assert line[ext[0] : ext[1]] == '{ "x" : "}" }'
+
+
+def test_jsonl_chain_splits_on_line_feed_only(tmp_path: Path) -> None:
+    # Go leaves U+0085 raw inside JSON strings and splits recorder files on LF
+    # only; str.splitlines() would cut such an entry in half.
+    text = (TESTDATA / "g1-ext-chain.jsonl").read_text(encoding="utf-8")
+    assert chr(0x85) in text
+    receipts = load_evidence_chain(TESTDATA / "g1-ext-chain.jsonl")
+    assert len(receipts) == 5
+
+
+def _resign_open_with_policy_hash(policy_hash: object) -> dict[str, object]:
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
+    first = receipts[0]
+    action_record = first["action_record"]
+    open_record = action_record["session_control"]["open"]
+    open_record["policy_hash"] = policy_hash
+    if isinstance(policy_hash, str):
+        open_record.pop("genesis_hash", None)
+        genesis = compute_session_open_genesis(open_record)
+        open_record["genesis_hash"] = genesis
+        action_record["chain_prev_hash"] = genesis
+    _sign_v1_action_receipt(first)
+    return first
+
+
+def test_session_open_accepts_bare_hex_policy_hash_like_go() -> None:
+    # Go's emitter writes the bare hex config hash and Go applies no format
+    # rule to session_control.open.policy_hash.
+    bare = "c611d973228752db025ba2ecef19fe011ad5f8de94ea697cbaa0d2f67386158f"
+    report = verify_evidence_chain([_resign_open_with_policy_hash(bare)], TESTDATA_KEY)
+    assert report["valid"] is True, report
+    empty = verify_evidence_chain([_resign_open_with_policy_hash("")], TESTDATA_KEY)
+    assert empty["valid"] is True, empty
+
+
+def test_session_open_rejects_non_string_policy_hash() -> None:
+    report = verify_evidence_chain([_resign_open_with_policy_hash(7)], TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_control.open.policy_hash must be a string" in report["error"]

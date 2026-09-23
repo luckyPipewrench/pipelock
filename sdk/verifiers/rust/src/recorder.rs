@@ -23,6 +23,16 @@ const SKIPPABLE_ENTRY_TYPES: &[&str] = &[
 ];
 
 pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
+    Ok(read_entry_lines(path)?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect())
+}
+
+// read_entry_lines returns each validated entry together with its trimmed
+// source line, which receipt extraction needs to recover the ext bag's exact
+// source bytes.
+fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, String)>> {
     let text = fs::read_to_string(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
     let mut entries = Vec::new();
@@ -59,7 +69,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
                 index + 1
             )));
         }
-        entries.push(entry);
+        entries.push((entry, line.to_string()));
     }
     Ok(entries)
 }
@@ -72,9 +82,34 @@ fn legacy_namespace_field_is_set(entry: &serde_json::Value, field: &str) -> bool
     }
 }
 
+#[derive(Default)]
+struct ExtractedReceipts {
+    action: Vec<Receipt>,
+    evidence: Vec<Receipt>,
+}
+
+impl ExtractedReceipts {
+    // select_chain mirrors the Go reference receipt-chain mode, which verifies
+    // the action_receipt subsequence and skips evidence_receipt entries. A
+    // default Pipelock run interleaves both types in one file, each on its own
+    // chain. A file that carries only evidence_receipt entries is verified as
+    // an evidence_receipt_v2 chain.
+    fn select_chain(self) -> Vec<Receipt> {
+        if self.action.is_empty() {
+            self.evidence
+        } else {
+            self.action
+        }
+    }
+}
+
 pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
-    let mut receipts = Vec::new();
-    for entry in read_entries(path)? {
+    Ok(extract_typed_receipts(path)?.select_chain())
+}
+
+fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
+    let mut extracted = ExtractedReceipts::default();
+    for (entry, line) in read_entry_lines(path)? {
         let entry_type = entry.get("type").and_then(serde_json::Value::as_str);
         let is_receipt =
             entry_type == Some(ACTION_RECEIPT_TYPE) || entry_type == Some(EVIDENCE_RECEIPT_TYPE);
@@ -119,9 +154,23 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
                 ))
             })?;
         }
-        receipts.push(detail.clone());
+        let mut receipt = detail.clone();
+        if entry_type == Some(ACTION_RECEIPT_TYPE) {
+            if let (Some(bytes), Some(object)) = (
+                crate::rawjson::recorder_line_ext_bytes(&line),
+                receipt.as_object_mut(),
+            ) {
+                object.insert(
+                    crate::rawjson::EXT_SOURCE_KEY.to_string(),
+                    serde_json::Value::String(bytes),
+                );
+            }
+            extracted.action.push(receipt);
+        } else {
+            extracted.evidence.push(receipt);
+        }
     }
-    Ok(receipts)
+    Ok(extracted)
 }
 
 pub fn extract_receipts_from_session_dir(dir: &Path, session_id: &str) -> Result<Vec<Receipt>> {
@@ -149,11 +198,13 @@ pub fn extract_receipts_from_session_dir(dir: &Path, session_id: &str) -> Result
         .map(|path| seq_start(&path).map(|seq| (seq, path)))
         .collect::<Result<Vec<_>>>()?;
     files.sort_by_key(|(seq, _)| *seq);
-    let mut receipts = Vec::new();
+    let mut combined = ExtractedReceipts::default();
     for (_, file) in files {
-        receipts.extend(extract_receipts(&file)?);
+        let extracted = extract_typed_receipts(&file)?;
+        combined.action.extend(extracted.action);
+        combined.evidence.extend(extracted.evidence);
     }
-    Ok(receipts)
+    Ok(combined.select_chain())
 }
 
 fn seq_start(path: &Path) -> Result<u64> {

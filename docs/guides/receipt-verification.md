@@ -193,10 +193,21 @@ Chain verification checks:
   v3.1 bound-genesis `g1:<sha256>` value derived from the signed
   `session_open` record.
 - Each subsequent receipt's `chain_prev_hash` equals the SHA-256 hash of
-  the previous receipt's canonical JSON.
+  the previous receipt's canonical JSON. When the previous receipt carries a
+  top-level `ext` member, that JSON ends with `"ext":` followed by the ext
+  value's source bytes, compacted and HTML-escaped the way Go's
+  `encoding/json` re-encodes raw JSON, with key order, number spelling, and
+  escape spelling kept as written. An explicit `"ext": null` is included; an
+  absent `ext` adds nothing. Editing ext after the next receipt links it
+  breaks the chain, while whitespace-only edits do not.
 - Signed v1 objects reject unknown fields. Only the unsigned top-level `ext`
-  object may carry advisory forward-compatible metadata, and it never
-  contributes to a verified claim.
+  object may carry advisory forward-compatible metadata. The signature never
+  covers it and its value never contributes to a verified claim; only its
+  bytes join the chain link hash.
+- In a flight-recorder file, the chain is the `action_receipt` subsequence.
+  `evidence_receipt` entries interleaved in the same file are skipped, as in
+  the Go verifier; a file with only `evidence_receipt` entries is verified as
+  an EvidenceReceipt v2 chain by the SDK verifiers.
 
 By default, this verifies the receipt subsequence only. To verify every present
 flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown

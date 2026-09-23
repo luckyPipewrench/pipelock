@@ -237,6 +237,11 @@ const (
 // additional Pipelock listener into this namespace because the proxy itself
 // needs host-network egress. The unix doorway crosses only one explicitly
 // declared filesystem object and creates no route at all.
+// renderContainedNetworkNamespaceUnit renders the namespace holder. Contained
+// launches join it with JoinsNamespaceOf=, and systemd shares a /tmp namespace
+// between joined units only when BOTH enable PrivateTmp= (systemd.unit(5),
+// JoinsNamespaceOf=). Without PrivateTmp here a launch that requests a private
+// /tmp still sees the host /tmp.
 func renderContainedNetworkNamespaceUnit() string {
 	return `[Unit]
 Description=Pipelock contained-agent network namespace
@@ -247,6 +252,7 @@ Type=simple
 ExecStart=/usr/bin/sleep infinity
 ExecStartPost=/bin/sh -c '/usr/bin/readlink /proc/self/ns/net > /run/pipelock-contain/agent-netns.id'
 PrivateNetwork=true
+PrivateTmp=true
 NoNewPrivileges=true
 RuntimeDirectory=pipelock-contain
 RuntimeDirectoryMode=0755

@@ -1026,3 +1026,16 @@ func TestNoSocketUnitClaimsTheAgentNamespace(t *testing.T) {
 		}
 	}
 }
+
+// TestContainedNetworkNamespaceUnitSharesPrivateTmp pins the holder half of
+// the private /tmp contract: joined launches get a private /tmp only when the
+// unit they join also enables PrivateTmp.
+func TestContainedNetworkNamespaceUnitSharesPrivateTmp(t *testing.T) {
+	t.Parallel()
+	body := renderContainedNetworkNamespaceUnit()
+	for _, want := range []string{"PrivateNetwork=true", "PrivateTmp=true"} {
+		if !unitHasExactEntry(body, "Service", strings.SplitN(want, "=", 2)[0], strings.SplitN(want, "=", 2)[1]) {
+			t.Fatalf("namespace holder unit missing %s:\n%s", want, body)
+		}
+	}
+}

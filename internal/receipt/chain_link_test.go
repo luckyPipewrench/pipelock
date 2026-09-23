@@ -1052,6 +1052,36 @@ func TestChainLink_PublishErrorPaths(t *testing.T) {
 	}
 }
 
+func TestChainLink_EmptyAndUnreadableTail(t *testing.T) {
+	t.Parallel()
+	tail, err := sessionReceiptTail(nil)
+	if err != nil || tail != nil {
+		t.Fatalf("empty shard set: tail=%v, err=%v; want nil, nil", tail, err)
+	}
+	if pred, ok := claimableTail(nil, "proxy", io.Discard); ok || pred.session != "" {
+		t.Fatalf("empty chain was claimable: %+v, %v", pred, ok)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.jsonl")
+	if _, err := sessionReceiptTail([]string{missing}); err == nil || !strings.Contains(err.Error(), "reading evidence file") {
+		t.Fatalf("missing shard: err=%v; want read error", err)
+	}
+}
+
+func TestChainLink_ReadFileRefusesMissingAndOversized(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if _, err := readChainLinkFile(filepath.Join(dir, "missing.json")); err == nil || !strings.Contains(err.Error(), "stat chain link file") {
+		t.Fatalf("missing link: err=%v; want stat error", err)
+	}
+	path := filepath.Join(dir, "oversized.json")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxChainLinkFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readChainLinkFile(path); err == nil || !strings.Contains(err.Error(), "chain link file exceeds") {
+		t.Fatalf("oversized link: err=%v; want size refusal", err)
+	}
+}
+
 func TestChainLink_ContinuityBases(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

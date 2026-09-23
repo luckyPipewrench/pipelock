@@ -558,14 +558,7 @@ function broken(
 
 export function computeTotals(receipts: Receipt[]) {
   type VerdictBucket =
-    | "allow"
-    | "block"
-    | "warn"
-    | "ask"
-    | "strip"
-    | "forward"
-    | "redirect"
-    | "other";
+    "allow" | "block" | "warn" | "ask" | "strip" | "forward" | "redirect" | "other";
   const totals: Record<VerdictBucket, number> = {
     allow: 0,
     block: 0,

@@ -96,12 +96,7 @@ const docsNotAsserted = [
 
 // SignatureStatus is the per-signature appraisal outcome.
 export type SignatureStatus =
-  | "verified"
-  | "failed"
-  | "unknown_key"
-  | "unimplemented"
-  | "unknown_suite"
-  | "malformed";
+  "verified" | "failed" | "unknown_key" | "unimplemented" | "unknown_suite" | "malformed";
 
 export interface SignatureResult {
   key_id: string;

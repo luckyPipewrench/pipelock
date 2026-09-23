@@ -14,7 +14,7 @@ import (
 
 func TestEvidenceWriterGone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence.jsonl")
-	writer, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	writer, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

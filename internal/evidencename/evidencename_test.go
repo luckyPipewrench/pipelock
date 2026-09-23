@@ -68,7 +68,7 @@ func TestValidateOperatorSessionID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
-		id string
+		id   string
 		want string
 	}{
 		{"empty", "", "must not be empty"},

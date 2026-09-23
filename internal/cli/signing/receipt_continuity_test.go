@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,6 +20,22 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+func TestReceiptDirectoryListingFailureIsNotSuccess(t *testing.T) {
+	t.Parallel()
+	location := recorder.EvidenceLocation{Dir: filepath.Join(t.TempDir(), "missing")}
+	if session, err := resolveOneReceiptSession(location, "proxy"); err == nil || session != "" || !strings.Contains(err.Error(), "listing receipt chains") {
+		t.Fatalf("resolve missing directory: session=%q, err=%v; want no session and listing error", session, err)
+	}
+	var output bytes.Buffer
+	if err := verifyWholeRecorderDir(&output, location, "proxy", false, nil, verifyReceiptOptions{}); err == nil || !strings.Contains(err.Error(), "listing receipt chains") || strings.Contains(output.String(), "VALID") {
+		t.Fatalf("whole-recorder missing directory: err=%v, output=%q; want listing error without success", err, output.String())
+	}
+	output.Reset()
+	if err := verifyChainDirWithContinuity(&output, location, "proxy", false, nil, verifyReceiptOptions{}); err == nil || !strings.Contains(err.Error(), "listing receipt chains") || strings.Contains(output.String(), "VALID") {
+		t.Fatalf("chain missing directory: err=%v, output=%q; want listing error without success", err, output.String())
+	}
+}
 
 // runContinuityChain records one real run chain in dir the way production
 // does and returns its session.

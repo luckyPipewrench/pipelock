@@ -161,6 +161,27 @@ func TestAcquireSession_RejectsInvalidNamesBeforeBinding(t *testing.T) {
 	}
 }
 
+func TestSessionIDTracksBinding(t *testing.T) {
+	var nilRec *Recorder
+	if got := nilRec.SessionID(); got != "" {
+		t.Fatalf("nil recorder session = %q, want empty", got)
+	}
+	if got := (&Recorder{nop: true}).SessionID(); got != "" {
+		t.Fatalf("nop recorder session = %q, want empty", got)
+	}
+	rec := newTestRecorderForAcquire(t)
+	if got := rec.SessionID(); got != "" {
+		t.Fatalf("unbound recorder session = %q, want empty", got)
+	}
+	const session = "proxy.run.test"
+	if err := rec.AcquireSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.SessionID(); got != session {
+		t.Fatalf("bound recorder session = %q, want %q", got, session)
+	}
+}
+
 // TestAcquireSession_SameSessionIsNoop proves repeated acquisition with the
 // same session ID does not error - a caller may legitimately call this more
 // than once (e.g. once eagerly at startup, defensively again before first

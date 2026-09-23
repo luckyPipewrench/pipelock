@@ -429,6 +429,9 @@ func TestServer_Reload_StrictModeRejectionNamesTriggeringField(t *testing.T) {
 		Owner:      "platform-security",
 		Expires:    expires,
 	}}
+	// Snapshot the count now: oldCfg is the live object, so comparing against
+	// it after Reload would also see any in-place change.
+	wantExclusions := len(oldCfg.FetchProxy.Monitoring.PathEntropyExclusions)
 	s.lastReloadAt = time.Time{}
 
 	reloadErr := s.Reload(candidate)
@@ -439,7 +442,7 @@ func TestServer_Reload_StrictModeRejectionNamesTriggeringField(t *testing.T) {
 		t.Fatalf("rejection = %q, want it to still name strict mode", reloadErr)
 	}
 	assertRejectedReloadKeptConfig(t, s, oldCfg)
-	if len(s.proxy.CurrentConfig().FetchProxy.Monitoring.PathEntropyExclusions) != len(oldCfg.FetchProxy.Monitoring.PathEntropyExclusions) {
+	if len(s.proxy.CurrentConfig().FetchProxy.Monitoring.PathEntropyExclusions) != wantExclusions {
 		t.Fatal("rejected strict-mode reload still published its path entropy exclusion")
 	}
 	for _, want := range []string{

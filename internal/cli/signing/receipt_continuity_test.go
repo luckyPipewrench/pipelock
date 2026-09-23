@@ -59,6 +59,84 @@ func continuityKey(t *testing.T) (string, ed25519.PrivateKey) {
 	return hex.EncodeToString(pub), priv
 }
 
+func TestVerifyReceiptRunDirectoryReaders(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pub, priv := continuityKey(t)
+	first := runContinuityChain(t, dir, priv, 1)
+	reportPath := filepath.Join(t.TempDir(), "clean.json")
+	out, err := runVerifyReceipt(t, "--chain", dir, "--key", pub, "--clean-report", reportPath)
+	if err != nil || !strings.Contains(out, "Actions:   3") || !strings.Contains(out, first) {
+		t.Fatalf("single run clean report: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatal(err)
+	}
+	second := runContinuityChain(t, dir, priv, 1)
+	if err := os.Remove(reportPath); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pub, "--clean-report", reportPath)
+	if err == nil || !strings.Contains(err.Error(), "pass --session") {
+		t.Fatalf("multi-run clean report must refuse ambiguous single-chain output: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(reportPath); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous clean report was written: %v", err)
+	}
+	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pub, "--session", second, "--clean-report", reportPath)
+	if err != nil || !strings.Contains(out, second) {
+		t.Fatalf("explicit run clean report: %v\n%s", err, out)
+	}
+	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pub, "--whole-recorder")
+	if err == nil || !strings.Contains(out, first) || !strings.Contains(out, second) || !strings.Contains(out, "RESTART CONTINUITY") {
+		t.Fatalf("whole recorder must inspect every run and report their state: %v\n%s", err, out)
+	}
+}
+
+func TestVerifyReceiptRunDirectoryReadersRejectMissingAndEmpty(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pub, _ := continuityKey(t)
+	for _, args := range [][]string{
+		{"--chain", dir, "--key", pub, "--whole-recorder"},
+		{"--chain", dir, "--key", pub, "--clean-report", filepath.Join(t.TempDir(), "clean.json")},
+	} {
+		out, err := runVerifyReceipt(t, args...)
+		if err == nil || !strings.Contains(err.Error(), "no ") {
+			t.Fatalf("empty directory must fail closed: %v\n%s", err, out)
+		}
+	}
+}
+
+func TestTranscriptRootRunDirectoryResolution(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pub, priv := continuityKey(t)
+	first := runContinuityChain(t, dir, priv, 1)
+	cmd := TranscriptRootCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--chain", dir, "--key", pub})
+	if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), first) {
+		t.Fatalf("one run root: %v\n%s", err, out.String())
+	}
+	_ = runContinuityChain(t, dir, priv, 1)
+	cmd = TranscriptRootCmd()
+	cmd.SetArgs([]string{"--chain", dir, "--key", pub})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "pass --session") {
+		t.Fatalf("ambiguous root must fail: %v", err)
+	}
+}
+
+func TestCleanReportRejectsNoReceipts(t *testing.T) {
+	t.Parallel()
+	pub, _ := continuityKey(t)
+	err := verifyCleanReport(io.Discard, "empty run", nil, []string{pub}, false, filepath.Join(t.TempDir(), "clean.json"))
+	if err == nil || !strings.Contains(err.Error(), "no receipts") {
+		t.Fatalf("empty clean report must fail closed: %v", err)
+	}
+}
+
 func TestVerifyReceiptChainDirVerifiesEveryRunAndContinuity(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

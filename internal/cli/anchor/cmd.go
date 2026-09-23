@@ -23,17 +23,18 @@ import (
 )
 
 type receiptsOptions struct {
-	keys      []string
-	sessionID string
-	asDir     bool
-	backend   string
-	logPath   string
-	logID     string
-	rekorURL  string
-	rekorKey  string
-	rekorHash string
-	rekorYes  bool
-	output    string
+	keys            []string
+	sessionID       string
+	sessionExplicit bool
+	asDir           bool
+	backend         string
+	logPath         string
+	logID           string
+	rekorURL        string
+	rekorKey        string
+	rekorHash       string
+	rekorYes        bool
+	output          string
 }
 
 func Cmd() *cobra.Command {
@@ -66,6 +67,7 @@ development. Rekor submission is recorded for later transparency-log audit;
 verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runReceipts(cmd.OutOrStdout(), args[0], opts)
 		},
 	}
@@ -305,8 +307,23 @@ func resolveBackend(opts receiptsOptions) (anchorpkg.Backend, error) {
 
 func extractReceipts(target string, opts receiptsOptions) ([]receipt.Receipt, string, error) {
 	if opts.asDir {
-		receipts, err := receipt.ExtractReceiptsFromSessionDir(target, opts.sessionID)
-		return receipts, opts.sessionID, err
+		session := opts.sessionID
+		if !opts.sessionExplicit {
+			sessions, err := receipt.ResolveBaseSessions(target, session)
+			if err != nil {
+				return nil, "", fmt.Errorf("listing receipt chains: %w", err)
+			}
+			switch len(sessions) {
+			case 0:
+				return nil, "", fmt.Errorf("no receipt chains found for base %q", session)
+			case 1:
+				session = sessions[0]
+			default:
+				return nil, "", fmt.Errorf("base %q has %d receipt chains; pass --session with a run session to anchor one chain", session, len(sessions))
+			}
+		}
+		receipts, err := receipt.ExtractReceiptsFromSessionDir(target, session)
+		return receipts, session, err
 	}
 	receipts, sessionID, err := receipt.ExtractReceiptsWithSessionID(target)
 	if err == nil {

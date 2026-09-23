@@ -176,9 +176,15 @@ Examples:
 			if resolvedLocation != nil {
 				if cleanReport == "" {
 					if wholeRecorder {
-						return outputResult(out, verifyWholeRecorderFromResolvedSessionDir(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
+						return outputResult(out, verifyWholeRecorderDir(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
 					}
 					return outputResult(out, verifyChainDirWithContinuity(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
+				}
+				if !cmd.Flags().Changed("session") {
+					sessionID, err = resolveOneReceiptSession(*resolvedLocation, sessionID)
+					if err != nil {
+						return err
+					}
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
@@ -328,6 +334,70 @@ func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.
 	}
 	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
 	return verifyWholeRecorderDetailed(out, label, query.Entries, result, trustedKeys, opts)
+}
+
+// resolveOneReceiptSession keeps single-chain outputs unambiguous. The clean
+// report has one chain summary, so a base with several runs needs an explicit
+// run session rather than silently reporting only one of them.
+func resolveOneReceiptSession(location recorder.EvidenceLocation, base string) (string, error) {
+	sessions, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return "", fmt.Errorf("listing receipt chains: %w", err)
+	}
+	switch len(sessions) {
+	case 0:
+		return "", fmt.Errorf("no receipt chains found for base %q", base)
+	case 1:
+		return sessions[0], nil
+	default:
+		return "", fmt.Errorf("base %q has %d receipt chains; pass --session with a run session for this single-chain output", base, len(sessions))
+	}
+}
+
+func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	base := sessionID
+	if b, ok := receipt.RunSessionBase(sessionID); ok {
+		base = b
+	}
+	sessions, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return fmt.Errorf("listing receipt chains: %w", err)
+	}
+	if len(sessions) == 0 {
+		return fmt.Errorf("no recorder chains found for base %q", base)
+	}
+	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
+		TrustedKeys: trustedKeys, Endorsements: opts.RotationEndorsements,
+	})
+	if err != nil {
+		return fmt.Errorf("restart continuity check incomplete: %w", err)
+	}
+	if explicit {
+		sessions = []string{sessionID}
+	}
+	var failed []string
+	var firstErr error
+	for _, session := range sessions {
+		chainOpts, chainKeys := chainScopedTrust(report, session, trustedKeys, opts)
+		if verifyErr := verifyWholeRecorderFromResolvedSessionDir(out, location, session, chainKeys, chainOpts); verifyErr != nil {
+			failed = append(failed, session)
+			if firstErr == nil {
+				firstErr = verifyErr
+			}
+		}
+		_, _ = fmt.Fprintln(out)
+	}
+	printRestartContinuity(out, report)
+	if len(failed) > 0 {
+		if len(sessions) == 1 {
+			return firstErr
+		}
+		return fmt.Errorf("whole-recorder verification failed for %d of %d chain(s): %s", len(failed), len(sessions), strings.Join(failed, ", "))
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
+	}
+	return nil
 }
 
 func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder.Entry, whole receipt.WholeRecorderResult, trustedKeys []string, opts verifyReceiptOptions) error {
@@ -1014,6 +1084,9 @@ type cleanActionEntry struct {
 }
 
 func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
+	if len(receipts) == 0 {
+		return fmt.Errorf("no receipts found in %s", label)
+	}
 	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
 	if !result.Valid {
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
@@ -1401,6 +1474,12 @@ Examples:
 					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
 				}
 				chainDir = location.Dir
+				if !cmd.Flags().Changed("session") {
+					sessionID, err = resolveOneReceiptSession(location, sessionID)
+					if err != nil {
+						return err
+					}
+				}
 				receipts, err = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 				if err != nil {
 					return fmt.Errorf("extracting session receipts: %w", err)

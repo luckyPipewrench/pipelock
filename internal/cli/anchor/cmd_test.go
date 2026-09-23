@@ -700,6 +700,40 @@ func cliRecorderSessionDir(t *testing.T) (dir string, keyHex string) {
 	return dir, hex.EncodeToString(pub)
 }
 
+func TestAnchorDirectoryResolvesRunSession(t *testing.T) {
+	t.Parallel()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "policy-test", Session: session})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := receiptsCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{dir, "--dir", "--key", hex.EncodeToString(pub), "--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"), "--out", "bundle.json"})
+	if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), session) {
+		t.Fatalf("anchor one run: %v\n%s", err, out.String())
+	}
+	if _, _, err := extractReceipts(dir, receiptsOptions{asDir: true, sessionID: "missing", sessionExplicit: false}); err == nil || !strings.Contains(err.Error(), "no receipt chains") {
+		t.Fatalf("missing base must fail: %v", err)
+	}
+}
+
 // TestReceiptsCmdAsDirExtractsFromSessionDirectory covers the --dir branch of
 // extractReceipts, which reads a whole session directory rather than a single
 // evidence file.

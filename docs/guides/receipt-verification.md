@@ -343,6 +343,10 @@ The `--key` flag is required for transcript roots: the root is only
 meaningful if every receipt in the selected writer chain was verified against a
 trusted key.
 
+For a directory with one run chain, `transcript-root --chain DIR` selects that
+run. If the directory has several run chains, pass `--session` with the exact
+run ID. A transcript root summarizes one chain, not the whole directory.
+
 When verifying a file-based evidence capture, `transcript-root` derives the
 `SessionID` from the first entry in the file rather than the `--session`
 flag (which still controls the session ID for directory-based chain scans).
@@ -351,11 +355,19 @@ rather than silently printing a valid-looking root, so scripts can trust an
 exit-0 status to mean receipts were present and the selected writer chain
 verified.
 
+`verify-receipt --chain DIR --whole-recorder` checks every run chain. A clean
+report describes one chain: `--clean-report` selects a lone run, and requires
+`--session` when several runs are present. An empty report is an error.
+
 ## Anchoring receipts
 
 `pipelock anchor receipts` verifies a receipt chain with pinned signer keys,
 writes the verified chain head to an anchor backend, and emits an anchor bundle
 for later offline verification.
+
+With `--dir`, anchoring selects a lone run chain automatically. If the
+directory holds several runs, pass `--session` with the exact run ID; each
+anchor bundle covers one chain.
 
 The local backend is deterministic test/development plumbing, not an
 operator-independent witness:

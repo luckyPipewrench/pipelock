@@ -262,6 +262,8 @@ sudo pipelock evidence compact \
 sudo systemctl start pipelock.service
 ```
 
+`proxy` is the session older binaries wrote. Current binaries record one chain per process run, so pass the over-cap run session instead, for example `--session proxy.run.<id>`.
+
 The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and uses bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and signed v1 or v2 receipts before and after compaction. It copies each JSONL record line without changing its bytes and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory then becomes a timestamped sibling archive with SHA-256 digests and byte mappings.
 
 Recorder histories created with checkpoint signing disabled contain unsigned checkpoints. The compactor preserves them only when a later checkpoint has a valid signature that seals the earlier records through the recorder hash chain. It reports the exact count and exits non-zero. Inspect the source, then rerun with `--allow-unsigned-checkpoints=N` to acknowledge that count. The compactor refuses an unsigned checkpoint at the end of the chain because no later signature covers it, and refuses histories with more than 10,000 unsigned checkpoints so manifest generation remains bounded. The archive manifest lists each acknowledged checkpoint and the later-signature coverage result. Signed checkpoints still require a valid signature.

@@ -3675,15 +3675,15 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 // applyShield runs Browser Shield rewriting on a response body when enabled
 // and the hostname is not exempt. A nonnil block result prevents delivery and
 // supplies the transport's status, reason, and receipt classification.
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, *shieldBlockResult) {
+func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
 	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
-		return body, nil, nil
+		return body, nil, false, nil
 	}
 
 	// Exempt domains: skip shield entirely.
 	if isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains) {
 		p.metrics.RecordShieldSkipped("exempt_domain")
-		return body, nil, nil
+		return body, nil, false, nil
 	}
 
 	// Content-type gate: skip shield entirely for non-shieldable media
@@ -3695,23 +3695,27 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	// on the rewrite path; we short-circuit here for binary bodies so the
 	// oversize ceiling only applies to content the shield would actually
 	// rewrite (HTML, JS, SVG).
-	if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(contentType, body, respHeaders)) {
+	pipeline := detectShieldPipelineForResponse(contentType, body, respHeaders)
+	if shieldLeavesBodyUnchanged(pipeline) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
-		return body, nil, nil
+		return body, nil, false, nil
 	}
-
 	// Max shield bytes: enforce oversize action. A size-exempt response already
 	// admitted to the bounded whole-buffer path can reuse that path's larger
 	// ceiling. Over-cap bodies retain the inflight reservation until this work
 	// finishes; under-cap bodies remain bounded by the normal scan ceiling.
 	shieldMaxBytes := shieldMaxBytesForResponse(cfg, hostname, transport)
+	if pipeline == shield.PipelineSVG && shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
+		p.logger.LogBlocked(actx, "media_policy", svgIncompleteValidationReason)
+		return nil, nil, false, svgValidationBlock(svgIncompleteValidationReason)
+	}
 	if shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
 			if isShieldUTF16Response(body, contentType) {
 				p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldUTF16ScanHeadBlockReason)
-				return nil, nil, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
+				return nil, nil, false, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
 			}
 			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full
@@ -3722,16 +3726,16 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
 				if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-					return nil, summary, shieldCapacityBlock()
+					return nil, summary, false, shieldCapacityBlock()
 				}
 			}
-			return append(head, body[shieldMaxBytes:]...), summary, nil
+			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
-			return body, nil, nil
+			return body, nil, false, nil
 		default: // block: fail-closed, return 403
 			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes))
-			return nil, nil, &shieldBlockResult{
+			return nil, nil, false, &shieldBlockResult{
 				info:   blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 				status: http.StatusForbidden, reason: shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes),
 			}
@@ -3743,7 +3747,14 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
 	if result.uninspectableReason != "" {
 		p.logger.LogBlocked(actx, shieldUninspectableLayer, result.uninspectableReason)
-		return nil, nil, shieldUninspectableBlock(result.uninspectableReason)
+		return nil, nil, false, shieldUninspectableBlock(result.uninspectableReason)
+	}
+	if result.svgRefusal != "" {
+		// Name the construct that failed. The validator's reasons are compiled
+		// strings describing SVG structure, never response content, so they
+		// are safe to surface and make a false positive diagnosable.
+		p.logger.LogBlocked(actx, "media_policy", result.svgRefusal)
+		return nil, nil, false, svgValidationBlock(result.svgRefusal)
 	}
 	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	rewritten, summary := result.body, result.summary
@@ -3751,10 +3762,10 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
 		if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-			return nil, summary, shieldCapacityBlock()
+			return nil, summary, false, shieldCapacityBlock()
 		}
 	}
-	return rewritten, summary, nil
+	return rewritten, summary, result.svgValidated, nil
 }
 
 // runShieldPipelineResult applies Browser Shield and returns an optional
@@ -6044,8 +6055,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	shieldBodyBytes := int64(len(body))
 	shieldBlocked := p.blockShieldPartialResponse(resp, body, shieldHost, cfg, actx)
 	var shieldSummary *receipt.ShieldSummary
+	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, shieldBlocked = p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -6080,7 +6092,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// through unchanged and image/audio/video responses get transport-
 	// agnostic enforcement. Blocks yield a structured FetchResponse so the
 	// client sees the policy reason, not a generic 403.
-	mediaVerdict := applyMediaPolicy(cfg, contentType, body)
+	mediaVerdict := applyMediaPolicy(cfg, contentType, body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
 	mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
 	if mediaVerdict.Blocked {

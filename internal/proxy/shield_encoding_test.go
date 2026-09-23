@@ -151,7 +151,7 @@ func TestApplyShieldRetainsRewriteAuditEvent(t *testing.T) {
 	t.Cleanup(logger.Close)
 	p.logger = logger
 	body := []byte(`<html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`)
-	_, summary, blocked := p.applyShield(body, "text/html", "example.com", http.Header{"Content-Type": {"text/html"}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+	_, summary, _, blocked := p.applyShield(body, "text/html", "example.com", http.Header{"Content-Type": {"text/html"}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
 	if blocked != nil || summary == nil || summary.TrackingBeacons == 0 {
 		t.Fatalf("shield rewrite missing: blocked=%+v summary=%+v", blocked, summary)
 	}
@@ -192,8 +192,12 @@ func TestShieldUTF16_RewritesAndRepairsMetadata(t *testing.T) {
 			bom:         true,
 		},
 		{
-			name:        "SVG big endian BOM and XML declaration",
-			body:        `<?xml version="1.0" encoding="UTF-16BE"?><svg xmlns="http://www.w3.org/2000/svg"><image href="https://track.example.com/pixel" width="1" height="1"/></svg>`,
+			name: "SVG big endian BOM and XML declaration",
+			// A hyperlink passes SVG validation (it fetches nothing) and is
+			// still rewritten, so this exercises the rewrite-and-repair path.
+			// A fetching reference such as <image href> is refused outright;
+			// see TestShieldUTF16_SVGValidatesDecodedText.
+			body:        `<?xml version="1.0" encoding="UTF-16BE"?><svg xmlns="http://www.w3.org/2000/svg"><a href="https://track.example.com/pixel"><rect width="1" height="1"/></a></svg>`,
 			contentType: "image/svg+xml; charset=utf-16be",
 			order:       shieldUTF16BE,
 			bom:         true,
@@ -362,7 +366,7 @@ func TestProxy_ApplyShield_WHATWGUTF16Labels(t *testing.T) {
 		t.Run(tt.label, func(t *testing.T) {
 			body := encodeUTF16ForShieldTest(` <html><body><img src="https://track.example.com/pixel" width="1" height="1"></body></html>`, tt.order, false)
 			contentType := "text/html; charset=" + tt.label
-			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+			out, summary, _, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
 			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
 				t.Fatalf("label %q outcome: blocked=%+v summary=%+v body=%q", tt.label, blocked, summary, out)
 			}
@@ -382,7 +386,7 @@ func TestProxy_ApplyShield_BOMPrecedence(t *testing.T) {
 
 	t.Run("generic UTF-16 lets big endian BOM win", func(t *testing.T) {
 		body := encodeUTF16ForShieldTest(html, shieldUTF16BE, true)
-		out, summary, blocked := p.applyShield(body, "text/html; charset=utf-16", "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+		out, summary, _, blocked := p.applyShield(body, "text/html; charset=utf-16", "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
 		if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
 			t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
 		}
@@ -394,7 +398,7 @@ func TestProxy_ApplyShield_BOMPrecedence(t *testing.T) {
 		if isShieldUTF16Response(body, contentType) {
 			t.Fatal("UTF-8 BOM response classified as UTF-16")
 		}
-		out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+		out, summary, _, blocked := p.applyShield(body, contentType, "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
 		if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
 			t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
 		}
@@ -612,7 +616,7 @@ func TestProxy_ApplyShield_NoSniffAndBinaryTypesStayInert(t *testing.T) {
 				if tt.nosniff {
 					headers.Set("X-Content-Type-Options", "nosniff")
 				}
-				out, summary, blocked := p.applyShield(body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+				out, summary, _, blocked := p.applyShield(body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 				if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != tt.contentType {
 					t.Fatalf("inert outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
 				}
@@ -636,7 +640,7 @@ func TestProxy_ApplyShield_InvalidNoSniffStillShields(t *testing.T) {
 				"Content-Type":           {"unknown/unknown"},
 				"X-Content-Type-Options": {"other, nosniff"},
 			}
-			out, summary, blocked := p.applyShield(body, "unknown/unknown", "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			out, summary, _, blocked := p.applyShield(body, "unknown/unknown", "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") || headers.Get("Content-Type") != "text/html" {
 				t.Fatalf("outcome: blocked=%+v summary=%+v headers=%#v body=%q", blocked, summary, headers, out)
 			}
@@ -654,7 +658,7 @@ func TestProxy_ApplyShield_MalformedNonGenericTypesStayInert(t *testing.T) {
 	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
 		t.Run(transport, func(t *testing.T) {
 			headers := http.Header{"Content-Type": {contentType}}
-			out, summary, blocked := p.applyShield(body, contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			out, summary, _, blocked := p.applyShield(body, contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 			if blocked != nil || summary != nil || !bytes.Equal(out, body) || headers.Get("Content-Type") != contentType {
 				t.Fatalf("outcome: blocked=%+v summary=%+v content-type=%q unchanged=%t", blocked, summary, headers.Get("Content-Type"), bytes.Equal(out, body))
 			}
@@ -719,23 +723,58 @@ func TestProxy_ApplyShield_MalformedDeclaredEssenceTransportParity(t *testing.T)
 	cfg.BrowserShield.InjectFingerprintShims = false
 	cfg.BrowserShield.StripExtensionProbing = false
 
-	tests := []struct {
-		name        string
-		contentType string
-		body        []byte
-		pipeline    string
-	}{
-		{"SVG", "image/svg+xml; a=1; a=2", []byte(`<!doctype html><svg><script>alert(1)</script></svg>`), "svg"},
+	// A malformed parameter list must not hide the SVG essence. Classification
+	// as SVG is proven in both directions: the hostile document is refused by
+	// SVG validation, and the benign twin is admitted with the SVG proof.
+	const contentType = "image/svg+xml; a=1; a=2"
+	hostile := []byte(`<!doctype html><svg><script>alert(1)</script></svg>`)
+	benign := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`)
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
+		t.Run("SVG hostile/"+transport, func(t *testing.T) {
+			out, _, svgShielded, blocked := p.applyShield(hostile, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked == nil || svgShielded || strings.Contains(string(out), "alert(1)") || !strings.Contains(blocked.reason, "SVG failed browser-shield validation") {
+				t.Fatalf("outcome: blocked=%+v proof=%t body=%q", blocked, svgShielded, out)
+			}
+		})
+		t.Run("SVG benign/"+transport, func(t *testing.T) {
+			out, _, svgShielded, blocked := p.applyShield(benign, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			if blocked != nil || !svgShielded || string(out) != string(benign) {
+				t.Fatalf("outcome: blocked=%+v proof=%t body=%q", blocked, svgShielded, out)
+			}
+			if verdict := applyMediaPolicy(cfg, contentType, out, mediaPolicyOptions{svgShielded: svgShielded}); verdict.Blocked {
+				t.Fatalf("media floor refused a validated SVG under a malformed essence: %s", verdict.BlockReason)
+			}
+		})
 	}
-	for _, tt := range tests {
-		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
-			t.Run(tt.name+"/"+transport, func(t *testing.T) {
-				out, summary, blocked := p.applyShield(tt.body, tt.contentType, "example.com", http.Header{"Content-Type": {tt.contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
-				if blocked != nil || summary == nil || summary.Pipeline != tt.pipeline || strings.Contains(string(out), "alert(1)") {
-					t.Fatalf("outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
-				}
-			})
-		}
+}
+
+// SVG validation runs on the strictly decoded text, so a UTF-16 document gets
+// the same verdict as its UTF-8 twin rather than a spurious parse failure.
+func TestShieldUTF16_SVGValidatesDecodedText(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults().BrowserShield
+	cfg.Enabled = true
+	engine := shield.NewEngine(nil)
+	const contentType = "image/svg+xml; charset=utf-16le"
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"benign", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`, true},
+		{"script", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`, false},
+		{"fetching reference", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><image href="https://track.example.com/pixel"/></svg>`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runShieldPipelineWithEncoding(engine, encodeUTF16ForShieldTest(tc.body, shieldUTF16LE, true), contentType, http.Header{"Content-Type": {contentType}}, &cfg, metrics.New(), TransportFetch)
+			if result.uninspectableReason != "" {
+				t.Fatal(result.uninspectableReason)
+			}
+			if result.svgValidated != tc.want || (result.svgRefusal == "") != tc.want {
+				t.Fatalf("svgValidated=%t refusal=%q, want validated=%t", result.svgValidated, result.svgRefusal, tc.want)
+			}
+		})
 	}
 }
 
@@ -762,7 +801,7 @@ func TestProxy_ApplyShield_NonHTTPWhitespaceTransportParity(t *testing.T) {
 		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
 			t.Run(tt.name+"/"+transport, func(t *testing.T) {
 				headers := http.Header{"Content-Type": {tt.contentType}}
-				out, summary, blocked := p.applyShield(tt.body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+				out, summary, _, blocked := p.applyShield(tt.body, tt.contentType, "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 				if blocked != nil || summary == nil || summary.Pipeline != "html" || strings.Contains(string(out), "track.example.com") || headers.Get("Content-Type") != "text/html" {
 					t.Fatalf("outcome: blocked=%+v summary=%+v content-type=%q body=%q", blocked, summary, headers.Get("Content-Type"), out)
 				}
@@ -781,7 +820,7 @@ func TestProxy_ApplyShield_MalformedUTF16ContentTypeFailsClosed(t *testing.T) {
 
 	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
 		t.Run(transport, func(t *testing.T) {
-			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			out, summary, _, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 			if blocked == nil || blocked.info.Reason != blockreason.BrowserShieldUninspectable || summary != nil || out != nil {
 				t.Fatalf("malformed UTF-16 outcome: blocked=%+v summary=%+v unchanged=%t", blocked, summary, bytes.Equal(out, body))
 			}
@@ -802,7 +841,7 @@ func TestProxy_ApplyShield_MalformedContentTypeWithUTF8BOMStillShields(t *testin
 
 	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect} {
 		t.Run(transport, func(t *testing.T) {
-			out, summary, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			out, summary, _, blocked := p.applyShield(body, contentType, "example.com", http.Header{"Content-Type": {contentType}}, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
 				t.Fatalf("malformed UTF-8 BOM outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
 			}
@@ -859,7 +898,7 @@ func TestProxy_ApplyShield_UTF16ScanHeadBlocks(t *testing.T) {
 	cfg.BrowserShield.MaxShieldBytes = 16
 	cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
 	body := encodeUTF16ForShieldTest(`<html><body>`+strings.Repeat("safe", 20)+`</body></html>`, shieldUTF16LE, true)
-	_, _, blocked := p.applyShield(body, "text/html; charset=utf-16le", "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+	_, _, _, blocked := p.applyShield(body, "text/html; charset=utf-16le", "example.com", http.Header{}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
 	if blocked == nil || blocked.info.Reason != blockreason.BrowserShieldUninspectable {
 		t.Fatalf("scan-head UTF-16 block = %+v, want browser shield uninspectable", blocked)
 	}
@@ -896,7 +935,7 @@ func TestProxy_ApplyShield_UTF16TransportParity(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			headers := http.Header{"Content-Type": {"text/html; charset=utf-16le"}}
 			headers.Set("ETag", `"upstream"`)
-			out, summary, blocked := p.applyShield(body, headers.Get("Content-Type"), "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
+			out, summary, _, blocked := p.applyShield(body, headers.Get("Content-Type"), "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", transport, "action")
 			if blocked != nil || summary == nil || strings.Contains(string(out), "track.example.com") {
 				t.Fatalf("transport outcome: blocked=%+v summary=%+v body=%q", blocked, summary, out)
 			}

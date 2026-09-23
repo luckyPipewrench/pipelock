@@ -30,6 +30,13 @@ type shieldPipelineResult struct {
 	uninspectableReason string
 	utf16               bool
 	pipeline            shield.PipelineType
+	// svgValidated is the only proof that may admit an SVG response: the
+	// complete decoded body, and the rewritten body that will be delivered,
+	// both passed shield.ValidateSVG.
+	svgValidated bool
+	// svgRefusal names the construct that failed SVG validation. It is built
+	// from compiled validator strings, never from response content.
+	svgRefusal string
 }
 
 // A 206 range refers to bytes of the upstream representation. Shield cannot
@@ -71,10 +78,27 @@ func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentTy
 	if !utf16 {
 		content = string(body)
 	}
+	if pipeline == shield.PipelineSVG && len(body) == 0 {
+		// An empty body (HEAD, 204, 304) carries no content to activate.
+		return shieldPipelineResult{body: body, pipeline: pipeline, svgValidated: true}
+	}
+	if pipeline == shield.PipelineSVG {
+		if err := shield.ValidateSVG(content); err != nil {
+			return shieldPipelineResult{body: body, pipeline: pipeline, svgRefusal: svgValidationRefusal(err)}
+		}
+	}
 
 	headerNonce := shield.ExtractCSPNonce(headers)
 	shieldResult := engine.RewriteWithNonce(content, pipeline, cfg, headerNonce)
 	result := shieldPipelineResult{body: body, summary: shieldSummaryFromResult(shieldResult), utf16: utf16, pipeline: pipeline}
+	if pipeline == shield.PipelineSVG {
+		// Validate what will actually be delivered, not only what arrived:
+		// a rewrite must never be the step that makes an SVG active.
+		if err := shield.ValidateSVG(shieldResult.Content); err != nil {
+			return shieldPipelineResult{body: body, pipeline: pipeline, svgRefusal: svgValidationRefusal(err)}
+		}
+		result.svgValidated = true
+	}
 	if !shieldResult.Rewritten {
 		return result
 	}
@@ -87,6 +111,10 @@ func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentTy
 	}
 	recordShieldRewriteMetrics(m, shieldResult, transport)
 	return result
+}
+
+func svgValidationRefusal(err error) string {
+	return fmt.Sprintf("media_policy: SVG failed browser-shield validation: %v", err)
 }
 
 func recordShieldRewriteMetrics(m *metrics.Metrics, result shield.Result, transport string) {

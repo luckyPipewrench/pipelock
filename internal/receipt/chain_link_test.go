@@ -1351,7 +1351,7 @@ func TestChainLink_TwelveProcessesShareOneDirectory(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestChainLinkHelperProcess$", "-test.count=1") //nolint:gosec // re-exec of this test binary
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestChainLinkHelperProcess$", "-test.count=1") // #nosec G204,G702 -- controlled re-exec of this test binary.
 			cmd.Env = append(os.Environ(), helperDirEnv+"="+dir, helperKeyEnv+"="+hex.EncodeToString(priv),
 				helperIDEnv+"="+strconv.Itoa(i), helperNEnv+"="+strconv.Itoa(helperProcs))
 			outs[i], errs[i] = cmd.CombinedOutput()

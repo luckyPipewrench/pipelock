@@ -104,6 +104,17 @@ func TestReloadDowngradeRejectReason_RequiredContractsHonorWarningDisposition(t 
 			wantRejected:   true,
 			wantWarningFor: "fetch_proxy.monitoring.path_entropy_exclusions",
 		},
+		{
+			name: "secret file replacement is rejected",
+			old: func(c *config.Config) {
+				c.DLP.SecretsFile = "old-secrets.txt"
+			},
+			updated: func(c *config.Config) {
+				c.DLP.SecretsFile = "new-secrets.txt"
+			},
+			wantRejected:   true,
+			wantWarningFor: "dlp.secrets_file",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, mode := range []string{config.ModeBalanced, config.ModeAudit} {

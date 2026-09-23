@@ -709,11 +709,11 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 				Message: "secrets_file removed — known secret scanning disabled",
 			})
 		} else if old.DLP.SecretsFile != "" {
-			warnings = append(warnings, advisoryReloadWarning(
-				"dlp.secrets_file",
-				fmt.Sprintf("secrets_file changed from %q to %q — secrets will be reloaded",
+			warnings = append(warnings, ReloadWarning{
+				Field: "dlp.secrets_file",
+				Message: fmt.Sprintf("secrets_file changed from %q to %q — secrets will be reloaded",
 					old.DLP.SecretsFile, updated.DLP.SecretsFile),
-			))
+			})
 		}
 	}
 

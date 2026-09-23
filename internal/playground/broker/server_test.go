@@ -2190,6 +2190,78 @@ func TestServer_BundleSlowDownloadDoesNotHoldKitBuildSlot(t *testing.T) {
 	}
 }
 
+func TestServer_BundleKitBuildQueueIsBounded(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "bounded-kit-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var calls atomic.Int32
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
+		KitBuilder: func(_ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return []byte("kit"), "kit.zip", nil
+		},
+	})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+
+	request := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=windows", nil)
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	firstDone := make(chan int, 1)
+	go func() { firstDone <- request() }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first kit build did not start")
+	}
+	secondDone := make(chan int, 1)
+	go func() { secondDone <- request() }()
+	deadline := time.After(3 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for len(srv.kitBuildQueue) != 2 {
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("second kit request did not enter bounded queue")
+		}
+	}
+	if got := request(); got != http.StatusServiceUnavailable {
+		t.Fatalf("third kit status = %d, want 503", got)
+	}
+	close(release)
+	if got := <-firstDone; got != http.StatusOK {
+		t.Fatalf("first kit status = %d, want 200", got)
+	}
+	if got := <-secondDone; got != http.StatusOK {
+		t.Fatalf("second kit status = %d, want 200", got)
+	}
+}
+
 func TestServer_BundleKitBuildFailureKeepsRawForRetry(t *testing.T) {
 	t.Parallel()
 	vm := newFakeVM(t, "kit-retry-token")

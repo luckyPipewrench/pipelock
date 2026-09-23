@@ -177,6 +177,7 @@ type Server struct {
 	global        *livechat.DailyBudget
 	client        *http.Client
 	kitBuildSlots chan struct{}
+	kitBuildQueue chan struct{}
 
 	vmReadyTimeout time.Duration
 	signingReady   bool
@@ -448,6 +449,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
 		kitBuildSlots:  make(chan struct{}, 1),
+		kitBuildQueue:  make(chan struct{}, 2),
 		vmReadyTimeout: vmReadyTimeout,
 		signingReady:   signingVerified,
 		bundleCache:    newArtifactCache(artifactCacheTTL),
@@ -883,16 +885,25 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			select {
+			case s.kitBuildQueue <- struct{}{}:
+			default:
+				writeBrokerErr(w, http.StatusServiceUnavailable, "verify kit is busy; retry shortly")
+				return
+			}
+			select {
 			case s.kitBuildSlots <- struct{}{}:
 			case <-r.Context().Done():
+				<-s.kitBuildQueue
 				return
 			}
 			if r.Context().Err() != nil {
 				<-s.kitBuildSlots
+				<-s.kitBuildQueue
 				return
 			}
 			kit, filename, err := s.cfg.KitBuilder(playground.VerifyKitOS(osParam), raw.body)
 			<-s.kitBuildSlots
+			<-s.kitBuildQueue
 			if err != nil {
 				writeBrokerErr(w, http.StatusServiceUnavailable, "verify kit is not available")
 				return

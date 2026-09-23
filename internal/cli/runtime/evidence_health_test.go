@@ -1328,3 +1328,13 @@ func TestReadLastReceiptTailSurfacesNonNotExistReadDirError(t *testing.T) {
 // A directory mode expressed as a named constant; a bare octal literal here
 // trips the file-permission linter even though this is a directory.
 const evidenceDirTestMode = os.FileMode(0o750)
+
+// TestEvidenceAnchorStateFileIsRecorderOwned covers the second copy of the
+// anchor-state marker name, held here for evidence health sampling, so it
+// cannot drift from the recorder's owned-file definition unnoticed.
+func TestEvidenceAnchorStateFileIsRecorderOwned(t *testing.T) {
+	t.Parallel()
+	if !recorder.IsRecorderOwnedFile(evidenceAnchorStateFile) {
+		t.Fatalf("recorder.IsRecorderOwnedFile(%q) = false", evidenceAnchorStateFile)
+	}
+}

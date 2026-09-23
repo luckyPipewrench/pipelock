@@ -1512,3 +1512,15 @@ func TestChainLink_TwelveProcessesShareOneDirectory(t *testing.T) {
 		t.Fatalf("concurrent live runs must neither fork nor link each other: links=%d unlinked=%d findings=%+v", report.LinkCount(), len(report.Unlinked()), report.Findings)
 	}
 }
+
+// TestChainLinkFileNameIsRecorderOwned is the parity check between the name
+// this package publishes and the recorder's definition of the files it owns.
+// The recorder cannot import this package, so without this test the two could
+// drift and a writer guarded by IsRecorderOwnedFile would overwrite a link.
+func TestChainLinkFileNameIsRecorderOwned(t *testing.T) {
+	t.Parallel()
+	name := ChainLinkFileName("proxy.run.00112233445566778899aabbccddeeff")
+	if !recorder.IsRecorderOwnedFile(name) {
+		t.Fatalf("recorder.IsRecorderOwnedFile(%q) = false; the link would be unprotected", name)
+	}
+}

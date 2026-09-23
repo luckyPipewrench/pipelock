@@ -894,3 +894,27 @@ func TestQuerySession_DirectoryEntries(t *testing.T) {
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
 }
+
+func TestIsRecorderOwnedFile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		owned bool
+	}{
+		{"evidence-proxy-0.jsonl", true},
+		{"evidence-proxy.run.00112233445566778899aabbccddeeff-3.jsonl", true},
+		{"evidence-proxy-0-raw-00112233445566778899aabbccddeeff.raw.enc", true},
+		{"chain-link-proxy.run.00112233445566778899aabbccddeeff.json", true},
+		{recorder.RunWriterLockPrefix + "proxy.run.00112233445566778899aabbccddeeff" + recorder.RunWriterLockSuffix, true},
+		{"anchor-state.json", true},
+		// Operator outputs that happen to sit beside evidence are not owned.
+		{"bundle.json", false},
+		{"report.md", false},
+		{"chain-link-notes.txt", false},
+		{"evidence-summary.md", false},
+	} {
+		if got := recorder.IsRecorderOwnedFile(tc.name); got != tc.owned {
+			t.Errorf("IsRecorderOwnedFile(%q) = %v, want %v", tc.name, got, tc.owned)
+		}
+	}
+}

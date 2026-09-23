@@ -94,12 +94,23 @@ func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 		set  func(*shadowFlags, string)
 		want string
 	}{
+		// The legacy shard name is caught first by the older alias check.
 		{name: "out", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
 		{name: "out-json", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
-		{name: "run-out", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
-		{name: "run-out-json", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
-		{name: "legacy-later-shard", file: "evidence-proxy-1.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
-		{name: "other-run", file: "evidence-other.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		{name: "run-out", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "run-out-json", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		{name: "legacy-later-shard", file: "evidence-proxy-1.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "other-run", file: "evidence-other.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		// Every other file the recorder keeps here, none of which parses as an
+		// evidence shard. Before this guard refused the whole directory, each of
+		// these would have been replaced by the report.
+		{name: "chain-link", file: "chain-link-proxy.run.12345678901234567890123456789012.json", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "writer-lock", file: "writer-proxy.run.12345678901234567890123456789012.lock", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		{name: "raw-escrow", file: "evidence-proxy-0-raw-00112233445566778899aabbccddeeff.raw.enc", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
+		{name: "anchor-state", file: "anchor-state.json", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not be inside the recorder directory"},
+		// A name the recorder never writes is refused too: a report in this
+		// directory makes it a mixed directory that compaction refuses.
+		{name: "plain-report", file: "report.md", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not be inside the recorder directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -146,10 +146,13 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			if pathErr != nil {
 				return pathErr
 			}
-			name := filepath.Base(path)
-			_, _, evidenceFile := recorder.ParseEvidenceFilename(name)
-			if filepath.Dir(path) == recorderDir && evidenceFile {
-				return fmt.Errorf("%s must not name %s", label, shadowReceiptsLabel)
+			// A report never belongs inside the recorder directory. Refusing the
+			// whole directory, rather than a list of names, protects every file
+			// the recorder keeps there, including ones added later, and stops a
+			// stray report from turning the directory into a mixed one that the
+			// compactor then refuses.
+			if filepath.Dir(path) == recorderDir {
+				return fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere", label, recorderDir, shadowReceiptsLabel)
 			}
 		}
 	}

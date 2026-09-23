@@ -19,6 +19,7 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -216,6 +217,16 @@ func receiptDirectory(target string, asDir bool) (string, error) {
 }
 
 func validateBundleOutputPath(receiptDir, bundlePath string) error {
+	// The bundle legitimately lives in the receipt directory, so this cannot
+	// refuse the directory the way other report writers do. An EXISTING file
+	// there is already protected by the output-alias check, which receives
+	// every regular file in the directory. This refuses a recorder-owned NAME
+	// that does not exist yet: writing the bundle under it would squat on the
+	// name, so the recorder's later exclusive publish fails and a continuity
+	// link, for one, could never be recorded.
+	if recorder.IsRecorderOwnedFile(filepath.Base(bundlePath)) {
+		return fmt.Errorf("--out must not name a recorder-owned file in the receipt directory: %s", filepath.Base(bundlePath))
+	}
 	if info, err := os.Lstat(bundlePath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("--out must not be a symlink")

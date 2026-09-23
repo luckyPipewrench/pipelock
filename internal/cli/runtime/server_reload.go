@@ -561,13 +561,36 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// security contracts. A required evidence/signature mode should not
 		// keep forwarding under a warning-only weakening reload.
 		if reason := reloadDowngradeRejectReason(oldCfg, newCfg, warnings); reason != "" && !restoringPriorPolicy {
+			// The returned error keeps this exact prefix: other code, tests, and
+			// docs match on "rejected: security downgrade from".
 			rejectErr := fmt.Errorf("rejected: security downgrade from %s", reason)
-			if fields := trustExpansionReloadFields(warnings); len(fields) > 0 {
-				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %s cannot widen trust at runtime; previous configuration remains active; restart Pipelock to apply this change\n", strings.Join(fields, ", "))
-			} else {
-				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v; previous configuration remains active\n", rejectErr)
+			// "reason" names the CONTRACT that is in force (e.g. "required
+			// security mode (flight_recorder.require_receipts)"), which is not
+			// always the field the operator just edited. That field is only
+			// discoverable by re-deriving it from the reload warnings. Name it
+			// explicitly so the operator does not read a receipts-contract
+			// rejection as "something about receipts broke" when the actual
+			// edit was an entropy exclusion. The restart remedy holds because
+			// this downgrade comparison runs only on reload (oldCfg non-nil); a
+			// fresh start still validates the file but has no old config to
+			// compare it against, so this particular refusal cannot recur.
+			detail := rejectedDowngradeReloadDetail(oldCfg, newCfg, warnings)
+			auditErr := rejectErr
+			if detail != "" {
+				auditErr = fmt.Errorf("%w: %s", rejectErr, detail)
 			}
-			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+			switch {
+			case len(trustExpansionReloadFields(warnings)) > 0:
+				// Preserve the existing operator-facing wording for this case:
+				// it already leads with the field and the exact reason it is
+				// rejectable, so it does not repeat the generic prefix.
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %s; previous configuration remains active; restart Pipelock to apply this change\n", detail)
+			case detail != "":
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v: %s; previous configuration remains active; restart Pipelock to apply this change\n", rejectErr, detail)
+			default:
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v; previous configuration remains active; restart Pipelock to apply this change\n", rejectErr)
+			}
+			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), auditErr)
 			return rejectErr
 		}
 		// Bundle load failures are warning-only at startup because there is no
@@ -1088,6 +1111,75 @@ func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {
 
 func reloadWarningIsAdvisory(w config.ReloadWarning) bool {
 	return w.Disposition == config.ReloadWarningDispositionAdvisory
+}
+
+// rejectedDowngradeReloadDetail names the specific edit that triggered a
+// downgrade rejection, for the stderr WARNING and the audit event. It is a
+// diagnostic only; reloadDowngradeRejectReason above already decided the
+// reload is rejected before this is ever called.
+//
+// A contract that requiredModeTeardowns reports as torn down is left out,
+// because reason already names it (e.g. "required security mode
+// (flight_recorder.require_receipts)" for a reload that cleared
+// require_receipts itself); any other weakening in the same reload is still
+// named. In the remaining cases the rejection came from a non-advisory
+// ReloadWarning whose field is NOT named in "reason" at all, because reason
+// there reports the ACTIVE contract the warning is rejectable under, not the
+// field the warning is about. Trust-widening warnings get their own phrasing
+// ("cannot widen trust at runtime") because the caller already prints them
+// without repeating the generic "security downgrade from" prefix.
+func rejectedDowngradeReloadDetail(oldCfg, newCfg *config.Config, warnings []config.ReloadWarning) string {
+	// A torn-down contract is already named in reason, so it is left out
+	// here; any OTHER weakening in the same reload still has to be named.
+	named := make(map[string]struct{})
+	for _, f := range requiredModeTeardowns(oldCfg, newCfg) {
+		named[f] = struct{}{}
+	}
+	trust := trustExpansionReloadFields(warnings)
+	isTrust := make(map[string]struct{}, len(trust))
+	var parts []string
+	if len(trust) > 0 {
+		for _, f := range trust {
+			isTrust[f] = struct{}{}
+		}
+		parts = append(parts, strings.Join(trust, ", ")+" cannot widen trust at runtime")
+	}
+	// A reload can widen trust and weaken another control at once; name both,
+	// or the second edit stays invisible.
+	var weakened []string
+	for _, f := range rejectableDowngradeReloadWarningFields(warnings) {
+		_, trusted := isTrust[f]
+		_, torn := named[f]
+		if !trusted && !torn {
+			weakened = append(weakened, f)
+		}
+	}
+	if len(weakened) > 0 {
+		parts = append(parts, strings.Join(weakened, ", ")+" weakens protection and cannot apply at runtime")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// rejectableDowngradeReloadWarningFields names the reload warning fields that
+// make a reload rejectable under a required/strict contract, deduplicated and
+// in warning-emission order. Advisory warnings (restart-only, informational)
+// are excluded: hasRejectableDowngradeWarning already treats them as unable to
+// trigger rejection on their own, so naming one here would blame an edit that
+// was not the actual trigger.
+func rejectableDowngradeReloadWarningFields(warnings []config.ReloadWarning) []string {
+	seen := make(map[string]struct{}, len(warnings))
+	var fields []string
+	for _, w := range warnings {
+		if reloadWarningIsAdvisory(w) {
+			continue
+		}
+		if _, ok := seen[w.Field]; ok {
+			continue
+		}
+		seen[w.Field] = struct{}{}
+		fields = append(fields, w.Field)
+	}
+	return fields
 }
 
 // trustExpansionReloadFields identifies trust fields for a rejected reload's

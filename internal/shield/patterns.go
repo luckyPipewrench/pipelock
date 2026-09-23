@@ -200,7 +200,16 @@ func stripHiddenElementTraps(s string) (string, int) {
 		start, openEnd := pos+loc[0], pos+loc[1]
 		tag := strings.ToLower(s[pos+loc[2] : pos+loc[3]])
 		end := matchingCloseEnd(lower, openEnd, tag)
-		if !trapInstructionRe.MatchString(htmlTagRe.ReplaceAllString(s[openEnd:end], " ")) {
+		inner := s[openEnd:end]
+		if closeStart := strings.LastIndex(asciiLower(inner), "</"+tag); closeStart >= 0 {
+			inner = inner[:closeStart]
+		}
+		// Only a text-only hidden element is a trap. A hidden element that
+		// holds markup is interface: applications hide whole views, menus
+		// and templates until their scripts reveal them, and removing one
+		// because its text happens to contain "instead" deleted the page.
+		// Its text is still read by response scanning.
+		if strings.Contains(inner, "<") || !trapInstructionRe.MatchString(inner) {
 			b.WriteString(s[pos:openEnd])
 			pos = openEnd
 			continue

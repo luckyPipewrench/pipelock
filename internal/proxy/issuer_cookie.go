@@ -487,3 +487,57 @@ func issuerCookieScanHeaders(ctx context.Context, headers http.Header, sc *scann
 	}
 	return scan, allowances
 }
+
+// issuerCookieMaxBlockNames bounds the cookie names a block record carries.
+const (
+	issuerCookieMaxBlockNames = 16
+	issuerCookieUnnamed       = "(unnamed)"
+	issuerCookieRedactedName  = "(redacted)"
+)
+
+// loggableCookieName returns a pair's name for an audit record. A pair with
+// no name, a name that itself carries a DLP match, or an overlong name is
+// replaced by a placeholder, because a name is caller-controlled and could
+// otherwise carry the value the block exists to keep out of logs.
+func loggableCookieName(ctx context.Context, pair string, sc *scanner.Scanner) string {
+	name, _, found := strings.Cut(pair, "=")
+	name = strings.Trim(name, " \t")
+	switch {
+	case !found || name == "":
+		return issuerCookieUnnamed
+	case len(name) > issuerCookieMaxLoggedName || len(sc.ScanTextForDLP(ctx, name).Matches) > 0:
+		return issuerCookieRedactedName
+	}
+	return name
+}
+
+// cookieNamesWithDLPMatch names the scanned Cookie pairs that each carry a
+// DLP match, so an operator can tell which cookie a header block came from.
+// It reports names only, never values.
+func cookieNamesWithDLPMatch(ctx context.Context, headers http.Header, sc *scanner.Scanner) []string {
+	if sc == nil {
+		return nil
+	}
+	var names []string
+	for key, fields := range headers {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		for _, field := range fields {
+			for _, raw := range strings.Split(field, ";") {
+				pair := strings.Trim(raw, " \t")
+				if pair == "" {
+					continue
+				}
+				if len(sc.ScanTextForDLP(ctx, pair).Matches) == 0 {
+					continue
+				}
+				names = append(names, loggableCookieName(ctx, pair, sc))
+				if len(names) == issuerCookieMaxBlockNames {
+					return names
+				}
+			}
+		}
+	}
+	return names
+}

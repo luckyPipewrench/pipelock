@@ -4590,7 +4590,7 @@ func TestLogBlockedDetailHeaderDLPMetadata(t *testing.T) {
 	}
 	logger.LogBlockedDetail(LogContext{method: "GET", url: "https://app.vendor.example/", requestID: "req-1"},
 		"header_dlp", "request header contains secret", BlockDetail{
-			Header: "Cookie", Patterns: []string{"Session Token"},
+			Header: "Cookie", Patterns: []string{"Session Token"}, Cookies: []string{"sid"},
 		})
 	logger.Close()
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -4607,6 +4607,10 @@ func TestLogBlockedDetailHeaderDLPMetadata(t *testing.T) {
 	patterns, ok := entry["patterns"].([]any)
 	if !ok || len(patterns) != 1 || patterns[0] != "Session Token" {
 		t.Fatalf("patterns = %v", entry["patterns"])
+	}
+	cookies, ok := entry["cookies"].([]any)
+	if !ok || len(cookies) != 1 || cookies[0] != "sid" {
+		t.Fatalf("cookies = %v", entry["cookies"])
 	}
 }
 

@@ -215,6 +215,43 @@ func TestIssuerCookieScanHeadersPairwise(t *testing.T) {
 	}
 }
 
+func TestCookieNamesWithDLPMatch(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	ctx := context.Background()
+	aws := issuerAWSShapedValue()
+	headers := http.Header{"Cookie": {"theme=dark; lb=" + aws + "; " + aws + "; " + aws + "=x; session=" + issuerJWTShapedValue()}}
+	got := cookieNamesWithDLPMatch(ctx, headers, sc)
+	want := []string{"lb", issuerCookieUnnamed, issuerCookieRedactedName, "session"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("names = %v, want %v", got, want)
+	}
+	for _, name := range got {
+		if strings.Contains(name, aws) {
+			t.Fatal("a cookie value reached the logged names")
+		}
+	}
+	long := strings.Repeat("n", issuerCookieMaxLoggedName+1)
+	if got := cookieNamesWithDLPMatch(ctx, http.Header{"Cookie": {long + "=" + aws}}, sc); len(got) != 1 || got[0] != issuerCookieRedactedName {
+		t.Fatalf("overlong name = %v", got)
+	}
+	var many []string
+	for i := 0; i < issuerCookieMaxBlockNames+4; i++ {
+		many = append(many, fmt.Sprintf("c%d=%s", i, aws))
+	}
+	if got := cookieNamesWithDLPMatch(ctx, http.Header{"Cookie": {strings.Join(many, "; ")}}, sc); len(got) != issuerCookieMaxBlockNames {
+		t.Fatalf("names not bounded: %d", len(got))
+	}
+	if got := cookieNamesWithDLPMatch(ctx, http.Header{"Cookie": {"theme=dark"}, "X-Other": {aws}}, sc); len(got) != 0 {
+		t.Fatalf("clean cookies or other headers must name nothing: %v", got)
+	}
+	if cookieNamesWithDLPMatch(ctx, headers, nil) != nil {
+		t.Fatal("a nil scanner must name nothing")
+	}
+}
+
 func issuerCookieTestConfig(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	cfg.RequestBodyScanning.Action = config.ActionBlock
@@ -334,7 +371,12 @@ func TestInterceptIssuerBoundCookieEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"event":"dlp_issuer_cookie_allow"`, `"cookie":"AWSALB"`, `"cookie":"session"`, `"pattern":"AWS Access ID"`, `"pattern":"JWT Token"`} {
+	for _, want := range []string{
+		`"event":"dlp_issuer_cookie_allow"`, `"cookie":"AWSALB"`, `"cookie":"session"`, `"pattern":"AWS Access ID"`, `"pattern":"JWT Token"`,
+		// Block records name the offending cookie, and only the ones still
+		// scanned: the issued pairs beside "leak" are not named.
+		`"cookies":["AWSALB"]`, `"cookies":["leak"]`, `"cookies":["trap"]`,
+	} {
 		if !bytes.Contains(auditBytes, []byte(want)) {
 			t.Fatalf("audit missing %s", want)
 		}

@@ -1072,6 +1072,9 @@ type BlockDetail struct {
 	// Header and Patterns identify a header DLP finding without logging its value.
 	Header   string
 	Patterns []string
+	// Cookies names the Cookie pairs that carried a header DLP match. Names
+	// only; a cookie value is never logged.
+	Cookies []string
 }
 
 // Class string constants kept in lockstep with internal/scanner ResultClass.
@@ -1142,6 +1145,9 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("mitre_technique", technique)
 	if len(detail.Patterns) > 0 {
 		e.strs("patterns", detail.Patterns)
+	}
+	if len(detail.Cookies) > 0 {
+		e.strs("cookies", detail.Cookies)
 	}
 
 	// includeBlocked gates local audit log only - external emission always fires

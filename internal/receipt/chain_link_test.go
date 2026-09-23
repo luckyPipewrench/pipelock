@@ -482,6 +482,45 @@ func TestChainLink_TamperDeleteLinkBreaksOuterChain(t *testing.T) {
 	}
 }
 
+// The recorder hash is unkeyed. A reader with write access to evidence can
+// remove the first link and recompute the remaining envelope hashes while
+// leaving the signed receipts untouched. This is a design reproduction, not
+// an assertion that the current verifier should reject the resulting chain.
+func TestChainLink_DeletionAndOuterRehashLooksUnlinked(t *testing.T) {
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	_, successor := linkedPair(t, dir, priv)
+	before := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if !before.Healthy() || before.LinkCount() != 1 {
+		t.Fatalf("positive control: healthy linked pair required: %+v", before)
+	}
+	rewriteSessionFile(t, dir, successor.session, func(lines [][]byte) [][]byte {
+		link := linkLineIndex(t, lines)
+		lines = append(lines[:link:link], lines[link+1:]...)
+		prev := recorder.GenesisHash
+		for i, line := range lines {
+			var entry recorder.Entry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				t.Fatal(err)
+			}
+			entry.Sequence = uint64(i)
+			entry.PrevHash = prev
+			entry.Hash = recorder.ComputeHash(entry)
+			prev = entry.Hash
+			var err error
+			lines[i], err = json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return lines
+	})
+	after := mustVerifyBase(t, dir, BaseVerifyOptions{})
+	if !after.Healthy() || after.LinkCount() != 0 {
+		t.Fatalf("expected deletion to launder into an unlinked healthy pair; findings=%+v links=%d", after.Findings, after.LinkCount())
+	}
+}
+
 func TestChainLink_TamperAlterLinkFailsSignature(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

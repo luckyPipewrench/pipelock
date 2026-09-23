@@ -195,14 +195,13 @@ func browserContentTypeIsGeneric(mediaType string) bool {
 }
 
 func responseForbidsMIMESniffing(headers http.Header) bool {
-	for _, value := range headers.Values("X-Content-Type-Options") {
-		for token := range strings.SplitSeq(value, ",") {
-			if strings.EqualFold(strings.TrimSpace(token), "nosniff") {
-				return true
-			}
-		}
+	values := headers.Values("X-Content-Type-Options")
+	if len(values) == 0 {
+		return false
 	}
-	return false
+	first, _, _ := strings.Cut(values[0], ",")
+	first = strings.Trim(first, "\t\n\r ")
+	return strings.EqualFold(first, "nosniff")
 }
 
 func shieldSniffHeader(body []byte) []byte {

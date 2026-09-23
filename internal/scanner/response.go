@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf16"
@@ -862,30 +864,64 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 	if len(indices) == 0 {
 		return nil
 	}
+	// Large bodies spend most of their time in independent regexp engines.
+	// Keep each pattern's result in its original slot so match order, pass
+	// precedence, and suppression behavior are identical to the serial path.
+	workers := min(runtime.GOMAXPROCS(0), len(indices))
+	if workers < 2 || len(content) < 4096 {
+		return matchPatternsSequential(indices, patterns, content)
+	}
+	results := make([][]ResponseMatch, len(indices))
+	var wg sync.WaitGroup
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for slot := worker; slot < len(indices); slot += workers {
+				idx := indices[slot]
+				if idx >= 0 && idx < len(patterns) {
+					results[slot] = matchResponsePattern(patterns[idx], content)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	var matches []ResponseMatch
+	for _, group := range results {
+		matches = append(matches, group...)
+	}
+	return matches
+}
+
+func matchPatternsSequential(indices []int, patterns []*compiledPattern, content string) []ResponseMatch {
 	var matches []ResponseMatch
 	for _, idx := range indices {
-		if idx < 0 || idx >= len(patterns) {
-			continue
+		if idx >= 0 && idx < len(patterns) {
+			matches = append(matches, matchResponsePattern(patterns[idx], content)...)
 		}
-		p := patterns[idx]
-		if !responsePatternCanMatch(p, content) {
-			continue
+	}
+	return matches
+}
+
+func matchResponsePattern(p *compiledPattern, content string) []ResponseMatch {
+	if !responsePatternCanMatch(p, content) {
+		return nil
+	}
+	locs := responsePatternMatchLocations(p, content)
+	var matches []ResponseMatch
+	for _, loc := range locs {
+		matchText := content[loc[0]:loc[1]]
+		if runes := []rune(matchText); len(runes) > 100 {
+			matchText = string(runes[:100])
 		}
-		locs := responsePatternMatchLocations(p, content)
-		for _, loc := range locs {
-			matchText := content[loc[0]:loc[1]]
-			if runes := []rune(matchText); len(runes) > 100 {
-				matchText = string(runes[:100])
-			}
-			matches = append(matches, ResponseMatch{
-				PatternName:   p.name,
-				MatchText:     matchText,
-				Position:      loc[0],
-				Bundle:        p.bundle,
-				BundleVersion: p.bundleVersion,
-				matchLength:   loc[1] - loc[0],
-			})
-		}
+		matches = append(matches, ResponseMatch{
+			PatternName:   p.name,
+			MatchText:     matchText,
+			Position:      loc[0],
+			Bundle:        p.bundle,
+			BundleVersion: p.bundleVersion,
+			matchLength:   loc[1] - loc[0],
+		})
 	}
 	return matches
 }

@@ -1941,6 +1941,24 @@ func headerValueForDLP(name, value, target string, valueCount int) string {
 	return scanner.ScrubSigV4AuthorizationForTarget(value, target)
 }
 
+type joinedHeaderValue struct {
+	original string
+	scrubbed string
+}
+
+// joinHeaderValuesInOriginalOrder keeps each scrubbed value beside its original
+// while sorting, so the two DLP scans see the same header boundaries.
+func joinHeaderValuesInOriginalOrder(values []joinedHeaderValue) (string, string) {
+	sort.SliceStable(values, func(i, j int) bool { return values[i].original < values[j].original })
+	original := make([]string, len(values))
+	scrubbed := make([]string, len(values))
+	for i, value := range values {
+		original[i] = value.original
+		scrubbed[i] = value.scrubbed
+	}
+	return strings.Join(original, "\n"), strings.Join(scrubbed, "\n")
+}
+
 // scanRequestHeaders scans HTTP request headers for DLP patterns.
 // Two modes: "sensitive" scans only listed headers; "all" scans everything
 // except the ignore list. Headers are scanned regardless of destination
@@ -2039,7 +2057,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	}
 	sort.Strings(headerNames)
 
-	var allValues, scrubbedValues []string
+	var joinedValues []joinedHeaderValue
 	scrubbed := false
 	for _, name := range headerNames {
 		values := headersToScan[name]
@@ -2053,8 +2071,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 			}
 			// Include header name in joined scan to catch secrets split
 			// across the name:value boundary (e.g., X-AKIA1234: EXAMPLE).
-			allValues = append(allValues, name)
-			scrubbedValues = append(scrubbedValues, name)
+			joinedValues = append(joinedValues, joinedHeaderValue{name, name})
 		}
 
 		for _, v := range values {
@@ -2063,8 +2080,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 			if strings.EqualFold(name, headerNameAuthorization) {
 				joinedVal = sc.ScrubAuthorizedCredentialFromJoinedHeaders(name, scanVal, target)
 			}
-			allValues = append(allValues, scanVal)
-			scrubbedValues = append(scrubbedValues, joinedVal)
+			joinedValues = append(joinedValues, joinedHeaderValue{scanVal, joinedVal})
 			scrubbed = scrubbed || joinedVal != scanVal
 			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {
@@ -2085,13 +2101,11 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	// Joined scan: catches split-secret attacks across multiple headers
 	// or repeated values of the same header.
 	// Sort to ensure deterministic ordering (Go map iteration is random).
-	if len(allValues) > 1 {
-		sort.Strings(allValues)
-		joined := strings.Join(allValues, "\n")
+	if len(joinedValues) > 1 {
+		joined, scrubbedJoined := joinHeaderValuesInOriginalOrder(joinedValues)
 		matches := sc.ScanTextForDLP(ctx, joined).Matches
 		if scrubbed {
-			sort.Strings(scrubbedValues)
-			scrubbedMatches := sc.ScanTextForDLP(ctx, strings.Join(scrubbedValues, "\n")).Matches
+			scrubbedMatches := sc.ScanTextForDLP(ctx, scrubbedJoined).Matches
 			matches = scanner.MergeJoinedHeaderMatches(matches, scrubbedMatches)
 		}
 		if len(matches) > 0 {

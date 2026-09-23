@@ -120,6 +120,17 @@ func TestCredentialAudienceHosts_WebSocketFrameAndFragmentedDirectText(t *testin
 	}
 }
 
+func TestJoinHeaderValuesInOriginalOrder(t *testing.T) {
+	values := []joinedHeaderValue{
+		{original: "Bearer ya29." + strings.Repeat("a", 24), scrubbed: "Bearer [authorized-credential]"},
+		{original: "Bearer a", scrubbed: "Bearer a"},
+	}
+	original, scrubbed := joinHeaderValuesInOriginalOrder(values)
+	if original != "Bearer a\nBearer ya29."+strings.Repeat("a", 24) || scrubbed != "Bearer a\nBearer [authorized-credential]" {
+		t.Fatalf("joined headers lost original order: original=%q scrubbed=%q", original, scrubbed)
+	}
+}
+
 func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -200,6 +211,23 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 	}
 	if !sawAWS {
 		t.Fatalf("header-name AWS key not reported: %#v", nameResult.DLPMatches)
+	}
+	splitGoogle := scanRequestHeadersForTarget(t.Context(), http.Header{
+		"Authorization": []string{"Bearer " + token},
+		"X-First":       []string{"ya29."},
+		"X-Second":      []string{strings.Repeat("z", 24)},
+	}, cfg, sc, target)
+	if splitGoogle == nil || splitGoogle.Clean {
+		t.Fatal("Google token split across non-Authorization headers was allowed")
+	}
+	sawGoogle := false
+	for _, match := range splitGoogle.DLPMatches {
+		if match.PatternName == "Google OAuth Token" {
+			sawGoogle = true
+		}
+	}
+	if !sawGoogle {
+		t.Fatalf("split Google token not reported: %#v", splitGoogle.DLPMatches)
 	}
 
 	_, body := scanRequestBody(t.Context(), BodyScanRequest{

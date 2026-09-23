@@ -298,3 +298,27 @@ func TestVerifyReceiptChainDirFailedChainFails(t *testing.T) {
 		t.Fatalf("an untrusted chain must fail: %v\n%s", err, out)
 	}
 }
+
+// TestWholeRecorderReportsIncompleteRunsWithoutFailing covers the behavior a
+// crashed run used to break permanently: an unsealed run is reported as
+// INCOMPLETE and does not by itself fail the directory-wide check, while
+// --require-seal still turns it into a failure.
+func TestWholeRecorderReportsIncompleteRunsWithoutFailing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pub, priv := continuityKey(t)
+	unsealed := runContinuityChain(t, dir, priv, 1)
+
+	out, err := runVerifyReceipt(t, "--chain", dir, "--key", pub, "--whole-recorder")
+	if err != nil {
+		t.Fatalf("an unsealed run must not fail the directory check: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "INCOMPLETE") || !strings.Contains(out, unsealed) {
+		t.Fatalf("unsealed run %q must be named under INCOMPLETE:\n%s", unsealed, out)
+	}
+
+	strict, strictErr := runVerifyReceipt(t, "--chain", dir, "--key", pub, "--whole-recorder", "--require-seal")
+	if strictErr == nil {
+		t.Fatalf("--require-seal must fail on an unsealed run:\n%s", strict)
+	}
+}

@@ -658,6 +658,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateContainmentLoopbackServices(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateContainmentPublishedServices(); err != nil {
+		return warnings, err
+	}
 	if number := c.Containment.Display.Number; number != nil && (*number < 0 || *number > 999) {
 		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
 	}
@@ -3865,7 +3868,25 @@ func (c *Config) ValidateSuppressions() error {
 // normally catches a malformed, expired, or proxy-port-colliding declaration
 // never runs on that path.
 func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
-	return c.validateContainmentLoopbackServices()
+	if err := c.validateContainmentLoopbackServices(); err != nil {
+		return err
+	}
+	return c.validateContainmentPublishedServices()
+}
+
+func (c *Config) validateContainmentPublishedServices() error {
+	if len(c.Containment.PublishedServices) == 0 {
+		return nil
+	}
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	port, err := strconv.Atoi(proxyPort)
+	if err != nil {
+		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+	}
+	return ValidateContainmentPublishedServices(c.Containment.PublishedServices, c.Containment.LoopbackServices, port, time.Now())
 }
 
 // credentialAudienceDomainSubset reports whether every candidate domain is

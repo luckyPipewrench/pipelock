@@ -732,6 +732,32 @@ func TestAnchorDirectoryResolvesRunSession(t *testing.T) {
 	if _, _, err := extractReceipts(dir, receiptsOptions{asDir: true, sessionID: "missing", sessionExplicit: false}); err == nil || !strings.Contains(err.Error(), "no receipt chains") {
 		t.Fatalf("missing base must fail: %v", err)
 	}
+
+	// A second run makes the base ambiguous. Anchoring one chain of several
+	// without naming it would pick a chain for the operator, so it refuses and
+	// says which flag resolves it.
+	second, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSession, err := recorder.AcquireRunSession(second, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEmitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: second, PrivKey: priv, ConfigHash: "policy-test", Session: secondSession})
+	if err := secondEmitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ambiguous := extractReceipts(dir, receiptsOptions{asDir: true, sessionID: recorder.DefaultSessionBase, sessionExplicit: false})
+	if ambiguous == nil || !strings.Contains(ambiguous.Error(), "pass --session") {
+		t.Fatalf("ambiguous base must refuse and name the flag: %v", ambiguous)
+	}
+	if _, resolved, err := extractReceipts(dir, receiptsOptions{asDir: true, sessionID: secondSession, sessionExplicit: true}); err != nil || resolved != secondSession {
+		t.Fatalf("explicit run session must resolve: %v %q", err, resolved)
+	}
 }
 
 // TestReceiptsCmdAsDirExtractsFromSessionDirectory covers the --dir branch of

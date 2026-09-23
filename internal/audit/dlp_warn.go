@@ -40,18 +40,24 @@ func (l *Logger) LogDLPCredentialAudienceAllow(ctx LogContext, patternName, surf
 	l.logDLPAllowance(ctx, EventDLPCredentialAudienceAllow, patternName, surface, destination, "DLP credential allowed for declared audience")
 }
 
-// LogDLPIssuerCookieAllow records an intercepted HTTPS cookie allowance. The
-// destination and pattern are bounded metadata; the cookie value is omitted.
-func (l *Logger) LogDLPIssuerCookieAllow(ctx LogContext, patternName, destination string) {
-	l.logDLPAllowance(ctx, EventDLPIssuerCookieAllow, patternName, "header", destination, "DLP cookie allowed for observed issuer")
+// LogDLPIssuerCookieAllow records a returned cookie pair left out of header
+// DLP because the destination issued it. It names the pattern, the cookie
+// name and the destination; the cookie value is never recorded.
+func (l *Logger) LogDLPIssuerCookieAllow(ctx LogContext, patternName, cookieName, destination string) {
+	l.logDLPAllowanceWithCookie(ctx, EventDLPIssuerCookieAllow, patternName, cookieName, "header", destination, "DLP cookie allowed for observed issuer")
 }
 
 func (l *Logger) logDLPAllowance(ctx LogContext, event EventType, patternName, surface, destination, message string) {
+	l.logDLPAllowanceWithCookie(ctx, event, patternName, "", surface, destination, message)
+}
+
+func (l *Logger) logDLPAllowanceWithCookie(ctx LogContext, event EventType, patternName, cookieName, surface, destination, message string) {
 	technique := TechniqueForScanner(ScannerDLP)
 	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, ScannerDLP)
 
 	e := newLogEntry(l.zl.Info(), event).
 		str("pattern", patternName).
+		optStr("cookie", cookieName).
 		str("surface", surface).
 		str("destination", destination).
 		str("mitre_technique", technique).

@@ -3348,21 +3348,6 @@ func validOptionalCardOriginPort(hostport, port string) bool {
 }
 
 func (c *Config) validateRequestBodyScanning(warnings *[]Warning) error {
-	if c.RequestBodyScanning.IssuerBoundSessionCookies {
-		if !c.RequestBodyScanning.Enabled || !c.RequestBodyScanning.ScanHeaders || !c.TLSInterception.Enabled {
-			return fmt.Errorf("request_body_scanning.issuer_bound_session_cookies requires request body and header scanning with tls_interception.enabled")
-		}
-		if c.RequestBodyScanning.HeaderMode != HeaderModeSensitive {
-			return fmt.Errorf("request_body_scanning.issuer_bound_session_cookies requires header_mode: sensitive")
-		}
-		hasCookie := false
-		for _, name := range c.RequestBodyScanning.SensitiveHeaders {
-			hasCookie = hasCookie || strings.EqualFold(name, "Cookie")
-		}
-		if !hasCookie {
-			return fmt.Errorf("request_body_scanning.issuer_bound_session_cookies requires Cookie in sensitive_headers")
-		}
-	}
 	if err := validateRequestBodySigV4CredentialRoutes(&c.RequestBodyScanning); err != nil {
 		return err
 	}

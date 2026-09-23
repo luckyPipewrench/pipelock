@@ -466,7 +466,7 @@ func Defaults() *Config {
 			Action:                    ActionWarn,
 			MaxBodyBytes:              5 * 1024 * 1024, // 5MB
 			ScanHeaders:               true,
-			IssuerBoundSessionCookies: false,
+			IssuerBoundSessionCookies: true, // takes effect only with tls_interception.enabled
 			HeaderMode:                HeaderModeSensitive,
 			ContentEntropyEnabled:     true,
 			ContentEntropyAction:      ActionWarn,

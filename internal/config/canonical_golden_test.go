@@ -435,7 +435,7 @@ const (
 	// Re-bumped when the built-in Google OAuth Token pattern gained the compiled
 	// audience *.googleapis.com, restricted to Bearer Authorization headers.
 	// Other carriers still block, and the binary policy identity moves.
-	goldenHashDefaults = "b381fd2e17249f072032831ba4b8ff82b868669499e79f0d742c276c0be3f109"
+	goldenHashDefaults = "46cae9a455ab6e7e34b8ddfdf2635c418bb3beb0a0d8adec20f0c09430673ea0"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

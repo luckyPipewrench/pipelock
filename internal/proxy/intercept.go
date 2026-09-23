@@ -1341,24 +1341,17 @@ func newInterceptHandler(
 		}
 
 		// Request header DLP scanning.
-		issuerStore := ic.issuerCookieStore()
-		if issuerStore != nil {
-			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
-			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-				issuerStore.taintSession(sessionKey)
-				issuerStore = nil
-			} else {
-				bodyComplete := interceptBodyBytes != nil || r.Body == nil || r.Body == http.NoBody
-				issuerStore.observeHTTPRequest(sessionKey, r, targetURL, interceptBodyBytes, bodyComplete)
-			}
-		}
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
 			scanHeaders := r.Header
-			if issuerStore != nil {
-				scanHeaders = issuerCookieScanHeaders(r.Context(), r.Header, ic.Config, ic.Scanner, issuerStore,
-					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now(), func(pattern string) {
-						ic.Proxy.recordIssuerCookieAllow(actx, pattern, targetURL, ic.RequestID, ic.Agent, r.Method)
-					})
+			if issuerStore := ic.issuerCookieStore(); issuerStore != nil {
+				var allowances []issuerCookieAllowance
+				scanHeaders, allowances = issuerCookieScanHeaders(r.Context(), r.Header, ic.Scanner, issuerStore,
+					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now())
+				for _, allowance := range allowances {
+					for _, pattern := range allowance.Patterns {
+						ic.Proxy.recordIssuerCookieAllow(actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method)
+					}
+				}
 			}
 			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), scanHeaders, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
 				if ic.Logger != nil {

@@ -9,42 +9,46 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
-	"hash/maphash"
-	"net"
+	"math"
 	"net/http"
 	"net/url"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/envelope"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"golang.org/x/net/publicsuffix"
 )
 
 const issuerCookieReceiptExtensionKey = "dlp_issuer_cookie_allow" // #nosec G101 -- receipt extension identifier
 
 type issuerCookieAllowMetadata struct {
 	Pattern     string `json:"pattern"`
+	Cookie      string `json:"cookie"`
 	Surface     string `json:"surface"`
 	Destination string `json:"destination"`
 }
 
-func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, target, requestID, agent, method string) {
+// issuerCookieMaxLoggedName bounds the cookie name copied into audit records.
+// The destination chose the name; the value is never recorded.
+const issuerCookieMaxLoggedName = 256
+
+func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string) {
+	if len(cookieName) > issuerCookieMaxLoggedName {
+		cookieName = cookieName[:issuerCookieMaxLoggedName]
+	}
 	parsed, err := url.Parse(target)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return
 	}
 	destination := strings.ToLower(parsed.Hostname())
 	if p.logger != nil {
-		p.logger.LogDLPIssuerCookieAllow(ctx, pattern, destination)
+		p.logger.LogDLPIssuerCookieAllow(ctx, pattern, cookieName, destination)
 	}
-	metadata := issuerCookieAllowMetadata{Pattern: pattern, Surface: "header", Destination: destination}
+	metadata := issuerCookieAllowMetadata{Pattern: pattern, Cookie: cookieName, Surface: "header", Destination: destination}
 	extension, err := json.Marshal(map[string]issuerCookieAllowMetadata{issuerCookieReceiptExtensionKey: metadata})
 	if err != nil {
 		return
@@ -57,24 +61,28 @@ func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, target, r
 	})
 }
 
-// These ceilings bound the in-memory evidence window. Exhaustion disables
-// allowances for the affected session rather than forgetting earlier input.
+// Limits come from the cookie specifications, not from observed traffic.
+// RFC 6265 section 6.1 asks user agents to support cookies of at least 4096
+// bytes (name, value and attributes together) and at least 3000 cookies in
+// total. RFC 6265bis section 5.6 ignores an attribute value longer than 1024
+// octets. The session ceiling bounds memory. Every eviction forgets an
+// issuance, which can only return that cookie to ordinary header DLP.
 const (
-	issuerCookieMaxAge          = 24 * time.Hour
-	issuerCookieMinValueBytes   = 16
-	issuerCookieMaxValueBytes   = 128
-	issuerCookieMaxEntries      = 256
-	issuerCookieMaxSessions     = 8
-	issuerCookieMaxRequestBytes = 32 << 10
-	issuerCookieMaxSeenBytes    = 4 << 20
-	issuerCookieBloomBits       = 1 << 25
+	issuerCookieMaxPairBytes  = 4096
+	issuerCookieMaxAttrBytes  = 1024
+	issuerCookieMaxEntries    = 3000
+	issuerCookieMaxSessions   = 32
+	issuerCookieMaxSetCookies = 256
 )
 
+// issuerBoundCookieStore remembers keyed digests of cookies that an
+// intercepted HTTPS origin issued to one identity session. A remembered
+// cookie pair is left out of header DLP only when the same session returns
+// it to the exact issuing host and port over HTTPS. Returning a value to the
+// origin that issued it discloses nothing that origin does not already hold.
 type issuerBoundCookieStore struct {
 	mu       sync.Mutex
 	key      [32]byte
-	seedA    maphash.Seed
-	seedB    maphash.Seed
 	sessions map[string]*issuerCookieSession
 	disabled bool
 }
@@ -86,20 +94,16 @@ type issuerCookieRuntime struct {
 	store *issuerBoundCookieStore
 }
 
-func (p *Proxy) issuerCookieStore(cfg *config.Config, auth envelope.ActorAuth) *issuerBoundCookieStore {
-	if p == nil || cfg == nil || !cfg.RequestBodyScanning.IssuerBoundSessionCookies || !auth.TrustedForIdentity() {
-		return nil
-	}
-	runtime := p.issuerCookieRuntime.Load()
-	if runtime == nil {
-		return nil
-	}
-	return runtime.store
+// issuerCookieEnabled reports whether a policy can produce issuance evidence.
+// Only intercepted HTTPS responses are observed, so the allowance exists
+// only where TLS interception and header DLP are both active.
+func issuerCookieEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.RequestBodyScanning.IssuerBoundSessionCookies && cfg.TLSInterception.Enabled &&
+		cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders
 }
 
 func (ic *InterceptContext) issuerCookieStore() *issuerBoundCookieStore {
-	if ic == nil || ic.Proxy == nil || ic.Config == nil ||
-		!ic.Config.RequestBodyScanning.IssuerBoundSessionCookies || !ic.ActorAuth.TrustedForIdentity() {
+	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.ActorAuth.TrustedForIdentity() {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
@@ -122,30 +126,21 @@ func recordDeliveredIssuerCookies(ic *InterceptContext, request *http.Request, r
 }
 
 type issuerCookieSession struct {
-	seen          []uint64
-	observedBytes int
-	tainted       bool
-	entries       []issuerCookieEntry
-	lastUsed      time.Time
+	entries  []issuerCookieEntry
+	lastUsed time.Time
 }
 
+// issuerCookieEntry holds no cookie name or value, only their keyed digest.
 type issuerCookieEntry struct {
-	digest   [32]byte
-	name     string
-	host     string
-	port     string
-	domain   string
-	hostOnly bool
-	path     string
-	secure   bool
-	expires  time.Time
+	digest  [32]byte
+	host    string
+	port    string
+	path    string
+	expires time.Time // zero means a session cookie
 }
 
 func newIssuerBoundCookieStore() *issuerBoundCookieStore {
-	s := &issuerBoundCookieStore{
-		seedA: maphash.MakeSeed(), seedB: maphash.MakeSeed(),
-		sessions: make(map[string]*issuerCookieSession),
-	}
+	s := &issuerBoundCookieStore{sessions: make(map[string]*issuerCookieSession)}
 	if _, err := rand.Read(s.key[:]); err != nil {
 		s.disabled = true
 	}
@@ -164,98 +159,20 @@ func (s *issuerBoundCookieStore) sessionLocked(id string, create bool, now time.
 		return nil
 	}
 	if len(s.sessions) >= issuerCookieMaxSessions {
-		// Re-creating an evicted session would erase its outbound history and
-		// permit a reflected value to look newly issued. Exhaustion disables
-		// this allowance until reload instead.
-		s.disabled = true
-		s.sessions = nil
-		return nil
-	}
-	sess := &issuerCookieSession{seen: make([]uint64, issuerCookieBloomBits/64), lastUsed: now}
-	s.sessions[id] = sess
-	return sess
-}
-
-// observeOutbound fingerprints every candidate substring in an observed
-// request. Bloom collisions can only refuse an allowance. When bytes cannot
-// be accounted for within the ceiling, the session stays fail-closed.
-func (s *issuerBoundCookieStore) observeOutbound(id string, request []byte) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess := s.sessionLocked(id, true, time.Now())
-	if sess == nil || sess.tainted {
-		return
-	}
-	if len(request) > issuerCookieMaxRequestBytes || sess.observedBytes > issuerCookieMaxSeenBytes-len(request) {
-		sess.tainted = true
-		sess.seen = nil
-		sess.entries = nil
-		return
-	}
-	sess.observedBytes += len(request)
-	for start := range request {
-		for end := start + issuerCookieMinValueBytes; end <= len(request) && end-start <= issuerCookieMaxValueBytes; end++ {
-			a, b := maphash.Bytes(s.seedA, request[start:end]), maphash.Bytes(s.seedB, request[start:end])
-			issuerBloomSet(sess.seen, a)
-			issuerBloomSet(sess.seen, b)
-		}
-	}
-}
-
-func (s *issuerBoundCookieStore) taintSession(id string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sess := s.sessionLocked(id, true, time.Now()); sess != nil {
-		sess.tainted = true
-		sess.seen = nil
-		sess.entries = nil
-	}
-}
-
-// observeHTTPRequest includes every client-controlled request component that
-// can be forwarded by the HTTP proxy. An unread body invalidates the session.
-func (s *issuerBoundCookieStore) observeHTTPRequest(id string, r *http.Request, target string, body []byte, bodyComplete bool) {
-	if s == nil || r == nil || !bodyComplete {
-		s.taintSession(id)
-		return
-	}
-	s.observeOutbound(id, []byte(r.Method))
-	s.observeOutbound(id, []byte(target))
-	for _, headers := range []http.Header{r.Header, r.Trailer} {
-		names := make([]string, 0, len(headers))
-		for name := range headers {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			s.observeOutbound(id, []byte(name))
-			for _, value := range headers[name] {
-				s.observeOutbound(id, []byte(value))
+		// Evicting the least recently used session forgets its issuances,
+		// so its cookies receive ordinary header DLP again.
+		var oldest string
+		var oldestAt time.Time
+		for key, sess := range s.sessions {
+			if oldest == "" || sess.lastUsed.Before(oldestAt) {
+				oldest, oldestAt = key, sess.lastUsed
 			}
 		}
+		delete(s.sessions, oldest)
 	}
-	s.observeOutbound(id, body)
-}
-
-func issuerBloomSet(bits []uint64, hash uint64) {
-	index := hash % issuerCookieBloomBits
-	bits[index/64] |= 1 << (index % 64)
-}
-
-func issuerBloomHas(bits []uint64, hash uint64) bool {
-	index := hash % issuerCookieBloomBits
-	return bits[index/64]&(1<<(index%64)) != 0
-}
-
-func (s *issuerBoundCookieStore) seenOutbound(sess *issuerCookieSession, value string) bool {
-	return issuerBloomHas(sess.seen, maphash.String(s.seedA, value)) &&
-		issuerBloomHas(sess.seen, maphash.String(s.seedB, value))
+	sess := &issuerCookieSession{lastUsed: now}
+	s.sessions[id] = sess
+	return sess
 }
 
 func (s *issuerBoundCookieStore) digest(name, value string) [32]byte {
@@ -268,52 +185,138 @@ func (s *issuerBoundCookieStore) digest(name, value string) [32]byte {
 	return out
 }
 
+// issuerSetCookie is one Set-Cookie line reduced to what the allowance needs.
+type issuerSetCookie struct {
+	name, value, path string
+	expires           time.Time
+	expired           bool
+}
+
+// parseIssuerSetCookie follows the RFC 6265 section 5.2 algorithm for the
+// name-value pair and the Max-Age, Expires and Path attributes. The name and
+// value keep their wire spelling, including any quotes, because that is what
+// a user agent returns. Anything the algorithm would ignore, or that exceeds
+// the section 6.1 size, is not recorded and stays under ordinary DLP.
+func parseIssuerSetCookie(line, defaultPath string, now time.Time) (issuerSetCookie, bool) {
+	var c issuerSetCookie
+	pair, attrs, _ := strings.Cut(line, ";")
+	name, value, found := strings.Cut(pair, "=")
+	if !found {
+		return c, false
+	}
+	c.name, c.value = strings.Trim(name, " \t"), strings.Trim(value, " \t")
+	if c.name == "" || len(c.name)+len(c.value) > issuerCookieMaxPairBytes || issuerCookieHasCTL(c.name+c.value) {
+		return c, false
+	}
+	c.path = defaultPath
+	maxAgeSet := false
+	for attrs != "" {
+		var attr string
+		attr, attrs, _ = strings.Cut(attrs, ";")
+		key, val, _ := strings.Cut(attr, "=")
+		key, val = strings.Trim(key, " \t"), strings.Trim(val, " \t")
+		if len(val) > issuerCookieMaxAttrBytes {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "max-age":
+			if val == "" || (val[0] != '-' && (val[0] < '0' || val[0] > '9')) {
+				continue
+			}
+			seconds, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				continue
+			}
+			maxAgeSet = true
+			switch {
+			case seconds <= 0:
+				c.expired, c.expires = true, time.Time{}
+			case seconds > int64(math.MaxInt64/time.Second):
+				c.expired, c.expires = false, time.Time{}
+			default:
+				c.expired, c.expires = false, now.Add(time.Duration(seconds)*time.Second)
+			}
+		case "expires":
+			if maxAgeSet {
+				continue
+			}
+			at, err := http.ParseTime(val)
+			if err != nil {
+				continue
+			}
+			c.expired, c.expires = !at.After(now), at
+		case "path":
+			if val != "" && val[0] == '/' {
+				c.path = val
+			} else {
+				c.path = defaultPath
+			}
+		}
+	}
+	return c, !c.expired
+}
+
+func issuerCookieHasCTL(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if (s[i] < 0x20 && s[i] != '\t') || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// observeResponse records cookies from a response delivered to the client.
+// Domain attributes are deliberately ignored: the allowance binds to the
+// exact issuing host, so a sibling host that a browser would also send a
+// domain cookie to receives ordinary header DLP.
 func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, headers http.Header, delivered bool, now time.Time) {
-	if s == nil || !delivered || origin == nil || origin.Scheme != "https" {
+	if s == nil || !delivered {
 		return
 	}
 	host, port, ok := issuerCookieOrigin(origin)
 	if !ok {
 		return
 	}
-	response := &http.Response{Header: headers}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess := s.sessionLocked(id, false, now)
-	if sess == nil || sess.tainted {
+	lines := headers.Values("Set-Cookie")
+	if len(lines) == 0 {
 		return
 	}
-	for _, cookie := range response.Cookies() {
-		if len(cookie.Value) < issuerCookieMinValueBytes || len(cookie.Value) > issuerCookieMaxValueBytes ||
-			strings.ContainsAny(cookie.Value, "\r\n\x00") || s.seenOutbound(sess, cookie.Value) || cookie.MaxAge < 0 {
-			continue
-		}
-		domain, hostOnly, ok := issuerCookieDomain(host, cookie.Domain)
+	if len(lines) > issuerCookieMaxSetCookies {
+		lines = lines[:issuerCookieMaxSetCookies]
+	}
+	defaultPath := issuerCookieDefaultPath(origin.Path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sess *issuerCookieSession
+	for _, line := range lines {
+		cookie, ok := parseIssuerSetCookie(line, defaultPath, now)
 		if !ok {
 			continue
 		}
-		path := cookie.Path
-		if path == "" || path[0] != '/' {
-			path = issuerCookieDefaultPath(origin.Path)
-		}
-		expires := now.Add(issuerCookieMaxAge)
-		if cookie.MaxAge > 0 {
-			if maxAgeExpiry := now.Add(time.Duration(cookie.MaxAge) * time.Second); maxAgeExpiry.Before(expires) {
-				expires = maxAgeExpiry
+		if sess == nil {
+			if sess = s.sessionLocked(id, true, now); sess == nil {
+				return
 			}
-		} else if !cookie.Expires.IsZero() && cookie.Expires.Before(expires) {
-			expires = cookie.Expires
-		}
-		if !expires.After(now) {
-			continue
 		}
 		entry := issuerCookieEntry{
-			digest: s.digest(cookie.Name, cookie.Value), name: cookie.Name,
-			host: host, port: port, domain: domain, hostOnly: hostOnly,
-			path: path, secure: cookie.Secure, expires: expires,
+			digest: s.digest(cookie.name, cookie.value), host: host, port: port,
+			path: cookie.path, expires: cookie.expires,
+		}
+		replaced := false
+		for i := range sess.entries {
+			old := &sess.entries[i]
+			if old.digest == entry.digest && old.host == host && old.port == port && old.path == entry.path {
+				*old = entry
+				replaced = true
+				break
+			}
+		}
+		if replaced {
+			continue
 		}
 		if len(sess.entries) >= issuerCookieMaxEntries {
-			sess.entries = sess.entries[1:]
+			// Forget the oldest issuance; it returns to ordinary DLP.
+			sess.entries = append(sess.entries[:0], sess.entries[1:]...)
 		}
 		sess.entries = append(sess.entries, entry)
 	}
@@ -331,22 +334,11 @@ func issuerCookieOrigin(u *url.URL) (host, port string, ok bool) {
 	return host, port, host != ""
 }
 
-func issuerCookieDomain(host, attribute string) (domain string, hostOnly, ok bool) {
-	if attribute == "" {
-		return host, true, true
-	}
-	domain = strings.ToLower(strings.TrimPrefix(attribute, "."))
-	if domain == "" || net.ParseIP(host) != nil || strings.HasSuffix(domain, ".") ||
-		(host != domain && !strings.HasSuffix(host, "."+domain)) {
-		return "", false, false
-	}
-	if suffix, _ := publicsuffix.PublicSuffix(domain); suffix == domain {
-		return "", false, false
-	}
-	return domain, false, true
-}
-
+// issuerCookieDefaultPath implements the RFC 6265 section 5.1.4 default-path.
 func issuerCookieDefaultPath(path string) string {
+	if path == "" || path[0] != '/' {
+		return "/"
+	}
 	last := strings.LastIndex(path, "/")
 	if last <= 0 {
 		return "/"
@@ -356,106 +348,94 @@ func issuerCookieDefaultPath(path string) string {
 
 func (s *issuerBoundCookieStore) allows(id string, target *url.URL, name, value string, now time.Time) bool {
 	host, port, ok := issuerCookieOrigin(target)
-	if !ok || s == nil || len(value) < issuerCookieMinValueBytes || len(value) > issuerCookieMaxValueBytes {
+	if !ok || s == nil || len(name)+len(value) > issuerCookieMaxPairBytes {
 		return false
+	}
+	requestPath := target.Path
+	if requestPath == "" {
+		requestPath = "/"
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess := s.sessionLocked(id, false, now)
-	if sess == nil || sess.tainted {
+	if sess == nil {
 		return false
 	}
 	digest := s.digest(name, value)
 	for _, entry := range sess.entries {
-		if entry.digest == digest && entry.name == name && entry.host == host && entry.port == port &&
-			entry.expires.After(now) && issuerCookiePathMatches(entry.path, target.Path) {
+		if hmac.Equal(entry.digest[:], digest[:]) && entry.host == host && entry.port == port &&
+			(entry.expires.IsZero() || entry.expires.After(now)) && issuerCookiePathMatches(entry.path, requestPath) {
 			return true
 		}
 	}
 	return false
 }
 
+// issuerCookiePathMatches implements the RFC 6265 section 5.1.4 path-match.
 func issuerCookiePathMatches(cookiePath, requestPath string) bool {
 	return requestPath == cookiePath || (strings.HasPrefix(requestPath, cookiePath) &&
 		(strings.HasSuffix(cookiePath, "/") || strings.HasPrefix(requestPath[len(cookiePath):], "/")))
 }
 
-type issuerCookieSpan struct{ start, end int }
-
-// issuerCookieScanHeaders makes a scanning-only copy. The real request keeps
-// its original Cookie header. Refuse the allowance when joined-header scanning
-// or normalized/encoded match coordinates could conceal another finding.
-func issuerCookieScanHeaders(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, store *issuerBoundCookieStore, session string, target *url.URL, now time.Time, onAllow func(string)) http.Header {
-	if store == nil || cfg.RequestBodyScanning.HeaderMode != config.HeaderModeSensitive {
-		return headers
-	}
-	for _, name := range cfg.RequestBodyScanning.SensitiveHeaders {
-		if !strings.EqualFold(name, "Cookie") && len(headers.Values(name)) > 0 {
-			return headers
-		}
-	}
-	values := headers.Values("Cookie")
-	if len(values) != 1 {
-		return headers
-	}
-	raw := values[0]
-	if normalize.ForDLP(raw) != raw {
-		return headers
-	}
-	// A second cookie can produce a cross-boundary match that the scanner
-	// deduplicates behind the first. Until every match span is retained, only
-	// the single-cookie spelling has a provable value boundary.
-	if strings.Count(raw, ";") != 0 {
-		return headers
-	}
-	equals := strings.IndexByte(raw, '=')
-	if equals < 1 {
-		return headers
-	}
-	name := strings.TrimSpace(raw[:equals])
-	valueStart := equals + 1
-	for valueStart < len(raw) && raw[valueStart] == ' ' {
-		valueStart++
-	}
-	valueEnd := len(raw)
-	for valueEnd > valueStart && raw[valueEnd-1] == ' ' {
-		valueEnd--
-	}
-	if name == "" || !store.allows(session, target, name, raw[valueStart:valueEnd], now) {
-		return headers
-	}
-	allowedSpan := issuerCookieSpan{valueStart, valueEnd}
-	result := sc.ScanTextForDLP(ctx, raw)
-	if result.Clean || len(result.Matches) == 0 || len(result.InformationalMatches) > 0 {
-		return headers
-	}
-	var patterns []string
-	for _, match := range result.Matches {
-		span := match.Span()
-		if span.ViewLabel != scanner.ViewDLPNormalized || !issuerSpanWithin([]issuerCookieSpan{allowedSpan}, span.ByteStart, span.ByteEnd) {
-			return headers
-		}
-		patterns = append(patterns, match.PatternName)
-	}
-	masked := []byte(raw)
-	for i := allowedSpan.start; i < allowedSpan.end; i++ {
-		masked[i] = '*'
-	}
-	copyHeaders := headers.Clone()
-	copyHeaders.Set("Cookie", string(masked))
-	for _, pattern := range patterns {
-		if onAllow != nil {
-			onAllow(pattern)
-		}
-	}
-	return copyHeaders
+// issuerCookieAllowance names one returned cookie pair left out of header DLP
+// and the patterns it would have matched. It never carries the value.
+type issuerCookieAllowance struct {
+	Name     string
+	Patterns []string
 }
 
-func issuerSpanWithin(spans []issuerCookieSpan, start, end int) bool {
-	for _, span := range spans {
-		if start >= span.start && end <= span.end && end > start {
-			return true
+// issuerCookieScanHeaders returns the headers header DLP should scan. The
+// forwarded request is never modified. Each Cookie field is split into pairs
+// by the RFC 6265 section 4.2.1 grammar; a pair this session received from
+// the exact target origin is omitted, and every other pair, header and body
+// byte is scanned unchanged.
+func issuerCookieScanHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, store *issuerBoundCookieStore, session string, target *url.URL, now time.Time) (http.Header, []issuerCookieAllowance) {
+	if store == nil || target == nil {
+		return headers, nil
+	}
+	var kept []string
+	var allowances []issuerCookieAllowance
+	var keys []string
+	for key, fields := range headers {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		keys = append(keys, key)
+		for _, field := range fields {
+			var remaining []string
+			for _, raw := range strings.Split(field, ";") {
+				pair := strings.Trim(raw, " \t")
+				if pair == "" {
+					continue
+				}
+				name, value, found := strings.Cut(pair, "=")
+				name, value = strings.Trim(name, " \t"), strings.Trim(value, " \t")
+				if !found || name == "" || !store.allows(session, target, name, value, now) {
+					remaining = append(remaining, pair)
+					continue
+				}
+				allowance := issuerCookieAllowance{Name: name}
+				if sc != nil {
+					for _, match := range sc.ScanTextForDLP(ctx, pair).Matches {
+						allowance.Patterns = append(allowance.Patterns, match.PatternName)
+					}
+				}
+				allowances = append(allowances, allowance)
+			}
+			if len(remaining) > 0 {
+				kept = append(kept, strings.Join(remaining, "; "))
+			}
 		}
 	}
-	return false
+	if len(allowances) == 0 {
+		return headers, nil
+	}
+	scan := headers.Clone()
+	for _, key := range keys {
+		delete(scan, key)
+	}
+	if len(kept) > 0 {
+		scan["Cookie"] = kept
+	}
+	return scan, allowances
 }

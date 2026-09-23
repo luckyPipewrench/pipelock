@@ -1097,9 +1097,15 @@ func portFromAddr(addr net.Addr) string {
 
 // singleLiveEvidenceFile returns the lone evidence JSONL file from the dir.
 func singleLiveEvidenceFile(dir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(dir, "evidence-proxy.run.*-*.jsonl"))
 	if err != nil {
 		return "", fmt.Errorf("globbing evidence: %w", err)
+	}
+	if len(matches) == 0 {
+		matches, err = filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+		if err != nil {
+			return "", fmt.Errorf("globbing legacy evidence: %w", err)
+		}
 	}
 	if len(matches) == 0 {
 		return "", fmt.Errorf("no evidence files in %s", dir)

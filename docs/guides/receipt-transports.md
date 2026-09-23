@@ -103,7 +103,7 @@ When request-side redaction succeeds, the receipt keeps the underlying transport
 
 All receipts from a single proxy instance share a hash chain. The first receipt has `chain_prev_hash: "genesis"`. Each subsequent receipt's `chain_prev_hash` is the SHA-256 of the previous receipt's canonical JSON. `chain_seq` increments by 1 for each receipt.
 
-Verify a single file with `pipelock verify-receipt evidence-proxy-0.jsonl --key <signer.pub>`. Verification is safe by default: an unpinned run (no `--key`) is structural-only and exits non-zero unless you pass `--allow-unpinned`. Verify chain integrity across restarted or rotated evidence files with `pipelock verify-receipt --chain <evidence-dir> --key <signer.pub>`; for a chain whose signing key rotated, pass `--key` once per trusted segment key. See the [receipt verification guide](receipt-verification.md) for the full flow.
+Verify a single run file with `pipelock verify-receipt evidence-proxy.run.<id>-0.jsonl --key <signer.pub>`, substituting the full filename on disk. Verification is safe by default: an unpinned run (no `--key`) is structural-only and exits non-zero unless you pass `--allow-unpinned`. Verify all run chains and their links with `pipelock verify-receipt --chain <evidence-dir> --key <signer.pub>`; for a chain whose signing key rotated, pass `--key` once per trusted segment key. See the [receipt verification guide](receipt-verification.md) for the full flow.
 
 ## Emit Failure Behavior
 

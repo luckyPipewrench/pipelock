@@ -37,9 +37,11 @@ const (
 )
 
 // BaseVerifyOptions configures VerifyBase.
+// In-chain endorsements require a pinned root key; cross-chain endorsements
+// are reported as continuity claims and do not create provenance on their own.
 type BaseVerifyOptions struct {
 	// TrustedKeys pins signer keys (hex). Empty means trust-on-first-use per
-	// chain; a key change across a link then needs an endorsement.
+	// chain; an in-chain key change remains untrusted in that mode.
 	TrustedKeys []string
 	// Endorsements authorize a successor key across a link when signed by the
 	// predecessor key and bound to the predecessor session and exact tail.
@@ -54,6 +56,7 @@ type BaseVerifyOptions struct {
 }
 
 // BaseChain is one chain of a base: a run session or the legacy base session.
+// Valid describes that chain; LinkTrust separately describes its predecessor.
 type BaseChain struct {
 	Session   string
 	Legacy    bool
@@ -76,6 +79,7 @@ type BaseFinding struct {
 }
 
 // BaseReport is the verification result for every chain of one base.
+// A deleted link file leaves a successor unlinked, not a finding.
 type BaseReport struct {
 	Base     string
 	Chains   []BaseChain
@@ -458,7 +462,7 @@ func verifyBaseChain(d *baseChainData, trusted []string, own []RotationEndorseme
 		trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
 	}
 	var res ChainResult
-	if len(own) > 0 && len(trusted) > 0 {
+	if len(own) > 0 {
 		res = VerifyChainWithEndorsements(d.chain.Session, d.receipts, own, trusted)
 	} else {
 		res = VerifyChainTrusted(d.receipts, trusted)

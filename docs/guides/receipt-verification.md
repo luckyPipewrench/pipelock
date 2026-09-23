@@ -167,6 +167,8 @@ Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that
 spans restarts or rotations for one recorder session/writer stream) and pin the
 trusted key:
 
+The `evidence-proxy-0.jsonl` filenames in the historical examples below are legacy samples. A current process writes `evidence-proxy.run.<id>-0.jsonl`; substitute its actual filename, or use `--chain DIR` to check every run and link in the directory.
+
 ```bash
 pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
 ```
@@ -632,6 +634,8 @@ The TypeScript and Rust verifiers ship with their own test suites that
 exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
+
+For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a run chain, using the full ID from its evidence filename, or verify that chain's JSONL file directly.
 
 ## Audit Packet v0 schema
 

@@ -241,9 +241,12 @@ sleep 0.3
 
 # -- Test 3 -------------------------------------------------------------------
 step "Test 3: receipt artifact written"
-EVIDENCE="$RECORDER_DIR/evidence-proxy-0.jsonl"
+shopt -s nullglob
+evidence_files=("$RECORDER_DIR"/evidence-proxy.run.*-0.jsonl)
+shopt -u nullglob
+EVIDENCE="${evidence_files[0]:-}"
 BLOCK_RECEIPT="$WORK/block-receipt.json"
-if [ -s "$EVIDENCE" ]; then
+if [ "${#evidence_files[@]}" -eq 1 ] && [ -s "$EVIDENCE" ]; then
   pass "evidence JSONL exists ($EVIDENCE)"
 else
   fail "missing evidence JSONL at $EVIDENCE"

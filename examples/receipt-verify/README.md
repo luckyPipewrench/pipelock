@@ -11,7 +11,7 @@ Fully offline: runtime-generated signing key + metadata-IP `/fetch` block.
 | Check | What it proves |
 |-------|----------------|
 | Block | `/fetch` to `169.254.169.254` returns HTTP 403 |
-| Receipt on disk | `evidence-proxy-0.jsonl` contains a fetch `block` receipt |
+| Receipt on disk | `evidence-proxy.run.<id>-0.jsonl` contains a fetch `block` receipt |
 | Verify pass | `pipelock verify-receipt --key` exits 0 |
 | Tamper fails | Changing a captured receipt's signed `action_record.verdict` makes chain verification exit 1 |
 
@@ -50,11 +50,12 @@ entry is extracted as an action receipt; unknown types fail closed.
 WORK="$(mktemp -d)"
 "$PIPELOCK_BIN" signing key generate --purpose receipt-signing --out "$WORK/signing.key"
 "$PIPELOCK_BIN" signing pubkey --key-file "$WORK/signing.key" --out "$WORK/signing.key.pub"
-# Point flight_recorder.dir / signing_key_path at $WORK, then:
+# Point flight_recorder.dir at $WORK/evidence and signing_key_path at $WORK/signing.key, then:
 "$PIPELOCK_BIN" run --config /path/to/rewritten-pipelock.yaml
 curl -sS -G --data-urlencode "url=http://169.254.169.254/latest/meta-data/" \
   "http://127.0.0.1:8888/fetch"
-"$PIPELOCK_BIN" verify-receipt "$WORK/evidence/evidence-proxy-0.jsonl" \
+EVIDENCE_FILE="$(find "$WORK/evidence" -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"
+"$PIPELOCK_BIN" verify-receipt "$EVIDENCE_FILE" \
   --key "$WORK/signing.key.pub"
 ```
 

@@ -33,3 +33,26 @@ func EvidenceWriterGone(path string) (bool, error) {
 	}
 	return locked, nil
 }
+
+// EvidenceRunWriterGone probes a run's lifetime lock, held across shard rotation.
+// Missing lock files fail closed because absence cannot prove writer exit.
+func EvidenceRunWriterGone(dir, session string) (bool, error) {
+	return EvidenceWriterGone(filepath.Join(dir, "writer-"+session+".lock"))
+}
+
+func acquireRunPresence(dir, session string) (*os.File, error) {
+	path := filepath.Join(filepath.Clean(dir), "writer-"+session+".lock")
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_RDWR|evidenceReadNoFollowFlag, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockEvidenceFileForWrite(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}

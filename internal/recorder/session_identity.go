@@ -60,6 +60,14 @@ func (r *Recorder) AcquireSession(sessionID string) error {
 	if err := r.resumeSessionLocked(sessionID); err != nil {
 		return fmt.Errorf("recorder: resume chain state: %w", err)
 	}
+	if strings.Contains(sessionID, ".run.") {
+		presence, err := acquireRunPresence(r.cfg.Dir, sessionID)
+		if err != nil {
+			r.sessionID = ""
+			return fmt.Errorf("recorder: acquire run presence: %w", err)
+		}
+		r.runPresence = presence
+	}
 	return nil
 }
 

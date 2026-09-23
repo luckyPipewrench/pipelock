@@ -171,10 +171,10 @@ python3 demo.py
 
 The harness produces three artifacts worth looking at:
 
-1. **`evidence/evidence-proxy-0.jsonl`**: the MCP stdio evidence file.
+1. **`evidence/evidence-proxy.run.<id>-0.jsonl`**: the MCP stdio evidence file.
    It contains the signed receipt stream as `action_receipt` entries
    and may also contain other recorder entries such as checkpoints.
-2. **`evidence-proxy-0.jsonl` from the HTTP upstream run**: same
+2. **`evidence-proxy.run.<id>-0.jsonl` from the HTTP upstream run**: same
    event shape, different `transport` field.
 3. **`signing.key.pub` hex output**: the public key printed to
    stdout, the only thing a third party needs to verify the stream.
@@ -182,15 +182,21 @@ The harness produces three artifacts worth looking at:
 The harness verifies the stream inline with Python. For an
 independent check, install the reference verifier:
 
+Choose the run chain being checked, for example the first JSONL file in the example's evidence directory:
+
+```bash
+EVIDENCE_FILE="$(find evidence -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"
+```
+
 ```bash
 pip install pipelock-verify
-python -m pipelock_verify evidence/evidence-proxy-0.jsonl --key <public-key-hex>
+python -m pipelock_verify "$EVIDENCE_FILE" --key <public-key-hex>
 ```
 
 Or use the Go CLI that ships with Pipelock:
 
 ```bash
-pipelock verify-receipt evidence/evidence-proxy-0.jsonl --key <public-key-hex>
+pipelock verify-receipt "$EVIDENCE_FILE" --key <public-key-hex>
 ```
 
 Both exit 0 on success, 1 on any signature failure, chain break, or

@@ -398,7 +398,10 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 		if _, statErr := os.Lstat(filepath.Join(dir, name)); statErr == nil {
 			continue // already continued by another run
 		}
-		gone, probeErr := recorder.EvidenceWriterGone(c.latest)
+		gone, probeErr := recorder.EvidenceRunWriterGone(dir, c.session)
+		if !strings.Contains(c.session, ".run.") {
+			gone, probeErr = recorder.EvidenceWriterGone(c.latest)
+		}
 		if probeErr != nil || !gone {
 			continue // a live writer, or its absence cannot be proven
 		}

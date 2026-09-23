@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -32,6 +33,8 @@ import (
 
 const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key"
 
+var errUnsealedRecorder = errors.New("whole-recorder verification incomplete: no transcript_root seal")
+
 // VerifyReceiptCmd returns the "verify-receipt" cobra command.
 func VerifyReceiptCmd() *cobra.Command {
 	var expectedKeys []string
@@ -48,6 +51,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var postureKey string
 	var endorsementPaths []string
 	var wholeRecorder bool
+	var requireSeal bool
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -85,7 +89,7 @@ Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = i
 
 Examples:
   pipelock verify-receipt receipt.json
-  pipelock verify-receipt evidence-proxy-0.jsonl
+  pipelock verify-receipt evidence-proxy.run.<id>-0.jsonl
   pipelock verify-receipt --chain /var/lib/pipelock/evidence
   pipelock verify-receipt receipt.json --key 70b991eb...
   pipelock verify-receipt --chain DIR --key old.key --key new.key
@@ -96,6 +100,9 @@ Examples:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
+			if requireSeal && !wholeRecorder {
+				return errors.New("--require-seal requires --whole-recorder")
+			}
 			trustedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
@@ -176,6 +183,7 @@ Examples:
 			if resolvedLocation != nil {
 				if cleanReport == "" {
 					if wholeRecorder {
+						verifyOpts.RequireSeal = requireSeal
 						return outputResult(out, verifyWholeRecorderDir(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
 					}
 					return outputResult(out, verifyChainDirWithContinuity(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
@@ -231,6 +239,7 @@ Examples:
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
+	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	cmd.Flags().BoolVar(&allowUnanchoredSeal, "allow-unanchored-seal", false, "with --whole-recorder, accept a recorder whose transcript_root seal is not covered by a signed checkpoint (entries after the last signed checkpoint are then hash-linked but not authenticated)")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
@@ -293,6 +302,7 @@ type receiptPostureOptions struct {
 
 type verifyReceiptOptions struct {
 	AllowUnpinned        bool
+	RequireSeal          bool
 	AllowUnanchoredSeal  bool
 	SessionID            string
 	Print                receiptPrintOptions
@@ -376,18 +386,32 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 		sessions = []string{sessionID}
 	}
 	var failed []string
+	var incomplete []string
 	var firstErr error
 	for _, session := range sessions {
 		chainOpts, chainKeys := chainScopedTrust(report, session, trustedKeys, opts)
 		if verifyErr := verifyWholeRecorderFromResolvedSessionDir(out, location, session, chainKeys, chainOpts); verifyErr != nil {
-			failed = append(failed, session)
-			if firstErr == nil {
-				firstErr = verifyErr
+			if errors.Is(verifyErr, errUnsealedRecorder) {
+				incomplete = append(incomplete, session)
+				if opts.RequireSeal {
+					failed = append(failed, session)
+					if firstErr == nil {
+						firstErr = verifyErr
+					}
+				}
+			} else {
+				failed = append(failed, session)
+				if firstErr == nil {
+					firstErr = verifyErr
+				}
 			}
 		}
 		_, _ = fmt.Fprintln(out)
 	}
 	printRestartContinuity(out, report)
+	if len(incomplete) > 0 {
+		_, _ = fmt.Fprintf(out, "INCOMPLETE RUNS (%d): %s\n", len(incomplete), strings.Join(incomplete, ", "))
+	}
 	if len(failed) > 0 {
 		if len(sessions) == 1 {
 			return firstErr
@@ -415,7 +439,7 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	}
 	if !found {
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no transcript_root seal (recorder still running or tail truncated)")
-		return fmt.Errorf("whole-recorder verification incomplete: no transcript_root seal")
+		return errUnsealedRecorder
 	}
 	rootReceiptCount := receiptEntriesBefore(entries, rootIndex)
 	if rootReceiptCount == 0 || rootReceiptCount > len(whole.Receipts) {
@@ -1449,7 +1473,7 @@ rotated its signing key, pass --key once per trusted segment key.
 
 Examples:
   pipelock transcript-root --chain /var/lib/pipelock/evidence --key pub.key
-  pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...
+  pipelock transcript-root evidence-proxy.run.<id>-0.jsonl --key 70b991eb...
   pipelock transcript-root --chain DIR --key old.key --key new.key`,
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)

@@ -592,6 +592,14 @@ func TestSingleEvidenceFile_Errors(t *testing.T) {
 	if _, err := singleEvidenceFile(t.TempDir()); err == nil {
 		t.Errorf("expected error for no evidence file")
 	}
+	dir := t.TempDir()
+	want := filepath.Join(dir, "evidence-proxy.run.12345678901234567890123456789012-0.jsonl")
+	if err := os.WriteFile(want, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := singleEvidenceFile(dir); err != nil || got != want {
+		t.Fatalf("run evidence = %q, %v; want %q", got, err, want)
+	}
 }
 
 func TestLabConfig_UnknownScenario(t *testing.T) {

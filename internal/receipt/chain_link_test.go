@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -386,15 +388,52 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 	// Five new runs race to continue them, all live at once.
 	var wg sync.WaitGroup
 	runs := make([]testRun, 5)
+	runErrors := make([]error, len(runs))
 	for i := range runs {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			runs[i] = startRun(t, dir, priv)
-			runs[i].openAndEmit(t, 1)
+			rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+			if err != nil {
+				runErrors[i] = fmt.Errorf("recorder.New: %w", err)
+				return
+			}
+			session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+			if err != nil {
+				runErrors[i] = fmt.Errorf("AcquireRunSession: %w", err)
+				_ = rec.Close()
+				return
+			}
+			e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor, Session: session, Notices: io.Discard})
+			if err := e.InitError(); err != nil {
+				runErrors[i] = fmt.Errorf("InitError: %w", err)
+				_ = rec.Close()
+				return
+			}
+			if err := e.EmitSessionOpen(); err != nil {
+				runErrors[i] = fmt.Errorf("EmitSessionOpen: %w", err)
+				_ = rec.Close()
+				return
+			}
+			if err := e.Emit(EmitOpts{ActionID: NewActionID(), Target: testTarget, Verdict: config.ActionBlock, Transport: testTransport, Method: http.MethodGet}); err != nil {
+				runErrors[i] = fmt.Errorf("Emit: %w", err)
+				_ = rec.Close()
+				return
+			}
+			runs[i] = testRun{rec: rec, e: e, session: session}
 		}(i)
 	}
 	wg.Wait()
+	for i, err := range runErrors {
+		if err != nil {
+			for _, r := range runs {
+				if r.rec != nil {
+					_ = r.rec.Close()
+				}
+			}
+			t.Fatalf("run %d setup: %v", i, err)
+		}
+	}
 	claimed := map[string]int{}
 	for _, r := range runs {
 		if l := r.e.ChainLink(); l != nil {
@@ -416,6 +455,49 @@ func TestChainLink_ConcurrentRestartAtMostOneSuccessor(t *testing.T) {
 	report := mustVerifyBase(t, dir, BaseVerifyOptions{})
 	if !report.Healthy() || report.LinkCount() != 3 || len(report.Chains) != 8 || len(report.Unlinked()) != 5 {
 		t.Fatalf("healthy=%v links=%d chains=%d unlinked=%v findings=%+v", report.Healthy(), report.LinkCount(), len(report.Chains), report.Unlinked(), report.Findings)
+	}
+}
+
+func TestChainLink_RotationDoesNotExposeLiveRunAsPredecessor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, MaxEntriesPerFile: 1}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor, Session: session, Notices: io.Discard})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if rec.SessionID() != session {
+		t.Fatal("run session changed during rotation")
+	}
+	files, err := recorderFiles(dir, session)
+	if err != nil || len(files) == 0 {
+		t.Fatalf("predecessor files: %v", err)
+	}
+	if gone, err := recorder.EvidenceWriterGone(files[len(files)-1]); err != nil || !gone {
+		t.Fatalf("old shard probe should expose rotation gap: gone=%v err=%v", gone, err)
+	}
+	if gone, err := recorder.EvidenceRunWriterGone(dir, session); err != nil || gone {
+		t.Fatalf("run presence must survive rotation: gone=%v err=%v", gone, err)
+	}
+	other := startRun(t, dir, priv)
+	other.openAndEmit(t, 1)
+	if other.e.ChainLink() != nil {
+		t.Fatal("live rotating run was claimed")
+	}
+	other.close(t)
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := recorder.EvidenceRunWriterGone(dir, session); err != nil || !gone {
+		t.Fatalf("closed run should be claimable: gone=%v err=%v", gone, err)
 	}
 }
 
@@ -524,6 +606,9 @@ func TestChainLink_KeyChangeTrust(t *testing.T) {
 		return e
 	}
 	good := endorse(link.PredecessorTailSeq, link.PredecessorTailHash)
+	if r := mustVerifyBase(t, dir, BaseVerifyOptions{Endorsements: []RotationEndorsement{good}}); !r.Healthy() {
+		t.Fatalf("unpinned cross-chain endorsement must authorize structural continuity: %+v", r.Findings)
+	}
 	r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pubA)}, Endorsements: []RotationEndorsement{good}})
 	if !r.Healthy() {
 		t.Fatalf("endorsed successor must be trusted: %+v", r.Findings)

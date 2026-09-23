@@ -64,7 +64,7 @@ key remains accepted so existing recorder deployments can migrate.
 Example:
   pipelock signing receipt-rotation endorse \
     --chain /var/lib/pipelock/evidence \
-    --session proxy \
+    --session proxy.run.<id-of-stopped-run> \
     --prior-key-file /etc/pipelock/keys/flight-recorder-signing.key \
     --new-key-file /etc/pipelock/keys/flight-recorder-signing.next.key \
     --root-key /etc/pipelock/keys/flight-recorder-signing.root.pub \

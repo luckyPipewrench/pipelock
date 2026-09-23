@@ -105,7 +105,7 @@ func TestVerifyReceiptRunDirectoryReaders(t *testing.T) {
 		t.Fatalf("explicit run clean report: %v\n%s", err, out)
 	}
 	out, err = runVerifyReceipt(t, "--chain", dir, "--key", pub, "--whole-recorder")
-	if err == nil || !strings.Contains(out, first) || !strings.Contains(out, second) || !strings.Contains(out, "RESTART CONTINUITY") {
+	if err != nil || !strings.Contains(out, first) || !strings.Contains(out, second) || !strings.Contains(out, "RESTART CONTINUITY") || !strings.Contains(out, "INCOMPLETE RUNS (2)") {
 		t.Fatalf("whole recorder must inspect every run and report their state: %v\n%s", err, out)
 	}
 }

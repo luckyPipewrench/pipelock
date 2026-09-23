@@ -90,11 +90,14 @@ func TestRunShadowRefusesOutAliasingOutJSON(t *testing.T) {
 func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		file string
 		set  func(*shadowFlags, string)
 		want string
 	}{
-		{name: "out", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
-		{name: "out-json", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		{name: "out", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
+		{name: "out-json", file: shadowRecorderEvidenceFile, set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
+		{name: "run-out", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outPath = p }, want: "--out must not name shadow receipts"},
+		{name: "run-out-json", file: "evidence-proxy.run.12345678901234567890123456789012-0.jsonl", set: func(f *shadowFlags, p string) { f.outJSONPath = p }, want: "--out-json must not name shadow receipts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -103,7 +106,7 @@ func TestRunShadowRefusesOutAliasingRecorderDest(t *testing.T) {
 			if err := os.Mkdir(recorderDir, 0o750); err != nil {
 				t.Fatalf("Mkdir recorder: %v", err)
 			}
-			receiptPath := filepath.Join(recorderDir, shadowRecorderEvidenceFile)
+			receiptPath := filepath.Join(recorderDir, tc.file)
 			if err := os.WriteFile(receiptPath, []byte("keep-me\n"), 0o600); err != nil {
 				t.Fatalf("WriteFile recorder dest: %v", err)
 			}

@@ -160,6 +160,7 @@ type Recorder struct {
 	prevHash       string
 	writer         *bufio.Writer
 	file           *os.File
+	runPresence    *os.File
 	ceremonyLock   *os.File
 	ceremonyDir    os.FileInfo
 	evidenceDir    os.FileInfo
@@ -715,6 +716,10 @@ func (r *Recorder) close() (retErr error) {
 
 	r.closed = true
 	defer func() {
+		if r.runPresence != nil {
+			retErr = errors.Join(retErr, unlockEvidenceFile(r.runPresence), r.runPresence.Close())
+			r.runPresence = nil
+		}
 		retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())
 	}()
 

@@ -157,6 +157,7 @@ func TestRejectableDowngradeReloadWarningFields(t *testing.T) {
 	newCfg := config.Defaults()
 	newCfg.MediationEnvelope.Sign = true
 	newCfg.MediationEnvelope.KeyID = "new-key"
+	newCfg.HealthWatchdog.Enabled = !oldCfg.HealthWatchdog.Enabled
 	newCfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
 		Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query",
 		Reason: "structured query", Owner: "platform-security", Expires: expires,
@@ -166,14 +167,18 @@ func TestRejectableDowngradeReloadWarningFields(t *testing.T) {
 		Reason: "health probe", Owner: "platform-security", Expires: expires,
 	}}
 	warnings := config.ValidateReload(oldCfg, newCfg)
-	var sawKeyID bool
+	// Two different advisory warnings, so a helper that skips one field by
+	// name instead of by disposition cannot pass.
+	advisory := map[string]bool{}
 	for _, w := range warnings {
-		if w.Field == "mediation_envelope.key_id" {
-			sawKeyID = true
+		if w.Disposition == config.ReloadWarningDispositionAdvisory {
+			advisory[w.Field] = true
 		}
 	}
-	if !sawKeyID {
-		t.Fatalf("fixture did not produce the advisory key_id warning: %+v", warnings)
+	for _, f := range []string{"mediation_envelope.key_id", "health_watchdog"} {
+		if !advisory[f] {
+			t.Fatalf("fixture did not produce the advisory %s warning: %+v", f, warnings)
+		}
 	}
 	// Repeat every warning so de-duplication is exercised.
 	warnings = append(warnings, warnings...)
@@ -184,7 +189,7 @@ func TestRejectableDowngradeReloadWarningFields(t *testing.T) {
 	var want []string
 	seen := map[string]bool{}
 	for _, w := range warnings {
-		if w.Field == "mediation_envelope.key_id" || seen[w.Field] {
+		if w.Disposition == config.ReloadWarningDispositionAdvisory || seen[w.Field] {
 			continue
 		}
 		seen[w.Field] = true

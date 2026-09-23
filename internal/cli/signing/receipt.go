@@ -60,6 +60,15 @@ receipt hash chain (prev_hash linkage, seq continuity, signatures). Pass
 --whole-recorder to also verify every recorder entry present, its taxonomy,
 and the transcript_root seal. For a multi-file chain spanning restarts or
 rotations, pass --chain DIR.
+
+Each process run records its own chain ("<base>.run.<id>"). With --chain and
+no --session, every chain of the base is verified, then restart continuity:
+each optional signed link file beside the chains must name the exact tail of
+the run it continues, under a trusted or endorsed key. Runs no link file
+continues are listed as unlinked. That is normal for a first run or for
+concurrent runs, and it is also what a deleted link file looks like, so a
+passing result does not prove no run's evidence is missing. Pass --session
+to verify one chain; continuity for its base is still reported.
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -169,7 +178,7 @@ Examples:
 					if wholeRecorder {
 						return outputResult(out, verifyWholeRecorderFromResolvedSessionDir(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
 					}
-					return outputResult(out, verifyChainFromResolvedSessionDirDetailed(out, *resolvedLocation, sessionID, trustedKeys, verifyOpts))
+					return outputResult(out, verifyChainDirWithContinuity(out, *resolvedLocation, sessionID, cmd.Flags().Changed("session"), trustedKeys, verifyOpts))
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
@@ -775,6 +784,91 @@ func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []strin
 		return fmt.Errorf("extracting receipts: %w", err)
 	}
 	return verifyChainDetailed(out, path, receipts, trustedKeys, opts)
+}
+
+// verifyChainDirWithContinuity verifies receipt chains in an evidence
+// directory. When the directory holds no run chains of the session's base it
+// is exactly the single-session verification. Otherwise it verifies every
+// chain of the base (or only the named one when --session was given) and then
+// the base's restart continuity, and fails when any chain fails or any link
+// file does not verify.
+func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	base := sessionID
+	if b, ok := receipt.RunSessionBase(sessionID); ok {
+		base = b
+	}
+	chains, err := receipt.ResolveBaseSessions(location.Dir, base)
+	if err != nil {
+		return fmt.Errorf("listing receipt chains: %w", err)
+	}
+	hasRuns := false
+	for _, s := range chains {
+		if _, ok := receipt.RunSessionBase(s); ok {
+			hasRuns = true
+			break
+		}
+	}
+	if !hasRuns {
+		return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, opts)
+	}
+	targets := chains
+	if explicit {
+		targets = []string{sessionID}
+	}
+	var failed []string
+	for _, s := range targets {
+		chainOpts := opts
+		chainOpts.SessionID = s
+		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, trustedKeys, chainOpts); verifyErr != nil {
+			failed = append(failed, s)
+		}
+		_, _ = fmt.Fprintln(out)
+	}
+	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
+		TrustedKeys:  trustedKeys,
+		Endorsements: opts.RotationEndorsements,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "RESTART CONTINUITY INCOMPLETE: %s: %v\n", location.Dir, err)
+		return fmt.Errorf("restart continuity check incomplete: %w", err)
+	}
+	printRestartContinuity(out, report)
+	if len(failed) > 0 {
+		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s", len(failed), len(targets), strings.Join(failed, ", "))
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
+	}
+	return nil
+}
+
+// printRestartContinuity prints a base report. Unlinked runs are always
+// listed, because a passing result must not read as proof of continuity.
+func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
+	label := "RESTART CONTINUITY OK"
+	if !report.Healthy() {
+		label = "RESTART CONTINUITY FAILED"
+	}
+	unlinked := report.Unlinked()
+	_, _ = fmt.Fprintf(out, "%s: base %q: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
+		label, report.Base, len(report.Chains), report.LinkCount(), len(unlinked), len(report.Findings))
+	for _, c := range report.Chains {
+		if c.Link != nil {
+			trust := c.LinkTrust
+			if trust == "" {
+				trust = "untrusted"
+			}
+			_, _ = fmt.Fprintf(out, "  linked:   %s continues %s at seq %d (%s)\n", c.Session, c.Link.PredecessorSession, c.Link.PredecessorTailSeq, trust)
+		}
+	}
+	for _, s := range unlinked {
+		_, _ = fmt.Fprintf(out, "  unlinked: %s\n", s)
+	}
+	for _, f := range report.Findings {
+		_, _ = fmt.Fprintf(out, "  - %s: %s: %s\n", f.Kind, f.Session, f.Detail)
+	}
+	_, _ = fmt.Fprintln(out, "  Note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,")
+	_, _ = fmt.Fprintln(out, "  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.")
 }
 
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {

@@ -2292,11 +2292,13 @@ func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	firstDone := make(chan struct{})
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		defer close(firstDone)
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
-		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+		rec := httptest.NewRecorder()
+		rec.Code = 0
+		srv.Handler().ServeHTTP(rec, req)
+		firstDone <- rec
 	}()
 	select {
 	case <-started:
@@ -2305,7 +2307,10 @@ func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-firstDone:
+	case rec := <-firstDone:
+		if rec.Code != 0 || rec.Body.Len() != 0 {
+			t.Fatalf("canceled kit build wrote response: status=%d body=%q", rec.Code, rec.Body.String())
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("canceled kit build did not finish")
 	}
@@ -2340,11 +2345,13 @@ func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
 	defer func() { <-srv.kitBuildSlots }()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := make(chan struct{})
+	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		defer close(done)
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
-		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+		rec := httptest.NewRecorder()
+		rec.Code = 0
+		srv.Handler().ServeHTTP(rec, req)
+		done <- rec
 	}()
 	deadline := time.After(3 * time.Second)
 	tick := time.NewTicker(time.Millisecond)
@@ -2358,7 +2365,10 @@ func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case rec := <-done:
+		if rec.Code != 0 || rec.Body.Len() != 0 {
+			t.Fatalf("canceled kit waiter wrote response: status=%d body=%q", rec.Code, rec.Body.String())
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("canceled kit waiter did not finish")
 	}
@@ -2444,8 +2454,9 @@ func TestServer_BundleKitUnavailableAfterRaw(t *testing.T) {
 	cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
 	rec := httptest.NewRecorder()
+	rec.Code = 0
 	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+	if rec.Code != 0 || rec.Body.Len() != 0 {
 		t.Fatalf("canceled request wrote response: status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }

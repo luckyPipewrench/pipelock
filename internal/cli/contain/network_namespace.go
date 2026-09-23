@@ -362,7 +362,11 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 	if processStatus != statusPass {
 		return processStatus, processDetail
 	}
-	return statusPass, boundaryDetail + "; " + processDetail
+	publishedStatus, publishedDetail := probePublishedServices(ctx, env, pid, agentNamespace)
+	if publishedStatus != statusPass {
+		return publishedStatus, publishedDetail
+	}
+	return statusPass, boundaryDetail + "; " + processDetail + "; " + publishedDetail
 }
 
 func managedDoorwaySocketNames(proxySocketPath string, services []config.ContainmentLoopbackService) []string {

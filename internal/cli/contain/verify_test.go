@@ -4054,6 +4054,10 @@ func allPassEnv(t *testing.T) *probeEnv {
 		if path == env.nftRulesPath {
 			return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 		}
+		if path == publishedServiceRecordPath(env.loopbackForwarderInvPath) {
+			// A host that never declared a published service has no record.
+			return nil, os.ErrNotExist
+		}
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}
 	env.readLink = func(path string) (string, error) {

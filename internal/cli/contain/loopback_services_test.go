@@ -1254,7 +1254,7 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 			return errors.New("forwarder failed")
 		}
 		err := reloadNFTRules(context.Background(), fx.env)
-		if err == nil || !strings.Contains(err.Error(), "reconcile namespace loopback forwarders") {
+		if err == nil || !strings.Contains(err.Error(), "namespace loopback forwarders failed to reconcile") {
 			t.Fatalf("reload error = %v, want no-op forwarder reconciliation failure", err)
 		}
 	})

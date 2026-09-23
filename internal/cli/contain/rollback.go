@@ -169,6 +169,11 @@ func actionRemoveNetworkNamespace() step {
 		desc: "remove the contained-agent network namespace and proxy forwarder units",
 		undo: func(ctx context.Context, env *installEnv) error {
 			var errs []error
+			// Close published endpoints first: their relays join the namespace
+			// removed below.
+			if err := removePublishedServices(ctx, env); err != nil {
+				errs = append(errs, err)
+			}
 			if inv, err := readLoopbackForwarderInventory(env); err != nil {
 				errs = append(errs, err)
 			} else {

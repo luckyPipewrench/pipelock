@@ -276,6 +276,14 @@ type ContainmentPublishedService struct {
 // be reached again.
 const ContainmentPublishedSocketDir = "/run/pipelock-contain-published"
 
+// ValidPublishedServiceName reports whether name is usable as a published
+// service name, and so inside a systemd unit name and a socket path. Callers
+// that read back state Pipelock wrote use it so a tampered inventory cannot
+// name a unit outside the managed set.
+func ValidPublishedServiceName(name string) bool {
+	return publishedServiceNamePattern.MatchString(name)
+}
+
 // EffectiveAgentHost returns the in-namespace address being published.
 func (s ContainmentPublishedService) EffectiveAgentHost() string {
 	if s.AgentHost == "" {

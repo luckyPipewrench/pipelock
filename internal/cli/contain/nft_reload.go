@@ -65,6 +65,10 @@ type nftReloadEnv struct {
 	// blocks on the shared lock instead of interleaving.
 	pauseAfterSnapshot  func()
 	reconcileForwarders func(context.Context, []config.ContainmentLoopbackService) error
+	// reconcilePublished closes, opens, or re-renders published agent
+	// services. Reload always runs it so an expired or removed publication
+	// is closed without another contain install.
+	reconcilePublished func(context.Context, []config.ContainmentPublishedService) error
 }
 
 var (
@@ -100,6 +104,11 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 			installEnv := defaultInstallEnv(io.Discard)
 			unitStep := stepInstallNetworkNamespaceWithServices(&services)
 			_, err := runSteps(ctx, installEnv, io.Discard, []step{unitStep})
+			return err
+		},
+		reconcilePublished: func(ctx context.Context, services []config.ContainmentPublishedService) error {
+			installEnv := defaultInstallEnv(io.Discard)
+			_, err := runSteps(ctx, installEnv, io.Discard, []step{stepInstallPublishedServices(&services)})
 			return err
 		},
 	}
@@ -176,6 +185,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	// the namespace socket forwarders, so removals and expirations take effect
 	// without another contain install.
 	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
+	publishedServices := reconcileDeclaredContainmentPublishedServicesForReload(env, header.proxyPort)
 	if env.pauseAfterSnapshot != nil {
 		env.pauseAfterSnapshot()
 	}
@@ -248,10 +258,8 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 	}
 	if !fileChanged && !legacyReceiverLive && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
-		if env.reconcileForwarders != nil {
-			if err := env.reconcileForwarders(ctx, loopbackServices); err != nil {
-				return fmt.Errorf("reconcile namespace loopback forwarders: %w", err)
-			}
+		if err := reconcileNamespaceDoorways(ctx, env, loopbackServices, publishedServices); err != nil {
+			return err
 		}
 		if env.report != nil {
 			env.report(nftReloadOutcome(false, 0, false, false))
@@ -277,15 +285,31 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
-	if env.reconcileForwarders != nil {
-		if err := env.reconcileForwarders(ctx, loopbackServices); err != nil {
-			return fmt.Errorf("nft boundary is current but namespace loopback forwarders failed to reconcile: %w", err)
-		}
+	if err := reconcileNamespaceDoorways(ctx, env, loopbackServices, publishedServices); err != nil {
+		return fmt.Errorf("nft boundary is current but %w", err)
 	}
 	if env.report != nil {
 		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == "", true))
 	}
 	return nil
+}
+
+// reconcileNamespaceDoorways reconciles both declared doorway kinds and
+// attempts each even when the other fails: a failing loopback forwarder must
+// not keep an expired publication open, and the reverse.
+func reconcileNamespaceDoorways(ctx context.Context, env *nftReloadEnv, loopback []config.ContainmentLoopbackService, published []config.ContainmentPublishedService) error {
+	var errs []error
+	if env.reconcileForwarders != nil {
+		if err := env.reconcileForwarders(ctx, loopback); err != nil {
+			errs = append(errs, fmt.Errorf("namespace loopback forwarders failed to reconcile: %w", err))
+		}
+	}
+	if env.reconcilePublished != nil {
+		if err := env.reconcilePublished(ctx, published); err != nil {
+			errs = append(errs, fmt.Errorf("published services failed to reconcile: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func legacyOwnedLoopbackOutputPresent(live string) bool {

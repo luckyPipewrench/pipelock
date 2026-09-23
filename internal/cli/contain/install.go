@@ -325,6 +325,9 @@ func installSteps(opts installOpts) []step {
 		stepExportPipelockCA(),
 		stepWriteCombinedCABundle(),
 		stepInstallNetworkNamespace(),
+		// Publishes declared agent listeners to their operators. After the
+		// namespace step so the relay's JoinsNamespaceOf= target exists.
+		stepInstallPublishedServices(nil),
 		// Browsers do not consume the CA environment exported by plk-launch.
 		// Establish their per-user trust before containment can report ready.
 		stepEstablishBrowserCATrust(),

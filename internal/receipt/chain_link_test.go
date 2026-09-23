@@ -1639,3 +1639,88 @@ func TestChainLink_MultiHopEndorsementFromPinnedRoot(t *testing.T) {
 		t.Fatal("an endorsement from an untrusted predecessor must not trust its successor")
 	}
 }
+
+// A link can name a predecessor signer key that never signed the predecessor's
+// tail. An endorsement signed by that key matches the link, but it carries no
+// authority over the real chain, so the successor must not become trusted.
+func TestChainLink_EndorsementByKeyThatDidNotSignTailIsNotTrusted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pubA, privA := generateTestKey(t)
+	pubX, privX := generateTestKey(t)
+	pubB, privB := generateTestKey(t)
+	a := startRun(t, dir, privA)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	as := sessionReceipts(t, dir, a.session)
+	tail := as[len(as)-1]
+	tailHash, err := ReceiptHash(tail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := startRun(t, dir, privB)
+	// Taken first, so B's own publish finds A's link name used.
+	forgeLink(t, dir, ChainLinkFileName(a.session), ChainLink{
+		PredecessorSession: a.session, PredecessorTailSeq: tail.ActionRecord.ChainSeq,
+		PredecessorTailHash: tailHash, PredecessorSignerKey: hex.EncodeToString(pubX),
+		SuccessorSession: b.session, SuccessorSignerKey: hex.EncodeToString(pubB),
+	}, privB)
+	b.openAndEmit(t, 1)
+	b.close(t)
+	e, err := SignRotationEndorsement(RotationEndorsement{
+		SessionID: a.session, PriorFinalSeq: tail.ActionRecord.ChainSeq, PriorTailHash: tailHash,
+		NewSignerKey: hex.EncodeToString(pubB), RotatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, privX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pubA)}, Endorsements: []RotationEndorsement{e}})
+	if r.Healthy() {
+		t.Fatal("a link whose predecessor key did not sign the tail must be a finding")
+	}
+	for _, c := range r.Chains {
+		if c.Session == b.session && (c.Valid || c.LinkTrust == LinkTrustEndorsed) {
+			t.Fatalf("successor trusted through a key that never signed the tail: valid=%v trust=%q", c.Valid, c.LinkTrust)
+		}
+	}
+}
+
+// An endorsement for a key change across a link whose link file is gone binds
+// the predecessor's final receipt. It must not be forced onto the predecessor's
+// in-chain check, which would reject it as unplaceable and report the
+// predecessor as corrupt; the successor is simply unlinked.
+func TestChainLink_UnusedCrossChainEndorsementDoesNotCorruptPredecessor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pubA, privA := generateTestKey(t)
+	pubB, privB := generateTestKey(t)
+	a := startRun(t, dir, privA)
+	a.openAndEmit(t, 1)
+	a.close(t)
+	b := startRun(t, dir, privB)
+	b.openAndEmit(t, 1)
+	b.close(t)
+	link := b.e.ChainLink()
+	if link == nil {
+		t.Fatal("B must link to A")
+	}
+	e, err := SignRotationEndorsement(RotationEndorsement{
+		SessionID: a.session, PriorFinalSeq: link.PredecessorTailSeq, PriorTailHash: link.PredecessorTailHash,
+		NewSignerKey: hex.EncodeToString(pubB), RotatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, privA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, ChainLinkFileName(a.session))); err != nil {
+		t.Fatal(err)
+	}
+	r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)}, Endorsements: []RotationEndorsement{e}})
+	if findingKinds(r)[FindingCorruptChain] != 0 {
+		t.Fatalf("an unused cross-chain endorsement must not corrupt the predecessor: %+v", r.Findings)
+	}
+	for _, c := range r.Chains {
+		if c.Session == a.session && !c.Valid {
+			t.Fatalf("predecessor must still verify: %+v", c)
+		}
+	}
+}

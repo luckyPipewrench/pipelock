@@ -382,10 +382,14 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		verify := func(s string) {
 			// In-chain rotation endorsements go only to their own chain, and
 			// never one already consumed across a link: the single-chain
-			// verifier rejects any endorsement it cannot place.
+			// verifier rejects any endorsement it cannot place. An endorsement
+			// that binds this chain's final receipt hands off across a link,
+			// never within the chain; when its link is missing it stays
+			// unused, and the successor then reports as unlinked rather than
+			// this chain as corrupt.
 			var own []RotationEndorsement
 			for i, e := range opts.Endorsements {
-				if e.SessionID == s && !crossUsed[i] {
+				if e.SessionID == s && !crossUsed[i] && !bindsFinalReceipt(e, data[s].chain) {
 					own = append(own, e)
 				}
 			}
@@ -404,7 +408,10 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 						waiting = append(waiting, s)
 						continue
 					}
-					endorsed[s] = exists && pred.chain.Valid
+					// The endorsement's signer must be the key that signed the
+					// predecessor's actual tail, not only the key the link names.
+					endorsed[s] = exists && pred.chain.Valid && len(pred.receipts) > 0 &&
+						checkLinkedTail(pred.receipts, *data[s].chain.Link) == nil
 				}
 				verify(s)
 				resolved[s] = true
@@ -596,4 +603,12 @@ func readIndexedEntries(ix evidenceIndex, session string) ([]recorder.Entry, err
 		entries = append(entries, es...)
 	}
 	return entries, nil
+}
+
+// bindsFinalReceipt reports whether e hands off from c's last receipt. Only a
+// cross-chain endorsement does that: an in-chain rotation always has receipts
+// after the prior tail it names. Sequence numbers are not compared, because a
+// rotated chain can restart them in its new segment.
+func bindsFinalReceipt(e RotationEndorsement, c BaseChain) bool {
+	return c.TailHash != "" && e.PriorFinalSeq == c.FinalSeq && e.PriorTailHash == c.TailHash
 }

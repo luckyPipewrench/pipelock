@@ -437,7 +437,7 @@ const (
 	// Other carriers still block, and the binary policy identity moves.
 	// Re-bumped when shipped path-entropy routes began merging beside operator
 	// entries instead of being replaced by them.
-	goldenHashDefaults = "5e145fe9c8007ea24699926b5e4547bbd6b4c26f9fa250dead90eb31ca23bda2"
+	goldenHashDefaults = "ae1aeafae708b4a94271db61c443ffc668b55607bc0949742ae4875fbca40f84"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -671,7 +671,7 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "3749e7ec981cc670477135d44d2db19dace3b3ca9f046f45a39e3904f3e17a89"
+	goldenHashRichConfig = "22c0a7737d4d96689e9ed5884d3599dc230d863115ad99c3e50a35c0ed2c475d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1242,8 +1242,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
 		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "0415205281d3f70b8afb44f2b0aa7003f6e71b8104564b32f09039f3a4874710"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "3854a9adb51cffd55800aef90952ccd42eff677081a5ce85e7288dc30e2420bf"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "8a9b921b01406f27390a3c902e81ae9106276bd340260e2b978b91ed6792fb69"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7d9f9827b3f28f076a0c18474c83469e154ea9e3935ba5da48a885f500ee8a97"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

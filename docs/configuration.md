@@ -915,7 +915,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | System Override | `system:` | high |
 | Role Override | `you are now (DAN\|evil\|unrestricted)` | high |
 | New Instructions | `(new\|updated) (instructions\|directives)` | high |
-| Jailbreak Attempt | `DAN\|developer mode\|sudo mode` | high |
+| Jailbreak Attempt | `DAN` beside a word (`act as DAN`, `DAN mode`), `developer mode`, `sudo mode`, `unrestricted mode` | high |
 | Hidden Instruction | `do not reveal this to the user` | high |
 | Behavior Override | `from now on you (will\|must)` | high |
 | Encoded Payload | `decode this from base64 and execute` | high |

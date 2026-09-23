@@ -38,6 +38,53 @@ type ContainmentConfig struct {
 	LoopbackServices  []ContainmentLoopbackService  `yaml:"loopback_services"`
 	PublishedServices []ContainmentPublishedService `yaml:"published_services"`
 	Display           ContainmentDisplay            `yaml:"display"`
+	// AgentListener names the per-agent listener the containment doorway
+	// delivers the contained agent's traffic to, e.g. "127.0.0.1:8889". It
+	// must be one of the listeners declared under agents.<name>.listeners, so
+	// the proxy attributes that traffic to the profile bound to the listener.
+	// Only processes inside the agent's network namespace can reach the
+	// doorway and only Pipelock's relay dials the listener, so the binding
+	// cannot be claimed by another local client or forged from inside the
+	// namespace. Empty keeps the shared proxy listener.
+	AgentListener string `yaml:"agent_listener,omitempty"`
+}
+
+// ValidateContainmentAgentListener checks containment.agent_listener: a
+// numeric loopback host:port that is not the shared proxy listener and that
+// exactly matches a declared agents.<name>.listeners entry. An address no
+// profile binds would attribute the agent to nothing.
+func ValidateContainmentAgentListener(listener string, agents map[string]AgentProfile, proxyPort int) error {
+	if listener == "" {
+		return nil
+	}
+	host, portText, err := net.SplitHostPort(listener)
+	if err != nil {
+		return fmt.Errorf("containment.agent_listener %q: %w", listener, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("containment.agent_listener %q must use a numeric loopback address (127.0.0.1 or ::1)", listener)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("containment.agent_listener %q has an invalid port", listener)
+	}
+	if port == proxyPort {
+		return fmt.Errorf("containment.agent_listener %q is the shared proxy port; omit agent_listener to keep the shared listener", listener)
+	}
+	want := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	for _, profile := range agents {
+		for _, declared := range profile.Listeners {
+			dHost, dPort, splitErr := net.SplitHostPort(declared)
+			if splitErr != nil {
+				continue
+			}
+			if dIP := net.ParseIP(dHost); dIP != nil && net.JoinHostPort(dIP.String(), dPort) == want {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("containment.agent_listener %q is not declared under any agents.<name>.listeners; declare it on the contained agent's profile", listener)
 }
 
 // ContainmentDisplay configures the private Xvfb display installed for the

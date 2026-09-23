@@ -267,7 +267,7 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 	}{
 		{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit()},
 		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
-		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.port)},
+		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}
 	for _, unit := range units {
@@ -703,6 +703,13 @@ WantedBy=multi-user.target
 // loopback listener. See the declared-loopback forwarder above for why this
 // runs the Pipelock binary instead of systemd-socket-proxyd.
 func renderContainedProxyForwarderUnit(pipelockPath, proxyUser string, port int) string {
+	return renderContainedProxyForwarderUnitTo(pipelockPath, proxyUser, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+}
+
+// renderContainedProxyForwarderUnitTo renders the host-side doorway relay that
+// delivers contained-agent traffic to target, the shared proxy listener or the
+// agent's own containment.agent_listener.
+func renderContainedProxyForwarderUnitTo(pipelockPath, proxyUser, target string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Forward contained-agent proxy connections to the host Pipelock listener
 Requires=pipelock.service
@@ -712,12 +719,12 @@ After=pipelock.service
 Type=exec
 User=%s
 Group=%s
-ExecStart=%s contain netns-forward --systemd-listener --target-tcp 127.0.0.1:%d
+ExecStart=%s contain netns-forward --systemd-listener --target-tcp %s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-`, proxyUser, proxyUser, pipelockPath, port)
+`, proxyUser, proxyUser, pipelockPath, target)
 }
 
 type unitRuntimeState struct {
@@ -879,7 +886,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			paths := []managedFile{
 				{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit(), modeUnitFile},
 				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName), modeUnitFile},
-				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.proxyPort), modeUnitFile},
+				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(managedPipelockConfigPath(env), env.proxyPort)), modeUnitFile},
 				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.proxyPort), modeUnitFile},
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
@@ -1163,4 +1170,30 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			return errors.Join(errs...)
 		},
 	}
+}
+
+// containedRelayTarget returns the address the doorway relay delivers to: the
+// managed config's containment.agent_listener when set, otherwise the shared
+// proxy listener. An unreadable or invalid config falls back to the shared
+// listener, which is the pre-existing behaviour; install and reload validate
+// the declaration before it is ever promoted, and verify renders the same
+// target, so a drifted unit is reported rather than trusted.
+func containedRelayTarget(configPath string, proxyPort int) string {
+	shared := net.JoinHostPort("127.0.0.1", strconv.Itoa(proxyPort))
+	if configPath == "" {
+		return shared
+	}
+	cfg, err := config.LoadForInspection(configPath)
+	if err != nil || cfg.Containment.AgentListener == "" {
+		return shared
+	}
+	host, port, err := net.SplitHostPort(cfg.Containment.AgentListener)
+	if err != nil {
+		return shared
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return shared
+	}
+	return net.JoinHostPort(ip.String(), port)
 }

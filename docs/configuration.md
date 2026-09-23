@@ -1715,6 +1715,20 @@ containment:
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
 
+### Contained agent identity (containment)
+
+A contained agent reaches the proxy through its namespace doorway, which by default delivers to the shared proxy listener. Traffic there is attributed by the usual rules, so a profile whose `source_cidrs` covers loopback claims the contained agent along with every other local client. Set `containment.agent_listener` to one of the agent's own `agents.<name>.listeners` to deliver the doorway to that listener instead:
+
+```yaml
+agents:
+  contained-agent:
+    listeners: ["127.0.0.1:8889"]
+containment:
+  agent_listener: "127.0.0.1:8889"
+```
+
+The proxy then attributes the contained agent's traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Only processes inside the agent's network namespace can reach the doorway, and only Pipelock's relay dials the listener, so no other local client and nothing inside the namespace can claim the identity. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
+
 ### Declared loopback services (containment)
 
 The contained agent runs in a private network namespace. Its own loopback listeners work on any port, while host loopback services are absent unless the operator declares them. `containment.loopback_services` declares each host loopback TCP service that Pipelock should expose as a socket inside the agent namespace:

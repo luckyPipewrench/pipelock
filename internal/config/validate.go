@@ -3875,6 +3875,19 @@ func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
 }
 
 func (c *Config) validateContainmentPublishedServices() error {
+	if c.Containment.AgentListener != "" {
+		_, proxyPortText, err := net.SplitHostPort(c.FetchProxy.Listen)
+		if err != nil {
+			return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+		}
+		proxyPort, err := strconv.Atoi(proxyPortText)
+		if err != nil {
+			return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPortText, err)
+		}
+		if err := ValidateContainmentAgentListener(c.Containment.AgentListener, c.Agents, proxyPort); err != nil {
+			return err
+		}
+	}
 	if len(c.Containment.PublishedServices) == 0 {
 		return nil
 	}

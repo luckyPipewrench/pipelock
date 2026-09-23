@@ -1234,8 +1234,12 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "f242752d21d28e4afd680674eeb1a075ec6733a4ac319fcd4537e460a4fd60b3"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "2cc8a568bd25c9dad55671ca6ac01b238e1c746840e5a73d2fcd840b9af66193"},
+		// Re-bumped when a YAML config that omits fetch_proxy.monitoring.blocklist
+		// started inheriting the shipped blocklist instead of loading it empty.
+		// These fixtures are loaded from YAML, so their effective blocklist
+		// changed, and the policy hash is what reports that.
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "c77b70247b7cf67a505d73db3bfdf80e32bc590bf2802f5388433721e974eeb4"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "77ae99a2a277cf66c7ea8bfde8ca6ce06dd8ad583046c75f348d7cf9921a604c"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -318,6 +318,13 @@ func (c *Config) ApplyDefaults() {
 	if c.FetchProxy.Monitoring.PathEntropyExclusions == nil {
 		c.FetchProxy.Monitoring.PathEntropyExclusions = append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
 	}
+	// Same rule for the exfiltration blocklist, where losing it is worse: it is
+	// a deny list, so a config file that omitted the key ran with no blocklist
+	// at all while validation reported OK. nil gets the shipped set; an
+	// explicit [] stays an opt-out.
+	if c.FetchProxy.Monitoring.Blocklist == nil {
+		c.FetchProxy.Monitoring.Blocklist = append([]string(nil), Defaults().FetchProxy.Monitoring.Blocklist...)
+	}
 	if c.FetchProxy.Monitoring.MaxReqPerMinute <= 0 {
 		c.FetchProxy.Monitoring.MaxReqPerMinute = 60
 	}

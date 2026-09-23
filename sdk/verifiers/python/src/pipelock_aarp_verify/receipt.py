@@ -719,13 +719,15 @@ def _start_rotated_segment(
             f"seq {seq}: key_transition prior_signer_key does not match prior "
             "segment key",
         )
+    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
+    if signer_key == state["cur_key"]:
+        return _broken_chain(seq, f"seq {seq}: key_transition does not change signer key")
     if marker.get("prior_chain_seq") != state["prior_segment_seq"]:
         return _broken_chain(
             seq,
             f"seq {seq}: key_transition prior_chain_seq does not match prior "
             "segment final seq",
         )
-    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
     if trusted_keys:
         if signer_key not in trusted_keys:
             return _broken_chain(

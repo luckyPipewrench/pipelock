@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // newDoorwayEcho starts a unix listener that echoes what it reads, standing in
@@ -142,13 +144,9 @@ func TestRunNetnsForwardStopsOnContextCancel(t *testing.T) {
 
 	// Wait for the listener to be announced so cancel races the accept loop
 	// rather than the setup.
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), "contained-namespace proxy") {
-		if time.Now().After(deadline) {
-			t.Fatal("forwarder never reported its listener")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.For(t, 5*time.Second, func() bool {
+		return strings.Contains(out.String(), "contained-namespace proxy")
+	}, "forwarder never reported its listener")
 	cancel()
 
 	select {
@@ -156,7 +154,7 @@ func TestRunNetnsForwardStopsOnContextCancel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cancel should be a clean shutdown, got %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("forwarder did not stop on context cancellation")
 	}
 }

@@ -504,12 +504,12 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 				t.Fatalf("reseed: %v", err)
 			}
 			writeScriptFixture(t, env.pipelockTarget, "#!/bin/sh\nexit 0\n")
-			if err := os.Chmod(env.pipelockTarget, 0o700); err != nil { //nolint:gosec // executable namespace assertion fixture
+			if err := os.Chmod(env.pipelockTarget, 0o700); err != nil {
 				t.Fatalf("chmod namespace assertion fixture: %v", err)
 			}
 			if tc.mutate != nil {
 				tc.mutate()
-				if err := os.Chmod(env.pipelockTarget, 0o700); err != nil { //nolint:gosec // executable namespace assertion fixture
+				if err := os.Chmod(env.pipelockTarget, 0o700); err != nil {
 					t.Fatalf("chmod mutated namespace assertion fixture: %v", err)
 				}
 			}

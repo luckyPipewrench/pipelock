@@ -112,7 +112,7 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 		}
 		paths = append(paths, path)
 	}
-	cmd := exec.CommandContext(context.Background(), "systemd-analyze", append([]string{"verify"}, paths...)...) //nolint:gosec // fixed executable and test-owned paths
+	cmd := exec.CommandContext(context.Background(), "systemd-analyze", append([]string{"verify"}, paths...)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("systemd-analyze verify: %v\n%s", err, out)
 	}
@@ -244,7 +244,7 @@ func TestInstallNetworkNamespaceRestartsUpdatedNamespaceAndForwarders(t *testing
 		}
 	}
 	for path, want := range oldBodies {
-		got, readErr := os.ReadFile(filepath.Clean(path)) //nolint:gosec // test-owned unit path
+		got, readErr := os.ReadFile(filepath.Clean(path))
 		if readErr != nil || string(got) != want {
 			t.Fatalf("rollback restored %s = %q, %v; want %q", path, got, readErr, want)
 		}
@@ -788,7 +788,7 @@ func TestProbeAgentProcessNamespacesSkipsRecycledPID(t *testing.T) {
 				statReads++
 				return procStatFixture("101", strconv.Itoa(100+statReads)), nil
 			}
-			return os.ReadFile(path) //nolint:gosec // fixture paths stay under t.TempDir
+			return os.ReadFile(filepath.Clean(path))
 		},
 		readLink: os.Readlink,
 	}
@@ -933,7 +933,7 @@ func TestDeclaredLoopbackForwardersInstallAndRevoke(t *testing.T) {
 	if err != nil || len(inv.Services) != 0 {
 		t.Fatalf("revoked inventory = (%+v, %v), want empty", inv, err)
 	}
-	if restored, err := os.ReadFile(filepath.Clean(operatorServicePath)); err != nil || string(restored) != operatorServiceBody { //nolint:gosec // test-owned temporary path
+	if restored, err := os.ReadFile(filepath.Clean(operatorServicePath)); err != nil || string(restored) != operatorServiceBody {
 		t.Fatalf("operator-owned unit was not restored after revoke: body=%q err=%v", restored, err)
 	}
 }
@@ -978,7 +978,7 @@ func TestDeclaredLoopbackForwarderRevokeRollsBack(t *testing.T) {
 	}
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 	servicePath := filepath.Join(unitDir, loopbackForwarderUnitBase(service.Host, service.Port)+".service")
-	body, readErr := os.ReadFile(filepath.Clean(servicePath)) //nolint:gosec // test-owned temporary path
+	body, readErr := os.ReadFile(filepath.Clean(servicePath))
 	if readErr != nil || string(body) != renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service) {
 		t.Fatalf("managed forwarder was not reconstructed after rollback: body=%q err=%v", body, readErr)
 	}

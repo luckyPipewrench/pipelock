@@ -123,7 +123,7 @@ func TestActionRemoveNetworkNamespaceRestoresOperatorState(t *testing.T) {
 		t.Fatalf("remove network namespace: %v", err)
 	}
 	for _, path := range []string{dynamicService, env.proxyForwarderServicePath} {
-		body, err := os.ReadFile(filepath.Clean(path)) //nolint:gosec // test-owned temporary path
+		body, err := os.ReadFile(filepath.Clean(path))
 		if err != nil || string(body) != operatorBody {
 			t.Fatalf("operator unit %s = %q, %v", path, body, err)
 		}

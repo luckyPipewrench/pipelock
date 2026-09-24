@@ -406,8 +406,7 @@ func TestProbePublishedServicesOutcomes(t *testing.T) {
 			fx.env.stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 		}, "bridge failed: endpoint"},
 		{"endpoint world connectable", func(fx *publishedProbeFixture) {
-			if err := os.Chmod(fx.socketPath, 0o666); err != nil { //nolint:gosec // the probe must reject a socket wider than 0600
-
+			if err := os.Chmod(fx.socketPath, 0o666); err != nil {
 				t.Fatal(err)
 			}
 		}, "access denied"},

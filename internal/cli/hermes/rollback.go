@@ -81,6 +81,13 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
+	browserHomeDir, err := browserHome(opts.HomeDir)
+	if err != nil {
+		return err
+	}
+	if err := rollbackBrowserDefaults(browserHomeDir); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 
 	if opts.RestoreBackup != "" {

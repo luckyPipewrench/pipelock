@@ -42,6 +42,8 @@ type verifyReport struct {
 	MCPServerCount    int      `json:"mcp_server_count"`
 	MCPServersWrapped int      `json:"mcp_servers_wrapped"`
 	Coverage          string   `json:"coverage"`
+	BrowserDefaults   string   `json:"browser_defaults"`
+	BrowserRemedy     string   `json:"browser_remedy,omitempty"`
 }
 
 // lookPipelock resolves the pipelock binary the plugin would invoke. Overridable
@@ -115,6 +117,11 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 		PluginPresent:   pluginInstalled(opts.PluginRoot),
 		ManifestPresent: pluginManifestPresent(opts.PluginRoot),
 		TerminalBackend: "local",
+	}
+	if browserHomeDir, err := browserHome(opts.HomeDir); err != nil {
+		r.BrowserDefaults, r.BrowserRemedy = "unknown", err.Error()+"; pass --home"
+	} else {
+		r.BrowserDefaults, r.BrowserRemedy = verifyBrowserDefaults(browserHomeDir)
 	}
 
 	sidecarOK := inspectConfigSidecar(&r)
@@ -271,6 +278,10 @@ func emitVerifyJSON(cmd *cobra.Command, r verifyReport) error {
 
 func emitVerifyText(cmd *cobra.Command, r verifyReport) {
 	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "Browser defaults: %s\n", r.BrowserDefaults)
+	if r.BrowserRemedy != "" {
+		_, _ = fmt.Fprintf(out, "  remedy: %s\n", r.BrowserRemedy)
+	}
 	_, _ = fmt.Fprintf(out, "Plugin installed: %v (%s)\n", r.PluginPresent, r.PluginRoot)
 	_, _ = fmt.Fprintf(out, "Manifest present: %v (%s)\n", r.ManifestPresent, manifestName)
 	_, _ = fmt.Fprintf(out, "Plugin enabled:   %v (%s.%s)\n", r.PluginEnabled, pluginsKey, enabledKey)

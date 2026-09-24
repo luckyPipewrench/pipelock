@@ -58,7 +58,8 @@ type installOptions struct {
 
 	// HomeDir overrides the value used to resolve PluginRoot/HermesConfig when
 	// those are empty. Defaults to os.UserHomeDir().
-	HomeDir string
+	HomeDir           string
+	NoBrowserDefaults bool
 }
 
 // validate rejects an unacceptable flag set.
@@ -158,6 +159,8 @@ network isolation.`,
 		"override the Hermes config path (default ~/.hermes/config.yaml)")
 	cmd.Flags().StringVar(&opts.PipelockConfig, "pipelock-config", "",
 		"pipelock config the hook should use (recorded in the plugin sidecar)")
+	cmd.Flags().BoolVar(&opts.NoBrowserDefaults, "no-browser-defaults", false,
+		"leave agent-browser user defaults unchanged")
 
 	return cmd
 }
@@ -170,10 +173,33 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
-	if opts.Mode == ModeMCPOnly {
-		return installMCPOnly(cmd, opts)
+	// Browser defaults are validated before anything changes and written only
+	// after the integration succeeds, so a failed install leaves the
+	// agent-browser config untouched.
+	browserHomeDir := ""
+	if !opts.NoBrowserDefaults {
+		home, err := browserHome(opts.HomeDir)
+		if err != nil {
+			return fmt.Errorf("%w; pass --home or --no-browser-defaults", err)
+		}
+		if err := preflightBrowserDefaults(home); err != nil {
+			return fmt.Errorf("%w; fix the file or pass --no-browser-defaults", err)
+		}
+		browserHomeDir = home
 	}
-	return installFull(cmd, opts)
+	var err error
+	if opts.Mode == ModeMCPOnly {
+		err = installMCPOnly(cmd, opts)
+	} else {
+		err = installFull(cmd, opts)
+	}
+	if err != nil || browserHomeDir == "" {
+		return err
+	}
+	if err := installBrowserDefaults(browserHomeDir); err != nil {
+		return fmt.Errorf("hermes integration installed, but browser defaults were not: %w; fix the file and rerun, or pass --no-browser-defaults", err)
+	}
+	return nil
 }
 
 // installMCPOnly rewrites ~/.hermes/config.yaml's mcp_servers entries to route

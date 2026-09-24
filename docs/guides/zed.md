@@ -26,7 +26,7 @@ sequences.
 ## Quick Start
 
 ```bash
-# 1. Install pipelock (requires Go 1.25+)
+# 1. Install pipelock (requires Go 1.26+)
 git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock

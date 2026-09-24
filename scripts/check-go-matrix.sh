@@ -3,23 +3,23 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Pull-request CI runs only the Go floor version (see ci.yaml's
-# test-oss-go126/test-enterprise-go126/test-replay-go126 jobs, which are
+# test-oss-go127/test-enterprise-go127/test-replay-go127 jobs, which are
 # skipped on pull_request unless the diff touches CI/Go-pin files). Pushes to
 # main and the release workflow are the only two places every supported Go
-# minor is still exercised together, and AGENTS.md promises "CI tests Go 1.25
-# and 1.26". This asserts release.yaml's release-tests matrix is a superset of
+# minor is still exercised together, and AGENTS.md promises "CI tests Go 1.26
+# and 1.27". This asserts release.yaml's release-tests matrix is a superset of
 # the Go minors ci.yaml's producer jobs actually install, so trimming a
 # version from one workflow without the other fails here.
 #
 # Structural, not name-based: an earlier version of this guard inferred each
-# CI job's Go minor from its job-ID suffix (test-oss-go126 -> 1.26), so
+# CI job's Go minor from its job-ID suffix (test-oss-go127 -> 1.27), so
 # bumping a producer's actual `go-version:` to 1.27 while leaving its ID
-# `-go126` would false-green. This reads each job's real setup-go
+# `-go127` would false-green. This reads each job's real setup-go
 # `go-version:` (resolving `${{ matrix.* }}` against that job's own
 # `strategy.matrix` when the pin is templated, as release-tests's is), never
 # the job name.
 #
-# Minor versions only (1.25, 1.26), not exact patches: release.yaml
+# Minor versions only (1.26, 1.27), not exact patches: release.yaml
 # intentionally pins an exact patch and that patch drifts independently of
 # this guard (see the comment on that pin).
 set -uo pipefail
@@ -47,12 +47,12 @@ ci_path, release_path = sys.argv[1], sys.argv[2]
 # skip. If any is renamed or removed, this guard must fail rather than
 # silently checking fewer lanes than it was written for.
 EXPECTED_CI_JOBS = [
-	"test-oss-go125",
 	"test-oss-go126",
-	"test-enterprise-go125",
+	"test-oss-go127",
 	"test-enterprise-go126",
-	"test-replay-go125",
+	"test-enterprise-go127",
 	"test-replay-go126",
+	"test-replay-go127",
 ]
 
 MAJOR_MINOR_RE = re.compile(r"^(\d+)\.(\d+)")

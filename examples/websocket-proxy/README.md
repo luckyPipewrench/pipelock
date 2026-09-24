@@ -18,7 +18,7 @@ and pipelock proxy both bind on `127.0.0.1`.
 ## Prerequisites
 
 - `pipelock` on `PATH`, or set `PIPELOCK_BIN` to your built binary
-- Go 1.25+ (to run the small echo/probe helpers)
+- Go 1.26+ (to run the small echo/probe helpers)
 - Bash 3.2+ and `curl`
 - Python 3
 

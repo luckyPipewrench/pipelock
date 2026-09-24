@@ -41,7 +41,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
           cache: false
 
       - name: Build scanner from origin/main
@@ -111,10 +111,10 @@ jobs:
             --exclude sdk/conformance/testdata/aarp-corpus/ \
             < "${diff_file}"
 
-  # Pull requests skip the Go 1.26 lane by default (see the producer jobs
+  # Pull requests skip the Go 1.27 lane by default (see the producer jobs
   # below), but a PR that changes CI policy, Go pins, or the guard that checks
   # them must still prove both versions before merge -- the whole reason the
-  # 1.26 lane is being skipped elsewhere is that it never catches anything
+  # 1.27 lane is being skipped elsewhere is that it never catches anything
   # OTHER than a real toolchain change, and this is exactly that case. Uses a
   # job-level output (not a workflow-level `paths:` trigger filter) because a
   # `paths:`-filtered workflow run is entirely skipped rather than reporting a
@@ -153,10 +153,10 @@ jobs:
 
   # Keep each Go minor in a separate producer. A matrix-level aggregate cannot
   # distinguish which minor failed: its single result is red for either one.
-  test-oss-go125:
+  test-oss-go126:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    name: test-oss (1.25, ${{ matrix.shard }})
+    name: test-oss (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
@@ -171,7 +171,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -181,7 +181,7 @@ jobs:
 
       - name: Run tests (OSS)
         env:
-          TEST_LABEL: OSS Go 1.25 ${{ matrix.shard }}
+          TEST_LABEL: OSS Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
@@ -218,17 +218,66 @@ jobs:
           files: ./coverage-oss-${{ matrix.shard }}.out
           fail_ci_if_error: false
 
-  test-oss-go126:
+  test-oss-go127:
     needs: [security-scan, changed-files]
-    # Pull requests run only the Go 1.25 floor unless the PR itself touches
-    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
+    # Pull requests run only the Go 1.26 floor unless the PR itself touches
+    # CI policy / Go pins (see the changed-files job); this Go 1.27 lane
     # otherwise runs on push to main (and is proven again, pinned, in
     # release.yaml before a tag). Three days of PR history showed this lane
     # catching only timing flakes, never a version-specific failure, so
     # duplicating it on every ordinary PR was pure runner-queue contention.
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
-    name: test-oss (1.26, ${{ matrix.shard }})
+    name: test-oss (1.27, ${{ matrix.shard }})
+    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27'
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Run tests (OSS)
+        env:
+          TEST_LABEL: OSS Go 1.27 ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -o pipefail
+          set +e
+          packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          package_parallelism=2
+          if [ "$TEST_SHARD" = "proxy" ]; then
+            package_parallelism=1
+          fi
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
+
+  test-enterprise-go126:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: test-enterprise (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
@@ -251,58 +300,9 @@ jobs:
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
 
-      - name: Run tests (OSS)
-        env:
-          TEST_LABEL: OSS Go 1.26 ${{ matrix.shard }}
-          TEST_SHARD: ${{ matrix.shard }}
-        run: |
-          set -o pipefail
-          set +e
-          packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
-          package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
-            package_parallelism=1
-          fi
-          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
-            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
-          test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
-          summary_status=$?
-          if [ "$summary_status" -ne 0 ]; then
-            exit "$summary_status"
-          fi
-          exit "$test_status"
-
-  test-enterprise-go125:
-    needs: [security-scan]
-    runs-on: ubuntu-latest
-    name: test-enterprise (1.25, ${{ matrix.shard }})
-    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 48
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: '1.25'
-
-      - name: Verify dependencies
-        run: bash scripts/ci-retry.sh go mod verify
-
-      - name: Download dependencies
-        run: bash scripts/ci-retry.sh go mod download
-
       - name: Run tests (enterprise with coverage)
         env:
-          TEST_LABEL: enterprise Go 1.25 ${{ matrix.shard }}
+          TEST_LABEL: enterprise Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
@@ -341,17 +341,17 @@ jobs:
           files: ./coverage-${{ matrix.shard }}.out
           fail_ci_if_error: false
 
-  test-enterprise-go126:
+  test-enterprise-go127:
     needs: [security-scan, changed-files]
-    # Pull requests run only the Go 1.25 floor unless the PR itself touches
-    # CI policy / Go pins (see the changed-files job); this Go 1.26 lane
+    # Pull requests run only the Go 1.26 floor unless the PR itself touches
+    # CI policy / Go pins (see the changed-files job); this Go 1.27 lane
     # otherwise runs on push to main (and is proven again, pinned, in
     # release.yaml before a tag). Three days of PR history showed this lane
     # catching only timing flakes, never a version-specific failure, so
     # duplicating it on every ordinary PR was pure runner-queue contention.
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name != 'pull_request' || needs.changed-files.outputs.ci_policy == 'true') }}
     runs-on: ubuntu-latest
-    name: test-enterprise (1.26, ${{ matrix.shard }})
+    name: test-enterprise (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
@@ -366,7 +366,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -376,7 +376,7 @@ jobs:
 
       - name: Run tests (enterprise)
         env:
-          TEST_LABEL: enterprise Go 1.26 ${{ matrix.shard }}
+          TEST_LABEL: enterprise Go 1.27 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -o pipefail
@@ -411,7 +411,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -435,31 +435,8 @@ jobs:
           files: ./coverage-subprocess.out
           fail_ci_if_error: false
 
-  test-replay-go125:
-    needs: [security-scan]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: '1.25'
-      - name: Replay harness (deterministic regression)
-        run: make test-replay-harness
-
   test-replay-go126:
     needs: [security-scan]
-    # NOT gated behind the changed-files check the two heavy shard matrices
-    # below use: the CI topology contract (scripts/test_ci_workflow_topology.py)
-    # requires this job's needs to be exactly {security-scan}, because the
-    # test-go126 aggregate's fail-closed gate must be able to demand this
-    # single cheap job's real success unconditionally. It is also five minutes
-    # of "make test-replay-harness" with no shard fan-out, so skipping it on
-    # ordinary PRs was never where the runner-queue contention came from --
-    # that was the twelve race-test shard jobs below.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -473,35 +450,58 @@ jobs:
       - name: Replay harness (deterministic regression)
         run: make test-replay-harness
 
-  test-go125:
-    needs: [security-scan, test-oss-go125, test-enterprise-go125, test-subprocess-coverage, test-replay-go125]
+  test-replay-go127:
+    needs: [security-scan]
+    # NOT gated behind the changed-files check the two heavy shard matrices
+    # below use: the CI topology contract (scripts/test_ci_workflow_topology.py)
+    # requires this job's needs to be exactly {security-scan}, because the
+    # test-go127 aggregate's fail-closed gate must be able to demand this
+    # single cheap job's real success unconditionally. It is also five minutes
+    # of "make test-replay-harness" with no shard fan-out, so skipping it on
+    # ordinary PRs was never where the runner-queue contention came from --
+    # that was the twelve race-test shard jobs below.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27'
+      - name: Replay harness (deterministic regression)
+        run: make test-replay-harness
+
+  test-go126:
+    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-subprocess-coverage, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    name: test (1.25)
+    name: test (1.26)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
         run: |
           echo "security-scan result: ${{ needs.security-scan.result }}"
-          echo "test-oss-go125 result: ${{ needs.test-oss-go125.result }}"
-          echo "test-enterprise-go125 result: ${{ needs.test-enterprise-go125.result }}"
+          echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
+          echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
           echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
-          echo "test-replay-go125 result: ${{ needs.test-replay-go125.result }}"
+          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
           test "${{ needs.security-scan.result }}" = "success"
-          test "${{ needs.test-oss-go125.result }}" = "success"
-          test "${{ needs.test-enterprise-go125.result }}" = "success"
+          test "${{ needs.test-oss-go126.result }}" = "success"
+          test "${{ needs.test-enterprise-go126.result }}" = "success"
           test "${{ needs.test-subprocess-coverage.result }}" = "success"
-          test "${{ needs.test-replay-go125.result }}" = "success"
+          test "${{ needs.test-replay-go126.result }}" = "success"
 
-  test-go126:
-    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-replay-go126]
+  test-go127:
+    needs: [security-scan, test-oss-go127, test-enterprise-go127, test-replay-go127]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    # "test (1.26)" is a required check name on every PR (see the branch
+    # "test (1.27)" is a required check name on every PR (see the branch
     # ruleset), so it must exist and complete on pull_request events even
-    # though test-oss-go126/test-enterprise-go126 are skipped there on
+    # though test-oss-go127/test-enterprise-go127 are skipped there on
     # ordinary PRs. This job's `needs` is exactly {security-scan, the three
-    # go126 producers} per the CI topology contract
+    # go127 producers} per the CI topology contract
     # (scripts/test_ci_workflow_topology.py) -- it does NOT also depend on
     # changed-files, so it cannot read that job's output directly. It does
     # not need to: a producer's own `if:` only ever lets it report "skipped"
@@ -510,7 +510,7 @@ jobs:
     # was a safe, intentional skip -- there is no other way to reach it. A
     # push to main, or a pull_request that DID touch CI policy (so the
     # producer actually ran), still demands a real "success".
-    name: test (1.26)
+    name: test (1.27)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
@@ -530,22 +530,22 @@ jobs:
           # instead of relying on the compound's own exit status.
           test "${{ needs.security-scan.result }}" = "success"
 
-          echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
-          if ! test "${{ needs.test-oss-go126.result }}" = "success"; then
-            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-oss-go126.result }}" != "skipped" ]; then
+          echo "test-oss-go127 result: ${{ needs.test-oss-go127.result }}"
+          if ! test "${{ needs.test-oss-go127.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-oss-go127.result }}" != "skipped" ]; then
               exit 1
             fi
           fi
 
-          echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
-          if ! test "${{ needs.test-enterprise-go126.result }}" = "success"; then
-            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go126.result }}" != "skipped" ]; then
+          echo "test-enterprise-go127 result: ${{ needs.test-enterprise-go127.result }}"
+          if ! test "${{ needs.test-enterprise-go127.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go127.result }}" != "skipped" ]; then
               exit 1
             fi
           fi
 
-          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
-          test "${{ needs.test-replay-go126.result }}" = "success"
+          echo "test-replay-go127 result: ${{ needs.test-replay-go127.result }}"
+          test "${{ needs.test-replay-go127.result }}" = "success"
 
   test-macos:
     needs: [security-scan]
@@ -559,7 +559,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify native target is darwin/arm64
         run: |
@@ -588,7 +588,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify native target is darwin/amd64
         run: |
@@ -630,7 +630,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify native target is windows/amd64
         shell: pwsh
@@ -681,7 +681,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify native target is windows/arm64
         shell: pwsh
@@ -747,7 +747,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Verify native target is linux/arm64
         run: |
@@ -807,7 +807,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Run browser target fallback contracts
         run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform" ./internal/securefile/... ./internal/recorder/...
@@ -871,7 +871,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: golangci-lint (OSS)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
@@ -957,7 +957,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Test code compiles for every published target
         run: |
@@ -1011,10 +1011,10 @@ jobs:
           # setup-go fall back to a direct download from the official Go
           # distribution, bypassing the manifest.
           #
-          # This job scans the 1.26 toolchain. Release binaries are built on the
-          # 1.25 pins in release.yaml, so a green scan here does NOT establish
-          # that the shipped artifact is clean; the release pins have to be
-          # moved too, and were found trailing this one on 2026-09-05.
+          # This job scans the same 1.26 toolchain release.yaml builds the
+          # shipped binaries with, so a green scan here covers the released
+          # artifact only while the two pins match. Move them together; the
+          # release pins were found trailing this one on 2026-09-05.
           #
           # THIS PIN GOES STALE BY DESIGN. Every Go patch release that fixes a
           # reachable stdlib advisory turns this job red repo-wide until the pin
@@ -1079,7 +1079,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build binary
         run: |
@@ -1114,7 +1114,7 @@ jobs:
   # The parallel binary and cross-target producers also flow through this gate,
   # so a compilation failure cannot present as a successful required build check.
   build:
-    needs: [security-scan, test-go125, test-go126, lint, test-cross-target, helm, build-binaries]
+    needs: [security-scan, test-go126, test-go127, lint, test-cross-target, helm, build-binaries]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1122,8 +1122,8 @@ jobs:
       - name: Report required build evidence
         env:
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result }}
-          TEST_GO125_RESULT: ${{ needs.test-go125.result }}
           TEST_GO126_RESULT: ${{ needs.test-go126.result }}
+          TEST_GO127_RESULT: ${{ needs.test-go127.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
@@ -1132,8 +1132,8 @@ jobs:
           set -euo pipefail
           for result in \
             "$SECURITY_SCAN_RESULT" \
-            "$TEST_GO125_RESULT" \
             "$TEST_GO126_RESULT" \
+            "$TEST_GO127_RESULT" \
             "$LINT_RESULT" \
             "$CROSS_TARGET_RESULT" \
             "$HELM_RESULT" \
@@ -1147,7 +1147,7 @@ jobs:
   # Operator-facing rollup only. Branch protection continues to evaluate the
   # required producer checks independently.
   pipelock-ci-summary:
-    needs: [security-scan, test-go125, test-go126, test-macos, lint, build, govulncheck]
+    needs: [security-scan, test-go126, test-go127, test-macos, lint, build, govulncheck]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: Pipelock CI Summary
@@ -1156,8 +1156,8 @@ jobs:
       - name: Report required check evidence
         env:
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result }}
-          TEST_GO125_RESULT: ${{ needs.test-go125.result }}
           TEST_GO126_RESULT: ${{ needs.test-go126.result }}
+          TEST_GO127_RESULT: ${{ needs.test-go127.result }}
           MACOS_RESULT: ${{ needs.test-macos.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -1181,8 +1181,8 @@ jobs:
           }
 
           record_result 'security-scan' "$SECURITY_SCAN_RESULT"
-          record_result 'test (1.25)' "$TEST_GO125_RESULT"
           record_result 'test (1.26)' "$TEST_GO126_RESULT"
+          record_result 'test (1.27)' "$TEST_GO127_RESULT"
           record_result 'test-macos' "$MACOS_RESULT"
           record_result 'lint' "$LINT_RESULT"
           record_result 'build' "$BUILD_RESULT"

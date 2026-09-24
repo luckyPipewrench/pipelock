@@ -340,7 +340,7 @@ func TestCore_SSRFLiteral_ConfigMismatch_APIAllowlisted(t *testing.T) {
 		t.Fatal("expected core SSRF to block 10.0.0.1")
 	}
 	if result.Class != ClassConfigMismatch {
-		t.Errorf("expected ClassConfigMismatch for api_allowlisted IP, got %q", result.Class)
+		t.Errorf("expected ClassConfigMismatch for api_allowlisted IP, got %d", result.Class)
 	}
 	// The hint reaches the blocked agent via X-Pipelock-Hint, so it must be the
 	// terse reason, never the ssrf.ip_allowlist operator knob (confused deputy).
@@ -385,7 +385,7 @@ func TestCore_SSRFLiteral_ConfigMismatch_CanonicalIPNeverAllows(t *testing.T) {
 				t.Fatalf("scanner = %q, want %q", result.Scanner, ScannerCoreSSRF)
 			}
 			if result.Class != ClassConfigMismatch {
-				t.Fatalf("class = %q, want equivalent-IP config mismatch", result.Class)
+				t.Fatalf("class = %d, want equivalent-IP config mismatch", result.Class)
 			}
 		})
 	}

@@ -152,8 +152,8 @@ exit "$DEFAULT_STATUS"
         self.assertEqual(
             {
                 "security-scan",
-                "test-go125",
                 "test-go126",
+                "test-go127",
                 "lint",
                 "test-cross-target",
                 "helm",
@@ -164,8 +164,8 @@ exit "$DEFAULT_STATUS"
         self.assertIn("if: ${{ always() }}", self.build)
         for result in (
             "SECURITY_SCAN_RESULT",
-            "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
+            "TEST_GO127_RESULT",
             "LINT_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
@@ -177,8 +177,8 @@ exit "$DEFAULT_STATUS"
         script = step_script(self.build, "Report required build evidence")
         result_names = (
             "SECURITY_SCAN_RESULT",
-            "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
+            "TEST_GO127_RESULT",
             "LINT_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",

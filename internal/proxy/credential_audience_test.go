@@ -120,6 +120,148 @@ func TestCredentialAudienceHosts_WebSocketFrameAndFragmentedDirectText(t *testin
 	}
 }
 
+func TestJoinHeaderValuesInOriginalOrder(t *testing.T) {
+	values := []joinedHeaderValue{
+		{original: "Bearer ya29." + strings.Repeat("a", 24), scrubbed: "Bearer [authorized-credential]"},
+		{original: "Bearer a", scrubbed: "Bearer a"},
+	}
+	original, scrubbed := joinHeaderValuesInOriginalOrder(values)
+	if original != "Bearer a\nBearer ya29."+strings.Repeat("a", 24) || scrubbed != "Bearer a\nBearer [authorized-credential]" {
+		t.Fatalf("joined headers lost original order: original=%q scrubbed=%q", original, scrubbed)
+	}
+}
+
+func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	token := "ya29." + strings.Repeat("a", 24)
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+		clean  bool
+	}{
+		{name: "Authorization", header: "Authorization", clean: true},
+		{name: "other header", header: "X-Api-Key"},
+		{name: "non-Bearer Authorization", header: "Authorization", value: "Token " + token},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := tc.value
+			if value == "" {
+				value = "Bearer " + token
+			}
+			headers := http.Header{tc.header: []string{value}}
+			var allows []scanner.CredentialAudienceAllow
+			result := scanRequestHeadersForTargetWithAudience(t.Context(), headers, cfg, sc, target, nil, func(allow scanner.CredentialAudienceAllow) { allows = append(allows, allow) })
+			clean := result == nil || result.Clean
+			if clean != tc.clean || (len(allows) == 1) != tc.clean {
+				t.Fatalf("header %q clean=%t allows=%#v result=%#v", tc.header, clean, allows, result)
+			}
+		})
+	}
+	mixedHeaders := http.Header{"Authorization": []string{"Bearer " + token + " AKIA" + strings.Repeat("A", 16)}}
+	mixedResult := scanRequestHeadersForTarget(t.Context(), mixedHeaders, cfg, sc, target)
+	if mixedResult == nil || mixedResult.Clean {
+		t.Fatal("unrelated secret in Authorization header was hidden by Google allowance")
+	}
+	// The allowed token's greedy match must not swallow the first half of a
+	// secret whose second half is in another header. The continuation sorts
+	// after "Bearer" so the joined copy places the halves together.
+	splitHeaders := http.Header{
+		"Authorization": []string{"Bearer " + token + "AKIA" + strings.Repeat("A", 8)},
+		"X-Split":       []string{"C" + strings.Repeat("A", 7)},
+	}
+	splitResult := scanRequestHeadersForTarget(t.Context(), splitHeaders, cfg, sc, target)
+	if splitResult == nil || splitResult.Clean {
+		t.Fatal("secret split across Authorization and another header was hidden")
+	}
+	sawAWS := false
+	for _, match := range splitResult.DLPMatches {
+		switch match.PatternName {
+		case "AWS Access ID":
+			sawAWS = true
+		case "Google OAuth Token":
+			t.Fatalf("allowed Google token reblocked by joined scan: %#v", splitResult.DLPMatches)
+		}
+	}
+	if !sawAWS {
+		t.Fatalf("split AWS key not reported: %#v", splitResult.DLPMatches)
+	}
+	// Header names remain scanned in all mode even when a Google token in a
+	// separate Authorization value is allowed for this destination.
+	secretName := "X-AKIA" + strings.Repeat("A", 16)
+	nameResult := scanRequestHeadersForTarget(t.Context(), http.Header{
+		"Authorization": []string{"Bearer " + token},
+		secretName:      []string{"ordinary"},
+	}, cfg, sc, target)
+	if nameResult == nil || nameResult.Clean {
+		t.Fatal("secret in header name was hidden by Google allowance")
+	}
+	sawAWS = false
+	for _, match := range nameResult.DLPMatches {
+		if match.PatternName == "AWS Access ID" {
+			sawAWS = true
+		}
+	}
+	if !sawAWS {
+		t.Fatalf("header-name AWS key not reported: %#v", nameResult.DLPMatches)
+	}
+	splitGoogle := scanRequestHeadersForTarget(t.Context(), http.Header{
+		"Authorization": []string{"Bearer " + token},
+		"X-First":       []string{"ya29."},
+		"X-Second":      []string{strings.Repeat("z", 24)},
+	}, cfg, sc, target)
+	if splitGoogle == nil || splitGoogle.Clean {
+		t.Fatal("Google token split across non-Authorization headers was allowed")
+	}
+	sawGoogle := false
+	for _, match := range splitGoogle.DLPMatches {
+		if match.PatternName == "Google OAuth Token" {
+			sawGoogle = true
+		}
+	}
+	if !sawGoogle {
+		t.Fatalf("split Google token not reported: %#v", splitGoogle.DLPMatches)
+	}
+
+	_, body := scanRequestBody(t.Context(), BodyScanRequest{
+		Body: strings.NewReader(`{"credential":"` + token + `"}`), ContentType: "application/json", MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner: sc, Target: target,
+	})
+	if body.Clean {
+		t.Fatal("Google OAuth token in request body allowed")
+	}
+	relay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://gmail.googleapis.com/gmail/v1/users/me/profile")
+	if !relay.scanClientText(t.Context(), audit.NewNop(), []byte(token)) {
+		t.Fatal("Google OAuth token in WebSocket text allowed")
+	}
+	wsTarget := "wss://gmail.googleapis.com/gmail/v1/users/me/profile"
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+		block  bool
+	}{
+		{name: "Bearer Authorization", header: "Authorization", value: "Bearer " + token},
+		{name: "other header", header: "X-Api-Key", value: "Bearer " + token, block: true},
+		{name: "non-Bearer Authorization", header: "Authorization", value: "Token " + token, block: true},
+	} {
+		t.Run("WebSocket "+tc.name, func(t *testing.T) {
+			p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
+			blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, wsTarget, audit.LogContext{})
+			if blocked != tc.block {
+				t.Fatalf("WebSocket header %q blocked=%t want %t", tc.header, blocked, tc.block)
+			}
+		})
+	}
+}
+
 func newCredentialAudienceWebSocketRelay(sc *scanner.Scanner, cfg *config.Config, target string) *wsRelay {
 	return &wsRelay{
 		scanner:      sc,
@@ -797,27 +939,30 @@ func TestInterceptTunnel_CredentialAudienceAllowIsRecorded(t *testing.T) {
 		`pipelock_dlp_credential_audience_allows_total{pattern="Test Audience Key",surface="header"}`, 1)
 }
 
-// These are production-shaped Slack regressions: each CONNECT authority is
-// evaluated as its real Slack host while a local dial override supplies the
-// test socket. The tokens are detected by the immutable core scanner and the
-// configurable DLP list is absent.
-func TestInterceptTunnel_CoreSlackAudienceWithNoConfiguredPattern(t *testing.T) {
+// These are production-shaped credential regressions: each CONNECT authority is
+// evaluated as its real provider host while a local dial override supplies the
+// test socket. Slack is on the immutable core floor; Google OAuth is a
+// configured built-in pattern.
+func TestInterceptTunnel_BuiltInCredentialAudience(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		host        string
 		path        string
 		token       string
 		tokenPrefix string
+		pattern     string
+		core        bool
 	}{
-		{name: "Web API bot token", host: "slack.com", path: "/api/auth.test", token: fakeSlackBotToken(), tokenPrefix: "xoxb-"},
-		{name: "hosted MCP user token", host: "mcp.slack.com", path: "/mcp", token: "xoxp-" + strings.Repeat("a", 24), tokenPrefix: "xoxp-"},
+		{name: "Web API bot token", host: "slack.com", path: "/api/auth.test", token: fakeSlackBotToken(), tokenPrefix: "xoxb-", pattern: "Slack Token", core: true},
+		{name: "hosted MCP user token", host: "mcp.slack.com", path: "/mcp", token: "xoxp-" + strings.Repeat("a", 24), tokenPrefix: "xoxp-", pattern: "Slack Token", core: true},
+		{name: "Gmail API access token", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/profile", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var upstreamHits atomic.Int32
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				upstreamHits.Add(1)
 				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+tc.tokenPrefix) {
-					t.Error("upstream did not receive the expected Slack Authorization header")
+					t.Error("upstream did not receive the expected Authorization header")
 				}
 				_, _ = fmt.Fprint(w, `{"ok":false,"error":"invalid_auth"}`)
 			}))
@@ -835,7 +980,9 @@ func TestInterceptTunnel_CoreSlackAudienceWithNoConfiguredPattern(t *testing.T) 
 			cfg.RequestBodyScanning.Action = config.ActionBlock
 			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 			cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
-			cfg.DLP.Patterns = nil
+			if tc.core {
+				cfg.DLP.Patterns = nil
+			}
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 
@@ -870,10 +1017,10 @@ func TestInterceptTunnel_CoreSlackAudienceWithNoConfiguredPattern(t *testing.T) 
 			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK || upstreamHits.Load() != 1 {
-				t.Fatalf("core Slack credential blocked before upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
+				t.Fatalf("provider credential blocked before upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
 			}
 			assertMetricSampleValue(t, m,
-				`pipelock_dlp_credential_audience_allows_total{pattern="Slack Token",surface="header"}`, 1)
+				`pipelock_dlp_credential_audience_allows_total{pattern="`+tc.pattern+`",surface="header"}`, 1)
 		})
 	}
 }

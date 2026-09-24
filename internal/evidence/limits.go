@@ -28,6 +28,7 @@ const (
 	LimitFsyncDOS            LimitID = "L-FSYNC-DOS"
 	LimitContainmentUnproven LimitID = "L-CONTAINMENT-UNPROVEN"
 	LimitConcurrentWriters   LimitID = "L-CONCURRENT-RECORDER-WRITERS"
+	LimitRestartContinuity   LimitID = "L-RESTART-CONTINUITY-DELETION"
 )
 
 var Limits = []Limit{
@@ -42,7 +43,8 @@ var Limits = []Limit{
 	{ID: LimitFsyncHonesty, Title: "Fsync Honesty", Category: "recorder-integrity", Summary: "Hardware fsync honesty vs lying storage is unprovable.", Bound: "Attest storage config + capture the syscall return."},
 	{ID: LimitFsyncDOS, Title: "Fsync Backpressure", Category: "availability", Summary: "fsync/backpressure is a DoS surface; fail-closed blocking under storage stall can stall egress.", Bound: "fsync_errors_total SLO + alerting; a deliberate integrity-over-availability tradeoff."},
 	{ID: LimitContainmentUnproven, Title: "Containment Unproven", Category: "completeness", Summary: "\"The boundary is the witness\" holds only under attested containment; the binary alone cannot prove non-bypass.", Bound: "Containment-attestation grade (item d)."},
-	{ID: LimitConcurrentWriters, Title: "Concurrent Recorder Writers", Category: "recorder-integrity", Summary: "Concurrent pipelock processes sharing one recorder directory can fork the sequence and produce a structurally unverifiable chain; the verifier may report a prev_hash mismatch that looks like tampering.", Bound: "Single-writer guard / per-writer evidence directories (not yet enforced); detect existing damage with `pipelock evidence doctor DIR`."},
+	{ID: LimitConcurrentWriters, Title: "Concurrent Recorder Writers", Category: "recorder-integrity", Summary: "Each process run records its own chain, so current processes sharing one recorder directory no longer fork a shared chain; an older binary writing the shared legacy session alongside another writer still can, and the verifier may report a prev_hash mismatch that looks like tampering.", Bound: "One chain per process run (current binaries); detect legacy-session damage with `pipelock evidence doctor DIR`."},
+	{ID: LimitRestartContinuity, Title: "Restart Continuity Deletion", Category: "completeness", Summary: "Continuity between process runs is recorded only as an optional signed link file beside the chains; deleting a link file makes its successor look like an honest unlinked run and is not detected, so a structurally clean directory does not prove no run's evidence is missing.", Bound: "A signed head commitment (not yet available); `pipelock verify-receipt --chain` and `pipelock evidence doctor` list every unlinked run."},
 }
 
 func ByID(id LimitID) (Limit, bool) {

@@ -1088,6 +1088,31 @@ func TestVerifyReceiptCmd_WholeRecorderChainAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_WholeRecorderDirectoryIncompleteSummary(t *testing.T) {
+	t.Parallel()
+	path, pub := buildChainJSONL(t, 1)
+	key := hex.EncodeToString(pub)
+	for _, tc := range []struct {
+		name    string
+		require bool
+	}{{"report", false}, {"require", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := VerifyReceiptCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			args := []string{"--whole-recorder", "--chain", filepath.Dir(path), "--key", key}
+			if tc.require {
+				args = append(args, "--require-seal")
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			if (err != nil) != tc.require || !strings.Contains(out.String(), "INCOMPLETE RUNS (1): proxy") || strings.Contains(out.String(), "CHAIN VALID") {
+				t.Fatalf("require=%v err=%v output=%s", tc.require, err, out.String())
+			}
+		})
+	}
+}
+
 func TestVerifyReceiptCmd_WholeRecorderReportsReceiptTailAfterSealIncomplete(t *testing.T) {
 	t.Parallel()
 

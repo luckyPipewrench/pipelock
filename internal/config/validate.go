@@ -1468,11 +1468,11 @@ func (c *Config) validateDLP(warnings *[]Warning) error {
 }
 
 func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
-	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
-	// is not implemented - DLP matches follow the transport-level action
-	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
-	// These fields exist on the struct so YAML doesn't silently drop them;
-	// validation rejects non-empty values with an explicit error.
+	// dlp.action is not supported: DLP matches follow the calling surface's
+	// action (request_body_scanning.action, mcp_input_scanning.action, or
+	// enforce mode). The field exists so YAML doesn't silently drop it, and a
+	// non-empty value is rejected with an explicit error. A per-pattern
+	// action accepts only "warn", and never on a built-in pattern.
 	if c.DLP.Action != "" {
 		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}
@@ -3612,11 +3612,11 @@ func (c *Config) validateTLSInterception() error {
 		return fmt.Errorf("tls_interception: %w", resolveErr)
 	}
 	if _, err := os.Stat(certPath); err != nil {
-		return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w", certPath, err)
+		return fmt.Errorf("CA cert not found at %s (run 'pipelock tls init'): %w%s", certPath, err, c.caPathMismatchHint(certPath))
 	}
 	keyInfo, err := os.Stat(keyPath)
 	if err != nil {
-		return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w", keyPath, err)
+		return fmt.Errorf("CA key not found at %s (run 'pipelock tls init'): %w%s", keyPath, err, c.caPathMismatchHint(certPath))
 	}
 	// Reject world-readable, any writable, or any executable bits. Allow
 	// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
@@ -5687,17 +5687,20 @@ func (c *Config) validateMediaPolicy() error {
 }
 
 // ResolveCAPath returns resolved CA cert and key paths.
-// Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
-// Returns an error if $HOME cannot be determined and paths are not set explicitly.
+// Empty config values resolve against the pipelock home directory: the
+// --home flag, then PIPELOCK_HOME, then ~/.pipelock. That is the precedence
+// `pipelock tls init` uses via signing.ResolveKeystoreDir, so the CA the
+// proxy loads is always the one the operator just generated.
+// Returns an error if the home directory cannot be determined and paths
+// are not set explicitly.
 func (c *Config) ResolveCAPath() (certPath, keyPath string, err error) {
 	certPath = c.TLSInterception.CACertPath
 	keyPath = c.TLSInterception.CAKeyPath
 	if certPath == "" || keyPath == "" {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", "", fmt.Errorf("resolve CA path: %w (set ca_cert and ca_key explicitly)", homeErr)
+		dir, dirErr := signing.ResolveKeystoreDir("")
+		if dirErr != nil {
+			return "", "", fmt.Errorf("resolve CA path: %w (set ca_cert and ca_key explicitly)", dirErr)
 		}
-		dir := filepath.Join(home, ".pipelock")
 		if certPath == "" {
 			certPath = filepath.Join(dir, "ca.pem")
 		}
@@ -5706,6 +5709,44 @@ func (c *Config) ResolveCAPath() (certPath, keyPath string, err error) {
 		}
 	}
 	return certPath, keyPath, nil
+}
+
+// caPathMismatchHint returns an extra sentence for a CA-not-found error when
+// the default dir resolved via --home/PIPELOCK_HOME and a CA also exists
+// under the bare ~/.pipelock (the directory `pipelock tls init` would have
+// used before --home/PIPELOCK_HOME was set). This is the case that used to
+// fail silently in the opposite direction: the proxy would find the OLD CA
+// at ~/.pipelock and sign with it while `tls show-ca` printed the NEW one.
+// Returns "" when ca_cert/ca_key are explicit, or no alternate CA exists.
+// resolvedPath is the cert path ResolveCAPath already produced, named
+// again in the hint so the operator sees both paths together.
+func (c *Config) caPathMismatchHint(resolvedPath string) string {
+	if c.TLSInterception.CACertPath != "" || c.TLSInterception.CAKeyPath != "" {
+		return ""
+	}
+	resolvedHome := signing.ResolvedHome()
+	if resolvedHome == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	altDir := filepath.Join(home, signing.DefaultPipelockDir)
+	if filepath.Clean(altDir) == filepath.Clean(resolvedHome) {
+		return ""
+	}
+	altCert := filepath.Join(altDir, "ca.pem")
+	if _, err := os.Stat(altCert); err != nil {
+		return ""
+	}
+	// Only offer "keep using it" for a usable pair: a lone certificate has
+	// no key to sign with.
+	if _, err := os.Stat(filepath.Join(altDir, "ca-key.pem")); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(" (an existing CA is at %s, outside the pipelock home that resolved %s: set tls_interception.ca_cert and ca_key to keep using it, or run 'pipelock tls init' with that home to create a new CA that clients must then trust)",
+		altCert, resolvedPath)
 }
 
 // upgradeActionStrength returns a numeric strength for upgrade_warn/upgrade_ask values.

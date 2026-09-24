@@ -34,11 +34,12 @@ go run ./cmd/pipelock-verifier receipt \
   /tmp/shadow-verify-check/shadow-delta-receipt.json
 
 # Verify the recorder chain:
+EVIDENCE_FILE="$(find /tmp/shadow-verify-check/recorder -maxdepth 1 -type f -name 'evidence-*.jsonl' -print -quit)"
 go run ./cmd/pipelock-verifier chain \
   --key /tmp/shadow-verify-check/receipt-signing.pub \
   --expect-payload-kind shadow_delta \
   --expect-contract sha256:example-contract \
-  /tmp/shadow-verify-check/recorder/evidence-proxy-0.jsonl
+  "$EVIDENCE_FILE"
 ```
 
 ## How the receipts are verified
@@ -58,7 +59,7 @@ for another payload kind, or for another contract is rejected.
 
 ## Reproducibility
 
-All artifacts except `recorder/evidence-proxy-0.jsonl` are byte-reproducible
+All artifacts except the recorder JSONL file are byte-reproducible
 across runs. The recorder JSONL wrapper uses wall-clock timestamps from
 `recorder.Record()`, but the EvidenceReceipt v2 inside its `detail` field is
 fully deterministic (fixed clock, fixed event IDs, deterministic Ed25519 seed).

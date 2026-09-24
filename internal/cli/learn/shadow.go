@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -132,6 +133,39 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 		"--out-json": flags.outJSONPath,
 	}); err != nil {
 		return err
+	}
+	if flags.recorderDir != "" {
+		recorderDir, err := filepath.Abs(filepath.Clean(flags.recorderDir))
+		if err != nil {
+			return err
+		}
+		for label, output := range map[string]string{"--out": flags.outPath, "--out-json": flags.outJSONPath} {
+			if output == "" {
+				continue
+			}
+			path, pathErr := filepath.Abs(filepath.Clean(output))
+			if pathErr != nil {
+				return pathErr
+			}
+			// A report never belongs inside the recorder directory. Refusing the
+			// whole directory, rather than a list of names, protects every file
+			// the recorder keeps there, including ones added later, and stops a
+			// stray report from turning the directory into a mixed one that the
+			// compactor then refuses. Identity is decided by the filesystem on
+			// the parent exactly as written: a symlinked parent, or one reached
+			// through "..", names the recorder directory while its cleaned
+			// spelling does not. A parent that cannot be resolved is refused
+			// too, with its cause, rather than assumed to be elsewhere.
+			// The report writer cleans the path before writing, so the cleaned
+			// parent is checked as well: a symlink inside the recorder
+			// directory that points out, followed by "..", passes the raw
+			// check and then writes here.
+			rawSame, rawErr := cliutil.SamePathIdentity(recorderDir, unresolvedParent(output))
+			cleanSame, cleanErr := cliutil.SamePathIdentity(recorderDir, filepath.Dir(path))
+			if rawSame || cleanSame || rawErr != nil || cleanErr != nil {
+				return errors.Join(fmt.Errorf("%s must not be inside the recorder directory %s, which holds %s; write reports elsewhere (got %s)", label, recorderDir, shadowReceiptsLabel, path), rawErr, cleanErr)
+			}
+		}
 	}
 	sessionsDir, err := resolveShadowSessions(cfg, flags)
 	if err != nil {
@@ -368,7 +402,15 @@ func emitShadowReceipts(flags shadowFlags, body contract.Contract, report shadow
 		return 0, fmt.Errorf("learn shadow: open recorder: %w", err)
 	}
 	defer func() { _ = rec.Close() }()
+	// Record under a fresh per-run session so a shadow replay can never
+	// resume, and fork, a chain another process is writing in the same
+	// recorder directory.
+	runSession, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		return 0, fmt.Errorf("learn shadow: acquire recorder session: %w", err)
+	}
 	emitter := shadow.NewEmitter(shadow.EmitterConfig{
+		SessionID: runSession,
 		Recorder:  rec,
 		Signer:    signer,
 		Principal: "learn",
@@ -488,4 +530,20 @@ func readShadowReport(path string) (shadow.Report, error) {
 		return shadow.Report{}, fmt.Errorf("learn diff: decode report: %w", err)
 	}
 	return report, nil
+}
+
+// unresolvedParent returns the directory part of p without cleaning it.
+// filepath.Dir collapses ".." lexically, before any symlink is resolved, so
+// "alias/../name" would lose the directory the kernel actually reaches.
+func unresolvedParent(p string) string {
+	// "/" is a separator on every supported platform, including Windows,
+	// where filepath.Separator is "\".
+	i := strings.LastIndexFunc(p, func(r rune) bool { return r == '/' || r == filepath.Separator })
+	switch {
+	case i < 0:
+		return "."
+	case i == 0:
+		return string(filepath.Separator)
+	}
+	return p[:i]
 }

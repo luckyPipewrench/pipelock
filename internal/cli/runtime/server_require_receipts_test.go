@@ -111,7 +111,15 @@ func TestNewServer_RequireReceiptsWithLiveEmitterStarts(t *testing.T) {
 	}
 }
 
-func TestNewServer_RequireReceiptsWithBrickedEmitterFails(t *testing.T) {
+// TestNewServer_RequireReceiptsCorruptPriorTailStartsFreshRun replaces the
+// old TestNewServer_RequireReceiptsWithBrickedEmitterFails. That test encoded
+// the rule that a corrupt tail on the shared "proxy" session bricked receipt
+// emission, because a new process resumed and extended that damaged chain.
+// Each process now records its own fresh run chain, so a damaged chain from an
+// earlier run can no longer be extended; refusing to start over it would only
+// cost all future evidence. The damaged chain must stay on disk untouched for
+// `pipelock evidence doctor` to report.
+func TestNewServer_RequireReceiptsCorruptPriorTailStartsFreshRun(t *testing.T) {
 	recorderDir := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
 	_, priv, err := signing.GenerateKeyPair()
@@ -122,6 +130,10 @@ func TestNewServer_RequireReceiptsWithBrickedEmitterFails(t *testing.T) {
 		t.Fatalf("save signing key: %v", err)
 	}
 	seedTamperedReceiptTail(t, recorderDir, priv)
+	before, err := os.ReadDir(recorderDir)
+	if err != nil {
+		t.Fatalf("read seeded dir: %v", err)
+	}
 
 	cfgPath := writeServerTestConfig(t, strings.Join([]string{
 		"mode: balanced",
@@ -134,12 +146,45 @@ func TestNewServer_RequireReceiptsWithBrickedEmitterFails(t *testing.T) {
 	}, "\n"))
 
 	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
-	if err == nil {
-		s.cleanup()
-		t.Fatal("expected NewServer to fail when require_receipts has a bricked emitter")
+	if err != nil {
+		t.Fatalf("NewServer must start a fresh run chain over a corrupt prior tail: %v", err)
 	}
-	if !strings.Contains(err.Error(), "require_receipts") || !strings.Contains(err.Error(), "resume") {
-		t.Fatalf("error = %q, want require_receipts and resume context", err)
+	t.Cleanup(func() { s.cleanup() })
+	if initErr := s.receiptEmitter.InitError(); initErr != nil {
+		t.Fatalf("fresh run emitter must be healthy: %v", initErr)
+	}
+	session := s.receiptEmitter.Session()
+	if base, ok := receipt.RunSessionBase(session); !ok || base != recorder.DefaultSessionBase {
+		t.Fatalf("emitter session %q is not a run session of %q", session, recorder.DefaultSessionBase)
+	}
+	if link := s.receiptEmitter.ChainLink(); link != nil {
+		t.Fatalf("a corrupt predecessor tail must not be linked; got link to %q", link.PredecessorSession)
+	}
+	for _, de := range before {
+		if _, statErr := os.Stat(filepath.Join(recorderDir, de.Name())); statErr != nil {
+			t.Fatalf("seeded evidence %s must stay on disk: %v", de.Name(), statErr)
+		}
+	}
+}
+
+// TestNewServer_RequireReceiptsWithBrickedEmitterFailsLegacy keeps the old
+// fail-closed contract for the path that still resumes: an emitter bound to
+// the legacy session (no run session) over a corrupt tail.
+func TestNewServer_RequireReceiptsWithBrickedEmitterFailsLegacy(t *testing.T) {
+	recorderDir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	seedTamperedReceiptTail(t, recorderDir, priv)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: recorderDir, CheckpointInterval: 100, MaxEntriesPerFile: 1000}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	e := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "h", Principal: "local", Actor: "pipelock"})
+	if e.InitError() == nil {
+		t.Fatal("legacy-session emitter over a corrupt tail must refuse to resume")
 	}
 }
 

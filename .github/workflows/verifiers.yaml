@@ -335,6 +335,37 @@ jobs:
               raise SystemExit(f"Python v2 receipt verifier failed: {report}")
           PY
 
+      - name: Python receipt-chain ext link smoke
+        working-directory: sdk/verifiers/python
+        # The pytest suite is not run in CI, so pin the ext link-hash contract
+        # here: the Go-generated ext chain must verify with the Go root hash,
+        # and the copy whose linked ext bytes were edited must be rejected.
+        run: |
+          KEY=$(python -c 'import json; print(json.load(open("../../conformance/testdata/test-key.json"))["public_key_hex"])')
+          PYTHONPATH=src python -m pipelock_aarp_verify receipt \
+            ../../conformance/testdata/g1-ext-chain.jsonl --chain --key "$KEY" \
+            --json > "$RUNNER_TEMP/python-ext-chain.json"
+          if PYTHONPATH=src python -m pipelock_aarp_verify receipt \
+            ../../conformance/testdata/g1-ext-tampered-invalid.jsonl --chain --key "$KEY" \
+            --json > "$RUNNER_TEMP/python-ext-tampered.json"; then
+            echo "Python verifier accepted a chain with edited ext link bytes" >&2
+            exit 1
+          fi
+          python - "$RUNNER_TEMP/python-ext-chain.json" "$RUNNER_TEMP/python-ext-tampered.json" <<'PY'
+          import json
+          import sys
+
+          want_root = "19805bc704923ef6a602abdfa3dc4982134997a69e3fff7a627b3f1805511d1b"
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              valid = json.load(fh)
+          if valid.get("valid") is not True or valid.get("root_hash") != want_root:
+              raise SystemExit(f"Python ext chain verification diverged: {valid}")
+          with open(sys.argv[2], encoding="utf-8") as fh:
+              tampered = json.load(fh)
+          if tampered.get("valid") is not False or tampered.get("broken_at_seq") != 1:
+              raise SystemExit(f"Python ext tamper not rejected at seq 1: {tampered}")
+          PY
+
       - name: Run AARP cross-language gate
         env:
           # All four verifiers implement --svid; require four-way agreement on the

@@ -1167,6 +1167,10 @@ Key-free evidence capture:
 				}
 				runFlightRecorderExpiryOnce(rec, cmd.ErrOrStderr(), defaultExpire)
 				defer func() { _ = rec.Close() }()
+				runSession, sessErr := acquireRunSession(rec)
+				if sessErr != nil {
+					return sessErr
+				}
 				retentionCtx, retentionCancel := context.WithCancel(cmd.Context())
 				var retentionWG sync.WaitGroup
 				startFlightRecorderRetention(retentionCtx, &retentionWG, rec, cmd.ErrOrStderr(), defaultFlightRecorderRetentionInterval, defaultExpire)
@@ -1204,6 +1208,7 @@ Key-free evidence capture:
 					PostureBinding:      postureResult.Binding,
 					PostureAvailability: string(postureResult.Availability),
 					HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+					Session:             runSession,
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
@@ -1231,6 +1236,7 @@ Key-free evidence capture:
 						Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
 						Principal: "local",
 						Actor:     "pipelock",
+						Session:   runSession,
 					})
 					if v2ReceiptEmitter != nil {
 						cmd.PrintErrf("  Receipts: v2 proxy_decision dual-emit enabled\n")

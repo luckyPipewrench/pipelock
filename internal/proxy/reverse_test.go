@@ -2749,3 +2749,55 @@ func TestReverseProxy_ShieldEnabled(t *testing.T) {
 		t.Fatal("expected clean JSON passthrough with shield engine active")
 	}
 }
+
+func TestReverseProxy_ShieldSniffsPastNonHTTPWhitespace(t *testing.T) {
+	html := `<!doctype html><img src="https://track.example.com/pixel" width="1" height="1">`
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{"duplicate parameters", "\u00a0application/javascript; a=1; a=2", html},
+		{"successful Go parse", "\u2003application/javascript; charset=utf-8", html},
+		{"doctype beyond Go sniff window", "\u00a0application/javascript; charset=utf-8", strings.Repeat(" ", 600) + html},
+		{"browser generic type", "unknown/unknown", html},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.InjectFingerprintShims = false
+			cfg.BrowserShield.StripExtensionProbing = false
+			cfg.BrowserShield.StripTrackingPixels = true
+			upstream := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				_, _ = w.Write([]byte(tt.body))
+			}
+			upstreamSrv := httptest.NewServer(http.HandlerFunc(upstream))
+			t.Cleanup(upstreamSrv.Close)
+			upstreamURL, err := url.Parse(upstreamSrv.URL)
+			if err != nil {
+				t.Fatalf("parse upstream URL: %v", err)
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			var cfgPtr atomic.Pointer[config.Config]
+			var scPtr atomic.Pointer[scanner.Scanner]
+			cfgPtr.Store(cfg)
+			scPtr.Store(sc)
+			handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+			proxy := httptest.NewServer(handler)
+			t.Cleanup(proxy.Close)
+
+			resp := testGet(t, proxy.URL+"/page")
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "track.example.com") || resp.Header.Get("Content-Type") != "text/html" {
+				t.Fatalf("status=%d content-type=%q body=%q, want shielded HTML response", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			}
+		})
+	}
+}

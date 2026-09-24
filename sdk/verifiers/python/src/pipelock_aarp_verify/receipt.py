@@ -22,6 +22,7 @@ from .number import (
     enforce_cross_language_number_range,
     parse_json_strict,
 )
+from .rawjson import SourcedReceipt, ext_source_bytes, recorder_line_ext_bytes
 
 V2_RECORD_TYPE = "evidence_receipt_v2"
 SIGNATURE_PREFIX = "ed25519:"
@@ -433,10 +434,21 @@ def verify_evidence_chain_file(
 
 
 def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
-    receipts: list[dict[str, Any]] = []
-    chain_type: str | None = None
+    """Load the receipt chain carried in a flight-recorder JSONL file.
+
+    Mirrors the Go reference receipt-chain mode: the action_receipt
+    subsequence is the chain and evidence_receipt entries are skipped. A
+    default Pipelock run interleaves both types in one file, each on its own
+    chain. A file that carries only evidence_receipt entries is loaded as an
+    evidence_receipt_v2 chain.
+    """
+    action: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    # Split on LF only, like Go's line scanner. str.splitlines() also splits
+    # on U+0085, U+2028 and other separators that Go's encoder leaves raw
+    # inside JSON strings, which would cut a valid entry in half.
     for index, line in enumerate(
-        Path(path).read_text(encoding="utf-8").splitlines(), start=1
+        Path(path).read_text(encoding="utf-8").split("\n"), start=1
     ):
         raw = line.strip()
         if raw == "":
@@ -463,15 +475,21 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
             raise ReceiptError(
                 f"line {index}: unexpected recorder entry type {entry_type!r}"
             )
-        if chain_type is None:
-            chain_type = entry_type
-        elif entry_type != chain_type:
-            raise ReceiptError("mixed action/evidence receipt chains are not supported")
         detail = entry.get("detail")
         if not isinstance(detail, dict):
             raise ReceiptError(f"line {index}: evidence entry has empty detail")
-        receipts.append(detail)
-    return receipts
+        if entry_type == EVIDENCE_ENTRY_TYPE:
+            evidence.append(detail)
+            continue
+        if "ext" in detail:
+            try:
+                ext_bytes = recorder_line_ext_bytes(raw)
+            except ValueError as exc:
+                raise ReceiptError(f"line {index}: ext source: {exc}") from exc
+            if ext_bytes is not None:
+                detail = SourcedReceipt(detail, ext_bytes)
+        action.append(detail)
+    return action if action else evidence
 
 
 def verify_evidence_chain(
@@ -719,13 +737,15 @@ def _start_rotated_segment(
             f"seq {seq}: key_transition prior_signer_key does not match prior "
             "segment key",
         )
+    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
+    if signer_key == state["cur_key"]:
+        return _broken_chain(seq, f"seq {seq}: key_transition does not change signer key")
     if marker.get("prior_chain_seq") != state["prior_segment_seq"]:
         return _broken_chain(
             seq,
             f"seq {seq}: key_transition prior_chain_seq does not match prior "
             "segment final seq",
         )
-    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
     if trusted_keys:
         if signer_key not in trusted_keys:
             return _broken_chain(
@@ -918,7 +938,27 @@ def compute_session_open_genesis(open_record: dict[str, Any]) -> str:
 
 
 def _canonicalize_receipt(receipt: dict[str, Any]) -> bytes:
-    return _canonical_json(_order_struct(receipt, _RECEIPT_FIELDS))
+    """Reproduce Go's json.Marshal(Receipt), the chain link preimage.
+
+    Go appends the unsigned top-level ext bag (a json.RawMessage) after
+    signer_key whenever it is present, including an explicit null, so ext
+    bytes take part in the link hash even though they never take part in the
+    signature. Those bytes come from the ext value's source text when the
+    receipt was read from a recorder line; re-serializing the parsed value is
+    a fallback for receipts built in memory and matches Go only for ext values
+    whose Go encoding survives a parse and re-serialize.
+    """
+    base = _canonical_json(_order_struct(receipt, _RECEIPT_FIELDS))
+    if "ext" not in receipt:
+        return base
+    source = ext_source_bytes(receipt)
+    ext_bytes = (
+        source.encode("utf-8")
+        if source is not None
+        else _canonical_json(receipt["ext"])
+    )
+    head = b"{" if base == b"{}" else base[:-1] + b","
+    return head + b'"ext":' + ext_bytes + b"}"
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -1087,9 +1127,9 @@ def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -
 def normalize_action_receipt(receipt: dict[str, Any]) -> None:
     # EV2-FU-1: the single tolerated unknown top-level surface is the advisory
     # ext bag. It is unsigned (the signature covers only the canonical action
-    # record) and never consulted, so it is accepted here but deliberately kept
-    # out of _RECEIPT_FIELDS (the canonical/hash preimage) rather than added to
-    # it. Every other unrecognized field is rejected by _reject_unknown.
+    # record) and never consulted for a verdict. Its bytes still join the chain
+    # link hash, as in Go; _canonicalize_receipt appends them. Every other
+    # unrecognized field is rejected by _reject_unknown.
     _reject_unknown(receipt, _field_names(_RECEIPT_FIELDS) | {"ext"}, "receipt")
     if receipt.get("version") != 1:
         raise ReceiptError(
@@ -1204,7 +1244,10 @@ def _validate_session_open(value: Any) -> None:
     _require_string(
         open_record.get("recorder_session"), "session_control.open.recorder_session"
     )
-    _require_policy_hash(
+    # Go decodes session_control.open.policy_hash into a plain string field
+    # and applies no format rule; its emitter writes the bare hex config hash.
+    # Accept exactly what Go decodes: absent, null, or any string.
+    _require_optional_string(
         open_record.get("policy_hash"), "session_control.open.policy_hash"
     )
     _require_string(

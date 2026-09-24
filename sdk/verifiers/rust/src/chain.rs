@@ -483,6 +483,17 @@ impl ChainWalkState {
                 ),
             ));
         }
+        let signer_key = receipt
+            .get("signer_key")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if signer_key == self.cur_key {
+            return Some(broken(
+                seq,
+                format!("seq {seq}: key_transition does not change signer key"),
+            ));
+        }
         if marker
             .get("prior_chain_seq")
             .and_then(serde_json::Value::as_u64)
@@ -493,11 +504,6 @@ impl ChainWalkState {
 				format!("seq {seq}: key_transition prior_chain_seq does not match prior segment final seq"),
 			));
         }
-        let signer_key = receipt
-            .get("signer_key")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_ascii_lowercase();
         if ctx.trusted_keys.is_empty() {
             if !ctx.allow_unpinned || signer_key != self.cur_key {
                 return Some(broken(

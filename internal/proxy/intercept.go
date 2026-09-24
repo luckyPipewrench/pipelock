@@ -2009,7 +2009,10 @@ func newInterceptHandler(
 		if maxResp <= 0 {
 			maxResp = interceptDefaultMaxResp
 		}
-		if interceptRespExempt && ic.Config.ResponseScanning.Enabled {
+		// Declared SVG stays on the buffered Shield path even for a trusted
+		// host: it is active content, and the SVG floor never admits
+		// unvalidated bytes.
+		if interceptRespExempt && ic.Config.ResponseScanning.Enabled && !responseHeadersDeclareSVG(resp.Header) {
 			ic.Logger.LogResponseScanExemptFullTrust(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			if !requiredIntentEmitted && interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
@@ -2219,10 +2222,14 @@ func newInterceptHandler(
 		}
 
 		// Browser Shield on intercepted response body.
+		svgShielded := false
 		if ic.Proxy != nil {
 			var shieldBlocked *shieldBlockResult
 			var shieldSummary *receipt.ShieldSummary
-			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
+			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
+			if shieldBlocked == nil {
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
+			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
 				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
@@ -2250,7 +2257,8 @@ func newInterceptHandler(
 		// Media policy on intercepted TLS responses. Runs after shield so
 		// HTML/JS rewriting happens on the original body and image/audio/
 		// video responses get transport-agnostic enforcement.
-		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody)
+		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
 		if mediaVerdict.Blocked {
 			interceptRecordFinding(ic, session.SignalBlock, "media_policy", mediaVerdict.BlockReason)
@@ -2484,6 +2492,10 @@ func newInterceptHandler(
 				if action == config.ActionStrip && scanResult.TransformedContent == "" {
 					action = config.ActionBlock
 					reason += " (strip failed)"
+				}
+				if action == config.ActionStrip && resp.StatusCode == http.StatusPartialContent {
+					action = config.ActionBlock
+					reason += " (partial response cannot be rewritten)"
 				}
 
 				switch action {

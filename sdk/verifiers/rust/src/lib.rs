@@ -10,6 +10,7 @@ pub mod lifecycle;
 pub mod output;
 pub mod provenance;
 pub(crate) mod provenance_proof;
+pub mod rawjson;
 pub mod receipt;
 pub mod recorder;
 pub mod rotation;

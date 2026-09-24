@@ -106,6 +106,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `bad_request` | Malformed client request (missing parameter, invalid URL, etc.). | `info` | `none` |
 | `compressed_response` | Compressed (gzip/br/zstd) response cannot be scanned safely. Operator must enable upstream decompression in pipelock or change the upstream's `Accept-Encoding` policy to clear the block. | `warn` | `policy` |
 | `browser_shield_oversize` | Response body exceeded the configured Browser Shield size limit. Operator must raise the limit or exempt the host to clear the block. | `warn` | `policy` |
+| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, or scan-head mode refused a valid UTF-16 response because a partial character stream is not safely inspectable. Correct the upstream encoding, raise the Browser Shield size limit so the full response can be inspected, or use the existing whole-host `browser_shield.exempt_domains` control when the host must intentionally bypass Browser Shield. | `warn` | `policy` |
 | `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
 ### Contract / learn-and-lock layer

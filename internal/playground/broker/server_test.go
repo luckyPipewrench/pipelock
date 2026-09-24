@@ -44,6 +44,21 @@ type serverFakeProvider struct {
 	destroyedCh chan string
 }
 
+type blockingBundleWriter struct {
+	http.ResponseWriter
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (w *blockingBundleWriter) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return w.ResponseWriter.Write(p)
+}
+
 type serverFakeHumanVerifier struct {
 	mu     sync.Mutex
 	err    error
@@ -140,6 +155,7 @@ type fakeVM struct {
 	streamRelease   chan struct{}
 	bundleStatus    int
 	rawBundleStatus int
+	rawFailOnce     atomic.Bool
 	bundleHits      atomic.Int32
 	// bundleHold, when non-nil, blocks a bundle response whose os matches
 	// bundleHoldOS until the channel is closed; bundleHeld signals (once) that
@@ -246,8 +262,12 @@ func (vm *fakeVM) handle(w http.ResponseWriter, r *http.Request) {
 			<-vm.bundleHold
 		}
 		status := vm.bundleStatus
-		if osParam == "" && vm.rawBundleStatus != 0 {
-			status = vm.rawBundleStatus
+		if osParam == "" {
+			if vm.rawFailOnce.Swap(false) {
+				status = http.StatusServiceUnavailable
+			} else if vm.rawBundleStatus != 0 {
+				status = vm.rawBundleStatus
+			}
 		}
 		if osParam != "" {
 			w.Header().Set("Content-Type", "application/zip")
@@ -290,6 +310,11 @@ func newBrokerTestServer(t *testing.T, provider *serverFakeProvider, cfg ServerC
 	}
 	if cfg.CodeRate.Burst == 0 {
 		cfg.CodeRate = livechat.RateConfig{RefillPerSec: 1000, Burst: 1000}
+	}
+	if cfg.KitBuilder == nil {
+		cfg.KitBuilder = func(_ context.Context, osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
+			return []byte("kit-" + string(osName) + "-" + strings.TrimPrefix(string(raw), "bundle-")), "kit.zip", nil
+		}
 	}
 	srv, err := NewServer(cfg)
 	if err != nil {
@@ -2013,15 +2038,14 @@ func TestServer_BundleRedownloadAfterVMTeardown(t *testing.T) {
 		t.Fatalf("second bundle body differs from first: %q vs %q", body2, body1)
 	}
 
-	// The VM should have been hit exactly once (not on the second download).
+	// The second download reads the cached raw bundle.
 	if got := vm.bundleHits.Load(); got != 1 {
 		t.Fatalf("VM bundle hits = %d, want 1 (second download should be a cache hit)", got)
 	}
 }
 
-// TestServer_BundleKitThenRawBothSucceed proves the prefetch-raw behavior:
-// downloading a verify-kit (os=linux) also prefetches the raw bundle into the
-// cache, so a subsequent raw download succeeds even after VM teardown.
+// TestServer_BundleKitThenRawBothSucceed proves that downloading a verify kit
+// also caches the raw bundle for use after VM teardown.
 func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	t.Parallel()
 	vm := newFakeVM(t, "kit-raw-token")
@@ -2067,10 +2091,9 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 		t.Fatalf("raw bundle body = %q, want %q", rawBody, "bundle-"+vm.token)
 	}
 
-	// The VM should have been hit exactly twice: once for the kit, once for
-	// the raw prefetch.
+	// The kit and raw bundle were fetched once each before VM release.
 	if got := vm.bundleHits.Load(); got != 2 {
-		t.Fatalf("VM bundle hits = %d, want 2 (kit + raw prefetch)", got)
+		t.Fatalf("VM bundle hits = %d, want 2 (kit and raw)", got)
 	}
 
 	srv.mu.Lock()
@@ -2078,6 +2101,363 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	srv.mu.Unlock()
 	if fetchMuLen != 0 {
 		t.Fatalf("fetch mutex entries after bundle downloads = %d, want 0", fetchMuLen)
+	}
+}
+
+func TestServer_BundleBrowserVerifyThenKits(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "raw-windows-token")
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL+"&format=raw")
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("browser verification bundle status = %d, want 200", rawResp.StatusCode)
+	}
+	expectDestroyed(t, destroyed)
+
+	for _, osName := range []string{"windows", "linux", "macos"} {
+		kitResp := getBroker(t, bundleURL+"&os="+osName)
+		kitBody, err := io.ReadAll(kitResp.Body)
+		_ = kitResp.Body.Close()
+		if err != nil {
+			t.Fatalf("read %s kit: %v", osName, err)
+		}
+		if kitResp.StatusCode != http.StatusOK || !strings.HasPrefix(string(kitBody), "kit-"+osName+"-") {
+			t.Fatalf("%s kit after browser verification: status=%d body=%q", osName, kitResp.StatusCode, kitBody)
+		}
+	}
+}
+
+func TestServer_BundleSlowDownloadDoesNotHoldKitBuildSlot(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "slow-kit-download-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	firstDone := make(chan struct{})
+	defer func() {
+		close(release)
+		<-firstDone
+	}()
+	go func() {
+		defer close(firstDone)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=windows", nil)
+		writer := &blockingBundleWriter{ResponseWriter: httptest.NewRecorder(), entered: entered, release: release}
+		srv.Handler().ServeHTTP(writer, req)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first kit did not reach its blocked response write")
+	}
+
+	secondDone := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=linux", nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		secondDone <- rec.Code
+	}()
+	select {
+	case got := <-secondDone:
+		if got != http.StatusOK {
+			t.Fatalf("second kit status = %d, want 200", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second kit build waited for first client's blocked response write")
+	}
+}
+
+func TestServer_BundleKitBuildQueueIsBounded(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "bounded-kit-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var calls atomic.Int32
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
+		KitBuilder: func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return []byte("kit"), "kit.zip", nil
+		},
+	})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+
+	request := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=windows", nil)
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	firstDone := make(chan int, 1)
+	go func() { firstDone <- request() }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first kit build did not start")
+	}
+	secondDone := make(chan int, 1)
+	go func() { secondDone <- request() }()
+	deadline := time.After(3 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for len(srv.kitBuildQueue) != 2 {
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("second kit request did not enter bounded queue")
+		}
+	}
+	if got := request(); got != http.StatusServiceUnavailable {
+		t.Fatalf("third kit status = %d, want 503", got)
+	}
+	close(release)
+	if got := <-firstDone; got != http.StatusOK {
+		t.Fatalf("first kit status = %d, want 200", got)
+	}
+	if got := <-secondDone; got != http.StatusOK {
+		t.Fatalf("second kit status = %d, want 200", got)
+	}
+}
+
+func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "canceled-kit-build-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	started := make(chan struct{})
+	var calls atomic.Int32
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
+		KitBuilder: func(ctx context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-ctx.Done()
+				return nil, "", ctx.Err()
+			}
+			return []byte("kit"), "kit.zip", nil
+		},
+	})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
+		rec := httptest.NewRecorder()
+		rec.Code = 0
+		srv.Handler().ServeHTTP(rec, req)
+		firstDone <- rec
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first kit build did not start")
+	}
+	cancel()
+	select {
+	case rec := <-firstDone:
+		if rec.Code != 0 || rec.Body.Len() != 0 {
+			t.Fatalf("canceled kit build wrote response: status=%d body=%q", rec.Code, rec.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled kit build did not finish")
+	}
+	if len(srv.kitBuildSlots) != 0 || len(srv.kitBuildQueue) != 0 {
+		t.Fatal("canceled kit build retained a build permit")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, bundleURL+"&os=linux", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("next kit status = %d, want 200", rec.Code)
+	}
+}
+
+func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "canceled-kit-wait-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+	srv.kitBuildSlots <- struct{}{}
+	defer func() { <-srv.kitBuildSlots }()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
+		rec := httptest.NewRecorder()
+		rec.Code = 0
+		srv.Handler().ServeHTTP(rec, req)
+		done <- rec
+	}()
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for len(srv.kitBuildQueue) != 1 {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("kit request did not wait for occupied build slot")
+		}
+	}
+	cancel()
+	select {
+	case rec := <-done:
+		if rec.Code != 0 || rec.Body.Len() != 0 {
+			t.Fatalf("canceled kit waiter wrote response: status=%d body=%q", rec.Code, rec.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled kit waiter did not finish")
+	}
+	if len(srv.kitBuildQueue) != 0 {
+		t.Fatal("canceled kit waiter retained a queue permit")
+	}
+}
+
+func TestServer_BundleKitBuildFailureKeepsRawForRetry(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "kit-retry-token")
+	var failBuild atomic.Bool
+	failBuild.Store(true)
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{
+		KitBuilder: func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+			if failBuild.Load() {
+				return nil, "", errors.New("test kit build failure")
+			}
+			return []byte("kit-ready"), "kit.zip", nil
+		},
+	})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+	expectDestroyed(t, destroyed)
+
+	kitResp := getBroker(t, bundleURL+"&os=windows")
+	badBody, _ := io.ReadAll(kitResp.Body)
+	_ = kitResp.Body.Close()
+	if kitResp.StatusCode != http.StatusServiceUnavailable || strings.Contains(string(badBody), "test kit build failure") {
+		t.Fatalf("failed kit status/body = %d %q", kitResp.StatusCode, badBody)
+	}
+
+	failBuild.Store(false)
+	kitResp = getBroker(t, bundleURL+"&os=windows")
+	goodBody, _ := io.ReadAll(kitResp.Body)
+	_ = kitResp.Body.Close()
+	if kitResp.StatusCode != http.StatusOK || string(goodBody) != "kit-ready" {
+		t.Fatalf("Windows kit retry status/body = %d %q", kitResp.StatusCode, goodBody)
+	}
+}
+
+func TestServer_BundleKitUnavailableAfterRaw(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "kit-unavailable-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, bundleURL)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw bundle status = %d, want 200", rawResp.StatusCode)
+	}
+
+	srv.cfg.KitBuilder = nil
+	kitResp := getBroker(t, bundleURL+"&os=windows")
+	_ = kitResp.Body.Close()
+	if kitResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("missing builder status = %d, want 503", kitResp.StatusCode)
+	}
+
+	srv.cfg.KitBuilder = func(_ context.Context, _ playground.VerifyKitOS, _ []byte) ([]byte, string, error) {
+		t.Fatal("canceled request must not enter kit builder")
+		return nil, "", nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, bundleURL+"&os=windows", nil)
+	rec := httptest.NewRecorder()
+	rec.Code = 0
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != 0 || rec.Body.Len() != 0 {
+		t.Fatalf("canceled request wrote response: status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2111,14 +2491,108 @@ func TestServer_BundleKitRawPrefetchFailureRetainsVM(t *testing.T) {
 		t.Fatalf("active leases after raw prefetch failure = %d, want 1", got)
 	}
 
-	// Once the raw bundle can be fetched, the token seals and the VM releases.
+	// Retrying the same kit must retry raw retention instead of taking a kit
+	// cache hit that leaves the VM leased indefinitely.
 	vm.rawBundleStatus = 0
+	kitResp = getBroker(t, kitURL)
+	_, _ = io.Copy(io.Discard, kitResp.Body)
+	_ = kitResp.Body.Close()
+	if kitResp.StatusCode != http.StatusOK {
+		t.Fatalf("kit status after retry = %d, want 200", kitResp.StatusCode)
+	}
+	expectDestroyed(t, destroyed)
+	if got := vm.bundleHits.Load(); got != 4 {
+		t.Fatalf("VM bundle hits after kit retry = %d, want 4", got)
+	}
 	rawURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
 	rawResp := getBroker(t, rawURL)
-	_, _ = io.ReadAll(rawResp.Body)
+	_, _ = io.Copy(io.Discard, rawResp.Body)
 	_ = rawResp.Body.Close()
 	if rawResp.StatusCode != http.StatusOK {
-		t.Fatalf("raw bundle status after retry = %d, want 200", rawResp.StatusCode)
+		t.Fatalf("raw bundle status after kit retry = %d, want 200", rawResp.StatusCode)
+	}
+}
+
+func TestServer_BundleConcurrentRawRetryReleasesVM(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "concurrent-raw-retry-token")
+	vm.rawFailOnce.Store(true)
+	vm.bundleHoldOS = "linux"
+	vm.bundleHold = make(chan struct{})
+	vm.bundleHeld = make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	releaseHold := func() { releaseOnce.Do(func() { close(vm.bundleHold) }) }
+	t.Cleanup(releaseHold)
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	type requestResult struct {
+		status int
+		err    error
+	}
+	request := func(rawURL string) requestResult {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+		if err != nil {
+			return requestResult{err: err}
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return requestResult{err: err}
+		}
+		_, copyErr := io.Copy(io.Discard, resp.Body)
+		closeErr := resp.Body.Close()
+		return requestResult{status: resp.StatusCode, err: errors.Join(copyErr, closeErr)}
+	}
+	kitDone := make(chan requestResult, 1)
+	go func() {
+		kitDone <- request(bundleURL + "&os=linux")
+	}()
+	select {
+	case <-vm.bundleHeld:
+	case <-time.After(3 * time.Second):
+		t.Fatal("kit fetch did not reach VM")
+	}
+	rawDone := make(chan requestResult, 1)
+	go func() {
+		rawDone <- request(bundleURL)
+	}()
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		srv.mu.Lock()
+		inflight := srv.bundleInflight[session.Token]
+		srv.mu.Unlock()
+		if inflight == 2 {
+			break
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("raw request did not enter while kit fetch was held")
+		}
+	}
+	releaseHold()
+	for name, done := range map[string]<-chan requestResult{"kit": kitDone, "raw": rawDone} {
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatalf("%s request: %v", name, got.err)
+			}
+			if got.status != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", name, got.status)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s request did not finish", name)
+		}
+	}
+	if got := vm.bundleHits.Load(); got != 3 {
+		t.Fatalf("VM bundle hits = %d, want kit, failed raw, and successful raw", got)
 	}
 	expectDestroyed(t, destroyed)
 }
@@ -2156,12 +2630,8 @@ func TestServer_BundleRejectsInvalidOSBeforeVMFetch(t *testing.T) {
 	}
 }
 
-// TestServer_BundleConcurrentVariantsHoldVMUntilAllDone proves the per-token
-// in-flight refcount: a fast variant (the raw bundle) completing while a slow
-// variant (an OS kit) is still being fetched must NOT release/destroy the VM.
-// Pre-fix, the fast download's eager releaseToken destroyed the VM mid-fetch of
-// the kit, reproducing the intermittent "download failed" bug under
-// double-clicks, two tabs, or raw+kit clicked together.
+// TestServer_BundleConcurrentVariantsHoldVMUntilAllDone proves that simultaneous
+// raw and kit requests fill one artifact family before releasing the VM.
 func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
 	t.Parallel()
 	vm := newFakeVM(t, "concurrent-token")
@@ -2206,31 +2676,31 @@ func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
 		t.Fatal("kit fetch never reached the VM")
 	}
 
-	// While the kit is still in-flight, the fast raw download completes.
-	rawResp := getBroker(t, rawURL)
-	rawBody, _ := io.ReadAll(rawResp.Body)
-	_ = rawResp.Body.Close()
-	if rawResp.StatusCode != http.StatusOK {
-		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
-	}
-	if string(rawBody) != "bundle-"+vm.token {
-		t.Fatalf("raw body = %q, want %q", rawBody, "bundle-"+vm.token)
-	}
-
-	// The VM must STILL be leased: the kit download is in-flight, so the fast
-	// raw download must not have released it.
+	// The raw request waits for the kit leader's family fill. Neither request
+	// may release the VM while the first variant is still in flight.
+	rawDone := make(chan kitResult, 1)
+	go func() {
+		resp := getBroker(t, rawURL)
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		rawDone <- kitResult{status: resp.StatusCode, body: string(b)}
+	}()
 	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
 		t.Fatalf("active leases while kit in-flight = %d, want 1 (VM must be held)", got)
 	}
 
-	// Release the kit fetch; as the last in-flight request it releases the VM.
+	// Release the kit fetch; both requests must succeed from one family fill.
 	releaseHold()
 	kit := <-kitDone
+	raw := <-rawDone
 	if kit.status != http.StatusOK {
 		t.Fatalf("kit status = %d, want 200", kit.status)
 	}
 	if !strings.HasPrefix(kit.body, "kit-linux-") {
 		t.Fatalf("kit body = %q, want kit-linux-* prefix", kit.body)
+	}
+	if raw.status != http.StatusOK || raw.body != "bundle-"+vm.token {
+		t.Fatalf("raw status/body = %d %q", raw.status, raw.body)
 	}
 
 	// Now the VM is released exactly once, after both downloads finished.
@@ -2314,10 +2784,9 @@ func TestServer_BundleConcurrentIdenticalCoalesced(t *testing.T) {
 			t.Fatalf("kit body = %q, want kit-linux-* prefix", rr.body)
 		}
 	}
-	// The kit was fetched from the VM exactly once; the extra hit is the raw
-	// prefetch. Pre-fix (no coalescing) the follower would fetch a second kit.
+	// The kit and raw bundle were fetched once each. The follower read cache.
 	if got := vm.bundleHits.Load(); got != 2 {
-		t.Fatalf("VM bundle hits = %d, want 2 (1 kit + 1 raw prefetch; coalesced)", got)
+		t.Fatalf("VM bundle hits = %d, want 2 (coalesced)", got)
 	}
 }
 

@@ -57,6 +57,7 @@ const (
 	goldenG1RotatedValid    = "g1-rotated-close-count-valid.jsonl"
 	goldenG1RotatedTwice    = "g1-rotated-twice-valid.jsonl"
 	goldenG1RotatedBad      = "g1-rotated-close-count-invalid.jsonl"
+	goldenG1RotatedSameKey  = "g1-rotated-same-key-invalid.jsonl"
 	goldenG1RotationEndorse = "g1-rotation-endorsement.json"
 	goldenG1RotationSecond  = "g1-rotation-endorsement-2.json"
 	goldenG1PlainAfterClose = "g1-plain-after-close.jsonl"
@@ -1022,6 +1023,11 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousHC), wrapInFlightRecorderEntries(t, g1AmbiguousHeartbeatClose))
 	g1Rotated, priorTail := buildG1RotatedChain(t, pub, priv, rotatedPub, rotatedPriv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedValid), wrapInFlightRecorderEntries(t, g1Rotated))
+	g1SameKey, _ := appendG1RotatedSegment(t, buildG1ValidChain(t, priv)[:3], g1RotatedSegmentOptions{
+		priorPub: pub, newPriv: priv, runNonce: g1RotatedRunNonce,
+		openNonce: g1RotatedOpenNonce, suffix: "same-key", keyEpoch: "epoch-2026-04-same-key",
+	})
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedSameKey), wrapInFlightRecorderEntries(t, g1SameKey))
 	rotationEndorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
 		SessionID:     recorderSessionID,
 		PriorFinalSeq: priorTail.ActionRecord.ChainSeq,
@@ -1388,6 +1394,16 @@ func TestConformance_G1RotatedTwiceVerifiesFromRoot(t *testing.T) {
 	)
 	if missingSecond.Valid {
 		t.Fatal("twice-rotated chain verified with only the first endorsement")
+	}
+}
+
+func TestConformance_G1RotatedSameKeyRejected(t *testing.T) {
+	t.Parallel()
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1RotatedSameKey))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub)})
+	if result.Valid || !strings.Contains(result.Error, "key_transition does not change signer key") {
+		t.Fatalf("same-key transition result = %+v", result)
 	}
 }
 

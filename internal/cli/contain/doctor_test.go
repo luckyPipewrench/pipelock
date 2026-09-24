@@ -31,7 +31,12 @@ func (s scriptedRun) cmd(_ context.Context, _ string, args ...string) (string, i
 func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	t.Helper()
 	env := defaultDoctorEnv()
-	env.runCmd = run.cmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "/usr/bin/systemd-run" {
+			return "LOOPBACK_PASS", 0, nil
+		}
+		return run.cmd(ctx, name, args...)
+	}
 	counter := uint64(10)
 	env.dropCounter = func(context.Context) (uint64, error) {
 		counter++
@@ -171,6 +176,19 @@ func TestCheckGatewayHealth(t *testing.T) {
 	res := checkGatewayHealth(context.Background(), env)
 	if res.status != statusFail || res.class != classInfra {
 		t.Fatalf("dead proxy: got status=%q class=%q", res.status, res.class)
+	}
+}
+
+func TestNFTOutputConfirmsAbsent(t *testing.T) {
+	for out, want := range map[string]bool{
+		"Error: No such file or directory; did you mean chain 'x'?": true,
+		"Error: chain pipelock_owned_input does not exist":          true,
+		"Error: Could not process rule: Operation not permitted":    false,
+		"netlink: Error: cache initialization failed":               false,
+	} {
+		if got := nftOutputConfirmsAbsent(out); got != want {
+			t.Errorf("nftOutputConfirmsAbsent(%q) = %t, want %t", out, got, want)
+		}
 	}
 }
 
@@ -500,6 +518,23 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
 		!strings.Contains(out, `"total":8`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
+	}
+	doorwaySockets := 0
+	dec := json.NewDecoder(strings.NewReader(out))
+	for dec.More() {
+		var rec doctorRecord
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatalf("decode doctor JSON record: %v\n%s", err, out)
+		}
+		if rec.Name == "managed_doorway_sockets" {
+			doorwaySockets++
+			if rec.Status != statusPass {
+				t.Fatalf("managed_doorway_sockets status = %q, want %q:\n%s", rec.Status, statusPass, out)
+			}
+		}
+	}
+	if doorwaySockets != 1 {
+		t.Fatalf("managed_doorway_sockets records = %d, want exactly 1:\n%s", doorwaySockets, out)
 	}
 }
 

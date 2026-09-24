@@ -75,7 +75,7 @@ func TlsInitCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&org, "org", "Pipelock", "Organization name for CA subject")
 	cmd.Flags().StringVar(&validity, "validity", "87600h", "CA certificate validity period")
-	cmd.Flags().StringVar(&outDir, "out", "", "Output directory (default $HOME/.pipelock)")
+	cmd.Flags().StringVar(&outDir, "out", "", "Output directory (default: pipelock home, i.e. --home, PIPELOCK_HOME, or ~/.pipelock)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing CA files")
 	return cmd
 }
@@ -102,7 +102,7 @@ func TlsInstallCACmd() *cobra.Command {
 			return certgen.InstallCA(cmd.OutOrStdout(), certPath)
 		},
 	}
-	cmd.Flags().StringVar(&certPath, "cert", "", "Path to CA certificate (default ~/.pipelock/ca.pem)")
+	cmd.Flags().StringVar(&certPath, "cert", "", "Path to CA certificate (default: <pipelock home>/ca.pem, i.e. --home, PIPELOCK_HOME, or ~/.pipelock)")
 	return cmd
 }
 
@@ -129,6 +129,6 @@ func TlsShowCACmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&certPath, "cert", "", "Path to CA certificate (default ~/.pipelock/ca.pem)")
+	cmd.Flags().StringVar(&certPath, "cert", "", "Path to CA certificate (default: <pipelock home>/ca.pem, i.e. --home, PIPELOCK_HOME, or ~/.pipelock)")
 	return cmd
 }

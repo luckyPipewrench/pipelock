@@ -19,21 +19,23 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type receiptsOptions struct {
-	keys      []string
-	sessionID string
-	asDir     bool
-	backend   string
-	logPath   string
-	logID     string
-	rekorURL  string
-	rekorKey  string
-	rekorHash string
-	rekorYes  bool
-	output    string
+	keys            []string
+	sessionID       string
+	sessionExplicit bool
+	asDir           bool
+	backend         string
+	logPath         string
+	logID           string
+	rekorURL        string
+	rekorKey        string
+	rekorHash       string
+	rekorYes        bool
+	output          string
 }
 
 func Cmd() *cobra.Command {
@@ -66,6 +68,7 @@ development. Rekor submission is recorded for later transparency-log audit;
 verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runReceipts(cmd.OutOrStdout(), args[0], opts)
 		},
 	}
@@ -214,6 +217,16 @@ func receiptDirectory(target string, asDir bool) (string, error) {
 }
 
 func validateBundleOutputPath(receiptDir, bundlePath string) error {
+	// The bundle legitimately lives in the receipt directory, so this cannot
+	// refuse the directory the way other report writers do. An EXISTING file
+	// there is already protected by the output-alias check, which receives
+	// every regular file in the directory. This refuses a recorder-owned NAME
+	// that does not exist yet: writing the bundle under it would squat on the
+	// name, so the recorder's later exclusive publish fails and a continuity
+	// link, for one, could never be recorded.
+	if recorder.IsRecorderOwnedFile(filepath.Base(bundlePath)) {
+		return fmt.Errorf("--out must not name a recorder-owned file in the receipt directory: %s", filepath.Base(bundlePath))
+	}
 	if info, err := os.Lstat(bundlePath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("--out must not be a symlink")
@@ -305,8 +318,23 @@ func resolveBackend(opts receiptsOptions) (anchorpkg.Backend, error) {
 
 func extractReceipts(target string, opts receiptsOptions) ([]receipt.Receipt, string, error) {
 	if opts.asDir {
-		receipts, err := receipt.ExtractReceiptsFromSessionDir(target, opts.sessionID)
-		return receipts, opts.sessionID, err
+		session := opts.sessionID
+		if !opts.sessionExplicit {
+			sessions, err := receipt.ResolveBaseSessions(target, session)
+			if err != nil {
+				return nil, "", fmt.Errorf("listing receipt chains: %w", err)
+			}
+			switch len(sessions) {
+			case 0:
+				return nil, "", fmt.Errorf("no receipt chains found for base %q", session)
+			case 1:
+				session = sessions[0]
+			default:
+				return nil, "", fmt.Errorf("base %q has %d receipt chains; pass --session with a run session to anchor one chain", session, len(sessions))
+			}
+		}
+		receipts, err := receipt.ExtractReceiptsFromSessionDir(target, session)
+		return receipts, session, err
 	}
 	receipts, sessionID, err := receipt.ExtractReceiptsWithSessionID(target)
 	if err == nil {

@@ -39,9 +39,9 @@ func TestResolveKeystoreDir_ExplicitPath(t *testing.T) {
 func TestResolveKeystoreDir_Default(t *testing.T) {
 	// When no explicit dir is given, it should use the default path.
 	t.Setenv("PIPELOCK_HOME", "")
-	old := PipelockHome
-	PipelockHome = ""
-	t.Cleanup(func() { PipelockHome = old })
+	old := signing.PipelockHome
+	signing.PipelockHome = ""
+	t.Cleanup(func() { signing.PipelockHome = old })
 
 	result, err := ResolveKeystoreDir("")
 	if err != nil {
@@ -58,9 +58,9 @@ func TestResolveKeystoreDir_Default(t *testing.T) {
 
 func TestResolveKeystoreDir_HomeFlagOverridesDefault(t *testing.T) {
 	homeDir := t.TempDir()
-	old := PipelockHome
-	PipelockHome = homeDir
-	t.Cleanup(func() { PipelockHome = old })
+	old := signing.PipelockHome
+	signing.PipelockHome = homeDir
+	t.Cleanup(func() { signing.PipelockHome = old })
 
 	result, err := ResolveKeystoreDir("")
 	if err != nil {
@@ -73,9 +73,9 @@ func TestResolveKeystoreDir_HomeFlagOverridesDefault(t *testing.T) {
 
 func TestResolveKeystoreDir_EnvFallback(t *testing.T) {
 	homeDir := t.TempDir()
-	old := PipelockHome
-	PipelockHome = ""
-	t.Cleanup(func() { PipelockHome = old })
+	old := signing.PipelockHome
+	signing.PipelockHome = ""
+	t.Cleanup(func() { signing.PipelockHome = old })
 	t.Setenv("PIPELOCK_HOME", homeDir)
 
 	result, err := ResolveKeystoreDir("")

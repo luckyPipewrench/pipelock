@@ -93,18 +93,19 @@ const (
 	SessionBinding   Reason = "session_binding"
 
 	// Posture / runtime layer.
-	AirlockActive          Reason = "airlock_active"
-	KillSwitchActive       Reason = "kill_switch_active"
-	EnvelopeVerifyFailed   Reason = "envelope_verify_failed"
-	OutboundEnvelopeFailed Reason = "outbound_envelope_failed"
-	ReceiptEmissionFailed  Reason = "receipt_emission_failed"
-	RedirectScanDenied     Reason = "redirect_scan_denied"
-	AuthorityMismatch      Reason = "authority_mismatch"
-	EscalationLevel        Reason = "escalation_level"
-	SessionAnomaly         Reason = "session_anomaly"
-	CrossRequestDeny       Reason = "cross_request_deny"
-	CompressedResponse     Reason = "compressed_response"
-	BrowserShieldOversize  Reason = "browser_shield_oversize"
+	AirlockActive              Reason = "airlock_active"
+	KillSwitchActive           Reason = "kill_switch_active"
+	EnvelopeVerifyFailed       Reason = "envelope_verify_failed"
+	OutboundEnvelopeFailed     Reason = "outbound_envelope_failed"
+	ReceiptEmissionFailed      Reason = "receipt_emission_failed"
+	RedirectScanDenied         Reason = "redirect_scan_denied"
+	AuthorityMismatch          Reason = "authority_mismatch"
+	EscalationLevel            Reason = "escalation_level"
+	SessionAnomaly             Reason = "session_anomaly"
+	CrossRequestDeny           Reason = "cross_request_deny"
+	CompressedResponse         Reason = "compressed_response"
+	BrowserShieldOversize      Reason = "browser_shield_oversize"
+	BrowserShieldUninspectable Reason = "browser_shield_uninspectable"
 
 	// Generic.
 	ParseError         Reason = "parse_error"
@@ -145,51 +146,52 @@ const (
 
 // validReasons is the fixed v1 allowlist enforced at construction.
 var validReasons = map[Reason]struct{}{
-	SchemeBlocked:          {},
-	DomainBlocklist:        {},
-	SSRFPrivateIP:          {},
-	SSRFMetadata:           {},
-	SSRFDNSRebind:          {},
-	PathEntropy:            {},
-	QueryEntropy:           {},
-	BodyEntropy:            {},
-	SubdomainEntropy:       {},
-	URLLength:              {},
-	RateLimit:              {},
-	DataBudget:             {},
-	ResponseSize:           {},
-	DLPMatch:               {},
-	PromptInjection:        {},
-	RedactionFailure:       {},
-	MediaPolicy:            {},
-	ToolPolicyDeny:         {},
-	ToolChainBlocked:       {},
-	ToolPoisoning:          {},
-	SessionBinding:         {},
-	AirlockActive:          {},
-	KillSwitchActive:       {},
-	EnvelopeVerifyFailed:   {},
-	OutboundEnvelopeFailed: {},
-	ReceiptEmissionFailed:  {},
-	RedirectScanDenied:     {},
-	AuthorityMismatch:      {},
-	EscalationLevel:        {},
-	SessionAnomaly:         {},
-	CrossRequestDeny:       {},
-	CompressedResponse:     {},
-	BrowserShieldOversize:  {},
-	ParseError:             {},
-	Timeout:                {},
-	PatternUnavailable:     {},
-	NotEnabled:             {},
-	BadRequest:             {},
-	BlockReasonOverflow:    {},
-	ContractDefaultDeny:    {},
-	ContractEnforceDefault: {},
-	ContractNonDefaultPort: {},
-	ContractInvalidPath:    {},
-	ContractObservedOnly:   {},
-	RequestPolicyDeny:      {},
+	SchemeBlocked:              {},
+	DomainBlocklist:            {},
+	SSRFPrivateIP:              {},
+	SSRFMetadata:               {},
+	SSRFDNSRebind:              {},
+	PathEntropy:                {},
+	QueryEntropy:               {},
+	BodyEntropy:                {},
+	SubdomainEntropy:           {},
+	URLLength:                  {},
+	RateLimit:                  {},
+	DataBudget:                 {},
+	ResponseSize:               {},
+	DLPMatch:                   {},
+	PromptInjection:            {},
+	RedactionFailure:           {},
+	MediaPolicy:                {},
+	ToolPolicyDeny:             {},
+	ToolChainBlocked:           {},
+	ToolPoisoning:              {},
+	SessionBinding:             {},
+	AirlockActive:              {},
+	KillSwitchActive:           {},
+	EnvelopeVerifyFailed:       {},
+	OutboundEnvelopeFailed:     {},
+	ReceiptEmissionFailed:      {},
+	RedirectScanDenied:         {},
+	AuthorityMismatch:          {},
+	EscalationLevel:            {},
+	SessionAnomaly:             {},
+	CrossRequestDeny:           {},
+	CompressedResponse:         {},
+	BrowserShieldOversize:      {},
+	BrowserShieldUninspectable: {},
+	ParseError:                 {},
+	Timeout:                    {},
+	PatternUnavailable:         {},
+	NotEnabled:                 {},
+	BadRequest:                 {},
+	BlockReasonOverflow:        {},
+	ContractDefaultDeny:        {},
+	ContractEnforceDefault:     {},
+	ContractNonDefaultPort:     {},
+	ContractInvalidPath:        {},
+	ContractObservedOnly:       {},
+	RequestPolicyDeny:          {},
 }
 
 // AllReasons returns every Reason in the canonical allowlist. The returned
@@ -622,6 +624,7 @@ func SeverityFor(reason Reason) Severity {
 		PatternUnavailable,
 		CompressedResponse,
 		BrowserShieldOversize,
+		BrowserShieldUninspectable,
 		BlockReasonOverflow,
 		ContractNonDefaultPort,
 		ContractInvalidPath:
@@ -665,6 +668,7 @@ func RetryFor(reason Reason) Retry {
 		NotEnabled,
 		CompressedResponse,
 		BrowserShieldOversize,
+		BrowserShieldUninspectable,
 		RequestPolicyDeny:
 		return RetryPolicy
 	case ContractInvalidPath:

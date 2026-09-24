@@ -1941,6 +1941,24 @@ func headerValueForDLP(name, value, target string, valueCount int) string {
 	return scanner.ScrubSigV4AuthorizationForTarget(value, target)
 }
 
+type joinedHeaderValue struct {
+	original string
+	scrubbed string
+}
+
+// joinHeaderValuesInOriginalOrder keeps each scrubbed value beside its original
+// while sorting, so the two DLP scans see the same header boundaries.
+func joinHeaderValuesInOriginalOrder(values []joinedHeaderValue) (string, string) {
+	sort.SliceStable(values, func(i, j int) bool { return values[i].original < values[j].original })
+	original := make([]string, len(values))
+	scrubbed := make([]string, len(values))
+	for i, value := range values {
+		original[i] = value.original
+		scrubbed[i] = value.scrubbed
+	}
+	return strings.Join(original, "\n"), strings.Join(scrubbed, "\n")
+}
+
 // scanRequestHeaders scans HTTP request headers for DLP patterns.
 // Two modes: "sensitive" scans only listed headers; "all" scans everything
 // except the ignore list. Headers are scanned regardless of destination
@@ -1987,8 +2005,9 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
 	}
 	matchedHeaders := map[string]struct{}{}
-	addMatches := func(headerName string, matches []scanner.TextDLPMatch) {
-		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, "header")
+	addMatches := func(headerName, value string, matches []scanner.TextDLPMatch) {
+		surface := scanner.CredentialAudienceHeaderSurface(headerName, value)
+		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, surface)
 		audienceAllows = append(audienceAllows, allows...)
 		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 		if len(filtered) == 0 {
@@ -2038,7 +2057,8 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	}
 	sort.Strings(headerNames)
 
-	var allValues []string
+	var joinedValues []joinedHeaderValue
+	scrubbed := false
 	for _, name := range headerNames {
 		values := headersToScan[name]
 		// In "all" mode, scan header names too (catches exfil via custom
@@ -2047,19 +2067,24 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		if bodyCfg.HeaderMode == config.HeaderModeAll {
 			result := sc.ScanTextForDLP(ctx, name)
 			if !result.Clean {
-				addMatches(name, result.Matches)
+				addMatches(name, name, result.Matches)
 			}
 			// Include header name in joined scan to catch secrets split
 			// across the name:value boundary (e.g., X-AKIA1234: EXAMPLE).
-			allValues = append(allValues, name)
+			joinedValues = append(joinedValues, joinedHeaderValue{name, name})
 		}
 
 		for _, v := range values {
 			scanVal := headerValueForDLP(name, v, target, len(values))
-			allValues = append(allValues, scanVal)
+			joinedVal := scanVal
+			if strings.EqualFold(name, headerNameAuthorization) {
+				joinedVal = sc.ScrubAuthorizedCredentialFromJoinedHeaders(name, scanVal, target)
+			}
+			joinedValues = append(joinedValues, joinedHeaderValue{scanVal, joinedVal})
+			scrubbed = scrubbed || joinedVal != scanVal
 			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {
-				addMatches(name, result.Matches)
+				addMatches(name, scanVal, result.Matches)
 			}
 			// In "all" mode, scan name+value concatenation to catch secrets
 			// split across the header name:value boundary.
@@ -2067,7 +2092,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 				combined := name + scanVal
 				combinedResult := sc.ScanTextForDLP(ctx, combined)
 				if !combinedResult.Clean {
-					addMatches(name, combinedResult.Matches)
+					addMatches(name, scanVal, combinedResult.Matches)
 				}
 			}
 		}
@@ -2076,12 +2101,15 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	// Joined scan: catches split-secret attacks across multiple headers
 	// or repeated values of the same header.
 	// Sort to ensure deterministic ordering (Go map iteration is random).
-	if len(allValues) > 1 {
-		sort.Strings(allValues)
-		joined := strings.Join(allValues, "\n")
-		result := sc.ScanTextForDLP(ctx, joined)
-		if !result.Clean {
-			addMatches("(joined)", result.Matches)
+	if len(joinedValues) > 1 {
+		joined, scrubbedJoined := joinHeaderValuesInOriginalOrder(joinedValues)
+		matches := sc.ScanTextForDLP(ctx, joined).Matches
+		if scrubbed {
+			scrubbedMatches := sc.ScanTextForDLP(ctx, scrubbedJoined).Matches
+			matches = scanner.MergeJoinedHeaderMatches(matches, scrubbedMatches)
+		}
+		if len(matches) > 0 {
+			addMatches("(joined)", joined, matches)
 		}
 	}
 

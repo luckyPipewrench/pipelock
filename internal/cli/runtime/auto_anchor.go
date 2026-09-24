@@ -85,7 +85,7 @@ func newAutoAnchorMonitor(
 		nowFn:     func() time.Time { return time.Now().UTC() },
 		backendFn: autoAnchorBackend,
 		extractFn: receipt.ExtractReceiptsFromSessionDir,
-		sessionID: transcriptRootSessionID,
+		sessionID: recorderSessionOf(rec),
 	}
 }
 

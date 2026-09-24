@@ -123,14 +123,13 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 	return func(ctx context.Context) doctorResult {
 		probe := doctorCounterProbeEnv(base, env)
 		probe.nftPersistUnitPath = ""
-		status, detail := probeNFTContainment(ctx, &probe)
-		switch status {
-		case statusPass:
+		status, detail, readErr := probeNFTContainmentClassified(ctx, &probe)
+		switch {
+		case status == statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
-		case statusFail:
-			if strings.Contains(detail, containmentBypassDetailPrefix) {
-				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
-			}
+		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
+			return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
+		case status == statusFail && !readErr:
 			return unknownInfra("managed chain structure could not establish containment: " + detail)
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
@@ -172,19 +171,21 @@ func skip(detail, remediation string) doctorResult {
 	return doctorResult{status: statusSkip, detail: detail, remediation: remediation}
 }
 
-// unknown returns an inconclusive result that must never count as a pass.
-func unknown(class, detail, remediation string) doctorResult {
+// unknown returns an inconclusive result that must never count as a pass. An
+// inconclusive probe is always attributed to infrastructure: doctor could not
+// establish the fact, which is never a policy or proxy-compatibility verdict.
+func unknown(detail, remediation string) doctorResult {
 	return doctorResult{
 		status:      statusUnknown,
 		detail:      detail,
 		remediation: remediation,
-		class:       class,
+		class:       classInfra,
 	}
 }
 
 // unknownInfra returns an inconclusive infrastructure-attribution result.
 func unknownInfra(detail string) doctorResult {
-	return unknown(classInfra, detail, rawEgressAttributionRemediation)
+	return unknown(detail, rawEgressAttributionRemediation)
 }
 
 type doctorCheck struct {
@@ -452,7 +453,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d — a bogus name resolved or DNS was intercepted", connectCode),
 			"investigate DNS interception / captive portal; the agent should never reach "+dnsFailureHost)
 	}
-	return unknown(classInfra,
+	return unknown(
 		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
 			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
 		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")

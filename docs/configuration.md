@@ -148,7 +148,7 @@ fetch_proxy:
 | `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments. A configured value must be greater than 0; omit the field to take the default. No upper bound is enforced. |
 | `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
-| `monitoring.blocklist` | 6 domains | Blocked exfiltration targets |
+| `monitoring.blocklist` | 6 domains | Blocked exfiltration targets. Omit the field to keep the shipped list; override to replace it, or set an empty list to disable it. Removing entries on hot reload is a security downgrade: strict mode and required-contract modes refuse it, so apply it with a restart |
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 | `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
@@ -336,8 +336,8 @@ For `pipelock contain`, `contain install` also establishes the interception CA i
 ```yaml
 tls_interception:
   enabled: false
-  ca_cert: ""                    # path to CA cert PEM (default: ~/.pipelock/ca.pem)
-  ca_key: ""                     # path to CA key PEM (default: ~/.pipelock/ca-key.pem)
+  ca_cert: ""                    # path to CA cert PEM (default: <pipelock home>/ca.pem, i.e. --home, PIPELOCK_HOME, or ~/.pipelock)
+  ca_key: ""                     # path to CA key PEM (default: <pipelock home>/ca-key.pem, same precedence)
   passthrough_domains:           # domains to splice (not intercept)
     - "*.googlevideo.com"
   cert_ttl: "24h"
@@ -348,8 +348,8 @@ tls_interception:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
-| `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
-| `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
+| `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `<pipelock home>/ca.pem` (`--home`, `PIPELOCK_HOME`, or `~/.pipelock`) |
+| `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `<pipelock home>/ca-key.pem` (same precedence) |
 | `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over ANY public suffix, ICANN-operated (`*.com`, `*.co.uk`) or private-section (`*.github.io`, `*.s3.amazonaws.com`), is refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every unrelated tenant under the suffix; this is stricter than the public-suffix rule for an ordinary exempt/trusted domain list, which still accepts a private-section wildcard because that list still scans what it exempts. An exact host under a private suffix (`mybucket.s3.amazonaws.com` with no wildcard) or a wildcard one label below it (`*.myorg.github.io`) is unaffected. |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
@@ -835,7 +835,7 @@ dlp:
         - "api.provider.example"
 ```
 
-Built-in provider-key patterns and the messaging-platform token patterns (Discord and Slack) carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority over an encrypted scheme, request-body, request-header, and outbound WebSocket-frame DLP allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. For a non-core pattern the allowance also covers URL DLP; a core-floor credential (`Slack Token`) placed in a URL query stays blocked, because the immutable core URL floor is evaluated first and a URL leaks the token into logs and history in ways a header does not. The same credential stays blocked for every other destination, including lookalike hosts. The set itself is not YAML configuration: it cannot be extended or cleared. For the non-core patterns the ordinary operator controls still apply, so `suppress`, `disable_patterns`, and a `warn` action all continue to work and each one warns at config load, naming the entry and the audience it widens; a core-floor member (`Slack Token`) keeps its compiled audience but still refuses all three controls, as the core-floor note below describes. That is a deliberate choice: refusing the config instead would stop a previously valid deployment from starting on upgrade. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+Built-in provider-key patterns, the Google OAuth access-token pattern, and the messaging-platform token patterns (Discord and Slack) carry a compiled, immutable credential-audience host set. When one of those credentials is sent to its declared API authority over an encrypted scheme, the applicable request and WebSocket DLP checks allow that one match and record `dlp_credential_audience_allow`; the counter is `pipelock_dlp_credential_audience_allows_total{pattern,surface}`. For most non-core patterns the allowance also covers URL DLP. Google OAuth access tokens are limited to a Bearer Authorization header: their matches in URLs, bodies, other headers, and WebSocket frames still block, including on Google API hosts. A core-floor credential (`Slack Token`) placed in a URL query stays blocked, because the immutable core URL floor is evaluated first and a URL leaks the token into logs and history in ways a header does not. The same credential stays blocked for every other destination, including lookalike hosts. The set itself is not YAML configuration: it cannot be extended or cleared. For the non-core patterns the ordinary operator controls still apply, so `suppress`, `disable_patterns`, and a `warn` action all continue to work and each one warns at config load, naming the entry and the audience it widens; a core-floor member (`Slack Token`) keeps its compiled audience but still refuses all three controls, as the core-floor note below describes. That is a deliberate choice: refusing the config instead would stop a previously valid deployment from starting on upgrade. MCP input remains blocked because it has no verified upstream authority. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
 
 Top-level `suppress`, `request_body_scanning.disable_patterns`, and a `warn` entry in `request_body_scanning.pattern_actions` remain operator controls and DO apply to built-in provider-key patterns. They do not edit the compiled audience set; they decide whether a match that falls outside it is enforced. Widening this way is a real security decision, so each one warns at load naming the entry and every match is audited. `exempt_domains` behaves differently on these patterns and is stricter: an entry naming any host outside the compiled audience is REJECTED at load, and an entry that only repeats compiled audience hosts loads with a warning and is ignored. For a custom provider-key pattern that you own, use a narrowly scoped pattern and the controls appropriate to the carrier: `exempt_domains` for URL DLP and `suppress` for request-body or request-header DLP.
 
@@ -855,7 +855,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | AWS Access Key ID | `AKIA\|A3T\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ASIA` | critical |
 | Google API Key | `AIza` | high |
 | Google OAuth Client Secret | `GOCSPX-` | critical |
-| Google OAuth Token | `ya29.` | high |
+| Google OAuth Token | `ya29.` | critical |
 | Google OAuth Client ID | `*.apps.googleusercontent.com` | medium |
 | Stripe Key | `[sr]k_live\|test_` | critical |
 | Stripe Webhook Secret | `whsec_` | critical |
@@ -3663,6 +3663,10 @@ movement, block deltas, and application breakage before moving to the standard
 fail-closed posture. Use `oversize_action: warn` only for short, explicitly
 scoped diagnostics because it returns oversized shieldable bodies unchanged.
 
+Browser Shield blocks partial (`206`) HTML and SVG responses that it would otherwise rewrite. Rewriting a fragment would leave its upstream byte range inaccurate, even if the new body had the same length. This block also applies when `oversize_action: warn` is set. Request the complete resource, or use `browser_shield.exempt_domains` for a host you intentionally want to pass through Shield unchanged. JavaScript and other content Shield does not rewrite keep their normal response-scanning path.
+
+Other response policies also preserve byte-range integrity: a partial response is blocked if response-scanning strip would change it, if its encoded body would need decoding for inspection, or if an agent byte budget would truncate it. These refusals do not affect complete responses.
+
 When Browser Shield rewrites a response, Pipelock adds `X-Pipelock-Shield-Rewrite` before sending it to the client. Its value lists non-zero rewrite categories in fixed order, for example `extension=1,tracking=1,trap=2`; clean and unchanged responses omit the header. `extension` includes an injected extension-defense shim, and `trap` includes hidden traps plus SVG active-content removals. The fetch endpoint also returns the same value in its `shield_rewrite` JSON field. The header is available on buffered fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses; streaming responses are not rewritten and therefore never carry it.
 
 ## Media Policy (v2.1)
@@ -3696,6 +3700,8 @@ All boolean fields use nil-means-security-default semantics: omitting a field fr
 | `max_image_bytes` | int64 | `5242880` (5 MiB) | Reject images larger than this before parsing (decompression bomb defense) |
 | `log_media_exposure` | *bool | `true` | Emit `media_exposure` events for allowed media responses |
 
+Media policy blocks a partial (`206`) image response only when stripping would change its bytes. An unchanged image keeps its range response. If you need partial images from a trusted source, request the complete image or set `media_policy.strip_image_metadata: false` to pass its metadata through unchanged.
+
 ### Metadata stripping
 
 For JPEG images: strips APP1 (EXIF, XMP), APP2 (ICC profile, FlashPix), and APP13 (IPTC, Photoshop) marker segments. APP0 (JFIF header) is preserved. Pixel data is never decoded or re-encoded. Bytes after the canonical EOI marker are truncated and the cleaned image is forwarded instead of failing closed.
@@ -3704,7 +3710,11 @@ For PNG images: strips tEXt, iTXt, zTXt (text metadata), and eXIf (EXIF) chunks.
 
 ### SVG active content hardening
 
-SVG (`image/svg+xml`) is never in the allowed image types list. SVG is active content handled by the browser shield pipeline, which strips `<foreignObject>` elements (XSS/injection vector), `on*` event handler attributes, external `xlink:href` and `href` references, hidden `<text>` elements (invisible prompt injection), `<script>` blocks, and animation injection (`<set>`/`<animate>` targeting href).
+SVG (`image/svg+xml`) is never in the allowed image types list. SVG is active content, so its delivery is owned by Browser Shield rather than `allowed_image_types`: an SVG response reaches the client only after Browser Shield parsed and validated the complete body, and the rewritten body it delivers, as an SVG document with no active content. This applies on the fetch endpoint, the forward proxy, TLS-intercepted CONNECT, and the reverse proxy.
+
+Validation refuses the whole response (`403`, block reason `media_policy`) when the document contains a script, `foreignObject`, or embedded-frame element in any namespace; an animation that targets anything other than a geometry, transform, or paint attribute (for example `href`, an `on*` handler, `style`, or `xml:base`); an XHTML or MathML element; an `on*` event handler; a fetching reference (`href` on `use`, `image`, `pattern`, `feImage`, `textPath`, and similar elements) that is not an in-document `#fragment`; a hyperlink with a scheme other than `http`, `https`, or `mailto`; a CSS `url()` that is not a `#fragment` (in a `style` attribute, a presentation attribute such as `fill`, or a `<style>` element), `@import`, or a CSS escape in a stylesheet; a DOCTYPE internal subset or other directive; a processing instruction other than the XML declaration; a charset other than UTF-8 or UTF-16; or malformed XML. The block reason names the construct, never the document's content. Ordinary tool output, including namespace declarations, RDF metadata, editor namespaces, gradient `url(#id)` references, and hyperlinks, is accepted.
+
+SVG is refused, whatever the document contains, whenever that complete validation did not happen: Browser Shield disabled (the default) or the host listed in `browser_shield.exempt_domains`, a partial (`206`) response, a body over its whole-body Shield limit under every `oversize_action` (`max_shield_bytes`, or `response_scanning.size_exempt_scan_max_bytes` for a `size_exempt_domains` host on forward, TLS-intercepted, and reverse traffic), or a compressed body that cannot be decoded. A response is treated as SVG when any `Content-Type` value a browser would use declares it, including a comma-combined or repeated header. To deliver SVG, enable Browser Shield. `media_policy.enabled: false` does not remove this requirement. Hosts in `response_scanning.exempt_domains` stream other content through without inspection, but a response that declares SVG still takes the buffered Browser Shield validation path.
 
 ### Validation
 

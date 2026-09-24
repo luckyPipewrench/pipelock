@@ -167,6 +167,8 @@ Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that
 spans restarts or rotations for one recorder session/writer stream) and pin the
 trusted key:
 
+The `evidence-proxy-0.jsonl` filenames in the historical examples below are legacy samples. A current process writes `evidence-proxy.run.<id>-0.jsonl`. A file argument checks only that shard; use `--chain DIR --session proxy.run.<id>` to check every shard of one run, or omit `--session` to check every run and link in the directory.
+
 ```bash
 pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
 ```
@@ -191,10 +193,22 @@ Chain verification checks:
   v3.1 bound-genesis `g1:<sha256>` value derived from the signed
   `session_open` record.
 - Each subsequent receipt's `chain_prev_hash` equals the SHA-256 hash of
-  the previous receipt's canonical JSON.
+  the previous receipt's canonical JSON. When the previous receipt carries a
+  top-level `ext` member, that JSON ends with `"ext":` followed by the ext
+  value's source bytes, compacted and HTML-escaped the way Go's
+  `encoding/json` re-encodes raw JSON, with key order, number spelling, and
+  escape spelling kept as written. An explicit `"ext": null` is included; an
+  absent `ext` adds nothing. Editing `ext` after the next receipt links it
+  breaks the chain. Adding or removing whitespace between JSON tokens does
+  not, but whitespace inside a string value is part of the value.
 - Signed v1 objects reject unknown fields. Only the unsigned top-level `ext`
-  object may carry advisory forward-compatible metadata, and it never
-  contributes to a verified claim.
+  object may carry advisory forward-compatible metadata. The signature never
+  covers it and its value never contributes to a verified claim; only its
+  bytes join the chain link hash.
+- In a flight-recorder file, the chain is the `action_receipt` subsequence.
+  `evidence_receipt` entries interleaved in the same file are skipped, as in
+  the Go verifier; a file with only `evidence_receipt` entries is verified as
+  an EvidenceReceipt v2 chain by the SDK verifiers.
 
 By default, this verifies the receipt subsequence only. To verify every present
 flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
@@ -251,7 +265,7 @@ field is therefore not a tamper demonstration for receipt-chain verification.
 
 ### Compacting an over-cap recorder directory
 
-Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
+Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder and isolate the selected session as described below before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
 
 ```bash
 sudo systemctl stop pipelock.service
@@ -259,8 +273,9 @@ sudo pipelock evidence compact \
   --receipt-dir /var/lib/pipelock/recorder \
   --session proxy \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
-sudo systemctl start pipelock.service
 ```
+
+`proxy` is the session older binaries wrote. Current binaries record one chain per process run, so pass the over-cap run session instead, for example `--session proxy.run.<id>`. The compactor requires its input directory to contain only that run's shards: `--session` does not filter a mixed directory. While the recorder is stopped, make a backup of the entire directory, then move every other run's shards and all link files to a separate, protected sibling directory. Check that only the selected run's shards remain before running compaction. After compaction, move the isolated files back into the active directory without replacing any compacted shard, verify the restored run directory and restart continuity, then start the recorder with `sudo systemctl start pipelock.service`. Retain both the full backup and the compactor's archive until verification succeeds. If the isolated files include raw-escrow sidecars, preserve them in the backup and restore them with the same names; the compactor cannot process sidecars in its input directory.
 
 The command refuses to run while a recorder holds the directory lock. It accepts oversized legacy input and uses bounded record memory. It verifies the trusted recorder hash chain, checkpoint signatures, and signed v1 or v2 receipts before and after compaction. It copies each JSONL record line without changing its bytes and keeps every replacement shard at or below the 8 MiB read limit. Linux installs the new active directory with one atomic exchange. The original directory then becomes a timestamped sibling archive with SHA-256 digests and byte mappings.
 
@@ -341,6 +356,10 @@ The `--key` flag is required for transcript roots: the root is only
 meaningful if every receipt in the selected writer chain was verified against a
 trusted key.
 
+For a directory with one run chain, `transcript-root --chain DIR` selects that
+run. If the directory has several run chains, pass `--session` with the exact
+run ID. A transcript root summarizes one chain, not the whole directory.
+
 When verifying a file-based evidence capture, `transcript-root` derives the
 `SessionID` from the first entry in the file rather than the `--session`
 flag (which still controls the session ID for directory-based chain scans).
@@ -349,11 +368,19 @@ rather than silently printing a valid-looking root, so scripts can trust an
 exit-0 status to mean receipts were present and the selected writer chain
 verified.
 
+`verify-receipt --chain DIR --whole-recorder` checks every run chain. A clean
+report describes one chain: `--clean-report` selects a lone run, and requires
+`--session` when several runs are present. An empty report is an error.
+
 ## Anchoring receipts
 
 `pipelock anchor receipts` verifies a receipt chain with pinned signer keys,
 writes the verified chain head to an anchor backend, and emits an anchor bundle
 for later offline verification.
+
+With `--dir`, anchoring selects a lone run chain automatically. If the
+directory holds several runs, pass `--session` with the exact run ID; each
+anchor bundle covers one chain.
 
 The local backend is deterministic test/development plumbing, not an
 operator-independent witness:
@@ -618,6 +645,8 @@ The TypeScript and Rust verifiers ship with their own test suites that
 exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
+
+For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a full run chain, using the full ID from its evidence filename. A direct JSONL file argument checks only that shard.
 
 ## Audit Packet v0 schema
 

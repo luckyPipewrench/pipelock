@@ -8,6 +8,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +220,37 @@ func TestBuildLiveVerifyKit_FailsClosedWithoutVerifier(t *testing.T) {
 	t.Parallel()
 	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, "", []byte("not-used")); err == nil {
 		t.Fatal("missing verifier path should fail closed")
+	}
+}
+
+func TestBuildLiveVerifyKitContext_Canceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := BuildLiveVerifyKitContext(ctx, VerifyKitOSLinux, "missing-verifier", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled kit build error = %v, want context cancellation", err)
+	}
+}
+
+func TestKitContextReader_StopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader := &kitContextReader{ctx: ctx, reader: bytes.NewReader([]byte("ab"))}
+	buf := make([]byte, 1)
+	if n, err := reader.Read(buf); n != 1 || err != nil {
+		t.Fatalf("first read = (%d, %v), want one byte", n, err)
+	}
+	cancel()
+	if n, err := reader.Read(buf); n != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled read = (%d, %v), want context cancellation", n, err)
+	}
+}
+
+func TestZipFile_StopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var buf bytes.Buffer
+	err := zipFile(ctx, zip.NewWriter(&buf), "test.txt", []byte("content"), 0o600)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled zip write error = %v, want context cancellation", err)
 	}
 }
 

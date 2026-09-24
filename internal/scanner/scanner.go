@@ -371,20 +371,21 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	name                           string
-	re                             *regexp.Regexp
-	withoutLeftBoundary            *regexp.Regexp
-	providerKeyPrefix              string
-	severity                       string
-	validate                       func(string) bool // post-match checksum (nil = regex-only)
-	exemptDomains                  []string          // domains where this pattern is skipped (wildcard supported)
-	core                           bool              // name belongs to the immutable floor: exemptDomains is never honored
-	credentialAudienceHosts        []string          // compiled built-ins only; empty means no audience exception
-	bundle                         string            // empty for built-in/config patterns
-	bundleVersion                  string
-	warn                           bool // true when pattern action is "warn" - matches are informational only
-	credentialURLWhitespaceGrammar bool // built-in-only runtime provenance; never configured by operators
-	requiredLiteralsAny            []string
+	name                                string
+	re                                  *regexp.Regexp
+	withoutLeftBoundary                 *regexp.Regexp
+	providerKeyPrefix                   string
+	severity                            string
+	validate                            func(string) bool // post-match checksum (nil = regex-only)
+	exemptDomains                       []string          // domains where this pattern is skipped (wildcard supported)
+	core                                bool              // name belongs to the immutable floor: exemptDomains is never honored
+	credentialAudienceHosts             []string          // compiled built-ins only; empty means no audience exception
+	credentialAudienceAuthorizationOnly bool              // compiled built-ins only; limits the allow to Authorization headers
+	bundle                              string            // empty for built-in/config patterns
+	bundleVersion                       string
+	warn                                bool // true when pattern action is "warn" - matches are informational only
+	credentialURLWhitespaceGrammar      bool // built-in-only runtime provenance; never configured by operators
+	requiredLiteralsAny                 []string
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -509,6 +510,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		// where that immutable credential is enforced (its own issuing authority
 		// over an encrypted scheme) without letting operator YAML reach it.
 		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
+		cp.credentialAudienceAuthorizationOnly = p.CredentialAudienceAuthorizationOnly
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {
@@ -1785,7 +1787,7 @@ func (s *Scanner) checkRateLimit(hostname string) Result {
 	if !s.rateLimiter.CheckAndRecord(baseDomain(hostname)) {
 		return Result{
 			Allowed: false,
-			Reason:  fmt.Sprintf("rate limit exceeded for %s", hostname),
+			Reason:  domainCeilingReason("rate limit", hostname),
 			Scanner: ScannerRateLimit,
 			Score:   0.7,
 			Class:   ClassProtective,
@@ -4394,6 +4396,18 @@ func ShannonEntropy(s string) float64 {
 	return entropy
 }
 
+// domainCeilingReason names the key a per-domain ceiling actually counted.
+// Both ceilings count by baseDomain so subdomain rotation cannot mint fresh
+// budgets; naming only the requested host would suggest a per-host budget
+// and hide that every sibling subdomain drew from the same one.
+func domainCeilingReason(ceiling, hostname string) string {
+	base := baseDomain(hostname)
+	if base == hostname {
+		return fmt.Sprintf("%s exceeded for %s", ceiling, hostname)
+	}
+	return fmt.Sprintf("%s exceeded for %s (shared by %s and all its subdomains; request to %s)", ceiling, base, base, hostname)
+}
+
 // checkDataBudget enforces per-domain data transfer limits.
 // Uses baseDomain normalization to prevent subdomain rotation bypass.
 func (s *Scanner) checkDataBudget(hostname string) Result {
@@ -4404,7 +4418,7 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 	if !s.dataBudget.IsAllowed(domain) {
 		return Result{
 			Allowed: false,
-			Reason:  fmt.Sprintf("data budget exceeded for %s", hostname),
+			Reason:  domainCeilingReason("data budget", hostname),
 			Scanner: ScannerDataBudget,
 			Score:   0.8,
 		}

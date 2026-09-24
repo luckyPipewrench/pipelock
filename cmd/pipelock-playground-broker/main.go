@@ -567,6 +567,20 @@ func requiredEnvironmentNames(f *serveFlags) []string {
 	return slices.Compact(names)
 }
 
+// brokerVerifyKitBinaries names the verifier binaries packaged in the broker image.
+func brokerVerifyKitBinaries() playground.VerifyKitBinaries {
+	return playground.VerifyKitBinaries{
+		Linux:   "/usr/local/bin/pipelock-verifier-linux",
+		MacOS:   "/usr/local/bin/pipelock-verifier-macos",
+		Windows: "/usr/local/bin/pipelock-verifier-windows.exe",
+	}
+}
+
+// buildBrokerVerifyKit packages a retained live bundle with the shipped verifier.
+func buildBrokerVerifyKit(ctx context.Context, osName playground.VerifyKitOS, raw []byte) ([]byte, string, error) {
+	return playground.BuildLiveVerifyKitContext(ctx, osName, brokerVerifyKitBinaries().Path(osName), raw)
+}
+
 func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {
 	// Refuse before resolving any secret or contacting a provider: a broker
 	// holding the guest-facing signing variable would hand the durable root to
@@ -672,6 +686,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	}
 
 	srv, err := broker.NewServer(broker.ServerConfig{
+		KitBuilder:         buildBrokerVerifyKit,
 		Leases:             lm,
 		WarmPool:           warmPool,
 		Gate:               gate,

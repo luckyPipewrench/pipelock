@@ -1678,29 +1678,39 @@ func probeManagedConfigMetrics(_ context.Context, env *probeEnv) (string, string
 // probeNFTContainment verifies the installed nftables boundary structure,
 // ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
+	status, detail, _ := probeNFTContainmentClassified(ctx, env)
+	return status, detail
+}
+
+// probeNFTContainmentClassified is probeNFTContainment plus whether a FAIL
+// came from being unable to read the state (a command, parse or lookup error)
+// rather than from a confirmed structural problem. contain verify treats both
+// as FAIL; doctor needs the distinction to report an unreadable chain as
+// inconclusive and a confirmed missing rule as FAIL.
+func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, string, bool) {
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
-		return statusSkip, fmt.Sprintf("nft unavailable: %v", err)
+		return statusSkip, fmt.Sprintf("nft unavailable: %v", err), false
 	}
 	if code != 0 {
 		low := strings.ToLower(out)
 		if strings.Contains(low, "operation not permitted") || strings.Contains(low, "permission denied") {
-			return statusSkip, "nft list chain requires root; rerun as root"
+			return statusSkip, "nft list chain requires root; rerun as root", false
 		}
-		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
-			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable)
+		if nftOutputConfirmsAbsent(out) {
+			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable), false
 		}
-		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out))
+		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out)), true
 	}
 
 	lines, err := attributedNFTChainLines(out, env.nftChain)
 	if err != nil {
-		return statusFail, err.Error()
+		return statusFail, err.Error(), true
 	}
 
 	current, err := containmentUIDsFromProbeEnv(env)
 	if err != nil {
-		return statusFail, err.Error()
+		return statusFail, err.Error(), true
 	}
 	// The base-chain contract comes first. Without the output hook no rule in
 	// this chain is ever reached, so neither the catch-all drop nor a rule
@@ -1708,29 +1718,29 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	// would report a definite verdict about a chain that enforces nothing.
 	// The doctor maps this wording to UNKNOWN, which is the honest state.
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
-		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
+		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain), false
 	}
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
 	}
 	if handles := legacyOwnedLoopbackMarkRuleHandles(out, current.agentUID); len(handles) > 0 {
-		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; rerun `pipelock contain install`", len(handles), legacyOwnedLoopbackMark)
+		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; rerun `pipelock contain install`", len(handles), legacyOwnedLoopbackMark), false
 	}
 	// Within a hooked chain that has the drop, a definite bypass outranks every
 	// missing canonical rule: reporting "proxy accept rule missing" for a chain
 	// that also admits all agent traffic would let the doctor downgrade the
 	// hole to an inconclusive result.
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
 	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
-		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID)
+		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID), false
 	}
 	if !chainLinesHaveSkuidAcceptForUID(lines, current.proxyUID) {
-		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID)
+		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID), false
 	}
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d proxy loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d proxy loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port), false
 	}
 	// A managed config this probe cannot read or honor fails the probe
 	// outright. Reporting it only alongside an unsafe verdict left the
@@ -1742,25 +1752,29 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	// policy, whatever the chain happens to look like.
 	_, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	if loopbackUnusable {
-		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
+		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem, false
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID), false
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID), false
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port) {
-		return statusFail, "chain contains unexpected verdict before agent drop"
+		return statusFail, "chain contains unexpected verdict before agent drop", false
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
+		// Persistence failures are reported as structural. The only consumer
+		// of the classification, the doctor chain reader, clears
+		// nftPersistUnitPath, so this branch never feeds it; split read errors
+		// out before wiring persistence into a classified caller.
 		if err := verifyNFTPersistence(env, current); err != nil {
-			return statusFail, err.Error()
+			return statusFail, err.Error(), false
 		}
 		if env.nftExpiryTimerPath != "" || env.nftExpiryServicePath != "" {
 			status, detail := probeContainmentExpiryTimer(ctx, env)
 			if status != statusPass {
-				return status, detail
+				return status, detail, false
 			}
 		}
 	}
@@ -1769,7 +1783,14 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		persistence = "; persistence unit verified"
 	}
 	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d direct-DNS drops and catch-all skuid drop rule; loopback access is owned by the private network namespace%s",
-		env.nftTable, env.nftChain, current.agentUID, persistence)
+		env.nftTable, env.nftChain, current.agentUID, persistence), false
+}
+
+// nftOutputConfirmsAbsent reports whether failed nft list output states that
+// the table or chain does not exist, as opposed to a failure to read it.
+func nftOutputConfirmsAbsent(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "no such file") || strings.Contains(low, "does not exist")
 }
 
 // probeContainmentExpiryTimer verifies the privileged reconciliation timer

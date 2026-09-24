@@ -628,6 +628,7 @@ type Proxy struct {
 	captureObs           capture.CaptureObserver
 	sizeExemptScanBudget sizeExemptScanBudget
 	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
+	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptKeyPath       string                                // active signing key path, for reload comparison
@@ -682,6 +683,16 @@ func WithCaptureObserver(obs capture.CaptureObserver) Option {
 // evidence log. Pass nil to disable (default).
 func WithRecorder(rec *recorder.Recorder) Option {
 	return func(p *Proxy) { p.recorder = rec }
+}
+
+// WithSession sets the recorder session this process records its own
+// decision entries under. Callers set this to the SAME run session ID
+// returned by recorder.AcquireRunSession for the recorder passed to
+// WithRecorder, so this proxy's own decision entries land in the same
+// chain as the receipt and proxy_decision emitters built from that
+// recorder. Leaving it unset keeps the historical literal "proxy".
+func WithSession(session string) Option {
+	return func(p *Proxy) { p.session = session }
 }
 
 // WithReceiptEmitter sets the action receipt emitter. When non-nil, the proxy
@@ -1416,8 +1427,21 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 		summary += " (" + pattern + ")"
 	}
 
-	_ = p.recorder.Record(recorder.Entry{
-		SessionID: "proxy",
+	session := p.session
+	if session == "" {
+		session = recorder.DefaultSessionBase
+	}
+
+	// The comment above this method already promised these errors are
+	// "logged but never block the proxy hot path". They were discarded
+	// instead (`_ =`), which meant a recorder write failure here - most
+	// notably a session_id mismatch when this entry's session and the
+	// recorder's acquired session disagree - was invisible. Actually log
+	// it, at audit-error severity like every other post-decision recorder
+	// failure in this file, rather than silently dropping tamper-evident
+	// coverage of a real enforcement verdict.
+	if err := p.recorder.Record(recorder.Entry{
+		SessionID: session,
 		Type:      "decision",
 		Transport: transport,
 		Summary:   summary,
@@ -1427,7 +1451,10 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 			"pattern":    pattern,
 			"request_id": requestID,
 		},
-	})
+	}); err != nil && p.logger != nil {
+		p.logger.LogError(audit.NewRequestLogContext(requestID),
+			fmt.Errorf("recording decision entry (verdict=%s layer=%s transport=%s): %w", verdict, layer, transport, err))
+	}
 }
 
 // emitReceipt creates and records a signed action receipt for a proxy decision.
@@ -1768,6 +1795,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 				Actor:          "pipelock",
 				ResumeSeq:      resumeSeq,
 				ResumePrevHash: resumePrev,
+				Session:        p.session,
 			})
 		}
 		return receiptEmitterStage{
@@ -1797,6 +1825,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PostureBinding:      postureResult.Binding,
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		Session:             p.session,
 	})
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {
@@ -1814,6 +1843,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			Actor:          "pipelock",
 			ResumeSeq:      resumeSeq,
 			ResumePrevHash: resumePrev,
+			Session:        p.session,
 		}),
 		keyPath: keyPath,
 	}, nil
@@ -3623,18 +3653,37 @@ func shieldCapacityBlock() *shieldBlockResult {
 	}
 }
 
+func shieldUninspectableBlock(reason string) *shieldBlockResult {
+	return &shieldBlockResult{
+		info:   blockInfoFor(blockreason.BrowserShieldUninspectable, shieldUninspectableLayer),
+		status: http.StatusForbidden,
+		reason: reason,
+	}
+}
+
+// blockShieldPartialResponse refuses shieldable ranges before any rewrite can
+// make their upstream Content-Range metadata misleading.
+func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hostname string, cfg *config.Config, actx audit.LogContext) *shieldBlockResult {
+	active := p.shieldEngine != nil && cfg.BrowserShield.Enabled && !isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains)
+	if !shieldPartialResponseNeedsBlock(resp.StatusCode, resp.Header, body, active) {
+		return nil
+	}
+	p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldPartialResponseBlockReason)
+	return shieldUninspectableBlock(shieldPartialResponseBlockReason)
+}
+
 // applyShield runs Browser Shield rewriting on a response body when enabled
 // and the hostname is not exempt. A nonnil block result prevents delivery and
 // supplies the transport's status, reason, and receipt classification.
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, *shieldBlockResult) {
+func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
 	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
-		return body, nil, nil
+		return body, nil, false, nil
 	}
 
 	// Exempt domains: skip shield entirely.
 	if isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains) {
 		p.metrics.RecordShieldSkipped("exempt_domain")
-		return body, nil, nil
+		return body, nil, false, nil
 	}
 
 	// Content-type gate: skip shield entirely for non-shieldable media
@@ -3646,24 +3695,28 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	// on the rewrite path; we short-circuit here for binary bodies so the
 	// oversize ceiling only applies to content the shield would actually
 	// rewrite (HTML, JS, SVG).
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	if shieldLeavesBodyUnchanged(shield.DetectPipeline(contentType, body[:prefixLen])) {
+	pipeline := detectShieldPipelineForResponse(contentType, body, respHeaders)
+	if shieldLeavesBodyUnchanged(pipeline) {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
-		return body, nil, nil
+		return body, nil, false, nil
 	}
-
 	// Max shield bytes: enforce oversize action. A size-exempt response already
 	// admitted to the bounded whole-buffer path can reuse that path's larger
 	// ceiling. Over-cap bodies retain the inflight reservation until this work
 	// finishes; under-cap bodies remain bounded by the normal scan ceiling.
 	shieldMaxBytes := shieldMaxBytesForResponse(cfg, hostname, transport)
+	if pipeline == shield.PipelineSVG && shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
+		p.logger.LogBlocked(actx, "media_policy", svgIncompleteValidationReason)
+		return nil, nil, false, svgValidationBlock(svgIncompleteValidationReason)
+	}
 	if shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
+			if isShieldUTF16Response(body, contentType) {
+				p.logger.LogBlocked(actx, shieldUninspectableLayer, shieldUTF16ScanHeadBlockReason)
+				return nil, nil, false, shieldUninspectableBlock(shieldUTF16ScanHeadBlockReason)
+			}
 			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
@@ -3673,97 +3726,76 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
 				if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-					return nil, summary, shieldCapacityBlock()
+					return nil, summary, false, shieldCapacityBlock()
 				}
 			}
-			return append(head, body[shieldMaxBytes:]...), summary, nil
+			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
-			return body, nil, nil
+			return body, nil, false, nil
 		default: // block: fail-closed, return 403
 			p.logger.LogBlocked(actx, "shield_oversize", shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes))
-			return nil, nil, &shieldBlockResult{
+			return nil, nil, false, &shieldBlockResult{
 				info:   blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 				status: http.StatusForbidden, reason: shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes),
 			}
 		}
 	}
 
-	rewritten, summary := p.runShieldPipelineResult(body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+	shieldStart := time.Now()
+	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, transport)
+	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
+	if result.uninspectableReason != "" {
+		p.logger.LogBlocked(actx, shieldUninspectableLayer, result.uninspectableReason)
+		return nil, nil, false, shieldUninspectableBlock(result.uninspectableReason)
+	}
+	if result.svgRefusal != "" {
+		// Name the construct that failed. The validator's reasons are compiled
+		// strings describing SVG structure, never response content, so they
+		// are safe to surface and make a false positive diagnosable.
+		p.logger.LogBlocked(actx, "media_policy", result.svgRefusal)
+		return nil, nil, false, svgValidationBlock(result.svgRefusal)
+	}
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
+	rewritten, summary := result.body, result.summary
 	if summary != nil {
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
 		if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-			return nil, summary, shieldCapacityBlock()
+			return nil, summary, false, shieldCapacityBlock()
 		}
 	}
-	return rewritten, summary, nil
+	return rewritten, summary, result.svgValidated, nil
 }
 
 // runShieldPipelineResult applies Browser Shield and returns an optional
 // summary for receipts and adaptive scoring when the response changed.
 func (p *Proxy) runShieldPipelineResult(body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, *receipt.ShieldSummary) {
 	shieldStart := time.Now()
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
-	if pipeline == shield.PipelineNone {
-		return body, nil
-	}
-	// Extract CSP nonce from response headers (preferred over body extraction).
-	headerNonce := shield.ExtractCSPNonce(respHeaders)
-	shieldResult := p.shieldEngine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
-	if shieldResult.Rewritten {
-		body = []byte(shieldResult.Content)
-		if shieldResult.ExtensionHits > 0 {
-			m.RecordShieldRewrite("extension", transport)
-			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.TrackingHits > 0 {
-			m.RecordShieldRewrite("tracking", transport)
-			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.TrapHits > 0 {
-			m.RecordShieldRewrite("trap", transport)
-			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL(), clientIP, requestID)
-		}
-		if shieldResult.ShimInjected {
-			m.RecordShieldShimInjected(transport)
-		}
-	}
+	result := runShieldPipelineWithEncoding(p.shieldEngine, body, contentType, respHeaders, cfg, m, transport)
+	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	m.RecordShieldLatency(transport, time.Since(shieldStart))
-	return body, shieldSummaryFromResult(shieldResult)
+	return result.body, result.summary
+}
+
+func (p *Proxy) logShieldRewriteSummary(summary *receipt.ShieldSummary, actx audit.LogContext, clientIP, requestID, transport string) {
+	if summary == nil {
+		return
+	}
+	if summary.ExtensionProbes > 0 {
+		p.logger.LogShieldRewrite("extension", summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.TrackingBeacons > 0 {
+		p.logger.LogShieldRewrite("tracking", summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
+	}
+	if summary.AgentTraps > 0 {
+		p.logger.LogShieldRewrite("trap", summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
+	}
 }
 
 func runShieldPipelineSharedResult(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) ([]byte, *receipt.ShieldSummary) {
-	prefixLen := len(body)
-	if prefixLen > 512 {
-		prefixLen = 512
-	}
-	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
-	if pipeline == shield.PipelineNone {
-		return body, nil
-	}
-	headerNonce := shield.ExtractCSPNonce(respHeaders)
-	shieldResult := engine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
-	if shieldResult.Rewritten {
-		body = []byte(shieldResult.Content)
-		if shieldResult.ExtensionHits > 0 {
-			m.RecordShieldRewrite("extension", transport)
-		}
-		if shieldResult.TrackingHits > 0 {
-			m.RecordShieldRewrite("tracking", transport)
-		}
-		if shieldResult.TrapHits > 0 {
-			m.RecordShieldRewrite("trap", transport)
-		}
-		if shieldResult.ShimInjected {
-			m.RecordShieldShimInjected(transport)
-		}
-	}
-	return body, shieldSummaryFromResult(shieldResult)
+	result := runShieldPipelineWithEncoding(engine, body, contentType, respHeaders, cfg, m, transport)
+	return result.body, result.summary
 }
 
 func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
@@ -6015,15 +6047,18 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	contentType := resp.Header.Get("Content-Type")
 	title := ""
 
-	isHTML := strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
-
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
 	shieldBodyBytes := int64(len(body))
-	body, shieldSummary, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+	shieldBlocked := p.blockShieldPartialResponse(resp, body, shieldHost, cfg, actx)
+	var shieldSummary *receipt.ShieldSummary
+	svgShielded := false
+	if shieldBlocked == nil {
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
 		p.metrics.RecordBlocked(shieldHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -6049,12 +6084,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = shieldBlocked.info.Layer
 		return
 	}
+	contentType = resp.Header.Get("Content-Type")
+	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
+	isHTML := validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
 
 	// Media policy on fetched responses. Runs after shield so HTML passes
 	// through unchanged and image/audio/video responses get transport-
 	// agnostic enforcement. Blocks yield a structured FetchResponse so the
 	// client sees the policy reason, not a generic 403.
-	mediaVerdict := applyMediaPolicy(cfg, contentType, body)
+	mediaVerdict := applyMediaPolicy(cfg, contentType, body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+	mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
 	if mediaVerdict.Blocked {
 		log.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
@@ -6091,6 +6130,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
 	content := string(body)
+	if scanAsHTML && shieldSummary == nil {
+		decoded, utf16, err := decodeShieldUTF16(body, contentType, shield.PipelineHTML)
+		if err != nil {
+			// Keep malformed bytes on the raw scanner path, which reports
+			// incomplete inspection as a failure rather than scanning markup.
+			scanAsHTML = false
+		} else if utf16 {
+			content = decoded
+		}
+	}
 
 	// Extract text from HTML hiding spots that readability strips (comments,
 	// non-executable data scripts, style, hidden elements). Scan only those

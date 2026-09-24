@@ -181,3 +181,17 @@ func TestAppendNote(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusHomeFlagSetsSharedHome pins that `keys status --home` feeds the
+// one shared home resolver, so key paths and the TLS CA default agree.
+func TestStatusHomeFlagSetsSharedHome(t *testing.T) {
+	orig := domsigning.PipelockHome
+	t.Cleanup(func() { domsigning.PipelockHome = orig })
+	home := t.TempDir()
+	if _, err := runStatus(t, "--home", home); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if domsigning.PipelockHome != home {
+		t.Fatalf("PipelockHome = %q, want %q", domsigning.PipelockHome, home)
+	}
+}

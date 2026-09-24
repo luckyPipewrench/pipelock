@@ -433,6 +433,7 @@ Checks:
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error, no hang, no bypass. |
 | 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the positively attributed managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 | 7 | `managed_chain_structure` | The live managed nftables chain can be read and has the installed structure. This is a qualified structural result only; check 6 observes packet enforcement. |
+| 8 | `managed_doorway_sockets` | Every managed doorway socket, the proxy doorway plus one per declared `containment.loopback_services` entry, is persistently enabled and active. A socket that is not enabled or not active reports FAIL naming the socket and the `systemctl` command that restores it; a declared service set that cannot be honored reports FAIL. |
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

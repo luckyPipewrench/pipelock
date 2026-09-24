@@ -187,6 +187,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		readFile: func(p string) ([]byte, error) {
 			return os.ReadFile(filepath.Clean(p))
 		},
+		readDir:   os.ReadDir,
 		writeFile: writeFileAtomic,
 		removeFile: func(p string) error {
 			err := os.Remove(p)

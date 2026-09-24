@@ -917,8 +917,10 @@ func TestDeclaredLoopbackForwardersInstallAndRevoke(t *testing.T) {
 	for _, name := range []string{
 		loopbackForwarderUnitBase("127.0.0.1", 9200) + ".socket",
 		loopbackForwarderUnitBase("127.0.0.1", 9200) + ".service",
+		loopbackForwarderUnitBase("127.0.0.1", 9200) + "-netns.service",
 		loopbackForwarderUnitBase("::1", 9300) + ".socket",
 		loopbackForwarderUnitBase("::1", 9300) + ".service",
+		loopbackForwarderUnitBase("::1", 9300) + "-netns.service",
 	} {
 		if filepath.Join(unitDir, name) == operatorServicePath {
 			continue
@@ -1075,5 +1077,43 @@ func TestContainedNetworkNamespaceUnitSharesPrivateTmp(t *testing.T) {
 		if !unitHasExactEntry(body, "Service", strings.SplitN(want, "=", 2)[0], strings.SplitN(want, "=", 2)[1]) {
 			t.Fatalf("namespace holder unit missing %s:\n%s", want, body)
 		}
+	}
+}
+
+// A forwarder the install inventory no longer lists must still be retired:
+// an earlier retirement that removed only the socket and service left the
+// in-namespace listener enabled with Requires= on a socket that no longer
+// exists, so it failed on every start.
+func TestDeclaredLoopbackOrphanListenerIsRetired(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	orphan := loopbackForwarderUnitBase("127.0.0.1", 9222)
+	for _, suffix := range []string{"-netns.service", ".service"} {
+		body := "[Unit]\nRequires=" + orphan + ".socket\n[Service]\nExecStart=/bin/true\n"
+		if err := os.WriteFile(filepath.Join(unitDir, orphan+suffix), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelated := filepath.Join(unitDir, "pipelock-agent-proxy.service.bak")
+	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("containment:\n  loopback_services: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stepInstallNetworkNamespace().apply(context.Background(), env); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for _, suffix := range []string{"-netns.service", ".service", ".socket"} {
+		if _, err := os.Stat(filepath.Join(unitDir, orphan+suffix)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("orphan %s survived: %v", orphan+suffix, err)
+		}
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated unit file was touched: %v", err)
 	}
 }

@@ -38,7 +38,7 @@ func loopbackForwarderUnitBase(host string, port int) string {
 	if host == "::1" {
 		family = "v6"
 	}
-	return fmt.Sprintf("pipelock-agent-loopback-%s-%d", family, port)
+	return fmt.Sprintf(loopbackUnitPrefix+"%s-%d", family, port)
 }
 
 func systemdListenAddress(host string, port int) string {
@@ -961,16 +961,17 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 				touched = append(touched, item.path)
 			}
-			for _, record := range oldInventory.Services {
-				if desiredUnits[record.Unit] {
-					continue
+			for _, unit := range staleLoopbackUnits(env, unitDir, oldInventory, desiredUnits) {
+				// Stop the in-namespace listener before its host socket: it
+				// Requires= the socket, so leaving it enabled after the socket is
+				// gone makes a unit that fails on every start.
+				for _, running := range []string{unit + "-netns.service", unit + ".socket"} {
+					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", running); err != nil {
+						return true, fmt.Errorf("disable stale loopback forwarder %s: %w", running, err)
+					}
 				}
-				socket := record.Unit + ".socket"
-				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", socket); err != nil {
-					return true, fmt.Errorf("disable stale loopback forwarder %s: %w", socket, err)
-				}
-				for _, suffix := range []string{".socket", ".service"} {
-					path := filepath.Join(unitDir, record.Unit+suffix)
+				for _, suffix := range []string{".socket", ".service", "-netns.service"} {
+					path := filepath.Join(unitDir, unit+suffix)
 					if _, statErr := env.stat(path); errors.Is(statErr, os.ErrNotExist) {
 						continue
 					} else if statErr != nil {
@@ -1196,4 +1197,46 @@ func containedRelayTarget(configPath string, proxyPort int) string {
 		return shared
 	}
 	return net.JoinHostPort(ip.String(), port)
+}
+
+// loopbackUnitPrefix begins every declared-loopback forwarder unit name.
+const loopbackUnitPrefix = "pipelock-agent-loopback-"
+
+// staleLoopbackUnits returns the base names of declared-loopback forwarders
+// that are no longer desired. The install inventory is the primary record; the
+// unit directory is swept as well, because a unit the inventory has already
+// forgotten (for example the in-namespace listener left by an earlier
+// retirement that removed only the socket and service) would otherwise stay
+// enabled forever against a socket that no longer exists.
+func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwarderInventory, desired map[string]bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(unit string) {
+		if unit == "" || desired[unit] || seen[unit] {
+			return
+		}
+		seen[unit] = true
+		out = append(out, unit)
+	}
+	for _, record := range inventory.Services {
+		add(record.Unit)
+	}
+	if env.readDir != nil {
+		if entries, err := env.readDir(unitDir); err == nil {
+			for _, entry := range entries {
+				name := entry.Name()
+				if !strings.HasPrefix(name, loopbackUnitPrefix) {
+					continue
+				}
+				for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
+					if base, ok := strings.CutSuffix(name, suffix); ok {
+						add(base)
+						break
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }

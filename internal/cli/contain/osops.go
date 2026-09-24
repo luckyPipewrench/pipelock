@@ -37,9 +37,12 @@ type installEnv struct {
 	// are abstracted only so tests can run on a tmpdir without sudo. Path
 	// arguments are absolute by convention; the orchestration code
 	// constructs them via env helpers (etcPath, wrapperPath, ...).
-	stat       func(path string) (os.FileInfo, error)
-	lstat      func(path string) (os.FileInfo, error)
-	readFile   func(path string) ([]byte, error)
+	stat     func(path string) (os.FileInfo, error)
+	lstat    func(path string) (os.FileInfo, error)
+	readFile func(path string) ([]byte, error)
+	// readDir lists a directory. Nil skips directory sweeps that are only a
+	// second line of defence behind the install inventory.
+	readDir    func(path string) ([]os.DirEntry, error)
 	writeFile  func(path string, contents []byte, mode os.FileMode) error
 	removeFile func(path string) error
 	mkdirAll   func(path string, mode os.FileMode) error
@@ -195,6 +198,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		stat:                          os.Stat,
 		lstat:                         os.Lstat,
 		readFile:                      os.ReadFile,
+		readDir:                       os.ReadDir,
 		writeFile:                     writeFileAtomic,
 		removeFile:                    os.Remove,
 		mkdirAll:                      os.MkdirAll,

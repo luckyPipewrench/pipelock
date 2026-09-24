@@ -6,7 +6,9 @@ package shield
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"golang.org/x/net/html"
 )
@@ -211,6 +213,7 @@ func styleHides(tag string) bool {
 // later declaration overrides an earlier one unless the earlier one is
 // !important and the later is not.
 func styleValueHides(style string) bool {
+	style = normalizeCSS(style)
 	type effective struct {
 		value     string
 		important bool
@@ -243,6 +246,50 @@ func styleValueHides(style string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeCSS rewrites a declaration block the way CSS reads it before the
+// properties are resolved: comments are removed, so display/**/:none is
+// display:none, and backslash escapes are decoded, so d\69 splay is display.
+func normalizeCSS(style string) string {
+	var b strings.Builder
+	for i := 0; i < len(style); i++ {
+		c := style[i]
+		switch {
+		case c == '/' && i+1 < len(style) && style[i+1] == '*':
+			end := strings.Index(style[i+2:], "*/")
+			if end < 0 {
+				return b.String()
+			}
+			i += 2 + end + 1
+		case c == '\\' && i+1 < len(style):
+			j := i + 1
+			for j < len(style) && j-i <= 6 && isHexDigit(style[j]) {
+				j++
+			}
+			if j == i+1 {
+				b.WriteByte(style[j])
+				i = j
+				continue
+			}
+			code, err := strconv.ParseUint(style[i+1:j], 16, 32)
+			if err != nil || code == 0 || code > unicode.MaxRune {
+				code = unicode.ReplacementChar
+			}
+			b.WriteRune(rune(code))
+			if j < len(style) && isHTMLSpaceByte(style[j]) {
+				j++
+			}
+			i = j - 1
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func isHTMLSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
 }
 
 // ariaHiddenTrue reports whether the first tag's own aria-hidden is true.

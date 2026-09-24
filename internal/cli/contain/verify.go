@@ -1804,6 +1804,10 @@ type containmentUIDs struct {
 	operatorKnown bool
 	proxyUID      int
 	agentUID      int
+	// ownedLoopback reports that this host installs the owned-loopback
+	// marking rules. Only then may the unsafe-verdict check accept those
+	// rules, and only in the exact form the renderer emits.
+	ownedLoopback bool
 }
 
 func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
@@ -1822,7 +1826,7 @@ func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
 		return containmentUIDs{}, fmt.Errorf("%s resolves to uid 0; contained agent user must be non-root", env.agentUserName)
 	}
 
-	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID}
+	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID, ownedLoopback: env.ownedLoopback}
 	if proxyUID == agentUID {
 		return containmentUIDs{}, fmt.Errorf("%s and %s both resolve to uid %d; containment users must be distinct", env.proxyUserName, env.agentUserName, agentUID)
 	}
@@ -2378,6 +2382,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 			return false
 		}
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
+			return false
+		}
+		if uids.ownedLoopback && lineIsRenderedOwnedLoopbackOutputRule(line, uids.agentUID) {
 			return false
 		}
 		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||

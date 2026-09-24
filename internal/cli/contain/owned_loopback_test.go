@@ -1494,10 +1494,8 @@ func TestReceiverChainDeletionIsFlushedFirst(t *testing.T) {
 // containment probe through the owned-loopback receiver-chain check with
 // fixtures built from the real renderers, so each outcome is decided by the
 // production parser: a confirmed absent or tampered receiver chain is a
-// structural failure, and a failed nft query is a read error. The all-good
-// case is not asserted here: the unsafe-verdict check that runs after the
-// receiver chain does not yet exempt the rendered owned-loopback OUTPUT rules
-// (tracked separately), so it cannot pass until that is fixed.
+// structural failure, a failed nft query is a read error, and the rendered
+// receiver chain with the rendered OUTPUT marking rules passes.
 func TestProbeOwnedLoopbackReceiverChainClassification(t *testing.T) {
 	anchorPath := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
 	outputChain := strings.Replace(goodNFTContainmentOutput,
@@ -1521,6 +1519,7 @@ func TestProbeOwnedLoopbackReceiverChainClassification(t *testing.T) {
 		wantRead   bool
 		wantDetail string
 	}{
+		{"rendered receiver chain", receiver, 0, nil, statusPass, false, ""},
 		{"receiver chain confirmed absent", "Error: No such file or directory; did you mean chain 'output_filter'?", 1, nil, statusFail, false, "is missing or unrecognized"},
 		{"receiver chain tampered", tampered, 0, nil, statusFail, false, "is missing or unrecognized"},
 		{"receiver chain query failed", "netlink: Error: cache initialization failed: Operation not supported", 1, nil, statusFail, true, "nft exit=1"},
@@ -1568,5 +1567,88 @@ func TestProbeOwnedLoopbackAnchorUnconfiguredIsStructural(t *testing.T) {
 	status, detail, readErr := probeOwnedLoopbackAnchorClassified(context.Background(), env)
 	if status != statusFail || readErr || !strings.Contains(detail, "not configured") {
 		t.Fatalf("got (%s, %q, readErr=%t), want structural FAIL naming the unconfigured path", status, detail, readErr)
+	}
+}
+
+// TestOwnedLoopbackOutputRulesAreExemptOnlyInRenderedForm pins the exemption
+// the unsafe-verdict check grants the owned-loopback marking rules. The rules
+// the renderer emits, with or without the `# handle N` suffix `nft -a` adds,
+// are safe only on a host that installs owned loopback. Any rule that differs
+// in one predicate stays an unsafe verdict, because each predicate is what
+// confines the accept to Pipelock-owned loopback sockets.
+func TestOwnedLoopbackOutputRulesAreExemptOnlyInRenderedForm(t *testing.T) {
+	const agentUID = 987
+	rendered := strings.Split(strings.TrimRight(nftOwnedLoopbackOutputRules(agentUID), "\n"), "\n")
+	if len(rendered) != 4 {
+		t.Fatalf("renderer emitted %d owned-loopback rules, want 4", len(rendered))
+	}
+	chainWith := func(extra ...string) []string {
+		lines := []string{"meta skuid 1000 accept", "meta skuid 999 accept", "meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept"}
+		lines = append(lines, extra...)
+		return append(lines, "meta skuid 987 counter drop")
+	}
+	owned := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 999, agentUID: agentUID, ownedLoopback: true}
+	legacy := owned
+	legacy.ownedLoopback = false
+
+	var handled []string
+	for i, line := range rendered {
+		handled = append(handled, strings.TrimSpace(line)+" # handle "+strconv.Itoa(40+i))
+	}
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(chainWith(rendered...), owned, defaultProxyPort, nil) {
+		t.Fatal("rendered owned-loopback rules must be safe when owned loopback is installed")
+	}
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(chainWith(handled...), owned, defaultProxyPort, nil) {
+		t.Fatal("rendered owned-loopback rules listed with nft handles must be safe")
+	}
+	if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(chainWith(rendered...), legacy, defaultProxyPort, nil) {
+		t.Fatal("owned-loopback rules must stay unsafe on a host that does not install owned loopback")
+	}
+
+	v4 := strings.TrimSpace(rendered[0])
+	established := strings.TrimSpace(rendered[2])
+	slice := `socket cgroupv2 level 1 "` + ownedLoopbackSlice + `" `
+	for _, tc := range []struct{ name, line string }{
+		{"cgroup scope removed", strings.Replace(v4, slice, "", 1)},
+		{"other uid", strings.Replace(v4, "meta skuid 987 ", "meta skuid 988 ", 1)},
+		{"other interface", strings.Replace(v4, `oifname "lo"`, `oifname "eth0"`, 1)},
+		{"non-loopback destination", strings.Replace(v4, "ip daddr 127.0.0.1", "ip daddr 10.0.0.1", 1)},
+		{"other cgroup", strings.Replace(v4, ownedLoopbackSlice, "user.slice", 1)},
+		{"mark not set", strings.Replace(v4, "ct mark set "+ownedLoopbackConntrackMark+" ", "", 1)},
+		{"established without cgroup scope", strings.Replace(established, slice, "", 1)},
+		{"trailing text that is not a handle", v4 + " # handle x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.line == v4 || tc.line == established {
+				t.Fatal("mutation did not change the rendered rule")
+			}
+			if lineIsRenderedOwnedLoopbackOutputRule(tc.line, agentUID) {
+				t.Fatalf("near-copy %q must not match the rendered rule", tc.line)
+			}
+			if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(chainWith(tc.line), owned, defaultProxyPort, nil) {
+				t.Fatalf("near-copy %q must remain an unsafe verdict", tc.line)
+			}
+		})
+	}
+}
+
+// TestLiveNFTContainmentMatchesRenderedOwnedLoopbackChain is the install
+// drift check's positive control: the OUTPUT chain the renderer emits with
+// owned loopback enabled reads back as matching, so install does not report
+// drift on its own output.
+func TestLiveNFTContainmentMatchesRenderedOwnedLoopbackChain(t *testing.T) {
+	full := renderNFTRulesWithServices(nftRuleOptions{
+		OperatorUID: 1000, ProxyUID: 999, AgentUID: 987, ProxyPort: defaultProxyPort,
+		Table: defaultNFTTable, Chain: defaultNFTChain, OwnedLoopback: true,
+	})
+	output := strings.Replace(full, nftOwnedLoopbackInputChain(), "", 1)
+	if output == full || !ownedLoopbackRulesReferenceCurrentAnchor(output, 4) {
+		t.Fatal("fixture must be the rendered OUTPUT chain with the owned-loopback rules and without the receiver chain")
+	}
+	if !liveNFTContainmentMatches(output, defaultNFTChain, 1000, 999, 987, defaultProxyPort, nil, true) {
+		t.Fatal("rendered owned-loopback OUTPUT chain must match on a host that installs owned loopback")
+	}
+	if liveNFTContainmentMatches(output, defaultNFTChain, 1000, 999, 987, defaultProxyPort, nil, false) {
+		t.Fatal("owned-loopback rules must be drift on a host that does not install owned loopback")
 	}
 }

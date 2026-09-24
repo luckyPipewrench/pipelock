@@ -6,6 +6,7 @@ package contain
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -185,6 +186,36 @@ func chainLinesHaveOwnedLoopbackOutputRules(lines []string, agentUID int) bool {
 		}
 	}
 	return haveV4 && haveV6
+}
+
+// lineIsRenderedOwnedLoopbackOutputRule reports whether a live OUTPUT chain
+// line is exactly one of the owned-loopback rules nftOwnedLoopbackOutputRules
+// renders for agentUID. The comparison is against the renderer's own output,
+// after removing the `# handle N` suffix that `nft -a` appends and collapsing
+// whitespace, so a rule differing in any predicate (another uid, another
+// interface, a missing cgroup scope, a different mark) is not exempt and the
+// unsafe-verdict check still reports it.
+func lineIsRenderedOwnedLoopbackOutputRule(line string, agentUID int) bool {
+	got := normalizeNFTChainLine(stripNFTRuleHandle(line))
+	for _, want := range strings.Split(nftOwnedLoopbackOutputRules(agentUID), "\n") {
+		if want = normalizeNFTChainLine(want); want != "" && got == want {
+			return true
+		}
+	}
+	return false
+}
+
+// stripNFTRuleHandle removes the trailing `# handle N` comment that
+// `nft -a list` appends to a rule, leaving any other text untouched.
+func stripNFTRuleHandle(line string) string {
+	idx := strings.LastIndex(line, " # handle ")
+	if idx < 0 {
+		return line
+	}
+	if _, err := strconv.ParseUint(strings.TrimSpace(line[idx+len(" # handle "):]), 10, 64); err != nil {
+		return line
+	}
+	return line[:idx]
 }
 
 // ownedLoopbackAnchorState reports the unit's enabled and active state before

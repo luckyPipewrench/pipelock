@@ -2564,6 +2564,7 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 		operatorKnown: true,
 		proxyUID:      proxyUID,
 		agentUID:      agentUID,
+		ownedLoopback: ownedLoopback,
 	}, proxyPort, loopbackServices)
 }
 

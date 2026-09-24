@@ -703,7 +703,6 @@ func TestJSONLeafBucketPayloadsOverDepthShapes(t *testing.T) {
 	}
 }
 
-
 func TestFoldRemainingJSONScalars(t *testing.T) {
 	t.Parallel()
 

@@ -4849,6 +4849,52 @@ func TestInterceptTunnel_BodyEntropyWarnRecordsMetricAndForwards(t *testing.T) {
 	assertInterceptMetric(t, m, `pipelock_body_entropy_hits_total{action="warn",agent=""} 1`)
 }
 
+// A body carrying both a blocking secret and a warn-level entropy finding must
+// name the secret in the block reason. The entropy warning rode along with the
+// request; reporting it as the cause sends the operator to the wrong scanner.
+func TestInterceptTunnel_BodyBlockNamesSecretOverEntropyWarning(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	key := "AKIA" + strings.Join([]string{"QR2S", "TUVW", "XYZ2", "3456"}, "")
+	body := `{"blob":"` + opaqueHighEntropyBodyValue() + `","note":"` + key + `"}`
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/upload", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%q", resp.StatusCode, string(respBody))
+	}
+	if upstreamHit.Load() {
+		t.Fatal("blocked request reached upstream")
+	}
+	if !strings.Contains(string(respBody), "AWS Access ID") {
+		t.Fatalf("block reason must name the secret pattern; body=%q", string(respBody))
+	}
+	if strings.Contains(string(respBody), "high entropy") {
+		t.Fatalf("block reason must not blame the entropy warning; body=%q", string(respBody))
+	}
+}
+
 func assertInterceptMetric(t *testing.T, m *metrics.Metrics, want string) {
 	t.Helper()
 	rec := httptest.NewRecorder()

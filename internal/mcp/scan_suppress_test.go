@@ -166,7 +166,7 @@ func assertMCPMetricSampleValue(t *testing.T, body, prefix string, want float64)
 func TestMCPStdioLowConfidenceInboundDLPRecordsDropped(t *testing.T) {
 	sc := testScanner(t)
 	lowConfidenceAWS := strings.Join([]string{
-		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"Southeast", "Asia", "region", "planning", "notes", "by", "random",
 		"OCR", "context", "for", "assistant", "safety", "review",
 	}, " ")
 	line := []byte(makeResponse(7, lowConfidenceAWS))
@@ -201,7 +201,7 @@ func TestMCPStdioLowConfidenceInboundDLPRecordsDropped(t *testing.T) {
 func TestMCPStdioLowConfidenceInboundDLPNilObservabilityKeepsVerdict(t *testing.T) {
 	sc := testScanner(t)
 	line := []byte(makeResponse(8, strings.Join([]string{
-		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"Southeast", "Asia", "region", "planning", "notes", "by", "random",
 		"OCR", "context", "for", "assistant", "safety", "review",
 	}, " ")))
 

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -21,6 +22,47 @@ var DLPValidators = map[string]func(string) bool{
 	config.ValidatorMod97: validateMod97,
 	config.ValidatorABA:   validateABA,
 	config.ValidatorWIF:   validateWIF,
+}
+
+// awsCredentialPrefixRe finds an access-key-shaped run with one of the two
+// prefixes AWS issues for access keys: AKIA (long-term) and ASIA (temporary
+// STS). The other prefixes in the detector regex name IAM resources (users,
+// roles, policies, instance profiles), not credentials.
+var awsCredentialPrefixRe = regexp.MustCompile(`(?i)(AKIA|ASIA)[A-Z0-9]{16}`)
+
+// validateAWSAccessIDCandidate rejects one false-positive class of the
+// case-folded AWS Access ID detector: ordinary prose that the
+// whitespace-collapsed view joins into a lowercase run behind an IAM resource
+// prefix. In "the technician vacuumed out the water" the collapsed view joins
+// "technician" and "vacuumed" into one run containing "anva" followed by more
+// letters, which the case-insensitive pattern reads as an ANVA identifier.
+//
+// The rejection is narrow on purpose. A candidate still validates when it
+//   - contains a genuine uppercase/digit identifier (strict, case-sensitive),
+//   - is entirely uppercase and digits (unchanged behavior for any prefix), or
+//   - contains an AKIA or ASIA run anywhere, in any case.
+//
+// The last rule keeps the evasion the case-folding exists for closed: a real
+// access key always starts AKIA or ASIA, so lowercasing it, splitting it with
+// spaces, or leading it with decoy prose leaves a run this check still finds.
+// The validator runs inside the pattern's all-matches loop, so rejecting a
+// prose candidate never hides a later genuine key in the same text.
+// builtinDLPValidatorForRegex returns the precision validator a built-in
+// detector regex always carries, keyed by the regex rather than the pattern
+// name so the immutable core copy, the configurable copy, and any renamed
+// operator copy of the same regex behave identically.
+func builtinDLPValidatorForRegex(regex string) func(string) bool {
+	if regex == config.AWSAccessIDRegex {
+		return validateAWSAccessIDCandidate
+	}
+	return nil
+}
+
+func validateAWSAccessIDCandidate(candidate string) bool {
+	if strictAWSAccessIDRe.MatchString(candidate) || !containsASCIILower(candidate) {
+		return true
+	}
+	return awsCredentialPrefixRe.MatchString(candidate)
 }
 
 // validateLuhn implements the Luhn algorithm (ISO/IEC 7812) for credit card

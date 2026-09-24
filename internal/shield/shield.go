@@ -254,7 +254,7 @@ func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce
 
 	// Hidden traps (elements + comments).
 	if cfg.StripHiddenTraps {
-		doc, res.TrapHits = e.stripTraps(doc, cfg.Strictness)
+		doc, res.TrapHits = e.stripTraps(doc, cfg.Strictness, allowSelfClosingScripts)
 	}
 
 	// Shim injection.
@@ -334,7 +334,7 @@ func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	// Strip hidden traps in the SVG XML body outside scripts.
 	if cfg.StripHiddenTraps {
 		var trapHits int
-		doc, trapHits = e.stripTraps(doc, cfg.Strictness)
+		doc, trapHits = e.stripTraps(doc, cfg.Strictness, true)
 		res.TrapHits += trapHits
 	}
 
@@ -638,11 +638,11 @@ func restoreHTMLScripts(doc string, scripts []maskedHTMLScript) string {
 // stripTraps removes hidden DOM traps and comment traps.
 // Under aggressive strictness, comment traps are always stripped.
 // Under minimal strictness, only hidden-element traps are stripped.
-func (e *Engine) stripTraps(s string, strictness string) (string, int) {
+func (e *Engine) stripTraps(s string, strictness string, xml bool) (string, int) {
 	total := 0
 
 	// Hidden elements are stripped at all strictness levels.
-	s, n := stripHiddenElementTraps(s)
+	s, n := stripHiddenElementTraps(s, xml)
 	total += n
 	s, n = replaceVerified(e.hiddenTrapRe, s, ariaHiddenTrue)
 	total += n

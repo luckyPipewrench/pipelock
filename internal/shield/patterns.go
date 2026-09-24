@@ -276,6 +276,9 @@ func cssDeclarations(style string) [][2]string {
 				quote = 0
 			}
 		case c == '/' && i+1 < len(style) && style[i+1] == '*':
+			// A comment separates tokens, so dis/**/play is two words, not
+			// display. It leaves a space where it stood.
+			cur.WriteByte(' ')
 			end := strings.Index(style[i+2:], "*/")
 			if end < 0 {
 				i = len(style)
@@ -435,8 +438,9 @@ type hiddenTrapCandidate struct {
 // references, comments and raw-text element bodies follow the HTML rules, and
 // text is read unescaped with tags removed so markup cannot split a keyword.
 // Each candidate is decided by lookup after one pass, so nested or stray tags
-// cannot make the rewrite quadratic.
-func stripHiddenElementTraps(s string) (string, int) {
+// cannot make the rewrite quadratic. xml selects XHTML and SVG parsing, where a
+// self-closing tag ends its element.
+func stripHiddenElementTraps(s string, xml bool) (string, int) {
 	// Every candidate carries a style attribute, and an attribute name cannot
 	// be written with character references.
 	if !strings.Contains(asciiLower(s), "style") {
@@ -534,9 +538,14 @@ func stripHiddenElementTraps(s string) (string, int) {
 			interfacePos = append(interfacePos, start)
 		}
 		// HTML ignores a self-closing slash on these elements, so <script/>
-		// still starts a raw-text body.
+		// still starts a raw-text body. XHTML and SVG are XML, where the slash
+		// ends the element and the text after it is ordinary markup.
 		if rawTextElements[name] {
-			rawBody = true
+			if xml && tt == html.SelfClosingTagToken {
+				z.NextIsNotRawText()
+			} else {
+				rawBody = true
+			}
 		}
 		// A self-closing slash on div, span or p is ignored by browsers, so
 		// both token kinds open the element.

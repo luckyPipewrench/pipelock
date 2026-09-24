@@ -2135,7 +2135,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
 		}
 		oversizePipeline := detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)
-		if shieldLeavesBodyUnchanged(oversizePipeline) {
+		if shieldLeavesBodyUnchanged(oversizePipeline) && !isSVGResponse {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
 		}

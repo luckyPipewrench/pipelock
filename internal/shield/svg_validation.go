@@ -375,6 +375,11 @@ func svgUnsafeCSS(value string, stylesheet bool) bool {
 // one to six hex digits (plus one optional whitespace) is that code point; a
 // backslash before any other character is that character.
 func cssUnescape(value string) string {
+	// CSS Syntax preprocessing: CR LF, a lone CR and FF are each one LF before
+	// tokenizing, so the single whitespace an escape consumes can be a CR LF
+	// pair. Without this, "\75<CR><LF>rl(" decodes to "u\nrl(" here while a
+	// browser reads url(.
+	value = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\f", "\n").Replace(value)
 	var b strings.Builder
 	for i := 0; i < len(value); i++ {
 		if value[i] != '\\' || i+1 == len(value) {

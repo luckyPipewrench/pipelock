@@ -35,6 +35,12 @@ func TestValidateSVG_DeliveryContract(t *testing.T) {
 		{name: "doctype internal subset", svg: `<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg"/>`},
 		{name: "non-doctype directive", svg: `<!ENTITY x "y"><svg xmlns="http://www.w3.org/2000/svg"/>`},
 		{name: "malformed", svg: `<svg xmlns="http://www.w3.org/2000/svg"><path></svg>`},
+		// CSS treats CR LF as one whitespace, which an escape consumes, so
+		// each of these spells url( for a browser; the character references
+		// survive XML attribute normalization.
+		{name: "css escape then crlf spells url", svg: `<svg xmlns="http://www.w3.org/2000/svg"><path fill="\75&#xD;&#xA;rl(https://attacker.example/fill)"/></svg>`},
+		{name: "css escape then lone cr spells url", svg: `<svg xmlns="http://www.w3.org/2000/svg"><path fill="\000075&#xD;rl(https://attacker.example/fill)"/></svg>`},
+		{name: "css escape then form feed spells url", svg: `<svg xmlns="http://www.w3.org/2000/svg"><path fill="\75&#xC;rl(https://attacker.example/fill)"/></svg>`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

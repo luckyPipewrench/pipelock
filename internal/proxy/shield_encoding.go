@@ -203,6 +203,12 @@ func detectShieldPipeline(contentType string, body []byte) shield.PipelineType {
 }
 
 func detectShieldPipelineForResponse(contentType string, body []byte, headers http.Header) shield.PipelineType {
+	// A browser uses the last valid value across every Content-Type field,
+	// while contentType is only the first. Any declared SVG is SVG, so no
+	// early skip keyed on the first value can let it past validation.
+	if responseHeadersDeclareSVG(headers) {
+		return shield.PipelineSVG
+	}
 	baseType, validBase := shieldMediaTypeEssence(contentType)
 	if validBase {
 		mediaType, _, err := mime.ParseMediaType(contentType)

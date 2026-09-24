@@ -311,6 +311,37 @@ func TestSVGDeliveryContract_IncompleteValidationRefused(t *testing.T) {
 		{"sse and svg content-type fields", nil, func(*testing.T) http.HandlerFunc {
 			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream", "image/svg+xml"}}, []byte(hostileSVGFixture))
 		}},
+		// Oversize and partial responses are decided before Browser Shield
+		// runs, from the Content-Type; a browser uses the last valid value
+		// across every field, so an inert first field must not route SVG
+		// onto a non-shieldable streaming or pass-through path.
+		{"oversize duplicate content-type fields scan_head", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"oversize duplicate content-type fields warn", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"oversize comma-combined content type", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"partial 206 duplicate content-type fields", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusPartialContent, http.Header{
+				"Content-Type":  {"text/plain", "image/svg+xml"},
+				"Content-Range": {fmt.Sprintf("bytes 0-%d/%d", len(hostileSVGFixture)-1, len(hostileSVGFixture)+100)},
+			}, []byte(hostileSVGFixture))
+		}},
 		{"malformed content-type parameters", func(cfg *config.Config) { cfg.BrowserShield.Enabled = false }, func(*testing.T) http.HandlerFunc {
 			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml; a=1; a=2"}}, []byte(hostileSVGFixture))
 		}},
@@ -376,6 +407,33 @@ func TestSVGDeliveryContract_EmptyBodyValidatedWhenShieldActive(t *testing.T) {
 	body, _, svgShielded, blocked := p.applyShield(nil, "image/svg+xml", "icons.vendor.example", http.Header{"Content-Type": {"image/svg+xml"}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportForward, "action")
 	if blocked != nil || !svgShielded || len(body) != 0 {
 		t.Fatalf("empty SVG: blocked=%+v proof=%t body=%q", blocked, svgShielded, body)
+	}
+}
+
+// TestDetectShieldPipelineHonorsEveryContentTypeField guards the early
+// decisions keyed on the shield pipeline (oversize, 206, non-shieldable skip).
+// They receive only the first Content-Type value, so the detector must return
+// SVG whenever any field a browser would use declares it, including when the
+// first value is a specific non-sniffed type or nosniff forbids sniffing.
+func TestDetectShieldPipelineHonorsEveryContentTypeField(t *testing.T) {
+	body := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+	}{
+		{"specific first field", http.Header{"Content-Type": {"image/png", "image/svg+xml"}}},
+		{"comma-combined", http.Header{"Content-Type": {"image/png, image/svg+xml"}}},
+		{"nosniff generic first field", http.Header{"Content-Type": {"text/plain", "image/svg+xml"}, "X-Content-Type-Options": {"nosniff"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := detectShieldPipelineForResponse(tc.headers.Get("Content-Type"), body, tc.headers); got != shield.PipelineSVG {
+				t.Fatalf("pipeline = %v, want SVG for %v", got, tc.headers)
+			}
+		})
+	}
+	png := http.Header{"Content-Type": {"image/png"}}
+	if got := detectShieldPipelineForResponse("image/png", []byte{0x89, 'P', 'N', 'G'}, png); got == shield.PipelineSVG {
+		t.Fatalf("plain image/png classified as SVG")
 	}
 }
 

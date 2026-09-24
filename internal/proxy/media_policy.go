@@ -347,7 +347,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 			// potentially booby-trapped content. The error surfaces in the
 			// exposure event for operator visibility.
 			exposure.Blocked = true
-			exposure.BlockReason = mediaParseBlockReason(mt, err)
+			exposure.BlockReason = mediaParseBlockReason(mt, body, err)
 			return MediaPolicyVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -370,9 +370,9 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	}
 }
 
-func mediaParseBlockReason(mediaType string, err error) string {
+func mediaParseBlockReason(mediaType string, body []byte, err error) string {
 	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
-		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mediaType, media.DescribeBytes(body))
 	}
 	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }

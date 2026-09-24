@@ -282,10 +282,46 @@ func openingTag(match string) string {
 	return ""
 }
 
-// styleHides reports whether the tag's own style attribute hides it.
+// styleHides reports whether the tag's own style attribute hides it, resolving
+// each property the way a browser does: a later declaration overrides an
+// earlier one unless the earlier one is !important and the later is not.
 func styleHides(tag string) bool {
 	style, ok := tagAttribute(tag, "style")
-	return ok && hiddenCSSDeclRe.MatchString(style)
+	if !ok {
+		return false
+	}
+	type effective struct {
+		value     string
+		important bool
+		set       bool
+	}
+	props := map[string]*effective{"display": {}, "visibility": {}, "font-size": {}, "opacity": {}}
+	for _, decl := range strings.Split(style, ";") {
+		name, value, found := strings.Cut(decl, ":")
+		if !found {
+			continue
+		}
+		prop := props[strings.ToLower(strings.TrimSpace(name))]
+		if prop == nil {
+			continue
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		important := false
+		if bang := strings.LastIndexByte(value, '!'); bang >= 0 && strings.TrimSpace(value[bang+1:]) == "important" {
+			important = true
+			value = strings.TrimSpace(value[:bang])
+		}
+		if prop.set && prop.important && !important {
+			continue
+		}
+		*prop = effective{value: value, important: important, set: true}
+	}
+	for name, prop := range props {
+		if prop.set && hiddenCSSDeclRe.MatchString(name+":"+prop.value) {
+			return true
+		}
+	}
+	return false
 }
 
 // ariaHiddenTrue reports whether the tag's own aria-hidden attribute is true.
@@ -388,6 +424,13 @@ func stripHiddenElementTraps(s string) (string, int) {
 			break
 		}
 		lt += pos
+		if lt+1 >= len(s) || !startsTag(s[lt+1]) {
+			// A '<' before a space, digit or other text is literal text, as
+			// HTML reads it; it cannot swallow the tag that follows.
+			addText(pos, lt+1)
+			pos = lt + 1
+			continue
+		}
 		addText(pos, lt)
 		if strings.HasPrefix(s[lt:], "<!--") {
 			closeComment := strings.Index(s[lt+4:], "-->")
@@ -418,6 +461,33 @@ func stripHiddenElementTraps(s string) (string, int) {
 			// the body: </stylex> does not.
 			pos = rawTextEnd(lower, end, name)
 			continue
+		case !closing && openCount["p"] > 0 && closesParagraph[name]:
+			// An opening block element closes the open p before it, so a
+			// hidden p ends here rather than swallowing what follows.
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i].tag != "p" {
+					continue
+				}
+				for j := len(stack) - 1; j >= i; j-- {
+					openCount[stack[j].tag]--
+					if c := stack[j].candidate; c >= 0 {
+						candidates[c].closeStart, candidates[c].end = lt, lt
+					}
+				}
+				stack = stack[:i]
+				break
+			}
+			if name == "div" || name == "p" {
+				candidate := -1
+				if styleHides(s[lt:end]) {
+					candidate = len(candidates)
+					candidates = append(candidates, hiddenTrapCandidate{start: lt, openEnd: end, closeStart: len(s), end: len(s), opened: true})
+				}
+				stack = append(stack, openElement{tag: name, candidate: candidate})
+				openCount[name]++
+			} else if interfaceTags[name] {
+				interfacePos = append(interfacePos, lt)
+			}
 		case name == "div" || name == "span" || name == "p":
 			if !closing {
 				// The tag scan reads every opening tag quote-aware, so it
@@ -519,6 +589,22 @@ func rawTextEnd(lower string, from int, name string) int {
 		}
 		i = next
 	}
+}
+
+// closesParagraph lists the opening tags that implicitly close an open p
+// element under the HTML parsing rules.
+var closesParagraph = map[string]bool{
+	"address": true, "article": true, "aside": true, "blockquote": true, "details": true,
+	"dialog": true, "div": true, "dl": true, "fieldset": true, "figcaption": true,
+	"figure": true, "footer": true, "form": true, "h1": true, "h2": true, "h3": true,
+	"h4": true, "h5": true, "h6": true, "header": true, "hgroup": true, "hr": true,
+	"main": true, "menu": true, "nav": true, "ol": true, "p": true, "pre": true,
+	"section": true, "summary": true, "table": true, "ul": true,
+}
+
+// startsTag reports whether the byte after '<' begins markup rather than text.
+func startsTag(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '/' || c == '!' || c == '?'
 }
 
 // isTagNameByte reports whether c can appear in a lowercase HTML tag name.

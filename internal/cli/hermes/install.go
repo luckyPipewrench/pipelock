@@ -174,11 +174,6 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
-	return withHermesLock(opts.HermesConfig, func() error { return runInstallLocked(cmd, opts) })
-}
-
-// runInstallLocked runs the install while holding the Hermes config lock.
-func runInstallLocked(cmd *cobra.Command, opts *installOptions) error {
 	// Browser defaults are validated before anything changes and written only
 	// after the integration succeeds, so a failed install leaves the
 	// agent-browser config untouched.

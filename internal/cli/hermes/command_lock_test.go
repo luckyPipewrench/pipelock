@@ -143,3 +143,17 @@ func TestHermesLockCanonicalizesExistingSymlink(t *testing.T) {
 		t.Fatalf("canonical path = %s; want %s", got, want)
 	}
 }
+
+// Case-insensitive platforms hash every spelling of a directory to one lock;
+// Linux keeps case because its filesystems are case-sensitive.
+func TestHermesLockKeyFoldsCaseWhereTheFilesystemDoes(t *testing.T) {
+	upper, lower := "/Users/Op/Hermes", "/users/op/hermes"
+	for _, goos := range []string{"darwin", "windows"} {
+		if hermesLockKey(goos, upper) != hermesLockKey(goos, lower) {
+			t.Fatalf("%s: case variants got different lock keys", goos)
+		}
+	}
+	if hermesLockKey("linux", upper) == hermesLockKey("linux", lower) {
+		t.Fatal("linux: distinct case-sensitive directories share a lock key")
+	}
+}

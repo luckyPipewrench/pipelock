@@ -908,8 +908,8 @@ func TestRunInstall_FullModeLocksPluginRoot(t *testing.T) {
 	if err := run(ModeFull); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
 		t.Fatalf("full-mode install should wait on the held plugin root, got %v", err)
 	}
-	if err := run(ModeMCPOnly); err != nil && strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
-		t.Fatalf("control: mcp-only install waited on the plugin root: %v", err)
+	if err := run(ModeMCPOnly); err != nil {
+		t.Fatalf("control: mcp-only install should not wait on the plugin root, got %v", err)
 	}
 }
 

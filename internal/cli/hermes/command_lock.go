@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -112,7 +114,18 @@ func hermesLockBusy(path string) error {
 	return fmt.Errorf("hermes command lock: timed out waiting for %s: another pipelock hermes install or rollback for the same Hermes user is running", path)
 }
 
+// hermesLockKey is the resource identity hashed into a lock file name. The
+// default macOS and Windows filesystems ignore case, so two spellings of one
+// directory must share a lock there. Lowercasing can only make two distinct
+// directories share a lock, which waits longer but never lets them run together.
+func hermesLockKey(goos, resource string) string {
+	if goos == "darwin" || goos == "windows" {
+		return strings.ToLower(resource)
+	}
+	return resource
+}
+
 func hermesLockPath(lockDir, resource string) string {
-	digest := sha256.Sum256([]byte(resource))
+	digest := sha256.Sum256([]byte(hermesLockKey(runtime.GOOS, resource)))
 	return filepath.Join(lockDir, fmt.Sprintf("%x.lock", digest))
 }

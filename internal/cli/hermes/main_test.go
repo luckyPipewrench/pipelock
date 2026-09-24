@@ -6,6 +6,7 @@ package hermes
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -28,10 +29,9 @@ func TestMain(m *testing.M) {
 	}
 	// An inherited value would turn verify's "present" into "overridden".
 	_ = os.Unsetenv("AGENT_BROWSER_ARGS")
-	// Command locks live under the user cache directory; keep them in the
-	// throwaway home rather than a real XDG_CACHE_HOME or LOCALAPPDATA.
-	_ = os.Unsetenv("XDG_CACHE_HOME")
-	_ = os.Setenv("LOCALAPPDATA", home)
+	// The command lock root comes from the account database, not the
+	// environment, so point it at the throwaway home for the whole package.
+	hermesUserCacheDir = func() (string, error) { return filepath.Join(home, ".cache"), nil }
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

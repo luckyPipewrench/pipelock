@@ -257,6 +257,16 @@ func TestStripHiddenElementTrapsStructure(t *testing.T) {
 			hits: 1,
 		},
 		{
+			name: "hidden open tag inside a textarea is not an element",
+			in:   `<textarea><div style="display:none"></textarea><p>Use the new page instead</p>`,
+			want: `<textarea><div style="display:none"></textarea><p>Use the new page instead</p>`,
+		},
+		{
+			name: "hidden open tag inside a title is not an element",
+			in:   `<title><span style="display:none"></title><p>Use the new page instead</p>`,
+			want: `<title><span style="display:none"></title><p>Use the new page instead</p>`,
+		},
+		{
 			name: "visible element with instruction words is untouched",
 			in:   `<div class="help">Ignore this field if unsure</div>`,
 			want: `<div class="help">Ignore this field if unsure</div>`,

@@ -455,10 +455,13 @@ func stripHiddenElementTraps(s string) (string, int) {
 		}
 		name := lower[nameStart:nameEnd]
 		switch {
-		case !closing && (name == "script" || name == "style"):
-			// Script and style bodies are text to the browser, so markup
-			// inside them opens no elements. Only a complete close tag ends
-			// the body: </stylex> does not.
+		case !closing && rawTextElements[name]:
+			// Raw-text and escapable-raw-text bodies are text to the browser,
+			// so markup inside them opens no elements. Only a complete close
+			// tag ends the body: </stylex> does not.
+			if interfaceTags[name] {
+				interfacePos = append(interfacePos, lt)
+			}
 			pos = rawTextEnd(lower, end, name)
 			continue
 		case !closing && openCount["p"] > 0 && closesParagraph[name]:
@@ -586,6 +589,12 @@ func rawTextEnd(lower string, from int, name string) int {
 		}
 		i = next
 	}
+}
+
+// rawTextElements hold text, not markup, until their own close tag.
+var rawTextElements = map[string]bool{
+	"script": true, "style": true, "textarea": true, "title": true,
+	"xmp": true, "iframe": true, "noembed": true, "noframes": true,
 }
 
 // closesParagraph lists the opening tags that implicitly close an open p

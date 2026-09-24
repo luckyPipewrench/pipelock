@@ -184,10 +184,6 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 		// agent-browser config untouched.
 		browserHomeDir := ""
 		if !opts.NoBrowserDefaults {
-			home, err := browserHome(opts.HomeDir)
-			if err != nil {
-				return fmt.Errorf("%w; pass --home or --no-browser-defaults", err)
-			}
 			if err := preflightBrowserDefaults(home); err != nil {
 				return fmt.Errorf("%w; fix the file or pass --no-browser-defaults", err)
 			}

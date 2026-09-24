@@ -100,3 +100,23 @@ func TestHermesCommandLockRejectsSymlink(t *testing.T) {
 		t.Fatal("accepted symlink")
 	}
 }
+
+func TestHermesLockCanonicalizesExistingSymlink(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err := canonicalLockResource(filepath.Join(alias, "missing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(realDir, "missing")
+	if got != want {
+		t.Fatalf("canonical path = %s; want %s", got, want)
+	}
+}

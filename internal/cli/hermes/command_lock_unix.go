@@ -14,14 +14,17 @@ func ensureHermesLockDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("hermes command lock: create %s: %w", path, err)
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
+	for _, dir := range []string{filepath.Dir(path), path} {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !hermesLockDirSafe(info.Mode(), owner.Uid) {
+			return fmt.Errorf("hermes command lock: unsafe lock directory %s: must be owned by invoking user and not group/world-writable", dir)
+		}
 	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || info.Mode().Perm()&0o022 != 0 || int(owner.Uid) != os.Getuid() {
-		return fmt.Errorf("hermes command lock: unsafe lock directory %s: must be owned by invoking user and not group/world-writable", path)
-	}
+
 	return nil
 }
 
@@ -58,3 +61,7 @@ func acquireHermesLock(path string, deadline time.Time) (func(), error) {
 }
 
 func hermesLockFileOwnerOK(uid uint32) bool { return int(uid) == os.Getuid() }
+
+func hermesLockDirSafe(mode os.FileMode, uid uint32) bool {
+	return mode.IsDir() && mode.Perm()&0o022 == 0 && hermesLockFileOwnerOK(uid)
+}

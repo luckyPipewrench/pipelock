@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -58,7 +59,28 @@ func TestHermesLockFileRejectsWrongOwner(t *testing.T) {
 	if hermesLockFileOwnerOK(0) {
 		t.Fatal("accepted foreign owner")
 	}
-	if !hermesLockFileOwnerOK(uint32(os.Getuid())) {
+	info, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := info.Sys().(*syscall.Stat_t)
+	if !hermesLockFileOwnerOK(owner.Uid) {
 		t.Fatal("rejected invoking owner")
+	}
+}
+
+func TestHermesLockDirectoryRejectsWrongOwner(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root")
+	}
+	if hermesLockDirSafe(os.ModeDir|0o700, 0) {
+		t.Fatal("accepted directory owned by another uid")
+	}
+	info, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hermesLockDirSafe(info.Mode(), info.Sys().(*syscall.Stat_t).Uid) {
+		t.Fatal("rejected invoking user's directory")
 	}
 }

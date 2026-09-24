@@ -86,6 +86,9 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	if err != nil {
 		// Browser cleanup only warns when home cannot be resolved.
 		home = filepath.Dir(opts.HermesConfig)
+	} else {
+		// Keep cleanup on the same resolved home whose lock we hold.
+		opts.HomeDir = home
 	}
 	return withHermesCommandLock(opts.HermesConfig, home, func() error {
 		if err := rollbackHermesIntegration(cmd, opts); err != nil {

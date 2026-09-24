@@ -252,23 +252,35 @@ func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
 // TestCheckOwnedLoopbackThroughRealReader drives the owned-loopback check
 // through doctorChainStructureReader and the classified containment probe, so
 // the FAIL/UNKNOWN split comes from the real reader rather than a stub: a
-// confirmed-missing anchor unit is a FAIL with install guidance, while an
-// anchor that cannot be read stays UNKNOWN.
+// confirmed-missing anchor unit or receiver chain is a FAIL with install
+// guidance, while an anchor or receiver chain that cannot be read stays UNKNOWN.
+// The receiver-chain cases pass the anchor check and the rendered OUTPUT chain,
+// so they reach the receiver-chain query itself.
 func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
 	anchorPath := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
+	outputChain := strings.Replace(goodNFTContainmentOutput,
+		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n",
+		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n"+nftOwnedLoopbackOutputRules(987), 1)
+	if outputChain == goodNFTContainmentOutput {
+		t.Fatal("fixture must carry the rendered owned-loopback OUTPUT rules")
+	}
 	for _, tc := range []struct {
 		name       string
 		readErr    error
 		sysOut     string
 		sysCode    int
+		inputOut   string
+		inputCode  int
 		wantStatus string
 		wantDetail string
 		wantRemedy string
 	}{
-		{"anchor unit missing", os.ErrNotExist, "", 0, statusFail, "is missing", "contain install"},
-		{"anchor unreadable", os.ErrPermission, "", 0, statusUnknown, "could not be read", "contain verify"},
-		{"anchor confirmed inactive", nil, "inactive\n", 3, statusFail, `is "inactive"`, "contain install"},
-		{"anchor state query failed", nil, "Failed to connect to bus: No such file or directory\n", 1, statusUnknown, "could not be read", "contain verify"},
+		{"anchor unit missing", os.ErrNotExist, "", 0, "", 0, statusFail, "is missing", "contain install"},
+		{"anchor unreadable", os.ErrPermission, "", 0, "", 0, statusUnknown, "could not be read", "contain verify"},
+		{"anchor confirmed inactive", nil, "inactive\n", 3, "", 0, statusFail, `is "inactive"`, "contain install"},
+		{"anchor state query failed", nil, "Failed to connect to bus: No such file or directory\n", 1, "", 0, statusUnknown, "could not be read", "contain verify"},
+		{"receiver chain confirmed absent", nil, systemctlActive + "\n", 0, "Error: No such file or directory; did you mean chain 'output_filter'?", 1, statusFail, "receiver chain", "contain install"},
+		{"receiver chain query failed", nil, systemctlActive + "\n", 0, "netlink: Error: cache initialization failed: Operation not supported", 1, statusUnknown, "", "contain verify"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := makeProbeEnv(t, func(e *probeEnv) {
@@ -280,15 +292,18 @@ func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
 						if tc.readErr != nil {
 							return nil, tc.readErr
 						}
-						return []byte("[Unit]\n"), nil
+						return []byte(renderOwnedLoopbackAnchorUnit()), nil
 					}
 					return nil, os.ErrNotExist
 				}
-				e.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 					if name == "systemctl" {
 						return tc.sysOut, tc.sysCode, nil
 					}
-					return goodNFTContainmentOutput, 0, nil
+					if len(args) > 0 && args[len(args)-1] == ownedLoopbackInputChain {
+						return tc.inputOut, tc.inputCode, nil
+					}
+					return outputChain, 0, nil
 				}
 			})
 			env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })

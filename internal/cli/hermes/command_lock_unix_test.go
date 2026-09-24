@@ -228,3 +228,33 @@ func TestHermesStableCacheDirIgnoresEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// A swapped symlink in place of the pipelock-hermes directory is refused
+// before the locks directory is created through it.
+func TestHermesLockDirectoryRefusesSymlinkBeforeWriting(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	elsewhere := filepath.Join(root, "elsewhere")
+	for _, dir := range []string{cache, elsewhere} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(cache, hermesLockDirName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	err := ensureHermesLockDir(filepath.Join(cache, hermesLockDirName, "locks"))
+	if err == nil || !strings.Contains(err.Error(), "unsafe lock directory") {
+		t.Fatalf("err = %v, want the symlinked directory refused", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(elsewhere, "locks")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("locks directory was created through the symlink: %v", statErr)
+	}
+	control := filepath.Join(root, "control")
+	if err := os.Mkdir(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureHermesLockDir(filepath.Join(control, hermesLockDirName, "locks")); err != nil {
+		t.Fatalf("control: fresh lock directory refused: %v", err)
+	}
+}

@@ -6,6 +6,7 @@
 package hermes
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -28,19 +29,27 @@ func hermesStableCacheDir() (string, error) {
 }
 
 func ensureHermesLockDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fmt.Errorf("hermes command lock: create %s: %w", path, err)
-	}
 	// The cache root is followed (a dotfiles-managed symlinked ~/.cache is
-	// legitimate); the pipelock and locks directories Pipelock creates are
-	// not, so a swapped symlink there is refused.
+	// legitimate); the pipelock-hermes and locks directories Pipelock creates
+	// are not. Each of those is checked without following symlinks before
+	// anything is created inside it, so a swapped symlink is refused before a
+	// directory can be written through it.
 	cacheRoot := filepath.Dir(filepath.Dir(path))
+	if err := os.MkdirAll(cacheRoot, 0o700); err != nil {
+		return fmt.Errorf("hermes command lock: create %s: %w", cacheRoot, err)
+	}
 	for _, dir := range []string{cacheRoot, filepath.Dir(path), path} {
 		stat := os.Lstat
 		if dir == cacheRoot {
 			stat = os.Stat
 		}
 		info, err := stat(dir)
+		if errors.Is(err, os.ErrNotExist) && dir != cacheRoot {
+			if mkErr := os.Mkdir(dir, 0o700); mkErr != nil && !errors.Is(mkErr, os.ErrExist) {
+				return fmt.Errorf("hermes command lock: create %s: %w", dir, mkErr)
+			}
+			info, err = os.Lstat(dir)
+		}
 		if err != nil {
 			return err
 		}
@@ -49,7 +58,6 @@ func ensureHermesLockDir(path string) error {
 			return fmt.Errorf("hermes command lock: unsafe lock directory %s: must be owned by invoking user and not group/world-writable", dir)
 		}
 	}
-
 	return nil
 }
 

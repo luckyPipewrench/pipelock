@@ -437,6 +437,8 @@ const (
 	// Other carriers still block, and the binary policy identity moves.
 	// Re-bumped when shipped path-entropy routes began merging beside operator
 	// entries instead of being replaced by them.
+	// Re-bumped when the built-in DAN jailbreak token began requiring word
+	// context, which changes a shipped response pattern.
 	goldenHashDefaults = "ae1aeafae708b4a94271db61c443ffc668b55607bc0949742ae4875fbca40f84"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via

@@ -1028,7 +1028,6 @@ func verifySignature(key crypto.PublicKey, message, signature []byte) bool {
 	}
 }
 
-//nolint:staticcheck // reads raw coordinates to normalize equivalent P-256 curves, which PublicKey.Bytes rejects
 func normalizeECDSAP256PublicKey(pub *ecdsa.PublicKey) (*ecdsa.PublicKey, bool) {
 	if pub == nil || pub.X == nil || pub.Y == nil || !isECDSAP256Curve(pub.Curve) {
 		return nil, false
@@ -1040,7 +1039,6 @@ func normalizeECDSAP256PublicKey(pub *ecdsa.PublicKey) (*ecdsa.PublicKey, bool) 
 	return &ecdsa.PublicKey{Curve: p256, X: pub.X, Y: pub.Y}, true
 }
 
-//nolint:staticcheck // reads raw coordinates to normalize equivalent P-256 curves, which PublicKey.Bytes rejects
 func validECDHP256Point(pub *ecdsa.PublicKey) bool {
 	byteLen := (elliptic.P256().Params().BitSize + 7) / 8
 	if pub.X.Sign() < 0 || pub.Y.Sign() < 0 || pub.X.BitLen() > byteLen*8 || pub.Y.BitLen() > byteLen*8 {

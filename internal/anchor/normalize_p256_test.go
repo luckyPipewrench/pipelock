@@ -28,8 +28,6 @@ import (
 // the point at infinity, off-curve points) must be refused WITHOUT panicking:
 // this runs on a verification path reached from remote transparency-log input,
 // so a panic here is a denial of service.
-//
-//nolint:staticcheck // test builds keys from raw coordinates on purpose
 func TestNormalizeECDSAP256PublicKey_CurveEquivalenceAndDegenerateKeys(t *testing.T) {
 	good, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

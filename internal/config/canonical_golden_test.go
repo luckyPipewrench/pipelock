@@ -438,7 +438,7 @@ const (
 	// Re-bumped when GitHub and GitLab token classes gained compiled audiences
 	// (GitHub Token, Fine-Grained PAT, GitLab PAT, CI job token) and the DLP
 	// section gained the declared enterprise host lists.
-	goldenHashDefaults = "99e866ba11ab3ab5c2825df046db0689ea26e865a1180b86c52722d3472ef0aa"
+	goldenHashDefaults = "8c7344210816b47bd8985cf47a34277ac29c704ed47e44d98a44258c3209a9d6"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -672,7 +672,7 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "14e606910b1e9b433f0746267eaf533f0a8dcfe82cd9c902cd849f7f6c73f886"
+	goldenHashRichConfig = "ed1797c884d72c9bc64cd0bcdab293e9868e1cbb452d6f2caf9ff6c5f97da701"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1243,8 +1243,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
 		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "5084d63ae502efe2b9c1a878599d4b3a72ba5fb95631c61f508edfe197b1cdbe"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "745e0ec3a99ae625efe2510ce76db90a90452d889baaaa4da3b5c499c1c3a48b"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "fdee6f1063b0ea54f7657c829f0f9c8a97992084b35400d071df593dfe6a2ad7"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "69db08442be474ced88a607024f4e80a675a592083d4896f21ac6d709d6cc9a0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

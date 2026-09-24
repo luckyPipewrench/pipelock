@@ -325,6 +325,7 @@ type TextDLPMatch struct {
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
 	credentialAudienceCarrierMask       uint8
+	credentialAudienceGitHosts          []string
 }
 
 func (m TextDLPMatch) credentialAudienceCarrierRestricted() bool {
@@ -577,6 +578,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -745,6 +747,7 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -776,6 +779,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -984,10 +988,12 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		if i, ok := index[k]; ok {
 			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) ||
 				result[i].credentialAudienceAuthorizationOnly != m.credentialAudienceAuthorizationOnly ||
-				result[i].credentialAudienceCarrierMask != m.credentialAudienceCarrierMask {
+				result[i].credentialAudienceCarrierMask != m.credentialAudienceCarrierMask ||
+				!slices.Equal(result[i].credentialAudienceGitHosts, m.credentialAudienceGitHosts) {
 				result[i].credentialAudienceHosts = nil
 				result[i].credentialAudienceAuthorizationOnly = false
 				result[i].credentialAudienceCarrierMask = 0
+				result[i].credentialAudienceGitHosts = nil
 			}
 			continue
 		}

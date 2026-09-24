@@ -67,15 +67,15 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 		{"gitlab job token declared", "Job-Token", job, "https://gitlab.corp.example/api/v4/job", "GitLab CI Job Token", true},
 		{"gitlab job token on private-token", "Private-Token", job, "https://gitlab.com/api/v4/job", "GitLab CI Job Token", false},
 		{"gitlab job token bearer", "Authorization", "Bearer " + job, "https://gitlab.com/api/v4/job", "GitLab CI Job Token", false},
-		// Git over HTTPS sends HTTP Basic. github.com is not an audience host,
-		// and the REST hosts accept only Bearer and token, so GitHub Basic
-		// blocks everywhere. GitLab git uses Basic oauth2:<token> on its host.
-		{"github basic x-access-token at github.com", "Authorization", basicAuth("x-access-token", gh), "https://github.com/o/r.git/git-upload-pack", "GitHub Token", false},
-		{"github basic user at github.com", "Authorization", basicAuth("octocat", gh), "https://github.com/o/r.git/info/refs", "GitHub Token", false},
+		// Git over HTTPS sends HTTP Basic. The git rule accepts it only at the
+		// git host and only on a git smart-HTTP or LFS path; the REST hosts
+		// never accept Basic. GitLab git uses Basic oauth2:<token>.
+		{"github basic x-access-token at github.com", "Authorization", basicAuth("x-access-token", gh), "https://github.com/o/r.git/git-upload-pack", "GitHub Token", true},
+		{"github basic user info/refs no service", "Authorization", basicAuth("octocat", gh), "https://github.com/o/r.git/info/refs", "GitHub Token", false},
 		{"github basic at api", "Authorization", basicAuth("x-access-token", gh), "https://api.github.com/user", "GitHub Token", false},
 		{"github unknown scheme at api", "Authorization", "Digest " + gh, "https://api.github.com/user", "GitHub Token", false},
 		{"gitlab basic oauth2", "Authorization", basicAuth("oauth2", gl), "https://gitlab.com/g/r.git/git-receive-pack", "GitLab PAT", true},
-		{"gitlab basic declared host", "Authorization", basicAuth("oauth2", gl), "https://gitlab.corp.example/g/r.git/info/refs", "GitLab PAT", true},
+		{"gitlab basic declared host", "Authorization", basicAuth("oauth2", gl), "https://gitlab.corp.example/g/r.git/info/refs?service=git-upload-pack", "GitLab PAT", true},
 		{"gitlab basic lookalike", "Authorization", basicAuth("oauth2", gl), "https://gitlab.com.evil.example/g/r.git/info/refs", "GitLab PAT", false},
 		{"gitlab token scheme", "Authorization", "token " + gl, "https://gitlab.com/api/v4/user", "GitLab PAT", false},
 		{"gitlab job token basic", "Authorization", basicAuth("gitlab-ci-token", job), "https://gitlab.com/g/r.git/info/refs", "GitLab CI Job Token", false},
@@ -141,12 +141,14 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 	}
 	cases := []headerCase{
 		{"gitlab basic", http.Header{"Authorization": {basicAuth("oauth2", gl)}}, "https://gitlab.com/g/r.git/git-receive-pack", true},
-		{"gitlab basic plus host header", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "User-Agent": {"git/2.45"}}, "https://gitlab.com/g/r.git/info/refs", true},
-		{"gitlab basic plus aws", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "X-Extra": {aws}}, "https://gitlab.com/g/r.git/info/refs", false},
+		{"gitlab basic plus host header", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "User-Agent": {"git/2.45"}}, "https://gitlab.com/g/r.git/info/refs?service=git-upload-pack", true},
+		{"gitlab basic plus aws", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "X-Extra": {aws}}, "https://gitlab.com/g/r.git/info/refs?service=git-upload-pack", false},
+		{"github git basic plus aws", http.Header{"Authorization": {basicAuth("x-access-token", gh)}, "X-Extra": {aws}}, "https://github.com/o/r.git/git-upload-pack", false},
+		{"github git basic plus agent header", http.Header{"Authorization": {basicAuth("x-access-token", gh)}, "User-Agent": {"git/2.45"}}, "https://github.com/o/r.git/git-upload-pack", true},
 		{"gitlab bearer plus aws", http.Header{"Authorization": {"Bearer " + gl}, "X-Extra": {aws}}, "https://gitlab.com/api/v4/user", false},
 		{"gitlab private-token plus job on bearer", http.Header{"Private-Token": {gl}, "Authorization": {"Bearer " + job}}, "https://gitlab.com/api/v4/user", false},
 		{"github bearer plus github in other header", http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, "https://api.github.com/user", false},
-		{"github basic at github.com", http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, "https://github.com/o/r.git/info/refs", false},
+		{"github basic at github.com non-git path", http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, "https://github.com/o/r", false},
 		{"slack basic", http.Header{"Authorization": {basicAuth("u", slack)}}, "https://slack.com/api/auth.test", true},
 		{"slack bearer base64", http.Header{"Authorization": {"Bearer " + base64.StdEncoding.EncodeToString([]byte(slack))}}, "https://slack.com/api/auth.test", true},
 		{"slack bearer plus aws", http.Header{"Authorization": {"Bearer " + slack}, "X-Extra": {aws}}, "https://slack.com/api/auth.test", false},
@@ -297,5 +299,85 @@ func TestGitHubGitLabAudience_UndeclaredEnterpriseBlocked(t *testing.T) {
 		if r == nil || r.Clean {
 			t.Fatalf("undeclared enterprise host %s allowed", tc.target)
 		}
+	}
+}
+
+// The git-over-HTTPS rule: Basic, https, a git host, and a git smart-HTTP or
+// LFS path, all four at once. Each blocked case drops exactly one of them.
+func TestGitHubGitLabAudience_GitTransportRule(t *testing.T) {
+	cfg := gitAudienceHeaderConfig()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	gh := fakeGitHubToken()
+	pat := "github" + "_pat_" + strings.Repeat("A", 40)
+	gl := fakeGitLabPAT()
+
+	for _, tc := range []struct {
+		name, value, target, pattern string
+		clean                        bool
+	}{
+		{"x-access-token receive-pack discovery", basicAuth("x-access-token", gh), "https://github.com/o/r.git/info/refs?service=git-receive-pack", "GitHub Token", true},
+		{"user upload-pack discovery", basicAuth("octocat", gh), "https://github.com/o/r/info/refs?service=git-upload-pack", "GitHub Token", true},
+		{"upload-pack no .git", basicAuth("x-access-token", gh), "https://github.com/o/r/git-upload-pack", "GitHub Token", true},
+		{"receive-pack", basicAuth("octocat", gh), "https://github.com/o/r.git/git-receive-pack", "GitHub Token", true},
+		{"lfs batch", basicAuth("x-access-token", gh), "https://github.com/o/r.git/info/lfs/objects/batch", "GitHub Token", true},
+		{"lfs locks", basicAuth("octocat", gh), "https://github.com/o/r.git/info/lfs/locks/verify", "GitHub Token", true},
+		{"fine-grained pat", basicAuth("x-access-token", pat), "https://github.com/o/r.git/git-upload-pack", "GitHub Fine-Grained PAT", true},
+		{"declared ghes git path", basicAuth("x-access-token", gh), "https://ghe.corp.example/o/r.git/info/refs?service=git-upload-pack", "GitHub Token", true},
+		{"settings page", basicAuth("x-access-token", gh), "https://github.com/settings/tokens", "GitHub Token", false},
+		{"repo page", basicAuth("x-access-token", gh), "https://github.com/o/r", "GitHub Token", false},
+		{"info/refs without service", basicAuth("x-access-token", gh), "https://github.com/o/r/info/refs", "GitHub Token", false},
+		{"info/refs unknown service", basicAuth("x-access-token", gh), "https://github.com/o/r/info/refs?service=git-evil", "GitHub Token", false},
+		{"info/refs extra query", basicAuth("x-access-token", gh), "https://github.com/o/r/info/refs?service=git-upload-pack&x=1", "GitHub Token", false},
+		{"bare service path", basicAuth("x-access-token", gh), "https://github.com/git-upload-pack", "GitHub Token", false},
+		{"bearer at git path", "Bearer " + gh, "https://github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"token scheme at git path", "token " + gh, "https://github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"basic at api git path", basicAuth("x-access-token", gh), "https://api.github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"lookalike host", basicAuth("x-access-token", gh), "https://github.com.evil.example/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"subdomain of github.com", basicAuth("x-access-token", gh), "https://gist.github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"cleartext", basicAuth("x-access-token", gh), "http://github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"traversal out of git path", basicAuth("x-access-token", gh), "https://github.com/o/r.git/git-upload-pack/../../settings/tokens", "GitHub Token", false},
+		{"traversal into git path", basicAuth("x-access-token", gh), "https://github.com/settings/../o/r/git-upload-pack", "GitHub Token", false},
+		{"encoded slash", basicAuth("x-access-token", gh), "https://github.com/settings%2Ftokens/git-upload-pack", "GitHub Token", false},
+		{"double slash", basicAuth("x-access-token", gh), "https://github.com//git-upload-pack", "GitHub Token", false},
+		{"github token at gitlab git path", basicAuth("x-access-token", gh), "https://gitlab.com/g/r.git/git-upload-pack", "GitHub Token", false},
+		{"gitlab basic git path", basicAuth("oauth2", gl), "https://gitlab.com/g/r.git/info/refs?service=git-receive-pack", "GitLab PAT", true},
+		{"gitlab basic lfs", basicAuth("oauth2", gl), "https://gitlab.com/g/r.git/info/lfs/objects/batch", "GitLab PAT", true},
+		{"gitlab basic non-git path", basicAuth("oauth2", gl), "https://gitlab.com/api/v4/user", "GitLab PAT", false},
+		{"gitlab bearer rest unchanged", "Bearer " + gl, "https://gitlab.com/api/v4/projects", "GitLab PAT", true},
+		{"gitlab token at github git path", basicAuth("oauth2", gl), "https://github.com/o/r.git/git-upload-pack", "GitLab PAT", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var allows []scanner.CredentialAudienceAllow
+			result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{"Authorization": []string{tc.value}}, cfg, sc, tc.target, nil,
+				func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) })
+			clean := result == nil || result.Clean
+			if clean != tc.clean {
+				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
+			}
+			if tc.clean {
+				if len(allows) != 1 || allows[0].PatternName != tc.pattern || allows[0].Surface != "header" {
+					t.Fatalf("allows=%+v", allows)
+				}
+				return
+			}
+			if len(allows) != 0 {
+				t.Fatalf("blocked request recorded audience allows: %+v", allows)
+			}
+			found := false
+			for _, m := range result.DLPMatches {
+				found = found || m.PatternName == tc.pattern
+			}
+			if !found {
+				t.Fatalf("block did not name %s: %+v", tc.pattern, result.DLPMatches)
+			}
+		})
+	}
+
+	// The git rule never applies to a WebSocket upgrade, even at a git path.
+	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
+	blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, sc, cfg, "wss://github.com/o/r.git/git-upload-pack", audit.LogContext{})
+	if !blocked {
+		t.Fatal("WebSocket upgrade with GitHub Basic at a git path allowed")
 	}
 }

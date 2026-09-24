@@ -48,6 +48,7 @@ type coreDLPPattern struct {
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
 	credentialAudienceCarrierMask       uint8
+	credentialAudienceGitHosts          []string
 }
 
 // coreResponsePattern defines a single immutable response scanning pattern.
@@ -75,6 +76,7 @@ func coreDLPPatternDefs() []coreDLPPattern {
 			credentialAudienceHosts:             append([]string(nil), pattern.CredentialAudienceHosts...),
 			credentialAudienceAuthorizationOnly: pattern.CredentialAudienceAuthorizationOnly,
 			credentialAudienceCarrierMask:       pattern.CredentialAudienceCarrierMask,
+			credentialAudienceGitHosts:          append([]string(nil), pattern.CredentialAudienceGitHosts...),
 		})
 	}
 	return out
@@ -219,6 +221,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			credentialAudienceHosts:             config.AppendDeclaredCredentialAudienceHosts(p.name, hosts, github, gitlab),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 			credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+			credentialAudienceGitHosts:          config.AppendDeclaredCredentialAudienceHosts(p.name, p.credentialAudienceGitHosts, github, gitlab),
 		})
 	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)
@@ -520,6 +523,7 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
 			})
 		}
@@ -572,6 +576,7 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
 			})
 		}

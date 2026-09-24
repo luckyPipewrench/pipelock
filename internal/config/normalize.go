@@ -1001,6 +1001,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 		patterns[i].CredentialAudienceHosts = nil
 		patterns[i].CredentialAudienceAuthorizationOnly = false
 		patterns[i].CredentialAudienceCarrierMask = 0
+		patterns[i].CredentialAudienceGitHosts = nil
 	}
 	for _, builtIn := range defaultDLPPatternSet {
 		if len(builtIn.CredentialAudienceHosts) == 0 {
@@ -1017,6 +1018,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
 			candidate.CredentialAudienceAuthorizationOnly = builtIn.CredentialAudienceAuthorizationOnly
 			candidate.CredentialAudienceCarrierMask = builtIn.CredentialAudienceCarrierMask
+			candidate.CredentialAudienceGitHosts = append([]string(nil), builtIn.CredentialAudienceGitHosts...)
 		}
 	}
 }

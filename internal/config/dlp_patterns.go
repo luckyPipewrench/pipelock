@@ -32,18 +32,23 @@ const (
 	CredentialAudienceCarrierAuthorizationBasic
 	CredentialAudienceCarrierPrivateToken
 	CredentialAudienceCarrierJobToken
+	// CredentialAudienceCarrierGitBasic is the separate git-over-HTTPS rule:
+	// Authorization Basic, https only, at a CredentialAudienceGitHosts host,
+	// and only on a git smart-HTTP or Git LFS path. It never widens the REST
+	// host list, and the REST hosts never accept Basic through it.
+	CredentialAudienceCarrierGitBasic
 )
 
-// githubTokenAudienceMask is the GitHub REST carriers: Authorization with the
-// Bearer or token scheme. Git over HTTPS uses Basic against github.com, which
-// is not an audience host, so Basic is not granted.
-const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken
+// githubTokenAudienceMask is the GitHub carriers: Authorization with the
+// Bearer or token scheme at the REST hosts, plus the git rule, which accepts
+// Basic at github.com only on a git transport path.
+const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken | CredentialAudienceCarrierGitBasic
 
 // gitlabTokenAudienceMask is the documented GitLab access-token carriers:
-// PRIVATE-TOKEN, Authorization Bearer for the API, and Authorization Basic
-// (oauth2:<token>) for git over HTTPS on the same host. Job tokens use
-// JOB-TOKEN only.
-const gitlabTokenAudienceMask = CredentialAudienceCarrierPrivateToken | CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationBasic
+// PRIVATE-TOKEN and Authorization Bearer for the API on any path, and
+// Authorization Basic (oauth2:<token>) through the git rule, which limits it
+// to git transport paths on the same host. Job tokens use JOB-TOKEN only.
+const gitlabTokenAudienceMask = CredentialAudienceCarrierPrivateToken | CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierGitBasic
 
 // defaultDLPPatternSet is the canonical shipped DLP pattern registry.
 // Defaults, generated presets, and drift tests read from this list instead of
@@ -96,12 +101,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// github.com itself is git, not the API host, and is not an audience.
 	// Sources: https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api
 	// https://docs.github.com/en/rest/releases/assets
-	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
-	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
 	// GitLab personal, project, and group access tokens share glpat-.
 	// The API host is the instance host. gitlab.com is the public one.
 	// Source: https://docs.gitlab.com/api/rest/authentication/
-	{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gitlab.com"}, CredentialAudienceCarrierMask: gitlabTokenAudienceMask},
+	{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gitlab.com"}, CredentialAudienceGitHosts: []string{"gitlab.com"}, CredentialAudienceCarrierMask: gitlabTokenAudienceMask},
 	// Remaining GitLab token families. Only the CI job token carries a
 	// compiled audience; the others are not documented as REST credentials on
 	// a header (runner, trigger, and OAuth application secrets travel in

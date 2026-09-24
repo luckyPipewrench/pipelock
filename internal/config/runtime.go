@@ -367,6 +367,9 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 		if src[i].CredentialAudienceHosts != nil {
 			dst[i].CredentialAudienceHosts = append([]string(nil), src[i].CredentialAudienceHosts...)
 		}
+		if src[i].CredentialAudienceGitHosts != nil {
+			dst[i].CredentialAudienceGitHosts = append([]string(nil), src[i].CredentialAudienceGitHosts...)
+		}
 	}
 	return dst
 }

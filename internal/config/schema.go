@@ -1247,6 +1247,7 @@ type DLPPattern struct {
 	CredentialAudienceHosts             []string `yaml:"-"`                   // compiled built-ins only; strict YAML rejects attempts to configure it
 	CredentialAudienceAuthorizationOnly bool     `yaml:"-"`                   // compiled built-ins only; restricts audience allowance to Authorization headers
 	CredentialAudienceCarrierMask       uint8    `yaml:"-"`                   // compiled built-ins only; which headers may carry the credential
+	CredentialAudienceGitHosts          []string `yaml:"-"`                   // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
 	// registry. It is runtime provenance, not an operator-facing setting.
 	CredentialURLWhitespaceGrammar bool `yaml:"-"`

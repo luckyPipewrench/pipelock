@@ -7,6 +7,7 @@ import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
 import { validateTimestamp } from "./aarp/numbers.js";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
+import { bindRecorderLineExtSource } from "./rawjson.js";
 import { InvalidError, RuntimeError, decodeUTF8, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
@@ -44,6 +45,7 @@ export function readEntries(file: string): RecorderEntry[] {
       rejectDuplicateKeys(line);
     }
     validateProjectedStrings(entry, i + 1, entry.v);
+    bindRecorderLineExtSource(entry.detail, line);
     if (
       entry.v !== 3 &&
       (legacyNamespaceFieldIsSet(entry.chain_kind) ||
@@ -122,8 +124,13 @@ function legacyNamespaceFieldIsSet(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
 }
 
-export function extractReceipts(file: string): Receipt[] {
-  const receipts: Receipt[] = [];
+interface ExtractedReceipts {
+  action: Receipt[];
+  evidence: Receipt[];
+}
+
+function extractTypedReceipts(file: string): ExtractedReceipts {
+  const extracted: ExtractedReceipts = { action: [], evidence: [] };
   for (const entry of readEntries(file)) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
     if (!isReceipt) {
@@ -143,10 +150,25 @@ export function extractReceipts(file: string): Receipt[] {
       } catch (err) {
         throw new InvalidError(`entry seq ${String(entry.seq)}: ${(err as Error).message}`);
       }
+      extracted.action.push(entry.detail as Receipt);
+    } else {
+      extracted.evidence.push(entry.detail as Receipt);
     }
-    receipts.push(entry.detail as Receipt);
   }
-  return receipts;
+  return extracted;
+}
+
+// selectReceiptChain mirrors the Go reference receipt-chain mode, which
+// verifies the action_receipt subsequence and skips evidence_receipt entries.
+// A default Pipelock run interleaves both types in one file, each on its own
+// chain. A file that carries only evidence_receipt entries is verified as an
+// evidence_receipt_v2 chain.
+function selectReceiptChain(extracted: ExtractedReceipts): Receipt[] {
+  return extracted.action.length > 0 ? extracted.action : extracted.evidence;
+}
+
+export function extractReceipts(file: string): Receipt[] {
+  return selectReceiptChain(extractTypedReceipts(file));
 }
 
 function seqStart(file: string): number {
@@ -170,5 +192,11 @@ export function extractReceiptsFromSessionDir(dir: string, sessionId: string): R
     })
     .map((name) => path.join(clean, name))
     .sort((a, b) => seqStart(a) - seqStart(b));
-  return files.flatMap((file) => extractReceipts(file));
+  const combined: ExtractedReceipts = { action: [], evidence: [] };
+  for (const file of files) {
+    const extracted = extractTypedReceipts(file);
+    combined.action.push(...extracted.action);
+    combined.evidence.push(...extracted.evidence);
+  }
+  return selectReceiptChain(combined);
 }

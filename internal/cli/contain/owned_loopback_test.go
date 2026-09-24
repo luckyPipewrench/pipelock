@@ -1489,3 +1489,84 @@ func TestReceiverChainDeletionIsFlushedFirst(t *testing.T) {
 	}
 	assertFlushBeforeDelete(t, "replacement transaction", staged)
 }
+
+// TestProbeOwnedLoopbackReceiverChainClassification drives the classified
+// containment probe through the owned-loopback receiver-chain check with
+// fixtures built from the real renderers, so each outcome is decided by the
+// production parser: a confirmed absent or tampered receiver chain is a
+// structural failure, and a failed nft query is a read error. The all-good
+// case is not asserted here: the unsafe-verdict check that runs after the
+// receiver chain does not yet exempt the rendered owned-loopback OUTPUT rules
+// (tracked separately), so it cannot pass until that is fixed.
+func TestProbeOwnedLoopbackReceiverChainClassification(t *testing.T) {
+	anchorPath := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
+	outputChain := strings.Replace(goodNFTContainmentOutput,
+		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n",
+		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n"+nftOwnedLoopbackOutputRules(987), 1)
+	if !ownedLoopbackRulesReferenceCurrentAnchor(outputChain, 4) {
+		t.Fatal("fixture must carry the rendered owned-loopback output rules")
+	}
+	receiver := renderOwnedLoopbackInputChainTable(defaultNFTTable)
+	tampered := strings.Replace(receiver, "        ct mark "+ownedLoopbackConntrackMark+" drop\n",
+		"        ct mark "+ownedLoopbackConntrackMark+" accept\n        ct mark "+ownedLoopbackConntrackMark+" drop\n", 1)
+	if tampered == receiver {
+		t.Fatal("tampered fixture must differ from the rendered receiver chain")
+	}
+	for _, tc := range []struct {
+		name       string
+		out        string
+		code       int
+		err        error
+		wantStatus string
+		wantRead   bool
+		wantDetail string
+	}{
+		{"receiver chain confirmed absent", "Error: No such file or directory; did you mean chain 'output_filter'?", 1, nil, statusFail, false, "is missing or unrecognized"},
+		{"receiver chain tampered", tampered, 0, nil, statusFail, false, "is missing or unrecognized"},
+		{"receiver chain query failed", "netlink: Error: cache initialization failed: Operation not supported", 1, nil, statusFail, true, "nft exit=1"},
+		{"receiver chain command error", "", 0, errors.New("exec: nft: not found"), statusFail, true, "list owned loopback receiver chain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.lookupUser = containTestLookup
+				e.ownedLoopback = true
+				e.ownedLoopbackAnchorUnitPath = anchorPath
+				e.nftPersistUnitPath = ""
+				e.readFile = func(path string) ([]byte, error) {
+					if path == anchorPath {
+						return []byte(renderOwnedLoopbackAnchorUnit()), nil
+					}
+					return nil, os.ErrNotExist
+				}
+				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					switch {
+					case name == "systemctl":
+						return systemctlActive + "\n", 0, nil
+					case len(args) > 0 && args[len(args)-1] == ownedLoopbackInputChain:
+						return tc.out, tc.code, tc.err
+					default:
+						return outputChain, 0, nil
+					}
+				}
+			})
+			status, detail, readErr := probeNFTContainmentClassified(context.Background(), env)
+			if status != tc.wantStatus || readErr != tc.wantRead || !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("got (%s, %q, readErr=%t), want status %s readErr=%t detail containing %q", status, detail, readErr, tc.wantStatus, tc.wantRead, tc.wantDetail)
+			}
+		})
+	}
+}
+
+// TestProbeOwnedLoopbackAnchorUnconfiguredIsStructural pins the unconfigured
+// anchor path: nothing to read, so it is a confirmed install gap, not a read
+// error.
+func TestProbeOwnedLoopbackAnchorUnconfiguredIsStructural(t *testing.T) {
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.ownedLoopback = true
+		e.ownedLoopbackAnchorUnitPath = ""
+	})
+	status, detail, readErr := probeOwnedLoopbackAnchorClassified(context.Background(), env)
+	if status != statusFail || readErr || !strings.Contains(detail, "not configured") {
+		t.Fatalf("got (%s, %q, readErr=%t), want structural FAIL naming the unconfigured path", status, detail, readErr)
+	}
+}

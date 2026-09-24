@@ -259,12 +259,16 @@ func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		readErr    error
+		sysOut     string
+		sysCode    int
 		wantStatus string
 		wantDetail string
 		wantRemedy string
 	}{
-		{"anchor unit missing", os.ErrNotExist, statusFail, "is missing", "contain install"},
-		{"anchor unreadable", os.ErrPermission, statusUnknown, "could not be read", "contain verify"},
+		{"anchor unit missing", os.ErrNotExist, "", 0, statusFail, "is missing", "contain install"},
+		{"anchor unreadable", os.ErrPermission, "", 0, statusUnknown, "could not be read", "contain verify"},
+		{"anchor confirmed inactive", nil, "inactive\n", 3, statusFail, `is "inactive"`, "contain install"},
+		{"anchor state query failed", nil, "Failed to connect to bus: No such file or directory\n", 1, statusUnknown, "could not be read", "contain verify"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := makeProbeEnv(t, func(e *probeEnv) {
@@ -273,11 +277,17 @@ func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
 				e.ownedLoopbackAnchorUnitPath = anchorPath
 				e.readFile = func(path string) ([]byte, error) {
 					if path == anchorPath {
-						return nil, tc.readErr
+						if tc.readErr != nil {
+							return nil, tc.readErr
+						}
+						return []byte("[Unit]\n"), nil
 					}
 					return nil, os.ErrNotExist
 				}
-				e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				e.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+					if name == "systemctl" {
+						return tc.sysOut, tc.sysCode, nil
+					}
 					return goodNFTContainmentOutput, 0, nil
 				}
 			})
@@ -288,6 +298,27 @@ func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
 				t.Fatalf("got %+v, want status %s detail containing %q remediation containing %q", got, tc.wantStatus, tc.wantDetail, tc.wantRemedy)
 			}
 		})
+	}
+}
+
+func TestContainmentStateConfirmationHelpers(t *testing.T) {
+	for out, want := range map[string]bool{
+		"Error: No such file or directory; did you mean chain 'x'?": true,
+		"Error: chain pipelock_owned_input does not exist":          true,
+		"Error: Could not process rule: Operation not permitted":    false,
+		"netlink: Error: cache initialization failed":               false,
+	} {
+		if got := nftOutputConfirmsAbsent(out); got != want {
+			t.Errorf("nftOutputConfirmsAbsent(%q) = %t, want %t", out, got, want)
+		}
+	}
+	for out, want := range map[string]bool{
+		"inactive\n": true, "failed": true, "activating": true,
+		"active": false, "": false, "Failed to connect to bus": false,
+	} {
+		if got := systemctlConfirmedInactiveState(out); got != want {
+			t.Errorf("systemctlConfirmedInactiveState(%q) = %t, want %t", out, got, want)
+		}
 	}
 }
 

@@ -1615,7 +1615,7 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		if strings.Contains(low, "operation not permitted") || strings.Contains(low, "permission denied") {
 			return statusSkip, "nft list chain requires root; rerun as root", false
 		}
-		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
+		if nftOutputConfirmsAbsent(out) {
 			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable), false
 		}
 		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out)), true
@@ -1665,6 +1665,9 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		if inputErr != nil {
 			return statusFail, fmt.Sprintf("list owned loopback receiver chain: %v", inputErr), true
 		}
+		if inputCode != 0 && !nftOutputConfirmsAbsent(input) {
+			return statusFail, fmt.Sprintf("list owned loopback receiver chain: nft exit=%d: %s", inputCode, oneLine(input)), true
+		}
 		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
 			return statusFail, fmt.Sprintf("owned loopback receiver chain %s is missing or unrecognized; marked loopback traffic is denied until `pipelock contain install` restores the receiver gate", ownedLoopbackInputChain), false
 		}
@@ -1699,6 +1702,10 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		return statusFail, "chain contains unexpected verdict before agent drop", false
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
+		// Persistence failures are reported as structural. The only consumer
+		// of the classification, the doctor chain reader, clears
+		// nftPersistUnitPath, so this branch never feeds it; split read errors
+		// out before wiring persistence into a classified caller.
 		if err := verifyNFTPersistence(env, current); err != nil {
 			return statusFail, err.Error(), false
 		}
@@ -1719,6 +1726,23 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 	}
 	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
 		env.nftTable, env.nftChain, current.agentUID, loopbackSummary), false
+}
+
+// nftOutputConfirmsAbsent reports whether failed nft list output states that
+// the table or chain does not exist, as opposed to a failure to read it.
+func nftOutputConfirmsAbsent(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "no such file") || strings.Contains(low, "does not exist")
+}
+
+// systemctlConfirmedInactiveState reports whether systemctl is-active printed
+// a real unit state other than active, which confirms the unit is not running.
+func systemctlConfirmedInactiveState(out string) bool {
+	switch strings.TrimSpace(out) {
+	case "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing":
+		return true
+	}
+	return false
 }
 
 func probeOwnedLoopbackAnchor(ctx context.Context, env *probeEnv) (string, string) {
@@ -1744,10 +1768,15 @@ func probeOwnedLoopbackAnchorClassified(ctx context.Context, env *probeEnv) (str
 	if err != nil {
 		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", unit, err), true
 	}
-	if code != 0 || strings.TrimSpace(out) != systemctlActive {
-		return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is %q; plk-contained-launch checks this anchor before starting a contained tool, so dynamic loopback access is denied until `pipelock contain install` restores it", unit, oneLine(out)), false
+	if code == 0 && strings.TrimSpace(out) == systemctlActive {
+		return statusPass, fmt.Sprintf("owned loopback cgroup anchor %s is active", unit), false
 	}
-	return statusPass, fmt.Sprintf("owned loopback cgroup anchor %s is active", unit), false
+	// systemctl is-active exits 3 for a unit it can name as not active; any
+	// other failure means the query itself failed and the state is unknown.
+	if code != 3 && !systemctlConfirmedInactiveState(out) {
+		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: systemctl exit=%d: %s", unit, code, oneLine(out)), true
+	}
+	return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is %q; plk-contained-launch checks this anchor before starting a contained tool, so dynamic loopback access is denied until `pipelock contain install` restores it", unit, oneLine(out)), false
 }
 
 // probeContainmentExpiryTimer verifies the privileged reconciliation timer

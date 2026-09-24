@@ -270,6 +270,7 @@ type Scanner struct {
 	responsePreFilter          *responsePreFilter // keyword candidate gate for primary regex passes
 	responseOptSpacePreFilter  *responsePreFilter // keyword candidate gate for opt-space pass
 	responseVowelFoldPreFilter *responsePreFilter // keyword candidate gate for vowel-fold pass
+	responseVerdicts           responseVerdictCache
 	responseAction             string
 	responseEnabled            bool
 	// coreObserveExceptions are the operator's declared, expiring per-host
@@ -735,6 +736,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		s.addressChecker = addressprotect.NewChecker(&cfg.AddressProtection, agentAddrs)
 	}
 
+	s.responseVerdicts.revision = s.responsePatternRevision()
 	return s, nil
 }
 

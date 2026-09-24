@@ -107,6 +107,20 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	if ctx != nil && ctx.Err() != nil {
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
+	key, eligible := s.responseVerdicts.key(body, suppressTarget, suppress)
+	if eligible {
+		if result, ok := s.responseVerdicts.get(key); ok {
+			return result
+		}
+	}
+	result := s.scanResponseBodyUncached(ctx, body, suppressTarget, suppress)
+	if eligible && (ctx == nil || ctx.Err() == nil) {
+		s.responseVerdicts.put(key, len(body), result)
+	}
+	return result
+}
+
+func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
 		if hasResponseImageSignature(body) {

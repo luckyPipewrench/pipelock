@@ -32,3 +32,25 @@ func BenchmarkResponseBodyBundles(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkResponseBodyEchartsRepeat(b *testing.B) {
+	root := os.Getenv("RESPONSE_BENCH_DIR")
+	if root == "" {
+		b.Skip("set RESPONSE_BENCH_DIR")
+	}
+	body, err := os.ReadFile(filepath.Join(root, "echarts.js"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	s := MustNew(config.Defaults())
+	defer s.Close()
+	if result := s.ScanResponseBodyWithSuppress(context.Background(), body, "", nil); !result.Clean {
+		b.Fatal("fixture should be clean")
+	}
+	b.ResetTimer()
+	for range b.N {
+		if result := s.ScanResponseBodyWithSuppress(context.Background(), body, "", nil); !result.Clean {
+			b.Fatal("fixture should be clean")
+		}
+	}
+}

@@ -299,6 +299,18 @@ func TestSVGDeliveryContract_IncompleteValidationRefused(t *testing.T) {
 		{"duplicate content-type fields", nil, func(*testing.T) http.HandlerFunc {
 			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
 		}},
+		// text/event-stream first must not route an SVG onto the unbuffered SSE
+		// branch: SSE classification requires exactly one Content-Type value
+		// that parses cleanly, so each of these takes the validated path.
+		{"sse then svg comma-combined", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"sse with parameters then svg", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream; charset=utf-8, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"sse and svg content-type fields", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
 		{"malformed content-type parameters", func(cfg *config.Config) { cfg.BrowserShield.Enabled = false }, func(*testing.T) http.HandlerFunc {
 			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml; a=1; a=2"}}, []byte(hostileSVGFixture))
 		}},

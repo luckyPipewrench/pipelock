@@ -65,18 +65,30 @@ func hermesLockResources(configPath string, dirs []string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hermes command lock: config directory: %w", err)
 	}
-	resources := []string{configDir}
+	paths := []string{configDir}
 	for _, dir := range dirs {
 		canonical, err := canonicalLockResource(dir)
 		if err != nil {
 			return nil, fmt.Errorf("hermes command lock: %s: %w", dir, err)
 		}
-		if !slices.Contains(resources, canonical) {
-			resources = append(resources, canonical)
+		paths = append(paths, canonical)
+	}
+	return lockResourceKeys(runtime.GOOS, paths), nil
+}
+
+// lockResourceKeys reduces paths to their lock keys, deduplicated and sorted
+// by key. Two spellings of one directory share a key on case- or
+// Unicode-insensitive filesystems, so deduplicating by the raw path would make
+// a command wait on a lock it already holds.
+func lockResourceKeys(goos string, paths []string) []string {
+	keys := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if key := hermesLockKey(goos, path); !slices.Contains(keys, key) {
+			keys = append(keys, key)
 		}
 	}
-	sort.Strings(resources)
-	return resources, nil
+	sort.Strings(keys)
+	return keys
 }
 
 // withHermesCommandLock runs fn while holding the locks for the Hermes config

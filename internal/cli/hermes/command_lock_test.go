@@ -168,3 +168,19 @@ func TestHermesLockKeyNormalizesUnicodeOnDarwin(t *testing.T) {
 		t.Fatal("linux: distinct byte spellings share a lock key")
 	}
 }
+
+// Spellings that share a lock key collapse to one resource, so a command never
+// waits on a lock it already holds; distinct directories stay distinct.
+func TestLockResourceKeysDeduplicateByKey(t *testing.T) {
+	composed, decomposed := "/Users/Op/Caf\u00e9", "/users/op/cafe\u0301"
+	if got := lockResourceKeys("darwin", []string{composed, decomposed}); len(got) != 1 {
+		t.Fatalf("darwin: equivalent spellings kept as %v, want one key", got)
+	}
+	if got := lockResourceKeys("windows", []string{`C:\Hermes`, `c:\hermes`}); len(got) != 1 {
+		t.Fatalf("windows: case variants kept as %v, want one key", got)
+	}
+	got := lockResourceKeys("linux", []string{"/b", "/a", "/B"})
+	if !slices.Equal(got, []string{"/B", "/a", "/b"}) {
+		t.Fatalf("linux keys = %v, want each distinct path once, sorted", got)
+	}
+}

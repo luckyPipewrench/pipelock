@@ -258,3 +258,34 @@ func TestHermesLockDirectoryRefusesSymlinkBeforeWriting(t *testing.T) {
 		t.Fatalf("control: fresh lock directory refused: %v", err)
 	}
 }
+
+// A lock file that another user can open, even read-only, is refused because
+// flock works on any open descriptor.
+func TestHermesLockFileRejectsSharedAccess(t *testing.T) {
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o666} {
+		path := filepath.Join(t.TempDir(), "lock")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		unlock, err := acquireHermesLock(path, time.Now().Add(time.Second))
+		if err == nil {
+			unlock()
+			t.Fatalf("mode %o accepted as a lock file", mode)
+		}
+		if !strings.Contains(err.Error(), "private to the invoking user") {
+			t.Fatalf("mode %o: err = %v, want the private-file refusal", mode, err)
+		}
+	}
+	control := filepath.Join(t.TempDir(), "lock")
+	if err := os.WriteFile(control, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := acquireHermesLock(control, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("control: private lock file refused: %v", err)
+	}
+	unlock()
+}

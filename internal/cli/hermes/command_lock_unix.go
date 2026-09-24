@@ -72,9 +72,11 @@ func acquireHermesLock(path string, deadline time.Time) (func(), error) {
 		closeFile()
 		return nil, fmt.Errorf("hermes command lock: stat %s: %w", path, err)
 	}
-	if info.Mode&syscall.S_IFMT != syscall.S_IFREG || !hermesLockFileOwnerOK(info.Uid) {
+	// flock works on a read-only descriptor, so any group or other access to
+	// the file would let another user hold the lock.
+	if info.Mode&syscall.S_IFMT != syscall.S_IFREG || !hermesLockFileOwnerOK(info.Uid) || info.Mode&0o077 != 0 {
 		closeFile()
-		return nil, fmt.Errorf("hermes command lock: unsafe lock file %s: must be regular and owned by invoking user", path)
+		return nil, fmt.Errorf("hermes command lock: unsafe lock file %s: must be a regular file owned by and private to the invoking user", path)
 	}
 	for {
 		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)

@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -532,6 +533,7 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 	// cannot leak into the evidence file or an enterprise audit envelope.
 	e.ChainKind = ""
 	e.WriterInstanceID = ""
+	sanitizeEntryText(&e)
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
@@ -764,6 +766,7 @@ func (r *Recorder) checkpointLocked() error {
 	e.Detail = cpDetail
 	e.Summary = fmt.Sprintf("checkpoint: %d entries [seq %d-%d]",
 		cpDetail.EntryCount, cpDetail.FirstSeq, cpDetail.LastSeq)
+	sanitizeEntryText(&e)
 	e.Hash = ComputeHash(e)
 
 	if err := r.writeEntryBounded(e, true); err != nil {
@@ -1562,4 +1565,14 @@ func (h EvidenceDirectoryHealth) FileCountVerdict() string {
 	return fmt.Sprintf(
 		"evidence session %q has %d JSONL shard(s), near the %d-file evidence read cap; warning threshold is %d",
 		h.MaxSessionID, h.MaxSessionFiles, h.MaxFilesPerSession, h.WarningThreshold)
+}
+
+// sanitizeEntryText replaces invalid UTF-8 in the entry's hashed text fields
+// the way encoding/json will when the entry is written. The hash covers these
+// strings as raw bytes, so without this a single invalid byte makes the stored
+// entry fail hash verification when it is read back.
+func sanitizeEntryText(e *Entry) {
+	for _, field := range []*string{&e.SessionID, &e.TraceID, &e.Type, &e.EventKind, &e.Transport, &e.Summary, &e.RawRef} {
+		*field = jsonscan.ReplaceInvalidUTF8(*field)
+	}
 }

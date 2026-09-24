@@ -66,3 +66,32 @@ func TestNormalizeReplacementEscapesMatchesReencode(t *testing.T) {
 		t.Fatalf("parsed = %q, want %q", parsed["k"], want)
 	}
 }
+
+// TestReplaceInvalidUTF8MatchesJSONRoundTrip pins that the replacement is
+// the one encoding/json applies, so a sanitized string survives a JSON round
+// trip unchanged on every Go release.
+func TestReplaceInvalidUTF8MatchesJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for _, in := range []string{
+		"",
+		"plain",
+		"a" + string([]byte{0xff}) + "b",
+		string([]byte{0xff, 0xfe, 0xfd}),
+		"x" + string([]byte{0xe2, 0x82}) + "y",
+		"\uFFFDok",
+	} {
+		clean := ReplaceInvalidUTF8(in)
+		raw, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if clean != decoded {
+			t.Fatalf("ReplaceInvalidUTF8(%q) = %q, JSON round trip = %q", in, clean, decoded)
+		}
+	}
+}

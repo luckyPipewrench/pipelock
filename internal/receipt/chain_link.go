@@ -180,6 +180,7 @@ func chainLinkDigest(l ChainLink) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal chain link: %w", err)
 	}
+	canonical = jsonscan.NormalizeReplacementEscapes(canonical)
 	// Ed25519 signs the domain-separated canonical bytes directly (it hashes
 	// internally); the domain prefix keeps a link signature from ever being
 	// valid as any other signed Pipelock structure.

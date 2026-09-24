@@ -6,7 +6,6 @@ package shield
 import (
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -272,11 +271,15 @@ func normalizeCSS(style string) string {
 				i = j
 				continue
 			}
-			code, err := strconv.ParseUint(style[i+1:j], 16, 32)
-			if err != nil || code == 0 || code > unicode.MaxRune {
+			// At most six hex digits, so the value always fits in a rune.
+			var code rune
+			for _, h := range style[i+1 : j] {
+				code = code*16 + hexValue(h)
+			}
+			if code == 0 || code > unicode.MaxRune || (code >= 0xD800 && code <= 0xDFFF) {
 				code = unicode.ReplacementChar
 			}
-			b.WriteRune(rune(code))
+			b.WriteRune(code)
 			if j < len(style) && isHTMLSpaceByte(style[j]) {
 				j++
 			}
@@ -286,6 +289,17 @@ func normalizeCSS(style string) string {
 		}
 	}
 	return b.String()
+}
+
+// hexValue returns the value of one hex digit already checked by isHexDigit.
+func hexValue(h rune) rune {
+	switch {
+	case h >= 'a':
+		return h - 'a' + 10
+	case h >= 'A':
+		return h - 'A' + 10
+	}
+	return h - '0'
 }
 
 func isHTMLSpaceByte(c byte) bool {

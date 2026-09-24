@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 var hermesLockTimeout = 30 * time.Second
@@ -119,7 +121,12 @@ func hermesLockBusy(path string) error {
 // directory must share a lock there. Lowercasing can only make two distinct
 // directories share a lock, which waits longer but never lets them run together.
 func hermesLockKey(goos, resource string) string {
-	if goos == "darwin" || goos == "windows" {
+	switch goos {
+	case "darwin":
+		// APFS also treats canonically equivalent Unicode spellings, such as a
+		// precomposed and a decomposed accent, as one name.
+		return norm.NFC.String(strings.ToLower(norm.NFC.String(resource)))
+	case "windows":
 		return strings.ToLower(resource)
 	}
 	return resource

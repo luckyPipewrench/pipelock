@@ -157,3 +157,14 @@ func TestHermesLockKeyFoldsCaseWhereTheFilesystemDoes(t *testing.T) {
 		t.Fatal("linux: distinct case-sensitive directories share a lock key")
 	}
 }
+
+// On macOS, precomposed and decomposed spellings of one name share a lock.
+func TestHermesLockKeyNormalizesUnicodeOnDarwin(t *testing.T) {
+	composed, decomposed := "/Users/Op/Caf\u00e9", "/Users/Op/Cafe\u0301"
+	if hermesLockKey("darwin", composed) != hermesLockKey("darwin", decomposed) {
+		t.Fatal("darwin: Unicode-equivalent spellings got different lock keys")
+	}
+	if hermesLockKey("linux", composed) == hermesLockKey("linux", decomposed) {
+		t.Fatal("linux: distinct byte spellings share a lock key")
+	}
+}

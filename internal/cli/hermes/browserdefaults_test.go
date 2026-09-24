@@ -682,3 +682,36 @@ func TestBackupBrowserConfigRefusesUnreadableSource(t *testing.T) {
 		t.Fatalf("refused backup left %d files", len(entries))
 	}
 }
+
+// If plugin removal fails after the Hermes config was rolled back, rollback
+// still removes Pipelock's browser flag and reports the original error.
+func TestRunRollback_PluginRemovalFailureStillCleansBrowserDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runInstall(cmd, opts); err != nil {
+		t.Fatal(err)
+	}
+	path, state := browserPaths(tmp)
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("install did not record browser defaults: %v", err)
+	}
+	prev := removePluginTreeForRollback
+	t.Cleanup(func() { removePluginTreeForRollback = prev })
+	removePluginTreeForRollback = func(string) error { return errors.New("plugin removal failed") }
+	rcmd := rollbackCmd()
+	rcmd.SetOut(&bytes.Buffer{})
+	rcmd.SetErr(&bytes.Buffer{})
+	err := runRollback(rcmd, &rollbackOptions{HomeDir: tmp, PluginRoot: opts.PluginRoot, HermesConfig: opts.HermesConfig})
+	if err == nil || !strings.Contains(err.Error(), "plugin removal failed") {
+		t.Fatalf("err = %v, want the plugin-removal error", err)
+	}
+	if _, statErr := os.Stat(state); !os.IsNotExist(statErr) {
+		t.Fatalf("ownership record remains after rollback: %v", statErr)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("browser config Pipelock created remains: %v", statErr)
+	}
+}

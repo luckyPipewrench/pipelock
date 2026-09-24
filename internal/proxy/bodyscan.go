@@ -490,6 +490,23 @@ func jwtOnlyCookieHeader(result *BodyScanResult) bool {
 	return true
 }
 
+// bodyEntropyDrivesBlock reports whether a blocking entropy finding, rather
+// than a secret match, is what stops the request. A secret match can ride
+// along at warn level (request_body_scanning.action or a pattern_actions
+// override), and a warn-level entropy finding can ride along with a blocking
+// secret. The block reason must name the finding that actually blocked.
+func bodyEntropyDrivesBlock(result BodyScanResult, hostname string, cfg *config.Config) bool {
+	if result.EntropyFinding == nil || result.EntropyAction != config.ActionBlock || cfg == nil {
+		return false
+	}
+	if len(result.DLPMatches) == 0 {
+		return true
+	}
+	dlpBlocks := requestBodyDLPAction(result.DLPMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions) == config.ActionBlock ||
+		shouldHardBlockBodyCriticalDLP(result, hostname, cfg)
+	return !dlpBlocks
+}
+
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if !shouldHardBlockRequestDLP(result.DLPMatches, cfg) {
 		return false

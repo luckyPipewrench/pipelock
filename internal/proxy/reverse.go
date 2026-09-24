@@ -1871,6 +1871,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" && len(injectionNames) > 0 {
 		reason = fmt.Sprintf("prompt injection: %s", strings.Join(injectionNames, ", "))
 	}
+	if reason == "" && bodyEntropyDrivesBlock(result, rp.upstream.Hostname(), cfg) {
+		reason = bodyEntropyReason(result)
+	}
 	if reason == "" && len(patternNames) > 0 {
 		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
 	}

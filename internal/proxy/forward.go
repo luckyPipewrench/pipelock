@@ -1582,6 +1582,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case len(injectionNames) > 0:
 					reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+				case bodyEntropyDrivesBlock(bodyResult, r.URL.Hostname(), cfg):
+					reason = bodyEntropyReason(bodyResult)
 				case len(patternNames) > 0:
 					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				case bodyResult.EntropyFinding != nil:

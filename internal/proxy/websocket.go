@@ -2081,6 +2081,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	reason := result.Reason
+	if reason == "" && bodyEntropyDrivesBlock(result, r.hostname, r.cfg) {
+		reason = contentEntropyReason(result.EntropyFinding)
+	}
 	if reason == "" {
 		patternNames := dlpMatchNames(result.DLPMatches)
 		if len(patternNames) > 0 {

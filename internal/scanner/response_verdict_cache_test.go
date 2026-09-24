@@ -26,21 +26,21 @@ func TestResponseVerdictCacheInputs(t *testing.T) {
 		t.Fatal("identical body missed cache")
 	}
 	changed := []byte("ordinary clean response bodY")
-	if _, ok := s.responseVerdicts.getKeyForTest(changed, "", nil); ok {
+	if s.responseVerdicts.hasKeyForTest(changed, "", nil) {
 		t.Fatal("one-byte change hit cache")
 	}
 	suppress := []config.SuppressEntry{{Rule: "example", Path: "/path"}}
-	if _, ok := s.responseVerdicts.getKeyForTest(body, "", suppress); ok {
+	if s.responseVerdicts.hasKeyForTest(body, "", suppress) {
 		t.Fatal("suppression change hit cache")
 	}
-	if _, ok := s.responseVerdicts.getKeyForTest(body, "/target", nil); ok {
+	if s.responseVerdicts.hasKeyForTest(body, "/target", nil) {
 		t.Fatal("target change hit cache")
 	}
 	updated := testResponseConfig()
 	updated.ResponseScanning.Patterns = append(updated.ResponseScanning.Patterns, config.ResponseScanPattern{Name: "New Pattern", Regex: `never_seen_literal`})
 	other := MustNew(updated)
 	defer other.Close()
-	if _, ok := other.responseVerdicts.getKeyForTest(body, "", nil); ok {
+	if other.responseVerdicts.hasKeyForTest(body, "", nil) {
 		t.Fatal("new scanner reused an old verdict")
 	}
 	if other.responsePatternRevision() == s.responseVerdicts.revision {
@@ -58,12 +58,13 @@ func TestResponseVerdictCacheInputs(t *testing.T) {
 	}
 }
 
-func (c *responseVerdictCache) getKeyForTest(body []byte, target string, suppress []config.SuppressEntry) (ResponseScanResult, bool) {
+func (c *responseVerdictCache) hasKeyForTest(body []byte, target string, suppress []config.SuppressEntry) bool {
 	key, ok := c.key(body, target, suppress)
 	if !ok {
-		return ResponseScanResult{}, false
+		return false
 	}
-	return c.get(key)
+	_, found := c.get(key)
+	return found
 }
 
 func TestResponseVerdictCacheFindingsAndBounds(t *testing.T) {

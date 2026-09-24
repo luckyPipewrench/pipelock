@@ -38,6 +38,7 @@ func BenchmarkResponseBodyEchartsRepeat(b *testing.B) {
 	if root == "" {
 		b.Skip("set RESPONSE_BENCH_DIR")
 	}
+	// #nosec G304 -- benchmark fixture directory is supplied by the local test runner.
 	body, err := os.ReadFile(filepath.Join(root, "echarts.js"))
 	if err != nil {
 		b.Fatal(err)

@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+// TestDomainCeilingReason covers the reason text for base domains,
+// subdomains, public suffixes, IP literals, and single-label hosts.
 func TestDomainCeilingReason(t *testing.T) {
 	tests := []struct {
 		name, host, want string
@@ -52,6 +54,31 @@ func TestCheckRateLimit_SubdomainsShareBaseDomainBudget(t *testing.T) {
 	}
 }
 
+// The data budget counts by base domain too: bytes recorded through one
+// subdomain exhaust the budget a sibling subdomain then hits, and the block
+// names the counted base domain and the requested host.
+func TestCheckDataBudget_SubdomainsShareBaseDomainBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 100
+	s := MustNew(cfg)
+	defer s.Close()
+
+	s.RecordRequest("api.example.com", 150)
+	r := s.Scan(context.Background(), "https://cable.example.com/socket")
+	if r.Allowed {
+		t.Fatal("sibling subdomain should share the exhausted data budget")
+	}
+	if r.Scanner != ScannerDataBudget {
+		t.Fatalf("scanner = %q, want %q", r.Scanner, ScannerDataBudget)
+	}
+	if !strings.Contains(r.Reason, "data budget exceeded for example.com (shared by example.com") ||
+		!strings.Contains(r.Reason, "request to cable.example.com") {
+		t.Fatalf("reason does not name the counted base domain and requested host: %q", r.Reason)
+	}
+}
+
+// TestRateLimitHintsNamePerAgentOverride checks both ceiling hints name the
+// base-domain scope and the per-agent override.
 func TestRateLimitHintsNamePerAgentOverride(t *testing.T) {
 	for _, sc := range []string{ScannerRateLimit, ScannerDataBudget} {
 		hint := OperatorHintForResult(sc, "")

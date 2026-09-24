@@ -635,3 +635,50 @@ func TestVerifyOutputStatesItsScope(t *testing.T) {
 		t.Fatalf("verify output does not state its scope: %q", out.String())
 	}
 }
+
+// If the integration installs but the browser defaults cannot be written, the
+// operator is told the integration is in place and how to proceed, and the
+// browser config is left as it was.
+func TestRunInstall_BrowserWriteFailureAfterIntegration(t *testing.T) {
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	path, state := browserPaths(tmp)
+	writeBrowserTestFile(t, path, `{"headed":true}`, 0o600)
+	prev := writeBrowserConfig
+	t.Cleanup(func() { writeBrowserConfig = prev })
+	writeBrowserConfig = func(string, []byte) error { return errors.New("disk full") }
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runInstall(cmd, opts)
+	if err == nil || !strings.Contains(err.Error(), "hermes integration installed, but browser defaults were not") ||
+		!strings.Contains(err.Error(), "--no-browser-defaults") {
+		t.Fatalf("err = %v", err)
+	}
+	if !pluginInstalled(opts.PluginRoot) {
+		t.Fatal("integration was not installed before the browser step")
+	}
+	if got, readErr := os.ReadFile(filepath.Clean(path)); readErr != nil || string(got) != `{"headed":true}` {
+		t.Fatalf("browser config changed: %q, %v", got, readErr)
+	}
+	if _, statErr := os.Stat(state); !os.IsNotExist(statErr) {
+		t.Fatalf("ownership record left after failed browser write: %v", statErr)
+	}
+}
+
+// A backup of a config that cannot be read is refused rather than written
+// empty, so a later restore never replaces real settings with nothing.
+func TestBackupBrowserConfigRefusesUnreadableSource(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "config.json")
+	if err := backupBrowserConfig(missing); err == nil {
+		t.Fatal("backup of a missing config succeeded")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("refused backup left %d files", len(entries))
+	}
+}

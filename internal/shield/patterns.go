@@ -179,7 +179,6 @@ func compileSVGActivePatterns() (
 var (
 	hiddenElementOpenRe = regexp.MustCompile(hiddenElementOpenPattern)
 	trapInstructionRe   = regexp.MustCompile(trapInstructionPattern)
-	htmlTagRe           = regexp.MustCompile(`<[^>]*>`)
 )
 
 // stripHiddenElementTraps removes each CSS-hidden div, span or p whose text

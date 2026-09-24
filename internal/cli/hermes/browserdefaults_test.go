@@ -30,6 +30,7 @@ func TestBrowserDefaultsInstallRollback(t *testing.T) {
 		{"malformed", `{`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_BROWSER_ARGS", "")
 			home := t.TempDir()
 			path, _ := browserPaths(home)
 			if tc.name != "absent" {

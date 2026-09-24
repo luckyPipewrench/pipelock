@@ -20,6 +20,7 @@ import (
 func fullOpts(tmp string) *installOptions {
 	return &installOptions{
 		Mode:         ModeFull,
+		HomeDir:      tmp,
 		PluginRoot:   filepath.Join(tmp, "plugins", "pipelock"),
 		HermesConfig: filepath.Join(tmp, "config.yaml"),
 	}
@@ -472,6 +473,7 @@ func TestRunInstall_PropagatesInstallError(t *testing.T) {
 	}
 	opts := &installOptions{
 		Mode:         ModeFull,
+		HomeDir:      tmp,
 		PluginRoot:   filepath.Join(conflict, "child"),
 		HermesConfig: filepath.Join(tmp, "config.yaml"),
 	}

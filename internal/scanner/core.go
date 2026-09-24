@@ -222,6 +222,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 			credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 			credentialAudienceGitHosts:          config.AppendDeclaredCredentialAudienceHosts(p.name, p.credentialAudienceGitHosts, github, gitlab),
+			validate:                            builtinDLPValidatorForRegex(p.regex),
 		})
 	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)

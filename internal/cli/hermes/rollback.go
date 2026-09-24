@@ -69,6 +69,7 @@ discards config changes made after that backup.`,
 		"override the plugin install directory (default ~/.hermes/plugins/pipelock)")
 	cmd.Flags().StringVar(&opts.HermesConfig, "hermes-config", "",
 		"override the Hermes config path (default ~/.hermes/config.yaml)")
+	cmd.Flags().StringVar(&opts.HomeDir, "home", "", homeFlagUsage)
 	cmd.Flags().StringVar(&opts.RestoreBackup, "restore-backup", "",
 		"overwrite config.yaml with this .bak file instead of surgical removal")
 	cmd.Flags().BoolVar(&opts.KeepPlugin, "keep-plugin", false,
@@ -81,6 +82,38 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
+	if err := rollbackHermesIntegration(cmd, opts); err != nil {
+		return err
+	}
+	rollbackBrowserDefaultsBestEffort(cmd, opts)
+	return nil
+}
+
+// rollbackBrowserDefaultsBestEffort removes Pipelock's agent-browser flag
+// after the Hermes integration is already rolled back. A broken or unreadable
+// agent-browser file must never keep the integration installed, so a failure
+// here is a warning naming the file; the ownership record stays in place so
+// a later rollback can retry.
+func rollbackBrowserDefaultsBestEffort(cmd *cobra.Command, opts *rollbackOptions) {
+	out := cmd.OutOrStdout()
+	home, err := browserHome(opts.HomeDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "pipelock: warning: browser defaults not rolled back: %v; pass --home and rerun rollback\n", err)
+		return
+	}
+	if err := rollbackBrowserDefaults(home); err != nil {
+		path, _ := browserPaths(home)
+		_, _ = fmt.Fprintf(out, "pipelock: warning: browser defaults not rolled back: %v; fix %s and rerun rollback\n", err, path)
+	}
+}
+
+// removePluginTreeForRollback removes the managed plugin files. It is a
+// variable only so a test can fail this step after the config rollback.
+var removePluginTreeForRollback = removePluginTree
+
+// rollbackHermesIntegration undoes the Hermes config, plugin, and MCP
+// wrapping changes.
+func rollbackHermesIntegration(cmd *cobra.Command, opts *rollbackOptions) error {
 	out := cmd.OutOrStdout()
 
 	if opts.RestoreBackup != "" {
@@ -134,7 +167,11 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 		return nil
 	}
 	if pluginInstalled(opts.PluginRoot) || fileExists(filepath.Join(opts.PluginRoot, configSidecarName)) {
-		if err := removePluginTree(opts.PluginRoot); err != nil {
+		if err := removePluginTreeForRollback(opts.PluginRoot); err != nil {
+			// The Hermes config side is already rolled back (or had nothing
+			// to undo). Still remove Pipelock's browser flag, best effort,
+			// and report the plugin-removal error unchanged.
+			rollbackBrowserDefaultsBestEffort(cmd, opts)
 			return err
 		}
 		_, _ = fmt.Fprintf(out, "pipelock: removed managed plugin files under %s\n", opts.PluginRoot)

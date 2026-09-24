@@ -1157,14 +1157,19 @@ func newInterceptHandler(
 
 				reason := result.Reason
 				if reason == "" {
+					// Same precedence as the forward and reverse paths: a secret
+					// match is named before an entropy finding, which is often only
+					// a warning riding along with the finding that actually blocked.
 					injectionNames := responseMatchNames(result.InjectionMatches)
+					patternNames := dlpMatchNames(result.DLPMatches)
 					switch {
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+					case len(patternNames) > 0:
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case result.EntropyFinding != nil:
 						reason = bodyEntropyReason(result)
 					default:
-						patternNames := dlpMatchNames(result.DLPMatches)
 						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					}
 				}

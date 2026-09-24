@@ -23,6 +23,13 @@ JavaScript media types still receive normal response scanning, but Browser
 Shield returns their bytes unchanged. This includes historical JavaScript media
 type aliases.
 
+SVG is the one active image format, so it is delivered only after Shield
+validates the complete body and the rewritten body it will send. A document
+with active content is refused rather than partially cleaned, and SVG is
+refused whenever Shield is disabled, exempt for the host, or cannot see the
+complete body (a partial `206`, an oversized body, or an undecodable
+encoding). See `docs/configuration.md`, "SVG active content hardening".
+
 Binary media, PDFs, JSON, and unknown specific content types bypass the shield.
 This avoids treating large legitimate media responses as shield failures.
 

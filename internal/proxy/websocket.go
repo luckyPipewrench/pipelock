@@ -1249,7 +1249,17 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
 	// can exfiltrate data in any of these values.
 	var allMatches []scanner.TextDLPMatch
+	var audienceAllows []scanner.CredentialAudienceAllow
 	matchedHeaders := make([]string, 0, 2)
+	defer func() {
+		// Record audience allows only when no header blocks the handshake.
+		if len(allMatches) > 0 {
+			return
+		}
+		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
+			p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent())
+		}
+	}()
 	for _, key := range []string{
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
@@ -1266,9 +1276,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if !result.Clean {
 			surface := scanner.CredentialAudienceHeaderSurface(key, scanVal)
 			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, surface)
-			for _, allow := range allows {
-				p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent())
-			}
+			audienceAllows = append(audienceAllows, allows...)
 			matches = filterBodyDLPMatches(matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
 				if p.logger != nil {
 					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", dropReason)

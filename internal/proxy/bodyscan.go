@@ -1263,13 +1263,10 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 	collectDropped := func(match scanner.TextDLPMatch, reason string) {
 		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
 	}
+	var audienceAllows []scanner.CredentialAudienceAllow
 	filterMatches := func(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch {
 		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, audienceSurface)
-		if onAudienceAllow != nil {
-			for _, allow := range allows {
-				onAudienceAllow(allow)
-			}
-		}
+		audienceAllows = append(audienceAllows, allows...)
 		return filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 	}
 	for _, text := range texts {
@@ -1293,6 +1290,12 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 		}
 	}
 	recordUniqueBodyDLPDrops(dropped, onDropped)
+	// Emit audience allows only for a clean result, matching the header path.
+	if onAudienceAllow != nil && len(allMatches) == 0 {
+		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
+			onAudienceAllow(allow)
+		}
+	}
 	return uniqueBodyDLPMatches(allMatches)
 }
 
@@ -1994,7 +1997,10 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	var dropped []droppedBodyDLPMatch
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
-		if onAudienceAllow == nil {
+		// An audience allow is evidence that a credential was delivered. It is
+		// emitted only when the whole header scan is clean, never for a request
+		// another header, decoded view, or joined match goes on to block.
+		if onAudienceAllow == nil || len(allMatches) > 0 {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {

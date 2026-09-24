@@ -28,7 +28,7 @@ func TestGitHubGitLabCredentialAudience_Surfaces(t *testing.T) {
 		host    string
 	}{
 		{"github bearer api", gh, "GitHub Token", "https://api.github.com/user", CredentialAudienceAuthorizationHeaderSurface, true, "api.github.com"},
-		{"github token-scheme uploads", gh, "GitHub Token", "https://uploads.github.com/repos/o/r/releases/1/assets", credentialAudienceAuthorizationAnySurface, true, "uploads.github.com"},
+		{"github token-scheme uploads", gh, "GitHub Token", "https://uploads.github.com/repos/o/r/releases/1/assets", credentialAudienceAuthorizationTokenSurface, true, "uploads.github.com"},
 		{"github fine-grained bearer", pat, "GitHub Fine-Grained PAT", "https://API.GITHUB.COM./user", CredentialAudienceAuthorizationHeaderSurface, true, "api.github.com"},
 		{"github url blocked", gh, "GitHub Token", "https://api.github.com/user?access_token=" + gh, "url", false, ""},
 		{"github body blocked", gh, "GitHub Token", "https://api.github.com/user", "body", false, ""},
@@ -48,6 +48,12 @@ func TestGitHubGitLabCredentialAudience_Surfaces(t *testing.T) {
 		{"gitlab body blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/projects", "body", false, ""},
 		{"gitlab lookalike blocked", gl, "GitLab PAT", "https://gitlab.com.evil.example/api/v4", credentialAudiencePrivateTokenSurface, false, ""},
 		{"gitlab subdomain blocked", gl, "GitLab PAT", "https://registry.gitlab.com/v2/", credentialAudiencePrivateTokenSurface, false, ""},
+		{"github basic at api blocked", gh, "GitHub Token", "https://api.github.com/user", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"github other scheme blocked", gh, "GitHub Token", "https://api.github.com/user", credentialAudienceAuthorizationOtherSurface, false, ""},
+		{"gitlab basic", gl, "GitLab PAT", "https://gitlab.com/g/r.git/info/refs", credentialAudienceAuthorizationBasicSurface, true, "gitlab.com"},
+		{"gitlab token-scheme blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/user", credentialAudienceAuthorizationTokenSurface, false, ""},
+		{"gitlab other scheme blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/user", credentialAudienceAuthorizationOtherSurface, false, ""},
+		{"google bearer-only rejects basic", "ya29." + strings.Repeat("g", 40), "Google OAuth Token", "https://www.googleapis.com/drive/v3/files", credentialAudienceAuthorizationBasicSurface, false, ""},
 		{"aws secret at github blocked", "aws_secret_access_key = " + strings.Repeat("A", 40), "AWS Secret Key", "https://api.github.com/", CredentialAudienceAuthorizationHeaderSurface, false, ""},
 	}
 	for _, tc := range cases {

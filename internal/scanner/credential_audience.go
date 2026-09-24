@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"net/url"
 	"strings"
 
@@ -45,23 +46,35 @@ const CredentialAudienceAuthorizationHeaderSurface = "authorization_header"
 const credentialAudienceAuthorizationHeaderName = "Authorization"
 
 const (
-	credentialAudienceAuthorizationAnySurface = "authorization_header_any"
-	credentialAudiencePrivateTokenSurface     = "header_private_token"
-	credentialAudienceJobTokenSurface         = "header_job_token"
+	credentialAudienceAuthorizationTokenSurface = "authorization_header_token"
+	credentialAudienceAuthorizationBasicSurface = "authorization_header_basic"
+	credentialAudienceAuthorizationOtherSurface = "authorization_header_other"
+	credentialAudiencePrivateTokenSurface       = "header_private_token"
+	credentialAudienceJobTokenSurface           = "header_job_token"
 )
 
 // CredentialAudienceHeaderSurface classifies the header that carried a match.
-// Bearer Authorization stays distinct so the Google OAuth exception cannot
-// attach to an arbitrary Authorization value. GitHub accepts either Bearer or
-// the older token scheme, so any other Authorization value is its own surface.
+// Authorization is classified by scheme, and only a complete two-field value
+// earns a scheme: Bearer stays distinct so the Google OAuth exception cannot
+// attach to an arbitrary Authorization value, and any other shape is a surface
+// no audience accepts.
 func CredentialAudienceHeaderSurface(headerName, value string) string {
 	switch {
 	case strings.EqualFold(headerName, credentialAudienceAuthorizationHeaderName):
 		fields := strings.Fields(value)
-		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			return CredentialAudienceAuthorizationHeaderSurface
+		if len(fields) != 2 {
+			return credentialAudienceAuthorizationOtherSurface
 		}
-		return credentialAudienceAuthorizationAnySurface
+		switch {
+		case strings.EqualFold(fields[0], "Bearer"):
+			return CredentialAudienceAuthorizationHeaderSurface
+		case strings.EqualFold(fields[0], "token"):
+			return credentialAudienceAuthorizationTokenSurface
+		case strings.EqualFold(fields[0], "Basic"):
+			return credentialAudienceAuthorizationBasicSurface
+		default:
+			return credentialAudienceAuthorizationOtherSurface
+		}
 	case strings.EqualFold(headerName, "Private-Token"):
 		return credentialAudiencePrivateTokenSurface
 	case strings.EqualFold(headerName, "Job-Token"):
@@ -77,9 +90,11 @@ func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint8
 	}
 	switch surface {
 	case CredentialAudienceAuthorizationHeaderSurface:
-		return authorizationOnly || mask&config.CredentialAudienceCarrierAuthorization != 0
-	case credentialAudienceAuthorizationAnySurface:
-		return mask&config.CredentialAudienceCarrierAuthorization != 0
+		return authorizationOnly || mask&config.CredentialAudienceCarrierAuthorizationBearer != 0
+	case credentialAudienceAuthorizationTokenSurface:
+		return mask&config.CredentialAudienceCarrierAuthorizationToken != 0
+	case credentialAudienceAuthorizationBasicSurface:
+		return mask&config.CredentialAudienceCarrierAuthorizationBasic != 0
 	case credentialAudiencePrivateTokenSurface:
 		return mask&config.CredentialAudienceCarrierPrivateToken != 0
 	case credentialAudienceJobTokenSurface:
@@ -117,7 +132,7 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		keep[i] = false
 		recordSurface := surface
 		switch surface {
-		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationAnySurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface:
+		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationTokenSurface, credentialAudienceAuthorizationBasicSurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface:
 			recordSurface = "header"
 		}
 		allows = append(allows, CredentialAudienceAllow{
@@ -253,7 +268,38 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 		if _, ok := s.credentialAudienceAllows(pattern, target, surface); !ok {
 			continue
 		}
-		value = pattern.re.ReplaceAllString(value, "[authorized-credential]")
+		value = pattern.re.ReplaceAllString(value, authorizedCredentialPlaceholder)
+	}
+	return s.scrubAuthorizedEncodedFields(value, target, surface)
+}
+
+const authorizedCredentialPlaceholder = "[authorized-credential]"
+
+// scrubAuthorizedEncodedFields covers the decoded views the raw regex pass
+// cannot see, such as HTTP Basic credentials: base64("oauth2:<token>"). A
+// field is replaced only when every carrier-restricted match found in it is
+// allowed on this surface at this destination, so the joined scan reaches the
+// same decision the per-header scan reached for that occurrence. Unallowed and
+// unrestricted matches are still reported by the per-header scan.
+func (s *Scanner) scrubAuthorizedEncodedFields(value, target, surface string) string {
+	for _, field := range strings.Fields(value) {
+		if field == authorizedCredentialPlaceholder {
+			continue
+		}
+		result := s.ScanTextForDLPQuiet(context.Background(), field)
+		var restricted []TextDLPMatch
+		for _, match := range result.Matches {
+			if match.credentialAudienceCarrierRestricted() {
+				restricted = append(restricted, match)
+			}
+		}
+		if len(restricted) == 0 {
+			continue
+		}
+		kept, allows := s.FilterTextDLPMatchesForDestination(restricted, target, surface)
+		if len(kept) == 0 && len(allows) > 0 {
+			value = strings.Replace(value, field, authorizedCredentialPlaceholder, 1)
+		}
 	}
 	return value
 }

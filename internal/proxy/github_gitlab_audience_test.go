@@ -5,7 +5,9 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -65,6 +67,18 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 		{"gitlab job token declared", "Job-Token", job, "https://gitlab.corp.example/api/v4/job", "GitLab CI Job Token", true},
 		{"gitlab job token on private-token", "Private-Token", job, "https://gitlab.com/api/v4/job", "GitLab CI Job Token", false},
 		{"gitlab job token bearer", "Authorization", "Bearer " + job, "https://gitlab.com/api/v4/job", "GitLab CI Job Token", false},
+		// Git over HTTPS sends HTTP Basic. github.com is not an audience host,
+		// and the REST hosts accept only Bearer and token, so GitHub Basic
+		// blocks everywhere. GitLab git uses Basic oauth2:<token> on its host.
+		{"github basic x-access-token at github.com", "Authorization", basicAuth("x-access-token", gh), "https://github.com/o/r.git/git-upload-pack", "GitHub Token", false},
+		{"github basic user at github.com", "Authorization", basicAuth("octocat", gh), "https://github.com/o/r.git/info/refs", "GitHub Token", false},
+		{"github basic at api", "Authorization", basicAuth("x-access-token", gh), "https://api.github.com/user", "GitHub Token", false},
+		{"github unknown scheme at api", "Authorization", "Digest " + gh, "https://api.github.com/user", "GitHub Token", false},
+		{"gitlab basic oauth2", "Authorization", basicAuth("oauth2", gl), "https://gitlab.com/g/r.git/git-receive-pack", "GitLab PAT", true},
+		{"gitlab basic declared host", "Authorization", basicAuth("oauth2", gl), "https://gitlab.corp.example/g/r.git/info/refs", "GitLab PAT", true},
+		{"gitlab basic lookalike", "Authorization", basicAuth("oauth2", gl), "https://gitlab.com.evil.example/g/r.git/info/refs", "GitLab PAT", false},
+		{"gitlab token scheme", "Authorization", "token " + gl, "https://gitlab.com/api/v4/user", "GitLab PAT", false},
+		{"gitlab job token basic", "Authorization", basicAuth("gitlab-ci-token", job), "https://gitlab.com/g/r.git/info/refs", "GitLab CI Job Token", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
@@ -80,6 +94,9 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 				}
 				return
 			}
+			if len(allows) != 0 {
+				t.Fatalf("blocked request recorded audience allows: %+v", allows)
+			}
 			found := false
 			for _, m := range result.DLPMatches {
 				found = found || m.PatternName == tc.pattern
@@ -89,6 +106,90 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertNoCredentialAudienceWebSocketMetric(t *testing.T, m *metrics.Metrics) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if strings.Contains(rec.Body.String(), "pipelock_dlp_credential_audience_allows_total{") {
+		t.Fatalf("blocked WebSocket handshake recorded an audience allow: %s", rec.Body.String())
+	}
+}
+
+func basicAuth(user, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+password))
+}
+
+// An audience allow records that a credential was delivered, so it must never
+// be emitted for a request the same scan blocks. Each case pairs a credential
+// its audience accepts with, in some cases, a second header that blocks.
+func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
+	cfg := gitAudienceHeaderConfig()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	gh, gl, job := fakeGitHubToken(), fakeGitLabPAT(), fakeGitLabJobToken()
+	slack := fakeSlackBotToken()
+	google := "ya29." + strings.Repeat("a", 24)
+	aws := "AKIA" + strings.Repeat("B", 16)
+
+	type headerCase struct {
+		name    string
+		headers http.Header
+		target  string
+		clean   bool
+	}
+	cases := []headerCase{
+		{"gitlab basic", http.Header{"Authorization": {basicAuth("oauth2", gl)}}, "https://gitlab.com/g/r.git/git-receive-pack", true},
+		{"gitlab basic plus host header", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "User-Agent": {"git/2.45"}}, "https://gitlab.com/g/r.git/info/refs", true},
+		{"gitlab basic plus aws", http.Header{"Authorization": {basicAuth("oauth2", gl)}, "X-Extra": {aws}}, "https://gitlab.com/g/r.git/info/refs", false},
+		{"gitlab bearer plus aws", http.Header{"Authorization": {"Bearer " + gl}, "X-Extra": {aws}}, "https://gitlab.com/api/v4/user", false},
+		{"gitlab private-token plus job on bearer", http.Header{"Private-Token": {gl}, "Authorization": {"Bearer " + job}}, "https://gitlab.com/api/v4/user", false},
+		{"github bearer plus github in other header", http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, "https://api.github.com/user", false},
+		{"github basic at github.com", http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, "https://github.com/o/r.git/info/refs", false},
+		{"slack basic", http.Header{"Authorization": {basicAuth("u", slack)}}, "https://slack.com/api/auth.test", true},
+		{"slack bearer base64", http.Header{"Authorization": {"Bearer " + base64.StdEncoding.EncodeToString([]byte(slack))}}, "https://slack.com/api/auth.test", true},
+		{"slack bearer plus aws", http.Header{"Authorization": {"Bearer " + slack}, "X-Extra": {aws}}, "https://slack.com/api/auth.test", false},
+		{"google bearer plus aws", http.Header{"Authorization": {"Bearer " + google}, "X-Extra": {aws}}, "https://gmail.googleapis.com/gmail/v1/users/me/profile", false},
+		{"google basic", http.Header{"Authorization": {basicAuth("u", google)}}, "https://gmail.googleapis.com/gmail/v1/users/me/profile", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var allows []scanner.CredentialAudienceAllow
+			result := scanRequestHeadersForTargetWithAudience(t.Context(), tc.headers, cfg, sc, tc.target, nil,
+				func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) })
+			clean := result == nil || result.Clean
+			if clean != tc.clean {
+				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
+			}
+			if len(allows) > 0 && !clean {
+				t.Fatalf("audience allow emitted for a blocked request: allows=%+v result=%+v", allows, result)
+			}
+			if clean && len(allows) != 1 {
+				t.Fatalf("clean audience request emitted %d allows: %+v", len(allows), allows)
+			}
+		})
+	}
+
+	// The body path follows the same invariant: an allowed credential beside
+	// an unrelated secret produces a block and no allow.
+	var bodyAllows []scanner.CredentialAudienceAllow
+	_, body := scanRequestBody(context.Background(), BodyScanRequest{
+		Body: strings.NewReader(`{"a":"` + slack + `","b":"` + aws + `"}`), ContentType: "application/json",
+		MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
+		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) { bodyAllows = append(bodyAllows, a) },
+	})
+	if body.Clean || len(bodyAllows) != 0 {
+		t.Fatalf("body with allowed and unrelated secret: clean=%t allows=%+v", body.Clean, bodyAllows)
+	}
+
+	// WebSocket upgrade headers: a blocked handshake records no allow metric.
+	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
+	blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
+	if !blocked {
+		t.Fatal("WebSocket upgrade with GitHub token in X-Api-Key allowed")
+	}
+	assertNoCredentialAudienceWebSocketMetric(t, p.metrics)
 }
 
 // An allowed GitHub token must not hide a different secret split across

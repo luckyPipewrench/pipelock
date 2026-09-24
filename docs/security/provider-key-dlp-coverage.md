@@ -23,9 +23,9 @@ Each row has a compiled credential-audience host set. Pipelock allows the matchi
 | Discord Bot Token | three base64url segments | `discord.com` | [Discord developer reference](https://docs.discord.com/developers/reference) |
 | Slack Token | `xox[bpras]-` + 15+ token chars | `slack.com`, `mcp.slack.com` | [Slack Web API](https://docs.slack.dev/apis/web-api/), [Slack MCP server](https://docs.slack.dev/ai/slack-mcp-server/) |
 | Slack App Token | `xapp-` multi-segment | `slack.com` | [apps.connections.open](https://docs.slack.dev/reference/methods/apps.connections.open/) |
-| GitHub Token | `gh[pour]_` or `ghs_` | `api.github.com`, `uploads.github.com` (Authorization header only) | [GitHub REST authentication](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api), [release assets](https://docs.github.com/en/rest/releases/assets) |
-| GitHub Fine-Grained PAT | `github_pat_` | `api.github.com`, `uploads.github.com` (Authorization header only) | [GitHub REST authentication](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api) |
-| GitLab PAT | `glpat-` | `gitlab.com` (`PRIVATE-TOKEN` or `Authorization`) | [GitLab REST authentication](https://docs.gitlab.com/api/rest/authentication/) |
+| GitHub Token | `gh[pour]_` or `ghs_` | `api.github.com`, `uploads.github.com` (`Authorization: Bearer` or `Authorization: token` only) | [GitHub REST authentication](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api), [release assets](https://docs.github.com/en/rest/releases/assets) |
+| GitHub Fine-Grained PAT | `github_pat_` | `api.github.com`, `uploads.github.com` (`Authorization: Bearer` or `Authorization: token` only) | [GitHub REST authentication](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api) |
+| GitLab PAT | `glpat-` | `gitlab.com` (`PRIVATE-TOKEN`, `Authorization: Bearer`, or `Authorization: Basic` for git over HTTPS) | [GitLab REST authentication](https://docs.gitlab.com/api/rest/authentication/) |
 | GitLab CI Job Token | `glcbt-` | `gitlab.com` (`JOB-TOKEN` only) | [GitLab REST authentication](https://docs.gitlab.com/api/rest/authentication/) |
 | Hugging Face Token | `hf_` + bounded alphanumeric suffix | `*.huggingface.co` | [Hugging Face tokens](https://huggingface.co/docs/hub/security-tokens) |
 | Databricks Token | `dapi` + 32+ hex chars | `*.databricks.com` | [Databricks PAT authentication](https://docs.databricks.com/aws/en/dev-tools/auth/pat) |

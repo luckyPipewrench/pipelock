@@ -84,3 +84,18 @@ func TestHermesLockDirectoryRejectsWrongOwner(t *testing.T) {
 		t.Fatal("rejected invoking user's directory")
 	}
 }
+
+func TestHermesLockRejectsWritableCacheRoot(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unsafeMode := os.FileMode(0o777)
+	if err := os.Chmod(cache, unsafeMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureHermesLockDir(filepath.Join(cache, "pipelock", "locks")); err == nil {
+		t.Fatal("accepted writable cache root")
+	}
+}

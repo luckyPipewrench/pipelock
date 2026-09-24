@@ -14,7 +14,7 @@ func ensureHermesLockDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("hermes command lock: create %s: %w", path, err)
 	}
-	for _, dir := range []string{filepath.Dir(path), path} {
+	for _, dir := range []string{filepath.Dir(filepath.Dir(path)), filepath.Dir(path), path} {
 		info, err := os.Lstat(dir)
 		if err != nil {
 			return err

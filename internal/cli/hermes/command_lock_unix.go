@@ -36,7 +36,7 @@ func acquireHermesLock(path string, deadline time.Time) (func(), error) {
 		closeFile()
 		return nil, fmt.Errorf("hermes command lock: stat %s: %w", path, err)
 	}
-	if info.Mode&syscall.S_IFMT != syscall.S_IFREG || int(info.Uid) != os.Getuid() {
+	if info.Mode&syscall.S_IFMT != syscall.S_IFREG || !hermesLockFileOwnerOK(info.Uid) {
 		closeFile()
 		return nil, fmt.Errorf("hermes command lock: unsafe lock file %s: must be regular and owned by invoking user", path)
 	}
@@ -56,3 +56,5 @@ func acquireHermesLock(path string, deadline time.Time) (func(), error) {
 		time.Sleep(min(10*time.Millisecond, time.Until(deadline)))
 	}
 }
+
+func hermesLockFileOwnerOK(uid uint32) bool { return int(uid) == os.Getuid() }

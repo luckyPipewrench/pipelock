@@ -18,7 +18,7 @@ func BenchmarkResponseBodyBundles(b *testing.B) {
 		b.Skip("set RESPONSE_BENCH_DIR")
 	}
 	for _, name := range []string{"echarts.js", "monaco.js"} {
-		body, err := os.ReadFile(filepath.Join(root, name))
+		body, err := os.ReadFile(filepath.Clean(filepath.Join(root, name)))
 		if err != nil {
 			b.Fatal(err)
 		}

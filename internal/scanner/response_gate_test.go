@@ -145,7 +145,7 @@ func TestResponseGateDifferentialCorpus(t *testing.T) {
 	}
 	if dir := os.Getenv("RESPONSE_BENCH_DIR"); dir != "" {
 		for _, name := range []string{"react-dom.js", "echarts.js", "monaco.js"} {
-			body, err := os.ReadFile(filepath.Join(dir, name))
+			body, err := os.ReadFile(filepath.Clean(filepath.Join(dir, name)))
 			if err != nil {
 				t.Fatal(err)
 			}

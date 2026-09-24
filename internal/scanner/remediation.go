@@ -232,7 +232,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:  protectedAddressAgentReason,
 	},
 	ScannerRateLimit: {
-		OperatorKnob: "This is a protective ceiling, not a threat detection. Raise `fetch_proxy.monitoring.max_requests_per_minute` or retry after the window.",
+		OperatorKnob: "This is a protective ceiling, not a threat detection. It counts requests per base domain, so every subdomain of a site shares one budget. Raise `fetch_proxy.monitoring.max_requests_per_minute`, retry after the window, or with named agent profiles (Pro) raise it for one agent with `agents.<name>.rate_limit.max_requests_per_minute`; an agent `rate_limit` block replaces both per-minute ceilings, so set `max_data_per_minute` there too if one is configured.",
 		AgentReason:  protectiveCeilingAgentReason,
 	},
 	ScannerLength: {
@@ -240,7 +240,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		AgentReason:  protectiveCeilingAgentReason,
 	},
 	ScannerDataBudget: {
-		OperatorKnob: "This is the URL scanner's per-domain sliding-window data ceiling. Raise `fetch_proxy.monitoring.max_data_per_minute` if the response volume is legitimate; zero disables this ceiling for every destination.",
+		OperatorKnob: "This is the URL scanner's per-domain sliding-window data ceiling, counted per base domain so every subdomain of a site shares it. Raise `fetch_proxy.monitoring.max_data_per_minute` if the response volume is legitimate; zero disables this ceiling for every destination. With named agent profiles (Pro), `agents.<name>.rate_limit.max_data_per_minute` sets it for one agent; that block replaces both per-minute ceilings, so set `max_requests_per_minute` there too.",
 		AgentReason:  protectiveCeilingAgentReason,
 	},
 	ScannerCRLF: {

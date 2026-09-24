@@ -2542,7 +2542,7 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 	// skips the reload, and the OUTPUT rules are never loaded. The receiver
 	// chain alone does not save that state, because it gates flows that
 	// nothing is marking.
-	if ownedLoopback && !chainLinesHaveOwnedLoopbackOutputRules(lines, agentUID) {
+	if ownedLoopback && !chainLinesHaveRenderedOwnedLoopbackOutputRulesBeforeAgentDrop(lines, agentUID) {
 		return false
 	}
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) ||
@@ -2564,6 +2564,7 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 		operatorKnown: true,
 		proxyUID:      proxyUID,
 		agentUID:      agentUID,
+		ownedLoopback: ownedLoopback,
 	}, proxyPort, loopbackServices)
 }
 

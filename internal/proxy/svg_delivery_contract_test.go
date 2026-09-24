@@ -1,0 +1,527 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package proxy
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
+)
+
+// The SVG delivery contract: an SVG response reaches the client only after
+// Browser Shield validated the COMPLETE body and the rewritten body it will
+// deliver. Every other state (shield disabled or exempt, partial, oversized,
+// undecodable, or refused by validation) is a refusal, never raw bytes.
+
+const (
+	benignSVGFixture  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 2h20v20H2z"/></svg>`
+	hostileSVGFixture = `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`
+	// A hyperlink passes validation (it fetches nothing until followed) and is
+	// rewritten by Shield, so this proves the delivered body is the rewritten
+	// one: the external target is gone and the drawing survives.
+	linkedSVGFixture = `<svg xmlns="http://www.w3.org/2000/svg"><a href="https://link.vendor.example/page"><rect id="kept" width="4" height="4"/></a></svg>`
+)
+
+// hostileSVGForms enumerates the active constructs the contract refuses.
+// Each carries a unique marker that must never reach the client.
+var hostileSVGForms = map[string]string{
+	"script":            `<svg xmlns="http://www.w3.org/2000/svg"><script>zqx_script()</script></svg>`,
+	"onload":            `<svg xmlns="http://www.w3.org/2000/svg" onload="zqx_onload()"><rect/></svg>`,
+	"javascript href":   `<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:zqx_js()"><rect/></a></svg>`,
+	"fetching href":     `<svg xmlns="http://www.w3.org/2000/svg"><image href="https://zqx-fetch.vendor.example/b.png"/></svg>`,
+	"presentation url":  `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://zqx-fill.vendor.example/p.svg#p)"/></svg>`,
+	"stylesheet import": `<svg xmlns="http://www.w3.org/2000/svg"><style>@im<![CDATA[port "https://zqx-css.vendor.example/x.css";]]></style></svg>`,
+	"css escape url":    `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="\75rl(https://zqx-escp.vendor.example/p#p)"/></svg>`,
+	"foreignObject":     `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">zqx_fobj</div></foreignObject></svg>`,
+	"set href to js":    `<svg xmlns="http://www.w3.org/2000/svg"><a href="#k"><set attributeName="href" to="javascript:zqx_set()"/><rect/></a></svg>`,
+	"svg data image":    `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml,zqx_data"/></svg>`,
+}
+
+func hostileMarker(doc string) string {
+	idx := strings.Index(doc, "zqx")
+	return doc[idx : idx+8]
+}
+
+func enableSVGDeliveryContract(cfg *config.Config) {
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = 1 << 20
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	cfg.ResponseScanning.Enabled = false
+}
+
+func svgFixtureHandler(body string) http.HandlerFunc {
+	return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml"}}, []byte(body))
+}
+
+func svgResponseHandler(status int, headers http.Header, body []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		for key, values := range headers {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	}
+}
+
+func svgPartialHandler(body string) http.HandlerFunc {
+	return svgResponseHandler(http.StatusPartialContent, http.Header{
+		"Content-Type":  {"image/svg+xml"},
+		"Content-Range": {fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)+100)},
+	}, []byte(body))
+}
+
+func svgGzipHandler(t *testing.T, body string) http.HandlerFunc {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml"}, "Content-Encoding": {"gzip"}}, buf.Bytes())
+}
+
+type svgPathResult struct {
+	delivered bool
+	status    int
+	body      []byte
+	// header is the delivered response header on HTTP transports; fetch
+	// returns extracted text and has none.
+	header http.Header
+	// blockReason is the refusal reason the transport reported, if any.
+	blockReason string
+}
+
+var svgResponsePaths = []string{"fetch", "forward", "tls interception", "reverse"}
+
+// runSVGPath drives one real transport with the contract baseline plus mod.
+func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler http.HandlerFunc) svgPathResult {
+	t.Helper()
+	configure := func(cfg *config.Config) {
+		enableSVGDeliveryContract(cfg)
+		if mod != nil {
+			mod(cfg)
+		}
+	}
+	readAll := func(response *http.Response) svgPathResult {
+		t.Helper()
+		defer func() { _ = response.Body.Close() }()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		result := svgPathResult{delivered: response.StatusCode < 300, status: response.StatusCode, body: body, header: response.Header}
+		var block struct {
+			BlockReason string `json:"block_reason"`
+		}
+		if json.Unmarshal(body, &block) == nil {
+			result.blockReason = block.BlockReason
+		} else if text, ok := strings.CutPrefix(string(body), "blocked: "); ok {
+			result.blockReason = strings.TrimSpace(text)
+		}
+		return result
+	}
+
+	switch path {
+	case "fetch":
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		configure(cfg)
+		p := newTestProxyWithConfig(t, cfg)
+		upstream := httptest.NewServer(handler)
+		t.Cleanup(upstream.Close)
+		w := httptest.NewRecorder()
+		p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil))
+		var response FetchResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode fetch response (status %d): %v", w.Code, err)
+		}
+		return svgPathResult{delivered: w.Code == http.StatusOK && !response.Blocked, status: w.Code, body: []byte(response.Content), blockReason: response.BlockReason}
+	case "forward":
+		upstream := httptest.NewServer(handler)
+		t.Cleanup(upstream.Close)
+		addr, cleanup := setupForwardProxy(t, configure)
+		t.Cleanup(cleanup)
+		response := doGet(t, proxyClient(addr), upstream.URL)
+		defer func() { _ = response.Body.Close() }()
+		return readAll(response)
+	case "tls interception":
+		upstream := httptest.NewTLSServer(handler)
+		t.Cleanup(upstream.Close)
+		cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+		configure(cfg)
+		p, err := New(cfg, logger, sc, m)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(p.Close)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+		defer func() { _ = response.Body.Close() }()
+		return readAll(response)
+	case "reverse":
+		cfg := reverseTestConfig()
+		configure(cfg)
+		server := reverseShieldConfiguredServer(t, cfg, handler, nil, audit.NewNop())
+		response := testGet(t, server.URL+"/page")
+		defer func() { _ = response.Body.Close() }()
+		return readAll(response)
+	default:
+		t.Fatalf("unknown path %q", path)
+		return svgPathResult{}
+	}
+}
+
+// assertSVGDelivered requires the benign fixture to arrive byte-for-byte: it
+// is already inert, so the shield rewrite must leave it unchanged.
+func assertSVGDelivered(t *testing.T, got svgPathResult) {
+	t.Helper()
+	if !got.delivered || string(got.body) != benignSVGFixture {
+		t.Fatalf("SVG not delivered intact: status=%d body=%q", got.status, got.body)
+	}
+}
+
+// assertActiveSVGNotDelivered accepts either outcome the contract allows for
+// hostile input: a refusal, or delivery of a sanitized document. What it
+// forbids is the active construct reaching the client, and it requires that
+// anything delivered passes the same structural check the floor applies.
+func assertActiveSVGNotDelivered(t *testing.T, got svgPathResult, forbidden string) {
+	t.Helper()
+	if bytes.Contains(got.body, []byte(forbidden)) {
+		t.Fatalf("active SVG construct reached the client: status=%d body=%q", got.status, got.body)
+	}
+	if got.delivered {
+		if err := shield.ValidateSVG(string(got.body)); err != nil {
+			t.Fatalf("delivered SVG fails validation (%v): %q", err, got.body)
+		}
+	}
+}
+
+func assertSVGRefused(t *testing.T, got svgPathResult, forbidden string) {
+	t.Helper()
+	if got.delivered || bytes.Contains(got.body, []byte(forbidden)) {
+		t.Fatalf("SVG was not refused: status=%d body=%q", got.status, got.body)
+	}
+}
+
+// Positive control: every buffered HTTP response transport delivers an
+// ordinary SVG, and delivers the REWRITTEN body when Shield changed it.
+func TestSVGDeliveryContract_BenignTransportParity(t *testing.T) {
+	for _, path := range svgResponsePaths {
+		t.Run(path+"/plain", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, nil, svgFixtureHandler(benignSVGFixture)))
+		})
+		t.Run(path+"/rewritten", func(t *testing.T) {
+			got := runSVGPath(t, path, nil, svgFixtureHandler(linkedSVGFixture))
+			if !got.delivered || bytes.Contains(got.body, []byte("link.vendor.example")) || !bytes.Contains(got.body, []byte(`<rect id="kept"`)) {
+				t.Fatalf("rewritten SVG: status=%d body=%q", got.status, got.body)
+			}
+		})
+		t.Run(path+"/media policy disabled", func(t *testing.T) {
+			disabled := false
+			got := runSVGPath(t, path, func(cfg *config.Config) { cfg.MediaPolicy.Enabled = &disabled }, svgFixtureHandler(benignSVGFixture))
+			assertSVGDelivered(t, got)
+		})
+		t.Run(path+"/decodable gzip", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, benignSVGFixture)))
+		})
+	}
+}
+
+func TestSVGDeliveryContract_HostileFormsNeverDelivered(t *testing.T) {
+	respScanExempt := func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+	}
+	for _, path := range svgResponsePaths {
+		for name, doc := range hostileSVGForms {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				assertActiveSVGNotDelivered(t, runSVGPath(t, path, nil, svgFixtureHandler(doc)), hostileMarker(doc))
+			})
+			// A response-scan-exempt host is full-trust passthrough for other
+			// content, but SVG still takes the buffered Shield path.
+			t.Run(path+"/response-scan exempt host/"+name, func(t *testing.T) {
+				assertActiveSVGNotDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(doc)), hostileMarker(doc))
+			})
+		}
+		t.Run(path+"/hostile inside gzip", func(t *testing.T) {
+			assertActiveSVGNotDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, hostileSVGFixture)), "alert(1)")
+		})
+		t.Run(path+"/response-scan exempt host/benign", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(benignSVGFixture)))
+		})
+	}
+}
+
+// Every state in which Shield did not validate the complete body is refused,
+// including a benign document, because no proof exists for the bytes.
+func TestSVGDeliveryContract_IncompleteValidationRefused(t *testing.T) {
+	disabled := false
+	cases := []struct {
+		name    string
+		mod     func(*config.Config)
+		handler func(t *testing.T) http.HandlerFunc
+	}{
+		{"shield disabled", func(cfg *config.Config) { cfg.BrowserShield.Enabled = false }, func(*testing.T) http.HandlerFunc { return svgFixtureHandler(hostileSVGFixture) }},
+		{"shield and media policy disabled", func(cfg *config.Config) {
+			cfg.BrowserShield.Enabled = false
+			cfg.MediaPolicy.Enabled = &disabled
+		}, func(*testing.T) http.HandlerFunc { return svgFixtureHandler(hostileSVGFixture) }},
+		{"shield exempt host", func(cfg *config.Config) { cfg.BrowserShield.ExemptDomains = []string{"127.0.0.1"} }, func(*testing.T) http.HandlerFunc { return svgFixtureHandler(hostileSVGFixture) }},
+		{"partial 206", nil, func(*testing.T) http.HandlerFunc { return svgPartialHandler(hostileSVGFixture) }},
+		{"partial 206 shield disabled", func(cfg *config.Config) { cfg.BrowserShield.Enabled = false }, func(*testing.T) http.HandlerFunc { return svgPartialHandler(hostileSVGFixture) }},
+		{"oversize scan_head", func(cfg *config.Config) {
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+		}, func(*testing.T) http.HandlerFunc { return svgFixtureHandler(hostileSVGFixture) }},
+		{"oversize warn", func(cfg *config.Config) {
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+		}, func(*testing.T) http.HandlerFunc { return svgFixtureHandler(hostileSVGFixture) }},
+		{"undecodable gzip", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml"}, "Content-Encoding": {"gzip"}}, []byte(hostileSVGFixture))
+		}},
+		{"unsupported encoding", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml"}, "Content-Encoding": {"compress"}}, []byte(hostileSVGFixture))
+		}},
+		// A client combines every Content-Type value and keeps the LAST valid
+		// one (Fetch "extract a MIME type"), so both of these render as SVG
+		// although the first value, the only one Header.Get returns, is inert.
+		{"comma-combined content type", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"duplicate content-type fields", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		// text/event-stream first must not route an SVG onto the unbuffered SSE
+		// branch: SSE classification requires exactly one Content-Type value
+		// that parses cleanly, so each of these takes the validated path.
+		{"sse then svg comma-combined", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"sse with parameters then svg", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream; charset=utf-8, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"sse and svg content-type fields", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/event-stream", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		// Oversize and partial responses are decided before Browser Shield
+		// runs, from the Content-Type; a browser uses the last valid value
+		// across every field, so an inert first field must not route SVG
+		// onto a non-shieldable streaming or pass-through path.
+		{"oversize duplicate content-type fields scan_head", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"oversize duplicate content-type fields warn", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain", "image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"oversize comma-combined content type", func(cfg *config.Config) {
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.MaxShieldBytes = 40
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+		}, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"text/plain, image/svg+xml"}}, []byte(hostileSVGFixture))
+		}},
+		{"partial 206 duplicate content-type fields", nil, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusPartialContent, http.Header{
+				"Content-Type":  {"text/plain", "image/svg+xml"},
+				"Content-Range": {fmt.Sprintf("bytes 0-%d/%d", len(hostileSVGFixture)-1, len(hostileSVGFixture)+100)},
+			}, []byte(hostileSVGFixture))
+		}},
+		{"malformed content-type parameters", func(cfg *config.Config) { cfg.BrowserShield.Enabled = false }, func(*testing.T) http.HandlerFunc {
+			return svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/svg+xml; a=1; a=2"}}, []byte(hostileSVGFixture))
+		}},
+	}
+	for _, path := range svgResponsePaths {
+		for _, tc := range cases {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				assertSVGRefused(t, runSVGPath(t, path, tc.mod, tc.handler(t)), "alert(1)")
+			})
+		}
+	}
+}
+
+// The reverse proxy streams declared image/* bodies without buffering. SVG is
+// the one active image format and must never take that path; this is the
+// regression guard for the streaming bypass, in each configuration that
+// reaches the streaming branch.
+func TestSVGDeliveryContract_ReverseNeverStreamsSVG(t *testing.T) {
+	disabled := false
+	for name, mod := range map[string]func(*config.Config){
+		"shield on media on":   nil,
+		"shield on media off":  func(cfg *config.Config) { cfg.MediaPolicy.Enabled = &disabled },
+		"shield off media off": func(cfg *config.Config) { cfg.BrowserShield.Enabled = false; cfg.MediaPolicy.Enabled = &disabled },
+		"shield off media on":  func(cfg *config.Config) { cfg.BrowserShield.Enabled = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := runSVGPath(t, "reverse", mod, svgFixtureHandler(hostileSVGFixture))
+			assertActiveSVGNotDelivered(t, got, "alert(1)")
+			// With Shield off nothing validated the body, so it is refused.
+			if strings.HasPrefix(name, "shield off") {
+				assertSVGRefused(t, got, "alert(1)")
+			}
+		})
+	}
+}
+
+func TestSVGDeliveryContract_RequiresShieldEvenWhenMediaPolicyIsDisabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.BrowserShield.Enabled = false
+	disabled := false
+	cfg.MediaPolicy.Enabled = &disabled
+	p := newTestProxyWithConfig(t, cfg)
+	body, _, svgShielded, shieldBlocked := p.applyShield([]byte(benignSVGFixture), "image/svg+xml", "icons.vendor.example", nil, cfg, audit.LogContext{}, "127.0.0.1", "req-svg", TransportFetch, "action-svg")
+	if shieldBlocked != nil || svgShielded {
+		t.Fatalf("disabled shield result = blocked:%v proof:%t", shieldBlocked, svgShielded)
+	}
+	verdict := applyMediaPolicy(cfg, "image/svg+xml", body, mediaPolicyOptions{svgShielded: svgShielded})
+	if !verdict.Blocked {
+		t.Fatal("SVG without a complete shield proof was allowed")
+	}
+	// A caller that omits the option entirely gets the same refusal.
+	if !applyMediaPolicy(cfg, "image/svg+xml", body).Blocked {
+		t.Fatal("SVG admitted by a caller that never supplied the shield proof")
+	}
+}
+
+// An empty SVG body (HEAD, 204, 304) carries nothing to activate and must not
+// be refused as malformed when Shield is active.
+func TestSVGDeliveryContract_EmptyBodyValidatedWhenShieldActive(t *testing.T) {
+	cfg := config.Defaults()
+	enableSVGDeliveryContract(cfg)
+	p := newTestProxyWithConfig(t, cfg)
+	body, _, svgShielded, blocked := p.applyShield(nil, "image/svg+xml", "icons.vendor.example", http.Header{"Content-Type": {"image/svg+xml"}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportForward, "action")
+	if blocked != nil || !svgShielded || len(body) != 0 {
+		t.Fatalf("empty SVG: blocked=%+v proof=%t body=%q", blocked, svgShielded, body)
+	}
+}
+
+// TestDetectShieldPipelineHonorsEveryContentTypeField guards the early
+// decisions keyed on the shield pipeline (oversize, 206, non-shieldable skip).
+// They receive only the first Content-Type value, so the detector must return
+// SVG whenever any field a browser would use declares it, including when the
+// first value is a specific non-sniffed type or nosniff forbids sniffing.
+func TestDetectShieldPipelineHonorsEveryContentTypeField(t *testing.T) {
+	body := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+	}{
+		{"specific first field", http.Header{"Content-Type": {"image/png", "image/svg+xml"}}},
+		{"comma-combined", http.Header{"Content-Type": {"image/png, image/svg+xml"}}},
+		{"nosniff generic first field", http.Header{"Content-Type": {"text/plain", "image/svg+xml"}, "X-Content-Type-Options": {"nosniff"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := detectShieldPipelineForResponse(tc.headers.Get("Content-Type"), body, tc.headers); got != shield.PipelineSVG {
+				t.Fatalf("pipeline = %v, want SVG for %v", got, tc.headers)
+			}
+		})
+	}
+	png := http.Header{"Content-Type": {"image/png"}}
+	if got := detectShieldPipelineForResponse("image/png", []byte{0x89, 'P', 'N', 'G'}, png); got == shield.PipelineSVG {
+		t.Fatalf("plain image/png classified as SVG")
+	}
+}
+
+func TestResponseHeadersDeclareSVG(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		values []string
+		want   bool
+	}{
+		{nil, false},
+		{[]string{"image/svg+xml"}, true},
+		{[]string{"image/svg+xml; charset=utf-8"}, true},
+		{[]string{"text/plain, image/svg+xml"}, true},
+		{[]string{"text/plain", "image/svg+xml"}, true},
+		{[]string{"image/svg+xml, */*"}, true},
+		{[]string{"image/svg+xml, text/plain"}, false},
+		{[]string{"image/svg+xml", "text/plain"}, false},
+		{[]string{`text/plain; x="a, image/svg+xml"`}, false},
+		{[]string{"image/png"}, false},
+	}
+	for _, tc := range cases {
+		headers := http.Header{}
+		for _, value := range tc.values {
+			headers.Add("Content-Type", value)
+		}
+		if got := responseHeadersDeclareSVG(headers); got != tc.want {
+			t.Errorf("responseHeadersDeclareSVG(%q) = %t, want %t", tc.values, got, tc.want)
+		}
+	}
+}
+
+// A rewrite must not relabel SVG that was selected from a later Content-Type
+// value. The metadata repair reads the first value, and replacing every value
+// with it would deliver sanitized SVG under another type. The invariant is the
+// one the browser applies: the delivered headers still declare SVG.
+func TestSVGDeliveryContract_RewrittenConflictingTypeKeepsSVGLabel(t *testing.T) {
+	for _, path := range []string{"forward", "tls interception", "reverse"} {
+		t.Run(path, func(t *testing.T) {
+			handler := svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/png", "image/svg+xml"}}, []byte(linkedSVGFixture))
+			got := runSVGPath(t, path, nil, handler)
+			if !got.delivered || bytes.Contains(got.body, []byte("link.vendor.example")) || !bytes.Contains(got.body, []byte(`<rect id="kept"`)) {
+				t.Fatalf("rewritten SVG not delivered: status=%d body=%q", got.status, got.body)
+			}
+			if !responseHeadersDeclareSVG(got.header) {
+				t.Fatalf("rewritten SVG delivered as %q, want a Content-Type a browser reads as SVG", got.header.Values("Content-Type"))
+			}
+		})
+	}
+}
+
+// Media policy classifies by the type the browser renders. An earlier audio
+// value must not route a validated SVG through the audio branch, which returns
+// before strip_images is consulted.
+func TestSVGDeliveryContract_EarlierAudioTypeCannotSkipImagePolicy(t *testing.T) {
+	stripImages := func(strip bool) func(*config.Config) {
+		return func(cfg *config.Config) {
+			keepAudio := false
+			cfg.MediaPolicy.StripAudio = &keepAudio
+			cfg.MediaPolicy.StripImages = &strip
+		}
+	}
+	handler := svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"audio/mpeg", "image/svg+xml"}}, []byte(benignSVGFixture))
+	for _, path := range svgResponsePaths {
+		t.Run(path+"/images stripped", func(t *testing.T) {
+			got := runSVGPath(t, path, stripImages(true), handler)
+			assertSVGRefused(t, got, "<svg")
+			if got.status != http.StatusForbidden || got.blockReason != "media_policy: images stripped" {
+				t.Fatalf("SVG not refused by image stripping: status=%d reason=%q body=%q", got.status, got.blockReason, got.body)
+			}
+		})
+		// Positive control: the same response is delivered when images are
+		// allowed, so the refusal above is the image policy and nothing else.
+		t.Run(path+"/images allowed", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, stripImages(false), handler))
+		})
+	}
+}

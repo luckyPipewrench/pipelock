@@ -194,12 +194,20 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	// the complete body. Disabled or exempt Shield, a partial or oversized
 	// body, or a caller that never ran Shield all leave svgShielded false, so
 	// the default for any caller that omits the option is refusal.
-	if (isSVGContentType(contentType) || responseHeadersDeclareSVG(option.headers)) && !option.svgShielded {
+	declaredSVG := isSVGContentType(contentType) || responseHeadersDeclareSVG(option.headers)
+	if declaredSVG && !option.svgShielded {
 		return MediaPolicyVerdict{
 			Blocked:     true,
 			BlockReason: svgIncompleteValidationReason,
 			MediaType:   svgMediaType,
 		}
+	}
+	// A browser renders SVG when any Content-Type value it would use declares
+	// it, while contentType is only the first value. Classify by what the
+	// browser renders, so an earlier audio or video value cannot route a
+	// validated SVG past the image policy.
+	if declaredSVG {
+		mt = svgMediaType
 	}
 
 	// Disabled policy: pure passthrough.
@@ -207,7 +215,9 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 		return MediaPolicyVerdict{Body: body, MediaType: mt}
 	}
 
-	mt = effectiveMediaType(mt, body)
+	if !declaredSVG {
+		mt = effectiveMediaType(mt, body)
+	}
 
 	// Non-media content types pass through the media policy (content
 	// scanning is handled by the response scanner elsewhere).

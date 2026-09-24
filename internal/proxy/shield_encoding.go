@@ -467,6 +467,13 @@ func repairShieldResponseMetadata(headers http.Header, pipeline shield.PipelineT
 		mediaType = shieldMediaType(pipeline)
 		params = map[string]string{}
 	}
+	// SVG selected from a later Content-Type value keeps its SVG label. The
+	// first value is what Get returns, and Set would otherwise replace every
+	// value with it, delivering sanitized SVG labeled as another type.
+	if pipeline == shield.PipelineSVG && mediaType != svgMediaType && responseHeadersDeclareSVG(headers) {
+		mediaType = svgMediaType
+		params = map[string]string{}
+	}
 	if convertedToUTF8 {
 		params["charset"] = "utf-8"
 	}

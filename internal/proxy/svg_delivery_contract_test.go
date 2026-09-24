@@ -101,6 +101,9 @@ type svgPathResult struct {
 	delivered bool
 	status    int
 	body      []byte
+	// header is the delivered response header on HTTP transports; fetch
+	// returns extracted text and has none.
+	header http.Header
 }
 
 var svgResponsePaths = []string{"fetch", "forward", "tls interception", "reverse"}
@@ -121,7 +124,7 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 		if err != nil {
 			t.Fatalf("read response: %v", err)
 		}
-		return svgPathResult{delivered: response.StatusCode < 300, status: response.StatusCode, body: body}
+		return svgPathResult{delivered: response.StatusCode < 300, status: response.StatusCode, body: body, header: response.Header}
 	}
 
 	switch path {
@@ -462,5 +465,48 @@ func TestResponseHeadersDeclareSVG(t *testing.T) {
 		if got := responseHeadersDeclareSVG(headers); got != tc.want {
 			t.Errorf("responseHeadersDeclareSVG(%q) = %t, want %t", tc.values, got, tc.want)
 		}
+	}
+}
+
+// A rewrite must not relabel SVG that was selected from a later Content-Type
+// value. The metadata repair reads the first value, and replacing every value
+// with it would deliver sanitized SVG under another type. The invariant is the
+// one the browser applies: the delivered headers still declare SVG.
+func TestSVGDeliveryContract_RewrittenConflictingTypeKeepsSVGLabel(t *testing.T) {
+	for _, path := range []string{"forward", "tls interception", "reverse"} {
+		t.Run(path, func(t *testing.T) {
+			handler := svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"image/png", "image/svg+xml"}}, []byte(linkedSVGFixture))
+			got := runSVGPath(t, path, nil, handler)
+			if !got.delivered || bytes.Contains(got.body, []byte("link.vendor.example")) || !bytes.Contains(got.body, []byte(`<rect id="kept"`)) {
+				t.Fatalf("rewritten SVG not delivered: status=%d body=%q", got.status, got.body)
+			}
+			if !responseHeadersDeclareSVG(got.header) {
+				t.Fatalf("rewritten SVG delivered as %q, want a Content-Type a browser reads as SVG", got.header.Values("Content-Type"))
+			}
+		})
+	}
+}
+
+// Media policy classifies by the type the browser renders. An earlier audio
+// value must not route a validated SVG through the audio branch, which returns
+// before strip_images is consulted.
+func TestSVGDeliveryContract_EarlierAudioTypeCannotSkipImagePolicy(t *testing.T) {
+	stripImages := func(strip bool) func(*config.Config) {
+		return func(cfg *config.Config) {
+			keepAudio := false
+			cfg.MediaPolicy.StripAudio = &keepAudio
+			cfg.MediaPolicy.StripImages = &strip
+		}
+	}
+	handler := svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"audio/mpeg", "image/svg+xml"}}, []byte(benignSVGFixture))
+	for _, path := range svgResponsePaths {
+		t.Run(path+"/images stripped", func(t *testing.T) {
+			assertSVGRefused(t, runSVGPath(t, path, stripImages(true), handler), "<svg")
+		})
+		// Positive control: the same response is delivered when images are
+		// allowed, so the refusal above is the image policy and nothing else.
+		t.Run(path+"/images allowed", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, stripImages(false), handler))
+		})
 	}
 }

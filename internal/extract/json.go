@@ -224,10 +224,13 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 	// at 10000 levels). When it refuses to go on, bucket the untokenized
 	// remainder of the input raw rather than drop it; the walk still reports
 	// incomplete, but the bytes reach the fragment scanner.
-	start := decoder.InputOffset()
+	// resume is the input offset just past the last token the decoder
+	// returned, so the fallback scan neither repeats a leaf already bucketed
+	// nor skips one.
+	resume := decoder.InputOffset()
 	defer func() {
-		if !complete && start >= 0 && start < int64(len(state.raw)) {
-			foldRemainingJSONScalars(state.raw[start:], func(value string) {
+		if !complete && resume >= 0 && resume < int64(len(state.raw)) {
+			foldRemainingJSONScalars(state.raw[resume:], func(value string) {
 				appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
 			})
 		}
@@ -240,6 +243,7 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 	for {
 		if len(stack) > 0 && stack[len(stack)-1] && expectKey && decoder.More() {
 			// Consume and discard the object member name.
+			resume = decoder.InputOffset()
 			keyTok, err := decoder.Token()
 			if err != nil {
 				return false
@@ -249,6 +253,7 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 			}
 			expectKey = false
 		}
+		resume = decoder.InputOffset()
 		token, err := decoder.Token()
 		if err != nil {
 			return false

@@ -746,3 +746,28 @@ func TestJSONLeafBucketPayloadsKeepsLeavesPastDecoderLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestJSONLeafBucketPayloadsFoldDoesNotRepeatLeaves pins that when the
+// decoder gives up part way through an over-depth value, the fallback scan
+// resumes after the last token it returned: a leaf already bucketed must not
+// be emitted again, or a piece of a split secret appears twice and breaks the
+// cross-request join.
+func TestJSONLeafBucketPayloadsFoldDoesNotRepeatLeaves(t *testing.T) {
+	t.Parallel()
+
+	deep := goDecoderNestingLimit + 5
+	body := `{"w":["FIRST",` + strings.Repeat("[", deep) + `"SECOND"` + strings.Repeat("]", deep) + `]}`
+	// MaxDepth 0 makes the whole "w" array one over-depth fold, so FIRST is
+	// tokenized by the decoder before it gives up inside the deep element.
+	buckets, _ := JSONLeafBucketPayloads(json.RawMessage(body), JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
+	var all strings.Builder
+	for _, v := range buckets {
+		all.Write(v)
+	}
+	if got := strings.Count(all.String(), "FIRST"); got != 1 {
+		t.Fatalf("FIRST bucketed %d times, want 1: %#v", got, buckets)
+	}
+	if !strings.Contains(all.String(), "SECOND") {
+		t.Fatalf("SECOND dropped: %#v", buckets)
+	}
+}

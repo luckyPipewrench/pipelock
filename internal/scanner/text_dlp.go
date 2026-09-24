@@ -238,11 +238,13 @@ func PartitionInboundTextDLPMatches(text string, matches []TextDLPMatch) (enforc
 // AWS Access ID finding produced by the whitespace-collapsed DLP view joining
 // ordinary lowercase prose into a credential-shaped token.
 //
-// This is deliberately narrow. Outbound scans must still block these because an
-// agent can leak a real key by changing case or adding spaces. Inbound Hermes
-// surfaces, however, include OCR/vision prose and operator messages; blocking a
-// result like "AIDA in product name generated..." blocks normal operation even
-// though the candidate cannot be a valid AWS access key ID. Real contiguous
+// Prose behind an IAM resource prefix ("AIDA in product name ...") never
+// reaches this helper: validateAWSAccessIDCandidate rejects it on every
+// surface. What remains is lowercase prose that joins into an AKIA or ASIA run
+// ("Southeast Asia region ..."). Outbound scans must still block these because
+// an agent can leak a real key by changing case or adding spaces. Inbound
+// Hermes surfaces, however, include OCR/vision prose and operator messages,
+// where blocking such a run stops normal operation. Real contiguous
 // tokens, uppercase/digit whitespace-split tokens, decoded tokens, and nearby
 // credential-context text stay high-confidence and must still be blocked by the
 // caller.

@@ -2080,8 +2080,27 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		closeBlockReason = blockreason.RedactionFailure
 	}
 
+	blockCause := blockingBodyFinding(result, r.hostname, r.cfg)
+	if result.RedactionBlockReason == "" {
+		switch blockCause {
+		case bodyBlockCauseInjection:
+			scannerLabel, receiptLayer = scannerLabelBodyPromptInjection, scannerLabelBodyPromptInjection
+			closeReason, closeBlockReason = "prompt injection detected", blockreason.PromptInjection
+		case bodyBlockCauseDLP:
+			scannerLabel, receiptLayer = scannerLabelBodyDLP, audit.ScannerDLP
+			closeReason, closeBlockReason = "DLP violation", blockreason.DLPMatch
+		case bodyBlockCauseEntropy:
+			scannerLabel, receiptLayer = scannerLabelBodyEntropy, scannerLabelBodyEntropy
+			closeReason, closeBlockReason = "high entropy content detected", blockreason.BodyEntropy
+		}
+	}
+
 	reason := result.Reason
-	if reason == "" && bodyEntropyDrivesBlock(result, r.hostname, r.cfg) {
+	switch {
+	case reason != "":
+	case blockCause == bodyBlockCauseInjection:
+		reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(responseMatchNames(result.InjectionMatches), ", "))
+	case blockCause == bodyBlockCauseEntropy:
 		reason = contentEntropyReason(result.EntropyFinding)
 	}
 	if reason == "" {

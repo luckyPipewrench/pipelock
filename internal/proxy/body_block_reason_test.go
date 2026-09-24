@@ -16,61 +16,71 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const testWarnMarkerPattern = "Test Warn Marker"
 
-func TestBodyEntropyDrivesBlock(t *testing.T) {
+func TestBlockingBodyFinding(t *testing.T) {
 	t.Parallel()
 
 	entropy := &ContentEntropyFinding{Entropy: 6, Threshold: 4.5, Length: 64}
 	warnMatch := scanner.TextDLPMatch{PatternName: testWarnMarkerPattern, Severity: config.SeverityMedium}
 	coreMatch := scanner.TextDLPMatch{PatternName: "AWS Access ID", Severity: config.SeverityCritical}
+	injection := []scanner.ResponseMatch{{PatternName: "Test Injection"}}
+	const host = "api.vendor.example"
 
-	newCfg := func(bodyAction string) *config.Config {
+	newCfg := func(bodyAction string, trusted ...string) *config.Config {
 		cfg := config.Defaults()
 		cfg.RequestBodyScanning.Action = bodyAction
+		cfg.RequestBodyScanning.TrustedHosts = trusted
 		return cfg
+	}
+	blockingEntropy := func(r BodyScanResult) BodyScanResult {
+		r.EntropyFinding, r.EntropyAction = entropy, config.ActionBlock
+		return r
 	}
 	for _, tt := range []struct {
 		name   string
 		result BodyScanResult
 		cfg    *config.Config
-		want   bool
+		want   bodyBlockCause
 	}{
-		{name: "no entropy finding", result: BodyScanResult{EntropyAction: config.ActionBlock}, cfg: newCfg(config.ActionWarn), want: false},
-		{name: "entropy only warns", result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionWarn}, cfg: newCfg(config.ActionWarn), want: false},
-		{name: "nil config", result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionBlock}, cfg: nil, want: false},
-		{name: "blocking entropy alone", result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionBlock}, cfg: newCfg(config.ActionWarn), want: true},
-		{
-			name:   "blocking entropy beside warn-level secret",
-			result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionBlock, DLPMatches: []scanner.TextDLPMatch{warnMatch}},
-			cfg:    newCfg(config.ActionWarn),
-			want:   true,
-		},
-		{
-			name:   "blocking entropy beside blocking secret",
-			result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionBlock, DLPMatches: []scanner.TextDLPMatch{warnMatch}},
-			cfg:    newCfg(config.ActionBlock),
-			want:   false,
-		},
-		{
-			name:   "blocking entropy beside hard-blocking core secret",
-			result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionBlock, DLPMatches: []scanner.TextDLPMatch{coreMatch}},
-			cfg:    newCfg(config.ActionWarn),
-			want:   false,
-		},
+		{name: "nil config", result: blockingEntropy(BodyScanResult{}), cfg: nil, want: bodyBlockCauseUnknown},
+		{name: "nothing blocks on its own", result: BodyScanResult{EntropyFinding: entropy, EntropyAction: config.ActionWarn, DLPMatches: []scanner.TextDLPMatch{warnMatch}}, cfg: newCfg(config.ActionWarn), want: bodyBlockCauseUnknown},
+		{name: "blocking entropy alone", result: blockingEntropy(BodyScanResult{}), cfg: newCfg(config.ActionWarn), want: bodyBlockCauseEntropy},
+		{name: "blocking entropy beside warn-level secret", result: blockingEntropy(BodyScanResult{DLPMatches: []scanner.TextDLPMatch{warnMatch}}), cfg: newCfg(config.ActionWarn), want: bodyBlockCauseEntropy},
+		{name: "blocking secret beside blocking entropy", result: blockingEntropy(BodyScanResult{DLPMatches: []scanner.TextDLPMatch{warnMatch}}), cfg: newCfg(config.ActionBlock), want: bodyBlockCauseDLP},
+		{name: "hard-blocking core secret", result: blockingEntropy(BodyScanResult{DLPMatches: []scanner.TextDLPMatch{coreMatch}}), cfg: newCfg(config.ActionWarn), want: bodyBlockCauseDLP},
+		{name: "injection to untrusted host", result: blockingEntropy(BodyScanResult{InjectionMatches: injection}), cfg: newCfg(config.ActionWarn), want: bodyBlockCauseInjection},
+		{name: "injection to trusted host beside blocking entropy", result: blockingEntropy(BodyScanResult{InjectionMatches: injection}), cfg: newCfg(config.ActionWarn, host), want: bodyBlockCauseEntropy},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := bodyEntropyDrivesBlock(tt.result, "api.vendor.example", tt.cfg); got != tt.want {
-				t.Fatalf("bodyEntropyDrivesBlock = %v, want %v", got, tt.want)
+			if got := blockingBodyFinding(tt.result, host, tt.cfg); got != tt.want {
+				t.Fatalf("blockingBodyFinding = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBodyBlockCauseLabel(t *testing.T) {
+	t.Parallel()
+	for cause, want := range map[bodyBlockCause]string{
+		bodyBlockCauseUnknown:   "current",
+		bodyBlockCauseInjection: scannerLabelBodyPromptInjection,
+		bodyBlockCauseDLP:       scannerLabelBodyDLP,
+		bodyBlockCauseEntropy:   scannerLabelBodyEntropy,
+	} {
+		if got := bodyBlockCauseLabel(cause, "current"); got != want {
+			t.Fatalf("bodyBlockCauseLabel(%v) = %q, want %q", cause, got, want)
+		}
 	}
 }
 
@@ -107,19 +117,10 @@ func TestInterceptTunnel_BodyBlockNamesEntropyOverWarnSecret(t *testing.T) {
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body=%q", resp.StatusCode, string(respBody))
-	}
+	assertEntropyNamedNotWarnSecret(t, resp)
 	if upstreamHit.Load() {
 		t.Fatal("blocked request reached upstream")
-	}
-	if !strings.Contains(string(respBody), "high entropy") {
-		t.Fatalf("block reason must name the blocking entropy finding; body=%q", string(respBody))
-	}
-	if strings.Contains(string(respBody), testWarnMarkerPattern) {
-		t.Fatalf("block reason must not blame the warn-level secret; body=%q", string(respBody))
 	}
 }
 
@@ -154,6 +155,9 @@ func assertEntropyNamedNotWarnSecret(t *testing.T, resp *http.Response) {
 	}
 	if strings.Contains(string(respBody), testWarnMarkerPattern) {
 		t.Fatalf("block reason must not blame the warn-level secret; body=%q", string(respBody))
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.BodyEntropy) {
+		t.Fatalf("structured block reason = %q, want %s; layer=%q", got, blockreason.BodyEntropy, resp.Header.Get(blockreason.HeaderLayer))
 	}
 }
 
@@ -206,5 +210,74 @@ func TestReverseBodyBlockNamesEntropyOverWarnSecret(t *testing.T) {
 	assertEntropyNamedNotWarnSecret(t, resp)
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func wsScanHitLabels(t *testing.T, m *metrics.Metrics) map[string]float64 {
+	t.Helper()
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	hits := map[string]float64{}
+	for _, fam := range families {
+		if fam.GetName() != "pipelock_ws_scan_hits_total" {
+			continue
+		}
+		for _, mm := range fam.GetMetric() {
+			for _, lp := range mm.GetLabel() {
+				hits[lp.GetValue()] += mm.GetCounter().GetValue()
+			}
+		}
+	}
+	return hits
+}
+
+// The WebSocket block path classifies a blocking entropy finding beside a
+// warn-level secret as entropy, and a hard-blocking injection beside blocking
+// entropy as injection.
+func TestWSRelay_BodyBlockClassifiesByBlockingFinding(t *testing.T) {
+	entropy := &ContentEntropyFinding{Entropy: 6, Threshold: 4.5, Length: 64}
+	for _, tt := range []struct {
+		name   string
+		result BodyScanResult
+		want   string
+	}{
+		{
+			name: "entropy beside warn-level secret",
+			result: BodyScanResult{
+				Action:         config.ActionBlock,
+				EntropyFinding: entropy,
+				EntropyAction:  config.ActionBlock,
+				DLPMatches:     []scanner.TextDLPMatch{{PatternName: testWarnMarkerPattern, Severity: config.SeverityMedium}},
+			},
+			want: scannerLabelBodyEntropy,
+		},
+		{
+			name: "hard-blocking injection beside blocking entropy",
+			result: BodyScanResult{
+				Action:           config.ActionBlock,
+				EntropyFinding:   entropy,
+				EntropyAction:    config.ActionBlock,
+				InjectionMatches: []scanner.ResponseMatch{{PatternName: "Test Injection"}},
+			},
+			want: scannerLabelBodyPromptInjection,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			relay, m := newAdaptiveWSRelay(t, 0)
+			enforce := true
+			relay.cfg.Enforce = &enforce
+			relay.cfg.RequestBodyScanning.Action = config.ActionWarn
+			relay.hostname = "exfil.vendor.example"
+
+			if !relay.handleClientMessageBodyResult(audit.NewNop(), []byte(`{"payload":"x"}`), tt.result) {
+				t.Fatal("expected the frame to be blocked")
+			}
+			hits := wsScanHitLabels(t, m)
+			if hits[tt.want] != 1 || len(hits) != 1 {
+				t.Fatalf("ws scan hits = %v, want exactly one %q", hits, tt.want)
+			}
+		})
 	}
 }

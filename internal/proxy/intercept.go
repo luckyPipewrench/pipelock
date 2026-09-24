@@ -1155,18 +1155,21 @@ func newInterceptHandler(
 					scannerLabel = scannerLabelBodyEntropy
 				}
 
+				blockCause := blockingBodyFinding(result, r.URL.Hostname(), ic.Config)
 				reason := result.Reason
 				if reason == "" {
-					// Name the finding that actually blocked: a blocking entropy
-					// finding beside a warn-level secret, otherwise the secret before
-					// an entropy finding that is only riding along.
+					// Name the finding that actually blocked; a finding that only
+					// warns can ride along with it. Without a single blocking
+					// finding, keep the injection, secret, entropy order.
 					injectionNames := responseMatchNames(result.InjectionMatches)
 					patternNames := dlpMatchNames(result.DLPMatches)
 					switch {
+					case blockCause == bodyBlockCauseEntropy:
+						reason = bodyEntropyReason(result)
+					case blockCause == bodyBlockCauseDLP:
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
-					case bodyEntropyDrivesBlock(result, r.URL.Hostname(), ic.Config):
-						reason = bodyEntropyReason(result)
 					case len(patternNames) > 0:
 						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case result.EntropyFinding != nil:
@@ -1183,6 +1186,11 @@ func newInterceptHandler(
 				// Address protection findings and fail-closed body errors are NOT
 				// exempted - only DLP pattern matches.
 				bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, result, r.URL.Hostname(), ic.Config)
+				// Classify the block by its cause after the exemption decision,
+				// which keeps its own label rules.
+				if result.RedactionBlockReason == "" {
+					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
+				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {

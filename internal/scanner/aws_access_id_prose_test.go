@@ -7,6 +7,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // awsTestKeyBody is sixteen access-key characters assembled at runtime so no
@@ -45,7 +47,7 @@ func TestScanTextForDLP_AWSResourcePrefixProseIsNotAccessKey(t *testing.T) {
 		{
 			// "technician vacuumed" collapses to "...anvacuumed...", an ANVA run.
 			name: "ANVA across a word boundary",
-			text: "The technician then vacuumed out the water from the fixture and flushed it again.",
+			text: "The technician vacuumed out the water from the fixture and flushed it again.",
 		},
 		{
 			name: "AROA across a word boundary",
@@ -148,5 +150,76 @@ func TestBuiltinDLPValidatorForRegex(t *testing.T) {
 	fn := builtinDLPValidatorForRegex(strictAWSAccessIDRe.String())
 	if fn == nil || fn(joinedProse("an", "vacuumed", "out", "the", "water")) {
 		t.Fatal("the built-in AWS Access ID regex must carry the resource-prefix prose validator")
+	}
+}
+
+// compiledAWSAccessIDPatterns returns the core-floor and configurable compiled
+// copies of the AWS Access ID pattern separately. ScanTextForDLP merges and
+// deduplicates both, so a scan-level test passes when either copy matches;
+// these handles let every fixture be checked against each copy on its own.
+func compiledAWSAccessIDPatterns(t *testing.T, s *Scanner) map[string]*compiledPattern {
+	t.Helper()
+	found := map[string]*compiledPattern{}
+	for _, p := range s.core.dlpPatterns {
+		if p.name == patternNameAWSAccessID {
+			found["core"] = p
+		}
+	}
+	for _, p := range s.dlpPatterns {
+		if p.name == patternNameAWSAccessID {
+			found["configurable"] = p
+		}
+	}
+	if len(found) != 2 {
+		t.Fatalf("expected core and configurable AWS Access ID patterns, got %d", len(found))
+	}
+	return found
+}
+
+// matchesInRawOrCollapsedView mirrors the two scanner views that matter for
+// these fixtures: the normalized text and its whitespace-collapsed form.
+func matchesInRawOrCollapsedView(p *compiledPattern, text string) bool {
+	cleaned := normalize.ForDLP(text)
+	if _, _, ok := p.matchSpan(cleaned); ok {
+		return true
+	}
+	_, _, ok := p.matchSpan(compactTextDLPWhitespace(cleaned))
+	return ok
+}
+
+func TestAWSAccessIDPatternCopiesAgreeIndependently(t *testing.T) {
+	t.Parallel()
+
+	s := MustNew(testConfig())
+	patterns := compiledAWSAccessIDPatterns(t, s)
+	body := awsTestKeyBody()
+	lower := strings.ToLower(body)
+	spacedLower := strings.Join([]string{"akia", lower[0:4], lower[4:8], lower[8:12], lower[12:16]}, " ")
+
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "uppercase contiguous AKIA", text: "value AKIA" + body + " end", want: true},
+		{name: "lowercase contiguous AKIA", text: "value akia" + lower + " end", want: true},
+		{name: "lowercase spaced AKIA", text: "value " + spacedLower + " end", want: true},
+		{name: "lowercase spaced ASIA", text: "value " + strings.Replace(spacedLower, "akia", "asia", 1) + " end", want: true},
+		{name: "decoy prose before lowercase spaced key", text: "the technician vacuumed out " + spacedLower, want: true},
+		{name: "uppercase contiguous AIDA identifier", text: "value AIDA" + body + " end", want: true},
+		{name: "uppercase spaced AIDA identifier", text: "value " + strings.Join([]string{"AIDA", body[0:4], body[4:8], body[8:12], body[12:16]}, " ") + " end", want: true},
+		{name: "ANVA prose", text: "The technician vacuumed out the water from the fixture and flushed it again.", want: false},
+		{name: "AROA prose", text: "Here is a roadmap for the entire quarter ahead of us.", want: false},
+		{name: "AIDA prose", text: "Aida performed the overture tonight again for the crowd.", want: false},
+	}
+	for copyName, p := range patterns {
+		for _, tt := range cases {
+			t.Run(copyName+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				if got := matchesInRawOrCollapsedView(p, tt.text); got != tt.want {
+					t.Fatalf("%s copy matched = %v, want %v", copyName, got, tt.want)
+				}
+			})
+		}
 	}
 }

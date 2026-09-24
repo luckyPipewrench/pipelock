@@ -3994,7 +3994,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if !scanEntropy || len(value) < s.entropyMinLen {
 			continue
 		}
-		entropy := ShannonEntropy(value)
+		entropy := payloadEntropy(value)
 		if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
 			continue
 		}

@@ -44,6 +44,10 @@ func TestEntropyMeasuresDecodedPayload(t *testing.T) {
 		{"base64 uuid query value", "https://app.vendor.example/x?id=" + url.QueryEscape(wrapped), false},
 		{"random bytes as base64url path", "https://collector.evil.test/p/" + randomB64, true},
 		{"random bytes as base64url query", "https://collector.evil.test/p?d=" + randomB64, true},
+		// A semicolon sends the query down the ambiguous-query path, which
+		// must measure values the same way.
+		{"base64 typed id query value beside a semicolon", "https://app.vendor.example/x?a=1;b=2&id=" + url.QueryEscape(typed), false},
+		{"random bytes beside a semicolon", "https://collector.evil.test/p?a=1;b=2&d=" + randomB64, true},
 		{"double-encoded random", "https://collector.evil.test/p/" + url.PathEscape(doubleB64), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

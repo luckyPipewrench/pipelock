@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,9 +133,9 @@ func TestURLHeuristicsDoNotRaiseAdaptiveScore(t *testing.T) {
 }
 
 func TestForwardHTTP_BoundOpaqueTrafficDoesNotEscalate(t *testing.T) {
-	upstreamHits := 0
+	var upstreamHits atomic.Int32
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamHits++
+		upstreamHits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -181,8 +182,8 @@ func TestForwardHTTP_BoundOpaqueTrafficDoesNotEscalate(t *testing.T) {
 		send(handler, body, fmt.Sprintf("opaque request %d", i))
 	}
 	key := sessionKeyFor("test-browser", adaptiveSessionKeyHTTPTest, envelope.ActorAuthBound)
-	if upstreamHits != 3 {
-		t.Fatalf("upstream hits = %d, want 3", upstreamHits)
+	if upstreamHits.Load() != 3 {
+		t.Fatalf("upstream hits = %d, want 3", upstreamHits.Load())
 	}
 	if !p.currentCEEEntropy(testCEEIdentity(key)).Exceeded {
 		t.Fatal("bound session did not retain the cross-request entropy finding")
@@ -215,8 +216,8 @@ func TestForwardHTTP_BoundOpaqueTrafficDoesNotEscalate(t *testing.T) {
 	defer fresh.Close()
 	send(fresh.buildHandler(http.NewServeMux()), graphqlBody, "fresh process")
 	freshRec := fresh.sessionMgrPtr.Load().GetOrCreate(key)
-	if freshRec.ThreatScore() != 0 || freshRec.EscalationLevel() != 0 || upstreamHits != 5 {
-		t.Fatalf("fresh process adaptive state: score=%.1f level=%d upstream hits=%d", freshRec.ThreatScore(), freshRec.EscalationLevel(), upstreamHits)
+	if freshRec.ThreatScore() != 0 || freshRec.EscalationLevel() != 0 || upstreamHits.Load() != 5 {
+		t.Fatalf("fresh process adaptive state: score=%.1f level=%d upstream hits=%d", freshRec.ThreatScore(), freshRec.EscalationLevel(), upstreamHits.Load())
 	}
 }
 

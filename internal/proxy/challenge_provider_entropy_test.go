@@ -162,4 +162,8 @@ func TestChallengeProviderImagesKeepMetadata(t *testing.T) {
 	if v := applyMediaPolicy(oversize, "image/png", body, mediaPolicyOptions{host: "challenges.cloudflare.com"}); !v.Blocked {
 		t.Fatal("size limits must still apply to a challenge provider")
 	}
+	malformed := append([]byte("\x89PNG\r\n\x1a\n"), []byte("not a chunk stream")...)
+	if v := applyMediaPolicy(cfg, "image/png", malformed, mediaPolicyOptions{host: "challenges.cloudflare.com"}); !v.Blocked {
+		t.Fatal("a malformed image from a challenge provider must still be refused")
+	}
 }

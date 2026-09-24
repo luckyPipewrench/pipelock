@@ -340,7 +340,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	// Metadata surgery on allowed images.
 	outBody := body
 	var stripResult *media.StripResult
-	if cfg.MediaPolicy.ShouldStripImageMetadata() && !isChallengeProviderHost(option.host) {
+	if cfg.MediaPolicy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
 			// Malformed image bytes. Fail closed: block rather than forward
@@ -355,11 +355,16 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 				Exposure:    exposureOrNil(cfg, exposure),
 			}
 		}
-		stripResult = sr
-		outBody = sr.Data
-		exposure.Format = sr.Format
-		exposure.MetadataRemoved = sr.SegmentsRemoved
-		exposure.BytesRemoved = sr.BytesRemoved
+		// A bot-verification challenge may read its own images byte for byte,
+		// so a challenge provider's image is parsed, and refused if malformed,
+		// but forwarded exactly as received.
+		if !isChallengeProviderHost(option.host) {
+			stripResult = sr
+			outBody = sr.Data
+			exposure.Format = sr.Format
+			exposure.MetadataRemoved = sr.SegmentsRemoved
+			exposure.BytesRemoved = sr.BytesRemoved
+		}
 	}
 
 	return MediaPolicyVerdict{

@@ -4053,8 +4053,8 @@ func TestCheckSubdomainEntropy_BlocksEncodedExfilLabels(t *testing.T) {
 			if result.Scanner != ScannerSubdomainEntropy {
 				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
 			}
-			if IsHostnameExfilResult(result) && result.IsEntropyOnly() {
-				t.Fatal("structural hostname exfiltration must remain concrete evidence")
+			if !IsHostnameExfilResult(result) || result.IsEntropyOnly() {
+				t.Fatalf("structural hostname exfiltration must remain concrete evidence: %+v", result)
 			}
 		})
 	}

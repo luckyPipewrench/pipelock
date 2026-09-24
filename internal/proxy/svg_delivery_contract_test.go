@@ -104,6 +104,8 @@ type svgPathResult struct {
 	// header is the delivered response header on HTTP transports; fetch
 	// returns extracted text and has none.
 	header http.Header
+	// blockReason is the refusal reason the transport reported, if any.
+	blockReason string
 }
 
 var svgResponsePaths = []string{"fetch", "forward", "tls interception", "reverse"}
@@ -124,7 +126,16 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 		if err != nil {
 			t.Fatalf("read response: %v", err)
 		}
-		return svgPathResult{delivered: response.StatusCode < 300, status: response.StatusCode, body: body, header: response.Header}
+		result := svgPathResult{delivered: response.StatusCode < 300, status: response.StatusCode, body: body, header: response.Header}
+		var block struct {
+			BlockReason string `json:"block_reason"`
+		}
+		if json.Unmarshal(body, &block) == nil {
+			result.blockReason = block.BlockReason
+		} else if text, ok := strings.CutPrefix(string(body), "blocked: "); ok {
+			result.blockReason = strings.TrimSpace(text)
+		}
+		return result
 	}
 
 	switch path {
@@ -142,7 +153,7 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatalf("decode fetch response (status %d): %v", w.Code, err)
 		}
-		return svgPathResult{delivered: w.Code == http.StatusOK && !response.Blocked, status: w.Code, body: []byte(response.Content)}
+		return svgPathResult{delivered: w.Code == http.StatusOK && !response.Blocked, status: w.Code, body: []byte(response.Content), blockReason: response.BlockReason}
 	case "forward":
 		upstream := httptest.NewServer(handler)
 		t.Cleanup(upstream.Close)
@@ -501,7 +512,11 @@ func TestSVGDeliveryContract_EarlierAudioTypeCannotSkipImagePolicy(t *testing.T)
 	handler := svgResponseHandler(http.StatusOK, http.Header{"Content-Type": {"audio/mpeg", "image/svg+xml"}}, []byte(benignSVGFixture))
 	for _, path := range svgResponsePaths {
 		t.Run(path+"/images stripped", func(t *testing.T) {
-			assertSVGRefused(t, runSVGPath(t, path, stripImages(true), handler), "<svg")
+			got := runSVGPath(t, path, stripImages(true), handler)
+			assertSVGRefused(t, got, "<svg")
+			if got.status != http.StatusForbidden || got.blockReason != "media_policy: images stripped" {
+				t.Fatalf("SVG not refused by image stripping: status=%d reason=%q body=%q", got.status, got.blockReason, got.body)
+			}
 		})
 		// Positive control: the same response is delivered when images are
 		// allowed, so the refusal above is the image policy and nothing else.

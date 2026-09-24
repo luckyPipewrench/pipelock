@@ -82,11 +82,13 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
-	if err := rollbackHermesIntegration(cmd, opts); err != nil {
-		return err
-	}
-	rollbackBrowserDefaultsBestEffort(cmd, opts)
-	return nil
+	return withHermesLock(opts.HermesConfig, func() error {
+		if err := rollbackHermesIntegration(cmd, opts); err != nil {
+			return err
+		}
+		rollbackBrowserDefaultsBestEffort(cmd, opts)
+		return nil
+	})
 }
 
 // rollbackBrowserDefaultsBestEffort removes Pipelock's agent-browser flag

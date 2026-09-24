@@ -574,3 +574,64 @@ func TestInstallBrowserDefaultsRecordFirst(t *testing.T) {
 		t.Fatalf("ownership record remains: %v", err)
 	}
 }
+
+// A config write that fails after the backup must leave the original config
+// in place, on install and on rollback, and rollback keeps its record so it
+// can retry.
+func TestBrowserConfigWriteFailureKeepsOriginal(t *testing.T) {
+	home := t.TempDir()
+	path, state := browserPaths(home)
+	original := `{"args":"--lang=en-US","headed":true}`
+	writeBrowserTestFile(t, path, original, 0o600)
+	prev := writeBrowserConfig
+	t.Cleanup(func() { writeBrowserConfig = prev })
+	writeBrowserConfig = func(string, []byte) error { return errors.New("disk full") }
+	if err := installBrowserDefaults(home); err == nil {
+		t.Fatal("install reported success on a failed config write")
+	}
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != original {
+		t.Fatalf("original config not intact after failed install write: %q, %v", got, err)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("ownership record left after failed install: %v", err)
+	}
+	writeBrowserConfig = prev
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserConfig = func(string, []byte) error { return errors.New("disk full") }
+	if err := rollbackBrowserDefaults(home); err == nil {
+		t.Fatal("rollback reported success on a failed config write")
+	}
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != string(installed) {
+		t.Fatalf("active config not intact after failed rollback write: %q, %v", got, err)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("ownership record dropped after failed rollback: %v", err)
+	}
+	writeBrowserConfig = prev
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatalf("retry rollback: %v", err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := browserArgs(obj); args != "--lang=en-US" {
+		t.Fatalf("args after retried rollback = %q", args)
+	}
+}
+
+func TestVerifyOutputStatesItsScope(t *testing.T) {
+	var out bytes.Buffer
+	cmd := verifyCmd()
+	cmd.SetOut(&out)
+	emitVerifyText(cmd, verifyReport{BrowserDefaults: "present"})
+	if !strings.Contains(out.String(), "environment Hermes launches the browser with is not inspected") {
+		t.Fatalf("verify output does not state its scope: %q", out.String())
+	}
+}

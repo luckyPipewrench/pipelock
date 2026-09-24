@@ -279,7 +279,10 @@ func emitVerifyJSON(cmd *cobra.Command, r verifyReport) error {
 
 func emitVerifyText(cmd *cobra.Command, r verifyReport) {
 	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(out, "Browser defaults: %s\n", r.BrowserDefaults)
+	// The state covers the agent-browser user config and this process's
+	// environment. A running Hermes may launch the browser with its own
+	// AGENT_BROWSER_ARGS, which verify cannot see.
+	_, _ = fmt.Fprintf(out, "Browser defaults: %s (agent-browser user config; the environment Hermes launches the browser with is not inspected)\n", r.BrowserDefaults)
 	if r.BrowserRemedy != "" {
 		_, _ = fmt.Fprintf(out, "  remedy: %s\n", r.BrowserRemedy)
 	}

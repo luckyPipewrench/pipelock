@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const browserFlag = "--disable-blink-features=AutomationControlled"
@@ -129,6 +130,10 @@ func loadBrowserDefaultsForInstall(home string) (map[string]json.RawMessage, boo
 // only so a test can fail this one write and prove the config is untouched.
 var writeBrowserOwnershipRecord = writeFileAtomic
 
+// writeBrowserConfig writes the agent-browser config. It is a variable only
+// so a test can fail this one write and prove the original stays in place.
+var writeBrowserConfig = writeFileAtomic
+
 func installBrowserDefaults(home string) error {
 	path, state := browserPaths(home)
 	obj, existed, args, already, err := loadBrowserDefaultsForInstall(home)
@@ -161,14 +166,30 @@ func installBrowserDefaults(home string) error {
 		return err
 	}
 	if existed {
-		if _, err := rotateExisting(path); err != nil {
+		if err := backupBrowserConfig(path); err != nil {
 			_ = os.Remove(state)
 			return err
 		}
 	}
-	if err := writeFileAtomic(path, data); err != nil {
+	if err := writeBrowserConfig(path, data); err != nil {
 		_ = os.Remove(state)
 		return err
+	}
+	return nil
+}
+
+// backupBrowserConfig copies the current config to <path>.bak.<nanos> and
+// leaves the original in place. The replacement is written atomically
+// afterward, so a failed write never leaves the active config missing, which
+// a rename-based rotation would.
+func backupBrowserConfig(path string) error {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("browser defaults: back up %s: %w", path, err)
+	}
+	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UTC().UnixNano())
+	if err := writeFileAtomic(backup, data); err != nil {
+		return fmt.Errorf("browser defaults: back up %s: %w", path, err)
 	}
 	return nil
 }
@@ -225,14 +246,14 @@ func rollbackBrowserDefaults(home string) error {
 				}
 				return os.Remove(state)
 			}
-			if _, err := rotateExisting(path); err != nil {
+			if err := backupBrowserConfig(path); err != nil {
 				return err
 			}
 			data, err := browserJSON(obj)
 			if err != nil {
 				return err
 			}
-			if err := writeFileAtomic(path, data); err != nil {
+			if err := writeBrowserConfig(path, data); err != nil {
 				return err
 			}
 		}

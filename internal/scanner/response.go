@@ -110,6 +110,9 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	key, eligible := s.responseVerdicts.key(body, suppressTarget, suppress)
 	if eligible {
 		if result, ok := s.responseVerdicts.get(key); ok {
+			if ctx != nil && ctx.Err() != nil {
+				return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
+			}
 			return result
 		}
 	}

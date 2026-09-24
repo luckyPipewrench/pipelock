@@ -56,6 +56,10 @@ func TestResponseVerdictCacheInputs(t *testing.T) {
 	if result := s.ScanResponseBodyWithSuppress(ctx, body, "", nil); !result.Clean {
 		t.Fatal("repeat body did not use its cached clean verdict")
 	}
+	canceling := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 2}
+	if result := s.ScanResponseBodyWithSuppress(canceling, body, "", nil); result.Clean || !result.Failed() {
+		t.Fatal("cancellation during a cache hit did not fail closed")
+	}
 }
 
 func (c *responseVerdictCache) hasKeyForTest(body []byte, target string, suppress []config.SuppressEntry) bool {

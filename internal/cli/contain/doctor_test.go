@@ -211,10 +211,14 @@ func TestCheckOwnedLoopback(t *testing.T) {
 func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
 	env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
 	env.chainStructure = func(context.Context) doctorResult {
-		return unknownInfra(managedChainNotEstablishedDetail + "owned loopback receiver chain is missing")
+		return unknownInfra("managed chain structure could not establish containment: owned loopback receiver chain is missing")
 	}
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain install") {
-		t.Fatalf("missing model = %+v, want FAIL with cause and install action", got)
+	// A reachable listener with an unconfirmed model is never a PASS, and the
+	// check does not upgrade the reader's verdict: the chain reader also fails
+	// on read errors, so turning this into FAIL would prescribe a reinstall
+	// for a model that may be installed.
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain verify") {
+		t.Fatalf("unconfirmed model = %+v, want UNKNOWN with cause and verify action", got)
 	}
 	// A chain read that failed is inconclusive, even when its detail contains a
 	// word such as "missing"; it must not become a reinstall FAIL.

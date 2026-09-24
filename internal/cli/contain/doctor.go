@@ -118,11 +118,6 @@ func doctorCounterProbeEnv(base *probeEnv, env *doctorEnv) probeEnv {
 // managed chain, while check 6 remains the packet-level enforcement proof.
 // A terminal rule owned by another UID cannot match the agent's packets, so
 // it stays outside this check exactly as it does for verify.
-// managedChainNotEstablishedDetail prefixes a chain read that completed and
-// could not establish containment, as opposed to a read that failed. The
-// owned-loopback check keys on it to tell an absent model from an unreadable one.
-const managedChainNotEstablishedDetail = "managed chain structure could not establish containment: "
-
 func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Context) doctorResult {
 	return func(ctx context.Context) doctorResult {
 		probe := doctorCounterProbeEnv(base, env)
@@ -135,7 +130,7 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 			if strings.Contains(detail, containmentBypassDetailPrefix) {
 				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
 			}
-			return unknownInfra(managedChainNotEstablishedDetail + detail)
+			return unknownInfra("managed chain structure could not establish containment: " + detail)
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
 		}
@@ -252,17 +247,19 @@ func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
 	}
 	if code == 0 && strings.Contains(out, "LOOPBACK_PASS") {
 		// A reachable listener proves the owned model only when the managed
-		// chain is installed; otherwise loopback works because nothing is
-		// contained. Only a chain read that completed and could not establish
-		// containment is a FAIL. A reader or command error stays UNKNOWN.
+		// chain is confirmed; otherwise loopback may work because nothing is
+		// contained. The chain reader cannot always tell a missing model from
+		// an unreadable one, so this check never upgrades its verdict: a
+		// definite bypass stays FAIL, anything short of PASS stays UNKNOWN,
+		// and managed_chain_structure reports the chain state on its own.
 		structure := checkManagedChainStructure(ctx, env)
-		switch {
-		case structure.status == statusPass:
+		switch structure.status {
+		case statusPass:
 			return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
-		case structure.status == statusUnknown && strings.HasPrefix(structure.detail, managedChainNotEstablishedDetail):
-			return fail(classInfra, "owned-loopback model is not installed: "+strings.TrimPrefix(structure.detail, managedChainNotEstablishedDetail), "rerun `pipelock contain install` to restore the owned slice and nftables rules")
-		default:
+		case statusFail:
 			return structure
+		default:
+			return unknown("the loopback listener was reachable, but the owned-loopback model could not be confirmed: "+structure.detail, "run `pipelock contain verify` to inspect the managed chain, then rerun `pipelock contain install` if the owned-loopback rules are missing")
 		}
 	}
 	return unknown(fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")

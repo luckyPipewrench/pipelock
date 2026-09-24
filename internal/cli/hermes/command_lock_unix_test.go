@@ -8,6 +8,7 @@ package hermes
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -119,4 +120,88 @@ func TestHermesCommandLockFollowsSymlinkedCacheRoot(t *testing.T) {
 	if err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil }); err != nil || !ran {
 		t.Fatalf("lock under a symlinked cache root: err=%v ran=%v", err, ran)
 	}
+}
+
+// A lock resource whose path runs through a regular file cannot be resolved,
+// and the error names which input was unusable.
+func TestHermesCommandLockRefusesUnresolvableResources(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	goodConfig := filepath.Join(root, "cfg", "config.yaml")
+	goodHome := filepath.Join(root, "home")
+	if err := withHermesCommandLock(goodConfig, goodHome, func() error { return nil }); err != nil {
+		t.Fatalf("control lock failed: %v", err)
+	}
+	for _, tc := range []struct {
+		name, config, home, want string
+	}{
+		{"config", filepath.Join(file, "cfg", "config.yaml"), goodHome, "config directory"},
+		{"home", goodConfig, filepath.Join(file, "home"), "hermes command lock: home"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := false
+			err := withHermesCommandLock(tc.config, tc.home, func() error { ran = true; return nil })
+			if err == nil || !strings.Contains(err.Error(), tc.want) || ran {
+				t.Fatalf("err = %v, ran = %v; want error naming %q and no run", err, ran, tc.want)
+			}
+		})
+	}
+}
+
+// Without any cache directory the lock cannot be placed, so the command is
+// refused rather than run unlocked.
+func TestHermesCommandLockNeedsCacheDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("HOME", "")
+	ran := false
+	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "cache directory") || ran {
+		t.Fatalf("err = %v, ran = %v; want cache directory error and no run", err, ran)
+	}
+}
+
+// A cache root that is a regular file cannot hold the lock directory.
+func TestHermesCommandLockDirectoryCreateFailure(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.WriteFile(cache, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CACHE_HOME", cache)
+	ran := false
+	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "hermes command lock: create") || ran {
+		t.Fatalf("err = %v, ran = %v; want create error and no run", err, ran)
+	}
+}
+
+// A lock path occupied by something other than a regular file is refused
+// before any lock is taken on it.
+func TestHermesLockFileRejectsNonRegular(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("opening a FIFO read-write is Linux-defined behavior")
+	}
+	path := filepath.Join(t.TempDir(), "lock")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := acquireHermesLock(path, time.Now().Add(time.Second))
+	if err == nil {
+		unlock()
+		t.Fatal("FIFO accepted as a lock file")
+	}
+	if !strings.Contains(err.Error(), "unsafe lock file") {
+		t.Fatalf("err = %v, want unsafe lock file", err)
+	}
+	control := filepath.Join(t.TempDir(), "lock")
+	unlock, err = acquireHermesLock(control, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("control lock failed: %v", err)
+	}
+	unlock()
 }

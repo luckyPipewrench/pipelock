@@ -199,6 +199,10 @@ var interfaceTags = map[string]bool{
 // hiddenTrapCandidate is one CSS-hidden div, span or p and where it closes.
 type hiddenTrapCandidate struct {
 	start, openEnd, closeStart, end int
+	// opened is set when the tag scan reaches this opening tag. A pattern
+	// match inside a comment, an attribute value, or script or style text is
+	// never opened and is not an element.
+	opened bool
 }
 
 // textSegment maps a run of document text, with tags removed, back to its
@@ -236,6 +240,7 @@ func stripHiddenElementTraps(s string) (string, int) {
 		candidate int
 	}
 	var stack []openElement
+	openCount := map[string]int{}
 	var interfacePos []int
 	var text strings.Builder
 	var segments []textSegment
@@ -270,7 +275,10 @@ func stripHiddenElementTraps(s string) (string, int) {
 		}
 		tagEnd := lt + gt + 1
 		if idx, ok := candidateAt[lt]; ok {
-			stack = append(stack, openElement{tag: strings.ToLower(s[opens[idx][2]:opens[idx][3]]), candidate: idx})
+			tag := strings.ToLower(s[opens[idx][2]:opens[idx][3]])
+			candidates[idx].opened = true
+			stack = append(stack, openElement{tag: tag, candidate: idx})
+			openCount[tag]++
 			pos = candidates[idx].openEnd
 			continue
 		}
@@ -285,9 +293,25 @@ func stripHiddenElementTraps(s string) (string, int) {
 		}
 		name := lower[nameStart:nameEnd]
 		switch {
+		case !closing && (name == "script" || name == "style"):
+			// Script and style bodies are text to the browser, so markup
+			// inside them opens no elements.
+			closeRaw := strings.Index(lower[tagEnd:], "</"+name)
+			if closeRaw < 0 {
+				pos = len(s)
+				continue
+			}
+			pos = tagEnd + closeRaw
+			continue
 		case name == "div" || name == "span" || name == "p":
 			if !closing {
 				stack = append(stack, openElement{tag: name, candidate: -1})
+				openCount[name]++
+				break
+			}
+			if openCount[name] == 0 {
+				// A stray closer has nothing to match; skipping it keeps the
+				// pass linear however many unmatched closers a page carries.
 				break
 			}
 			for i := len(stack) - 1; i >= 0; i-- {
@@ -297,10 +321,12 @@ func stripHiddenElementTraps(s string) (string, int) {
 				// Elements opened above the match never closed; they end where
 				// their ancestor does.
 				for j := len(stack) - 1; j > i; j-- {
+					openCount[stack[j].tag]--
 					if c := stack[j].candidate; c >= 0 {
 						candidates[c].closeStart, candidates[c].end = lt, lt
 					}
 				}
+				openCount[name]--
 				if c := stack[i].candidate; c >= 0 {
 					candidates[c].closeStart, candidates[c].end = lt, tagEnd
 				}
@@ -329,7 +355,7 @@ func stripHiddenElementTraps(s string) (string, int) {
 	var b strings.Builder
 	hits, written, removedUntil := 0, 0, 0
 	for _, c := range candidates {
-		if c.start < removedUntil {
+		if !c.opened || c.start < removedUntil {
 			continue
 		}
 		// Interface markup anywhere inside keeps the element: applications hide

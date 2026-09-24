@@ -762,8 +762,10 @@ func TestShieldUTF16_SVGValidatesDecodedText(t *testing.T) {
 		want bool
 	}{
 		{"benign", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>`, true},
-		{"script", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`, false},
-		{"fetching reference", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><image href="https://track.example.com/pixel"/></svg>`, false},
+		{"script refused before rewrite", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect/></svg>`, false},
+		// The rewriter does not touch a presentation-attribute url(), so the
+		// structural check on the delivered bytes refuses it.
+		{"external paint reference", `<?xml version="1.0" encoding="UTF-16LE"?><svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://track.example.com/p.svg#p)"/></svg>`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -773,6 +775,9 @@ func TestShieldUTF16_SVGValidatesDecodedText(t *testing.T) {
 			}
 			if result.svgValidated != tc.want || (result.svgRefusal == "") != tc.want {
 				t.Fatalf("svgValidated=%t refusal=%q, want validated=%t", result.svgValidated, result.svgRefusal, tc.want)
+			}
+			if tc.want && bytes.Contains(result.body, []byte("alert(1)")) {
+				t.Fatalf("validated SVG still carries the script: %q", result.body)
 			}
 		})
 	}

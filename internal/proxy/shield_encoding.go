@@ -92,8 +92,8 @@ func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentTy
 	shieldResult := engine.RewriteWithNonce(content, pipeline, cfg, headerNonce)
 	result := shieldPipelineResult{body: body, summary: shieldSummaryFromResult(shieldResult), utf16: utf16, pipeline: pipeline}
 	if pipeline == shield.PipelineSVG {
-		// Validate what will actually be delivered, not only what arrived:
-		// a rewrite must never be the step that makes an SVG active.
+		// Validate the rewritten bytes too: rewriting must not make a
+		// previously safe SVG active before delivery.
 		if err := shield.ValidateSVG(shieldResult.Content); err != nil {
 			return shieldPipelineResult{body: body, pipeline: pipeline, svgRefusal: svgValidationRefusal(err)}
 		}

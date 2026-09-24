@@ -2520,7 +2520,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// shield. This preserves the "media policy runs even when response scanning
 	// is disabled" invariant and matches the validator warning that
 	// exempt_domains only takes effect when response scanning is enabled.
-	if fwdRespExempt && cfg.ResponseScanning.Enabled {
+	// Declared SVG stays on the buffered Shield path even for a trusted host:
+	// it is active content, and the SVG floor never admits unvalidated bytes.
+	if fwdRespExempt && cfg.ResponseScanning.Enabled && !responseHeadersDeclareSVG(resp.Header) {
 		p.logger.LogResponseScanExemptFullTrust(actx, fwdRespHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)

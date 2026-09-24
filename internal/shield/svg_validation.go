@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -88,9 +91,22 @@ func ValidateSVG(document string) error {
 			if node.Name.Space == xhtmlNamespace || node.Name.Space == mathMLNamespace {
 				return errors.New("SVG contains an XHTML or MathML element")
 			}
+			// Animation is ordinary drawing (spinners, transitions) and is
+			// allowed, except where it retargets a link or a handler: SMIL
+			// can rewrite href to javascript: after validation has run.
+			if svgAnimationRetargetsActive(node) {
+				return errors.New("SVG animation targets a non-drawing attribute")
+			}
 			if svgActiveElement(node.Name.Local) {
 				// Only a fixed, known element name reaches the message.
 				return fmt.Errorf("SVG contains active element %q", strings.ToLower(node.Name.Local))
+			}
+			// Structural allowlist for the SVG namespace: anything not named
+			// is refused rather than assumed inert. XML names are
+			// case-sensitive. Other namespaces (metadata, editor state) are not
+			// rendered by an SVG user agent.
+			if node.Name.Space == svgNamespace && !svgAllowedElements[node.Name.Local] {
+				return errors.New("SVG contains an element outside the drawing allowlist")
 			}
 			for _, attr := range node.Attr {
 				if err := validateSVGAttribute(node.Name.Local, attr); err != nil {
@@ -113,8 +129,11 @@ func ValidateSVG(document string) error {
 			elements = elements[:len(elements)-1]
 			styleText = styleText[:len(styleText)-1]
 		case xml.CharData:
+			if len(elements) == 0 && len(strings.TrimSpace(string(node))) != 0 {
+				return errors.New("SVG has text outside the root element")
+			}
 			if len(styleText) > 0 && styleText[len(styleText)-1] != nil {
-				styleText[len(styleText)-1].Write(node)
+				_, _ = styleText[len(styleText)-1].Write(node) // strings.Builder never errors
 			}
 		case xml.Directive:
 			// <!DOCTYPE svg PUBLIC ...> is ordinary SVG 1.1 boilerplate. An
@@ -135,10 +154,85 @@ func ValidateSVG(document string) error {
 	}
 }
 
+// svgAnimationRetargetsActive reports whether a SMIL element animates anything
+// other than a drawing attribute. SMIL changes the document after validation
+// ran, so animating href, a handler, style or xml:base would install exactly
+// what the attribute checks refuse. The animated values (to, from, values, by)
+// are ordinary attributes and still pass the url() and scheme checks.
+func svgAnimationRetargetsActive(node xml.StartElement) bool {
+	switch strings.ToLower(node.Name.Local) {
+	case "set", "animate", "animatetransform", "animatemotion", "animatecolor":
+	default:
+		return false
+	}
+	for _, attr := range node.Attr {
+		if !strings.EqualFold(attr.Name.Local, "attributeName") {
+			continue
+		}
+		if !svgAnimatableAttributes[strings.ToLower(strings.TrimSpace(attr.Value))] {
+			return true
+		}
+	}
+	return false
+}
+
+// svgAllowedElements is every SVG-namespace element a drawing may use. It
+// omits script, foreignObject, the media and embedding elements, handler and
+// listener, and the SVG 1.1 elements whose purpose is to fetch another
+// resource (cursor, color-profile, font-face-uri, tref, altGlyph).
+var svgAllowedElements = setOf(
+	"svg", "g", "defs", "desc", "title", "metadata", "symbol", "use", "switch", "view",
+	"a", "image", "style", "marker", "pattern", "clipPath", "mask",
+	"path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+	"text", "tspan", "textPath",
+	"linearGradient", "radialGradient", "stop", "mpath",
+	"animate", "animateMotion", "animateTransform", "animateColor", "set",
+	"filter", "feBlend", "feColorMatrix", "feComponentTransfer", "feComposite",
+	"feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap", "feDistantLight",
+	"feDropShadow", "feFlood", "feFuncA", "feFuncB", "feFuncG", "feFuncR",
+	"feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology", "feOffset",
+	"fePointLight", "feSpecularLighting", "feSpotLight", "feTile", "feTurbulence",
+	"font", "font-face", "font-face-src", "font-face-name", "glyph", "missing-glyph", "hkern", "vkern",
+)
+
+// svgAnimatableAttributes is what an animation may target: geometry,
+// transforms and paint. Lowercase, because attributeName is compared that way.
+var svgAnimatableAttributes = setOf(
+	"transform", "opacity", "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width",
+	"stroke-dasharray", "stroke-dashoffset", "stop-color", "stop-opacity", "color", "visibility", "display",
+	"x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "fx", "fy", "width", "height",
+	"d", "points", "offset", "viewbox", "rotate", "stddeviation", "flood-color", "flood-opacity",
+	"font-size", "letter-spacing", "dx", "dy", "pathlength", "startoffset",
+)
+
+func setOf(names ...string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}
+
+// svgInlineRasterImage allows an <image> to embed a raster bitmap as a data
+// URL. It retrieves nothing and a raster format cannot execute; SVG-in-data
+// and every other data type stay refused.
+func svgInlineRasterImage(element, value string) bool {
+	if !strings.EqualFold(element, "image") {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{"data:image/png;", "data:image/jpeg;", "data:image/gif;", "data:image/webp;"} {
+		if strings.HasPrefix(v, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func svgActiveElement(local string) bool {
 	switch strings.ToLower(local) {
 	case "script", "foreignobject", "iframe", "object", "embed", "frame", "audio", "video",
-		"animate", "animatemotion", "animatetransform", "set", "handler", "listener":
+		"handler", "listener":
 		return true
 	default:
 		return false
@@ -169,10 +263,18 @@ func validateSVGAttribute(element string, attr xml.Attr) error {
 		return nil
 	}
 	local := strings.ToLower(attr.Name.Local)
+	// xml:base re-roots every relative and fragment reference in the
+	// subtree, so a "#fragment" check would no longer mean same-document.
+	if (attr.Name.Space == xmlNamespace || attr.Name.Space == "xml") && local == "base" {
+		return errors.New("SVG uses xml:base")
+	}
 	if strings.HasPrefix(local, "on") {
 		return errors.New("SVG contains an event handler attribute")
 	}
 	if local == "href" && !strings.HasPrefix(strings.TrimSpace(attr.Value), "#") {
+		if svgInlineRasterImage(element, attr.Value) {
+			return nil
+		}
 		if svgFetchesExternalHref(element) {
 			return errors.New("SVG contains an external reference on an element that fetches it")
 		}
@@ -247,22 +349,69 @@ func svgUnsafeCSS(value string, stylesheet bool) bool {
 		// Stylesheet-only constructs. A presentation attribute such as fill
 		// takes only a url() reference, and checking these there would
 		// refuse ordinary label text like "image(s)".
-		for _, fn := range []string{"@import", "expression(", "image(", "image-set(", "cross-fade(", "src("} {
+		for _, fn := range []string{"@import", "expression(", "image(", "image-set(", "cross-fade(", "src(", "-moz-binding"} {
 			if strings.Contains(v, fn) {
 				return true
 			}
 		}
-	}
-	for rest := v; ; {
-		idx := strings.Index(rest, "url(")
-		if idx < 0 {
-			return false
-		}
-		rest = rest[idx+len("url("):]
-		target := strings.TrimLeft(rest, " \t\n\r\f")
-		target = strings.TrimLeft(target, "\"'")
-		if !strings.HasPrefix(target, "#") {
+		if cssBehaviorProperty.MatchString(v) {
 			return true
 		}
 	}
+	if !stylesheet && strings.Contains(v, `\`) {
+		// A presentation attribute is parsed as a CSS value, so an escape
+		// can spell url( without the literal text. Decode, then check.
+		v = cssUnescape(v)
+	}
+	for _, match := range cssURLReference.FindAllStringSubmatch(v, -1) {
+		if !strings.HasPrefix(match[1], "#") {
+			return true
+		}
+	}
+	return false
 }
+
+// cssUnescape decodes CSS escapes and lowercases the result: a backslash and
+// one to six hex digits (plus one optional whitespace) is that code point; a
+// backslash before any other character is that character.
+func cssUnescape(value string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' || i+1 == len(value) {
+			b.WriteByte(value[i])
+			continue
+		}
+		j := i + 1
+		for j < len(value) && j-i <= 6 && isHexDigit(value[j]) {
+			j++
+		}
+		if j == i+1 {
+			b.WriteByte(value[j])
+			i = j
+			continue
+		}
+		code, err := strconv.ParseUint(value[i+1:j], 16, 32)
+		if err != nil || code > utf8.MaxRune {
+			code = utf8.RuneError
+		}
+		b.WriteRune(rune(code))
+		if j < len(value) && strings.IndexByte(" \t\n\r\f", value[j]) >= 0 {
+			j++
+		}
+		i = j - 1
+	}
+	return strings.ToLower(b.String())
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+var (
+	// cssURLReference captures the start of each url() target, tolerating
+	// whitespace and an optional quote.
+	cssURLReference = regexp.MustCompile(`url\s*\(\s*['"]?\s*([^)'"\s]*)`)
+	// cssBehaviorProperty matches the legacy IE behavior property, which
+	// loads and runs an HTC component.
+	cssBehaviorProperty = regexp.MustCompile(`(^|[;{\s])behavior\s*:`)
+)

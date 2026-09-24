@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 // The SVG delivery contract: an SVG response reaches the client only after
@@ -42,6 +43,10 @@ var hostileSVGForms = map[string]string{
 	"fetching href":     `<svg xmlns="http://www.w3.org/2000/svg"><image href="https://zqx-fetch.vendor.example/b.png"/></svg>`,
 	"presentation url":  `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://zqx-fill.vendor.example/p.svg#p)"/></svg>`,
 	"stylesheet import": `<svg xmlns="http://www.w3.org/2000/svg"><style>@im<![CDATA[port "https://zqx-css.vendor.example/x.css";]]></style></svg>`,
+	"css escape url":    `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="\75rl(https://zqx-escp.vendor.example/p#p)"/></svg>`,
+	"foreignObject":     `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">zqx_fobj</div></foreignObject></svg>`,
+	"set href to js":    `<svg xmlns="http://www.w3.org/2000/svg"><a href="#k"><set attributeName="href" to="javascript:zqx_set()"/><rect/></a></svg>`,
+	"svg data image":    `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml,zqx_data"/></svg>`,
 }
 
 func hostileMarker(doc string) string {
@@ -141,6 +146,7 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 		addr, cleanup := setupForwardProxy(t, configure)
 		t.Cleanup(cleanup)
 		response := doGet(t, proxyClient(addr), upstream.URL)
+		defer func() { _ = response.Body.Close() }()
 		return readAll(response)
 	case "tls interception":
 		upstream := httptest.NewTLSServer(handler)
@@ -157,12 +163,15 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 			t.Fatal(err)
 		}
 		response := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+		defer func() { _ = response.Body.Close() }()
 		return readAll(response)
 	case "reverse":
 		cfg := reverseTestConfig()
 		configure(cfg)
 		server := reverseShieldConfiguredServer(t, cfg, handler, nil, audit.NewNop())
-		return readAll(testGet(t, server.URL+"/page"))
+		response := testGet(t, server.URL+"/page")
+		defer func() { _ = response.Body.Close() }()
+		return readAll(response)
 	default:
 		t.Fatalf("unknown path %q", path)
 		return svgPathResult{}
@@ -173,6 +182,22 @@ func assertSVGDelivered(t *testing.T, got svgPathResult, want string) {
 	t.Helper()
 	if !got.delivered || string(got.body) != want {
 		t.Fatalf("SVG not delivered intact: status=%d body=%q", got.status, got.body)
+	}
+}
+
+// assertActiveSVGNotDelivered accepts either outcome the contract allows for
+// hostile input: a refusal, or delivery of a sanitized document. What it
+// forbids is the active construct reaching the client, and it requires that
+// anything delivered passes the same structural check the floor applies.
+func assertActiveSVGNotDelivered(t *testing.T, got svgPathResult, forbidden string) {
+	t.Helper()
+	if bytes.Contains(got.body, []byte(forbidden)) {
+		t.Fatalf("active SVG construct reached the client: status=%d body=%q", got.status, got.body)
+	}
+	if got.delivered {
+		if err := shield.ValidateSVG(string(got.body)); err != nil {
+			t.Fatalf("delivered SVG fails validation (%v): %q", err, got.body)
+		}
 	}
 }
 
@@ -207,15 +232,27 @@ func TestSVGDeliveryContract_BenignTransportParity(t *testing.T) {
 	}
 }
 
-func TestSVGDeliveryContract_HostileFormsRefused(t *testing.T) {
+func TestSVGDeliveryContract_HostileFormsNeverDelivered(t *testing.T) {
+	respScanExempt := func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+	}
 	for _, path := range svgResponsePaths {
 		for name, doc := range hostileSVGForms {
 			t.Run(path+"/"+name, func(t *testing.T) {
-				assertSVGRefused(t, runSVGPath(t, path, nil, svgFixtureHandler(doc)), hostileMarker(doc))
+				assertActiveSVGNotDelivered(t, runSVGPath(t, path, nil, svgFixtureHandler(doc)), hostileMarker(doc))
+			})
+			// A response-scan-exempt host is full-trust passthrough for other
+			// content, but SVG still takes the buffered Shield path.
+			t.Run(path+"/response-scan exempt host/"+name, func(t *testing.T) {
+				assertActiveSVGNotDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(doc)), hostileMarker(doc))
 			})
 		}
 		t.Run(path+"/hostile inside gzip", func(t *testing.T) {
-			assertSVGRefused(t, runSVGPath(t, path, nil, svgGzipHandler(t, hostileSVGFixture)), "alert(1)")
+			assertActiveSVGNotDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, hostileSVGFixture)), "alert(1)")
+		})
+		t.Run(path+"/response-scan exempt host/benign", func(t *testing.T) {
+			assertSVGDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(benignSVGFixture)), benignSVGFixture)
 		})
 	}
 }
@@ -286,7 +323,12 @@ func TestSVGDeliveryContract_ReverseNeverStreamsSVG(t *testing.T) {
 		"shield off media on":  func(cfg *config.Config) { cfg.BrowserShield.Enabled = false },
 	} {
 		t.Run(name, func(t *testing.T) {
-			assertSVGRefused(t, runSVGPath(t, "reverse", mod, svgFixtureHandler(hostileSVGFixture)), "alert(1)")
+			got := runSVGPath(t, "reverse", mod, svgFixtureHandler(hostileSVGFixture))
+			assertActiveSVGNotDelivered(t, got, "alert(1)")
+			// With Shield off nothing validated the body, so it is refused.
+			if strings.HasPrefix(name, "shield off") {
+				assertSVGRefused(t, got, "alert(1)")
+			}
 		})
 	}
 }

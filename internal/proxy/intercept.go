@@ -2009,7 +2009,10 @@ func newInterceptHandler(
 		if maxResp <= 0 {
 			maxResp = interceptDefaultMaxResp
 		}
-		if interceptRespExempt && ic.Config.ResponseScanning.Enabled {
+		// Declared SVG stays on the buffered Shield path even for a trusted
+		// host: it is active content, and the SVG floor never admits
+		// unvalidated bytes.
+		if interceptRespExempt && ic.Config.ResponseScanning.Enabled && !responseHeadersDeclareSVG(resp.Header) {
 			ic.Logger.LogResponseScanExemptFullTrust(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			if !requiredIntentEmitted && interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {

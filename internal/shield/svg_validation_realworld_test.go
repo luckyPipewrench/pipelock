@@ -65,7 +65,7 @@ func TestValidateSVG_RefusesActiveContent(t *testing.T) {
 		"css external url":        `<svg xmlns="http://www.w3.org/2000/svg"><style>.a{background:url(https://evil.example/x)}</style></svg>`,
 		"style attr url":          `<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url(https://evil.example/x)"/></svg>`,
 		"doctype internal subset": `<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`,
-		"animate element":         `<svg xmlns="http://www.w3.org/2000/svg"><animate attributeName="x"/></svg>`,
+		"animate retargets href":  `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><set attributeName="href" to="javascript:alert(1)"/></a></svg>`,
 		"not svg root":            `<html xmlns="http://www.w3.org/1999/xhtml"><body/></html>`,
 		"truncated document":      `<svg xmlns="http://www.w3.org/2000/svg"><rect>`,
 	}
@@ -89,6 +89,13 @@ func TestValidateSVG_CSSAndNamespaceForms(t *testing.T) {
 		"utf-16 declaration":       `<?xml version="1.0" encoding="UTF-16"?><svg xmlns="http://www.w3.org/2000/svg"/>`,
 		"editor path backslash":    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" inkscape:export-filename="C:\out\a.png"/>`,
 		"label mentioning image()": `<svg xmlns="http://www.w3.org/2000/svg" aria-label="image(s) of cats"/>`,
+		"spinner animation":        `<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;0;1" dur="1s"/></circle></svg>`,
+		"inline png image":         `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo="/></svg>`,
+		"behavior-named class":     `<svg xmlns="http://www.w3.org/2000/svg"><style>.behavior-note{fill:red}</style></svg>`,
+		"filter and clip":          `<svg xmlns="http://www.w3.org/2000/svg"><defs><filter id="f"><feGaussianBlur stdDeviation="2"/><feOffset dx="1"/></filter><clipPath id="c"><circle r="3"/></clipPath><mask id="m"><rect/></mask></defs><g filter="url(#f)" clip-path="url(#c)" mask="url( '#m' )"><rect/></g></svg>`,
+		"text and symbol":          `<svg xmlns="http://www.w3.org/2000/svg"><symbol id="s"><path d="M0 0"/></symbol><use href="#s"/><text><tspan>hi</tspan></text></svg>`,
+		"animated dash offset":     `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"><animate attributeName="stroke-dashoffset" values="0;10"/></path></svg>`,
+		"backslash in label text":  `<svg xmlns="http://www.w3.org/2000/svg"><rect aria-label="C:\files\icon"/></svg>`,
 	}
 	for name, doc := range accepted {
 		if err := ValidateSVG(doc); err != nil {
@@ -106,6 +113,22 @@ func TestValidateSVG_CSSAndNamespaceForms(t *testing.T) {
 		"xhtml style":                 `<svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml"><h:link rel="stylesheet" href="x.css"/></svg>`,
 		"second root element":         `<svg xmlns="http://www.w3.org/2000/svg"/><svg xmlns="http://www.w3.org/2000/svg"/>`,
 		"non-utf charset declaration": `<?xml version="1.0" encoding="ISO-8859-1"?><svg xmlns="http://www.w3.org/2000/svg"/>`,
+		"set xlink href":              `<svg xmlns="http://www.w3.org/2000/svg"><a href="#x"><set attributeName="xlink:href" to="https://evil.example/"/></a></svg>`,
+		"animate handler":             `<svg xmlns="http://www.w3.org/2000/svg"><rect><set attributeName="onclick" to="x()"/></rect></svg>`,
+		"xml base reroot":             `<svg xmlns="http://www.w3.org/2000/svg" xml:base="https://evil.example/"><use href="#a"/></svg>`,
+		"svg data image":              `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,PHN2Zz4="/></svg>`,
+		"text outside root":           `<svg xmlns="http://www.w3.org/2000/svg"/>trailing`,
+		"moz binding":                 `<svg xmlns="http://www.w3.org/2000/svg"><rect style="-moz-binding:url(#x)"/></svg>`,
+		"behavior property":           `<svg xmlns="http://www.w3.org/2000/svg"><style>rect{behavior:url(#x)}</style></svg>`,
+		"url with whitespace":         `<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url ( 'https://evil.example/p' )"/></svg>`,
+		"element case variant":        `<svg xmlns="http://www.w3.org/2000/svg"><Script>alert(1)</Script></svg>`,
+		"unlisted fetching element":   `<svg xmlns="http://www.w3.org/2000/svg"><cursor href="https://evil.example/c.png"/></svg>`,
+		"unknown svg element":         `<svg xmlns="http://www.w3.org/2000/svg"><widget src="https://evil.example/w"/></svg>`,
+		"animate style":               `<svg xmlns="http://www.w3.org/2000/svg"><rect><set attributeName="style" to="fill:red"/></rect></svg>`,
+		"animate xml base":            `<svg xmlns="http://www.w3.org/2000/svg"><g><set attributeName="xml:base" to="https://evil.example/"/></g></svg>`,
+		"animate to external paint":   `<svg xmlns="http://www.w3.org/2000/svg"><rect><animate attributeName="fill" to="url(https://evil.example/p#p)"/></rect></svg>`,
+		"escaped presentation url":    `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="\75rl(https://evil.example/p#p)"/></svg>`,
+		"escaped animation url":       `<svg xmlns="http://www.w3.org/2000/svg"><rect><set attributeName="fill" to="\75 \72 l(https://evil.example/p)"/></rect></svg>`,
 		"stylesheet pi":               `<?xml-stylesheet href="https://evil.example/x.css"?><svg xmlns="http://www.w3.org/2000/svg"/>`,
 	}
 	for name, doc := range refused {

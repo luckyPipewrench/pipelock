@@ -490,6 +490,56 @@ func jwtOnlyCookieHeader(result *BodyScanResult) bool {
 	return true
 }
 
+// bodyBlockCause names the body finding that blocks the request on its own.
+type bodyBlockCause int
+
+const (
+	// bodyBlockCauseUnknown means no single finding blocks by itself, for
+	// example when adaptive escalation upgraded a warning. Callers keep their
+	// existing naming order.
+	bodyBlockCauseUnknown bodyBlockCause = iota
+	bodyBlockCauseInjection
+	bodyBlockCauseDLP
+	bodyBlockCauseEntropy
+)
+
+// blockingBodyFinding reports which finding stops the request. Any finding can
+// ride along at warn level: a secret match under request_body_scanning.action
+// or a pattern_actions override, a prompt-injection match to a request-body
+// trusted host, or an entropy finding under content_entropy_action. The block
+// reason, label, and receipt must name the finding that actually blocked, in
+// the same precedence the enforcement paths apply.
+func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Config) bodyBlockCause {
+	if cfg == nil {
+		return bodyBlockCauseUnknown
+	}
+	switch {
+	case shouldHardBlockBodyPromptInjection(result, hostname, cfg):
+		return bodyBlockCauseInjection
+	case len(result.DLPMatches) > 0 &&
+		(requestBodyDLPAction(result.DLPMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions) == config.ActionBlock ||
+			shouldHardBlockBodyCriticalDLP(result, hostname, cfg)):
+		return bodyBlockCauseDLP
+	case result.EntropyFinding != nil && result.EntropyAction == config.ActionBlock:
+		return bodyBlockCauseEntropy
+	}
+	return bodyBlockCauseUnknown
+}
+
+// bodyBlockCauseLabel returns the scanner label for a blocking finding, or
+// current when no single finding blocks.
+func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
+	switch cause {
+	case bodyBlockCauseInjection:
+		return scannerLabelBodyPromptInjection
+	case bodyBlockCauseDLP:
+		return scannerLabelBodyDLP
+	case bodyBlockCauseEntropy:
+		return scannerLabelBodyEntropy
+	}
+	return current
+}
+
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if !shouldHardBlockRequestDLP(result.DLPMatches, cfg) {
 		return false

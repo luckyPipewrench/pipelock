@@ -10,8 +10,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf16"
@@ -105,6 +108,23 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	if ctx != nil && ctx.Err() != nil {
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
+	key, eligible := s.responseVerdicts.key(body, suppressTarget, suppress)
+	if eligible {
+		if result, ok := s.responseVerdicts.get(key); ok {
+			if ctx != nil && ctx.Err() != nil {
+				return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
+			}
+			return result
+		}
+	}
+	result := s.scanResponseBodyUncached(ctx, body, suppressTarget, suppress)
+	if eligible {
+		s.responseVerdicts.put(key, len(body), result)
+	}
+	return result
+}
+
+func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
 		if hasResponseImageSignature(body) {
@@ -850,6 +870,10 @@ func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMat
 	return matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, content)
 }
 
+// responseMatchSlots bounds the extra pattern-matching goroutines across every
+// response scan in the process.
+var responseMatchSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
+
 // matchPatternsPreFiltered checks a pre-filter for keyword candidates in
 // content, then runs ONLY the matching patterns' regex. If no pre-filter
 // is configured, falls back to running all patterns. On clean 10KB content,
@@ -862,30 +886,83 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 	if len(indices) == 0 {
 		return nil
 	}
+	// Large bodies spend most of their time in independent regexp engines.
+	// Keep each pattern's result in its original slot so match order, pass
+	// precedence, and suppression behavior are identical to the serial path.
+	workers := min(runtime.GOMAXPROCS(0), len(indices))
+	if workers < 2 || len(content) < 4096 {
+		return matchPatternsSequential(indices, patterns, content)
+	}
+	results := make([][]ResponseMatch, len(indices))
+	var next atomic.Int64
+	work := func() {
+		for {
+			slot := int(next.Add(1) - 1)
+			if slot >= len(indices) {
+				return
+			}
+			if idx := indices[slot]; idx >= 0 && idx < len(patterns) {
+				results[slot] = matchResponsePattern(patterns[idx], content)
+			}
+		}
+	}
+	// Extra workers come from a process-wide pool and are taken only when one
+	// is free, so concurrent large responses share the CPUs instead of each
+	// starting a full set of goroutines. The caller always works too, which
+	// makes a busy pool fall back to the sequential path rather than wait.
+	var wg sync.WaitGroup
+	for range workers - 1 {
+		select {
+		case responseMatchSlots <- struct{}{}:
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-responseMatchSlots
+					wg.Done()
+				}()
+				work()
+			}()
+		default:
+		}
+	}
+	work()
+	wg.Wait()
+	var matches []ResponseMatch
+	for _, group := range results {
+		matches = append(matches, group...)
+	}
+	return matches
+}
+
+func matchPatternsSequential(indices []int, patterns []*compiledPattern, content string) []ResponseMatch {
 	var matches []ResponseMatch
 	for _, idx := range indices {
-		if idx < 0 || idx >= len(patterns) {
-			continue
+		if idx >= 0 && idx < len(patterns) {
+			matches = append(matches, matchResponsePattern(patterns[idx], content)...)
 		}
-		p := patterns[idx]
-		if !responsePatternCanMatch(p, content) {
-			continue
+	}
+	return matches
+}
+
+func matchResponsePattern(p *compiledPattern, content string) []ResponseMatch {
+	if !responsePatternCanMatch(p, content) {
+		return nil
+	}
+	locs := responsePatternMatchLocations(p, content)
+	var matches []ResponseMatch
+	for _, loc := range locs {
+		matchText := content[loc[0]:loc[1]]
+		if runes := []rune(matchText); len(runes) > 100 {
+			matchText = string(runes[:100])
 		}
-		locs := responsePatternMatchLocations(p, content)
-		for _, loc := range locs {
-			matchText := content[loc[0]:loc[1]]
-			if runes := []rune(matchText); len(runes) > 100 {
-				matchText = string(runes[:100])
-			}
-			matches = append(matches, ResponseMatch{
-				PatternName:   p.name,
-				MatchText:     matchText,
-				Position:      loc[0],
-				Bundle:        p.bundle,
-				BundleVersion: p.bundleVersion,
-				matchLength:   loc[1] - loc[0],
-			})
-		}
+		matches = append(matches, ResponseMatch{
+			PatternName:   p.name,
+			MatchText:     matchText,
+			Position:      loc[0],
+			Bundle:        p.bundle,
+			BundleVersion: p.bundleVersion,
+			matchLength:   loc[1] - loc[0],
+		})
 	}
 	return matches
 }

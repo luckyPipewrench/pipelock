@@ -5,6 +5,7 @@ package shield
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -181,94 +182,181 @@ var (
 	trapInstructionRe   = regexp.MustCompile(trapInstructionPattern)
 )
 
-// stripHiddenElementTraps removes each CSS-hidden div, span or p whose text
-// carries instruction vocabulary. The whole element is removed, from its
-// opening tag to its matching close tag, so the rest of the document keeps
-// its structure. An element with no matching close runs to the end of the
-// document, as a browser would parse it.
+// interfaceTags mark a hidden element as application interface rather than a
+// trap: something a user interacts with or that lays out a view, which
+// applications hide until their scripts reveal it. Wrapper and phrasing tags
+// such as div, p, span, b and em do not count, because a trap can wrap its text
+// in them as easily as an application can.
+var interfaceTags = map[string]bool{
+	"a": true, "article": true, "aside": true, "audio": true, "button": true,
+	"canvas": true, "details": true, "dialog": true, "fieldset": true, "footer": true,
+	"form": true, "header": true, "iframe": true, "img": true, "input": true,
+	"label": true, "main": true, "nav": true, "ol": true, "option": true,
+	"picture": true, "section": true, "select": true, "summary": true, "svg": true,
+	"table": true, "template": true, "textarea": true, "ul": true, "video": true,
+}
+
+// hiddenTrapCandidate is one CSS-hidden div, span or p and where it closes.
+type hiddenTrapCandidate struct {
+	start, openEnd, closeStart, end int
+}
+
+// textSegment maps a run of document text, with tags removed, back to its
+// offset in the original document.
+type textSegment struct {
+	orig, text, length int
+}
+
+// stripHiddenElementTraps removes each CSS-hidden div, span or p that holds no
+// interface markup and whose text carries instruction vocabulary. The whole
+// element is removed, from its opening tag to its matching close tag, so the
+// rest of the document keeps its structure; an element with no matching close
+// runs to the end of the document, as a browser would parse it. The text is
+// read with tags removed, so inline markup cannot split a keyword apart.
+//
+// The work is linear in the document: one pass pairs every element with its
+// close tag and records where interface tags and instruction words fall, and
+// each candidate is then decided by lookup rather than by rescanning, so
+// deeply nested hidden elements cannot make the rewrite quadratic.
 func stripHiddenElementTraps(s string) (string, int) {
-	var b strings.Builder
+	opens := hiddenElementOpenRe.FindAllStringSubmatchIndex(s, -1)
+	if len(opens) == 0 {
+		return s, 0
+	}
 	lower := asciiLower(s)
-	hits := 0
+	candidateAt := make(map[int]int, len(opens))
+	candidates := make([]hiddenTrapCandidate, len(opens))
+	for i, loc := range opens {
+		candidates[i] = hiddenTrapCandidate{start: loc[0], openEnd: loc[1], closeStart: len(s), end: len(s)}
+		candidateAt[loc[0]] = i
+	}
+
+	type openElement struct {
+		tag       string
+		candidate int
+	}
+	var stack []openElement
+	var interfacePos []int
+	var text strings.Builder
+	var segments []textSegment
+	addText := func(from, to int) {
+		if to <= from {
+			return
+		}
+		segments = append(segments, textSegment{orig: from, text: text.Len(), length: to - from})
+		text.WriteString(s[from:to])
+	}
+
 	pos := 0
 	for pos < len(s) {
-		loc := hiddenElementOpenRe.FindStringSubmatchIndex(s[pos:])
-		if loc == nil {
+		lt := strings.IndexByte(s[pos:], '<')
+		if lt < 0 {
+			addText(pos, len(s))
 			break
 		}
-		start, openEnd := pos+loc[0], pos+loc[1]
-		tag := strings.ToLower(s[pos+loc[2] : pos+loc[3]])
-		end := matchingCloseEnd(lower, openEnd, tag)
-		inner := s[openEnd:end]
-		if closeStart := strings.LastIndex(asciiLower(inner), "</"+tag); closeStart >= 0 {
-			inner = inner[:closeStart]
-		}
-		// Only a text-only hidden element is a trap. A hidden element that
-		// holds markup is interface: applications hide whole views, menus
-		// and templates until their scripts reveal them, and removing one
-		// because its text happens to contain "instead" deleted the page.
-		// Its text is still read by response scanning.
-		if strings.Contains(inner, "<") || !trapInstructionRe.MatchString(inner) {
-			b.WriteString(s[pos:openEnd])
-			pos = openEnd
+		lt += pos
+		addText(pos, lt)
+		if strings.HasPrefix(s[lt:], "<!--") {
+			closeComment := strings.Index(s[lt+4:], "-->")
+			if closeComment < 0 {
+				break
+			}
+			pos = lt + 4 + closeComment + 3
 			continue
 		}
-		b.WriteString(s[pos:start])
-		pos = end
+		gt := strings.IndexByte(s[lt:], '>')
+		if gt < 0 {
+			break
+		}
+		tagEnd := lt + gt + 1
+		if idx, ok := candidateAt[lt]; ok {
+			stack = append(stack, openElement{tag: strings.ToLower(s[opens[idx][2]:opens[idx][3]]), candidate: idx})
+			pos = candidates[idx].openEnd
+			continue
+		}
+		closing := lt+1 < len(s) && s[lt+1] == '/'
+		nameStart := lt + 1
+		if closing {
+			nameStart++
+		}
+		nameEnd := nameStart
+		for nameEnd < len(lower) && isTagNameByte(lower[nameEnd]) {
+			nameEnd++
+		}
+		name := lower[nameStart:nameEnd]
+		switch {
+		case name == "div" || name == "span" || name == "p":
+			if !closing {
+				stack = append(stack, openElement{tag: name, candidate: -1})
+				break
+			}
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i].tag != name {
+					continue
+				}
+				// Elements opened above the match never closed; they end where
+				// their ancestor does.
+				for j := len(stack) - 1; j > i; j-- {
+					if c := stack[j].candidate; c >= 0 {
+						candidates[c].closeStart, candidates[c].end = lt, lt
+					}
+				}
+				if c := stack[i].candidate; c >= 0 {
+					candidates[c].closeStart, candidates[c].end = lt, tagEnd
+				}
+				stack = stack[:i]
+				break
+			}
+		case !closing && interfaceTags[name]:
+			interfacePos = append(interfacePos, lt)
+		}
+		pos = tagEnd
+	}
+
+	body := text.String()
+	words := trapInstructionRe.FindAllStringIndex(body, -1)
+	textAt := func(orig int) int {
+		i := sort.Search(len(segments), func(i int) bool { return segments[i].orig+segments[i].length > orig })
+		if i == len(segments) {
+			return len(body)
+		}
+		if orig <= segments[i].orig {
+			return segments[i].text
+		}
+		return segments[i].text + orig - segments[i].orig
+	}
+
+	var b strings.Builder
+	hits, written, removedUntil := 0, 0, 0
+	for _, c := range candidates {
+		if c.start < removedUntil {
+			continue
+		}
+		// Interface markup anywhere inside keeps the element: applications hide
+		// whole views, menus and forms until their scripts reveal them. Its text
+		// is still read by response scanning.
+		if k := sort.SearchInts(interfacePos, c.openEnd); k < len(interfacePos) && interfacePos[k] < c.closeStart {
+			continue
+		}
+		lo, hi := textAt(c.openEnd), textAt(c.closeStart)
+		k := sort.Search(len(words), func(i int) bool { return words[i][0] >= lo })
+		if k == len(words) || words[k][1] > hi {
+			continue
+		}
+		b.WriteString(s[written:c.start])
+		written, removedUntil = c.end, c.end
 		hits++
 	}
 	if hits == 0 {
 		return s, 0
 	}
-	b.WriteString(s[pos:])
+	b.WriteString(s[written:])
 	return b.String(), hits
 }
 
-// matchingCloseEnd returns the offset just past the close tag that balances
-// an element opened before from, counting nested elements of the same name.
-// lower is the document folded by asciiLower, computed once by the caller. It returns len(lower) when
-// the element is never closed.
-func matchingCloseEnd(lower string, from int, tag string) int {
-	depth := 1
-	i := from
-	for {
-		next := strings.Index(lower[i:], "<")
-		if next < 0 {
-			return len(lower)
-		}
-		i += next
-		rest := lower[i:]
-		switch {
-		case strings.HasPrefix(rest, "</"+tag) && tagNameEnds(rest, len(tag)+2):
-			depth--
-			closeEnd := strings.IndexByte(rest, '>')
-			if closeEnd < 0 {
-				return len(lower)
-			}
-			if depth == 0 {
-				return i + closeEnd + 1
-			}
-			i += closeEnd + 1
-		case strings.HasPrefix(rest, "<"+tag) && tagNameEnds(rest, len(tag)+1):
-			depth++
-			i += len(tag) + 1
-		default:
-			i++
-		}
-	}
-}
-
-// tagNameEnds reports whether the tag name in rest stops at offset n, so
-// <p> matches p while <param> and <picture> do not.
-func tagNameEnds(rest string, n int) bool {
-	if n >= len(rest) {
-		return true
-	}
-	switch rest[n] {
-	case '>', '/', ' ', '\t', '\n', '\r', '\f':
-		return true
-	}
-	return false
+// isTagNameByte reports whether c can appear in a lowercase HTML tag name.
+func isTagNameByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
 }
 
 // asciiLower folds only A-Z. Unicode case folding can change a string's byte

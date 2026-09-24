@@ -152,6 +152,7 @@ func installBrowserDefaults(home string) error {
 		return err
 	}
 	original := args
+	_, hadArgs := obj["args"]
 	if args == "" {
 		args = browserFlag
 	} else {
@@ -169,7 +170,7 @@ func installBrowserDefaults(home string) error {
 	// the record is removed again; if the record write fails, the config was
 	// never touched. Either way Pipelock never leaves a flag that rollback
 	// cannot attribute to it.
-	record, _ := json.Marshal(map[string]interface{}{"created": !existed, "original_args": original})
+	record, _ := json.Marshal(map[string]interface{}{"created": !existed, "original_args": original, "had_args": hadArgs})
 	if err := os.MkdirAll(filepath.Dir(state), 0o750); err != nil {
 		return err
 	}
@@ -219,6 +220,10 @@ func rollbackBrowserDefaults(home string) error {
 	if err := decodeStrictJSON(record["original_args"], &original); err != nil {
 		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
 	}
+	var hadArgs bool
+	if err := decodeStrictJSON(record["had_args"], &hadArgs); err != nil {
+		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
+	}
 	obj, exists, err := readBrowserConfig(path)
 	if err != nil {
 		return err
@@ -250,9 +255,11 @@ func rollbackBrowserDefaults(home string) error {
 				// value byte for byte, separators included.
 				remaining = original
 			}
-			if remaining == "" {
+			keepExplicitEmpty := hadArgs && original == ""
+			if remaining == "" && !keepExplicitEmpty {
 				// Only Pipelock's flag is left. An operator who removed their
-				// own arguments after install keeps that removal.
+				// own arguments after install keeps that removal; an operator
+				// whose file said "args": "" before install gets that back.
 				delete(obj, "args")
 			} else {
 				obj["args"], _ = json.Marshal(remaining)

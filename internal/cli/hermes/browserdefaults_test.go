@@ -329,8 +329,8 @@ func TestBrowserDefaultsRollbackRefusals(t *testing.T) {
 	}{
 		{"created not bool", `{"created":"yes","original_args":""}`, "", "malformed ownership record"},
 		{"original not string", `{"created":false,"original_args":1}`, "", "malformed ownership record"},
-		{"malformed config", `{"created":false,"original_args":""}`, `{`, "malformed JSON"},
-		{"config args not string", `{"created":false,"original_args":""}`, `{"args":1}`, "args must be a string"},
+		{"malformed config", `{"created":false,"original_args":"","had_args":false}`, `{`, "malformed JSON"},
+		{"config args not string", `{"created":false,"original_args":"","had_args":false}`, `{"args":1}`, "args must be a string"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -756,9 +756,10 @@ func TestBrowserDefaultsRejectNull(t *testing.T) {
 		}
 	})
 	for _, record := range []string{
-		`{"created":null,"original_args":""}`,
-		`{"created":false,"original_args":null}`,
-		`{"original_args":""}`,
+		`{"created":null,"original_args":"","had_args":false}`,
+		`{"created":false,"original_args":null,"had_args":false}`,
+		`{"original_args":"","had_args":false}`,
+		`{"created":false,"original_args":""}`,
 	} {
 		t.Run("record "+record, func(t *testing.T) {
 			home := t.TempDir()
@@ -791,5 +792,26 @@ func TestBrowserDefaultsRollbackKeepsOperatorDuplicate(t *testing.T) {
 	args, _ := browserArgs(obj)
 	if strings.Count(args, browserFlag) != 1 {
 		t.Fatalf("args = %q, want the operator's copy kept", args)
+	}
+}
+
+// An explicitly empty args value survives install and rollback unchanged.
+func TestBrowserDefaultsRollbackKeepsExplicitEmptyArgs(t *testing.T) {
+	home := t.TempDir()
+	path, _ := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"","headed":true}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := obj["args"]
+	if !ok || string(raw) != `""` {
+		t.Fatalf("args after rollback = %q (present=%v), want explicit empty string", raw, ok)
 	}
 }

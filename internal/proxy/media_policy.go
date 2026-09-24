@@ -11,11 +11,83 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
 const contentTypeOctetStream = "application/octet-stream"
+
+const (
+	svgMediaType                  = "image/svg+xml"
+	svgIncompleteValidationReason = "media_policy: SVG requires complete browser-shield validation"
+)
+
+// isSVGContentType reports whether a response declares SVG, either by the
+// parsed media type or by the browser-grammar essence Browser Shield uses when
+// Go's MIME parser rejects later parameters.
+func isSVGContentType(contentType string) bool {
+	if canonicalContentType(contentType) == svgMediaType {
+		return true
+	}
+	essence, ok := shieldMediaTypeEssence(contentType)
+	return ok && essence == svgMediaType
+}
+
+// responseHeadersDeclareSVG applies the Fetch standard's "extract a MIME
+// type" to every Content-Type field value: the values are combined and split
+// on commas outside quoted strings, invalid entries and */* are skipped, and
+// the LAST valid essence wins. A client therefore renders
+// "text/plain, image/svg+xml", or two separate Content-Type fields, as SVG
+// even though the first value, which is all Header.Get returns, is inert.
+func responseHeadersDeclareSVG(headers http.Header) bool {
+	values := headers.Values("Content-Type")
+	if len(values) == 0 {
+		return false
+	}
+	last := ""
+	for _, segment := range splitHeaderValuesOutsideQuotes(values) {
+		essence, ok := shieldMediaTypeEssence(segment)
+		if !ok || essence == "*/*" {
+			continue
+		}
+		last = essence
+	}
+	return last == svgMediaType
+}
+
+func splitHeaderValuesOutsideQuotes(values []string) []string {
+	var segments []string
+	for _, value := range values {
+		start, quoted := 0, false
+		for i := 0; i < len(value); i++ {
+			switch value[i] {
+			case '"':
+				quoted = !quoted
+			case '\\':
+				if quoted {
+					i++
+				}
+			case ',':
+				if !quoted {
+					segments = append(segments, value[start:i])
+					start = i + 1
+				}
+			}
+		}
+		segments = append(segments, value[start:])
+	}
+	return segments
+}
+
+// svgValidationBlock refuses an SVG whose complete validation did not succeed.
+func svgValidationBlock(reason string) *shieldBlockResult {
+	return &shieldBlockResult{
+		info:   blockInfoFor(blockreason.MediaPolicy, "media_policy"),
+		status: http.StatusForbidden,
+		reason: reason,
+	}
+}
 
 const mediaPartialResponseBlockReason = "media policy cannot safely strip metadata from a partial response; request the complete resource or disable media_policy.strip_image_metadata for intentional passthrough"
 
@@ -90,6 +162,16 @@ type MediaExposureFields struct {
 	BlockReason     string
 }
 
+// mediaPolicyOptions carries facts established by an earlier response stage.
+// SVG is active content, so its media admission is based on the complete
+// Browser Shield validation pass, never a static MIME allowlist entry.
+type mediaPolicyOptions struct {
+	svgShielded bool
+	// headers, when supplied, lets the SVG floor see every Content-Type value
+	// the client will combine, not only the first one.
+	headers http.Header
+}
+
 // applyMediaPolicy evaluates a response body against cfg.MediaPolicy and
 // returns a verdict describing what to forward and whether to emit an
 // exposure event. Called from every transport that buffers a response body
@@ -100,15 +182,42 @@ type MediaExposureFields struct {
 // or disabled policy), it returns the input slice unmodified with no
 // StripResult or Exposure. Non-nil Exposure signals to the caller that a
 // media_exposure event should be emitted.
-func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) MediaPolicyVerdict {
+func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, options ...mediaPolicyOptions) MediaPolicyVerdict {
+	option := mediaPolicyOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
 	mt := canonicalContentType(contentType)
+
+	// SVG delivery floor. This is not an optional media-policy setting: a
+	// response declared as SVG is delivered only when Browser Shield validated
+	// the complete body. Disabled or exempt Shield, a partial or oversized
+	// body, or a caller that never ran Shield all leave svgShielded false, so
+	// the default for any caller that omits the option is refusal.
+	declaredSVG := isSVGContentType(contentType) || responseHeadersDeclareSVG(option.headers)
+	if declaredSVG && !option.svgShielded {
+		return MediaPolicyVerdict{
+			Blocked:     true,
+			BlockReason: svgIncompleteValidationReason,
+			MediaType:   svgMediaType,
+		}
+	}
+	// A browser renders SVG when any Content-Type value it would use declares
+	// it, while contentType is only the first value. Classify by what the
+	// browser renders, so an earlier audio or video value cannot route a
+	// validated SVG past the image policy.
+	if declaredSVG {
+		mt = svgMediaType
+	}
 
 	// Disabled policy: pure passthrough.
 	if cfg == nil || !cfg.MediaPolicy.IsEnabled() {
 		return MediaPolicyVerdict{Body: body, MediaType: mt}
 	}
 
-	mt = effectiveMediaType(mt, body)
+	if !declaredSVG {
+		mt = effectiveMediaType(mt, body)
+	}
 
 	// Non-media content types pass through the media policy (content
 	// scanning is handled by the response scanner elsewhere).
@@ -167,7 +276,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 		}
 	}
 
-	if !cfg.MediaPolicy.ImageTypeAllowed(mt) {
+	if mt != svgMediaType && !cfg.MediaPolicy.ImageTypeAllowed(mt) {
 		exposure.Blocked = true
 		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", mt)
 		return MediaPolicyVerdict{
@@ -188,6 +297,14 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 			MediaType:   mt,
 			Exposure:    exposureOrNil(cfg, exposure),
 		}
+	}
+
+	// SVG admission is owned by the Browser Shield floor above, not by
+	// AllowedImageTypes (config validation refuses SVG there). It still honors
+	// the image block and size controls above; there is no binary metadata to
+	// strip from an XML document.
+	if mt == svgMediaType {
+		return MediaPolicyVerdict{Body: body, MediaType: mt, Exposure: exposureOrNil(cfg, exposure)}
 	}
 
 	// A zero-byte body cannot carry metadata, so there is nothing to parse and

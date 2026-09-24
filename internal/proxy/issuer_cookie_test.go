@@ -150,6 +150,14 @@ func TestIssuerCookieDiskRoundTripAndFailures(t *testing.T) {
 	if !loaded.allows("agent-one", target, "lb", value, now.Add(time.Second)) {
 		t.Fatal("recorded cookie lost on disk reload")
 	}
+	expired := newIssuerBoundCookieStore()
+	expired.path = path
+	if err := expired.load(now.Add(61 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(expired.sessions) != 0 || expired.allows("agent-one", target, "lb", value, now.Add(61*time.Second)) {
+		t.Fatal("expired cookie survived restart")
+	}
 	for _, tc := range []struct {
 		name, session, target string
 		at                    time.Time
@@ -180,6 +188,7 @@ func TestIssuerCookieDiskRoundTripAndFailures(t *testing.T) {
 		{name: "truncated", data: good[:len(good)/2], mode: 0o600},
 		{name: "tampered digest", data: bytes.Replace(good, []byte(`"digest":"`), []byte(`"digest":"zz`), 1), mode: 0o600},
 		{name: "wrong version", data: bytes.Replace(good, []byte(`"version":1`), []byte(`"version":2`), 1), mode: 0o600},
+		{name: "oversized", data: append(append([]byte(nil), good...), bytes.Repeat([]byte(" "), issuerCookieMaxStateBytes+1-len(good))...), mode: 0o600},
 		{name: "wrong permission", data: good, mode: 0o644},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,7 +244,9 @@ func TestIssuerCookieProxyRestart(t *testing.T) {
 		t.Fatalf("state file mode: %v, %v", info, err)
 	}
 	parent, err := os.Stat(filepath.Dir(path))
-	if err != nil || parent.Mode().Perm() != 0o750 {
+	// The directory is created 0750 subject to the process umask, so assert
+	// the same bound the code enforces: nothing beyond 0750.
+	if err != nil || parent.Mode().Perm()&^0o750 != 0 {
 		t.Fatalf("state directory mode: %v, %v", parent, err)
 	}
 }

@@ -49,7 +49,7 @@ const commentTrapPattern = `(?i)<!--[\s\S]*?(?:ignore|disregard|forget|override|
 // via CSS. The element's extent is found by balanced tag counting in
 // stripHiddenElementTraps, not by the regex: a lazy match to the first close
 // tag cut nested markup in half and left the page structurally broken.
-const hiddenElementOpenPattern = `(?i)<(div|span|p)\b[^>]*\bstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|font-size\s*:\s*0|visibility\s*:\s*hidden)[^"']*["'][^>]*>`
+const hiddenElementOpenPattern = `(?i)<(div|span|p)\b[^>]*\sstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|font-size\s*:\s*0|visibility\s*:\s*hidden)[^"']*["'][^>]*>`
 
 // trapInstructionPattern is the instruction vocabulary every trap rule keys
 // on. A hidden element, comment or aria-hidden node is removed only when its
@@ -59,7 +59,7 @@ const trapInstructionPattern = `(?i)ignore|disregard|forget|override|instead|ins
 
 // ariaHiddenTrapPattern matches aria-hidden elements containing instruction
 // keywords.
-const ariaHiddenTrapPattern = `(?i)<[^>]+aria-hidden\s*=\s*["']true["'][^>]*>[^<]*(?:ignore|disregard|forget|override|instead|instruction)[^<]*</[^>]+>`
+const ariaHiddenTrapPattern = `(?i)<[^>]*\saria-hidden\s*=\s*["']true["'][^>]*>[^<]*(?:ignore|disregard|forget|override|instead|instruction)[^<]*</[^>]+>`
 
 // SVG active content patterns. Applied in rewriteSVG after the existing
 // <script> extraction pass. Regex-based for consistency with the rest of
@@ -117,7 +117,7 @@ const svgExternalHrefPattern = `(?i)\s+href\s*=\s*(?:"[^"#][^"]*"|'[^'#][^']*')`
 // LLM consumption. The `(?:[\w.-]+:)?` prefix covers namespace-prefixed
 // element names like `<svg:text ...>` that would otherwise bypass the
 // bare-name match.
-const svgHiddenTextStylePattern = `(?is)<(?:[\w.-]+:)?text\b[^>]*style\s*=\s*["'][^"']*(?:opacity\s*:\s*0(?:\.0+)?|display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>.*?</(?:[\w.-]+:)?text>`
+const svgHiddenTextStylePattern = `(?is)<(?:[\w.-]+:)?text\b[^>]*\sstyle\s*=\s*["'][^"']*(?:opacity\s*:\s*0(?:\.0+)?|display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>.*?</(?:[\w.-]+:)?text>`
 
 // svgHiddenTextAttrPattern matches <text> elements that use SVG
 // presentation attributes (display, visibility, opacity) directly on the

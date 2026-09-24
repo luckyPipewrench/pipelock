@@ -45,12 +45,6 @@ const prefetchPattern = `(?i)<link[^>]+rel\s*=\s*["']?prefetch["']?[^>]*>`
 // that could be prompt injections hidden from rendering.
 const commentTrapPattern = `(?i)<!--[\s\S]*?(?:ignore|disregard|forget|override|instead|instruction)[\s\S]*?-->`
 
-// hiddenElementOpenPattern matches the OPENING tag of a div, span or p hidden
-// via CSS. The element's extent is found by balanced tag counting in
-// stripHiddenElementTraps, not by the regex: a lazy match to the first close
-// tag cut nested markup in half and left the page structurally broken.
-const hiddenElementOpenPattern = `(?i)<(div|span|p)\b[^>]*\sstyle\s*=\s*["'][^"']*(?:display\s*:\s*none|font-size\s*:\s*0|visibility\s*:\s*hidden)[^"']*["'][^>]*>`
-
 // trapInstructionPattern is the instruction vocabulary every trap rule keys
 // on. A hidden element, comment or aria-hidden node is removed only when its
 // text carries one of these words; ordinary hidden UI (menus, modals,
@@ -177,20 +171,18 @@ func compileSVGActivePatterns() (
 	return
 }
 
-var (
-	hiddenElementOpenRe = regexp.MustCompile(hiddenElementOpenPattern)
-	trapInstructionRe   = regexp.MustCompile(trapInstructionPattern)
-)
+var trapInstructionRe = regexp.MustCompile(trapInstructionPattern)
 
 // hiddenCSSDeclRe matches one CSS declaration that hides content, with the
 // whole value checked so opacity:0.5 or font-size:0.8em is not read as zero.
-var hiddenCSSDeclRe = regexp.MustCompile(`(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|(?:font-size|opacity)\s*:\s*0(?:\.0+)?(?:px|em|rem|%)?)\s*(?:!\s*important\s*)?(?:;|$)`)
+var hiddenCSSDeclRe = regexp.MustCompile(`(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?:\.0+)?(?:px|pt|pc|in|cm|mm|q|em|ex|ch|rem|lh|rlh|cap|rcap|rex|ric|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|svmin|svmax|lvw|lvh|lvi|lvb|lvmin|lvmax|dvw|dvh|dvi|dvb|dvmin|dvmax|cqw|cqh|cqi|cqb|cqmin|cqmax|%)?|opacity\s*:\s*0(?:\.0+)?%?)\s*(?:!\s*important\s*)?(?:;|$)`)
 
 // tagEnd returns the offset just past the '>' that closes the tag starting at
 // lt, skipping any '>' inside a quoted attribute value, or -1 when the tag
-// never closes.
+// never closes. A quote opens a value only right after '=', as HTML parses it.
 func tagEnd(s string, lt int) int {
 	quote := byte(0)
+	afterEq, unquotedValue := false, false
 	for i := lt + 1; i < len(s); i++ {
 		c := s[i]
 		switch {
@@ -198,10 +190,25 @@ func tagEnd(s string, lt int) int {
 			if c == quote {
 				quote = 0
 			}
-		case c == '"' || c == '\'':
-			quote = c
 		case c == '>':
 			return i + 1
+		case unquotedValue:
+			// Quotes and '=' inside an unquoted value are ordinary text.
+			if isHTMLSpace(c) {
+				unquotedValue = false
+			}
+		case c == '=':
+			afterEq = true
+		case isHTMLSpace(c):
+			// Whitespace between '=' and a value keeps afterEq.
+		case afterEq && (c == '"' || c == '\''):
+			quote = c
+			afterEq = false
+		default:
+			// A quote in an attribute name is ordinary text; only a quote
+			// right after '=' opens a quoted value.
+			unquotedValue = afterEq
+			afterEq = false
 		}
 	}
 	return -1
@@ -347,17 +354,14 @@ type textSegment struct {
 // each candidate is then decided by lookup rather than by rescanning, so
 // deeply nested hidden elements cannot make the rewrite quadratic.
 func stripHiddenElementTraps(s string) (string, int) {
-	opens := hiddenElementOpenRe.FindAllStringSubmatchIndex(s, -1)
-	if len(opens) == 0 {
+	lower := asciiLower(s)
+	// Every hiding declaration names one of these properties, so a document
+	// without them has no candidate and skips the scan.
+	if !strings.Contains(lower, "display") && !strings.Contains(lower, "visibility") &&
+		!strings.Contains(lower, "font-size") && !strings.Contains(lower, "opacity") {
 		return s, 0
 	}
-	lower := asciiLower(s)
-	candidateAt := make(map[int]int, len(opens))
-	candidates := make([]hiddenTrapCandidate, len(opens))
-	for i, loc := range opens {
-		candidates[i] = hiddenTrapCandidate{start: loc[0], openEnd: loc[1], closeStart: len(s), end: len(s)}
-		candidateAt[loc[0]] = i
-	}
+	var candidates []hiddenTrapCandidate
 
 	type openElement struct {
 		tag       string
@@ -397,16 +401,6 @@ func stripHiddenElementTraps(s string) (string, int) {
 		if end < 0 {
 			break
 		}
-		// A candidate is an element only when the pattern match ends where the
-		// real tag ends and the tag's own style attribute hides it.
-		if idx, ok := candidateAt[lt]; ok && candidates[idx].openEnd == end && styleHides(s[lt:end]) {
-			tag := strings.ToLower(s[opens[idx][2]:opens[idx][3]])
-			candidates[idx].opened = true
-			stack = append(stack, openElement{tag: tag, candidate: idx})
-			openCount[tag]++
-			pos = end
-			continue
-		}
 		closing := lt+1 < len(s) && s[lt+1] == '/'
 		nameStart := lt + 1
 		if closing {
@@ -426,7 +420,15 @@ func stripHiddenElementTraps(s string) (string, int) {
 			continue
 		case name == "div" || name == "span" || name == "p":
 			if !closing {
-				stack = append(stack, openElement{tag: name, candidate: -1})
+				// The tag scan reads every opening tag quote-aware, so it
+				// decides hiddenness from the real style attribute; no pattern
+				// match can open or miss a candidate.
+				candidate := -1
+				if styleHides(s[lt:end]) {
+					candidate = len(candidates)
+					candidates = append(candidates, hiddenTrapCandidate{start: lt, openEnd: end, closeStart: len(s), end: len(s), opened: true})
+				}
+				stack = append(stack, openElement{tag: name, candidate: candidate})
 				openCount[name]++
 				break
 			}

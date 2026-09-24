@@ -6,10 +6,12 @@ package hermes
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -112,6 +114,7 @@ func TestBrowserDefaultsSymlinkAndOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, path); err != nil {
+		skipIfWindowsSymlinkUnprivileged(t, err)
 		t.Fatal(err)
 	}
 	if err := installBrowserDefaults(home); err == nil {
@@ -713,5 +716,27 @@ func TestRunRollback_PluginRemovalFailureStillCleansBrowserDefaults(t *testing.T
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("browser config Pipelock created remains: %v", statErr)
+	}
+}
+
+// errPrivilegeNotHeld is Windows ERROR_PRIVILEGE_NOT_HELD, which
+// CreateSymbolicLink returns to a caller without the symlink privilege.
+const errPrivilegeNotHeld = syscall.Errno(1314)
+
+// skipIfWindowsSymlinkUnprivileged skips only when Windows refuses to create a
+// symbolic link for lack of privilege; every other failure stays fatal.
+func skipIfWindowsSymlinkUnprivileged(t *testing.T, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" && (errors.Is(err, fs.ErrPermission) || errors.Is(err, errPrivilegeNotHeld)) {
+		t.Skipf("symlink creation not permitted on this Windows host: %v", err)
+	}
+}
+
+func TestSkipIfWindowsSymlinkUnprivilegedKeepsOtherErrorsFatal(t *testing.T) {
+	// On every platform an unrelated error must not be skipped; the helper
+	// returns without skipping, so reaching the end of this test proves it.
+	skipIfWindowsSymlinkUnprivileged(t, errors.New("disk full"))
+	if runtime.GOOS != "windows" {
+		skipIfWindowsSymlinkUnprivileged(t, errPrivilegeNotHeld)
 	}
 }

@@ -8,28 +8,6 @@ import (
 	"strings"
 )
 
-// ExtensionProbeShim hooks fetch() and XMLHttpRequest.open() to block
-// chrome-extension:// and moz-extension:// URL access at runtime.
-// Injected as a <script> tag immediately after <head> when
-// strip_extension_probing is enabled.
-const ExtensionProbeShim = `(function(){` +
-	`if(typeof window!=='undefined'&&typeof window.fetch==='function'){` +
-	`var _fetch=window.fetch;` +
-	`window.fetch=function(input,init){` +
-	`var url=(typeof input==='string')?input:(input instanceof Request)?input.url:'';` +
-	`if(/^(chrome|moz)-extension:\/\//i.test(url)){return Promise.reject(new TypeError('Network request failed'));}` +
-	`return _fetch.apply(this,arguments);` +
-	`};` +
-	`}` +
-	`if(typeof XMLHttpRequest!=='undefined'){` +
-	`var _xhrOpen=XMLHttpRequest.prototype.open;` +
-	`XMLHttpRequest.prototype.open=function(method,url){` +
-	`if(typeof url==='string'&&/^(chrome|moz)-extension:\/\//i.test(url)){throw new DOMException('Blocked','NetworkError');}` +
-	`return _xhrOpen.apply(this,arguments);` +
-	`};` +
-	`}` +
-	`})();`
-
 // FingerprintShim overrides canvas, WebGL, and audio fingerprinting APIs.
 // Returns neutral values that prevent cross-session fingerprint correlation
 // without breaking legitimate canvas/WebGL rendering.

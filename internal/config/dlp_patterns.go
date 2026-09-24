@@ -355,7 +355,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// The line-start branch is intentionally strict around '=': spaced source
 	// assignments are not URL credentials. Delimiter-led query parameters keep
 	// whitespace tolerance for decoded and hand-written URLs.
-	{Name: "Credential in URL", Regex: `(?m)(?:^\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[A-Za-z0-9_+/=~%.-][^\s&;]{3,}|[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,})`, Severity: SeverityHigh, CredentialURLWhitespaceGrammar: true},
+	{Name: "Credential in URL", Regex: URLKeywordAssignmentRegex, Severity: SeverityHigh, CredentialURLWhitespaceGrammar: true},
 	// Environment variable credential patterns: catches env var dumps
 	// where the secret-bearing keyword is the terminal segment of an
 	// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,

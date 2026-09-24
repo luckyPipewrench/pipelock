@@ -816,3 +816,116 @@ func TestBrowserDefaultsRollbackKeepsExplicitEmptyArgs(t *testing.T) {
 		t.Fatalf("args after rollback = %q (present=%v), want explicit empty string", raw, ok)
 	}
 }
+
+// With browser defaults off, an unresolvable home does not block install.
+func TestRunInstall_NoBrowserDefaultsNeedsNoHome(t *testing.T) {
+	prev := userHomeDir
+	t.Cleanup(func() { userHomeDir = prev })
+	userHomeDir = func() (string, error) { return "", os.ErrNotExist }
+	tmp := t.TempDir()
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runInstall(cmd, &installOptions{Mode: ModeFull, NoBrowserDefaults: true, PluginRoot: filepath.Join(tmp, "plugins", "pipelock"), HermesConfig: filepath.Join(tmp, "config.yaml")})
+	if err != nil {
+		t.Fatalf("install --no-browser-defaults without a home: %v", err)
+	}
+}
+
+// With browser defaults off, install locks only the Hermes config, so a command
+// holding the browser home's lock does not block it.
+func TestRunInstall_NoBrowserDefaultsDoesNotLockHome(t *testing.T) {
+	root := lockTestEnvironment(t)
+	home := filepath.Join(root, "home")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- withHermesCommandLock(filepath.Join(root, "other", "config.yaml"), []string{home}, func() error { close(entered); <-release; return nil })
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("held lock failed before entering: %v", err)
+	}
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	run := func(noBrowserDefaults bool) error {
+		cmd := installCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		dir := t.TempDir()
+		return runInstall(cmd, &installOptions{Mode: ModeFull, NoBrowserDefaults: noBrowserDefaults, HomeDir: home, PluginRoot: filepath.Join(dir, "plugins", "pipelock"), HermesConfig: filepath.Join(dir, "config.yaml")})
+	}
+	if err := run(true); err != nil {
+		t.Fatalf("install --no-browser-defaults blocked on the browser home: %v", err)
+	}
+	if err := run(false); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("control: install with browser defaults should wait on the held home lock, got %v", err)
+	}
+}
+
+// holdHermesTestLock holds the lock for dirs until the returned release runs.
+func holdHermesTestLock(t *testing.T, config string, dirs []string) func() {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- withHermesCommandLock(config, dirs, func() error { close(entered); <-release; return nil })
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("held lock failed before entering: %v", err)
+	}
+	return func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A full-mode install writes the plugin tree, so it waits for another command
+// holding that plugin root even when the Hermes config and home differ. An
+// mcp-only install never touches the plugin tree and does not wait.
+func TestRunInstall_FullModeLocksPluginRoot(t *testing.T) {
+	root := lockTestEnvironment(t)
+	plugin := filepath.Join(root, "shared", "plugins", "pipelock")
+	defer holdHermesTestLock(t, filepath.Join(root, "other", "config.yaml"), []string{plugin})()
+	run := func(mode string) error {
+		cmd := installCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		dir := t.TempDir()
+		return runInstall(cmd, &installOptions{Mode: mode, NoBrowserDefaults: true, PluginRoot: plugin, HermesConfig: filepath.Join(dir, "config.yaml")})
+	}
+	if err := run(ModeFull); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("full-mode install should wait on the held plugin root, got %v", err)
+	}
+	if err := run(ModeMCPOnly); err != nil {
+		t.Fatalf("control: mcp-only install should not wait on the plugin root, got %v", err)
+	}
+}
+
+// Rollback removes the plugin tree, so it waits for another command holding it.
+func TestRunRollback_LocksPluginRoot(t *testing.T) {
+	root := lockTestEnvironment(t)
+	plugin := filepath.Join(root, "shared", "plugins", "pipelock")
+	release := holdHermesTestLock(t, filepath.Join(root, "other", "config.yaml"), []string{plugin})
+	rcmd := rollbackCmd()
+	rcmd.SetOut(&bytes.Buffer{})
+	rcmd.SetErr(&bytes.Buffer{})
+	dir := t.TempDir()
+	opts := &rollbackOptions{HomeDir: dir, PluginRoot: plugin, HermesConfig: filepath.Join(dir, "config.yaml")}
+	err := runRollback(rcmd, opts)
+	release()
+	if err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("rollback should wait on the held plugin root, got %v", err)
+	}
+}

@@ -1155,14 +1155,19 @@ func newInterceptHandler(
 					scannerLabel = scannerLabelBodyEntropy
 				}
 
+				blockCause := blockingBodyFinding(result, r.URL.Hostname(), ic.Config)
 				reason := result.Reason
 				if reason == "" {
-					// Same precedence as the forward and reverse paths: a secret
-					// match is named before an entropy finding, which is often only
-					// a warning riding along with the finding that actually blocked.
+					// Name the finding that actually blocked; a finding that only
+					// warns can ride along with it. Without a single blocking
+					// finding, keep the injection, secret, entropy order.
 					injectionNames := responseMatchNames(result.InjectionMatches)
 					patternNames := dlpMatchNames(result.DLPMatches)
 					switch {
+					case blockCause == bodyBlockCauseEntropy:
+						reason = bodyEntropyReason(result)
+					case blockCause == bodyBlockCauseDLP:
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
 					case len(patternNames) > 0:
@@ -1181,6 +1186,11 @@ func newInterceptHandler(
 				// Address protection findings and fail-closed body errors are NOT
 				// exempted - only DLP pattern matches.
 				bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, result, r.URL.Hostname(), ic.Config)
+				// Classify the block by its cause after the exemption decision,
+				// which keeps its own label rules.
+				if result.RedactionBlockReason == "" {
+					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
+				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {

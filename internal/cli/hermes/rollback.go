@@ -82,11 +82,21 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
-	if err := rollbackHermesIntegration(cmd, opts); err != nil {
-		return err
+	home, err := browserHome(opts.HomeDir)
+	if err != nil {
+		// Browser cleanup only warns when home cannot be resolved.
+		home = filepath.Dir(opts.HermesConfig)
+	} else {
+		// Keep cleanup on the same resolved home whose lock we hold.
+		opts.HomeDir = home
 	}
-	rollbackBrowserDefaultsBestEffort(cmd, opts)
-	return nil
+	return withHermesCommandLock(opts.HermesConfig, []string{home, opts.PluginRoot}, func() error {
+		if err := rollbackHermesIntegration(cmd, opts); err != nil {
+			return err
+		}
+		rollbackBrowserDefaultsBestEffort(cmd, opts)
+		return nil
+	})
 }
 
 // rollbackBrowserDefaultsBestEffort removes Pipelock's agent-browser flag

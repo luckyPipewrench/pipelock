@@ -149,6 +149,83 @@ func TestHTTPClient_GzipJSONResponseDecodedBeforeScanning(t *testing.T) {
 	}
 }
 
+// TestHTTPClient_EveryMethodRequestsIdentity covers the GET stream and DELETE
+// requests alongside POST. The upstream answers in br whenever it is asked
+// for br, which the client cannot decode, so forwarding a caller-supplied
+// browser Accept-Encoding would break the stream.
+func TestHTTPClient_EveryMethodRequestsIdentity(t *testing.T) {
+	// seen records every request, not one per method, so a later request of
+	// the same method cannot hide an earlier one's encoding.
+	var mu sync.Mutex
+	var seen []struct{ method, acceptEncoding string }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ae := r.Header.Get("Accept-Encoding")
+		mu.Lock()
+		seen = append(seen, struct{ method, acceptEncoding string }{r.Method, ae})
+		mu.Unlock()
+		if strings.Contains(ae, "br") {
+			w.Header().Set("Content-Encoding", "br")
+		}
+		switch r.Method {
+		case http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {}\n\n"))
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, http.Header{"Accept-Encoding": {"gzip, deflate, br, zstd"}})
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if _, err := reader.ReadMessage(); err != nil {
+		t.Fatalf("SendMessage reader ReadMessage: %v", err)
+	}
+
+	stream, err := c.OpenGETStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenGETStream: %v", err)
+	}
+	if _, err := stream.ReadMessage(); err != nil {
+		t.Fatalf("OpenGETStream reader ReadMessage: %v", err)
+	}
+	closer, ok := stream.(interface{ Close() error })
+	if !ok {
+		t.Fatalf("OpenGETStream reader %T does not expose Close", stream)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("OpenGETStream reader Close: %v", err)
+	}
+
+	c.sessionMu.Lock()
+	c.sessionID = "test-session"
+	c.sessionMu.Unlock()
+	c.DeleteSession(nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	count := map[string]int{}
+	for i, req := range seen {
+		count[req.method]++
+		if req.acceptEncoding != "identity" {
+			t.Errorf("upstream request %d (%s) Accept-Encoding = %q, want identity", i, req.method, req.acceptEncoding)
+		}
+	}
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if count[method] == 0 {
+			t.Errorf("%s never reached the upstream", method)
+		}
+	}
+}
+
 func TestHTTPClient_SSEResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

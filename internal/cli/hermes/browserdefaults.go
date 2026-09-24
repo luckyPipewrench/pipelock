@@ -69,10 +69,21 @@ func browserArgs(obj map[string]json.RawMessage) (string, error) {
 		return "", nil
 	}
 	var value string
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := decodeStrictJSON(data, &value); err != nil {
 		return "", errors.New("browser defaults: args must be a string")
 	}
 	return value, nil
+}
+
+// decodeStrictJSON decodes one field, refusing a missing value or a literal
+// null. encoding/json leaves the destination at its zero value for null, which
+// would silently turn "args": null into an empty string or a malformed
+// ownership record into "not created".
+func decodeStrictJSON(raw json.RawMessage, dst interface{}) error {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return errors.New("value is missing or null")
+	}
+	return json.Unmarshal(raw, dst)
 }
 
 // browserArgParts splits agent-browser's args string on both documented
@@ -202,10 +213,10 @@ func rollbackBrowserDefaults(home string) error {
 	}
 	var created bool
 	var original string
-	if err := json.Unmarshal(record["created"], &created); err != nil {
+	if err := decodeStrictJSON(record["created"], &created); err != nil {
 		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
 	}
-	if err := json.Unmarshal(record["original_args"], &original); err != nil {
+	if err := decodeStrictJSON(record["original_args"], &original); err != nil {
 		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
 	}
 	obj, exists, err := readBrowserConfig(path)
@@ -218,10 +229,18 @@ func rollbackBrowserDefaults(home string) error {
 			return err
 		}
 		if hasBrowserFlag(args) {
+			// Install appends exactly one copy at the end, so remove only the
+			// last copy; an identical flag the operator added stays.
 			parts := browserArgParts(args)
+			last := -1
+			for i, part := range parts {
+				if strings.TrimSpace(part) == browserFlag {
+					last = i
+				}
+			}
 			kept := make([]string, 0, len(parts))
-			for _, part := range parts {
-				if strings.TrimSpace(part) != browserFlag {
+			for i, part := range parts {
+				if i != last {
 					kept = append(kept, part)
 				}
 			}

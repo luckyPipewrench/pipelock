@@ -740,3 +740,56 @@ func TestSkipIfWindowsSymlinkUnprivilegedKeepsOtherErrorsFatal(t *testing.T) {
 		skipIfWindowsSymlinkUnprivileged(t, errPrivilegeNotHeld)
 	}
 }
+
+// A literal null for args or either ownership-record field is malformed, never
+// an empty value.
+func TestBrowserDefaultsRejectNull(t *testing.T) {
+	t.Run("args null on install", func(t *testing.T) {
+		home := t.TempDir()
+		path, _ := browserPaths(home)
+		writeBrowserTestFile(t, path, `{"args":null,"headed":true}`, 0o600)
+		if err := installBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "args must be a string") {
+			t.Fatalf("err = %v", err)
+		}
+		if got, _ := verifyBrowserDefaults(home); got != "invalid" {
+			t.Fatalf("verify = %q, want invalid", got)
+		}
+	})
+	for _, record := range []string{
+		`{"created":null,"original_args":""}`,
+		`{"created":false,"original_args":null}`,
+		`{"original_args":""}`,
+	} {
+		t.Run("record "+record, func(t *testing.T) {
+			home := t.TempDir()
+			_, state := browserPaths(home)
+			writeBrowserTestFile(t, state, record, 0o600)
+			if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "malformed ownership record") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+// Rollback removes only the copy install appended; an identical flag the
+// operator added afterwards stays.
+func TestBrowserDefaultsRollbackKeepsOperatorDuplicate(t *testing.T) {
+	home := t.TempDir()
+	path, _ := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"--lang=en-US"}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserTestFile(t, path, `{"args":"--lang=en-US,`+browserFlag+`,`+browserFlag+`"}`, 0o600)
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := browserArgs(obj)
+	if strings.Count(args, browserFlag) != 1 {
+		t.Fatalf("args = %q, want the operator's copy kept", args)
+	}
+}

@@ -1221,7 +1221,7 @@ func TestDashboardOIDCAuthenticatorRejectsBadDiscovery(t *testing.T) {
 		wantErr string
 	}{
 		{"HTTP error", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "no", http.StatusBadGateway) }), "HTTP 502"},
-		{"malformed JSON", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{")) }), "unexpected EOF"},
+		{"malformed JSON", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{")) }), "unexpected EOF|unexpected end of JSON input"},
 		{"trailing JSON", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{} {}`)) }), "trailing"},
 	}
 	for _, tc := range tests {
@@ -1232,7 +1232,7 @@ func TestDashboardOIDCAuthenticatorRejectsBadDiscovery(t *testing.T) {
 				Issuer: server.URL, Audience: oidcTestAudience, RoleClaim: "groups",
 				RoleMapJSON: oidcTestRoleMap(), HTTPClient: server.Client(),
 			})
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if err == nil || !errTextContainsAny(err, tc.wantErr) {
 				t.Fatalf("newDashboardOIDCAuthenticator error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
@@ -1439,4 +1439,17 @@ func TestDashboardOIDC_RunServeCompositionUsesMappedRoutePermissions(t *testing.
 	if composed.rawAuthorized(req) {
 		t.Fatal("mapped OIDC principal unexpectedly received raw permission")
 	}
+}
+
+// errTextContainsAny reports whether err's text contains any "|"-separated
+// alternative in want. Go 1.27 reports truncated JSON as "unexpected end of
+// JSON input" where earlier releases said "EOF", so a truncation case lists
+// both spellings rather than pinning one toolchain's wording.
+func errTextContainsAny(err error, want string) bool {
+	for _, alt := range strings.Split(want, "|") {
+		if strings.Contains(err.Error(), alt) {
+			return true
+		}
+	}
+	return false
 }

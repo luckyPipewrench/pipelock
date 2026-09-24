@@ -816,3 +816,18 @@ func TestBrowserDefaultsRollbackKeepsExplicitEmptyArgs(t *testing.T) {
 		t.Fatalf("args after rollback = %q (present=%v), want explicit empty string", raw, ok)
 	}
 }
+
+// With browser defaults off, an unresolvable home does not block install.
+func TestRunInstall_NoBrowserDefaultsNeedsNoHome(t *testing.T) {
+	prev := userHomeDir
+	t.Cleanup(func() { userHomeDir = prev })
+	userHomeDir = func() (string, error) { return "", os.ErrNotExist }
+	tmp := t.TempDir()
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runInstall(cmd, &installOptions{Mode: ModeFull, NoBrowserDefaults: true, PluginRoot: filepath.Join(tmp, "plugins", "pipelock"), HermesConfig: filepath.Join(tmp, "config.yaml")})
+	if err != nil {
+		t.Fatalf("install --no-browser-defaults without a home: %v", err)
+	}
+}

@@ -28,6 +28,10 @@ func TestMain(m *testing.M) {
 	}
 	// An inherited value would turn verify's "present" into "overridden".
 	_ = os.Unsetenv("AGENT_BROWSER_ARGS")
+	// Command locks live under the user cache directory; keep them in the
+	// throwaway home rather than a real XDG_CACHE_HOME or LOCALAPPDATA.
+	_ = os.Unsetenv("XDG_CACHE_HOME")
+	_ = os.Setenv("LOCALAPPDATA", home)
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

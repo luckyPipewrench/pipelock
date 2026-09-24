@@ -99,3 +99,21 @@ func TestHermesLockRejectsWritableCacheRoot(t *testing.T) {
 		t.Fatal("accepted writable cache root")
 	}
 }
+
+// A symlinked cache root is followed; the lock still works under it.
+func TestHermesCommandLockFollowsSymlinkedCacheRoot(t *testing.T) {
+	root := t.TempDir()
+	realCache := filepath.Join(root, "real-cache")
+	if err := os.Mkdir(realCache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "cache")
+	if err := os.Symlink(realCache, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CACHE_HOME", link)
+	ran := false
+	if err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil }); err != nil || !ran {
+		t.Fatalf("lock under a symlinked cache root: err=%v ran=%v", err, ran)
+	}
+}

@@ -14,8 +14,16 @@ func ensureHermesLockDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("hermes command lock: create %s: %w", path, err)
 	}
-	for _, dir := range []string{filepath.Dir(filepath.Dir(path)), filepath.Dir(path), path} {
-		info, err := os.Lstat(dir)
+	// The cache root is followed (a dotfiles-managed symlinked ~/.cache is
+	// legitimate); the pipelock and locks directories Pipelock creates are
+	// not, so a swapped symlink there is refused.
+	cacheRoot := filepath.Dir(filepath.Dir(path))
+	for _, dir := range []string{cacheRoot, filepath.Dir(path), path} {
+		stat := os.Lstat
+		if dir == cacheRoot {
+			stat = os.Stat
+		}
+		info, err := stat(dir)
 		if err != nil {
 			return err
 		}

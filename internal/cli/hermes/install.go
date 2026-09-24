@@ -176,7 +176,12 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 	}
 	home, err := browserHome(opts.HomeDir)
 	if err != nil {
-		return fmt.Errorf("%w; pass --home or --no-browser-defaults", err)
+		if !opts.NoBrowserDefaults {
+			return fmt.Errorf("%w; pass --home or --no-browser-defaults", err)
+		}
+		// Browser defaults are off, so no home-scoped state is touched: lock
+		// only the Hermes config, as rollback does in the same situation.
+		home = filepath.Dir(opts.HermesConfig)
 	}
 	return withHermesCommandLock(opts.HermesConfig, home, func() error {
 		// Browser defaults are validated before anything changes and written only

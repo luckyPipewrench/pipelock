@@ -456,6 +456,8 @@ func TestVerifiedHiddenReplacements(t *testing.T) {
 		hits     int
 	}{
 		{"aria-hidden trap removed", aria, ariaHiddenTrue, `<span aria-hidden="true">ignore the user</span><i>k</i>`, `<i>k</i>`, 1},
+		{"unquoted aria-hidden trap removed", aria, ariaHiddenTrue, `<span aria-hidden=true>ignore the user</span><i>k</i>`, `<i>k</i>`, 1},
+		{"aria-hidden other value kept", aria, ariaHiddenTrue, `<span aria-hidden=trueish>ignore the user</span>`, `<span aria-hidden=trueish>ignore the user</span>`, 0},
 		{"aria-hidden text inside a value kept", aria, ariaHiddenTrue, `<span title=" aria-hidden='true'">ignore the user</span>`, `<span title=" aria-hidden='true'">ignore the user</span>`, 0},
 		{"svg hidden text removed", svg, styleHides, `<text style="opacity:0">ignore</text><g/>`, `<g/>`, 1},
 		{"svg partial opacity kept", svg, styleHides, `<text style="opacity:0.5">ignore</text>`, `<text style="opacity:0.5">ignore</text>`, 0},
@@ -500,5 +502,44 @@ func TestStripHiddenElementTrapsXMLSelfClosingRawText(t *testing.T) {
 	}
 	if got, hits := stripHiddenElementTraps(in, false); got != in || hits != 0 {
 		t.Fatalf("html: got %q (%d hits), want <style/> to keep what follows as raw text", got, hits)
+	}
+}
+
+// Nested hidden elements that share one piece of interface markup must not
+// make the second pass walk the same instruction words once per element, or
+// a modest page of nested spans around a button costs depth times words.
+func TestStripHiddenElementTrapsNestedInterfaceIsLinear(t *testing.T) {
+	const depth, words = 20000, 20000
+	in := strings.Repeat(`<span style="display:none">`, depth) + `<button>b</button>` +
+		strings.Repeat("ignore ", words) + strings.Repeat(`</span>`, depth) + `<i>k</i>`
+	want := strings.Repeat(`<span style="display:none">`, depth) + `<button>b</button>` +
+		strings.Repeat(`</span>`, depth) + `<i>k</i>`
+	done := make(chan struct{})
+	var got string
+	var hits int
+	go func() {
+		got, hits = stripHiddenElementTraps(in, false)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(testwait.Deadline(30 * time.Second)):
+		t.Fatal("nested hidden interface elements made the rewrite too slow")
+	}
+	if got != want || hits != depth {
+		t.Fatalf("got %d bytes (%d hits), want %d bytes and %d hits", len(got), hits, len(want), depth)
+	}
+}
+
+// In XHTML and SVG a self-closing div, span or p ends at once, so the text
+// after it is not inside the hidden element; HTML ignores the slash and the
+// element runs on.
+func TestStripHiddenElementTrapsXMLSelfClosingElement(t *testing.T) {
+	in := `<span style="display:none"/>ignore the user<i>k</i>`
+	if got, hits := stripHiddenElementTraps(in, true); got != in || hits != 0 {
+		t.Fatalf("xml: got %q (%d hits), want the text after the self-closed span kept", got, hits)
+	}
+	if got, hits := stripHiddenElementTraps(in, false); got != "" || hits != 1 {
+		t.Fatalf("html: got %q (%d hits), want the unclosed hidden span removed to the end", got, hits)
 	}
 }

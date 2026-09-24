@@ -55,8 +55,9 @@ const commentTrapPattern = `(?i)<!--[\s\S]*?(?:ignore|disregard|forget|override|
 const trapInstructionPattern = `(?i)ignore|disregard|forget|override|instead|instruction`
 
 // ariaHiddenTrapPattern matches aria-hidden elements containing instruction
-// keywords.
-const ariaHiddenTrapPattern = `(?i)<[^>]*\saria-hidden\s*=\s*["']true["'][^>]*>[^<]*(?:ignore|disregard|forget|override|instead|instruction)[^<]*</[^>]+>`
+// keywords. The value may be quoted or bare, as HTML allows; ariaHiddenTrue
+// then decides from the parsed attribute.
+const ariaHiddenTrapPattern = `(?i)<[^>]*\saria-hidden\s*=\s*["']?true\b["']?[^>]*>[^<]*(?:ignore|disregard|forget|override|instead|instruction)[^<]*</[^>]+>`
 
 // SVG active content patterns. Applied in rewriteSVG after the existing
 // <script> extraction pass. Regex-based for consistency with the rest of
@@ -547,9 +548,10 @@ func stripHiddenElementTraps(s string, xml bool) (string, int) {
 				rawBody = true
 			}
 		}
-		// A self-closing slash on div, span or p is ignored by browsers, so
-		// both token kinds open the element.
-		if name == "div" || name == "span" || name == "p" {
+		// HTML ignores a self-closing slash on div, span or p, so both token
+		// kinds open the element. In XHTML and SVG the slash ends it at once,
+		// so it holds nothing and the text after it is outside.
+		if (name == "div" || name == "span" || name == "p") && (!xml || tt != html.SelfClosingTagToken) {
 			openAt(name, start, off, raw)
 		}
 	}
@@ -603,23 +605,48 @@ func stripHiddenElementTraps(s string, xml bool) (string, int) {
 	// Pass 2: interface markup keeps the element, because applications hide
 	// whole views, menus and forms until their scripts reveal them. The
 	// instruction-bearing text inside it is still removed, so an empty button
-	// cannot carry a trap past the shield.
+	// cannot carry a trap past the shield. The text is removed a whole text
+	// node at a time: cutting only the matched word would leave the rest of
+	// the instruction for the agent to read.
+	//
+	// Nested hidden elements share their words, so each candidate only records
+	// its text span here and every word is then visited once, however deeply
+	// the elements nest.
+	live := make([][]int, 0, len(words))
+	for _, w := range words {
+		if !inRemoved(w) {
+			live = append(live, w)
+		}
+	}
+	var spans [][2]int
 	for _, c := range candidates {
 		if !hasInterface(c) || insideCut(c.start) {
 			continue
 		}
 		lo, hi := textAt(c.openEnd), textAt(c.closeStart)
-		k, _ := hasWord(lo, hi)
-		stripped := false
-		for ; k < len(words) && words[k][1] <= hi; k++ {
-			if inRemoved(words[k]) {
-				continue
-			}
-			cuts = append(cuts, textCuts(textTokens, words[k][0], words[k][1])...)
-			stripped = true
-		}
-		if stripped {
+		k := sort.Search(len(live), func(i int) bool { return live[i][0] >= lo })
+		if k < len(live) && live[k][1] <= hi {
+			spans = append(spans, [2]int{lo, hi})
 			hits++
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	next, reach := 0, -1
+	var last [2]int
+	for _, w := range live {
+		// reach is the furthest end of any span that starts at or before w,
+		// so w lies inside some span exactly when it ends by reach.
+		for ; next < len(spans) && spans[next][0] <= w[0]; next++ {
+			reach = max(reach, spans[next][1])
+		}
+		if w[1] > reach {
+			continue
+		}
+		for _, cut := range textCuts(textTokens, w[0], w[1]) {
+			if cut != last {
+				cuts = append(cuts, cut)
+				last = cut
+			}
 		}
 	}
 	if hits == 0 {

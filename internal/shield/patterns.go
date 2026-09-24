@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // Extension probing patterns.
@@ -177,119 +179,38 @@ var trapInstructionRe = regexp.MustCompile(trapInstructionPattern)
 // whole value checked so opacity:0.5 or font-size:0.8em is not read as zero.
 var hiddenCSSDeclRe = regexp.MustCompile(`(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?:\.0+)?(?:px|pt|pc|in|cm|mm|q|em|ex|ch|rem|lh|rlh|cap|rcap|rex|ric|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|svmin|svmax|lvw|lvh|lvi|lvb|lvmin|lvmax|dvw|dvh|dvi|dvb|dvmin|dvmax|cqw|cqh|cqi|cqb|cqmin|cqmax|%)?|opacity\s*:\s*0(?:\.0+)?%?)\s*(?:!\s*important\s*)?(?:;|$)`)
 
-// tagEnd returns the offset just past the '>' that closes the tag starting at
-// lt, skipping any '>' inside a quoted attribute value, or -1 when the tag
-// never closes. A quote opens a value only right after '=', as HTML parses it.
-func tagEnd(s string, lt int) int {
-	quote := byte(0)
-	afterEq, unquotedValue := false, false
-	for i := lt + 1; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '>':
-			return i + 1
-		case unquotedValue:
-			// Quotes and '=' inside an unquoted value are ordinary text.
-			if isHTMLSpace(c) {
-				unquotedValue = false
-			}
-		case c == '=':
-			afterEq = true
-		case isHTMLSpace(c):
-			// Whitespace between '=' and a value keeps afterEq.
-		case afterEq && (c == '"' || c == '\''):
-			quote = c
-			afterEq = false
-		default:
-			// A quote in an attribute name is ordinary text; only a quote
-			// right after '=' opens a quoted value.
-			unquotedValue = afterEq
-			afterEq = false
-		}
+// startTagAttr reads the named attribute of the first tag in markup with the
+// HTML tokenizer, so quoting, character references and attribute-like text
+// inside another value are read the way a browser reads them. Like a browser,
+// it takes the first of duplicated attributes.
+func startTagAttr(markup, name string) (string, bool) {
+	z := html.NewTokenizer(strings.NewReader(markup))
+	switch z.Next() {
+	case html.StartTagToken, html.SelfClosingTagToken:
+	default:
+		return "", false
 	}
-	return -1
-}
-
-func isHTMLSpace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
-}
-
-// tagAttribute returns the value of the named attribute (lowercase) in an
-// opening tag, reading only real attribute positions: text that looks like an
-// attribute inside another attribute's quoted value is not an attribute.
-func tagAttribute(tag, name string) (string, bool) {
-	i := 1
-	for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '>' && tag[i] != '/' {
-		i++
-	}
-	for i < len(tag) {
-		for i < len(tag) && (isHTMLSpace(tag[i]) || tag[i] == '/') {
-			i++
-		}
-		if i >= len(tag) || tag[i] == '>' {
-			break
-		}
-		nameStart := i
-		for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '=' && tag[i] != '>' && tag[i] != '/' {
-			i++
-		}
-		attr := strings.ToLower(tag[nameStart:i])
-		for i < len(tag) && isHTMLSpace(tag[i]) {
-			i++
-		}
-		value := ""
-		if i < len(tag) && tag[i] == '=' {
-			i++
-			for i < len(tag) && isHTMLSpace(tag[i]) {
-				i++
-			}
-			if i < len(tag) && (tag[i] == '"' || tag[i] == '\'') {
-				q := tag[i]
-				i++
-				valueStart := i
-				for i < len(tag) && tag[i] != q {
-					i++
-				}
-				value = tag[valueStart:i]
-				if i < len(tag) {
-					i++
-				}
-			} else {
-				valueStart := i
-				for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '>' {
-					i++
-				}
-				value = tag[valueStart:i]
-			}
-		}
-		if attr == name {
-			return value, true
+	_, more := z.TagName()
+	for more {
+		var key, value []byte
+		key, value, more = z.TagAttr()
+		if string(key) == name {
+			return string(value), true
 		}
 	}
 	return "", false
 }
 
-// openingTag returns the real opening tag at the start of a match, or "" when
-// the match does not start with a tag that closes.
-func openingTag(match string) string {
-	if end := tagEnd(match, 0); end > 0 {
-		return match[:end]
-	}
-	return ""
+// styleHides reports whether the first tag's own style attribute hides it.
+func styleHides(tag string) bool {
+	style, ok := startTagAttr(tag, "style")
+	return ok && styleValueHides(style)
 }
 
-// styleHides reports whether the tag's own style attribute hides it, resolving
-// each property the way a browser does: a later declaration overrides an
-// earlier one unless the earlier one is !important and the later is not.
-func styleHides(tag string) bool {
-	style, ok := tagAttribute(tag, "style")
-	if !ok {
-		return false
-	}
+// styleValueHides resolves each hiding property the way a browser does: a
+// later declaration overrides an earlier one unless the earlier one is
+// !important and the later is not.
+func styleValueHides(style string) bool {
 	type effective struct {
 		value     string
 		important bool
@@ -324,20 +245,20 @@ func styleHides(tag string) bool {
 	return false
 }
 
-// ariaHiddenTrue reports whether the tag's own aria-hidden attribute is true.
+// ariaHiddenTrue reports whether the first tag's own aria-hidden is true.
 func ariaHiddenTrue(tag string) bool {
-	value, ok := tagAttribute(tag, "aria-hidden")
+	value, ok := startTagAttr(tag, "aria-hidden")
 	return ok && strings.EqualFold(strings.TrimSpace(value), "true")
 }
 
-// replaceVerified removes each pattern match whose opening tag passes keep's
+// replaceVerified removes each pattern match whose first tag passes hidden's
 // attribute check and leaves the rest untouched. The patterns find
-// candidates; the parsed tag decides, so attribute-like text inside another
-// attribute's value cannot mark content hidden.
+// candidates; the tokenized tag decides, so attribute-like text inside
+// another attribute's value cannot mark content hidden.
 func replaceVerified(re *regexp.Regexp, s string, hidden func(tag string) bool) (string, int) {
 	hits := 0
 	out := re.ReplaceAllStringFunc(s, func(match string) string {
-		if hidden(openingTag(match)) {
+		if hidden(match) {
 			hits++
 			return ""
 		}
@@ -363,238 +284,11 @@ var interfaceTags = map[string]bool{
 	"table": true, "template": true, "textarea": true, "ul": true, "video": true,
 }
 
-// hiddenTrapCandidate is one CSS-hidden div, span or p and where it closes.
-type hiddenTrapCandidate struct {
-	start, openEnd, closeStart, end int
-	// opened is set when the tag scan reaches this opening tag. A pattern
-	// match inside a comment, an attribute value, or script or style text is
-	// never opened and is not an element.
-	opened bool
-}
-
-// textSegment maps a run of document text, with tags removed, back to its
-// offset in the original document.
-type textSegment struct {
-	orig, text, length int
-}
-
-// stripHiddenElementTraps removes each CSS-hidden div, span or p that holds no
-// interface markup and whose text carries instruction vocabulary. The whole
-// element is removed, from its opening tag to its matching close tag, so the
-// rest of the document keeps its structure; an element with no matching close
-// runs to the end of the document, as a browser would parse it. The text is
-// read with tags removed, so inline markup cannot split a keyword apart.
-//
-// The work is linear in the document: one pass pairs every element with its
-// close tag and records where interface tags and instruction words fall, and
-// each candidate is then decided by lookup rather than by rescanning, so
-// deeply nested hidden elements cannot make the rewrite quadratic.
-func stripHiddenElementTraps(s string) (string, int) {
-	lower := asciiLower(s)
-	// Every hiding declaration names one of these properties, so a document
-	// without them has no candidate and skips the scan.
-	if !strings.Contains(lower, "display") && !strings.Contains(lower, "visibility") &&
-		!strings.Contains(lower, "font-size") && !strings.Contains(lower, "opacity") {
-		return s, 0
-	}
-	var candidates []hiddenTrapCandidate
-
-	type openElement struct {
-		tag       string
-		candidate int
-	}
-	var stack []openElement
-	openCount := map[string]int{}
-	var interfacePos []int
-	var text strings.Builder
-	var segments []textSegment
-	addText := func(from, to int) {
-		if to <= from {
-			return
-		}
-		segments = append(segments, textSegment{orig: from, text: text.Len(), length: to - from})
-		text.WriteString(s[from:to])
-	}
-
-	pos := 0
-	for pos < len(s) {
-		lt := strings.IndexByte(s[pos:], '<')
-		if lt < 0 {
-			addText(pos, len(s))
-			break
-		}
-		lt += pos
-		if lt+1 >= len(s) || !startsTag(s[lt+1]) {
-			// A '<' before a space, digit or other text is literal text, as
-			// HTML reads it; it cannot swallow the tag that follows.
-			addText(pos, lt+1)
-			pos = lt + 1
-			continue
-		}
-		addText(pos, lt)
-		if strings.HasPrefix(s[lt:], "<!--") {
-			closeComment := strings.Index(s[lt+4:], "-->")
-			if closeComment < 0 {
-				break
-			}
-			pos = lt + 4 + closeComment + 3
-			continue
-		}
-		end := tagEnd(s, lt)
-		if end < 0 {
-			break
-		}
-		closing := lt+1 < len(s) && s[lt+1] == '/'
-		nameStart := lt + 1
-		if closing {
-			nameStart++
-		}
-		nameEnd := nameStart
-		for nameEnd < len(lower) && isTagNameByte(lower[nameEnd]) {
-			nameEnd++
-		}
-		name := lower[nameStart:nameEnd]
-		switch {
-		case !closing && rawTextElements[name]:
-			// Raw-text and escapable-raw-text bodies are text to the browser,
-			// so markup inside them opens no elements. Only a complete close
-			// tag ends the body: </stylex> does not.
-			if interfaceTags[name] {
-				interfacePos = append(interfacePos, lt)
-			}
-			pos = rawTextEnd(lower, end, name)
-			continue
-		case !closing && openCount["p"] > 0 && closesParagraph[name]:
-			// An opening block element closes the open p before it, so a
-			// hidden p ends here rather than swallowing what follows.
-			for i := len(stack) - 1; i >= 0; i-- {
-				if stack[i].tag != "p" {
-					continue
-				}
-				for j := len(stack) - 1; j >= i; j-- {
-					openCount[stack[j].tag]--
-					if c := stack[j].candidate; c >= 0 {
-						candidates[c].closeStart, candidates[c].end = lt, lt
-					}
-				}
-				stack = stack[:i]
-				break
-			}
-			if name == "div" || name == "p" {
-				candidate := -1
-				if styleHides(s[lt:end]) {
-					candidate = len(candidates)
-					candidates = append(candidates, hiddenTrapCandidate{start: lt, openEnd: end, closeStart: len(s), end: len(s), opened: true})
-				}
-				stack = append(stack, openElement{tag: name, candidate: candidate})
-				openCount[name]++
-			} else if interfaceTags[name] {
-				interfacePos = append(interfacePos, lt)
-			}
-		case name == "div" || name == "span" || name == "p":
-			if !closing {
-				// The tag scan reads every opening tag quote-aware, so it
-				// decides hiddenness from the real style attribute; no pattern
-				// match can open or miss a candidate.
-				candidate := -1
-				if styleHides(s[lt:end]) {
-					candidate = len(candidates)
-					candidates = append(candidates, hiddenTrapCandidate{start: lt, openEnd: end, closeStart: len(s), end: len(s), opened: true})
-				}
-				stack = append(stack, openElement{tag: name, candidate: candidate})
-				openCount[name]++
-				break
-			}
-			if openCount[name] == 0 {
-				// A stray closer has nothing to match; skipping it keeps the
-				// pass linear however many unmatched closers a page carries.
-				break
-			}
-			for i := len(stack) - 1; i >= 0; i-- {
-				if stack[i].tag != name {
-					continue
-				}
-				// Elements opened above the match never closed; they end where
-				// their ancestor does.
-				for j := len(stack) - 1; j > i; j-- {
-					openCount[stack[j].tag]--
-					if c := stack[j].candidate; c >= 0 {
-						candidates[c].closeStart, candidates[c].end = lt, lt
-					}
-				}
-				openCount[name]--
-				if c := stack[i].candidate; c >= 0 {
-					candidates[c].closeStart, candidates[c].end = lt, end
-				}
-				stack = stack[:i]
-				break
-			}
-		case !closing && interfaceTags[name]:
-			interfacePos = append(interfacePos, lt)
-		}
-		pos = end
-	}
-
-	body := text.String()
-	words := trapInstructionRe.FindAllStringIndex(body, -1)
-	textAt := func(orig int) int {
-		i := sort.Search(len(segments), func(i int) bool { return segments[i].orig+segments[i].length > orig })
-		if i == len(segments) {
-			return len(body)
-		}
-		return segments[i].text + max(orig-segments[i].orig, 0)
-	}
-
-	var b strings.Builder
-	hits, written, removedUntil := 0, 0, 0
-	for _, c := range candidates {
-		if !c.opened || c.start < removedUntil {
-			continue
-		}
-		// Interface markup anywhere inside keeps the element: applications hide
-		// whole views, menus and forms until their scripts reveal them. Its text
-		// is still read by response scanning.
-		if k := sort.SearchInts(interfacePos, c.openEnd); k < len(interfacePos) && interfacePos[k] < c.closeStart {
-			continue
-		}
-		lo, hi := textAt(c.openEnd), textAt(c.closeStart)
-		k := sort.Search(len(words), func(i int) bool { return words[i][0] >= lo })
-		if k == len(words) || words[k][1] > hi {
-			continue
-		}
-		b.WriteString(s[written:c.start])
-		written, removedUntil = c.end, c.end
-		hits++
-	}
-	if hits == 0 {
-		return s, 0
-	}
-	b.WriteString(s[written:])
-	return b.String(), hits
-}
-
-// rawTextEnd returns the offset of the complete </name close tag that ends a
-// script or style body starting at from, or len(lower) when there is none.
-func rawTextEnd(lower string, from int, name string) int {
-	closer := "</" + name
-	for i := from; ; {
-		k := strings.Index(lower[i:], closer)
-		if k < 0 {
-			return len(lower)
-		}
-		at := i + k
-		next := at + len(closer)
-		if next >= len(lower) || lower[next] == '>' || lower[next] == '/' || isHTMLSpace(lower[next]) {
-			return at
-		}
-		i = next
-	}
-}
-
-// rawTextElements hold text, not markup, until their own close tag.
+// rawTextElements are the elements whose body the tokenizer returns as one
+// text token; that body is not page text a reader sees.
 var rawTextElements = map[string]bool{
-	"script": true, "style": true, "textarea": true, "title": true,
-	"xmp": true, "iframe": true, "noembed": true, "noframes": true,
+	"iframe": true, "noembed": true, "noframes": true, "noscript": true, "plaintext": true,
+	"script": true, "style": true, "textarea": true, "title": true, "xmp": true,
 }
 
 // closesParagraph lists the opening tags that implicitly close an open p
@@ -608,14 +302,234 @@ var closesParagraph = map[string]bool{
 	"section": true, "summary": true, "table": true, "ul": true,
 }
 
-// startsTag reports whether the byte after '<' begins markup rather than text.
-func startsTag(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '/' || c == '!' || c == '?'
+// hiddenTrapCandidate is one CSS-hidden div, span or p and where it closes.
+type hiddenTrapCandidate struct {
+	start, openEnd, closeStart, end int
 }
 
-// isTagNameByte reports whether c can appear in a lowercase HTML tag name.
-func isTagNameByte(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
+// stripHiddenElementTraps removes each CSS-hidden div, span or p whose text
+// carries instruction vocabulary. An element with no interface markup is
+// removed whole; one with interface markup keeps its markup and loses only the
+// text that carries the instruction words. A removed element goes from its
+// opening tag to its matching close tag, so the rest of the document keeps its
+// structure; an element with no matching close runs to the end of the
+// document, as a browser would parse it.
+//
+// The document is read with the HTML tokenizer, so quoting, character
+// references, comments and raw-text element bodies follow the HTML rules, and
+// text is read unescaped with tags removed so markup cannot split a keyword.
+// Each candidate is decided by lookup after one pass, so nested or stray tags
+// cannot make the rewrite quadratic.
+func stripHiddenElementTraps(s string) (string, int) {
+	// Every candidate carries a style attribute, and an attribute name cannot
+	// be written with character references.
+	if !strings.Contains(asciiLower(s), "style") {
+		return s, 0
+	}
+	type openElement struct {
+		tag       string
+		candidate int
+	}
+	type boundary struct {
+		orig, text int
+	}
+	var (
+		candidates   []hiddenTrapCandidate
+		stack        []openElement
+		interfacePos []int
+		bounds       []boundary
+		textTokens   []textToken
+		text         strings.Builder
+	)
+	openCount := map[string]int{}
+	closeOpen := func(from, at, end int, closeAll bool) {
+		// Ends the stack entries from index from upward. Entries above from
+		// never closed: they end where the closing tag starts.
+		for j := len(stack) - 1; j >= from; j-- {
+			openCount[stack[j].tag]--
+			if c := stack[j].candidate; c >= 0 {
+				candidates[c].closeStart, candidates[c].end = at, at
+				if j == from && !closeAll {
+					candidates[c].end = end
+				}
+			}
+		}
+		stack = stack[:from]
+	}
+	openAt := func(tag string, start, end int, raw []byte) {
+		candidate := -1
+		if styleHides(string(raw)) {
+			candidate = len(candidates)
+			candidates = append(candidates, hiddenTrapCandidate{start: start, openEnd: end, closeStart: len(s), end: len(s)})
+		}
+		stack = append(stack, openElement{tag: tag, candidate: candidate})
+		openCount[tag]++
+	}
+
+	z := html.NewTokenizer(strings.NewReader(s))
+	off := 0
+	rawBody := false
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		start := off
+		off += len(z.Raw())
+		bounds = append(bounds, boundary{orig: start, text: text.Len()})
+		if tt == html.TextToken {
+			if !rawBody {
+				t0 := text.Len()
+				text.Write(z.Text())
+				textTokens = append(textTokens, textToken{orig: start, origEnd: off, text: t0, textEnd: text.Len()})
+			}
+			rawBody = false
+			continue
+		}
+		rawBody = false
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken && tt != html.EndTagToken {
+			continue
+		}
+		raw := z.Raw()
+		nameBytes, _ := z.TagName()
+		name := string(nameBytes)
+		if tt == html.EndTagToken {
+			if (name == "div" || name == "span" || name == "p") && openCount[name] > 0 {
+				for i := len(stack) - 1; i >= 0; i-- {
+					if stack[i].tag == name {
+						closeOpen(i, start, off, false)
+						break
+					}
+				}
+			}
+			continue
+		}
+		if openCount["p"] > 0 && closesParagraph[name] {
+			// An opening block element closes the open p before it, so a
+			// hidden p ends here rather than swallowing what follows.
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i].tag == "p" {
+					closeOpen(i, start, start, true)
+					break
+				}
+			}
+		}
+		if interfaceTags[name] {
+			interfacePos = append(interfacePos, start)
+		}
+		if rawTextElements[name] && tt == html.StartTagToken {
+			rawBody = true
+		}
+		// A self-closing slash on div, span or p is ignored by browsers, so
+		// both token kinds open the element.
+		if name == "div" || name == "span" || name == "p" {
+			openAt(name, start, off, raw)
+		}
+	}
+	bounds = append(bounds, boundary{orig: off, text: text.Len()})
+
+	body := text.String()
+	words := trapInstructionRe.FindAllStringIndex(body, -1)
+	textAt := func(orig int) int {
+		i := sort.Search(len(bounds), func(i int) bool { return bounds[i].orig >= orig })
+		if i == len(bounds) {
+			return len(body)
+		}
+		return bounds[i].text
+	}
+
+	hasWord := func(lo, hi int) (int, bool) {
+		k := sort.Search(len(words), func(i int) bool { return words[i][0] >= lo })
+		return k, k < len(words) && words[k][1] <= hi
+	}
+	hasInterface := func(c hiddenTrapCandidate) bool {
+		j := sort.SearchInts(interfacePos, c.openEnd)
+		return j < len(interfacePos) && interfacePos[j] < c.closeStart
+	}
+
+	// Pass 1: hidden elements with no interface markup and an instruction
+	// word are removed whole.
+	var cuts [][2]int
+	var removedText [][2]int
+	hits, removedUntil := 0, 0
+	for _, c := range candidates {
+		if c.start < removedUntil || hasInterface(c) {
+			continue
+		}
+		if _, ok := hasWord(textAt(c.openEnd), textAt(c.closeStart)); !ok {
+			continue
+		}
+		cuts = append(cuts, [2]int{c.start, c.end})
+		removedText = append(removedText, [2]int{textAt(c.start), textAt(c.end)})
+		removedUntil = c.end
+		hits++
+	}
+	inRemoved := func(w []int) bool {
+		i := sort.Search(len(removedText), func(i int) bool { return removedText[i][1] > w[0] })
+		return i < len(removedText) && removedText[i][0] <= w[0]
+	}
+	insideCut := func(pos int) bool {
+		i := sort.Search(len(cuts), func(i int) bool { return cuts[i][1] > pos })
+		return i < len(cuts) && cuts[i][0] <= pos
+	}
+
+	// Pass 2: interface markup keeps the element, because applications hide
+	// whole views, menus and forms until their scripts reveal them. The
+	// instruction-bearing text inside it is still removed, so an empty button
+	// cannot carry a trap past the shield.
+	for _, c := range candidates {
+		if !hasInterface(c) || insideCut(c.start) {
+			continue
+		}
+		lo, hi := textAt(c.openEnd), textAt(c.closeStart)
+		k, _ := hasWord(lo, hi)
+		stripped := false
+		for ; k < len(words) && words[k][1] <= hi; k++ {
+			if inRemoved(words[k]) {
+				continue
+			}
+			cuts = append(cuts, textCuts(textTokens, words[k][0], words[k][1])...)
+			stripped = true
+		}
+		if stripped {
+			hits++
+		}
+	}
+	if hits == 0 {
+		return s, 0
+	}
+	sort.Slice(cuts, func(i, j int) bool { return cuts[i][0] < cuts[j][0] })
+	var b strings.Builder
+	written := 0
+	for _, cut := range cuts {
+		if cut[1] <= written {
+			continue
+		}
+		if cut[0] > written {
+			b.WriteString(s[written:cut[0]])
+		}
+		written = cut[1]
+	}
+	b.WriteString(s[written:])
+	return b.String(), hits
+}
+
+// textToken locates one run of document text both in the original bytes and
+// in the decoded, tag-free text the instruction words are matched against.
+type textToken struct {
+	orig, origEnd, text, textEnd int
+}
+
+// textCuts returns the original byte range of every text token that overlaps
+// the decoded text range [from, to). A keyword split across inline tags spans
+// several tokens, and each of them is removed.
+func textCuts(tokens []textToken, from, to int) [][2]int {
+	var cuts [][2]int
+	i := sort.Search(len(tokens), func(i int) bool { return tokens[i].textEnd > from })
+	for ; i < len(tokens) && tokens[i].text < to; i++ {
+		cuts = append(cuts, [2]int{tokens[i].orig, tokens[i].origEnd})
+	}
+	return cuts
 }
 
 // asciiLower folds only A-Z. Unicode case folding can change a string's byte

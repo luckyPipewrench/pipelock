@@ -173,8 +173,9 @@ func NewReverseProxy(
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 
 	// Director rewrites the request to target the upstream.
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
+	// Director keeps the current forwarding-header behavior; moving to Rewrite changes it and needs its own review.
+	originalDirector := proxy.Director         //nolint:staticcheck // see above
+	proxy.Director = func(req *http.Request) { //nolint:staticcheck // see above
 		originalDirector(req)
 		req.URL.Path = cleanReversePath(req.URL.Path)
 		req.URL.RawPath = ""

@@ -2109,6 +2109,7 @@ func TestVerifySignature_AcrossKeyTypes(t *testing.T) {
 	}
 }
 
+//nolint:staticcheck // test builds keys from raw coordinates on purpose
 func TestVerifySignature_ECDSAP256ParsedAndEquivalentCurves(t *testing.T) {
 	t.Parallel()
 
@@ -2153,6 +2154,7 @@ func TestVerifySignature_ECDSAP256ParsedAndEquivalentCurves(t *testing.T) {
 	}
 }
 
+//nolint:staticcheck // test builds keys from raw coordinates on purpose
 func TestVerifySignature_ECDSARejectsNilAndDegenerateKeys(t *testing.T) {
 	t.Parallel()
 

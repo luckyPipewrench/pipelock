@@ -540,6 +540,40 @@ func truncate(b []byte, n int) string {
 // human-readable provenance sidecar where this single field can vary.
 const stableManifestPlaceholder = "sha256:HARNESS-PLACEHOLDER"
 
+// stableManifestSignature replaces the manifest signature in golden
+// comparisons, after verifyHarnessManifestSignature has checked the real one.
+const stableManifestSignature = "ed25519:HARNESS-PLACEHOLDER"
+
+// verifyHarnessManifestSignature checks the compile manifest signature over
+// the unstabilized body with the harness key. Stabilizing replaces the
+// signature, so this is the check that keeps a signing regression visible.
+func verifyHarnessManifestSignature(t *testing.T, raw []byte) {
+	t.Helper()
+	var env contract.CompileManifestEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal manifest envelope: %v", err)
+	}
+	sigHex, ok := strings.CutPrefix(env.Signature, "ed25519:")
+	if !ok {
+		t.Fatalf("manifest signature %q lacks ed25519: prefix", env.Signature)
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		t.Fatalf("decode manifest signature: %v", err)
+	}
+	preimage, err := env.Body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("manifest preimage: %v", err)
+	}
+	pub, ok := newHarnessSigner().priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("harness signer public key is not ed25519")
+	}
+	if !ed25519.Verify(pub, preimage, sig) {
+		t.Fatal("manifest signature does not verify against its body with the harness key")
+	}
+}
+
 // stableManifestModuleDigests is the redacted module_digests value the
 // stabilized manifest carries instead of the build-info-derived map.
 var stableManifestModuleDigestsValue = map[string]string{
@@ -555,10 +589,14 @@ var stableManifestModuleDigestsValue = map[string]string{
 // severity) for the original finding.
 func stabilizeManifest(t *testing.T, raw []byte) []byte {
 	t.Helper()
+	verifyHarnessManifestSignature(t, raw)
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
+	// The signature covers module_digests, so it drifts with them. It was
+	// verified against the real body above; replace it only after that.
+	doc["signature"] = stableManifestSignature
 	body, ok := doc["body"].(map[string]any)
 	if !ok {
 		t.Fatalf("manifest body is not a map: %T", doc["body"])

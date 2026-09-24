@@ -29,5 +29,5 @@
     },
     "signer_key_id": "harness-contract-compile"
   },
-  "signature": "ed25519:1e816b769b6d58b4dec3b6cfbc9bac582e8a6a98bc19ad7d400d065e29b959398826688dcb3f66c7ca46e9a0fc052005c30acd8347fff31cdf9d36654c01bd01"
+  "signature": "ed25519:HARNESS-PLACEHOLDER"
 }

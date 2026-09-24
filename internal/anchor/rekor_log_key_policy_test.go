@@ -129,6 +129,8 @@ func TestLoadRekorPublicKey_RefusesUnsupportedKeysAtLoad(t *testing.T) {
 // a wrong-length key, and ECDSA verification panics on a nil curve or nil coordinates.
 // A panic on a verification path reached from remote transparency-log input is a
 // denial of service, so every such key must come back as a typed error instead.
+//
+//nolint:staticcheck // test builds keys from raw coordinates on purpose
 func TestSupportedRekorLogPublicKey_ClosesPanicVectors(t *testing.T) {
 	t.Parallel()
 

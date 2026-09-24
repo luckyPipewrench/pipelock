@@ -1282,8 +1282,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, binding *tokenLea
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
 		writeBrokerErr(rw, http.StatusBadGateway, "session proxy unavailable")
 	}
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
+	// Director keeps the current forwarding-header behavior; moving to Rewrite changes it and needs its own review.
+	originalDirector := proxy.Director         //nolint:staticcheck // see above
+	proxy.Director = func(req *http.Request) { //nolint:staticcheck // see above
 		originalDirector(req)
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host

@@ -840,3 +840,20 @@ func itoa(n int) string {
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
 }
+
+func TestRawURLAuthority(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"http://openclaw:65536:/mcp": "openclaw:65536:",
+		"https://host:8080?x=1":      "host:8080",
+		"http://host#frag":           "host",
+		"http://[::1]:443/":          "[::1]:443",
+		"no-scheme-here":             "",
+	}
+	for raw, want := range cases {
+		if got := rawURLAuthority(raw); got != want {
+			t.Errorf("rawURLAuthority(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

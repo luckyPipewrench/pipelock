@@ -316,7 +316,15 @@ func validateSidecarMCPUpstream(raw string) error {
 		return nil
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
+		// Go 1.26 url.Parse rejects some malformed ports itself, so the
+		// malformed-port message is decided from the raw authority here too.
+		if mcpUpstreamHostHasMalformedPort(rawURLAuthority(raw)) {
+			return fmt.Errorf("--mcp-upstream %q has malformed host/port syntax", raw)
+		}
+		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
+	}
+	if parsed.Host == "" {
 		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
 	}
 	switch parsed.Scheme {
@@ -452,6 +460,19 @@ func rawWorkloadHasMCPState(raw map[string]interface{}) bool {
 		}
 	}
 	return false
+}
+
+// rawURLAuthority returns the authority of raw without parsing it: the text
+// after "://" up to the first path, query, or fragment delimiter.
+func rawURLAuthority(raw string) string {
+	_, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
 }
 
 func mcpUpstreamHostHasMalformedPort(host string) bool {

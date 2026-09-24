@@ -144,6 +144,8 @@ func scalarFromSeed(seed string, n *big.Int) *big.Int {
 // key generation nondeterministic even with a fixed reader — so the corpus needs
 // stable certs cannot rely on it. We derive the scalar directly and recover the
 // public point through crypto/ecdh.
+//
+//nolint:staticcheck // corpus generator derives fixed keys and signatures from raw scalars on purpose
 func (g *aarpGen) detECDSAKey(c elliptic.Curve, seed string) *ecdsa.PrivateKey {
 	ec := ecdhCurveFor(c)
 	if ec == nil {
@@ -167,6 +169,8 @@ func (g *aarpGen) detECDSAKey(c elliptic.Curve, seed string) *ecdsa.PrivateKey {
 // ecdsa.SignASN1 is also nondeterministic (MaybeReadByte + hedged nonce), so we
 // derive the nonce from the seed and compute (r,s) directly. The result verifies
 // under the standard ecdsa.VerifyASN1 the reference verifier uses.
+//
+//nolint:staticcheck // corpus generator derives fixed keys and signatures from raw scalars on purpose
 func (g *aarpGen) detECDSASignASN1(priv *ecdsa.PrivateKey, hash []byte, seed string) []byte {
 	c := priv.Curve
 	ec := ecdhCurveFor(c)

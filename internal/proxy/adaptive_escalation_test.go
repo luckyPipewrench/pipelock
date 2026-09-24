@@ -448,9 +448,9 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 	}
 }
 
-// TestForwardHTTP_Adaptive_EntropyBudgetWarnKeepsScore verifies a CEE warning
+// TestForwardHTTP_Adaptive_EntropyBudgetWarnAddsNoScore verifies a CEE warning
 // does not push a nearly elevated session into block_all.
-func TestForwardHTTP_Adaptive_EntropyBudgetWarnKeepsScore(t *testing.T) {
+func TestForwardHTTP_Adaptive_EntropyBudgetWarnAddsNoScore(t *testing.T) {
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprint(w, "ok")
@@ -981,9 +981,9 @@ func TestFetch_Adaptive_HeaderDLPSignal(t *testing.T) {
 	}
 }
 
-// TestFetch_Adaptive_EntropyBudgetWarnKeepsScore verifies a CEE warning
+// TestFetch_Adaptive_EntropyBudgetWarnAddsNoScore verifies a CEE warning
 // does not push a nearly elevated fetch session into block_all.
-func TestFetch_Adaptive_EntropyBudgetWarnKeepsScore(t *testing.T) {
+func TestFetch_Adaptive_EntropyBudgetWarnAddsNoScore(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprint(w, "hello")

@@ -513,9 +513,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-check block_all after CONNECT CEE may have escalated the session. The
-	// CEE block above may fire ceeRecordSignals without blocking (e.g. entropy
-	// budget exceeded but action=warn), pushing the session to a block_all level.
-	// Use the live recorder for an up-to-date escalation level.
+	// CEE step above may record a fragment-DLP signal without blocking, pushing
+	// the session to a block_all level; entropy-budget findings are score-neutral
+	// and cannot. Use the live recorder for an up-to-date escalation level.
 	if postCEEAdaptive.Enabled {
 		if postCEERec != nil {
 			level := postCEERec.EscalationLevel()

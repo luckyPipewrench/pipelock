@@ -114,7 +114,7 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		}
 	}
 	result := s.scanResponseBodyUncached(ctx, body, suppressTarget, suppress)
-	if eligible && (ctx == nil || ctx.Err() == nil) {
+	if eligible {
 		s.responseVerdicts.put(key, len(body), result)
 	}
 	return result

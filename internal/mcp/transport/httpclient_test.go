@@ -154,12 +154,14 @@ func TestHTTPClient_GzipJSONResponseDecodedBeforeScanning(t *testing.T) {
 // for br, which the client cannot decode, so forwarding a caller-supplied
 // browser Accept-Encoding would break the stream.
 func TestHTTPClient_EveryMethodRequestsIdentity(t *testing.T) {
+	// seen records every request, not one per method, so a later request of
+	// the same method cannot hide an earlier one's encoding.
 	var mu sync.Mutex
-	seen := map[string]string{}
+	var seen []struct{ method, acceptEncoding string }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ae := r.Header.Get("Accept-Encoding")
 		mu.Lock()
-		seen[r.Method] = ae
+		seen = append(seen, struct{ method, acceptEncoding string }{r.Method, ae})
 		mu.Unlock()
 		if strings.Contains(ae, "br") {
 			w.Header().Set("Content-Encoding", "br")
@@ -210,14 +212,16 @@ func TestHTTPClient_EveryMethodRequestsIdentity(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
-		got, ok := seen[method]
-		if !ok {
-			t.Errorf("%s never reached the upstream", method)
-			continue
+	count := map[string]int{}
+	for i, req := range seen {
+		count[req.method]++
+		if req.acceptEncoding != "identity" {
+			t.Errorf("upstream request %d (%s) Accept-Encoding = %q, want identity", i, req.method, req.acceptEncoding)
 		}
-		if got != "identity" {
-			t.Errorf("%s upstream Accept-Encoding = %q, want identity", method, got)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if count[method] == 0 {
+			t.Errorf("%s never reached the upstream", method)
 		}
 	}
 }

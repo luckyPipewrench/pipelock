@@ -8,6 +8,7 @@ package hermes
 import (
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -118,7 +119,7 @@ func TestHermesCommandLockFollowsSymlinkedCacheRoot(t *testing.T) {
 	}
 	setHermesTestCacheDir(t, link)
 	ran := false
-	if err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil }); err != nil || !ran {
+	if err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), []string{filepath.Join(root, "home")}, func() error { ran = true; return nil }); err != nil || !ran {
 		t.Fatalf("lock under a symlinked cache root: err=%v ran=%v", err, ran)
 	}
 }
@@ -134,18 +135,18 @@ func TestHermesCommandLockRefusesUnresolvableResources(t *testing.T) {
 	}
 	goodConfig := filepath.Join(root, "cfg", "config.yaml")
 	goodHome := filepath.Join(root, "home")
-	if err := withHermesCommandLock(goodConfig, goodHome, func() error { return nil }); err != nil {
+	if err := withHermesCommandLock(goodConfig, []string{goodHome}, func() error { return nil }); err != nil {
 		t.Fatalf("control lock failed: %v", err)
 	}
 	for _, tc := range []struct {
 		name, config, home, want string
 	}{
 		{"config", filepath.Join(file, "cfg", "config.yaml"), goodHome, "config directory"},
-		{"home", goodConfig, filepath.Join(file, "home"), "hermes command lock: home"},
+		{"home", goodConfig, filepath.Join(file, "home"), "hermes command lock: " + filepath.Join(file, "home")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ran := false
-			err := withHermesCommandLock(tc.config, tc.home, func() error { ran = true; return nil })
+			err := withHermesCommandLock(tc.config, []string{tc.home}, func() error { ran = true; return nil })
 			if err == nil || !strings.Contains(err.Error(), tc.want) || ran {
 				t.Fatalf("err = %v, ran = %v; want error naming %q and no run", err, ran, tc.want)
 			}
@@ -161,7 +162,7 @@ func TestHermesCommandLockNeedsCacheDirectory(t *testing.T) {
 	hermesUserCacheDir = func() (string, error) { return "", errors.New("neither $XDG_CACHE_HOME nor $HOME are defined") }
 	t.Cleanup(func() { hermesUserCacheDir = old })
 	ran := false
-	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
+	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), []string{filepath.Join(root, "home")}, func() error { ran = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "cache directory") || ran {
 		t.Fatalf("err = %v, ran = %v; want cache directory error and no run", err, ran)
 	}
@@ -176,7 +177,7 @@ func TestHermesCommandLockDirectoryCreateFailure(t *testing.T) {
 	}
 	setHermesTestCacheDir(t, cache)
 	ran := false
-	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
+	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), []string{filepath.Join(root, "home")}, func() error { ran = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "hermes command lock: create") || ran {
 		t.Fatalf("err = %v, ran = %v; want create error and no run", err, ran)
 	}
@@ -206,4 +207,24 @@ func TestHermesLockFileRejectsNonRegular(t *testing.T) {
 		t.Fatalf("control lock failed: %v", err)
 	}
 	unlock()
+}
+
+// The lock root comes from the account database, so a per-process cache
+// override cannot send two runs by the same account to different locks.
+func TestHermesStableCacheDirIgnoresEnvironment(t *testing.T) {
+	account, err := user.Current()
+	if err != nil {
+		t.Skipf("no account entry: %v", err)
+	}
+	want := filepath.Join(account.HomeDir, ".cache")
+	for _, cache := range []string{filepath.Join(t.TempDir(), "one"), filepath.Join(t.TempDir(), "two")} {
+		t.Setenv("XDG_CACHE_HOME", cache)
+		got, err := hermesStableCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("XDG_CACHE_HOME=%s gave lock root %s, want %s", cache, got, want)
+		}
+	}
 }

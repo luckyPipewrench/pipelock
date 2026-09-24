@@ -46,6 +46,12 @@ func secureWindowsLockObject(handle windows.Handle, path string, sid *windows.SI
 	return nil
 }
 
+// hermesStableCacheDir returns the account's Local AppData folder from the
+// known-folder API, which ignores a per-process LOCALAPPDATA override.
+func hermesStableCacheDir() (string, error) {
+	return windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
+}
+
 func ensureHermesLockDir(path string) error {
 	sid, err := hermesWindowsIdentity()
 	if err != nil {

@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
 
 var hermesLockTimeout = 30 * time.Second
 
-// hermesUserCacheDir locates the per-user cache that holds the lock files.
-var hermesUserCacheDir = os.UserCacheDir
+// hermesUserCacheDir locates the per-account cache that holds the lock files.
+// It ignores per-process overrides such as XDG_CACHE_HOME and LOCALAPPDATA, so
+// every run by the same account finds the same locks.
+var hermesUserCacheDir = hermesStableCacheDir
 
 // hermesLockDirName is created directly under the cache root, so its
 // permissions are the ones this code sets rather than whatever a shared
@@ -50,27 +53,32 @@ func canonicalLockResource(path string) (string, error) {
 	}
 }
 
-// hermesLockResources returns the canonical directories a command locks,
+// hermesLockResources returns the canonical directories a command locks: the
+// Hermes config directory plus every other directory the command writes,
 // deduplicated and sorted so every command acquires them in the same order.
-func hermesLockResources(configPath, home string) ([]string, error) {
+func hermesLockResources(configPath string, dirs []string) ([]string, error) {
 	configDir, err := canonicalLockResource(filepath.Dir(configPath))
 	if err != nil {
 		return nil, fmt.Errorf("hermes command lock: config directory: %w", err)
 	}
-	browserHomeDir, err := canonicalLockResource(home)
-	if err != nil {
-		return nil, fmt.Errorf("hermes command lock: home: %w", err)
-	}
 	resources := []string{configDir}
-	if browserHomeDir != configDir {
-		resources = append(resources, browserHomeDir)
+	for _, dir := range dirs {
+		canonical, err := canonicalLockResource(dir)
+		if err != nil {
+			return nil, fmt.Errorf("hermes command lock: %s: %w", dir, err)
+		}
+		if !slices.Contains(resources, canonical) {
+			resources = append(resources, canonical)
+		}
 	}
 	sort.Strings(resources)
 	return resources, nil
 }
 
-func withHermesCommandLock(configPath, home string, fn func() error) error {
-	resources, err := hermesLockResources(configPath, home)
+// withHermesCommandLock runs fn while holding the locks for the Hermes config
+// directory and every directory in dirs.
+func withHermesCommandLock(configPath string, dirs []string, fn func() error) error {
+	resources, err := hermesLockResources(configPath, dirs)
 	if err != nil {
 		return err
 	}

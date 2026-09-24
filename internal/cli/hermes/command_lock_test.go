@@ -51,7 +51,7 @@ func TestHermesCommandLockResourcesAndContention(t *testing.T) {
 			release := make(chan struct{})
 			done := make(chan error, 1)
 			go func() {
-				done <- withHermesCommandLock(tc.heldConfig, tc.heldHome, func() error { close(entered); <-release; return nil })
+				done <- withHermesCommandLock(tc.heldConfig, []string{tc.heldHome}, func() error { close(entered); <-release; return nil })
 			}()
 			select {
 			case <-entered:
@@ -59,7 +59,7 @@ func TestHermesCommandLockResourcesAndContention(t *testing.T) {
 				t.Fatalf("held lock failed before entering: %v", err)
 			}
 			called := false
-			err := withHermesCommandLock(tc.secondConfig, tc.secondHome, func() error { called = true; return nil })
+			err := withHermesCommandLock(tc.secondConfig, []string{tc.secondHome}, func() error { called = true; return nil })
 			if err == nil || called || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") || !strings.Contains(err.Error(), ".lock") {
 				t.Errorf("contention err=%v called=%v", err, called)
 			}
@@ -67,7 +67,7 @@ func TestHermesCommandLockResourcesAndContention(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-			if err := withHermesCommandLock(tc.secondConfig, tc.secondHome, func() error { called = true; return nil }); err != nil || !called {
+			if err := withHermesCommandLock(tc.secondConfig, []string{tc.secondHome}, func() error { called = true; return nil }); err != nil || !called {
 				t.Fatalf("after release err=%v called=%v", err, called)
 			}
 		})
@@ -80,18 +80,18 @@ func TestHermesCommandLockOrder(t *testing.T) {
 	root := lockTestEnvironment(t)
 	a := filepath.Join(root, "a")
 	b := filepath.Join(root, "b")
-	forward, err := hermesLockResources(filepath.Join(a, "config.yaml"), b)
+	forward, err := hermesLockResources(filepath.Join(a, "config.yaml"), []string{b})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reverse, err := hermesLockResources(filepath.Join(b, "config.yaml"), a)
+	reverse, err := hermesLockResources(filepath.Join(b, "config.yaml"), []string{a})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(forward) != 2 || !slices.Equal(forward, reverse) || !slices.IsSorted(forward) {
 		t.Fatalf("lock order differs: %v vs %v", forward, reverse)
 	}
-	same, err := hermesLockResources(filepath.Join(a, "config.yaml"), a)
+	same, err := hermesLockResources(filepath.Join(a, "config.yaml"), []string{a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestHermesCommandLockRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "target"), path); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	if err := withHermesCommandLock(filepath.Join(resource, "config.yaml"), resource, func() error { return nil }); err == nil {
+	if err := withHermesCommandLock(filepath.Join(resource, "config.yaml"), []string{resource}, func() error { return nil }); err == nil {
 		t.Fatal("accepted symlink")
 	}
 }

@@ -841,7 +841,7 @@ func TestRunInstall_NoBrowserDefaultsDoesNotLockHome(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- withHermesCommandLock(filepath.Join(root, "other", "config.yaml"), home, func() error { close(entered); <-release; return nil })
+		done <- withHermesCommandLock(filepath.Join(root, "other", "config.yaml"), []string{home}, func() error { close(entered); <-release; return nil })
 	}()
 	select {
 	case <-entered:
@@ -866,5 +866,66 @@ func TestRunInstall_NoBrowserDefaultsDoesNotLockHome(t *testing.T) {
 	}
 	if err := run(false); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
 		t.Fatalf("control: install with browser defaults should wait on the held home lock, got %v", err)
+	}
+}
+
+// holdHermesTestLock holds the lock for dirs until the returned release runs.
+func holdHermesTestLock(t *testing.T, config string, dirs []string) func() {
+	t.Helper()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- withHermesCommandLock(config, dirs, func() error { close(entered); <-release; return nil })
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("held lock failed before entering: %v", err)
+	}
+	return func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A full-mode install writes the plugin tree, so it waits for another command
+// holding that plugin root even when the Hermes config and home differ. An
+// mcp-only install never touches the plugin tree and does not wait.
+func TestRunInstall_FullModeLocksPluginRoot(t *testing.T) {
+	root := lockTestEnvironment(t)
+	plugin := filepath.Join(root, "shared", "plugins", "pipelock")
+	defer holdHermesTestLock(t, filepath.Join(root, "other", "config.yaml"), []string{plugin})()
+	run := func(mode string) error {
+		cmd := installCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		dir := t.TempDir()
+		return runInstall(cmd, &installOptions{Mode: mode, NoBrowserDefaults: true, PluginRoot: plugin, HermesConfig: filepath.Join(dir, "config.yaml")})
+	}
+	if err := run(ModeFull); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("full-mode install should wait on the held plugin root, got %v", err)
+	}
+	if err := run(ModeMCPOnly); err != nil && strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("control: mcp-only install waited on the plugin root: %v", err)
+	}
+}
+
+// Rollback removes the plugin tree, so it waits for another command holding it.
+func TestRunRollback_LocksPluginRoot(t *testing.T) {
+	root := lockTestEnvironment(t)
+	plugin := filepath.Join(root, "shared", "plugins", "pipelock")
+	release := holdHermesTestLock(t, filepath.Join(root, "other", "config.yaml"), []string{plugin})
+	rcmd := rollbackCmd()
+	rcmd.SetOut(&bytes.Buffer{})
+	rcmd.SetErr(&bytes.Buffer{})
+	dir := t.TempDir()
+	opts := &rollbackOptions{HomeDir: dir, PluginRoot: plugin, HermesConfig: filepath.Join(dir, "config.yaml")}
+	err := runRollback(rcmd, opts)
+	release()
+	if err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("rollback should wait on the held plugin root, got %v", err)
 	}
 }

@@ -186,7 +186,12 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 		home = resolved
 		lockHome = resolved
 	}
-	return withHermesCommandLock(opts.HermesConfig, lockHome, func() error {
+	lockDirs := []string{lockHome}
+	if opts.Mode != ModeMCPOnly {
+		// Full mode writes the plugin tree, which another Hermes config can share.
+		lockDirs = append(lockDirs, opts.PluginRoot)
+	}
+	return withHermesCommandLock(opts.HermesConfig, lockDirs, func() error {
 		// Browser defaults are validated before anything changes and written only
 		// after the integration succeeds, so a failed install leaves the
 		// agent-browser config untouched.

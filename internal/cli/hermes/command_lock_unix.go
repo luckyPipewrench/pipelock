@@ -8,10 +8,24 @@ package hermes
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"syscall"
 	"time"
 )
+
+// hermesStableCacheDir returns ~/.cache for the invoking account, with the home
+// taken from the account database rather than $HOME or $XDG_CACHE_HOME.
+func hermesStableCacheDir() (string, error) {
+	account, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	if account.HomeDir == "" {
+		return "", fmt.Errorf("account %s has no home directory", account.Username)
+	}
+	return filepath.Join(account.HomeDir, ".cache"), nil
+}
 
 func ensureHermesLockDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {

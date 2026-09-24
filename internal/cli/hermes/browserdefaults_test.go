@@ -5,10 +5,14 @@ package hermes
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestBrowserDefaultsInstallRollback(t *testing.T) {
@@ -300,6 +304,9 @@ func TestBrowserDefaultsInstallRefusals(t *testing.T) {
 }
 
 func TestBrowserDefaultsFilesystemFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix permission bits")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission failures cannot be forced as root")
 	}
@@ -416,10 +423,20 @@ func TestRunRollback_BrowserDefaultsFailureSurfaces(t *testing.T) {
 	tmp := t.TempDir()
 	ropts := &rollbackOptions{HomeDir: home, PluginRoot: filepath.Join(tmp, "plugins", "pipelock"), HermesConfig: filepath.Join(tmp, "config.yaml")}
 	rcmd := rollbackCmd()
-	rcmd.SetOut(&bytes.Buffer{})
+	var out bytes.Buffer
+	rcmd.SetOut(&out)
 	rcmd.SetErr(&bytes.Buffer{})
-	if err := runRollback(rcmd, ropts); err == nil || !strings.Contains(err.Error(), "malformed ownership record") {
-		t.Fatalf("err = %v", err)
+	// A broken browser-defaults record must not block uninstalling the Hermes
+	// integration: rollback completes, warns with the file, keeps the record.
+	if err := runRollback(rcmd, ropts); err != nil {
+		t.Fatalf("rollback blocked by browser defaults: %v", err)
+	}
+	path, _ := browserPaths(home)
+	if !strings.Contains(out.String(), "browser defaults not rolled back") || !strings.Contains(out.String(), path) {
+		t.Fatalf("missing warning naming %s: %q", path, out.String())
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("ownership record removed after a failed browser rollback: %v", err)
 	}
 }
 
@@ -481,14 +498,79 @@ func TestBrowserDefaultsUnresolvableHomeNamesRemedy(t *testing.T) {
 	}
 
 	rcmd := rollbackCmd()
-	rcmd.SetOut(&bytes.Buffer{})
+	var rout bytes.Buffer
+	rcmd.SetOut(&rout)
 	rcmd.SetErr(&bytes.Buffer{})
-	if err := runRollback(rcmd, &rollbackOptions{PluginRoot: plugin, HermesConfig: cfg}); err == nil || !strings.Contains(err.Error(), "resolve home") {
-		t.Fatalf("rollback err = %v", err)
+	if err := runRollback(rcmd, &rollbackOptions{PluginRoot: plugin, HermesConfig: cfg}); err != nil {
+		t.Fatalf("rollback blocked by an unresolvable home: %v", err)
+	}
+	if !strings.Contains(rout.String(), "resolve home") || !strings.Contains(rout.String(), "pass --home") {
+		t.Fatalf("rollback warning = %q", rout.String())
 	}
 
 	report := buildVerifyReport(&installOptions{PluginRoot: plugin, HermesConfig: cfg})
 	if report.BrowserDefaults != "unknown" || !strings.Contains(report.BrowserRemedy, "pass --home") {
 		t.Fatalf("verify = %q / %q", report.BrowserDefaults, report.BrowserRemedy)
+	}
+}
+
+// Every remedy that says "pass --home" must name a flag the command has, and
+// the flag must reach the home the browser defaults use.
+func TestHomeFlagExistsAndIsUsed(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"install": installCmd(), "verify": verifyCmd(), "rollback": rollbackCmd()} {
+		if cmd.Flags().Lookup("home") == nil {
+			t.Fatalf("%s has no --home flag", name)
+		}
+	}
+	home := t.TempDir()
+	tmp := t.TempDir()
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--home", home, "--plugin-root", filepath.Join(tmp, "plugins", "pipelock"), "--hermes-config", filepath.Join(tmp, "config.yaml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install --home: %v", err)
+	}
+	path, _ := browserPaths(home)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("--home did not place browser defaults in %s: %v", home, err)
+	}
+}
+
+// With the ownership record written first, a failure to write it leaves the
+// browser config untouched, and a rerun installs and rolls back cleanly.
+func TestInstallBrowserDefaultsRecordFirst(t *testing.T) {
+	home := t.TempDir()
+	path, state := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"headed":true}`, 0o600)
+	prev := writeBrowserOwnershipRecord
+	t.Cleanup(func() { writeBrowserOwnershipRecord = prev })
+	writeBrowserOwnershipRecord = func(string, []byte) error { return errors.New("disk full") }
+	if err := installBrowserDefaults(home); err == nil {
+		t.Fatal("install succeeded without an ownership record")
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), browserFlag) {
+		t.Fatal("config gained the flag although its ownership record was never written")
+	}
+	writeBrowserOwnershipRecord = prev
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := browserArgs(obj); hasBrowserFlag(args) {
+		t.Fatalf("flag remains after rollback: %q", args)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("ownership record remains: %v", err)
 	}
 }

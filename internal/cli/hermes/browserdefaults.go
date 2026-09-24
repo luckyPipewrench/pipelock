@@ -125,6 +125,10 @@ func loadBrowserDefaultsForInstall(home string) (map[string]json.RawMessage, boo
 	return obj, existed, args, false, nil
 }
 
+// writeBrowserOwnershipRecord writes the ownership record. It is a variable
+// only so a test can fail this one write and prove the config is untouched.
+var writeBrowserOwnershipRecord = writeFileAtomic
+
 func installBrowserDefaults(home string) error {
 	path, state := browserPaths(home)
 	obj, existed, args, already, err := loadBrowserDefaultsForInstall(home)
@@ -145,19 +149,28 @@ func installBrowserDefaults(home string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	if existed {
-		if _, err := rotateExisting(path); err != nil {
-			return err
-		}
-	}
-	if err := writeFileAtomic(path, data); err != nil {
-		return err
-	}
+	// The ownership record is written first. If the config write then fails,
+	// the record is removed again; if the record write fails, the config was
+	// never touched. Either way Pipelock never leaves a flag that rollback
+	// cannot attribute to it.
 	record, _ := json.Marshal(map[string]interface{}{"created": !existed, "original_args": original})
 	if err := os.MkdirAll(filepath.Dir(state), 0o750); err != nil {
 		return err
 	}
-	return writeFileAtomic(state, record)
+	if err := writeBrowserOwnershipRecord(state, record); err != nil {
+		return err
+	}
+	if existed {
+		if _, err := rotateExisting(path); err != nil {
+			_ = os.Remove(state)
+			return err
+		}
+	}
+	if err := writeFileAtomic(path, data); err != nil {
+		_ = os.Remove(state)
+		return err
+	}
+	return nil
 }
 
 func rollbackBrowserDefaults(home string) error {

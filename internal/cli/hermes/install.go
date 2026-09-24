@@ -157,6 +157,7 @@ network isolation.`,
 		"override the plugin install directory (default ~/.hermes/plugins/pipelock)")
 	cmd.Flags().StringVar(&opts.HermesConfig, "hermes-config", "",
 		"override the Hermes config path (default ~/.hermes/config.yaml)")
+	cmd.Flags().StringVar(&opts.HomeDir, "home", "", homeFlagUsage)
 	cmd.Flags().StringVar(&opts.PipelockConfig, "pipelock-config", "",
 		"pipelock config the hook should use (recorded in the plugin sidecar)")
 	cmd.Flags().BoolVar(&opts.NoBrowserDefaults, "no-browser-defaults", false,

@@ -106,6 +106,7 @@ environment).`,
 		"override the plugin install directory (default ~/.hermes/plugins/pipelock)")
 	cmd.Flags().StringVar(&opts.HermesConfig, "hermes-config", "",
 		"override the Hermes config path (default ~/.hermes/config.yaml)")
+	cmd.Flags().StringVar(&opts.HomeDir, "home", "", homeFlagUsage)
 
 	return cmd
 }

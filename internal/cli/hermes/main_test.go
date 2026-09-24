@@ -19,10 +19,15 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "hermes tests: create temp home: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Setenv("HOME", home); err != nil {
-		fmt.Fprintf(os.Stderr, "hermes tests: set HOME: %v\n", err)
-		os.Exit(1)
+	// USERPROFILE is what os.UserHomeDir reads on Windows.
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if err := os.Setenv(key, home); err != nil {
+			fmt.Fprintf(os.Stderr, "hermes tests: set %s: %v\n", key, err)
+			os.Exit(1)
+		}
 	}
+	// An inherited value would turn verify's "present" into "overridden".
+	_ = os.Unsetenv("AGENT_BROWSER_ARGS")
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

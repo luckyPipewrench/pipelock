@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
 
@@ -33,6 +34,7 @@ type credentialAudienceCandidate struct {
 	patternName       string
 	hosts             []string
 	authorizationOnly bool
+	carrierMask       uint8
 }
 
 // CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
@@ -42,16 +44,49 @@ const CredentialAudienceAuthorizationHeaderSurface = "authorization_header"
 
 const credentialAudienceAuthorizationHeaderName = "Authorization"
 
-// CredentialAudienceHeaderSurface grants the restricted carrier only to a
-// complete Bearer Authorization value. Other providers still use the normal
-// header audience rule, while an arbitrary Authorization value cannot earn the
-// Google OAuth exception.
+const (
+	credentialAudienceAuthorizationAnySurface = "authorization_header_any"
+	credentialAudiencePrivateTokenSurface     = "header_private_token"
+	credentialAudienceJobTokenSurface         = "header_job_token"
+)
+
+// CredentialAudienceHeaderSurface classifies the header that carried a match.
+// Bearer Authorization stays distinct so the Google OAuth exception cannot
+// attach to an arbitrary Authorization value. GitHub accepts either Bearer or
+// the older token scheme, so any other Authorization value is its own surface.
 func CredentialAudienceHeaderSurface(headerName, value string) string {
-	fields := strings.Fields(value)
-	if strings.EqualFold(headerName, credentialAudienceAuthorizationHeaderName) && len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-		return CredentialAudienceAuthorizationHeaderSurface
+	switch {
+	case strings.EqualFold(headerName, credentialAudienceAuthorizationHeaderName):
+		fields := strings.Fields(value)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+			return CredentialAudienceAuthorizationHeaderSurface
+		}
+		return credentialAudienceAuthorizationAnySurface
+	case strings.EqualFold(headerName, "Private-Token"):
+		return credentialAudiencePrivateTokenSurface
+	case strings.EqualFold(headerName, "Job-Token"):
+		return credentialAudienceJobTokenSurface
+	default:
+		return "header"
 	}
-	return "header"
+}
+
+func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint8) bool {
+	if !authorizationOnly && mask == 0 {
+		return true
+	}
+	switch surface {
+	case CredentialAudienceAuthorizationHeaderSurface:
+		return authorizationOnly || mask&config.CredentialAudienceCarrierAuthorization != 0
+	case credentialAudienceAuthorizationAnySurface:
+		return mask&config.CredentialAudienceCarrierAuthorization != 0
+	case credentialAudiencePrivateTokenSurface:
+		return mask&config.CredentialAudienceCarrierPrivateToken != 0
+	case credentialAudienceJobTokenSurface:
+		return mask&config.CredentialAudienceCarrierJobToken != 0
+	default:
+		return false
+	}
 }
 
 // filterCredentialAudience is the one destination-aware filter for compiled
@@ -73,7 +108,7 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
-		if candidate.authorizationOnly && surface != CredentialAudienceAuthorizationHeaderSurface {
+		if !audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) {
 			continue
 		}
 		if len(candidate.hosts) == 0 || !destination.MatchesDomainList(host, candidate.hosts) {
@@ -81,7 +116,8 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		}
 		keep[i] = false
 		recordSurface := surface
-		if surface == CredentialAudienceAuthorizationHeaderSurface {
+		switch surface {
+		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationAnySurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface:
 			recordSurface = "header"
 		}
 		allows = append(allows, CredentialAudienceAllow{
@@ -134,6 +170,10 @@ func canonicalCredentialAudienceDestination(target string) (string, bool) {
 	return dest.Host, true
 }
 
+func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
+	return p != nil && (p.credentialAudienceAuthorizationOnly || p.credentialAudienceCarrierMask != 0)
+}
+
 func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, surface string) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
@@ -142,6 +182,7 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 		patternName:       pattern.name,
 		hosts:             pattern.credentialAudienceHosts,
 		authorizationOnly: pattern.credentialAudienceAuthorizationOnly,
+		carrierMask:       pattern.credentialAudienceCarrierMask,
 	}}, target, surface)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -178,6 +219,7 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].patternName = match.PatternName
 		candidates[i].hosts = match.credentialAudienceHosts
 		candidates[i].authorizationOnly = match.credentialAudienceAuthorizationOnly
+		candidates[i].carrierMask = match.credentialAudienceCarrierMask
 	}
 	keep, allows := filterCredentialAudience(candidates, target, surface)
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -196,14 +238,19 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 // as an unowned header and blocks it. The scrubbed copy decides only the
 // Authorization-only patterns; see MergeJoinedHeaderMatches.
 func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, target string) string {
-	if CredentialAudienceHeaderSurface(headerName, value) != CredentialAudienceAuthorizationHeaderSurface {
+	surface := CredentialAudienceHeaderSurface(headerName, value)
+	if surface == "header" {
 		return value
 	}
-	for _, pattern := range s.dlpPatterns {
-		if !pattern.credentialAudienceAuthorizationOnly {
+	patterns := s.dlpPatterns
+	if s.core != nil {
+		patterns = append(append([]*compiledPattern{}, patterns...), s.core.dlpPatterns...)
+	}
+	for _, pattern := range patterns {
+		if !pattern.credentialAudienceCarrierRestricted() {
 			continue
 		}
-		if _, ok := s.credentialAudienceAllows(pattern, target, CredentialAudienceAuthorizationHeaderSurface); !ok {
+		if _, ok := s.credentialAudienceAllows(pattern, target, surface); !ok {
 			continue
 		}
 		value = pattern.re.ReplaceAllString(value, "[authorized-credential]")
@@ -220,12 +267,12 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 func MergeJoinedHeaderMatches(original, scrubbed []TextDLPMatch) []TextDLPMatch {
 	merged := make([]TextDLPMatch, 0, len(original)+len(scrubbed))
 	for _, match := range original {
-		if !match.credentialAudienceAuthorizationOnly {
+		if !match.credentialAudienceCarrierRestricted() {
 			merged = append(merged, match)
 		}
 	}
 	for _, match := range scrubbed {
-		if match.credentialAudienceAuthorizationOnly {
+		if match.credentialAudienceCarrierRestricted() {
 			merged = append(merged, match)
 		}
 	}

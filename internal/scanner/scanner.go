@@ -381,6 +381,7 @@ type compiledPattern struct {
 	core                                bool              // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string          // compiled built-ins only; empty means no audience exception
 	credentialAudienceAuthorizationOnly bool              // compiled built-ins only; limits the allow to Authorization headers
+	credentialAudienceCarrierMask       uint8             // compiled built-ins only; which headers may carry the credential
 	bundle                              string            // empty for built-in/config patterns
 	bundleVersion                       string
 	warn                                bool // true when pattern action is "warn" - matches are informational only
@@ -454,7 +455,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	}
 
 	s := &Scanner{
-		core:                      initCoreScanner(),
+		core:                      initCoreScanner(cfg),
 		allowlist:                 allowlist,
 		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
 		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
@@ -509,8 +510,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		// none. A core-floor pattern may carry a compiled audience; it narrows
 		// where that immutable credential is enforced (its own issuing authority
 		// over an encrypted scheme) without letting operator YAML reach it.
-		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
+		cp.credentialAudienceHosts = append([]string(nil), config.AppendDeclaredCredentialAudienceHosts(p.Name, p.CredentialAudienceHosts, cfg.DLP.GitHubEnterpriseHosts, cfg.DLP.GitLabHosts)...)
 		cp.credentialAudienceAuthorizationOnly = p.CredentialAudienceAuthorizationOnly
+		cp.credentialAudienceCarrierMask = p.CredentialAudienceCarrierMask
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {

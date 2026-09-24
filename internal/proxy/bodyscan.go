@@ -2077,7 +2077,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		for _, v := range values {
 			scanVal := headerValueForDLP(name, v, target, len(values))
 			joinedVal := scanVal
-			if strings.EqualFold(name, headerNameAuthorization) {
+			if scanner.CredentialAudienceHeaderSurface(name, scanVal) != "header" {
 				joinedVal = sc.ScrubAuthorizedCredentialFromJoinedHeaders(name, scanVal, target)
 			}
 			joinedValues = append(joinedValues, joinedHeaderValue{scanVal, joinedVal})

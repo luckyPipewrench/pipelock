@@ -1223,6 +1223,13 @@ type DLP struct {
 	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
 	Action             string       `yaml:"action,omitempty"` // reserved - not yet implemented; rejected at validation
+	// GitHubEnterpriseHosts names exact GitHub Enterprise Server or GHE.com
+	// API hosts. They extend only the compiled GitHub token audiences.
+	// Public github.com API hosts stay compiled and are not listed here.
+	GitHubEnterpriseHosts []string `yaml:"github_enterprise_hosts,omitempty"`
+	// GitLabHosts names exact self-managed or Dedicated GitLab hosts. They
+	// extend only the compiled GitLab token audiences. gitlab.com stays compiled.
+	GitLabHosts []string `yaml:"gitlab_hosts,omitempty"`
 }
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs, request
@@ -1239,6 +1246,7 @@ type DLPPattern struct {
 	Compiled                            bool     `yaml:"-"`                   // true for patterns created in Defaults()
 	CredentialAudienceHosts             []string `yaml:"-"`                   // compiled built-ins only; strict YAML rejects attempts to configure it
 	CredentialAudienceAuthorizationOnly bool     `yaml:"-"`                   // compiled built-ins only; restricts audience allowance to Authorization headers
+	CredentialAudienceCarrierMask       uint8    `yaml:"-"`                   // compiled built-ins only; which headers may carry the credential
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
 	// registry. It is runtime provenance, not an operator-facing setting.
 	CredentialURLWhitespaceGrammar bool `yaml:"-"`

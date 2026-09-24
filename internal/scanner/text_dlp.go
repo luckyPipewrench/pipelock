@@ -324,6 +324,11 @@ type TextDLPMatch struct {
 	span                                MatchSpan
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
+	credentialAudienceCarrierMask       uint8
+}
+
+func (m TextDLPMatch) credentialAudienceCarrierRestricted() bool {
+	return m.credentialAudienceAuthorizationOnly || m.credentialAudienceCarrierMask != 0
 }
 
 // Span returns retained coordinates for this match in the normalized scanner
@@ -571,6 +576,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 				Warn:                                p.warn,
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -738,6 +744,7 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 				Warn:                                p.warn,
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -768,6 +775,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				Warn:                                p.warn,
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -974,10 +982,13 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 	for _, m := range matches {
 		k := key{name: m.PatternName, encoded: m.Encoded}
 		if i, ok := index[k]; ok {
-			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) {
+			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) ||
+				result[i].credentialAudienceAuthorizationOnly != m.credentialAudienceAuthorizationOnly ||
+				result[i].credentialAudienceCarrierMask != m.credentialAudienceCarrierMask {
 				result[i].credentialAudienceHosts = nil
+				result[i].credentialAudienceAuthorizationOnly = false
+				result[i].credentialAudienceCarrierMask = 0
 			}
-			result[i].credentialAudienceAuthorizationOnly = result[i].credentialAudienceAuthorizationOnly || m.credentialAudienceAuthorizationOnly
 			continue
 		}
 		index[k] = len(result)

@@ -435,7 +435,10 @@ const (
 	// Re-bumped when the built-in Google OAuth Token pattern gained the compiled
 	// audience *.googleapis.com, restricted to Bearer Authorization headers.
 	// Other carriers still block, and the binary policy identity moves.
-	goldenHashDefaults = "b381fd2e17249f072032831ba4b8ff82b868669499e79f0d742c276c0be3f109"
+	// Re-bumped when GitHub and GitLab token classes gained compiled audiences
+	// (GitHub Token, Fine-Grained PAT, GitLab PAT, CI job token) and the DLP
+	// section gained the declared enterprise host lists.
+	goldenHashDefaults = "99e866ba11ab3ab5c2825df046db0689ea26e865a1180b86c52722d3472ef0aa"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -669,7 +672,7 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "8f4feb3743a24ba04744eaa260b5406511e7ed2d59a7968bcf0dc3d3d460c698"
+	goldenHashRichConfig = "14e606910b1e9b433f0746267eaf533f0a8dcfe82cd9c902cd849f7f6c73f886"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1240,8 +1243,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
 		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "8e3a8c2a0827e639ea7ac4df9e7e0e63bf478fdde4ce7aac164a56dd69312082"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "d340e48953f4c35a4e0adacefd0212ea8eb5f7d2cffccf839ef0d87c5faabfdd"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "5084d63ae502efe2b9c1a878599d4b3a72ba5fb95631c61f508edfe197b1cdbe"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "745e0ec3a99ae625efe2510ce76db90a90452d889baaaa4da3b5c499c1c3a48b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

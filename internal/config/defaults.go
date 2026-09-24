@@ -51,6 +51,11 @@ const (
 
 // AWSAccessIDRegex is the canonical AWS access-key/user/role/policy ID shape
 // used by both default config DLP and the immutable core scanner floor.
+// URLKeywordAssignmentRegex is the built-in Credential in URL detector. A line-start
+// assignment counts only with no whitespace around '='; after '?', '&' or ';'
+// whitespace is tolerated because decoded query strings are the target.
+const URLKeywordAssignmentRegex = `(?m)(?:^\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[A-Za-z0-9_+/=~%.-][^\s&;]{3,}|[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,})`
+
 const AWSAccessIDRegex = `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`
 
 const (

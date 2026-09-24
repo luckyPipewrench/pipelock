@@ -1867,7 +1867,14 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	// Log the DLP finding.
 	patternNames := dlpMatchNames(result.DLPMatches)
 	injectionNames := responseMatchNames(result.InjectionMatches)
+	blockCause := blockingBodyFinding(result, rp.upstream.Hostname(), cfg)
 	reason := result.Reason
+	if reason == "" && blockCause == bodyBlockCauseEntropy {
+		reason = bodyEntropyReason(result)
+	}
+	if reason == "" && blockCause == bodyBlockCauseDLP {
+		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
+	}
 	if reason == "" && len(injectionNames) > 0 {
 		reason = fmt.Sprintf("prompt injection: %s", strings.Join(injectionNames, ", "))
 	}
@@ -1912,6 +1919,16 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		bodyBlockReason = blockreason.PromptInjection
 	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 		bodyBlockReason = blockreason.BodyEntropy
+	}
+	if result.RedactionBlockReason == "" {
+		switch blockCause {
+		case bodyBlockCauseInjection:
+			layer, bodyBlockReason = scannerLabelBodyPromptInjection, blockreason.PromptInjection
+		case bodyBlockCauseDLP:
+			layer, bodyBlockReason = "dlp", blockreason.DLPMatch
+		case bodyBlockCauseEntropy:
+			layer, bodyBlockReason = scannerLabelBodyEntropy, blockreason.BodyEntropy
+		}
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")

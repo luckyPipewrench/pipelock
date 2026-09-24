@@ -55,7 +55,7 @@ type Result struct {
 	ExtensionHits int          // chrome-extension:// / moz-extension:// patterns stripped
 	TrackingHits  int          // tracking pixels and prefetch links removed
 	TrapHits      int          // hidden DOM traps and comment traps removed
-	ShimInjected  bool         // true if a fingerprint/extension defense shim was prepended
+	ShimInjected  bool         // true if the opt-in fingerprint shim was prepended
 	PipelineUsed  PipelineType // which pipeline was applied
 
 	// SVG active content strip counts. SVGForeignObjectHits counts elided
@@ -254,7 +254,7 @@ func (e *Engine) rewriteHTML(res *Result, cfg *config.BrowserShield, headerNonce
 
 	// Hidden traps (elements + comments).
 	if cfg.StripHiddenTraps {
-		doc, res.TrapHits = e.stripTraps(doc, cfg.Strictness)
+		doc, res.TrapHits = e.stripTraps(doc, cfg.Strictness, allowSelfClosingScripts)
 	}
 
 	// Shim injection.
@@ -327,14 +327,14 @@ func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	// Hidden <text>: both inline style= form and SVG presentation
 	// attributes (display="none", visibility="hidden", opacity="0").
 	var hiddenStyleHits, hiddenAttrHits int
-	doc, hiddenStyleHits = countReplace(e.svgHiddenTextStyle, doc)
+	doc, hiddenStyleHits = replaceVerified(e.svgHiddenTextStyle, doc, styleHides)
 	doc, hiddenAttrHits = countReplace(e.svgHiddenTextAttrRe, doc)
 	res.SVGHiddenTextHits = hiddenStyleHits + hiddenAttrHits
 
 	// Strip hidden traps in the SVG XML body outside scripts.
 	if cfg.StripHiddenTraps {
 		var trapHits int
-		doc, trapHits = e.stripTraps(doc, cfg.Strictness)
+		doc, trapHits = e.stripTraps(doc, cfg.Strictness, true)
 		res.TrapHits += trapHits
 	}
 
@@ -638,11 +638,13 @@ func restoreHTMLScripts(doc string, scripts []maskedHTMLScript) string {
 // stripTraps removes hidden DOM traps and comment traps.
 // Under aggressive strictness, comment traps are always stripped.
 // Under minimal strictness, only hidden-element traps are stripped.
-func (e *Engine) stripTraps(s string, strictness string) (string, int) {
+func (e *Engine) stripTraps(s string, strictness string, xml bool) (string, int) {
 	total := 0
 
 	// Hidden elements are stripped at all strictness levels.
-	s, n := countReplace(e.hiddenTrapRe, s)
+	s, n := stripHiddenElementTraps(s, xml)
+	total += n
+	s, n = replaceVerified(e.hiddenTrapRe, s, ariaHiddenTrue)
 	total += n
 
 	// Comment traps are stripped at standard and aggressive.
@@ -657,9 +659,12 @@ func (e *Engine) stripTraps(s string, strictness string) (string, int) {
 // buildShimList assembles the ordered list of shim scripts to inject.
 func (e *Engine) buildShimList(cfg *config.BrowserShield) []string {
 	var shims []string
-	if cfg.StripExtensionProbing {
-		shims = append(shims, ExtensionProbeShim)
-	}
+	// Extension probing is handled by stripping extension URLs from the
+	// document. The runtime shim that replaced fetch and XMLHttpRequest.open
+	// is no longer injected: replacing native browser functions on every page
+	// is what bot-verification services test for, so a shielded browser was
+	// flagged as tampered and challenged on ordinary navigation. The shield
+	// modifies a page only to remove content it detected.
 	if cfg.InjectFingerprintShims {
 		shims = append(shims, FingerprintShim)
 	}

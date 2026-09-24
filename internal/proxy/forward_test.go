@@ -6568,7 +6568,7 @@ func TestForwardHTTP_ShieldOversizeTransportParity(t *testing.T) {
 }
 
 func TestForwardHTTP_ShieldRewriteClearsBodyValidators(t *testing.T) {
-	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`)
+	body := []byte(`<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a></body></html>`)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"upstream-etag"`)

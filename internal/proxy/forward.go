@@ -1578,9 +1578,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
 			bundleRules := dlpBundleRules(bodyResult.DLPMatches)
 			injectionNames := responseMatchNames(bodyResult.InjectionMatches)
+			blockCause := blockingBodyFinding(bodyResult, r.URL.Hostname(), cfg)
 			reason := bodyResult.Reason
 			if reason == "" {
 				switch {
+				case blockCause == bodyBlockCauseEntropy:
+					reason = bodyEntropyReason(bodyResult)
+				case blockCause == bodyBlockCauseDLP:
+					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				case len(injectionNames) > 0:
 					reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
 				case len(patternNames) > 0:
@@ -1591,6 +1596,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
 			bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, bodyResult, r.URL.Hostname(), cfg)
+			// Classify the block by its cause after the exemption decision,
+			// which keeps its own label rules.
+			if bodyResult.RedactionBlockReason == "" {
+				scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
+			}
 			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
 			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock

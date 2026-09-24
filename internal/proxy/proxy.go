@@ -3830,8 +3830,8 @@ func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
 }
 
 // shieldRewriteHeaderValue renders the bounded, client-visible summary for a
-// rewritten Browser Shield response. Extension includes an injected extension
-// defense shim; trap includes SVG active-content removals, which are the
+// rewritten Browser Shield response. Extension counts stripped extension URLs
+// plus the opt-in fingerprint shim when injected; trap includes SVG active-content removals, which are the
 // shield's SVG-specific trap class.
 func shieldRewriteHeaderValue(summary *receipt.ShieldSummary) string {
 	if summary == nil {

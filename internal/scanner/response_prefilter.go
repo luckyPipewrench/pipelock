@@ -3,10 +3,9 @@
 
 package scanner
 
-import (
-	"sort"
-	"strings"
-)
+import "regexp/syntax"
+
+import "github.com/luckyPipewrench/pipelock/internal/config"
 
 // responsePreFilter provides fast keyword-based pre-screening for response
 // pattern matching. Before running expensive regex against the full content,
@@ -19,9 +18,7 @@ import (
 // Conservative: false positives (running regex unnecessarily) are fine.
 // False negatives (skipping regex when keywords exist) are not.
 type responsePreFilter struct {
-	// keywords maps lowercased keyword anchors to the pattern indices
-	// in the parent Scanner.responsePatterns slice that share that keyword.
-	keywords map[string][]int
+	gates []*responseGate
 
 	// alwaysRun holds indices of patterns with no extractable keyword.
 	// These are always evaluated regardless of content. Typically cheap
@@ -34,18 +31,20 @@ type responsePreFilter struct {
 // and leading alternation groups.
 func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 	pf := &responsePreFilter{
-		keywords: make(map[string][]int),
+		gates: make([]*responseGate, len(patterns)),
 	}
 
 	for i, p := range patterns {
-		keywords := extractResponseKeywords(p.re.String())
-		if len(keywords) == 0 {
-			pf.alwaysRun = append(pf.alwaysRun, i)
-			continue
+		// This canonical entry also runs two companion detectors in
+		// responsePatternMatchLocations. Its regexp alone cannot gate them.
+		if p.name != externalDataTransferDirectivePatternName || p.re.String() != config.ExternalDataTransferDirectiveRegex {
+			tree, err := syntax.Parse(p.re.String(), syntax.Perl)
+			if err == nil {
+				pf.gates[i] = responseLiteralGate(tree)
+			}
 		}
-		for _, kw := range keywords {
-			lower := strings.ToLower(kw)
-			pf.keywords[lower] = append(pf.keywords[lower], i)
+		if pf.gates[i] == nil {
+			pf.alwaysRun = append(pf.alwaysRun, i)
 		}
 	}
 
@@ -56,34 +55,14 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 // be evaluated: keyword-matched candidates plus alwaysRun patterns.
 // Returns nil when no patterns need to run.
 func (pf *responsePreFilter) patternsToCheck(content string) []int {
-	lower := strings.ToLower(content)
-	var hits []int
-	seen := make(map[int]bool)
-	for kw, indices := range pf.keywords {
-		if strings.Contains(lower, kw) {
-			for _, idx := range indices {
-				if !seen[idx] {
-					seen[idx] = true
-					hits = append(hits, idx)
-				}
-			}
+	folded := responseSimpleFold(content)
+	hits := make([]int, 0, len(pf.gates))
+	for i, gate := range pf.gates {
+		if gate == nil || gate.matches(content, folded) {
+			hits = append(hits, i)
 		}
 	}
-	for _, idx := range pf.alwaysRun {
-		if !seen[idx] {
-			seen[idx] = true
-			hits = append(hits, idx)
-		}
-	}
-	sort.Ints(hits)
 	return hits
-}
-
-// extractResponseKeywords extracts keyword anchors from a response pattern
-// regex. The shared syntax-tree extractor proves that every branch contains at
-// least one returned anchor; otherwise the pattern stays in alwaysRun.
-func extractResponseKeywords(regex string) []string {
-	return extractConservativeLiteralAnchors(regex, false)
 }
 
 // hasEncodedRun checks whether content contains a contiguous run of

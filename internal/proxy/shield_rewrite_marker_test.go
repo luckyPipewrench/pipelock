@@ -75,7 +75,7 @@ func TestFetchShieldRewriteMarker(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=2,tracking=1,trap=1"},
+		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=1,tracking=1,trap=1"},
 		{name: "clean", body: []byte("<html><body>ordinary page</body></html>"), want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestForwardShieldRewriteMarker(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=2,tracking=1,trap=1"},
+		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=1,tracking=1,trap=1"},
 		{name: "clean", body: []byte("<html><body>ordinary page</body></html>"), want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +141,7 @@ func TestInterceptShieldRewriteMarker(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=2,tracking=1,trap=1"},
+		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=1,tracking=1,trap=1"},
 		{name: "clean", body: []byte("<html><body>ordinary page</body></html>"), want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestReverseShieldRewriteMarker(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=2,tracking=1,trap=1"},
+		{name: "rewritten", body: shieldRewriteMarkerBody, want: "extension=1,tracking=1,trap=1"},
 		{name: "clean", body: []byte("<html><body>ordinary page</body></html>"), want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -301,7 +301,7 @@ func TestReverseShieldRewriteMarkerStrippedFromSSE(t *testing.T) {
 func TestReverseShieldRewriteMarkerScanHeadWithoutResponseScanning(t *testing.T) {
 	resp := reverseShieldOversizeHarness(t, config.ShieldStrictnessStandard, config.ShieldOversizeScanHead, false)
 	defer func() { _ = resp.Body.Close() }()
-	if got, want := resp.Header.Get(shieldRewriteHeader), "extension=1,tracking=1"; got != want {
+	if got, want := resp.Header.Get(shieldRewriteHeader), "tracking=1"; got != want {
 		t.Fatalf("scan_head %s = %q, want %q", shieldRewriteHeader, got, want)
 	}
 }

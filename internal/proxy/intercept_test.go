@@ -5396,7 +5396,7 @@ func TestInterceptTunnel_ShieldOversizeTransportParity(t *testing.T) {
 }
 
 func TestInterceptTunnel_ShieldRewriteClearsBodyValidators(t *testing.T) {
-	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`)
+	body := []byte(`<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a></body></html>`)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"upstream-etag"`)
@@ -5447,7 +5447,7 @@ func TestInterceptTunnel_ShieldRewriteClearsBodyValidators(t *testing.T) {
 }
 
 func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.T) {
-	shimLen := len("<script>" + shield.ExtensionProbeShim + "</script>")
+	shimLen := len("<script>" + shield.FingerprintShim + "</script>")
 	extPrefix := "chrome-extension://"
 	if shimLen <= len(extPrefix) {
 		t.Fatalf("test invariant broken: shim length %d <= prefix length %d", shimLen, len(extPrefix))
@@ -5471,7 +5471,7 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 	cfg.BrowserShield.StripExtensionProbing = true
 	cfg.BrowserShield.StripHiddenTraps = false
 	cfg.BrowserShield.StripTrackingPixels = false
-	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.InjectFingerprintShims = true
 	testLogger, _ := audit.New("json", "stdout", "", false, false)
 	p, err := New(cfg, testLogger, sc, m)
 	if err != nil {

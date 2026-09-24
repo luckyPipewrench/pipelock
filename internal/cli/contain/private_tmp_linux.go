@@ -18,8 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const systemdRunPath = "/usr/bin/systemd-run"
-
 var privateTmpUnitSequence atomic.Uint64
 
 var (

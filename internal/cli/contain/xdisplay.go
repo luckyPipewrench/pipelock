@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -362,8 +361,8 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("parse display owner uid: %v", err)
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || uint64(stat.Uid) != wantUID {
+	ownerUID, ok := fileOwnerUID(info)
+	if !ok || uint64(ownerUID) != wantUID {
 		return statusFail, "display socket is not owned by the contained agent uid"
 	}
 	return statusPass, fmt.Sprintf("display %s is active with an agent-owned 0700 Unix socket", displayName(number))

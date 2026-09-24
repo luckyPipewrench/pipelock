@@ -20,6 +20,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// systemdRunPath is the systemd-run binary the contained launch path uses.
+// It lives in a platform-neutral file because the namespace unit renderers
+// that name it compile on every release target.
+const systemdRunPath = "/usr/bin/systemd-run"
+
 type loopbackForwarderInventory struct {
 	Services []loopbackForwarderRecord `json:"services"`
 }

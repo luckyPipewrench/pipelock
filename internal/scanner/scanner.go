@@ -3876,7 +3876,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
 			if len(segment) >= s.entropyMinLen {
-				entropy := ShannonEntropy(segment)
+				entropy := payloadEntropy(segment)
 				if entropy > s.entropyThreshold {
 					return Result{
 						Allowed: false,
@@ -3917,7 +3917,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				return result
 			}
 			if !excludedQuery && len(v) >= s.entropyMinLen {
-				entropy := ShannonEntropy(v)
+				entropy := payloadEntropy(v)
 				if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
 					continue
 				}
@@ -4268,6 +4268,66 @@ func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 		}, true
 	}
 	return Result{}, false
+}
+
+// payloadEntropyMinDecoded is the shortest decoded text treated as the
+// payload of a base64 value. Shorter decodes are too small to judge.
+const payloadEntropyMinDecoded = 8
+
+// payloadEntropy measures what a URL segment or query value carries rather
+// than how it is written. Applications routinely base64-encode ordinary
+// identifiers (a UUID, a typed record id) into paths, and the encoding alone
+// lifts Shannon entropy over the threshold even though the same text written
+// plainly would pass. When value is base64 or base64url that decodes to
+// printable ASCII, the decoded text is measured instead. Random bytes decode
+// to non-printable data and keep the raw measurement, and decoded text is no
+// more capable than the same text sent unencoded, so this adds no channel.
+func payloadEntropy(value string) float64 {
+	raw := ShannonEntropy(value)
+	if decoded, ok := decodePrintableBase64(value); ok {
+		if d := ShannonEntropy(decoded); d < raw {
+			return d
+		}
+	}
+	return raw
+}
+
+// isBase64AlphabetByte reports whether c belongs to the standard or URL-safe
+// base64 alphabet, including padding.
+func isBase64AlphabetByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	}
+	return c == '+' || c == '/' || c == '-' || c == '_' || c == '='
+}
+
+// decodePrintableBase64 decodes value as standard or URL-safe base64, with or
+// without padding, and reports the result only when it is printable ASCII of
+// at least payloadEntropyMinDecoded bytes.
+func decodePrintableBase64(value string) (string, bool) {
+	for i := 0; i < len(value); i++ {
+		if !isBase64AlphabetByte(value[i]) {
+			return "", false
+		}
+	}
+	for _, enc := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding} {
+		b, err := enc.DecodeString(value)
+		if err != nil || len(b) < payloadEntropyMinDecoded {
+			continue
+		}
+		printable := true
+		for _, c := range b {
+			if c < 0x20 || c > 0x7e {
+				printable = false
+				break
+			}
+		}
+		if printable {
+			return string(b), true
+		}
+	}
+	return "", false
 }
 
 func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {

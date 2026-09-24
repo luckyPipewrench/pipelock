@@ -78,8 +78,8 @@ func TestHook_EnvLookupRuleOnlyForTerminalCalls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: ExecuteContext: %v", tool, err)
 		}
-		if decision.Decision != DecisionBlock {
-			t.Fatalf("%s: environment lookup in non-terminal tool arguments allowed", tool)
+		if decision.Decision != DecisionBlock || !strings.Contains(decision.Reason, "Credential in URL") {
+			t.Fatalf("%s: decision=%q reason=%q, want a Credential in URL block", tool, decision.Decision, decision.Reason)
 		}
 	}
 }

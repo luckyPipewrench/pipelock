@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -121,15 +122,16 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 	return func(ctx context.Context) doctorResult {
 		probe := doctorCounterProbeEnv(base, env)
 		probe.nftPersistUnitPath = ""
-		status, detail := probeNFTContainment(ctx, &probe)
-		switch status {
-		case statusPass:
+		status, detail, readErr := probeNFTContainmentClassified(ctx, &probe)
+		switch {
+		case status == statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
-		case statusFail:
-			if strings.Contains(detail, containmentBypassDetailPrefix) {
-				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
-			}
-			return unknownInfra("managed chain structure could not establish containment: " + detail)
+		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
+			return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
+		case status == statusFail && !readErr:
+			res := unknownInfra("managed chain structure could not establish containment: " + detail)
+			res.structureNotInstalled = true
+			return res
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
 		}
@@ -143,6 +145,11 @@ type doctorResult struct {
 	detail      string
 	remediation string
 	class       string
+	// structureNotInstalled marks a managed-chain read that completed and
+	// confirmed a missing or wrong rule, as opposed to one that could not
+	// read the state. The chain check itself still reports UNKNOWN; the
+	// owned-loopback check turns a confirmed miss into a FAIL.
+	structureNotInstalled bool
 }
 
 func pass(detail string) doctorResult { return doctorResult{status: statusPass, detail: detail} }
@@ -155,19 +162,21 @@ func skip(detail, remediation string) doctorResult {
 	return doctorResult{status: statusSkip, detail: detail, remediation: remediation}
 }
 
-// unknown returns an inconclusive result that must never count as a pass.
-func unknown(class, detail, remediation string) doctorResult {
+// unknown returns an inconclusive result that must never count as a pass. An
+// inconclusive probe is always attributed to infrastructure: doctor could not
+// establish the fact, which is never a policy or proxy-compatibility verdict.
+func unknown(detail, remediation string) doctorResult {
 	return doctorResult{
 		status:      statusUnknown,
 		detail:      detail,
 		remediation: remediation,
-		class:       class,
+		class:       classInfra,
 	}
 }
 
 // unknownInfra returns an inconclusive infrastructure-attribution result.
 func unknownInfra(detail string) doctorResult {
-	return unknown(classInfra, detail, rawEgressAttributionRemediation)
+	return unknown(detail, rawEgressAttributionRemediation)
 }
 
 type doctorCheck struct {
@@ -186,6 +195,7 @@ func allDoctorChecks() []doctorCheck {
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
+		{8, "owned_loopback", "agent reaches its own ephemeral loopback listener in the owned slice", checkOwnedLoopback},
 	}
 }
 
@@ -196,6 +206,71 @@ func allDoctorChecks() []doctorCheck {
 const remediationRunAsRoot = "re-run as root: sudo pipelock contain doctor"
 
 const remediationInstall = "run `pipelock contain install` first"
+
+// The result marker distinguishes a completed network probe from a failure to
+// launch the transient service. The listener uses port zero so the test covers
+// the dynamic-port contract rather than an installed proxy exception.
+const ownedLoopbackProbeScript = `import socket, sys
+try:
+    cgroup = open('/proc/self/cgroup', encoding='ascii').read()
+    if %q not in cgroup:
+        raise RuntimeError('transient service did not enter the owned slice')
+except (OSError, RuntimeError) as exc:
+    print('LOOPBACK_SETUP: ' + str(exc))
+    sys.exit(2)
+try:
+    listener = socket.socket()
+    listener.settimeout(3)
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+except OSError as exc:
+    print('LOOPBACK_SETUP: listener: ' + str(exc))
+    sys.exit(2)
+try:
+    with listener, socket.create_connection(listener.getsockname(), timeout=3):
+        peer, _ = listener.accept()
+        peer.close()
+    print('LOOPBACK_PASS')
+except (OSError, TimeoutError) as exc:
+    print('LOOPBACK_FAIL: ' + str(exc))
+    sys.exit(1)
+`
+
+func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	args := []string{
+		"--wait", "--collect", "--service-type=oneshot", "--property=PrivateTmp=true", "--slice=" + ownedLoopbackSlice,
+		"--uid=" + env.agentUserName, "--gid=" + env.agentUserName, "--pipe", "--",
+		"/usr/bin/python3", "-c", fmt.Sprintf(ownedLoopbackProbeScript, ownedLoopbackSlice),
+	}
+	out, code, err := env.runCmd(ctx, "/usr/bin/systemd-run", args...)
+	if err != nil {
+		return unknown("owned-loopback transient service could not run: "+err.Error(), "check systemd-run and the contained agent identity, then rerun `pipelock contain doctor`")
+	}
+	if strings.Contains(out, "LOOPBACK_FAIL:") {
+		return fail(classInfra, "owned-slice ephemeral loopback connection failed: "+oneLine(out), "run `pipelock contain verify` to inspect the owned-loopback nftables rules and slice, then rerun `pipelock contain install`")
+	}
+	if code == 0 && strings.Contains(out, "LOOPBACK_PASS") {
+		// A reachable listener proves the owned model only when the managed
+		// chain is confirmed; otherwise loopback may work because nothing is
+		// contained. A definite bypass stays FAIL, a confirmed missing or
+		// wrong rule (receiver chain, anchor) is a FAIL with install
+		// guidance, and a chain that could not be read stays UNKNOWN.
+		structure := checkManagedChainStructure(ctx, env)
+		switch {
+		case structure.status == statusPass:
+			return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
+		case structure.status == statusFail:
+			return structure
+		case structure.structureNotInstalled:
+			return fail(classInfra, "owned-loopback model is not installed: "+structure.detail, "rerun `pipelock contain install` to restore the owned slice, anchor and nftables rules")
+		default:
+			return unknown("the loopback listener was reachable, but the owned-loopback model could not be confirmed: "+structure.detail, "run `pipelock contain verify` to inspect the managed chain, then rerun `pipelock contain install` if the owned-loopback rules are missing")
+		}
+	}
+	return unknown(fmt.Sprintf("owned-loopback probe could not complete (exit %d): %s", code, oneLine(out)), "check systemd-run, python3, and the contained agent identity, then rerun `pipelock contain doctor`")
+}
 
 const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
 
@@ -434,7 +509,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d — a bogus name resolved or DNS was intercepted", connectCode),
 			"investigate DNS interception / captive portal; the agent should never reach "+dnsFailureHost)
 	}
-	return unknown(classInfra,
+	return unknown(
 		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
 			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
 		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")

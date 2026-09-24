@@ -205,7 +205,9 @@ func sameSimpleFold(first, other rune) bool {
 }
 
 func newResponseLiteralGate(literal string, fold bool) *responseGate {
-	if utf8.RuneCountInString(literal) < minPreFilterAnchorLength {
+	// A single CJK rune is already selective on ordinary ASCII responses.
+	// Keep the longer minimum for ASCII, where one-character gates are noise.
+	if utf8.RuneCountInString(literal) < minPreFilterAnchorLength && isASCII(literal) {
 		return nil
 	}
 	gate := &responseGate{literal: literal}
@@ -214,6 +216,15 @@ func newResponseLiteralGate(literal string, fold bool) *responseGate {
 		gate.folded = responseSimpleFold(literal)
 	}
 	return gate
+}
+
+func isASCII(value string) bool {
+	for i := range len(value) {
+		if value[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // Canonicalize each Unicode simple-fold orbit. Go's regexp (?i) uses these

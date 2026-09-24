@@ -1661,6 +1661,9 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		if !ownedLoopbackRulesReferenceCurrentAnchor(out, 4) {
 			return statusFail, "owned loopback OUTPUT rules do not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules", false
 		}
+		if !chainLinesHaveRenderedOwnedLoopbackOutputRulesBeforeAgentDrop(lines, current.agentUID) {
+			return statusFail, "owned loopback OUTPUT rules are missing, altered, or appear after the agent catch-all drop; dynamic loopback access is denied until `pipelock contain install` reloads them", false
+		}
 		input, inputCode, inputErr := env.runCmd(ctx, probeNFTExecutable(env), "-n", "list", "chain", "inet", env.nftTable, ownedLoopbackInputChain)
 		if inputErr != nil {
 			return statusFail, fmt.Sprintf("list owned loopback receiver chain: %v", inputErr), true

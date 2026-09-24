@@ -92,7 +92,20 @@ func ownedLoopbackInputChainLooksManaged(out string) bool {
 // other, and both install and reload then decline to change dynamic loopback
 // rules with no operator action that can clear it.
 func normalizeNFTChainLine(line string) string {
-	normalized := strings.Join(strings.Fields(line), " ")
+	fields := strings.Fields(line)
+	// `nft -n` prints conntrack state and direction numerically (observed with
+	// nftables 1.1.3: `ct state 0x8`, `ct direction 1`). Map only the values
+	// the renderer emits; any other number stays numeric and so still fails an
+	// exact match against the rendered rules.
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] != "ct" {
+			continue
+		}
+		if canonical, ok := nftNumericCTSpellings[fields[i+1]][fields[i+2]]; ok {
+			fields[i+2] = canonical
+		}
+	}
+	normalized := strings.Join(fields, " ")
 	normalized = strings.ReplaceAll(normalized, "priority 0;", "priority filter;")
 	normalized = strings.ReplaceAll(normalized, "priority 0 ;", "priority filter;")
 	return normalized
@@ -203,6 +216,35 @@ func lineIsRenderedOwnedLoopbackOutputRule(line string, agentUID int) bool {
 		}
 	}
 	return false
+}
+
+// nftNumericCTSpellings maps the numeric `ct state` and `ct direction`
+// values `nft -n` prints to the names the renderer writes. Values come from
+// the nft(8) conntrack type tables: ct_state new=8, established=2;
+// ct_dir original=0, reply=1.
+var nftNumericCTSpellings = map[string]map[string]string{
+	"state":     {"0x8": "new", "8": "new", "0x2": "established", "2": "established"},
+	"direction": {"0": "original", "1": "reply"},
+}
+
+// chainLinesHaveRenderedOwnedLoopbackOutputRulesBeforeAgentDrop reports
+// whether every rule nftOwnedLoopbackOutputRules renders for agentUID is
+// present, in its rendered form, before the agent catch-all drop. A rule
+// placed after the drop never matches a packet, so its presence alone would
+// report dynamic loopback as installed while every such flow is dropped.
+func chainLinesHaveRenderedOwnedLoopbackOutputRulesBeforeAgentDrop(lines []string, agentUID int) bool {
+	for _, want := range strings.Split(nftOwnedLoopbackOutputRules(agentUID), "\n") {
+		want = normalizeNFTChainLine(want)
+		if want == "" {
+			continue
+		}
+		if !chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
+			return normalizeNFTChainLine(stripNFTRuleHandle(line)) == want
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // stripNFTRuleHandle removes the trailing `# handle N` comment that

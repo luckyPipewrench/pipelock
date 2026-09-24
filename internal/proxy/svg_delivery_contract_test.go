@@ -178,9 +178,11 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 	}
 }
 
-func assertSVGDelivered(t *testing.T, got svgPathResult, want string) {
+// assertSVGDelivered requires the benign fixture to arrive byte-for-byte: it
+// is already inert, so the shield rewrite must leave it unchanged.
+func assertSVGDelivered(t *testing.T, got svgPathResult) {
 	t.Helper()
-	if !got.delivered || string(got.body) != want {
+	if !got.delivered || string(got.body) != benignSVGFixture {
 		t.Fatalf("SVG not delivered intact: status=%d body=%q", got.status, got.body)
 	}
 }
@@ -213,7 +215,7 @@ func assertSVGRefused(t *testing.T, got svgPathResult, forbidden string) {
 func TestSVGDeliveryContract_BenignTransportParity(t *testing.T) {
 	for _, path := range svgResponsePaths {
 		t.Run(path+"/plain", func(t *testing.T) {
-			assertSVGDelivered(t, runSVGPath(t, path, nil, svgFixtureHandler(benignSVGFixture)), benignSVGFixture)
+			assertSVGDelivered(t, runSVGPath(t, path, nil, svgFixtureHandler(benignSVGFixture)))
 		})
 		t.Run(path+"/rewritten", func(t *testing.T) {
 			got := runSVGPath(t, path, nil, svgFixtureHandler(linkedSVGFixture))
@@ -224,10 +226,10 @@ func TestSVGDeliveryContract_BenignTransportParity(t *testing.T) {
 		t.Run(path+"/media policy disabled", func(t *testing.T) {
 			disabled := false
 			got := runSVGPath(t, path, func(cfg *config.Config) { cfg.MediaPolicy.Enabled = &disabled }, svgFixtureHandler(benignSVGFixture))
-			assertSVGDelivered(t, got, benignSVGFixture)
+			assertSVGDelivered(t, got)
 		})
 		t.Run(path+"/decodable gzip", func(t *testing.T) {
-			assertSVGDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, benignSVGFixture)), benignSVGFixture)
+			assertSVGDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, benignSVGFixture)))
 		})
 	}
 }
@@ -252,7 +254,7 @@ func TestSVGDeliveryContract_HostileFormsNeverDelivered(t *testing.T) {
 			assertActiveSVGNotDelivered(t, runSVGPath(t, path, nil, svgGzipHandler(t, hostileSVGFixture)), "alert(1)")
 		})
 		t.Run(path+"/response-scan exempt host/benign", func(t *testing.T) {
-			assertSVGDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(benignSVGFixture)), benignSVGFixture)
+			assertSVGDelivered(t, runSVGPath(t, path, respScanExempt, svgFixtureHandler(benignSVGFixture)))
 		})
 	}
 }

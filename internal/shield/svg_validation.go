@@ -390,11 +390,14 @@ func cssUnescape(value string) string {
 			i = j
 			continue
 		}
-		code, err := strconv.ParseUint(value[i+1:j], 16, 32)
-		if err != nil || code > utf8.MaxRune {
-			code = utf8.RuneError
+		// Six hex digits fit in 24 bits, so ParseInt with bitSize 32 cannot
+		// overflow int32; an out-of-range code point becomes U+FFFD, as CSS
+		// Syntax specifies for escapes above U+10FFFF.
+		r := utf8.RuneError
+		if code, err := strconv.ParseInt(value[i+1:j], 16, 32); err == nil && code <= utf8.MaxRune {
+			r = rune(code)
 		}
-		b.WriteRune(rune(code))
+		b.WriteRune(r)
 		if j < len(value) && strings.IndexByte(" \t\n\r\f", value[j]) >= 0 {
 			j++
 		}

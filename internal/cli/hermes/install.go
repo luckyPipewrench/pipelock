@@ -174,16 +174,19 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 	if err := opts.resolvePaths(); err != nil {
 		return err
 	}
-	home, err := browserHome(opts.HomeDir)
-	if err != nil {
-		if !opts.NoBrowserDefaults {
+	// Browser defaults off means no home-scoped state is touched, so lock only
+	// the Hermes config and never block on another install's browser home.
+	home := ""
+	lockHome := filepath.Dir(opts.HermesConfig)
+	if !opts.NoBrowserDefaults {
+		resolved, err := browserHome(opts.HomeDir)
+		if err != nil {
 			return fmt.Errorf("%w; pass --home or --no-browser-defaults", err)
 		}
-		// Browser defaults are off, so no home-scoped state is touched: lock
-		// only the Hermes config, as rollback does in the same situation.
-		home = filepath.Dir(opts.HermesConfig)
+		home = resolved
+		lockHome = resolved
 	}
-	return withHermesCommandLock(opts.HermesConfig, home, func() error {
+	return withHermesCommandLock(opts.HermesConfig, lockHome, func() error {
 		// Browser defaults are validated before anything changes and written only
 		// after the integration succeeds, so a failed install leaves the
 		// agent-browser config untouched.

@@ -6,17 +6,30 @@ package hermes
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
+// setHermesTestCacheDir points the lock at a fixture cache. os.UserCacheDir
+// reads a different variable on each platform, so tests set the location
+// directly rather than through the environment.
+func setHermesTestCacheDir(t *testing.T, dir string) {
+	t.Helper()
+	old := hermesUserCacheDir
+	hermesUserCacheDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { hermesUserCacheDir = old })
+}
+
 func lockTestEnvironment(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(root, "cache"))
+	cache := filepath.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setHermesTestCacheDir(t, cache)
 	old := hermesLockTimeout
 	hermesLockTimeout = 40 * time.Millisecond
 	t.Cleanup(func() { hermesLockTimeout = old })
@@ -40,7 +53,11 @@ func TestHermesCommandLockResourcesAndContention(t *testing.T) {
 			go func() {
 				done <- withHermesCommandLock(tc.heldConfig, tc.heldHome, func() error { close(entered); <-release; return nil })
 			}()
-			<-entered
+			select {
+			case <-entered:
+			case err := <-done:
+				t.Fatalf("held lock failed before entering: %v", err)
+			}
 			called := false
 			err := withHermesCommandLock(tc.secondConfig, tc.secondHome, func() error { called = true; return nil })
 			if err == nil || called || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") || !strings.Contains(err.Error(), ".lock") {
@@ -57,30 +74,29 @@ func TestHermesCommandLockResourcesAndContention(t *testing.T) {
 	}
 }
 
+// Every command must take its locks in the same order, or two commands that
+// share both resources could each hold one and wait on the other.
 func TestHermesCommandLockOrder(t *testing.T) {
 	root := lockTestEnvironment(t)
 	a := filepath.Join(root, "a")
 	b := filepath.Join(root, "b")
-	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	for _, pair := range [][2]string{{a, b}, {b, a}} {
-		wg.Add(1)
-		go func(config, home string) {
-			defer wg.Done()
-			results <- withHermesCommandLock(filepath.Join(config, "config.yaml"), home, func() error { return nil })
-		}(pair[0], pair[1])
+	forward, err := hermesLockResources(filepath.Join(a, "config.yaml"), b)
+	if err != nil {
+		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("lock order deadlocked")
+	reverse, err := hermesLockResources(filepath.Join(b, "config.yaml"), a)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for range 2 {
-		if err := <-results; err != nil {
-			t.Fatal(err)
-		}
+	if len(forward) != 2 || !slices.Equal(forward, reverse) || !slices.IsSorted(forward) {
+		t.Fatalf("lock order differs: %v vs %v", forward, reverse)
+	}
+	same, err := hermesLockResources(filepath.Join(a, "config.yaml"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(same) != 1 {
+		t.Fatalf("shared config and home should lock once, got %v", same)
 	}
 }
 
@@ -91,7 +107,7 @@ func TestHermesCommandLockRejectsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lockDir := filepath.Join(root, "cache", "pipelock", "locks")
+	lockDir := filepath.Join(root, "cache", hermesLockDirName, "locks")
 	if err := ensureHermesLockDir(lockDir); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +134,11 @@ func TestHermesLockCanonicalizesExistingSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(realDir, "missing")
+	resolvedReal, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedReal, "missing")
 	if got != want {
 		t.Fatalf("canonical path = %s; want %s", got, want)
 	}

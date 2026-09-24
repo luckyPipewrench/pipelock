@@ -831,3 +831,40 @@ func TestRunInstall_NoBrowserDefaultsNeedsNoHome(t *testing.T) {
 		t.Fatalf("install --no-browser-defaults without a home: %v", err)
 	}
 }
+
+// With browser defaults off, install locks only the Hermes config, so a command
+// holding the browser home's lock does not block it.
+func TestRunInstall_NoBrowserDefaultsDoesNotLockHome(t *testing.T) {
+	root := lockTestEnvironment(t)
+	home := filepath.Join(root, "home")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- withHermesCommandLock(filepath.Join(root, "other", "config.yaml"), home, func() error { close(entered); <-release; return nil })
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("held lock failed before entering: %v", err)
+	}
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	run := func(noBrowserDefaults bool) error {
+		cmd := installCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		dir := t.TempDir()
+		return runInstall(cmd, &installOptions{Mode: ModeFull, NoBrowserDefaults: noBrowserDefaults, HomeDir: home, PluginRoot: filepath.Join(dir, "plugins", "pipelock"), HermesConfig: filepath.Join(dir, "config.yaml")})
+	}
+	if err := run(true); err != nil {
+		t.Fatalf("install --no-browser-defaults blocked on the browser home: %v", err)
+	}
+	if err := run(false); err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
+		t.Fatalf("control: install with browser defaults should wait on the held home lock, got %v", err)
+	}
+}

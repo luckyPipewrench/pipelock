@@ -14,6 +14,14 @@ import (
 
 var hermesLockTimeout = 30 * time.Second
 
+// hermesUserCacheDir locates the per-user cache that holds the lock files.
+var hermesUserCacheDir = os.UserCacheDir
+
+// hermesLockDirName is created directly under the cache root, so its
+// permissions are the ones this code sets rather than whatever a shared
+// pipelock cache directory inherited.
+const hermesLockDirName = "pipelock-hermes"
+
 func canonicalLockResource(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -42,25 +50,35 @@ func canonicalLockResource(path string) (string, error) {
 	}
 }
 
-func withHermesCommandLock(configPath, home string, fn func() error) error {
+// hermesLockResources returns the canonical directories a command locks,
+// deduplicated and sorted so every command acquires them in the same order.
+func hermesLockResources(configPath, home string) ([]string, error) {
 	configDir, err := canonicalLockResource(filepath.Dir(configPath))
 	if err != nil {
-		return fmt.Errorf("hermes command lock: config directory: %w", err)
+		return nil, fmt.Errorf("hermes command lock: config directory: %w", err)
 	}
 	browserHomeDir, err := canonicalLockResource(home)
 	if err != nil {
-		return fmt.Errorf("hermes command lock: home: %w", err)
+		return nil, fmt.Errorf("hermes command lock: home: %w", err)
 	}
 	resources := []string{configDir}
 	if browserHomeDir != configDir {
 		resources = append(resources, browserHomeDir)
 	}
 	sort.Strings(resources)
-	cache, err := os.UserCacheDir()
+	return resources, nil
+}
+
+func withHermesCommandLock(configPath, home string, fn func() error) error {
+	resources, err := hermesLockResources(configPath, home)
+	if err != nil {
+		return err
+	}
+	cache, err := hermesUserCacheDir()
 	if err != nil {
 		return fmt.Errorf("hermes command lock: cache directory: %w", err)
 	}
-	lockDir := filepath.Join(cache, "pipelock", "locks")
+	lockDir := filepath.Join(cache, hermesLockDirName, "locks")
 	if err := ensureHermesLockDir(lockDir); err != nil {
 		return err
 	}

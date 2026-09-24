@@ -6,6 +6,7 @@
 package hermes
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -99,7 +100,7 @@ func TestHermesLockRejectsWritableCacheRoot(t *testing.T) {
 	if err := os.Chmod(cache, unsafeMode); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureHermesLockDir(filepath.Join(cache, "pipelock", "locks")); err == nil {
+	if err := ensureHermesLockDir(filepath.Join(cache, hermesLockDirName, "locks")); err == nil {
 		t.Fatal("accepted writable cache root")
 	}
 }
@@ -115,7 +116,7 @@ func TestHermesCommandLockFollowsSymlinkedCacheRoot(t *testing.T) {
 	if err := os.Symlink(realCache, link); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CACHE_HOME", link)
+	setHermesTestCacheDir(t, link)
 	ran := false
 	if err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil }); err != nil || !ran {
 		t.Fatalf("lock under a symlinked cache root: err=%v ran=%v", err, ran)
@@ -126,7 +127,7 @@ func TestHermesCommandLockFollowsSymlinkedCacheRoot(t *testing.T) {
 // and the error names which input was unusable.
 func TestHermesCommandLockRefusesUnresolvableResources(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	setHermesTestCacheDir(t, filepath.Join(root, "cache"))
 	file := filepath.Join(root, "file")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -156,8 +157,9 @@ func TestHermesCommandLockRefusesUnresolvableResources(t *testing.T) {
 // refused rather than run unlocked.
 func TestHermesCommandLockNeedsCacheDirectory(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", "")
-	t.Setenv("HOME", "")
+	old := hermesUserCacheDir
+	hermesUserCacheDir = func() (string, error) { return "", errors.New("neither $XDG_CACHE_HOME nor $HOME are defined") }
+	t.Cleanup(func() { hermesUserCacheDir = old })
 	ran := false
 	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "cache directory") || ran {
@@ -172,7 +174,7 @@ func TestHermesCommandLockDirectoryCreateFailure(t *testing.T) {
 	if err := os.WriteFile(cache, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CACHE_HOME", cache)
+	setHermesTestCacheDir(t, cache)
 	ran := false
 	err := withHermesCommandLock(filepath.Join(root, "cfg", "config.yaml"), filepath.Join(root, "home"), func() error { ran = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "hermes command lock: create") || ran {

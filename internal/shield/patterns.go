@@ -539,10 +539,7 @@ func stripHiddenElementTraps(s string) (string, int) {
 		if i == len(segments) {
 			return len(body)
 		}
-		if orig <= segments[i].orig {
-			return segments[i].text
-		}
-		return segments[i].text + orig - segments[i].orig
+		return segments[i].text + max(orig-segments[i].orig, 0)
 	}
 
 	var b strings.Builder

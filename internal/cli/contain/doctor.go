@@ -122,15 +122,16 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 	return func(ctx context.Context) doctorResult {
 		probe := doctorCounterProbeEnv(base, env)
 		probe.nftPersistUnitPath = ""
-		status, detail := probeNFTContainment(ctx, &probe)
-		switch status {
-		case statusPass:
+		status, detail, readErr := probeNFTContainmentClassified(ctx, &probe)
+		switch {
+		case status == statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
-		case statusFail:
-			if strings.Contains(detail, containmentBypassDetailPrefix) {
-				return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
-			}
-			return unknownInfra("managed chain structure could not establish containment: " + detail)
+		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
+			return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
+		case status == statusFail && !readErr:
+			res := unknownInfra("managed chain structure could not establish containment: " + detail)
+			res.structureNotInstalled = true
+			return res
 		default:
 			return unknownInfra("managed chain structure could not be read: " + detail)
 		}
@@ -144,6 +145,11 @@ type doctorResult struct {
 	detail      string
 	remediation string
 	class       string
+	// structureNotInstalled marks a managed-chain read that completed and
+	// confirmed a missing or wrong rule, as opposed to one that could not
+	// read the state. The chain check itself still reports UNKNOWN; the
+	// owned-loopback check turns a confirmed miss into a FAIL.
+	structureNotInstalled bool
 }
 
 func pass(detail string) doctorResult { return doctorResult{status: statusPass, detail: detail} }
@@ -248,16 +254,17 @@ func checkOwnedLoopback(ctx context.Context, env *doctorEnv) doctorResult {
 	if code == 0 && strings.Contains(out, "LOOPBACK_PASS") {
 		// A reachable listener proves the owned model only when the managed
 		// chain is confirmed; otherwise loopback may work because nothing is
-		// contained. The chain reader cannot always tell a missing model from
-		// an unreadable one, so this check never upgrades its verdict: a
-		// definite bypass stays FAIL, anything short of PASS stays UNKNOWN,
-		// and managed_chain_structure reports the chain state on its own.
+		// contained. A definite bypass stays FAIL, a confirmed missing or
+		// wrong rule (receiver chain, anchor) is a FAIL with install
+		// guidance, and a chain that could not be read stays UNKNOWN.
 		structure := checkManagedChainStructure(ctx, env)
-		switch structure.status {
-		case statusPass:
+		switch {
+		case structure.status == statusPass:
 			return pass("contained agent connected to its own ephemeral loopback listener in the owned slice")
-		case statusFail:
+		case structure.status == statusFail:
 			return structure
+		case structure.structureNotInstalled:
+			return fail(classInfra, "owned-loopback model is not installed: "+structure.detail, "rerun `pipelock contain install` to restore the owned slice, anchor and nftables rules")
 		default:
 			return unknown("the loopback listener was reachable, but the owned-loopback model could not be confirmed: "+structure.detail, "run `pipelock contain verify` to inspect the managed chain, then rerun `pipelock contain install` if the owned-loopback rules are missing")
 		}

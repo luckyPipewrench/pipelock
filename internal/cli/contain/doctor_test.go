@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,15 +211,22 @@ func TestCheckOwnedLoopback(t *testing.T) {
 
 func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
 	env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
+	// A chain read that completed and confirmed a missing rule is a FAIL with
+	// install guidance: a reachable listener then proves nothing is contained.
+	env.chainStructure = func(context.Context) doctorResult {
+		res := unknownInfra("managed chain structure could not establish containment: owned loopback receiver chain is missing")
+		res.structureNotInstalled = true
+		return res
+	}
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain install") {
+		t.Fatalf("confirmed missing model = %+v, want FAIL with cause and install action", got)
+	}
+	// An inconclusive chain result that is not a confirmed miss stays UNKNOWN.
 	env.chainStructure = func(context.Context) doctorResult {
 		return unknownInfra("managed chain structure could not establish containment: owned loopback receiver chain is missing")
 	}
-	// A reachable listener with an unconfirmed model is never a PASS, and the
-	// check does not upgrade the reader's verdict: the chain reader also fails
-	// on read errors, so turning this into FAIL would prescribe a reinstall
-	// for a model that may be installed.
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain verify") {
-		t.Fatalf("unconfirmed model = %+v, want UNKNOWN with cause and verify action", got)
+	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.remediation, "contain verify") {
+		t.Fatalf("unconfirmed model = %+v, want UNKNOWN with verify action", got)
 	}
 	// A chain read that failed is inconclusive, even when its detail contains a
 	// word such as "missing"; it must not become a reinstall FAIL.
@@ -238,6 +246,48 @@ func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
 	env.chainStructure = nil
 	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "reader is unavailable") {
 		t.Fatalf("unavailable model reader = %+v, want UNKNOWN with cause", got)
+	}
+}
+
+// TestCheckOwnedLoopbackThroughRealReader drives the owned-loopback check
+// through doctorChainStructureReader and the classified containment probe, so
+// the FAIL/UNKNOWN split comes from the real reader rather than a stub: a
+// confirmed-missing anchor unit is a FAIL with install guidance, while an
+// anchor that cannot be read stays UNKNOWN.
+func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
+	anchorPath := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
+	for _, tc := range []struct {
+		name       string
+		readErr    error
+		wantStatus string
+		wantDetail string
+		wantRemedy string
+	}{
+		{"anchor unit missing", os.ErrNotExist, statusFail, "is missing", "contain install"},
+		{"anchor unreadable", os.ErrPermission, statusUnknown, "could not be read", "contain verify"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := makeProbeEnv(t, func(e *probeEnv) {
+				e.lookupUser = containTestLookup
+				e.ownedLoopback = true
+				e.ownedLoopbackAnchorUnitPath = anchorPath
+				e.readFile = func(path string) ([]byte, error) {
+					if path == anchorPath {
+						return nil, tc.readErr
+					}
+					return nil, os.ErrNotExist
+				}
+				e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+					return goodNFTContainmentOutput, 0, nil
+				}
+			})
+			env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
+			env.chainStructure = doctorChainStructureReader(base, env)
+			got := checkOwnedLoopback(t.Context(), env)
+			if got.status != tc.wantStatus || !strings.Contains(got.detail, tc.wantDetail) || !strings.Contains(got.remediation, tc.wantRemedy) {
+				t.Fatalf("got %+v, want status %s detail containing %q remediation containing %q", got, tc.wantStatus, tc.wantDetail, tc.wantRemedy)
+			}
+		})
 	}
 }
 

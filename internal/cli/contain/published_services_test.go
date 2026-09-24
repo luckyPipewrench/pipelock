@@ -272,10 +272,28 @@ const (
 	publishedTestListen    = "   0: 0100007F:170C 00000000:0000 0A 00000000:00000000 00:00000000 00000000   987        0 41234 1 0000000000000000 100 0 0 10 0\n"
 )
 
+// shortSocketDir returns a directory whose socket paths fit the kernel's
+// sun_path limit (108 bytes including the NUL). t.TempDir honors TMPDIR, and a
+// deep TMPDIR plus a long subtest name makes bind fail with EINVAL, so fall
+// back to a short directory under /tmp in that case.
+func shortSocketDir(t *testing.T, name string) string {
+	t.Helper()
+	const sunPathBudget = 100
+	dir := t.TempDir()
+	if len(filepath.Join(dir, name)) <= sunPathBudget {
+		return dir
+	}
+	short, err := os.MkdirTemp("/tmp", "plk-pub-")
+	if err != nil {
+		t.Fatalf("mkdir short socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	return short
+}
+
 func newPublishedProbeFixture(t *testing.T) *publishedProbeFixture {
 	t.Helper()
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "viewer.sock")
+	socketPath := filepath.Join(shortSocketDir(t, "viewer.sock"), "viewer.sock")
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		t.Fatal(err)

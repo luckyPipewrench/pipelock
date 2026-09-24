@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf16"
@@ -869,6 +870,10 @@ func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMat
 	return matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, content)
 }
 
+// responseMatchSlots bounds the extra pattern-matching goroutines across every
+// response scan in the process.
+var responseMatchSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
+
 // matchPatternsPreFiltered checks a pre-filter for keyword candidates in
 // content, then runs ONLY the matching patterns' regex. If no pre-filter
 // is configured, falls back to running all patterns. On clean 10KB content,
@@ -889,19 +894,38 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 		return matchPatternsSequential(indices, patterns, content)
 	}
 	results := make([][]ResponseMatch, len(indices))
-	var wg sync.WaitGroup
-	for worker := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for slot := worker; slot < len(indices); slot += workers {
-				idx := indices[slot]
-				if idx >= 0 && idx < len(patterns) {
-					results[slot] = matchResponsePattern(patterns[idx], content)
-				}
+	var next atomic.Int64
+	work := func() {
+		for {
+			slot := int(next.Add(1) - 1)
+			if slot >= len(indices) {
+				return
 			}
-		}()
+			if idx := indices[slot]; idx >= 0 && idx < len(patterns) {
+				results[slot] = matchResponsePattern(patterns[idx], content)
+			}
+		}
 	}
+	// Extra workers come from a process-wide pool and are taken only when one
+	// is free, so concurrent large responses share the CPUs instead of each
+	// starting a full set of goroutines. The caller always works too, which
+	// makes a busy pool fall back to the sequential path rather than wait.
+	var wg sync.WaitGroup
+	for range workers - 1 {
+		select {
+		case responseMatchSlots <- struct{}{}:
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-responseMatchSlots
+					wg.Done()
+				}()
+				work()
+			}()
+		default:
+		}
+	}
+	work()
 	wg.Wait()
 	var matches []ResponseMatch
 	for _, group := range results {

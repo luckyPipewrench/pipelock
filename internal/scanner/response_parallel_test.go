@@ -124,3 +124,44 @@ func TestResponseParallelPreservesPatternOrder(t *testing.T) {
 		t.Fatalf("matches out of pattern order: %v", got)
 	}
 }
+
+// When every extra worker slot is taken, a scan still matches every pattern in
+// order on the calling goroutine and returns the slots it did not take.
+func TestResponseParallelFallsBackWhenSlotsAreBusy(t *testing.T) {
+	patterns := []*compiledPattern{
+		{name: "first", re: regexp.MustCompile(`alpha`)},
+		{name: "second", re: regexp.MustCompile(`beta`)},
+		{name: "third", re: regexp.MustCompile(`gamma`)},
+	}
+	filter := newResponsePreFilter(patterns)
+	content := strings.Repeat("ordinary text ", 400) + "alpha beta gamma"
+	want := matchPatternsPreFiltered(filter, patterns, content)
+	if len(want) != 3 {
+		t.Fatalf("control: matches = %v, want all three", want)
+	}
+	if len(responseMatchSlots) != 0 {
+		t.Fatalf("slots leaked after a scan: %d in use", len(responseMatchSlots))
+	}
+	held := 0
+	for len(responseMatchSlots) < cap(responseMatchSlots) {
+		responseMatchSlots <- struct{}{}
+		held++
+	}
+	t.Cleanup(func() {
+		for range held {
+			<-responseMatchSlots
+		}
+	})
+	got := matchPatternsPreFiltered(filter, patterns, content)
+	if len(got) != len(want) {
+		t.Fatalf("busy pool matches = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].PatternName != want[i].PatternName {
+			t.Fatalf("busy pool order = %v, want %v", got, want)
+		}
+	}
+	if len(responseMatchSlots) != held {
+		t.Fatalf("scan changed the busy pool: %d in use, want %d", len(responseMatchSlots), held)
+	}
+}

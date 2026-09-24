@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -26,8 +27,11 @@ func BenchmarkResponseBodyBundles(b *testing.B) {
 			s := MustNew(config.Defaults())
 			defer s.Close()
 			b.ResetTimer()
-			for range b.N {
-				result := s.ScanResponseBodyWithSuppress(context.Background(), body, "", nil)
+			for i := range b.N {
+				// The target is part of the verdict-cache key, so a new one per
+				// iteration measures a full scan rather than a cache hit.
+				// BenchmarkResponseBodyEchartsRepeat measures the cached path.
+				result := s.ScanResponseBodyWithSuppress(context.Background(), body, "bench-"+strconv.Itoa(i), nil)
 				if !result.Clean {
 					b.Fatal("fixture should be clean")
 				}
@@ -41,8 +45,7 @@ func BenchmarkResponseBodyEchartsRepeat(b *testing.B) {
 	if root == "" {
 		b.Skip("set RESPONSE_BENCH_DIR")
 	}
-	// #nosec G304 -- benchmark fixture directory is supplied by the local test runner.
-	body, err := os.ReadFile(filepath.Join(root, "echarts.js"))
+	body, err := os.ReadFile(filepath.Clean(filepath.Join(root, "echarts.js")))
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -69,8 +69,7 @@ func withHermesCommandLock(configPath, home string, fn func() error) error {
 	}()
 	deadline := time.Now().Add(hermesLockTimeout)
 	for _, resource := range resources {
-		digest := sha256.Sum256([]byte(resource))
-		lockPath := filepath.Join(lockDir, fmt.Sprintf("%x.lock", digest))
+		lockPath := hermesLockPath(lockDir, resource)
 		unlock, err := acquireHermesLock(lockPath, deadline)
 		if err != nil {
 			return err
@@ -82,4 +81,9 @@ func withHermesCommandLock(configPath, home string, fn func() error) error {
 
 func hermesLockBusy(path string) error {
 	return fmt.Errorf("hermes command lock: timed out waiting for %s: another pipelock hermes install or rollback for the same Hermes user is running", path)
+}
+
+func hermesLockPath(lockDir, resource string) string {
+	digest := sha256.Sum256([]byte(resource))
+	return filepath.Join(lockDir, fmt.Sprintf("%x.lock", digest))
 }

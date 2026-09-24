@@ -182,6 +182,130 @@ var (
 	trapInstructionRe   = regexp.MustCompile(trapInstructionPattern)
 )
 
+// hiddenCSSDeclRe matches one CSS declaration that hides content, with the
+// whole value checked so opacity:0.5 or font-size:0.8em is not read as zero.
+var hiddenCSSDeclRe = regexp.MustCompile(`(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|(?:font-size|opacity)\s*:\s*0(?:\.0+)?(?:px|em|rem|%)?)\s*(?:!\s*important\s*)?(?:;|$)`)
+
+// tagEnd returns the offset just past the '>' that closes the tag starting at
+// lt, skipping any '>' inside a quoted attribute value, or -1 when the tag
+// never closes.
+func tagEnd(s string, lt int) int {
+	quote := byte(0)
+	for i := lt + 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '>':
+			return i + 1
+		}
+	}
+	return -1
+}
+
+func isHTMLSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+// tagAttribute returns the value of the named attribute (lowercase) in an
+// opening tag, reading only real attribute positions: text that looks like an
+// attribute inside another attribute's quoted value is not an attribute.
+func tagAttribute(tag, name string) (string, bool) {
+	i := 1
+	for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '>' && tag[i] != '/' {
+		i++
+	}
+	for i < len(tag) {
+		for i < len(tag) && (isHTMLSpace(tag[i]) || tag[i] == '/') {
+			i++
+		}
+		if i >= len(tag) || tag[i] == '>' {
+			break
+		}
+		nameStart := i
+		for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '=' && tag[i] != '>' && tag[i] != '/' {
+			i++
+		}
+		attr := strings.ToLower(tag[nameStart:i])
+		for i < len(tag) && isHTMLSpace(tag[i]) {
+			i++
+		}
+		value := ""
+		if i < len(tag) && tag[i] == '=' {
+			i++
+			for i < len(tag) && isHTMLSpace(tag[i]) {
+				i++
+			}
+			if i < len(tag) && (tag[i] == '"' || tag[i] == '\'') {
+				q := tag[i]
+				i++
+				valueStart := i
+				for i < len(tag) && tag[i] != q {
+					i++
+				}
+				value = tag[valueStart:i]
+				if i < len(tag) {
+					i++
+				}
+			} else {
+				valueStart := i
+				for i < len(tag) && !isHTMLSpace(tag[i]) && tag[i] != '>' {
+					i++
+				}
+				value = tag[valueStart:i]
+			}
+		}
+		if attr == name {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+// openingTag returns the real opening tag at the start of a match, or "" when
+// the match does not start with a tag that closes.
+func openingTag(match string) string {
+	if end := tagEnd(match, 0); end > 0 {
+		return match[:end]
+	}
+	return ""
+}
+
+// styleHides reports whether the tag's own style attribute hides it.
+func styleHides(tag string) bool {
+	style, ok := tagAttribute(tag, "style")
+	return ok && hiddenCSSDeclRe.MatchString(style)
+}
+
+// ariaHiddenTrue reports whether the tag's own aria-hidden attribute is true.
+func ariaHiddenTrue(tag string) bool {
+	value, ok := tagAttribute(tag, "aria-hidden")
+	return ok && strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
+// replaceVerified removes each pattern match whose opening tag passes keep's
+// attribute check and leaves the rest untouched. The patterns find
+// candidates; the parsed tag decides, so attribute-like text inside another
+// attribute's value cannot mark content hidden.
+func replaceVerified(re *regexp.Regexp, s string, hidden func(tag string) bool) (string, int) {
+	hits := 0
+	out := re.ReplaceAllStringFunc(s, func(match string) string {
+		if hidden(openingTag(match)) {
+			hits++
+			return ""
+		}
+		return match
+	})
+	if hits == 0 {
+		return s, 0
+	}
+	return out, hits
+}
+
 // interfaceTags mark a hidden element as application interface rather than a
 // trap: something a user interacts with or that lays out a view, which
 // applications hide until their scripts reveal it. Wrapper and phrasing tags
@@ -269,17 +393,18 @@ func stripHiddenElementTraps(s string) (string, int) {
 			pos = lt + 4 + closeComment + 3
 			continue
 		}
-		gt := strings.IndexByte(s[lt:], '>')
-		if gt < 0 {
+		end := tagEnd(s, lt)
+		if end < 0 {
 			break
 		}
-		tagEnd := lt + gt + 1
-		if idx, ok := candidateAt[lt]; ok {
+		// A candidate is an element only when the pattern match ends where the
+		// real tag ends and the tag's own style attribute hides it.
+		if idx, ok := candidateAt[lt]; ok && candidates[idx].openEnd == end && styleHides(s[lt:end]) {
 			tag := strings.ToLower(s[opens[idx][2]:opens[idx][3]])
 			candidates[idx].opened = true
 			stack = append(stack, openElement{tag: tag, candidate: idx})
 			openCount[tag]++
-			pos = candidates[idx].openEnd
+			pos = end
 			continue
 		}
 		closing := lt+1 < len(s) && s[lt+1] == '/'
@@ -295,13 +420,9 @@ func stripHiddenElementTraps(s string) (string, int) {
 		switch {
 		case !closing && (name == "script" || name == "style"):
 			// Script and style bodies are text to the browser, so markup
-			// inside them opens no elements.
-			closeRaw := strings.Index(lower[tagEnd:], "</"+name)
-			if closeRaw < 0 {
-				pos = len(s)
-				continue
-			}
-			pos = tagEnd + closeRaw
+			// inside them opens no elements. Only a complete close tag ends
+			// the body: </stylex> does not.
+			pos = rawTextEnd(lower, end, name)
 			continue
 		case name == "div" || name == "span" || name == "p":
 			if !closing {
@@ -328,7 +449,7 @@ func stripHiddenElementTraps(s string) (string, int) {
 				}
 				openCount[name]--
 				if c := stack[i].candidate; c >= 0 {
-					candidates[c].closeStart, candidates[c].end = lt, tagEnd
+					candidates[c].closeStart, candidates[c].end = lt, end
 				}
 				stack = stack[:i]
 				break
@@ -336,7 +457,7 @@ func stripHiddenElementTraps(s string) (string, int) {
 		case !closing && interfaceTags[name]:
 			interfacePos = append(interfacePos, lt)
 		}
-		pos = tagEnd
+		pos = end
 	}
 
 	body := text.String()
@@ -378,6 +499,24 @@ func stripHiddenElementTraps(s string) (string, int) {
 	}
 	b.WriteString(s[written:])
 	return b.String(), hits
+}
+
+// rawTextEnd returns the offset of the complete </name close tag that ends a
+// script or style body starting at from, or len(lower) when there is none.
+func rawTextEnd(lower string, from int, name string) int {
+	closer := "</" + name
+	for i := from; ; {
+		k := strings.Index(lower[i:], closer)
+		if k < 0 {
+			return len(lower)
+		}
+		at := i + k
+		next := at + len(closer)
+		if next >= len(lower) || lower[next] == '>' || lower[next] == '/' || isHTMLSpace(lower[next]) {
+			return at
+		}
+		i = next
+	}
 }
 
 // isTagNameByte reports whether c can appear in a lowercase HTML tag name.

@@ -327,7 +327,7 @@ func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	// Hidden <text>: both inline style= form and SVG presentation
 	// attributes (display="none", visibility="hidden", opacity="0").
 	var hiddenStyleHits, hiddenAttrHits int
-	doc, hiddenStyleHits = countReplace(e.svgHiddenTextStyle, doc)
+	doc, hiddenStyleHits = replaceVerified(e.svgHiddenTextStyle, doc, styleHides)
 	doc, hiddenAttrHits = countReplace(e.svgHiddenTextAttrRe, doc)
 	res.SVGHiddenTextHits = hiddenStyleHits + hiddenAttrHits
 
@@ -644,7 +644,7 @@ func (e *Engine) stripTraps(s string, strictness string) (string, int) {
 	// Hidden elements are stripped at all strictness levels.
 	s, n := stripHiddenElementTraps(s)
 	total += n
-	s, n = countReplace(e.hiddenTrapRe, s)
+	s, n = replaceVerified(e.hiddenTrapRe, s, ariaHiddenTrue)
 	total += n
 
 	// Comment traps are stripped at standard and aggressive.

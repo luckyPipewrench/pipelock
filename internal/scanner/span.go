@@ -103,7 +103,7 @@ func (p *compiledPattern) matchSpan(text string) (start, end int, ok bool) {
 func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, ok bool) {
 	if p.withoutLeftBoundary == nil {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			if p.validate == nil || p.validate(text[loc[0]:loc[1]]) {
+			if p.accepts(text, loc[0], loc[1]) {
 				return loc[0], loc[1], true
 			}
 		}
@@ -117,7 +117,7 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 			}
 			start = loc[0] + bodyLoc[0]
 			end = loc[0] + bodyLoc[1]
-			if p.validate == nil || p.validate(text[start:end]) {
+			if p.accepts(text, start, end) {
 				return start, end, true
 			}
 		}
@@ -133,7 +133,7 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 			invalidIndex++
 			continue
 		}
-		if p.validate == nil || p.validate(text[start:end]) {
+		if p.accepts(text, start, end) {
 			return start, end, true
 		}
 	}

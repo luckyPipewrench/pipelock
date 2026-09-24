@@ -228,16 +228,17 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	// Keep stdout JSON contract intact; warnings go to stderr.
 	reportBundleLoadResult(cmd.ErrOrStderr(), rules.MergeIntoConfig(cfg, cliutil.Version))
 
-	// Build scanner and policy.
-	sc, err := scanner.New(cfg)
+	// Build action from payload.
+	action := payloadToAction(payload)
+
+	// Build scanner and policy. A shell command is code about to run, so its
+	// scanner treats an environment lookup assignment as code, not a credential.
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{ToolCommandEnvLookups: action.Kind == decide.EventShellExecution})
 	if err != nil {
 		return fmt.Errorf("create scanner: %w", err)
 	}
 	defer sc.Close()
 	pc := policy.New(cfg.MCPToolPolicy)
-
-	// Build action from payload.
-	action := payloadToAction(payload)
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)

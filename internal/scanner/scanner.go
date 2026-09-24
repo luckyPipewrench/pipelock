@@ -372,17 +372,20 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	name                                string
-	re                                  *regexp.Regexp
-	withoutLeftBoundary                 *regexp.Regexp
-	providerKeyPrefix                   string
-	severity                            string
-	validate                            func(string) bool // post-match checksum (nil = regex-only)
-	exemptDomains                       []string          // domains where this pattern is skipped (wildcard supported)
-	core                                bool              // name belongs to the immutable floor: exemptDomains is never honored
-	credentialAudienceHosts             []string          // compiled built-ins only; empty means no audience exception
-	credentialAudienceAuthorizationOnly bool              // compiled built-ins only; limits the allow to Authorization headers
-	bundle                              string            // empty for built-in/config patterns
+	name                string
+	re                  *regexp.Regexp
+	withoutLeftBoundary *regexp.Regexp
+	providerKeyPrefix   string
+	severity            string
+	validate            func(string) bool // post-match checksum (nil = regex-only)
+	// validateAt judges a candidate in the view it was found in, with the view
+	// around it. It is set only in scanners built for tool-command text.
+	validateAt                          func(view string, start, end int) bool
+	exemptDomains                       []string // domains where this pattern is skipped (wildcard supported)
+	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
+	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
+	credentialAudienceAuthorizationOnly bool     // compiled built-ins only; limits the allow to Authorization headers
+	bundle                              string   // empty for built-in/config patterns
 	bundleVersion                       string
 	warn                                bool // true when pattern action is "warn" - matches are informational only
 	credentialURLWhitespaceGrammar      bool // built-in-only runtime provenance; never configured by operators
@@ -396,19 +399,28 @@ type compiledPattern struct {
 // checksum - prevents a checksum-failing decoy from suppressing a later
 // valid match in the same text blob.
 func (p *compiledPattern) matches(text string) bool {
-	if p.validate == nil {
+	if p.validate == nil && p.validateAt == nil {
 		return p.re.MatchString(text)
 	}
 	// Check all regex hits, not just the first. An attacker could front-load
 	// BIN-matching decoys that fail checksum before the real card/IBAN.
 	// No cap: regex specificity (BIN prefixes, IBAN format) and data budget
 	// limits already bound the match count in practice.
-	for _, m := range p.re.FindAllString(text, -1) {
-		if p.validate(m) {
+	for _, loc := range p.re.FindAllStringIndex(text, -1) {
+		if p.accepts(text, loc[0], loc[1]) {
 			return true
 		}
 	}
 	return false
+}
+
+// accepts reports whether a regex candidate counts as a finding after every
+// post-match check this pattern carries.
+func (p *compiledPattern) accepts(view string, start, end int) bool {
+	if p.validate != nil && !p.validate(view[start:end]) {
+		return false
+	}
+	return p.validateAt == nil || p.validateAt(view, start, end)
 }
 
 // New creates a Scanner from config. Config should be validated first via
@@ -417,6 +429,12 @@ func (p *compiledPattern) matches(text string) bool {
 // files are returned as errors so callers can fail closed without panicking.
 type Options struct {
 	DestinationGrants destination.GrantSet
+	// ToolCommandEnvLookups builds a scanner for text that is a local tool
+	// command, result or agent message, never bytes on the wire. In such a
+	// scanner the built-in Credential in URL pattern does not count an
+	// assignment whose whole statement is one environment-variable lookup.
+	// Proxy, body, header, WebSocket and MCP upstream scanners never set it.
+	ToolCommandEnvLookups bool
 }
 
 func New(cfg *config.Config) (*Scanner, error) {
@@ -541,6 +559,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		}
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)
+		}
+		if opts.ToolCommandEnvLookups && p.Regex == config.URLKeywordAssignmentRegex {
+			cp.validateAt = toolCommandCredentialInURLCandidate
 		}
 		s.dlpPatterns = append(s.dlpPatterns, cp)
 	}

@@ -169,7 +169,11 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		},
 	}, stderr, "hermes hook")
 
-	sc, err := scanner.New(cfg)
+	// Hook text is a local tool's arguments or result, never bytes on the wire,
+	// so an assignment whose whole statement is one environment lookup is code,
+	// not a credential. The proxy's scanners carry no such rule, so a command
+	// that later sends the value is still blocked there.
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{ToolCommandEnvLookups: true})
 	if err != nil {
 		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: scanner startup failed: %v", err)))
 	}

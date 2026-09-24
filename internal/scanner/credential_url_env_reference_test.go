@@ -138,6 +138,8 @@ func TestFilterToolCommandEnvLookups_NonLookupsStillFlagged(t *testing.T) {
 		{name: "quote glued to more text", text: `python3 -c 'x; ` + kw + `=os.getenv("API_TOKEN")'` + secret},
 		{name: "literal on the next line", text: "python3 -c 'import os; " + kw + "=os.getenv(\"API_TOKEN\")\n" + kw + "=\"" + secret + "\"; send(" + kw + ")'"},
 		{name: "literal on the next line crlf", text: "python3 -c 'import os; " + kw + "=os.getenv(\"API_TOKEN\")\r\n" + kw + "=" + secret + "'"},
+		{name: "lookup after semicolon in a url query", text: `curl 'https://api.vendor.example/?x=1;` + kw + `=os.getenv("API_TOKEN")'`},
+		{name: "lookup after semicolon in a scheme-less query", text: `curl api.vendor.example/v1?x=1;` + kw + `=os.getenv("API_TOKEN")`},
 		{name: "bare literal on the next line", text: "import os; " + kw + "=os.getenv(\"API_TOKEN\")\n" + kw + "=" + secret},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -269,6 +271,11 @@ func TestToolCommandCredentialInURLCandidate(t *testing.T) {
 		{name: "lookup then closing quote and semicolon", view: lookup + `' ; next`, count: false},
 		{name: "lookup then closing quote and more code", view: lookup + `' more`, count: true},
 		{name: "query position", view: `?` + kw + `=os.getenv("API_TOKEN")`, count: true},
+		{name: "semicolon inside a url", view: `https://h/?a=1;` + kw + `=os.getenv("API_TOKEN")`, count: true},
+		// Touching the URL, ';' may be a query separator; from the text alone it
+		// is ambiguous, so it counts.
+		{name: "semicolon touching a url", view: `curl https://h/x; ` + kw + `=os.getenv("API_TOKEN"); y`, count: true},
+		{name: "semicolon separated from a url", view: `curl https://h/x ; ` + kw + `=os.getenv("API_TOKEN"); y`, count: false},
 		{name: "not a lookup", view: `; ` + kw + `=abcdefgh`, count: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

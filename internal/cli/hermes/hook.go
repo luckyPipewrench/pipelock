@@ -169,11 +169,13 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		},
 	}, stderr, "hermes hook")
 
-	// Hook text is a local tool's arguments or result, never bytes on the wire,
-	// so an assignment whose whole statement is one environment lookup is code,
-	// not a credential. The proxy's scanners carry no such rule, so a command
-	// that later sends the value is still blocked there.
-	sc, err := scanner.NewWithOptions(cfg, scanner.Options{ToolCommandEnvLookups: true})
+	// A terminal command is code about to run, and a tool result or gateway
+	// message is text the agent receives; neither is sent anywhere as written.
+	// There, an assignment whose whole statement is one environment lookup is
+	// code, not a credential. Other tools' arguments can be sent to a server
+	// as literal bytes, so they keep the full check, as do the proxy's scanners.
+	toolCommand := event.HookEventName != HookPreToolCall || event.ToolName == hermesTerminalTool
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{ToolCommandEnvLookups: toolCommand})
 	if err != nil {
 		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: scanner startup failed: %v", err)))
 	}
@@ -260,6 +262,9 @@ const (
 // (see scanDirection). Empty text short-circuits to allow: nothing to scan
 // means nothing to flag, and a spurious block on an empty-arguments tool call
 // would be a denial of service.
+// hermesTerminalTool is the Hermes tool whose arguments are a local command.
+const hermesTerminalTool = "terminal"
+
 func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string, dir scanDirection) HookDecision {
 	if strings.TrimSpace(text) == "" {
 		return allowDecision()

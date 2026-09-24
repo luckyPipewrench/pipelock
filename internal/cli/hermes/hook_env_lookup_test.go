@@ -11,10 +11,15 @@ import (
 
 func hookToolCallPayload(t *testing.T, event, command string) string {
 	t.Helper()
+	return hookToolPayload(t, event, "terminal", map[string]string{"command": command})
+}
+
+func hookToolPayload(t *testing.T, event, tool string, input map[string]string) string {
+	t.Helper()
 	payloadBytes, err := json.Marshal(map[string]interface{}{
 		"hook_event_name": event,
-		"tool_name":       "terminal",
-		"tool_input":      map[string]string{"command": command},
+		"tool_name":       tool,
+		"tool_input":      input,
 	})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -57,6 +62,24 @@ func TestHook_EnvLookupExemptionDoesNotCoverLiteralsOrQueries(t *testing.T) {
 		}
 		if decision.Decision != DecisionBlock || !strings.Contains(decision.Reason, "Credential in URL") {
 			t.Fatalf("%s: decision=%q reason=%q, want a Credential in URL block", name, decision.Decision, decision.Reason)
+		}
+	}
+}
+
+// Only terminal commands get the rule on pre_tool_call. Other tools' arguments
+// can be sent to a server as literal bytes, so the same text still blocks.
+func TestHook_EnvLookupRuleOnlyForTerminalCalls(t *testing.T) {
+	t.Parallel()
+
+	kw := "to" + "ken"
+	text := `python3 -c 'import os; ` + kw + `=os.environ.get("SLACK_BOT_TOKEN"); assert ` + kw + `'`
+	for _, tool := range []string{"web_extract", "send_message", "mcp_server_run"} {
+		decision, err := runHookCLI(t, hookToolPayload(t, HookPreToolCall, tool, map[string]string{"text": text}))
+		if err != nil {
+			t.Fatalf("%s: ExecuteContext: %v", tool, err)
+		}
+		if decision.Decision != DecisionBlock {
+			t.Fatalf("%s: environment lookup in non-terminal tool arguments allowed", tool)
 		}
 	}
 }

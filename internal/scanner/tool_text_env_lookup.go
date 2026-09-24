@@ -62,7 +62,7 @@ var envLookupValueRe = func() *regexp.Regexp {
 // Options.ToolCommandEnvLookups carry this check.
 func toolCommandCredentialInURLCandidate(view string, start, end int) bool {
 	parts := statementCandidateRe.FindStringSubmatch(view[start:end])
-	if parts == nil {
+	if parts == nil || semicolonInURL(view, start) {
 		return true
 	}
 	value := parts[1]
@@ -109,4 +109,21 @@ func endsStatement(view string, pos int) bool {
 		return next == len(view) || strings.ContainsRune(" \t\r\n", rune(view[next]))
 	}
 	return false
+}
+
+// semicolonInURL reports whether a candidate that starts with ';' sits inside
+// a URL, where ';' separates query parameters and the value is sent as literal
+// bytes. It looks back from the ';' to the previous whitespace: a token there
+// containing "?" or "://" is a URL. Views that remove whitespace make that
+// token longer, which can only turn a statement into a URL, never the reverse.
+func semicolonInURL(view string, start int) bool {
+	if start >= len(view) || view[start] != ';' {
+		return false
+	}
+	i := start
+	for i > 0 && !strings.ContainsRune(" \t\r\n", rune(view[i-1])) {
+		i--
+	}
+	token := view[i:start]
+	return strings.Contains(token, "?") || strings.Contains(token, "://")
 }

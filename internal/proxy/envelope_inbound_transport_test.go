@@ -190,7 +190,7 @@ func TestWebSocketInboundEnvelopeVerificationMissingHeaderBlocks(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyLn.Addr().String(), upLn.Addr().String())
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, err := ws.Dial(dialCtx, wsURL)
+	conn, err := wsTestDial(dialCtx, ws.DefaultDialer, wsURL)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("websocket dial should fail without inbound envelope")

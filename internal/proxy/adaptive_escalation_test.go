@@ -1967,7 +1967,7 @@ func dialWSProxy(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, ws.Dialer{Extensions: nil}, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}

@@ -212,18 +212,14 @@ func styleHides(tag string) bool {
 // later declaration overrides an earlier one unless the earlier one is
 // !important and the later is not.
 func styleValueHides(style string) bool {
-	style = normalizeCSS(style)
 	type effective struct {
 		value     string
 		important bool
 		set       bool
 	}
 	props := map[string]*effective{"display": {}, "visibility": {}, "font-size": {}, "opacity": {}}
-	for _, decl := range strings.Split(style, ";") {
-		name, value, found := strings.Cut(decl, ":")
-		if !found {
-			continue
-		}
+	for _, decl := range cssDeclarations(style) {
+		name, value := decl[0], decl[1]
 		prop := props[strings.ToLower(strings.TrimSpace(name))]
 		if prop == nil {
 			continue
@@ -247,46 +243,105 @@ func styleValueHides(style string) bool {
 	return false
 }
 
-// normalizeCSS rewrites a declaration block the way CSS reads it before the
-// properties are resolved: comments are removed, so display/**/:none is
-// display:none, and backslash escapes are decoded, so d\69 splay is display.
-func normalizeCSS(style string) string {
-	var b strings.Builder
+// cssDeclarations splits a declaration block into name and value pairs the
+// way CSS tokenizes it: comments are dropped, and a ';' or ':' separates only
+// when it is not escaped and not inside a string or parentheses. Escapes are
+// decoded after the split, so an escaped delimiter stays part of its token.
+func cssDeclarations(style string) [][2]string {
+	var decls [][2]string
+	var name, value, cur strings.Builder
+	inValue := false
+	quote := byte(0)
+	depth := 0
+	flush := func() {
+		if inValue {
+			value.WriteString(cur.String())
+			decls = append(decls, [2]string{decodeCSSEscapes(name.String()), decodeCSSEscapes(value.String())})
+		}
+		name.Reset()
+		value.Reset()
+		cur.Reset()
+		inValue = false
+	}
 	for i := 0; i < len(style); i++ {
 		c := style[i]
 		switch {
+		case c == '\\' && i+1 < len(style):
+			cur.WriteByte(c)
+			cur.WriteByte(style[i+1])
+			i++
+		case quote != 0:
+			cur.WriteByte(c)
+			if c == quote {
+				quote = 0
+			}
 		case c == '/' && i+1 < len(style) && style[i+1] == '*':
 			end := strings.Index(style[i+2:], "*/")
 			if end < 0 {
-				return b.String()
-			}
-			i += 2 + end + 1
-		case c == '\\' && i+1 < len(style):
-			j := i + 1
-			for j < len(style) && j-i <= 6 && isHexDigit(style[j]) {
-				j++
-			}
-			if j == i+1 {
-				b.WriteByte(style[j])
-				i = j
+				i = len(style)
 				continue
 			}
-			// At most six hex digits, so the value always fits in a rune.
-			var code rune
-			for _, h := range style[i+1 : j] {
-				code = code*16 + hexValue(h)
+			i += 2 + end + 1
+		case c == '"' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == '(':
+			depth++
+			cur.WriteByte(c)
+		case c == ')':
+			if depth > 0 {
+				depth--
 			}
-			if code == 0 || code > unicode.MaxRune || (code >= 0xD800 && code <= 0xDFFF) {
-				code = unicode.ReplacementChar
-			}
-			b.WriteRune(code)
-			if j < len(style) && isHTMLSpaceByte(style[j]) {
-				j++
-			}
-			i = j - 1
+			cur.WriteByte(c)
+		case c == ':' && depth == 0 && !inValue:
+			name.WriteString(cur.String())
+			cur.Reset()
+			inValue = true
+		case c == ';' && depth == 0:
+			flush()
 		default:
-			b.WriteByte(c)
+			cur.WriteByte(c)
 		}
+	}
+	flush()
+	return decls
+}
+
+// decodeCSSEscapes decodes backslash escapes in one CSS token, so d\69 splay
+// reads as display.
+func decodeCSSEscapes(token string) string {
+	if !strings.Contains(token, "\\") {
+		return token
+	}
+	var b strings.Builder
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		if c != '\\' || i+1 >= len(token) {
+			b.WriteByte(c)
+			continue
+		}
+		j := i + 1
+		for j < len(token) && j-i <= 6 && isHexDigit(token[j]) {
+			j++
+		}
+		if j == i+1 {
+			b.WriteByte(token[j])
+			i = j
+			continue
+		}
+		// At most six hex digits, so the value always fits in a rune.
+		var code rune
+		for _, h := range token[i+1 : j] {
+			code = code*16 + hexValue(h)
+		}
+		if code == 0 || code > unicode.MaxRune || (code >= 0xD800 && code <= 0xDFFF) {
+			code = unicode.ReplacementChar
+		}
+		b.WriteRune(code)
+		if j < len(token) && isHTMLSpaceByte(token[j]) {
+			j++
+		}
+		i = j - 1
 	}
 	return b.String()
 }
@@ -478,7 +533,9 @@ func stripHiddenElementTraps(s string) (string, int) {
 		if interfaceTags[name] {
 			interfacePos = append(interfacePos, start)
 		}
-		if rawTextElements[name] && tt == html.StartTagToken {
+		// HTML ignores a self-closing slash on these elements, so <script/>
+		// still starts a raw-text body.
+		if rawTextElements[name] {
 			rawBody = true
 		}
 		// A self-closing slash on div, span or p is ignored by browsers, so

@@ -539,6 +539,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			}
 			cp.validate = fn
 		}
+		if cp.validate == nil {
+			cp.validate = builtinDLPValidatorForRegex(p.Regex)
+		}
 		s.dlpPatterns = append(s.dlpPatterns, cp)
 	}
 

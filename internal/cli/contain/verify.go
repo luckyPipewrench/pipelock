@@ -1591,34 +1591,44 @@ func probeManagedConfigMetrics(_ context.Context, env *probeEnv) (string, string
 // probeNFTContainment verifies the installed nftables boundary structure,
 // ordering, UID ownership, and persistence wiring.
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
+	status, detail, _ := probeNFTContainmentClassified(ctx, env)
+	return status, detail
+}
+
+// probeNFTContainmentClassified is probeNFTContainment plus whether a FAIL
+// came from being unable to read the state (a command, parse or lookup error)
+// rather than from a confirmed structural problem. contain verify treats both
+// as FAIL; doctor needs the distinction to report an unreadable chain as
+// inconclusive and a confirmed missing rule as FAIL.
+func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, string, bool) {
 	if env.ownedLoopback {
-		if status, detail := probeOwnedLoopbackAnchor(ctx, env); status != statusPass {
-			return status, detail
+		if status, detail, readErr := probeOwnedLoopbackAnchorClassified(ctx, env); status != statusPass {
+			return status, detail, readErr
 		}
 	}
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
-		return statusSkip, fmt.Sprintf("nft unavailable: %v", err)
+		return statusSkip, fmt.Sprintf("nft unavailable: %v", err), false
 	}
 	if code != 0 {
 		low := strings.ToLower(out)
 		if strings.Contains(low, "operation not permitted") || strings.Contains(low, "permission denied") {
-			return statusSkip, "nft list chain requires root; rerun as root"
+			return statusSkip, "nft list chain requires root; rerun as root", false
 		}
-		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
-			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable)
+		if nftOutputConfirmsAbsent(out) {
+			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable), false
 		}
-		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out))
+		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out)), true
 	}
 
 	lines, err := attributedNFTChainLines(out, env.nftChain)
 	if err != nil {
-		return statusFail, err.Error()
+		return statusFail, err.Error(), true
 	}
 
 	current, err := containmentUIDsFromProbeEnv(env)
 	if err != nil {
-		return statusFail, err.Error()
+		return statusFail, err.Error(), true
 	}
 	// The base-chain contract comes first. Without the output hook no rule in
 	// this chain is ever reached, so neither the catch-all drop nor a rule
@@ -1626,40 +1636,46 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	// would report a definite verdict about a chain that enforces nothing.
 	// The doctor maps this wording to UNKNOWN, which is the honest state.
 	if !nftChainLinesHaveManagedOutputBaseChain(lines) {
-		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain)
+		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain), false
 	}
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
 	}
 	// Within a hooked chain that has the drop, a definite bypass outranks every
 	// missing canonical rule: reporting "proxy accept rule missing" for a chain
 	// that also admits all agent traffic would let the doctor downgrade the
 	// hole to an inconclusive result.
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule)
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
 	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
-		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID)
+		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID), false
 	}
 	if !chainLinesHaveSkuidAcceptForUID(lines, current.proxyUID) {
-		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID)
+		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID), false
 	}
 	if !chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines, current.agentUID, env.port) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port), false
 	}
 	if env.ownedLoopback {
 		if !ownedLoopbackRulesReferenceCurrentAnchor(out, 4) {
-			return statusFail, "owned loopback OUTPUT rules do not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules"
+			return statusFail, "owned loopback OUTPUT rules do not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules", false
+		}
+		if !chainLinesHaveRenderedOwnedLoopbackOutputRulesBeforeAgentDrop(lines, current.agentUID) {
+			return statusFail, "owned loopback OUTPUT rules are missing, altered, or appear after the agent catch-all drop; dynamic loopback access is denied until `pipelock contain install` reloads them", false
 		}
 		input, inputCode, inputErr := env.runCmd(ctx, probeNFTExecutable(env), "-n", "list", "chain", "inet", env.nftTable, ownedLoopbackInputChain)
 		if inputErr != nil {
-			return statusFail, fmt.Sprintf("list owned loopback receiver chain: %v", inputErr)
+			return statusFail, fmt.Sprintf("list owned loopback receiver chain: %v", inputErr), true
+		}
+		if inputCode != 0 && !nftOutputConfirmsAbsent(input) {
+			return statusFail, fmt.Sprintf("list owned loopback receiver chain: nft exit=%d: %s", inputCode, oneLine(input)), true
 		}
 		if inputCode != 0 || !ownedLoopbackInputChainLooksManaged(input) {
-			return statusFail, fmt.Sprintf("owned loopback receiver chain %s is missing or unrecognized; marked loopback traffic is denied until `pipelock contain install` restores the receiver gate", ownedLoopbackInputChain)
+			return statusFail, fmt.Sprintf("owned loopback receiver chain %s is missing or unrecognized; marked loopback traffic is denied until `pipelock contain install` restores the receiver gate", ownedLoopbackInputChain), false
 		}
 		if !ownedLoopbackRulesReferenceCurrentAnchor(input, 1) {
-			return statusFail, "owned loopback receiver rule does not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules"
+			return statusFail, "owned loopback receiver rule does not reference the current containment-slice cgroup; dynamic loopback access is denied until `pipelock contain install` refreshes the anchor and rules", false
 		}
 	}
 	// A managed config this probe cannot read or honor fails the probe
@@ -1672,30 +1688,34 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	// policy, whatever the chain happens to look like.
 	loopbackServices, loopbackProblem, loopbackUnusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
 	if loopbackUnusable {
-		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem
+		return statusFail, "containment.loopback_services cannot be honored: " + loopbackProblem, false
 	}
 	for _, svc := range loopbackServices {
 		if problem := declaredLoopbackPairProblem(lines, current.agentUID, svc); problem != "" {
-			return statusFail, problem
+			return statusFail, problem, false
 		}
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "udp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID), false
 	}
 	if !chainLinesHaveAgentDNSDropBeforeCatchAll(lines, current.agentUID, "tcp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID), false
 	}
 	if chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, current, env.port, loopbackServices) {
-		return statusFail, "chain contains unexpected verdict before agent drop"
+		return statusFail, "chain contains unexpected verdict before agent drop", false
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
+		// Persistence failures are reported as structural. The only consumer
+		// of the classification, the doctor chain reader, clears
+		// nftPersistUnitPath, so this branch never feeds it; split read errors
+		// out before wiring persistence into a classified caller.
 		if err := verifyNFTPersistence(env, current); err != nil {
-			return statusFail, err.Error()
+			return statusFail, err.Error(), false
 		}
 		if env.nftExpiryTimerPath != "" || env.nftExpiryServicePath != "" {
 			status, detail := probeContainmentExpiryTimer(ctx, env)
 			if status != statusPass {
-				return status, detail
+				return status, detail, false
 			}
 		}
 	}
@@ -1708,29 +1728,58 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		loopbackSummary = fmt.Sprintf("proxy loopback allow plus %d declared loopback service(s)", len(loopbackServices))
 	}
 	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, %s, direct-DNS drops, and persistence unit",
-		env.nftTable, env.nftChain, current.agentUID, loopbackSummary)
+		env.nftTable, env.nftChain, current.agentUID, loopbackSummary), false
+}
+
+// nftOutputConfirmsAbsent reports whether failed nft list output states that
+// the table or chain does not exist, as opposed to a failure to read it.
+func nftOutputConfirmsAbsent(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "no such file") || strings.Contains(low, "does not exist")
+}
+
+// systemctlConfirmedInactiveState reports whether systemctl is-active printed
+// a real unit state other than active, which confirms the unit is not running.
+func systemctlConfirmedInactiveState(out string) bool {
+	switch strings.TrimSpace(out) {
+	case "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing":
+		return true
+	}
+	return false
 }
 
 func probeOwnedLoopbackAnchor(ctx context.Context, env *probeEnv) (string, string) {
+	status, detail, _ := probeOwnedLoopbackAnchorClassified(ctx, env)
+	return status, detail
+}
+
+// probeOwnedLoopbackAnchorClassified reports whether a FAIL came from being
+// unable to read the anchor state, as probeNFTContainmentClassified does.
+func probeOwnedLoopbackAnchorClassified(ctx context.Context, env *probeEnv) (string, string, bool) {
 	path := filepath.Clean(env.ownedLoopbackAnchorUnitPath)
 	if path == "." || path == "" {
-		return statusFail, "owned loopback cgroup anchor path is not configured; run pipelock contain install"
+		return statusFail, "owned loopback cgroup anchor path is not configured; run pipelock contain install", false
 	}
 	if _, err := env.readFile(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is missing; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path)
+			return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is missing; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path), false
 		}
-		return statusFail, fmt.Sprintf("read owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path, err)
+		return statusFail, fmt.Sprintf("read owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", path, err), true
 	}
 	unit := filepath.Base(path)
 	out, code, err := env.runCmd(ctx, "systemctl", "is-active", unit)
 	if err != nil {
-		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", unit, err)
+		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: %v; plk-contained-launch denies dynamic loopback access until `pipelock contain install` restores it", unit, err), true
 	}
-	if code != 0 || strings.TrimSpace(out) != systemctlActive {
-		return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is %q; plk-contained-launch checks this anchor before starting a contained tool, so dynamic loopback access is denied until `pipelock contain install` restores it", unit, oneLine(out))
+	if code == 0 && strings.TrimSpace(out) == systemctlActive {
+		return statusPass, fmt.Sprintf("owned loopback cgroup anchor %s is active", unit), false
 	}
-	return statusPass, fmt.Sprintf("owned loopback cgroup anchor %s is active", unit)
+	// systemctl is-active exits 3 for a unit it can name as not active; any
+	// other failure means the query itself failed and the state is unknown.
+	if code != 3 && !systemctlConfirmedInactiveState(out) {
+		return statusFail, fmt.Sprintf("check owned loopback cgroup anchor %s: systemctl exit=%d: %s", unit, code, oneLine(out)), true
+	}
+	return statusFail, fmt.Sprintf("owned loopback cgroup anchor %s is %q; plk-contained-launch checks this anchor before starting a contained tool, so dynamic loopback access is denied until `pipelock contain install` restores it", unit, oneLine(out)), false
 }
 
 // probeContainmentExpiryTimer verifies the privileged reconciliation timer
@@ -1758,6 +1807,10 @@ type containmentUIDs struct {
 	operatorKnown bool
 	proxyUID      int
 	agentUID      int
+	// ownedLoopback reports that this host installs the owned-loopback
+	// marking rules. Only then may the unsafe-verdict check accept those
+	// rules, and only in the exact form the renderer emits.
+	ownedLoopback bool
 }
 
 func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
@@ -1776,7 +1829,7 @@ func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
 		return containmentUIDs{}, fmt.Errorf("%s resolves to uid 0; contained agent user must be non-root", env.agentUserName)
 	}
 
-	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID}
+	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID, ownedLoopback: env.ownedLoopback}
 	if proxyUID == agentUID {
 		return containmentUIDs{}, fmt.Errorf("%s and %s both resolve to uid %d; containment users must be distinct", env.proxyUserName, env.agentUserName, agentUID)
 	}
@@ -2332,6 +2385,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 			return false
 		}
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
+			return false
+		}
+		if uids.ownedLoopback && lineIsRenderedOwnedLoopbackOutputRule(line, uids.agentUID) {
 			return false
 		}
 		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||

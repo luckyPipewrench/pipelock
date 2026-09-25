@@ -899,13 +899,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// first because phrase order matters; DLP still uses a sorted join below
 	// for deterministic split-secret detection.
 	joinedInOrder := strings.Join(texts, "\n")
-	var joinedInjection []scanner.ResponseMatch
+	var inOrderInjection, sortedInjection []scanner.ResponseMatch
 	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
 	if injectionResult.Failed() {
 		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
-		joinedInjection = append(joinedInjection, injectionResult.Matches...)
+		inOrderInjection = injectionResult.Matches
 	}
 
 	// Sort to ensure deterministic ordering for DLP (Go map iteration in
@@ -917,12 +917,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
-		joinedInjection = append(joinedInjection, injectionResult.Matches...)
+		sortedInjection = injectionResult.Matches
 	}
 	// The joined views re-read every field, so they repeat what the per-field
-	// scan already found. Keep every per-field match and add only what the
-	// joined views alone detected, such as a phrase split across fields.
-	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, joinedInjection)
+	// scan already found. Keep every per-field match and add only the
+	// occurrences a joined view alone detected, such as a phrase split across
+	// fields.
+	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection)
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp
@@ -1528,27 +1529,30 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 	return unique
 }
 
-// mergeJoinedInjectionMatches keeps every per-field match, so the same phrase
-// in two fields is reported twice, and appends a joined-view match only when
-// no per-field or earlier joined match has the same pattern and text.
-// Position is not part of the key because it is relative to whichever scan
-// view produced the match.
-func mergeJoinedInjectionMatches(perField, joined []scanner.ResponseMatch) []scanner.ResponseMatch {
-	if len(joined) == 0 {
-		return perField
-	}
-	seen := make(map[string]struct{}, len(perField)+len(joined))
+// mergeJoinedInjectionMatches folds overlapping scan views into one list. Each
+// view is a complete reading of the body, so the number of occurrences of a
+// pattern and text is the largest count any single view reports. Every
+// per-field match is kept, and a joined view contributes only occurrences
+// beyond that count, so repeats across views collapse while separate
+// occurrences inside one view survive. Position is not part of the key because
+// it is relative to whichever view produced the match.
+func mergeJoinedInjectionMatches(perField []scanner.ResponseMatch, joinedViews ...[]scanner.ResponseMatch) []scanner.ResponseMatch {
+	kept := make(map[string]int, len(perField))
 	for _, match := range perField {
-		seen[bodyInjectionMatchKey(match)] = struct{}{}
+		kept[bodyInjectionMatchKey(match)]++
 	}
 	merged := perField
-	for _, match := range joined {
-		key := bodyInjectionMatchKey(match)
-		if _, ok := seen[key]; ok {
-			continue
+	for _, view := range joinedViews {
+		inView := make(map[string]int, len(view))
+		for _, match := range view {
+			key := bodyInjectionMatchKey(match)
+			inView[key]++
+			if inView[key] <= kept[key] {
+				continue
+			}
+			kept[key] = inView[key]
+			merged = append(merged, match)
 		}
-		seen[key] = struct{}{}
-		merged = append(merged, match)
 	}
 	return merged
 }

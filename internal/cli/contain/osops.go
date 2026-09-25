@@ -116,6 +116,7 @@ type installEnv struct {
 	nftExpiryServicePath        string
 	nftExpiryTimerPath          string
 	displayUnitPath             string
+	displayAuthorityPath        string
 	// xvfbPath is the X server binary consulted when display provisioning is
 	// left unset in config. A field rather than a constant so a test host
 	// that happens to have Xvfb installed does not change what the tests
@@ -238,6 +239,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
 		displayUnitPath:               defaultDisplayUnitPath,
+		displayAuthorityPath:          defaultDisplayAuthorityPath,
 		xvfbPath:                      defaultXvfbPath,
 		ownLeafNoFollow:               applyAgentOwnershipNoFollow,
 		repairLeafMode:                setLeafModeNoFollow,
@@ -297,6 +299,7 @@ const (
 	defaultNFTExpiryServicePath          = "/etc/systemd/system/pipelock-containment-expiry.service"
 	defaultNFTExpiryTimerPath            = "/etc/systemd/system/pipelock-containment-expiry.timer"
 	defaultDisplayUnitPath               = "/etc/systemd/system/pipelock-agent-display.service"
+	defaultDisplayAuthorityPath          = "/var/lib/pipelock-agent/Xauthority"
 	containmentExpiryTimerCalendar       = "hourly"
 	containmentExpiryTimerAccuracy       = "1m"
 	containmentExpiryServiceTimeout      = "90"

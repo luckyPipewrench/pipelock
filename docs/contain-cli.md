@@ -401,6 +401,10 @@ The contract has four parts:
 
 A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
 
+### Xvfb display authorization
+
+When the managed display is enabled, `pipelock contain install` creates a fresh 128-bit MIT-MAGIC-COOKIE-1 record in `/var/lib/pipelock-agent/Xauthority`. The root-owned state directory is mode `0711`; the cookie file belongs to `pipelock-agent` and has mode `0600`. Xvfb starts with `-auth` pointing at the file, and the contained launch environment sets `XAUTHORITY` to the same path. Re-running install rotates the cookie and restarts an active Xvfb. `pipelock contain rollback` removes the managed cookie file.
+
 ### Browser launch default
 
 Under automation, Chromium advertises an automation marker that managed bot challenges can loop on. `pipelock contain install` adds `--disable-blink-features=AutomationControlled` to the `args` string in agent-browser's user config, `~/.agent-browser/config.json` in the contained agent's home. Every agent launched under containment runs as that one account, so every contained agent that drives Chromium through agent-browser gets the default, whichever agent it is. Existing keys and launch arguments are kept (comma- and newline-separated `args` both work), an existing file is backed up to `config.json.bak` before the change, and a flag that is already present is left alone. A file that is not valid JSON, an `args` value that is not a string, a symlink at `~/.agent-browser` or at the file itself, or a browser directory owned by another account stops the install before anything is written; repair it and rerun `pipelock contain install`. On Linux, install opens the browser directory without following symlinks and performs config and backup operations through that directory handle.

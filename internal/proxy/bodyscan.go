@@ -772,8 +772,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		// this body cannot be parsed.
 		if extracted.Err == "" {
 			disabled := bodyDLPDisabledSet(req.DisablePatterns)
-			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)...)
+			// No allow is collected here: redaction may rewrite the credential
+			// before forwarding, and a credential that survives redaction is
+			// collected again by the post-redaction scan below.
+			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)...)
 		}
 	}
 

@@ -858,4 +858,32 @@ func TestVerifyHarnessManifestSignatureRejectsTampering(t *testing.T) {
 	if err := verifyHarnessManifestSignature(tamperedSig); err == nil {
 		t.Fatal("manifest with a changed signature verified")
 	}
+
+	malformed := map[string]struct {
+		signature string
+		raw       []byte
+		wantSub   string
+	}{
+		"malformed json":   {raw: []byte(`{"body":`), wantSub: "unmarshal manifest envelope"},
+		"missing prefix":   {signature: strings.TrimPrefix(sig, "ed25519:"), wantSub: "lacks ed25519: prefix"},
+		"invalid hex":      {signature: "ed25519:zz", wantSub: "decode manifest signature"},
+		"truncated digest": {signature: "ed25519:00", wantSub: "does not verify"},
+	}
+	for name, tc := range malformed {
+		raw := tc.raw
+		if raw == nil {
+			var caseDoc map[string]any
+			if err := json.Unmarshal(result.ManifestJSON, &caseDoc); err != nil {
+				t.Fatalf("%s: unmarshal manifest: %v", name, err)
+			}
+			caseDoc["signature"] = tc.signature
+			if raw, err = json.Marshal(caseDoc); err != nil {
+				t.Fatalf("%s: marshal manifest: %v", name, err)
+			}
+		}
+		err := verifyHarnessManifestSignature(raw)
+		if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("%s: error = %v, want substring %q", name, err, tc.wantSub)
+		}
+	}
 }

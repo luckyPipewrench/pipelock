@@ -1544,7 +1544,7 @@ func TestCovDispUndoRestoresCookieBeforeDisplayStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousAuthority, err := encodeDisplayAuthority(hostname, "5", make([]byte, displayAuthorityCookieSize))
+	previousAuthority, err := encodeDisplayAuthority(hostname, "99", make([]byte, displayAuthorityCookieSize))
 	if err != nil {
 		t.Fatal(err)
 	}

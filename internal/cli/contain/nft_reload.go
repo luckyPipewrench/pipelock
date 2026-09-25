@@ -671,7 +671,10 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 		return 0, nil
 	}
 	start := i
-	if lineHasAgentListenerGuardForProxy(rules[i].line, proxyUID) {
+	// Recognize the guard by shape, whatever UID it exempts: after a proxy UID
+	// change the live guard still names the old one, and it must be replaced
+	// with the rest of the block rather than left in front of it.
+	if lineHasManagedAgentListenerGuard(rules[i].line) {
 		i++
 	}
 	if i+2 >= len(rules) {
@@ -721,6 +724,19 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 func lineHasAgentListenerGuardForProxy(line string, proxyUID int) bool {
 	fields := nftLineFields(line)
 	if len(fields) < 15 || !slices.Equal(fields[:7], []string{"meta", "skuid", "!=", "{", "0,", strconv.Itoa(proxyUID), "}"}) {
+		return false
+	}
+	return lineHasAgentListenerGuardSuffix(fields[7:])
+}
+
+// lineHasManagedAgentListenerGuard reports whether line is a Pipelock
+// agent-listener guard exempting root and any single numeric UID.
+func lineHasManagedAgentListenerGuard(line string) bool {
+	fields := nftLineFields(line)
+	if len(fields) < 15 || !slices.Equal(fields[:5], []string{"meta", "skuid", "!=", "{", "0,"}) || fields[6] != "}" {
+		return false
+	}
+	if uid, err := strconv.Atoi(fields[5]); err != nil || uid <= 0 {
 		return false
 	}
 	return lineHasAgentListenerGuardSuffix(fields[7:])

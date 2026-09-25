@@ -9,6 +9,7 @@ import {
   applyEvidenceProvenanceRecipe,
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST,
   supportedOperationKindsForProfile,
 } from "../src/provenance.js";
 import { findPackageRoot } from "./paths.js";
@@ -29,6 +30,10 @@ const corpusPath = resolve(
 const corpusPathV2 = resolve(
   packageRoot,
   "../../conformance/testdata/transform-profile/evidence-provenance-v2.json",
+);
+const corpusPathV3 = resolve(
+  packageRoot,
+  "../../conformance/testdata/transform-profile/evidence-provenance-v3.json",
 );
 const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
   profile_digest: string;
@@ -98,6 +103,35 @@ test("evidence provenance: v2 corpus executes every vector byte-exactly", () => 
       vector.output_b64,
       vector.id,
     );
+  }
+});
+
+test("evidence provenance: v3 corpus executes every vector byte-exactly", () => {
+  const v3 = JSON.parse(readFileSync(corpusPathV3, "utf8")) as {
+    profile_digest: string;
+    vectors: Vector[];
+  };
+  assert.equal(v3.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST);
+  for (const vector of v3.vectors) {
+    const recipe: { transform_profile_digest: string; operations: unknown[] } = {
+      transform_profile_digest: vector.transform_profile_digest ?? v3.profile_digest,
+      operations: vector.recipe ?? [],
+    };
+    if (vector.want_error) {
+      assert.throws(
+        () => applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        (error: unknown) => error instanceof Error && error.message.includes(vector.want_error!),
+        vector.id,
+      );
+    } else {
+      assert.equal(
+        Buffer.from(
+          applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        ).toString("base64"),
+        vector.output_b64,
+        vector.id,
+      );
+    }
   }
 });
 

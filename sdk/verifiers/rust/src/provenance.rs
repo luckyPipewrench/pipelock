@@ -15,6 +15,8 @@ pub const PROFILE_DIGEST_V1: &str =
     "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 pub const PROFILE_DIGEST_V2: &str =
     "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
+pub const PROFILE_DIGEST_V3: &str =
+    "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -39,10 +41,14 @@ struct Operation {
 enum ProfileVersion {
     V1,
     V2,
+    V3,
 }
 
 pub fn is_known_profile_digest(digest: &str) -> bool {
-    matches!(digest, PROFILE_DIGEST_V1 | PROFILE_DIGEST_V2)
+    matches!(
+        digest,
+        PROFILE_DIGEST_V1 | PROFILE_DIGEST_V2 | PROFILE_DIGEST_V3
+    )
 }
 
 impl Recipe {
@@ -62,12 +68,20 @@ impl Recipe {
             .enumerate()
             .map(|(i, v)| Operation::from_json(v).map_err(|e| format!("recipe operation {i}: {e}")))
             .collect::<Result<Vec<_>, _>>()?;
-        if profile == ProfileVersion::V1
-            && operations
-                .iter()
-                .any(|operation| operation.kind == "ascii_alphanumeric_strip")
-        {
-            return Err("ascii_alphanumeric_strip is unsupported by transform profile".to_string());
+        for operation in &operations {
+            if (profile == ProfileVersion::V1 && operation.kind == "ascii_alphanumeric_strip")
+                || (profile != ProfileVersion::V3
+                    && ["ascii_upper", "json_unicode_escape"].contains(&operation.kind.as_str()))
+                || (profile != ProfileVersion::V3
+                    && ["base32_decode", "base32_decode_liberal"]
+                        .contains(&operation.kind.as_str())
+                    && operation.fields.contains_key("alphabet"))
+            {
+                return Err(format!(
+                    "{} is unsupported by transform profile",
+                    operation.kind
+                ));
+            }
         }
         Ok(Self {
             digest: digest.to_string(),
@@ -214,12 +228,14 @@ impl Operation {
             | "hostname_dot_remove"
             | "canary_canonicalize"
             | "ascii_alphanumeric_strip" => (&["kind"], &[]),
+            "ascii_upper" | "json_unicode_escape" => (&["kind"], &[]),
             "url_component" => (&["kind", "component"], &["selector", "occurrence"]),
             "percent_decode" => (&["kind", "passes"], &[]),
             "dlp_normalize" | "matching_normalize" => (&["kind", "profile"], &[]),
-            "base32_decode" | "base64_decode" | "base32_decode_liberal" => {
-                (&["kind"], &["decode_padding"])
+            "base32_decode" | "base32_decode_liberal" => {
+                (&["kind"], &["decode_padding", "alphabet"])
             }
+            "base64_decode" => (&["kind"], &["decode_padding"]),
             "base64_decode_liberal" => (&["kind", "alphabet"], &["decode_padding"]),
             "encoded_token_normalize" => (&["kind", "alphabet"], &[]),
             "text_segment" => (&["kind"], &["occurrence"]),
@@ -289,7 +305,15 @@ impl Operation {
                     required_str(&self.fields, "profile")?
                 ))
             }
-            "base32_decode" | "base64_decode" | "base32_decode_liberal" => {
+            "base32_decode" | "base32_decode_liberal" => {
+                optional_bool(&self.fields, "decode_padding")?;
+                if let Some(alphabet) = self.fields.get("alphabet") {
+                    if !["standard", "base32hex"].contains(&alphabet.as_str().unwrap_or("")) {
+                        return Err(format!("unknown base32 alphabet {alphabet:?}"));
+                    }
+                }
+            }
+            "base64_decode" => {
                 optional_bool(&self.fields, "decode_padding")?;
             }
             "base64_decode_liberal" => {
@@ -376,6 +400,8 @@ impl Operation {
                 .chars()
                 .map(|c| c.to_lowercase().next().unwrap_or(c))
                 .collect()),
+            "ascii_upper" => Ok(value.chars().map(|c| c.to_ascii_uppercase()).collect()),
+            "json_unicode_escape" => json_unicode_escape(value),
             "invisible_strip" => Ok(map_invisible(value, None)),
             "hex_decode" => strict_hex(value, true, "hex decode"),
             "base32_decode" => base32_decode(
@@ -383,6 +409,10 @@ impl Operation {
                 optional_bool(&self.fields, "decode_padding")?.unwrap_or(false),
                 true,
                 "base32 decode",
+                self.fields
+                    .get("alphabet")
+                    .and_then(Value::as_str)
+                    .unwrap_or("standard"),
             ),
             "base64_decode" => base64_decode(
                 value,
@@ -415,13 +445,17 @@ impl Operation {
                 .collect()),
             "query_unescape" => query_unescape(value, budget),
             "invisible_space" => Ok(map_invisible(value, Some(' '))),
-            "matching_normalize" => Ok(matching_normalize(value)),
+            "matching_normalize" => Ok(matching_normalize(value, profile)),
             "hex_decode_liberal" => strict_hex(value, false, "liberal hex decode"),
             "base32_decode_liberal" => base32_decode(
                 value,
                 optional_bool(&self.fields, "decode_padding")?.unwrap_or(false),
                 false,
                 "liberal base32 decode",
+                self.fields
+                    .get("alphabet")
+                    .and_then(Value::as_str)
+                    .unwrap_or("standard"),
             ),
             "base64_decode_liberal" => base64_decode(
                 value,
@@ -497,6 +531,7 @@ fn validate_digest(digest: &str) -> Result<ProfileVersion, String> {
     match digest {
         PROFILE_DIGEST_V1 => Ok(ProfileVersion::V1),
         PROFILE_DIGEST_V2 => Ok(ProfileVersion::V2),
+        PROFILE_DIGEST_V3 => Ok(ProfileVersion::V3),
         _ => Err("recipe: transform profile digest: unknown profile".to_string()),
     }
 }
@@ -641,7 +676,13 @@ fn strict_hex(s: &str, canonical: bool, label: &str) -> Result<String, String> {
     }
     String::from_utf8(b).map_err(|_| format!("{label} output: invalid UTF-8"))
 }
-fn base32_decode(s: &str, padded: bool, canonical: bool, label: &str) -> Result<String, String> {
+fn base32_decode(
+    s: &str,
+    padded: bool,
+    canonical: bool,
+    label: &str,
+    alphabet: &str,
+) -> Result<String, String> {
     let data_len = s.trim_end_matches('=').len();
     let padding = s.len() - data_len;
     let expected_padding = match data_len % 8 {
@@ -655,8 +696,12 @@ fn base32_decode(s: &str, padded: bool, canonical: bool, label: &str) -> Result<
     if (padded && padding != expected_padding) || (!padded && padding != 0) {
         return Err(format!("{label}: invalid padding"));
     }
-    let b = liberal_base32_bytes(s).map_err(|e| format!("{label}: {e}"))?;
-    let encoded = BASE32.encode(&b);
+    let b = liberal_base32_bytes(s, alphabet).map_err(|e| format!("{label}: {e}"))?;
+    let encoded = if alphabet == "base32hex" {
+        data_encoding::BASE32HEX.encode(&b)
+    } else {
+        BASE32.encode(&b)
+    };
     let want = if padded {
         encoded
     } else {
@@ -671,7 +716,7 @@ fn base32_decode(s: &str, padded: bool, canonical: bool, label: &str) -> Result<
 // Go's encoding/base32 decoder deliberately accepts non-zero unused trailing
 // bits. The liberal profile operation pins that behavior; strict mode gets its
 // canonicality from the re-encode comparison above.
-fn liberal_base32_bytes(s: &str) -> Result<Vec<u8>, String> {
+fn liberal_base32_bytes(s: &str, alphabet: &str) -> Result<Vec<u8>, String> {
     let data = s.trim_end_matches('=');
     if s[data.len()..].chars().any(|c| c != '=') {
         return Err("invalid base32 padding".to_string());
@@ -680,10 +725,18 @@ fn liberal_base32_bytes(s: &str) -> Result<Vec<u8>, String> {
     let mut count = 0_u8;
     let mut out = Vec::new();
     for byte in data.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'2'..=b'7' => byte - b'2' + 26,
-            _ => return Err("invalid base32 character".to_string()),
+        let value = if alphabet == "base32hex" {
+            match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'A'..=b'V' => byte - b'A' + 10,
+                _ => return Err("invalid base32 character".to_string()),
+            }
+        } else {
+            match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'2'..=b'7' => byte - b'2' + 26,
+                _ => return Err("invalid base32 character".to_string()),
+            }
         } as u32;
         bits = (bits << 5) | value;
         count += 5;
@@ -878,7 +931,55 @@ fn dlp_normalize(s: &str) -> String {
         .filter(|c| !is_combining_mark(*c))
         .collect()
 }
-fn matching_normalize(s: &str) -> String {
+fn json_unicode_escape(s: &str) -> Result<String, String> {
+    // Lenient by profile: a well-formed escape or surrogate pair decodes, an
+    // unpaired surrogate escape becomes U+FFFD, and any other text beginning
+    // with \u is copied unchanged. Nothing rejects.
+    let bytes = s.as_bytes();
+    let hex4 = |at: usize| -> Option<u32> {
+        let digits = bytes.get(at..at + 4)?;
+        if !digits.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+    };
+    let is_escape = |at: usize| bytes.get(at..at + 2) == Some(b"\\u".as_slice());
+    let mut output = String::with_capacity(s.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let high = if is_escape(i) { hex4(i + 2) } else { None };
+        let Some(high) = high else {
+            i += 1;
+            continue;
+        };
+        output.push_str(&s[copied..i]);
+        let (decoded, size) = if !(0xd800..=0xdfff).contains(&high) {
+            (
+                char::from_u32(high).ok_or("json unicode escape: invalid scalar")?,
+                6,
+            )
+        } else if high <= 0xdbff && is_escape(i + 6) {
+            match hex4(i + 8) {
+                Some(low) if (0xdc00..=0xdfff).contains(&low) => (
+                    char::from_u32(0x10000 + ((high - 0xd800) << 10) + low - 0xdc00)
+                        .ok_or("json unicode escape: invalid scalar")?,
+                    12,
+                ),
+                _ => ('\u{fffd}', 6),
+            }
+        } else {
+            ('\u{fffd}', 6)
+        };
+        output.push(decoded);
+        i += size;
+        copied = i;
+    }
+    output.push_str(&s[copied..]);
+    Ok(output)
+}
+
+fn matching_normalize(s: &str, profile: ProfileVersion) -> String {
     let x = map_invisible(s, None)
         .nfkc()
         .map(confusable)
@@ -888,6 +989,11 @@ fn matching_normalize(s: &str) -> String {
         .collect::<String>();
     // ForMatching maps the explicit exotic set to spaces, but deliberately
     // preserves leading/trailing and repeated ordinary whitespace.
+    let x = if profile == ProfileVersion::V3 {
+        x.nfc().collect::<String>()
+    } else {
+        x
+    };
     x.chars().map(|c| if exotic(c) { ' ' } else { c }).collect()
 }
 
@@ -1022,7 +1128,7 @@ fn encoded_token_normalize_v1(s: &str, a: &str) -> String {
 fn url_noise_strip(value: &str, profile: ProfileVersion) -> String {
     match profile {
         ProfileVersion::V1 => strip_chars(value, "./ \t\n\r+,;|"),
-        ProfileVersion::V2 => value
+        ProfileVersion::V2 | ProfileVersion::V3 => value
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '='))
             .collect(),

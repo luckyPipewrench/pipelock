@@ -900,6 +900,8 @@ fn kind_byte(kind: &str) -> std::result::Result<u8, String> {
         "encoded_run" => Ok(26),
         "canary_canonicalize" => Ok(27),
         "ascii_alphanumeric_strip" => Ok(28),
+        "ascii_upper" => Ok(29),
+        "json_unicode_escape" => Ok(30),
         _ => Err("unknown operation".into()),
     }
 }

@@ -23,7 +23,11 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .number import IJSONNumber, StrictParseError, parse_json_strict
-from .provenance import PROFILE_DIGEST, ProvenanceError as TransformProvenanceError, profile_version
+from .provenance import (
+    PROFILE_DIGEST,
+    ProvenanceError as TransformProvenanceError,
+    profile_version,
+)
 from .provenance import Recipe as TransformRecipe
 
 FIXTURE_FORMAT = "pipelock-evidence-provenance-verification-fixture/v1"
@@ -76,6 +80,8 @@ _OP_BYTES = {
     "encoded_run": 26,
     "canary_canonicalize": 27,
     "ascii_alphanumeric_strip": 28,
+    "ascii_upper": 29,
+    "json_unicode_escape": 30,
 }
 _COMPONENT_BYTES = {
     "": 0,

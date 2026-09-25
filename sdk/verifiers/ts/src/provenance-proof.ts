@@ -12,6 +12,7 @@ import { RawNumber, parseJSONStrict } from "./aarp/strictjson.js";
 import {
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST,
   applyEvidenceProvenanceRecipe,
   validateEvidenceProvenanceRecipe,
 } from "./provenance.js";
@@ -470,9 +471,11 @@ function invalid(failure: FailureStage, report: ProvenanceReport): ProvenanceRep
 function validateProofStructure(proof: Proof): void {
   if (
     proof.version !== proofVersion ||
-    ![EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST, EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST].includes(
-      proof.transform_profile_digest,
-    )
+    ![
+      EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
+      EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
+      EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST,
+    ].includes(proof.transform_profile_digest)
   ) {
     throw new FixtureError("unsupported evidence provenance proof");
   }
@@ -572,6 +575,8 @@ function operationBytes(op: Operation): Buffer {
     encoded_run: 26,
     canary_canonicalize: 27,
     ascii_alphanumeric_strip: 28,
+    ascii_upper: 29,
+    json_unicode_escape: 30,
   };
   const component: Record<string, number> = {
     "": 0,

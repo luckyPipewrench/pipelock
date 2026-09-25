@@ -15,6 +15,7 @@ import pytest
 from pipelock_aarp_verify.provenance import (
     PROFILE_DIGEST,
     PROFILE_DIGEST_V2,
+    PROFILE_DIGEST_V3,
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
@@ -29,6 +30,27 @@ CORPUS = (
     / "evidence-provenance-v1.json"
 )
 CORPUS_V2 = CORPUS.with_name("evidence-provenance-v2.json")
+CORPUS_V3 = CORPUS.with_name("evidence-provenance-v3.json")
+
+
+def test_evidence_provenance_transform_v3_corpus() -> None:
+    corpus = json.loads(CORPUS_V3.read_text())
+    assert corpus["profile_digest"] == PROFILE_DIGEST_V3
+    for vector in corpus["vectors"]:
+        recipe = Recipe.from_json(
+            vector.get("transform_profile_digest", corpus["profile_digest"]),
+            vector.get("recipe", []),
+        )
+        if vector.get("want_error"):
+            with pytest.raises(ProvenanceError) as excinfo:
+                recipe.apply_bytes(base64.b64decode(vector["input_b64"], validate=True))
+            assert vector["want_error"] in str(excinfo.value), vector["id"]
+        else:
+            assert recipe.apply_bytes(
+                base64.b64decode(vector["input_b64"], validate=True)
+            ).encode() == base64.b64decode(vector["output_b64"], validate=True), vector[
+                "id"
+            ]
 
 
 def test_evidence_provenance_uses_profile_pinned_unicode_database() -> None:

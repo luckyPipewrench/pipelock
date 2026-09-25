@@ -561,7 +561,7 @@ func TestCovNSProbeAgentProcessNamespacesFineGrainedBranches(t *testing.T) {
 		{
 			name:         "first ns/net read errors",
 			buildFixture: func(t *testing.T, procRoot string) { covNSValidProcFixture(t, procRoot) },
-			linkFaults:   map[string][]covNSFault{"net": {{occurrence: 1, err: errors.New("namespace unreadable")}}},
+			linkFaults:   map[string][]covNSFault{"net": {{occurrence: 2, err: errors.New("namespace unreadable")}}},
 			wantStatus:   statusFail,
 			wantDetail:   "read process 101 network namespace: namespace unreadable",
 		},
@@ -1589,7 +1589,7 @@ func TestCovNSLineHasLegacyOwnedLoopbackMarkRejectsTokenMismatch(t *testing.T) {
 func TestCovNSReconcileNamespaceDoorwaysPublishedFailureIsReported(t *testing.T) {
 	var forwardersCalled, publishedCalled bool
 	env := &nftReloadEnv{
-		reconcileForwarders: func(context.Context, []config.ContainmentLoopbackService) error {
+		reconcileForwarders: func(context.Context, int, []config.ContainmentLoopbackService) error {
 			forwardersCalled = true
 			return nil
 		},
@@ -1598,7 +1598,7 @@ func TestCovNSReconcileNamespaceDoorwaysPublishedFailureIsReported(t *testing.T)
 			return errors.New("published relay failed")
 		},
 	}
-	err := reconcileNamespaceDoorways(context.Background(), env, nil, nil)
+	err := reconcileNamespaceDoorways(context.Background(), env, defaultProxyPort, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "published services failed to reconcile: published relay failed") {
 		t.Fatalf("reconcileNamespaceDoorways() error = %v", err)
 	}

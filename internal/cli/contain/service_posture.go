@@ -90,6 +90,13 @@ func verifyAgentCannotReadSigningKey(ctx context.Context, env *probeEnv, cfg *co
 	if cfg.FlightRecorder.SigningKeyPath == "" || keyPath == "." {
 		return errors.New("flight_recorder.signing_key_path is required for service posture")
 	}
+	_, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--", "test", "-e", "/")
+	if err != nil {
+		return fmt.Errorf("cannot switch to %s to check signing-key isolation: %w", env.agentUserName, err)
+	}
+	if code != 0 {
+		return fmt.Errorf("cannot switch to %s to check signing-key isolation: sudo exit %d", env.agentUserName, code)
+	}
 	out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--", "test", "-r", keyPath)
 	if err != nil {
 		return fmt.Errorf("check signing-key isolation: %w", err)

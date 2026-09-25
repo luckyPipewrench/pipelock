@@ -428,6 +428,7 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 	// The initial user namespace, read from PID 1. Unreadable means no
 	// nested-sandbox exemption is granted.
 	initUserNS, _ := env.readLink(filepath.Join(procRoot, "1", "ns", "user"))
+	initNetNS, _ := env.readLink(filepath.Join(procRoot, "1", "ns", "net"))
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 1 || !entry.IsDir() {
@@ -511,7 +512,7 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 		// a process outside the managed namespace that still shares the
 		// initial user namespace, or whose user namespace cannot be read,
 		// remains a failure.
-		if initUserNS != "" {
+		if initUserNS != "" && initNetNS != "" && namespace != "" && namespace != initNetNS {
 			if userNS, err := env.readLink(filepath.Join(procRoot, entry.Name(), "ns", "user")); err == nil && userNS != "" && userNS != initUserNS {
 				continue
 			}

@@ -4113,6 +4113,11 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	case testNFT:
 		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:
+		// The identity-switch probe must succeed before the signing-key read
+		// probe can distinguish an unreadable key from sudo's own exit 1.
+		if containsArg(args, "test") && containsArg(args, "-e") && len(args) > 0 && args[len(args)-1] == "/" {
+			return "", 0, nil
+		}
 		// Containment posture signing must prove the managed agent cannot read
 		// the private signing key. Exit 1 is test(1)'s ordinary "not readable".
 		if containsArg(args, "test") && containsArg(args, "-r") && len(args) > 0 && strings.HasSuffix(args[len(args)-1], ".key") {

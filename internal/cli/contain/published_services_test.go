@@ -237,7 +237,7 @@ func TestReloadReconcilesPublicationsEvenWhenLoopbackFails(t *testing.T) {
 	var published []config.ContainmentPublishedService
 	called := false
 	env := &nftReloadEnv{
-		reconcileForwarders: func(context.Context, []config.ContainmentLoopbackService) error {
+		reconcileForwarders: func(context.Context, int, []config.ContainmentLoopbackService) error {
 			return errors.New("forwarder failed")
 		},
 		reconcilePublished: func(_ context.Context, services []config.ContainmentPublishedService) error {
@@ -246,7 +246,7 @@ func TestReloadReconcilesPublicationsEvenWhenLoopbackFails(t *testing.T) {
 			return nil
 		},
 	}
-	err := reconcileNamespaceDoorways(context.Background(), env, nil, nil)
+	err := reconcileNamespaceDoorways(context.Background(), env, defaultProxyPort, nil, nil)
 	if err == nil || !called || published != nil {
 		t.Fatalf("err=%v called=%v published=%v", err, called, published)
 	}

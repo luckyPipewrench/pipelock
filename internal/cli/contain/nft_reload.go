@@ -64,7 +64,7 @@ type nftReloadEnv struct {
 	// between snapshot and apply to prove a concurrent `contain install`
 	// blocks on the shared lock instead of interleaving.
 	pauseAfterSnapshot  func()
-	reconcileForwarders func(context.Context, []config.ContainmentLoopbackService) error
+	reconcileForwarders func(context.Context, int, []config.ContainmentLoopbackService) error
 	// reconcilePublished closes, opens, or re-renders published agent
 	// services. Reload always runs it so an expired or removed publication
 	// is closed without another contain install.
@@ -100,8 +100,8 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 			_, _ = fmt.Fprintln(os.Stderr, "WARNING: "+msg)
 		},
 		lockFn: withContainmentReconcileLock,
-		reconcileForwarders: func(ctx context.Context, services []config.ContainmentLoopbackService) error {
-			installEnv := defaultInstallEnv(io.Discard)
+		reconcileForwarders: func(ctx context.Context, proxyPort int, services []config.ContainmentLoopbackService) error {
+			installEnv := forwarderInstallEnv(proxyPort)
 			unitStep := stepInstallNetworkNamespaceWithServices(&services)
 			_, err := runSteps(ctx, installEnv, io.Discard, []step{unitStep})
 			return err
@@ -112,6 +112,12 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 			return err
 		},
 	}
+}
+
+func forwarderInstallEnv(proxyPort int) *installEnv {
+	env := defaultInstallEnv(io.Discard)
+	env.proxyPort = proxyPort
+	return env
 }
 
 func reloadNFTRulesCmd() *cobra.Command {
@@ -258,7 +264,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 	}
 	if !fileChanged && !legacyReceiverLive && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
-		if err := reconcileNamespaceDoorways(ctx, env, loopbackServices, publishedServices); err != nil {
+		if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
 			return err
 		}
 		if env.report != nil {
@@ -285,7 +291,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
-	if err := reconcileNamespaceDoorways(ctx, env, loopbackServices, publishedServices); err != nil {
+	if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
 		return fmt.Errorf("nft boundary is current but %w", err)
 	}
 	if env.report != nil {
@@ -297,10 +303,10 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 // reconcileNamespaceDoorways reconciles both declared doorway kinds and
 // attempts each even when the other fails: a failing loopback forwarder must
 // not keep an expired publication open, and the reverse.
-func reconcileNamespaceDoorways(ctx context.Context, env *nftReloadEnv, loopback []config.ContainmentLoopbackService, published []config.ContainmentPublishedService) error {
+func reconcileNamespaceDoorways(ctx context.Context, env *nftReloadEnv, proxyPort int, loopback []config.ContainmentLoopbackService, published []config.ContainmentPublishedService) error {
 	var errs []error
 	if env.reconcileForwarders != nil {
-		if err := env.reconcileForwarders(ctx, loopback); err != nil {
+		if err := env.reconcileForwarders(ctx, proxyPort, loopback); err != nil {
 			errs = append(errs, fmt.Errorf("namespace loopback forwarders failed to reconcile: %w", err))
 		}
 	}

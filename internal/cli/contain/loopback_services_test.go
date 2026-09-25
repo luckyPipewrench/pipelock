@@ -1111,7 +1111,7 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, nftReloadTestConfigWithService("2099-01-01T00:00:00Z"), basePersisted)
 	var forwarded []config.ContainmentLoopbackService
-	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+	fx.env.reconcileForwarders = func(_ context.Context, _ int, services []config.ContainmentLoopbackService) error {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
@@ -1129,6 +1129,35 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 	}
 }
 
+func TestReloadNFTRulesPreservesInstalledProxyPortForForwarders(t *testing.T) {
+	const installedPort = 9432
+	installEnv := forwarderInstallEnv(installedPort)
+	if installEnv.proxyPort != installedPort {
+		t.Fatalf("forwarder install port = %d, want %d", installEnv.proxyPort, installedPort)
+	}
+	unit := renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", testAgentUser, installEnv.proxyPort)
+	if !strings.Contains(unit, "--listen 127.0.0.1:9432 --target "+containedDoorwaySocketPath) {
+		t.Fatalf("forwarder install rendered wrong port: %s", unit)
+	}
+	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, installedPort, defaultNFTTable, defaultNFTChain)
+	live := strings.ReplaceAll(nftReloadTestLiveWithNoService, "dport 8888", "dport 9432")
+	fx := newNFTReloadTestFixture(t, live, "mode: balanced\n", basePersisted)
+	var rendered string
+	fx.env.reconcileForwarders = func(_ context.Context, port int, _ []config.ContainmentLoopbackService) error {
+		rendered = renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", testAgentUser, port)
+		return nil
+	}
+	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+		t.Fatalf("reloadNFTRules: %v", err)
+	}
+	if !strings.Contains(rendered, "--listen 127.0.0.1:9432 --target "+containedDoorwaySocketPath) {
+		t.Fatalf("rendered forwarder uses wrong installed proxy port: %s", rendered)
+	}
+	if strings.Contains(rendered, "--listen 127.0.0.1:8888") {
+		t.Fatalf("rendered forwarder retained default proxy port: %s", rendered)
+	}
+}
+
 // TestReloadNFTRulesReconcilesRevokedLoopbackService is the HIGH-severity
 // proof: an operator REMOVES a declared entry from the managed config
 // (never touching contain install), and the next reload drops the live
@@ -1139,7 +1168,7 @@ func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
 	withServicePersisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", withServicePersisted) // managed config with the entry simply removed
 	var forwarded []config.ContainmentLoopbackService
-	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+	fx.env.reconcileForwarders = func(_ context.Context, _ int, services []config.ContainmentLoopbackService) error {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
@@ -1172,7 +1201,7 @@ func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
 	withServicePersistedExpired := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, nftReloadTestConfigWithService("2000-01-01T00:00:00Z"), withServicePersistedExpired)
 	var forwarded []config.ContainmentLoopbackService
-	fx.env.reconcileForwarders = func(_ context.Context, services []config.ContainmentLoopbackService) error {
+	fx.env.reconcileForwarders = func(_ context.Context, _ int, services []config.ContainmentLoopbackService) error {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
@@ -1250,7 +1279,7 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 
 	t.Run("no-op nft reconciliation", func(t *testing.T) {
 		fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, "mode: balanced\n", basePersisted)
-		fx.env.reconcileForwarders = func(context.Context, []config.ContainmentLoopbackService) error {
+		fx.env.reconcileForwarders = func(context.Context, int, []config.ContainmentLoopbackService) error {
 			return errors.New("forwarder failed")
 		}
 		err := reloadNFTRules(context.Background(), fx.env)
@@ -1261,7 +1290,7 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 
 	t.Run("after nft rewrite", func(t *testing.T) {
 		fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, "mode: balanced\n", basePersisted)
-		fx.env.reconcileForwarders = func(context.Context, []config.ContainmentLoopbackService) error {
+		fx.env.reconcileForwarders = func(context.Context, int, []config.ContainmentLoopbackService) error {
 			return errors.New("forwarder failed")
 		}
 		err := reloadNFTRules(context.Background(), fx.env)

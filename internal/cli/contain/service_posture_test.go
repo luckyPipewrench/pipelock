@@ -175,27 +175,43 @@ func TestRunContainServicePostureFailsBeforeSigningOutsideNamespace(t *testing.T
 
 func TestVerifyAgentCannotReadSigningKey(t *testing.T) {
 	tests := []struct {
-		name    string
-		code    int
-		runErr  error
-		wantErr string
+		name      string
+		probeCode int
+		code      int
+		runErr    error
+		wantErr   string
 	}{
 		{name: "unreadable", code: 1},
+		{name: "identity switch denied", probeCode: 1, code: 1, wantErr: "cannot switch to " + testAgentUser + " to check signing-key isolation"},
 		{name: "readable", code: 0, wantErr: "could forge its own containment evidence"},
 		{name: "unknown exit", code: 2, wantErr: "sudo exit 2"},
 		{name: "probe error", runErr: errors.New("exec failed"), wantErr: "check signing-key isolation"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			readProbeCalled := false
 			env := &probeEnv{
 				agentUserName: testAgentUser,
-				runCmd: func(context.Context, string, ...string) (string, int, error) {
+				runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name != "sudo" || len(args) < 7 || args[0] != "-n" || args[1] != "-u" || args[2] != testAgentUser || args[3] != "--" || args[4] != "test" {
+						t.Fatalf("unexpected identity probe: %s %v", name, args)
+					}
+					if args[5] == "-e" && args[6] == "/" {
+						return "", tc.probeCode, nil
+					}
+					if args[5] != "-r" || args[6] != "/operator/receipt.key" {
+						t.Fatalf("unexpected key probe: %v", args)
+					}
+					readProbeCalled = true
 					return "probe output", tc.code, tc.runErr
 				},
 			}
 			cfg := config.Defaults()
 			cfg.FlightRecorder.SigningKeyPath = "/operator/receipt.key"
 			err := verifyAgentCannotReadSigningKey(context.Background(), env, cfg)
+			if readProbeCalled == (tc.probeCode != 0) {
+				t.Fatalf("readability probe called = %t after identity probe exit %d", readProbeCalled, tc.probeCode)
+			}
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("verifyAgentCannotReadSigningKey: %v", err)

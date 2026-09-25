@@ -594,6 +594,7 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 		cgroups    map[string]string
 		userNS     map[string]string
 		initUserNS string
+		initNetNS  string
 		unitBody   string
 		wantStatus string
 		wantDetail string
@@ -639,6 +640,7 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 			namespaces: map[string]string{"101": "net:[200]", "105": "net:[300]"},
 			userNS:     map[string]string{"101": "user:[1]", "105": "user:[900]"},
 			initUserNS: "user:[1]",
+			initNetNS:  "net:[100]",
 			wantStatus: statusPass,
 			wantDetail: "2 live pipelock-agent process(es)",
 		},
@@ -647,8 +649,26 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 			namespaces: map[string]string{"101": "net:[200]", "106": "net:[300]"},
 			userNS:     map[string]string{"101": "user:[1]", "106": "user:[1]"},
 			initUserNS: "user:[1]",
+			initNetNS:  "net:[100]",
 			wantStatus: statusFail,
 			wantDetail: "pid 106",
+		},
+		{
+			name:       "private user namespace sharing host network namespace still fails",
+			namespaces: map[string]string{"101": "net:[200]", "108": "net:[100]"},
+			userNS:     map[string]string{"101": "user:[1]", "108": "user:[900]"},
+			initUserNS: "user:[1]",
+			initNetNS:  "net:[100]",
+			wantStatus: statusFail,
+			wantDetail: "pid 108",
+		},
+		{
+			name:       "unreadable initial network namespace grants no exemption",
+			namespaces: map[string]string{"101": "net:[200]", "109": "net:[300]"},
+			userNS:     map[string]string{"101": "user:[1]", "109": "user:[900]"},
+			initUserNS: "user:[1]",
+			wantStatus: statusFail,
+			wantDetail: "pid 109",
 		},
 		{
 			name:       "unreadable initial user namespace grants no exemption",
@@ -690,6 +710,14 @@ func TestProbeAgentProcessNamespaces(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(tc.initUserNS, filepath.Join(procRoot, "1", "ns", "user")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.initNetNS != "" {
+				if err := os.MkdirAll(filepath.Join(procRoot, "1", "ns"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(tc.initNetNS, filepath.Join(procRoot, "1", "ns", "net")); err != nil {
 					t.Fatal(err)
 				}
 			}

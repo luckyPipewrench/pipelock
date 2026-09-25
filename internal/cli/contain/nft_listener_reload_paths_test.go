@@ -32,8 +32,8 @@ func TestReloadNFTRulesKeepsExistingListenerGuardOnBadConfig(t *testing.T) {
 			if err := reloadNFTRules(context.Background(), fx.env); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("reload error = %v, want %q", err, tc.want)
 			}
-			if got, ok := fx.persisted(); ok && got != persisted {
-				t.Fatalf("bad config changed persisted rules: %q", got)
+			if got, ok := fx.persisted(); !ok || got != persisted {
+				t.Fatalf("bad config changed or removed persisted rules: present=%t body=%q", ok, got)
 			}
 		})
 	}

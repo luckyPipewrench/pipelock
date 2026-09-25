@@ -1010,7 +1010,7 @@ func newNFTReloadTestFixture(t *testing.T, live, configBody, persistedRules stri
 	const configPath = "/etc/pipelock/pipelock.yaml"
 
 	fx := &nftReloadTestFixture{}
-	writes := make(map[string]string)
+	writes := map[string]string{rulesPath: persistedRules}
 	var reloadScript string
 
 	fx.env = &nftReloadEnv{

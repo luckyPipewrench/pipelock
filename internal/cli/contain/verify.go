@@ -15,6 +15,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -2179,7 +2180,7 @@ func chainLinesHaveAgentListenerGuard(lines []string, listener string, proxyUID 
 		if len(fields) == 0 || fields[0] == "type" || fields[0] == "chain" || fields[0] == "{" || fields[0] == "}" {
 			continue
 		}
-		if found == 0 && (lineHasTerminalSkuidVerdict(line, proxyUID, "accept") || lineHasAnyToken(line, "accept")) {
+		if found == 0 && lineHasAnyToken(line, "accept") && acceptMayReachAgentListener(fields, host, port) {
 			return false
 		}
 		if !strings.Contains(line, "pipelock_agent_listener_blocked") {
@@ -2197,6 +2198,35 @@ func chainLinesHaveAgentListenerGuard(lines []string, listener string, proxyUID 
 		return false
 	}
 	return found == 1
+}
+
+// An earlier accept only bypasses the guard when its destination could be
+// the configured listener. Unknown nft expressions stay conservative.
+func acceptMayReachAgentListener(fields []string, host, port string) bool {
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "tcp" && fields[i+1] == "dport" && fields[i+2] != port {
+			if _, err := strconv.Atoi(fields[i+2]); err == nil {
+				return false
+			}
+		}
+		if (fields[i] == "ip" || fields[i] == "ip6") && fields[i+1] == "daddr" {
+			if fields[i+2] == host {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(fields[i+2])
+			addr, addrErr := netip.ParseAddr(host)
+			if err == nil && addrErr == nil && !prefix.Contains(addr) {
+				return false
+			}
+			if err != nil {
+				other, parseErr := netip.ParseAddr(fields[i+2])
+				if parseErr == nil && addrErr == nil && other != addr {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func chainLinesHaveAgentListenerGuardLine(lines []string) bool {

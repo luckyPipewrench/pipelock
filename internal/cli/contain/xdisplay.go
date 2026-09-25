@@ -245,10 +245,12 @@ func stepProvisionAgentDisplay() step {
 				}
 				return nil
 			}
-			if err := restoreAgentDisplay(ctx, env); err != nil {
+			// Put the previous cookie back before the display restarts, so the
+			// restored Xvfb and the Xauthority file carry the same cookie.
+			if err := restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted); err != nil {
 				return err
 			}
-			return restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted)
+			return restoreAgentDisplay(ctx, env)
 		},
 	}
 }

@@ -1533,3 +1533,55 @@ func TestCovDispProxyOneNetnsConnReturnsOnContextCancel(t *testing.T) {
 		t.Fatal("proxyOneNetnsConn did not return after context cancellation")
 	}
 }
+
+// Rolling back a re-provision must restore the previous cookie before the
+// restored display starts; otherwise Xvfb reads the new cookie while the
+// file ends up holding the old one.
+func TestCovDispUndoRestoresCookieBeforeDisplayStart(t *testing.T) {
+	env, runner := covDispPrepareDisplayEnv(t)
+	covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousAuthority, err := encodeDisplayAuthority(hostname, "5", make([]byte, displayAuthorityCookieSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.displayAuthorityPath, previousAuthority, displayAuthorityFileMode); err != nil {
+		t.Fatal(err)
+	}
+	prior := renderAgentDisplayUnit(&installEnv{agentUserName: env.agentUserName, displayNumber: 99, xvfbPath: env.xvfbPath})
+	if err := os.WriteFile(env.displayUnitPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Base(env.displayUnitPath)
+	runner.on(argvFor(testSystemctl, "is-enabled", unit), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", unit), "active\n", 0, nil)
+	st := stepProvisionAgentDisplay()
+	if _, err := st.apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	rotated, err := os.ReadFile(env.displayAuthorityPath)
+	if err != nil || bytes.Equal(rotated, previousAuthority) {
+		t.Fatalf("apply did not rotate the cookie: err=%v", err)
+	}
+	starts := 0
+	originalRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == testSystemctl && len(args) == 2 && args[0] == "start" && args[1] == unit {
+			starts++
+			atStart, readErr := os.ReadFile(env.displayAuthorityPath)
+			if readErr != nil || !bytes.Equal(atStart, previousAuthority) {
+				t.Fatalf("display started before the previous cookie was restored: read=%v restored=%t", readErr, bytes.Equal(atStart, previousAuthority))
+			}
+		}
+		return originalRun(ctx, name, args...)
+	}
+	if err := st.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if starts != 1 {
+		t.Fatalf("undo start calls = %d, want 1; calls=%v", starts, runner.calls)
+	}
+}

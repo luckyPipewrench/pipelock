@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -482,8 +484,18 @@ func TestStepWriteAgentBrowserDefaults_RefusesWrongOwnerWithoutChanges(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fixture account is UID 987; the temporary directory belongs to
-	// the test runner. Disable only the synthetic-ownership test hook.
+	// Choose an agent UID distinct from the runner's without risking overflow.
+	agentUID := os.Getuid() - 1
+	if os.Getuid() == 0 {
+		agentUID = 1
+	}
+	priorLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.agentUserName {
+			return &user.User{Uid: strconv.Itoa(agentUID), Gid: strconv.Itoa(os.Getgid()), Username: name}, nil
+		}
+		return priorLookup(name)
+	}
 	env.agentBrowserDirOwner = nil
 	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || applied || !strings.Contains(err.Error(), "not agent-owned") {
 		t.Fatalf("wrong-owner directory accepted: applied=%v err=%v", applied, err)

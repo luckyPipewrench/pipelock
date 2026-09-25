@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -164,6 +166,54 @@ func TestForwardProxy_BodyPromptInjection_FollowsEnforce(t *testing.T) {
 				t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), tt.wantHit)
 			}
 			if !tt.wantHit {
+				if got := resp.Header.Get("X-Pipelock-Block-Reason"); got != "prompt_injection" {
+					t.Fatalf("block reason = %q, want prompt_injection", got)
+				}
+			}
+		})
+	}
+}
+
+// The reverse proxy defaults an empty body action to block, but its ordinary
+// block still requires enforcement, so audit mode forwards an injection body
+// whether the action is warn or unset.
+func TestReverseProxy_BodyPromptInjection_FollowsEnforce(t *testing.T) {
+	enabled, disabled := true, false
+	tests := []struct {
+		name       string
+		enforce    *bool
+		action     string
+		wantStatus int
+		wantHits   int32
+	}{
+		{name: "audit only warn", enforce: &disabled, action: config.ActionWarn, wantStatus: http.StatusOK, wantHits: 1},
+		{name: "audit only empty action", enforce: &disabled, action: "", wantStatus: http.StatusOK, wantHits: 1},
+		{name: "enforced warn", enforce: &enabled, action: config.ActionWarn, wantStatus: http.StatusForbidden, wantHits: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits atomic.Int32
+			cfg := reverseTestConfig()
+			cfg.Enforce = tt.enforce
+			cfg.RequestBodyScanning.Action = tt.action
+			rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+			proxy := reverseLiveLockSetupWithConfig(t, cfg, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+				func(w http.ResponseWriter, _ *http.Request) {
+					hits.Add(1)
+					_, _ = w.Write([]byte("ok"))
+				})
+
+			resp := testAgentPost(t, proxy.URL+"/v1/chat", auditModeInjectionBody)
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != tt.wantStatus {
+				respBody, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tt.wantStatus, respBody)
+			}
+			if got := hits.Load(); got != tt.wantHits {
+				t.Fatalf("upstream hits = %d, want %d", got, tt.wantHits)
+			}
+			if tt.wantHits == 0 {
 				if got := resp.Header.Get("X-Pipelock-Block-Reason"); got != "prompt_injection" {
 					t.Fatalf("block reason = %q, want prompt_injection", got)
 				}

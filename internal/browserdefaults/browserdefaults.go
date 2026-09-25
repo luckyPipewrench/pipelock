@@ -213,7 +213,7 @@ func Remove(data []byte, rec Record) (out []byte, remove, changed bool, err erro
 		return nil, false, false, err
 	}
 	if !HasFlag(args) {
-		return nil, false, false, nil
+		return nil, false, false, errors.New("browser defaults: recorded flag is absent; resolve manually")
 	}
 	// An identical later addition makes ownership ambiguous. Keep the record
 	// so an operator can resolve it without losing either copy.

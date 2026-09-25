@@ -156,8 +156,8 @@ func TestRemoveKeepsLaterEditsAndOperatorCopy(t *testing.T) {
 		t.Fatalf("ambiguous copies: out=%s remove=%v changed=%v err=%v", back, remove, changed, err)
 	}
 
-	// Flag already gone: nothing to write.
-	if _, remove, changed, err := Remove([]byte(`{"args":"--a"}`), rec); err != nil || changed || remove {
+	// An absent recorded flag also needs manual resolution.
+	if _, remove, changed, err := Remove([]byte(`{"args":"--a"}`), rec); err == nil || !strings.Contains(err.Error(), "resolve manually") || changed || remove {
 		t.Fatalf("absent flag: remove=%v changed=%v err=%v", remove, changed, err)
 	}
 

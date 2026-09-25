@@ -128,6 +128,7 @@ func TestIssuerCookieStatePath_HomeResolution(t *testing.T) {
 func TestNewPersistentIssuerCookieStore_PathFailureLogs(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // os.UserHomeDir reads USERPROFILE on Windows
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, err := audit.New("json", "file", auditPath, true, true)
 	if err != nil {

@@ -547,11 +547,21 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // risk deleting an operator rule. Requiring the complete ordered six-rule
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
-func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
+// renderNFTManagedChainReloadScript deletes the live managed block and loads
+// rulesBody. prior lists UID sets recorded in the header of the rules file this
+// install is replacing: after a UID change the live block was rendered with
+// those UIDs, so it is recognized with them as well as with the current ones.
+// Only a complete managed block rendered for a recorded UID set is claimed, so
+// a foreign rule that merely resembles one rule of the block is left alone.
+func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool, prior ...nftRulesHeaderUIDs) string {
 	// A superseded owned-loopback rule can be found both inside a managed block
 	// and by the standalone scan. Deleting one handle twice fails the whole
 	// atomic nft transaction, so each handle is emitted once, in chain order.
 	handles := slices.Concat(legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID), legacyOwnedLoopbackMarkRuleHandles(live, agentUID))
+	for _, uids := range prior {
+		handles = append(handles, legacyManagedNFTRuleBlockHandles(live, uids.operatorUID, uids.proxyUID, uids.agentUID)...)
+		handles = append(handles, legacyOwnedLoopbackMarkRuleHandles(live, uids.agentUID)...)
+	}
 	slices.Sort(handles)
 	handles = slices.Compact(handles)
 	var script strings.Builder

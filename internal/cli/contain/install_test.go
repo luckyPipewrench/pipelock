@@ -3163,3 +3163,44 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+// A UID change: the rules file on disk and the live chain were rendered with
+// earlier UIDs. Install must pass the UIDs from that file's header to reload,
+// so the reload script removes every rule of the old managed block.
+func TestStepInstallNFTRules_ReloadRemovesOldBlockAfterUIDChange(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, oldProxyUID, oldAgentUID := 1000, 1038, 1037
+	old := renderNFTRules(operatorUID, oldProxyUID, oldAgentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(old), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	live := nftListingFromRulesBodyForTest(old, 40)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	reloadPath := managedChainReloadPath(env)
+	var script string
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == reloadPath {
+			script = string(data)
+		}
+		return originalWrite(path, data, mode)
+	}
+
+	if _, err := stepInstallNFTRules().apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertManagedChainReload(t, runner, env)
+	oldRules := nftRulesWithHandles(live)
+	if len(oldRules) < 5 {
+		t.Fatalf("fixture has too few old rules: %d", len(oldRules))
+	}
+	for _, rule := range oldRules {
+		if !strings.Contains(script, fmt.Sprintf("delete rule inet %s %s handle %d\n", defaultNFTTable, defaultNFTChain, rule.handle)) {
+			t.Fatalf("old-UID rule %q (handle %d) survived the reload:\n%s", rule.line, rule.handle, script)
+		}
+	}
+}

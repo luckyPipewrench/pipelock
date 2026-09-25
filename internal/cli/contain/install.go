@@ -2136,9 +2136,17 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	})
 
 	rulesMatch := false
+	// The replaced rules file records the UIDs its managed block was rendered
+	// with. When they differ from the current ones, reload must recognize the
+	// live block by those as well, or the old block survives a UID change.
+	var priorUIDs []nftRulesHeaderUIDs
 	if existing, err := env.readFile(env.nftRulesPath); err == nil {
 		existingBody := string(existing)
 		rulesMatch = existingBody == body
+		if prior, ok, headerErr := parseNFTRulesHeaderUIDs(existing); ok && headerErr == nil &&
+			(prior.operatorUID != operatorUID || prior.proxyUID != proxyUID || prior.agentUID != agentUID) {
+			priorUIDs = append(priorUIDs, prior)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 	}
@@ -2193,7 +2201,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		reloadedManagedChain := false
 		if tableLoaded && (rulesChanged || liveRulesDrifted) {
-			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
+			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, priorUIDs...); err != nil {
 				return changed, err
 			}
 			reloadedManagedChain = true
@@ -2368,7 +2376,7 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	return nil
 }
 
-func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string, operatorUID, proxyUID, agentUID int) error {
+func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string, operatorUID, proxyUID, agentUID int, prior ...nftRulesHeaderUIDs) error {
 	out, code, err := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
 	if err != nil {
 		return fmt.Errorf("list nft managed chain for reload: %w", err)
@@ -2389,7 +2397,7 @@ func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody strin
 	} else if !strings.Contains(strings.ToLower(input), "no such file") {
 		return fmt.Errorf("list legacy owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input))
 	}
-	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, receiverChainLive)
+	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, receiverChainLive, prior...)
 	reloadPath := env.nftRulesPath + ".reload"
 	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)

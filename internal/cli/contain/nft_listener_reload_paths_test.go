@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -36,5 +37,23 @@ func TestReloadNFTRulesKeepsExistingListenerGuardOnBadConfig(t *testing.T) {
 				t.Fatalf("bad config changed or removed persisted rules: present=%t body=%q", ok, got)
 			}
 		})
+	}
+}
+
+func TestReloadNFTRulesRejectsUnreadableConfigWithoutGuard(t *testing.T) {
+	persisted := renderNFTRulesWithServices(nftRuleOptions{OperatorUID: loopbackTestOperatorUID, ProxyUID: loopbackTestProxyUID, AgentUID: loopbackTestAgentUID, ProxyPort: loopbackTestProxyPort, Table: defaultNFTTable, Chain: defaultNFTChain})
+	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithNoService, "", persisted)
+	prior := fx.env.readFile
+	fx.env.readFile = func(path string) ([]byte, error) {
+		if path == fx.env.configPath {
+			return nil, os.ErrPermission
+		}
+		return prior(path)
+	}
+	if err := reloadNFTRules(context.Background(), fx.env); !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "read managed listener config") {
+		t.Fatalf("reload error = %v, want wrapped config permission error", err)
+	}
+	if got, ok := fx.persisted(); !ok || got != persisted {
+		t.Fatalf("unreadable config changed persisted rules: present=%t body=%q", ok, got)
 	}
 }

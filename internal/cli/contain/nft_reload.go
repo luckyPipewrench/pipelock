@@ -198,8 +198,8 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		if errors.Is(listenerReadErr, os.ErrNotExist) && strings.Contains(string(persisted), "pipelock_agent_listener_blocked") {
 			return fmt.Errorf("managed listener config %s is missing; refusing to remove the existing listener guard", env.configPath)
 		}
-		if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) && strings.Contains(string(persisted), "pipelock_agent_listener_blocked") {
-			return fmt.Errorf("read managed listener config: %w", listenerReadErr)
+		if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+			return fmt.Errorf("read managed listener config %s: %w", env.configPath, listenerReadErr)
 		}
 		agentListener, err = agentListenerFromConfigBytes(listenerData)
 		if err != nil {

@@ -1223,9 +1223,8 @@ func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
 }
 
 // TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig proves the
-// unreadable-managed-config branch of reconcileDeclaredContainmentLoopbackServicesForReload:
-// a permission error (not a missing file) still renders zero declared
-// services rather than erroring the whole reload, and warns.
+// unreadable-managed-config branch: a permission error aborts reload and
+// preserves the persisted rules instead of silently dropping services.
 func TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig(t *testing.T) {
 	t.Parallel()
 	basePersistedUnreadable := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
@@ -1236,11 +1235,11 @@ func TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig(t *testing.T) {
 		}
 		return []byte(renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)), nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
-		t.Fatalf("reloadNFTRules: %v", err)
+	if err := reloadNFTRules(context.Background(), fx.env); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("reloadNFTRules error = %v, want permission error", err)
 	}
-	if strings.Contains(fx.appliedBody(), "dport 9200 accept") {
-		t.Fatalf("an unreadable managed config must render zero declared services, got:\n%s", fx.appliedBody())
+	if got, ok := fx.persisted(); !ok || got != basePersistedUnreadable {
+		t.Fatalf("unreadable config changed persisted rules: present=%t body=%q", ok, got)
 	}
 	if len(fx.warnings) != 1 || !strings.Contains(fx.warnings[0], "unreadable") {
 		t.Fatalf("expected exactly one unreadable-config warning, got %v", fx.warnings)

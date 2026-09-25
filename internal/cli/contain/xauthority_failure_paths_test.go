@@ -5,6 +5,7 @@ package contain
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,14 +13,20 @@ import (
 	"testing"
 )
 
-func TestDisplayAuthorityOversizeRegenerates(t *testing.T) {
+func TestDisplayAuthorityOversizeRefusesProvisionWithoutChange(t *testing.T) {
 	env, _ := covDispPrepareDisplayEnv(t)
 	env.readFileBounded = readContainFileBounded
-	if err := os.WriteFile(env.displayAuthorityPath, bytes.Repeat([]byte{'x'}, maxDisplayAuthorityBytes+1), 0o600); err != nil {
+	covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")
+	original := bytes.Repeat([]byte{'x'}, maxDisplayAuthorityBytes+1)
+	if err := os.WriteFile(env.displayAuthorityPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if data, exists, err := readDisplayAuthority(env); err != nil || exists || data != nil {
-		t.Fatalf("oversize authority = %d bytes, exists=%t, err=%v; want regeneration", len(data), exists, err)
+	applied, err := stepProvisionAgentDisplay().apply(context.Background(), env)
+	if applied || !errors.Is(err, errDisplayAuthorityOversize) || !strings.Contains(err.Error(), env.displayAuthorityPath) || !strings.Contains(err.Error(), "remove or reduce") {
+		t.Fatalf("oversize authority: applied=%t, err=%v; want actionable refusal", applied, err)
+	}
+	if got, readErr := os.ReadFile(env.displayAuthorityPath); readErr != nil || !bytes.Equal(got, original) {
+		t.Fatalf("existing authority changed: length=%d, err=%v", len(got), readErr)
 	}
 	if err := os.WriteFile(env.displayAuthorityPath, []byte("valid"), 0o600); err != nil {
 		t.Fatal(err)

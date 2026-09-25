@@ -435,7 +435,7 @@ func readDisplayAuthority(env *installEnv) ([]byte, bool, error) {
 	}
 	data, err := reader(path, maxDisplayAuthorityBytes)
 	if errors.Is(err, errDisplayAuthorityOversize) {
-		return nil, false, fmt.Errorf("Xauthority file %s exceeds the size limit; remove or reduce it before provisioning the display: %w", path, err)
+		return nil, false, fmt.Errorf("xauthority file %s exceeds the size limit; remove or reduce it before provisioning the display: %w", path, err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil

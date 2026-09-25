@@ -83,9 +83,14 @@ const (
 	issuerCookieMaxEntries    = 3000
 	issuerCookieMaxSessions   = 32
 	issuerCookieMaxSetCookies = 256
-	issuerCookieMaxStateBytes = 32 << 20
-	issuerCookieStateVersion  = 1
-	issuerCookieWriteInterval = 3 * time.Second
+	// issuerCookieMaxCheckedPairs bounds the Cookie pairs one request checks
+	// against the store. The header is client-controlled and each check scans
+	// up to issuerCookieMaxEntries under the store lock; pairs past the bound
+	// are scanned as ordinary header content.
+	issuerCookieMaxCheckedPairs = 256
+	issuerCookieMaxStateBytes   = 32 << 20
+	issuerCookieStateVersion    = 1
+	issuerCookieWriteInterval   = 3 * time.Second
 )
 
 // issuerBoundCookieStore remembers keyed digests of cookies that an
@@ -582,7 +587,7 @@ func (s *issuerBoundCookieStore) observeResponse(id string, origin *url.URL, hea
 	if len(lines) > issuerCookieMaxSetCookies {
 		lines = lines[:issuerCookieMaxSetCookies]
 	}
-	defaultPath := issuerCookieDefaultPath(origin.Path)
+	defaultPath := issuerCookieDefaultPath(origin.EscapedPath())
 	s.mu.Lock()
 	changed := false
 	defer func() {
@@ -694,7 +699,9 @@ func (s *issuerBoundCookieStore) allows(id string, target *url.URL, name, value 
 	if !ok || s == nil || len(name)+len(value) > issuerCookieMaxPairBytes {
 		return false
 	}
-	requestPath := target.Path
+	// RFC 6265 path-match compares the request-uri path as sent, so the
+	// escaped form is used: a decoded %2F must not extend a cookie's scope.
+	requestPath := target.EscapedPath()
 	if requestPath == "" {
 		requestPath = "/"
 	}
@@ -739,6 +746,7 @@ func issuerCookieScanHeaders(ctx context.Context, headers http.Header, sc *scann
 	var kept []string
 	var allowances []issuerCookieAllowance
 	var keys []string
+	checked := 0
 	for key, fields := range headers {
 		if !strings.EqualFold(key, "Cookie") {
 			continue
@@ -753,7 +761,12 @@ func issuerCookieScanHeaders(ctx context.Context, headers http.Header, sc *scann
 				}
 				name, value, found := strings.Cut(pair, "=")
 				name, value = strings.Trim(name, " \t"), strings.Trim(value, " \t")
-				if !found || name == "" || !store.allows(session, target, name, value, now) {
+				if !found || name == "" || checked >= issuerCookieMaxCheckedPairs {
+					remaining = append(remaining, pair)
+					continue
+				}
+				checked++
+				if !store.allows(session, target, name, value, now) {
 					remaining = append(remaining, pair)
 					continue
 				}

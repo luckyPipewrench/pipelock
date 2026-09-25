@@ -95,6 +95,7 @@ func TestIssuerCookieStatePath_HomeResolution(t *testing.T) {
 		t.Setenv("XDG_STATE_HOME", "")
 		home := t.TempDir()
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 		path, err := issuerCookieStatePath()
 		if err != nil {
 			t.Fatal(err)
@@ -108,6 +109,7 @@ func TestIssuerCookieStatePath_HomeResolution(t *testing.T) {
 	t.Run("XDG unset and HOME unset fails", func(t *testing.T) {
 		t.Setenv("XDG_STATE_HOME", "")
 		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
 		if _, err := issuerCookieStatePath(); err == nil {
 			t.Fatal("expected an error when neither XDG_STATE_HOME nor HOME resolve")
 		}

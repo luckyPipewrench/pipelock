@@ -845,3 +845,62 @@ func TestIssuerCookieScopeRules(t *testing.T) {
 		}
 	}
 }
+
+// RFC 6265 path-match compares the request path as sent. An escaped slash
+// stays part of one segment, so a cookie scoped to /account is not returned
+// to /account%2Fadmin even though the decoded path would match.
+func TestIssuerCookieAllowsUsesEscapedPath(t *testing.T) {
+	now := time.Now()
+	issuer, _ := url.Parse("https://app.vendor.example/account/login")
+	store := newIssuerBoundCookieStore()
+	store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {"lb=" + issuerAWSShapedValue() + "; Path=/account"}}, true, now)
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"https://app.vendor.example/account", true},
+		{"https://app.vendor.example/account/settings", true},
+		{"https://app.vendor.example/account%2Fadmin", false},
+		{"https://app.vendor.example/accountant", false},
+	} {
+		target, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := store.allows("agent-one", target, "lb", issuerAWSShapedValue(), now); got != tc.want {
+			t.Errorf("allows(%s) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// The Cookie header is client-controlled, so the pairs checked against the
+// store are bounded; an issued pair past the bound is scanned, not skipped.
+func TestIssuerCookieScanHeadersBoundsCheckedPairs(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	now := time.Now()
+	issuer, _ := url.Parse("https://app.vendor.example/")
+	store := newIssuerBoundCookieStore()
+	store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {"lb=" + issuerAWSShapedValue() + "; Path=/"}}, true, now)
+	filler := make([]string, issuerCookieMaxCheckedPairs)
+	for i := range filler {
+		filler[i] = fmt.Sprintf("f%d=v", i)
+	}
+	issued := "lb=" + issuerAWSShapedValue()
+
+	within := http.Header{"Cookie": {strings.Join(append([]string{issued}, filler[1:]...), "; ")}}
+	if _, allowances := issuerCookieScanHeaders(t.Context(), within, sc, store, "agent-one", issuer, now); len(allowances) != 1 {
+		t.Fatalf("issued pair inside the bound: allowances = %d, want 1", len(allowances))
+	}
+
+	past := http.Header{"Cookie": {strings.Join(append(filler, issued), "; ")}}
+	scan, allowances := issuerCookieScanHeaders(t.Context(), past, sc, store, "agent-one", issuer, now)
+	if len(allowances) != 0 {
+		t.Fatalf("issued pair past the bound was skipped: allowances = %+v", allowances)
+	}
+	if !strings.HasSuffix(past.Get("Cookie"), issued) || scan.Get("Cookie") != past.Get("Cookie") {
+		t.Fatal("a Cookie header past the bound must be scanned unchanged")
+	}
+}

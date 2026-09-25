@@ -1390,6 +1390,16 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Each direction cancels ctx when it ends. Wake the other direction's
+	// blocked read at once: it re-checks ctx on the next loop and returns.
+	// Without this, a client that disconnected left the upstream reader
+	// waiting out the full idle timeout, holding the upstream socket and the
+	// scanner for that long.
+	stopUpstreamWake := context.AfterFunc(ctx, func() { _ = r.upstreamConn.SetReadDeadline(time.Now()) })
+	defer stopUpstreamWake()
+	stopClientWake := context.AfterFunc(ctx, func() { _ = r.clientConn.SetReadDeadline(time.Now()) })
+	defer stopClientWake()
+
 	// Use separate per-direction counters to avoid data races. The goroutine
 	// writes c2s*, the main goroutine writes s2c*, and we sum after wg.Wait().
 	var c2sBytes, c2sText, c2sBinary int64
@@ -2368,6 +2378,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		_ = r.clientConn.SetReadDeadline(r.idleDeadline(idleTimeout))
+		// A cancel between the check at the top of the loop and the line
+		// above had its wake deadline overwritten; catch it here.
+		if ctx.Err() != nil {
+			continue
+		}
 
 		hdr, err := ws.ReadHeader(r.clientConn)
 		if err != nil {
@@ -2854,6 +2869,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		_ = r.upstreamConn.SetReadDeadline(r.idleDeadline(idleTimeout))
+		// A cancel between the check at the top of the loop and the line
+		// above had its wake deadline overwritten; catch it here.
+		if ctx.Err() != nil {
+			continue
+		}
 
 		hdr, err := ws.ReadHeader(r.upstreamConn)
 		if err != nil {

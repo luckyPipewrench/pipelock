@@ -380,3 +380,116 @@ func TestProbeListedToolTargets_EdgeFailures(t *testing.T) {
 		})
 	}
 }
+
+// TestProbeWorkspaceAccess_EmptyToolOutputNamesACLCause reproduces the live
+// bug: POSIX `test -r`/`-x` prints nothing on a permission denial, so the old
+// message read "... not readable/traversable by pipelock-agent: " with
+// nothing after the colon. The probe must fall back to a real `getfacl -p`
+// read and explain the actual drift shape instead of an empty reason. The
+// getfacl fixture below is captured verbatim from a real host
+// (`chmod 750 <dir>; setfacl -m u:daemon:rwx <dir>; chmod 750 <dir>; getfacl
+// -p <dir>`), the exact form `getfacl -p` prints, not an invented shape.
+func TestProbeWorkspaceAccess_EmptyToolOutputNamesACLCause(t *testing.T) {
+	env := makeProbeEnv(t)
+	dir := t.TempDir()
+	env.workspacePaths = []string{dir}
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		switch name {
+		case "sudo":
+			// A denied POSIX `test` prints nothing; this is the live shape.
+			return "", 1, nil
+		case "getfacl":
+			return "# file: " + dir + "\n" +
+				"# owner: root\n" +
+				"# group: root\n" +
+				"user::rwx\n" +
+				"user:" + testAgentUser + ":rwx\t#effective:r-x\n" +
+				"group::r-x\n" +
+				"mask::r-x\n" +
+				"other::---\n", 0, nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return "", -1, nil
+		}
+	}
+	status, detail := probeWorkspaceAccess(context.Background(), env)
+	if status != statusFail {
+		t.Fatalf("status: %s, want fail; detail=%s", status, detail)
+	}
+	if strings.Contains(detail, ": ;") || strings.HasSuffix(strings.TrimSpace(detail), ":") {
+		t.Fatalf("detail still has an empty cause: %q", detail)
+	}
+	if !strings.Contains(detail, "mask limits it") {
+		t.Fatalf("detail does not name the mask-limited cause: %q", detail)
+	}
+	if !strings.Contains(detail, "pipelock contain grant-workspace "+dir) {
+		t.Fatalf("detail does not name the shipped remedy: %q", detail)
+	}
+}
+
+// TestProbeWorkspaceAccess_EmptyToolOutputMissingACLEntry covers the sibling
+// drift shape: no ACL entry for the agent at all (a grant that was never
+// applied or was fully revoked out from under a still-recorded inventory
+// entry), verified against getfacl's real output for that case.
+func TestProbeWorkspaceAccess_EmptyToolOutputMissingACLEntry(t *testing.T) {
+	env := makeProbeEnv(t)
+	dir := t.TempDir()
+	env.workspacePaths = []string{dir}
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		switch name {
+		case "sudo":
+			return "", 1, nil
+		case "getfacl":
+			return "# file: " + dir + "\n" +
+				"# owner: root\n" +
+				"# group: root\n" +
+				"user::rwx\n" +
+				"group::---\n" +
+				"other::---\n", 0, nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return "", -1, nil
+		}
+	}
+	status, detail := probeWorkspaceAccess(context.Background(), env)
+	if status != statusFail {
+		t.Fatalf("status: %s, want fail; detail=%s", status, detail)
+	}
+	if !strings.Contains(detail, "no ACL entry for "+testAgentUser) {
+		t.Fatalf("detail does not name the missing-entry cause: %q", detail)
+	}
+	if !strings.Contains(detail, "pipelock contain grant-workspace "+dir) {
+		t.Fatalf("detail does not name the shipped remedy: %q", detail)
+	}
+}
+
+// TestProbeWorkspaceAccess_GetfaclFailureStillNamesRemedy proves the
+// diagnostic call is best-effort: if getfacl itself cannot run, the probe
+// still fails closed with an actionable message instead of reverting to the
+// old empty-reason shape.
+func TestProbeWorkspaceAccess_GetfaclFailureStillNamesRemedy(t *testing.T) {
+	env := makeProbeEnv(t)
+	dir := t.TempDir()
+	env.workspacePaths = []string{dir}
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		switch name {
+		case "sudo":
+			return "", 1, nil
+		case "getfacl":
+			return "", 1, nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return "", -1, nil
+		}
+	}
+	status, detail := probeWorkspaceAccess(context.Background(), env)
+	if status != statusFail {
+		t.Fatalf("status: %s, want fail; detail=%s", status, detail)
+	}
+	if !strings.Contains(detail, "exit 1") {
+		t.Fatalf("detail does not fall back to the exit code: %q", detail)
+	}
+	if !strings.Contains(detail, "pipelock contain grant-workspace "+dir) {
+		t.Fatalf("detail does not name the shipped remedy: %q", detail)
+	}
+}

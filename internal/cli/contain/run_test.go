@@ -191,7 +191,7 @@ func TestRunContainRun_RelativePostureOutputExportsAbsoluteProofPath(t *testing.
 			if err != nil {
 				t.Fatalf("containRunLaunchEvidence: %v", err)
 			}
-			wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, env.port, wantProof)
+			wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, env.port, wantProof, "")
 			wantHash, err := stringSliceSHA256(wantEnv)
 			if err != nil {
 				t.Fatalf("hash wanted env: %v", err)
@@ -593,6 +593,23 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 	if launch.ArgvSHA256 == "" || launch.EnvSHA256 == "" {
 		t.Fatalf("launch evidence missing privacy-preserving hashes: %+v", launch)
+	}
+}
+
+func TestEmitContainRunPostureRejectsAgentReadableSigningKey(t *testing.T) {
+	env := allPassEnv(t)
+	baseRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "sudo" && containsArg(args, "test") && containsArg(args, "-r") {
+			return "", 0, nil
+		}
+		return baseRun(ctx, name, args...)
+	}
+	cfg := config.Defaults()
+	cfg.FlightRecorder.SigningKeyPath = "/agent-readable/receipt.key"
+	_, err := emitContainRunPosture(cfg, nil, t.TempDir(), env, []string{"claude"})
+	if err == nil || !strings.Contains(err.Error(), "could forge its own containment evidence") {
+		t.Fatalf("error = %v, want readable-key refusal", err)
 	}
 }
 

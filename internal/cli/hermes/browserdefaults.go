@@ -10,11 +10,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/browserdefaults"
 )
 
-const browserFlag = "--disable-blink-features=AutomationControlled"
+// browserFlag is the shared Chromium default; the merge and removal rules
+// live in internal/browserdefaults so `pipelock contain install` and this
+// command cannot drift.
+const browserFlag = browserdefaults.Flag
 
 // browserHome is the home agent-browser reads its user config from: the
 // Hermes user's home, resolved exactly as install resolves its defaults
@@ -38,10 +42,12 @@ func browserPaths(home string) (string, string) {
 	return filepath.Join(home, ".agent-browser", "config.json"), filepath.Join(home, ".hermes", "pipelock-browser-defaults.json")
 }
 
-func readBrowserConfig(path string) (map[string]json.RawMessage, bool, error) {
+// readBrowserFile returns a regular file's bytes and whether it existed,
+// refusing anything that is not a regular file (a symlink included).
+func readBrowserFile(path string) ([]byte, bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]json.RawMessage{}, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
@@ -53,88 +59,65 @@ func readBrowserConfig(path string) (map[string]json.RawMessage, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return map[string]json.RawMessage{}, true, nil
+	return data, true, nil
+}
+
+func readBrowserConfig(path string) (map[string]json.RawMessage, bool, error) {
+	data, existed, err := readBrowserFile(path)
+	if err != nil {
+		return nil, false, err
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
-		return nil, false, fmt.Errorf("browser defaults: malformed JSON in %s", path)
+	if !existed {
+		return map[string]json.RawMessage{}, false, nil
+	}
+	obj, err := browserdefaults.Parse(data)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w in %s", err, path)
 	}
 	return obj, true, nil
 }
 
 func browserArgs(obj map[string]json.RawMessage) (string, error) {
-	data, ok := obj["args"]
-	if !ok {
-		return "", nil
-	}
-	var value string
-	if err := decodeStrictJSON(data, &value); err != nil {
-		return "", errors.New("browser defaults: args must be a string")
-	}
-	return value, nil
-}
-
-// decodeStrictJSON decodes one field, refusing a missing value or a literal
-// null. encoding/json leaves the destination at its zero value for null, which
-// would silently turn "args": null into an empty string or a malformed
-// ownership record into "not created".
-func decodeStrictJSON(raw json.RawMessage, dst interface{}) error {
-	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
-		return errors.New("value is missing or null")
-	}
-	return json.Unmarshal(raw, dst)
-}
-
-// browserArgParts splits agent-browser's args string on both documented
-// separators (comma and newline), so detection and removal agree.
-func browserArgParts(args string) []string {
-	return strings.FieldsFunc(args, func(r rune) bool { return r == ',' || r == '\n' })
+	return browserdefaults.Args(obj)
 }
 
 func hasBrowserFlag(args string) bool {
-	for _, part := range browserArgParts(args) {
-		if strings.TrimSpace(part) == browserFlag {
-			return true
-		}
-	}
-	return false
-}
-
-func browserJSON(obj map[string]json.RawMessage) ([]byte, error) {
-	data, err := json.MarshalIndent(obj, "", "  ")
-	return append(data, '\n'), err
+	return browserdefaults.HasFlag(args)
 }
 
 // preflightBrowserDefaults performs every read and validation install needs
 // without writing, so runInstall can refuse a bad agent-browser config before
 // it changes anything else.
 func preflightBrowserDefaults(home string) error {
-	_, _, _, _, err := loadBrowserDefaultsForInstall(home)
+	_, _, _, err := loadBrowserDefaultsForInstall(home)
 	return err
 }
 
-// loadBrowserDefaultsForInstall returns the parsed config, whether it existed,
-// its args, and whether Pipelock's flag is already present.
-func loadBrowserDefaultsForInstall(home string) (map[string]json.RawMessage, bool, string, bool, error) {
+// loadBrowserDefaultsForInstall returns the config bytes, whether the file
+// existed, and whether Pipelock's flag is already present, after every
+// validation install needs.
+func loadBrowserDefaultsForInstall(home string) ([]byte, bool, bool, error) {
 	path, state := browserPaths(home)
-	obj, existed, err := readBrowserConfig(path)
+	data, existed, err := readBrowserFile(path)
 	if err != nil {
-		return nil, false, "", false, err
+		return nil, false, false, err
 	}
-	args, err := browserArgs(obj)
+	present, err := browserdefaults.Inspect(data)
 	if err != nil {
-		return nil, false, "", false, err
+		if errors.Is(err, browserdefaults.ErrMalformed) {
+			return nil, false, false, fmt.Errorf("%w in %s", err, path)
+		}
+		return nil, false, false, err
 	}
-	if hasBrowserFlag(args) {
-		return obj, existed, args, true, nil
+	if present {
+		return data, existed, true, nil
 	}
-	if _, present, err := readBrowserConfig(state); err != nil {
-		return nil, false, "", false, err
-	} else if present {
-		return nil, false, "", false, errors.New("browser defaults: stale ownership record; run pipelock hermes rollback first")
+	if _, recorded, err := readBrowserFile(state); err != nil {
+		return nil, false, false, err
+	} else if recorded {
+		return nil, false, false, errors.New("browser defaults: stale ownership record; run pipelock hermes rollback first")
 	}
-	return obj, existed, args, false, nil
+	return data, existed, false, nil
 }
 
 // writeBrowserOwnershipRecord writes the ownership record. It is a variable
@@ -147,20 +130,12 @@ var writeBrowserConfig = writeFileAtomic
 
 func installBrowserDefaults(home string) error {
 	path, state := browserPaths(home)
-	obj, existed, args, already, err := loadBrowserDefaultsForInstall(home)
+	data, existed, already, err := loadBrowserDefaultsForInstall(home)
 	if err != nil || already {
 		return err
 	}
-	original := args
-	_, hadArgs := obj["args"]
-	if args == "" {
-		args = browserFlag
-	} else {
-		args = args + "," + browserFlag
-	}
-	obj["args"], _ = json.Marshal(args)
-	data, err := browserJSON(obj)
-	if err != nil {
+	merged, rec, already, err := browserdefaults.Merge(data, existed)
+	if err != nil || already {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -170,11 +145,10 @@ func installBrowserDefaults(home string) error {
 	// the record is removed again; if the record write fails, the config was
 	// never touched. Either way Pipelock never leaves a flag that rollback
 	// cannot attribute to it.
-	record, _ := json.Marshal(map[string]interface{}{"created": !existed, "original_args": original, "had_args": hadArgs})
 	if err := os.MkdirAll(filepath.Dir(state), 0o750); err != nil {
 		return err
 	}
-	if err := writeBrowserOwnershipRecord(state, record); err != nil {
+	if err := writeBrowserOwnershipRecord(state, rec.Marshal()); err != nil {
 		return err
 	}
 	if existed {
@@ -183,7 +157,7 @@ func installBrowserDefaults(home string) error {
 			return err
 		}
 	}
-	if err := writeBrowserConfig(path, data); err != nil {
+	if err := writeBrowserConfig(path, merged); err != nil {
 		_ = os.Remove(state)
 		return err
 	}
@@ -208,78 +182,39 @@ func backupBrowserConfig(path string) error {
 
 func rollbackBrowserDefaults(home string) error {
 	path, state := browserPaths(home)
-	record, present, err := readBrowserConfig(state)
+	recordData, present, err := readBrowserFile(state)
 	if err != nil || !present {
 		return err
 	}
-	var created bool
-	var original string
-	if err := decodeStrictJSON(record["created"], &created); err != nil {
-		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
+	rec, err := browserdefaults.DecodeRecord(recordData)
+	if err != nil {
+		return err
 	}
-	if err := decodeStrictJSON(record["original_args"], &original); err != nil {
-		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
-	}
-	var hadArgs bool
-	if err := decodeStrictJSON(record["had_args"], &hadArgs); err != nil {
-		return fmt.Errorf("browser defaults: malformed ownership record: %w", err)
-	}
-	obj, exists, err := readBrowserConfig(path)
+	data, exists, err := readBrowserFile(path)
 	if err != nil {
 		return err
 	}
 	if exists {
-		args, err := browserArgs(obj)
+		out, remove, changed, err := browserdefaults.Remove(data, rec)
 		if err != nil {
+			if errors.Is(err, browserdefaults.ErrMalformed) {
+				return fmt.Errorf("%w in %s", err, path)
+			}
 			return err
 		}
-		if hasBrowserFlag(args) {
-			// Install appends exactly one copy at the end, so remove only the
-			// last copy; an identical flag the operator added stays.
-			parts := browserArgParts(args)
-			last := -1
-			for i, part := range parts {
-				if strings.TrimSpace(part) == browserFlag {
-					last = i
-				}
+		if remove {
+			// Pipelock created the file and nothing else lives in it:
+			// remove it outright rather than leaving a backup of our own flag.
+			if err := os.Remove(path); err != nil {
+				return err
 			}
-			kept := make([]string, 0, len(parts))
-			for i, part := range parts {
-				if i != last {
-					kept = append(kept, part)
-				}
-			}
-			remaining := strings.Join(kept, ",")
-			if strings.Join(browserArgParts(original), ",") == remaining {
-				// Nothing else changed since install: restore the operator's
-				// value byte for byte, separators included.
-				remaining = original
-			}
-			keepExplicitEmpty := hadArgs && original == ""
-			if remaining == "" && !keepExplicitEmpty {
-				// Only Pipelock's flag is left. An operator who removed their
-				// own arguments after install keeps that removal; an operator
-				// whose file said "args": "" before install gets that back.
-				delete(obj, "args")
-			} else {
-				obj["args"], _ = json.Marshal(remaining)
-			}
-			if created && len(obj) == 0 {
-				// Pipelock created the file and nothing else lives in it:
-				// remove it outright rather than leaving a backup of our own flag.
-				if err := os.Remove(path); err != nil {
-					return err
-				}
-				return os.Remove(state)
-			}
+			return os.Remove(state)
+		}
+		if changed {
 			if err := backupBrowserConfig(path); err != nil {
 				return err
 			}
-			data, err := browserJSON(obj)
-			if err != nil {
-				return err
-			}
-			if err := writeBrowserConfig(path, data); err != nil {
+			if err := writeBrowserConfig(path, out); err != nil {
 				return err
 			}
 		}

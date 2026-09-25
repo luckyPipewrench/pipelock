@@ -37,9 +37,13 @@ type installEnv struct {
 	// are abstracted only so tests can run on a tmpdir without sudo. Path
 	// arguments are absolute by convention; the orchestration code
 	// constructs them via env helpers (etcPath, wrapperPath, ...).
-	stat       func(path string) (os.FileInfo, error)
-	lstat      func(path string) (os.FileInfo, error)
-	readFile   func(path string) ([]byte, error)
+	stat            func(path string) (os.FileInfo, error)
+	lstat           func(path string) (os.FileInfo, error)
+	readFile        func(path string) ([]byte, error)
+	readFileBounded func(path string, limit int64) ([]byte, error)
+	// readDir lists a directory. Nil skips directory sweeps that are only a
+	// second line of defence behind the install inventory.
+	readDir    func(path string) ([]os.DirEntry, error)
 	writeFile  func(path string, contents []byte, mode os.FileMode) error
 	removeFile func(path string) error
 	mkdirAll   func(path string, mode os.FileMode) error
@@ -50,6 +54,14 @@ type installEnv struct {
 	// keep the descriptor-based implementation, because a path-based chmod in
 	// an agent-owned directory is redirectable by a swapped symlink.
 	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
+	// Browser config operations stay under an opened os.Root. These optional
+	// descriptor hooks let unprivileged tests inject ownership and I/O faults.
+	agentBrowserFchown func(f *os.File, uid, gid int) error
+	agentBrowserWrite  func(f *os.File, data []byte) (int, error)
+	agentBrowserLstat  func(root *os.Root, name string) (os.FileInfo, error)
+	agentBrowserRemove func(root *os.Root, name string) error
+	// Test seam for synthetic user IDs in unprivileged browser fixtures.
+	agentBrowserDirOwner func(f *os.File, uid int) bool
 
 	// repairLeafMode reads and tightens a file's mode through a single
 	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable
@@ -85,52 +97,69 @@ type installEnv struct {
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
-	operatorUser                string
-	proxyUserName               string
-	agentUserName               string
-	configDir                   string
-	dataDir                     string
-	wrapperDir                  string
-	systemUnitPath              string
-	nftRulesPath                string
-	nftMainPath                 string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
-	nftPersistUnitPath          string
+	operatorUser                  string
+	proxyUserName                 string
+	agentUserName                 string
+	configDir                     string
+	dataDir                       string
+	wrapperDir                    string
+	systemUnitPath                string
+	nftRulesPath                  string
+	nftMainPath                   string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
+	nftPersistUnitPath            string
+	networkNamespaceUnitPath      string
+	proxyForwarderSocketPath      string
+	proxyForwarderServicePath     string
+	namespaceForwarderServicePath string
+	// Retained only so upgrade and rollback can remove the unit written by
+	// the superseded cgroup receiver design.
 	ownedLoopbackAnchorUnitPath string
 	nftExpiryServicePath        string
 	nftExpiryTimerPath          string
-	reconcileLockPath           string
+	displayUnitPath             string
+	displayAuthorityPath        string
+	// xvfbPath is the X server binary consulted when display provisioning is
+	// left unset in config. A field rather than a constant so a test host
+	// that happens to have Xvfb installed does not change what the tests
+	// exercise.
+	xvfbPath          string
+	reconcileLockPath string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared
 	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
 	// Defaults to the real flock-based implementation; tests substitute a
 	// fake to deterministically exercise the install/reload interleaving.
-	lockFn             func(lockPath string, fn func() error) error
-	sudoersPath        string
-	caBundlePath       string
-	systemCABundlePath string
-	caExportPath       string
-	integrityDir       string
-	integrityPin       string
-	wrapperInvPath     string
-	toolsListPath      string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
-	workspaceInvPath   string
-	evidenceACLInvPath string // operator evidence-read ACL inventory
-	guardScriptPath    string
-	guardServiceUnit   string
-	guardPathUnit      string
-	undiciShimPath     string // node undici proxy shim loaded via NODE_OPTIONS
-	profileScriptPath  string // /etc/profile.d login-shell runtime contract
-	agentHome          string // contained agent home (per-tool config destination)
-	lookPath           func(string) (string, error)
-	platformFamily     string
-	pipelockBinary     string // source binary path passed to --pipelock-binary
-	pipelockTarget     string // destination, default /usr/local/bin/pipelock
-	bashPath           string
-	nologinPath        string
-	nftPath            string
-	curlPath           string
-	proxyPort          int
-	ownedLoopback      bool
+	lockFn                   func(lockPath string, fn func() error) error
+	sudoersPath              string
+	caBundlePath             string
+	systemCABundlePath       string
+	caExportPath             string
+	integrityDir             string
+	integrityPin             string
+	wrapperInvPath           string
+	toolsListPath            string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
+	workspaceInvPath         string
+	loopbackForwarderInvPath string
+	evidenceACLInvPath       string // operator evidence-read ACL inventory
+	// evidenceACLPreexisting records that the operator evidence ACL recorded
+	// in the inventory already covered this install's operator and dirs before
+	// the grant step ran, so rolling that step back must leave it in place.
+	evidenceACLPreexisting bool
+	guardScriptPath        string
+	guardServiceUnit       string
+	guardPathUnit          string
+	undiciShimPath         string // node undici proxy shim loaded via NODE_OPTIONS
+	profileScriptPath      string // /etc/profile.d login-shell runtime contract
+	agentHome              string // contained agent home (per-tool config destination)
+	pipelockBinary         string // source binary path passed to --pipelock-binary
+	pipelockTarget         string // destination, default /usr/local/bin/pipelock
+	bashPath               string
+	nologinPath            string
+	nftPath                string
+	curlPath               string
+	proxyPort              int
+	lookPath               func(string) (string, error)
+	platformFamily         string
 
 	prevNFTTableDump             string
 	prevNFTTableStateKnown       bool
@@ -143,6 +172,12 @@ type installEnv struct {
 	prevNFTExpiryServiceExisted  bool
 	prevNFTExpiryTimerExisted    bool
 	prevNFTUnitFilesStateKnown   bool
+	prevDisplayUnitExisted       bool
+	prevDisplayEnabled           bool
+	prevDisplayActive            bool
+	prevDisplayStateKnown        bool
+	displayEnabled               bool
+	displayNumber                int
 	preflightBinaryHash          string
 	archivedBackups              map[string][]string
 	serviceBinaryChanged         bool
@@ -167,40 +202,49 @@ type installEnv struct {
 func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
-		runCmd:                      realRunCommand,
-		dialCtx:                     realDial,
-		wait:                        waitForReadiness,
-		stat:                        os.Stat,
-		lstat:                       os.Lstat,
-		readFile:                    os.ReadFile,
-		writeFile:                   writeFileAtomic,
-		removeFile:                  os.Remove,
-		mkdirAll:                    os.MkdirAll,
-		chown:                       os.Chown,
-		lchown:                      os.Lchown,
-		ownLeafNoFollow:             applyAgentOwnershipNoFollow,
-		repairLeafMode:              setLeafModeNoFollow,
-		rename:                      os.Rename,
-		chmod:                       os.Chmod,
-		symlink:                     os.Symlink,
-		lookupUser:                  user.Lookup,
-		selfPath:                    os.Executable,
-		hashFile:                    sha256HexOfFile,
-		out:                         out,
-		errOut:                      os.Stderr,
-		now:                         time.Now,
-		operatorUser:                os.Getenv("SUDO_USER"),
-		proxyUserName:               defaultProxyUser,
-		agentUserName:               defaultAgentUser,
-		configDir:                   defaultConfigDir,
-		dataDir:                     defaultDataDir,
-		wrapperDir:                  defaultWrapperDir,
-		systemUnitPath:              defaultSystemUnitPath,
-		nftRulesPath:                defaultNFTRulesPath,
-		nftPersistUnitPath:          defaultNFTPersistUnitPath,
-		ownedLoopbackAnchorUnitPath: defaultOwnedLoopbackAnchorUnitPath,
-		nftExpiryServicePath:        defaultNFTExpiryServicePath,
-		nftExpiryTimerPath:          defaultNFTExpiryTimerPath,
+		runCmd:                        realRunCommand,
+		dialCtx:                       realDial,
+		wait:                          waitForReadiness,
+		stat:                          os.Stat,
+		lstat:                         os.Lstat,
+		readFile:                      os.ReadFile,
+		readFileBounded:               readContainFileBounded,
+		readDir:                       os.ReadDir,
+		writeFile:                     writeFileAtomic,
+		removeFile:                    os.Remove,
+		mkdirAll:                      os.MkdirAll,
+		chown:                         os.Chown,
+		lchown:                        os.Lchown,
+		rename:                        os.Rename,
+		chmod:                         os.Chmod,
+		symlink:                       os.Symlink,
+		lookupUser:                    user.Lookup,
+		selfPath:                      os.Executable,
+		hashFile:                      sha256HexOfFile,
+		out:                           out,
+		errOut:                        os.Stderr,
+		now:                           time.Now,
+		operatorUser:                  os.Getenv("SUDO_USER"),
+		proxyUserName:                 defaultProxyUser,
+		agentUserName:                 defaultAgentUser,
+		configDir:                     defaultConfigDir,
+		dataDir:                       defaultDataDir,
+		wrapperDir:                    defaultWrapperDir,
+		systemUnitPath:                defaultSystemUnitPath,
+		nftRulesPath:                  defaultNFTRulesPath,
+		nftPersistUnitPath:            defaultNFTPersistUnitPath,
+		networkNamespaceUnitPath:      defaultNetworkNamespaceUnitPath,
+		proxyForwarderSocketPath:      defaultProxyForwarderSocketPath,
+		proxyForwarderServicePath:     defaultProxyForwarderServicePath,
+		namespaceForwarderServicePath: defaultNamespaceForwarderServicePath,
+		ownedLoopbackAnchorUnitPath:   defaultOwnedLoopbackAnchorUnitPath,
+		nftExpiryServicePath:          defaultNFTExpiryServicePath,
+		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
+		displayUnitPath:               defaultDisplayUnitPath,
+		displayAuthorityPath:          defaultDisplayAuthorityPath,
+		xvfbPath:                      defaultXvfbPath,
+		ownLeafNoFollow:               applyAgentOwnershipNoFollow,
+		repairLeafMode:                setLeafModeNoFollow,
 		// The reconcile lock lives beside the nft rules file under
 		// /etc/nftables.d/, a directory only root writes, NOT under
 		// dataDir: dataDir is recursively chowned to pipelock-proxy by
@@ -211,32 +255,32 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		lockFn:            withContainmentReconcileLock,
 		// Populated so rollback can clean up a legacy `include` line a
 		// pre-portability build appended here. New installs never write it.
-		nftMainPath:        defaultNFTMainConfigPath,
-		sudoersPath:        defaultSudoersPath,
-		caBundlePath:       defaultCABundlePath,
-		systemCABundlePath: platform.systemCABundlePath,
-		caExportPath:       defaultCAExportPath,
-		integrityDir:       defaultIntegrityDir,
-		integrityPin:       defaultIntegrityPin,
-		wrapperInvPath:     defaultWrapperInvPath,
-		toolsListPath:      defaultToolsListPath,
-		workspaceInvPath:   defaultWorkspaceInvPath,
-		evidenceACLInvPath: defaultEvidenceACLInvPath,
-		guardScriptPath:    defaultGuardScriptPath,
-		guardServiceUnit:   defaultGuardServiceUnit,
-		guardPathUnit:      defaultGuardPathUnit,
-		undiciShimPath:     defaultUndiciShimPath,
-		profileScriptPath:  defaultProfileScriptPath,
-		agentHome:          "/home/" + defaultAgentUser,
-		lookPath:           exec.LookPath,
-		platformFamily:     platform.family,
-		pipelockTarget:     defaultPipelockTarget,
-		bashPath:           platform.bashPath,
-		nologinPath:        platform.nologinPath,
-		nftPath:            platform.nftPath,
-		curlPath:           platform.curlPath,
-		proxyPort:          defaultProxyPort,
-		ownedLoopback:      true,
+		nftMainPath:              defaultNFTMainConfigPath,
+		sudoersPath:              defaultSudoersPath,
+		caBundlePath:             defaultCABundlePath,
+		systemCABundlePath:       platform.systemCABundlePath,
+		caExportPath:             defaultCAExportPath,
+		integrityDir:             defaultIntegrityDir,
+		integrityPin:             defaultIntegrityPin,
+		wrapperInvPath:           defaultWrapperInvPath,
+		toolsListPath:            defaultToolsListPath,
+		workspaceInvPath:         defaultWorkspaceInvPath,
+		loopbackForwarderInvPath: defaultLoopbackForwarderInvPath,
+		evidenceACLInvPath:       defaultEvidenceACLInvPath,
+		guardScriptPath:          defaultGuardScriptPath,
+		guardServiceUnit:         defaultGuardServiceUnit,
+		guardPathUnit:            defaultGuardPathUnit,
+		undiciShimPath:           defaultUndiciShimPath,
+		profileScriptPath:        defaultProfileScriptPath,
+		agentHome:                "/home/" + defaultAgentUser,
+		pipelockTarget:           defaultPipelockTarget,
+		bashPath:                 platform.bashPath,
+		nologinPath:              platform.nologinPath,
+		nftPath:                  platform.nftPath,
+		curlPath:                 platform.curlPath,
+		proxyPort:                defaultProxyPort,
+		lookPath:                 exec.LookPath,
+		platformFamily:           platform.family,
 	}
 }
 
@@ -244,17 +288,23 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 // so the two subsystems agree on filesystem layout. Names are picked to
 // avoid collision with verify.go constants.
 const (
-	defaultConfigDir                   = "/etc/pipelock"
-	defaultDataDir                     = "/var/lib/pipelock"
-	defaultSystemUnitPath              = "/etc/systemd/system/pipelock.service"
-	defaultNFTRulesPath                = "/etc/nftables.d/50-pipelock-containment.nft"
-	defaultNFTPersistUnitPath          = "/etc/systemd/system/pipelock-containment-nft.service"
-	defaultOwnedLoopbackAnchorUnitPath = "/etc/systemd/system/pipelock-contained-anchor.service"
-	defaultNFTExpiryServicePath        = "/etc/systemd/system/pipelock-containment-expiry.service"
-	defaultNFTExpiryTimerPath          = "/etc/systemd/system/pipelock-containment-expiry.timer"
-	containmentExpiryTimerCalendar     = "hourly"
-	containmentExpiryTimerAccuracy     = "1m"
-	containmentExpiryServiceTimeout    = "90"
+	defaultConfigDir                     = "/etc/pipelock"
+	defaultDataDir                       = "/var/lib/pipelock"
+	defaultSystemUnitPath                = "/etc/systemd/system/pipelock.service"
+	defaultNFTRulesPath                  = "/etc/nftables.d/50-pipelock-containment.nft"
+	defaultNFTPersistUnitPath            = "/etc/systemd/system/pipelock-containment-nft.service"
+	defaultNetworkNamespaceUnitPath      = "/etc/systemd/system/" + containedNetworkNamespaceUnit
+	defaultProxyForwarderSocketPath      = "/etc/systemd/system/" + containedProxyForwarderUnit + ".socket"
+	defaultProxyForwarderServicePath     = "/etc/systemd/system/" + containedProxyForwarderUnit + ".service"
+	defaultNamespaceForwarderServicePath = "/etc/systemd/system/" + containedNamespaceForwarderUnit
+	defaultOwnedLoopbackAnchorUnitPath   = "/etc/systemd/system/pipelock-contained-anchor.service"
+	defaultNFTExpiryServicePath          = "/etc/systemd/system/pipelock-containment-expiry.service"
+	defaultNFTExpiryTimerPath            = "/etc/systemd/system/pipelock-containment-expiry.timer"
+	defaultDisplayUnitPath               = "/etc/systemd/system/pipelock-agent-display.service"
+	defaultDisplayAuthorityPath          = "/var/lib/pipelock-agent/Xauthority"
+	containmentExpiryTimerCalendar       = "hourly"
+	containmentExpiryTimerAccuracy       = "1m"
+	containmentExpiryServiceTimeout      = "90"
 	// defaultNFTMainConfigPath is the distro nft service config that
 	// pre-portability installs appended a managed `include` line to. New
 	// installs persist via defaultNFTPersistUnitPath and never touch this
@@ -262,20 +312,21 @@ const (
 	// older build (otherwise the dangling include breaks the distro
 	// nftables.service after the rules file is removed). See
 	// restoreOrRemoveNFTMainInclude.
-	defaultNFTMainConfigPath  = "/etc/sysconfig/nftables.conf"
-	defaultSudoersPath        = "/etc/sudoers.d/50-pipelock-agent"
-	defaultCAExportPath       = "/etc/pipelock/ca.pem"
-	defaultIntegrityDir       = "/etc/pipelock/integrity"
-	defaultIntegrityPin       = "/etc/pipelock/integrity/binary-pin.sha256"
-	defaultWrapperInvPath     = "/etc/pipelock/contain/wrappers.json"
-	defaultToolsListPath      = "/etc/pipelock/contain/tools.list"
-	defaultWorkspaceInvPath   = "/etc/pipelock/contain/workspaces.json"
-	defaultEvidenceACLInvPath = "/etc/pipelock/contain/evidence-acls.json"
-	defaultGuardScriptPath    = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
-	defaultGuardServiceUnit   = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
-	defaultGuardPathUnit      = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
-	defaultPipelockTarget     = "/usr/local/bin/pipelock"
-	defaultSystemCABundle     = "/etc/ssl/certs/ca-certificates.crt"
+	defaultNFTMainConfigPath        = "/etc/sysconfig/nftables.conf"
+	defaultSudoersPath              = "/etc/sudoers.d/50-pipelock-agent"
+	defaultCAExportPath             = "/etc/pipelock/ca.pem"
+	defaultIntegrityDir             = "/etc/pipelock/integrity"
+	defaultIntegrityPin             = "/etc/pipelock/integrity/binary-pin.sha256"
+	defaultWrapperInvPath           = "/etc/pipelock/contain/wrappers.json"
+	defaultToolsListPath            = "/etc/pipelock/contain/tools.list"
+	defaultWorkspaceInvPath         = "/etc/pipelock/contain/workspaces.json"
+	defaultLoopbackForwarderInvPath = "/etc/pipelock/contain/loopback-forwarders.json"
+	defaultEvidenceACLInvPath       = "/etc/pipelock/contain/evidence-acls.json"
+	defaultGuardScriptPath          = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
+	defaultGuardServiceUnit         = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
+	defaultGuardPathUnit            = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
+	defaultPipelockTarget           = "/usr/local/bin/pipelock"
+	defaultSystemCABundle           = "/etc/ssl/certs/ca-certificates.crt"
 
 	// File modes. The model is "pipelock-agent UID must be able to read every
 	// non-secret file the wrappers depend on at runtime, but cannot read

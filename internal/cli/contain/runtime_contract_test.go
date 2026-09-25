@@ -62,6 +62,9 @@ func TestRuntimeContractVars_CoversAllSurfaces(t *testing.T) {
 	if m["NODE_USE_ENV_PROXY"] != "1" {
 		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", m["NODE_USE_ENV_PROXY"])
 	}
+	if m["XAUTHORITY"] != displayAuthorityPath(env) {
+		t.Errorf("XAUTHORITY = %q, want managed path %q", m["XAUTHORITY"], displayAuthorityPath(env))
+	}
 	if m["npm_config_ignore_scripts"] != "1" {
 		t.Errorf("npm_config_ignore_scripts = %q, want 1", m["npm_config_ignore_scripts"])
 	}
@@ -141,6 +144,7 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 		`"$TARGET" "$@"`,
 		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",
 		"NODE_USE_ENV_PROXY=1",
+		"XAUTHORITY=" + displayAuthorityPath(env),
 		"npm_config_ignore_scripts=1",
 	} {
 		if !strings.Contains(joined, want) {
@@ -164,7 +168,7 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 
 func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
 	const customProof = "/custom/posture/proof.json"
-	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof, "")
 	want := []string{
 		"HOME=/home/" + testAgentUser,
 		"USER=" + testAgentUser,
@@ -181,6 +185,7 @@ func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
 	// The resolved posture proof path is exported so an in-child emitter binds
 	// this run's capsule instead of falling back to the default path.
 	want = append(want, posturebinding.RuntimeProofEnv+"="+customProof)
+	want = append(want, "DISPLAY=")
 	want = append(want, "PATH="+agentExecPath(testAgentUser))
 	if gotJoined, wantJoined := strings.Join(got, "\n"), strings.Join(want, "\n"); gotJoined != wantJoined {
 		t.Fatalf("contain launch env =\n%s\nwant:\n%s", gotJoined, wantJoined)
@@ -188,7 +193,7 @@ func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
 }
 
 func TestContainLaunchEnv_EmptyPostureProofFallsBackToDefault(t *testing.T) {
-	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, "")
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, "", "")
 	want := posturebinding.RuntimeProofEnv + "=" + posturebinding.DefaultContainRunProofPath
 	found := false
 	for _, e := range got {
@@ -853,7 +858,7 @@ func TestStepWriteUtilityWrappers_WriteErrorRollsBack(t *testing.T) {
 func TestLaunchPathsShareEnvNameSet(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 
-	goEnv := containLaunchEnv(env.agentUserName, agentHomeDir(env), env.proxyPort, "")
+	goEnv := containLaunchEnv(env.agentUserName, agentHomeDir(env), env.proxyPort, "", "")
 	goNames := make([]string, 0, len(goEnv))
 	for _, e := range goEnv {
 		name, _, ok := strings.Cut(e, "=")
@@ -908,10 +913,14 @@ func TestLaunchExecEnvLines_EnvIClearsLeakAndForwardsPosture(t *testing.T) {
 	if !strings.Contains(res.output, posturebinding.RuntimeProofEnv+"=/custom/run/proof.json") {
 		t.Fatalf("posture proof not forwarded under env -i:\n%s", res.output)
 	}
-	for _, leak := range []string{"DISPLAY=", "XAUTHORITY=", "SUDO_USER="} {
-		if strings.Contains(res.output, leak) {
-			t.Fatalf("env -i leaked operator variable %q:\n%s", leak, res.output)
-		}
+	if !strings.Contains(res.output, "DISPLAY=:0") {
+		t.Fatalf("operator DISPLAY did not win:\n%s", res.output)
+	}
+	if strings.Contains(res.output, "XAUTHORITY=/x") || strings.Contains(res.output, "SUDO_USER=") {
+		t.Fatalf("env -i leaked operator XAUTHORITY or SUDO_USER:\n%s", res.output)
+	}
+	if !strings.Contains(res.output, "XAUTHORITY="+displayAuthorityPath(env)) {
+		t.Fatalf("managed XAUTHORITY was not exported alongside DISPLAY:\n%s", res.output)
 	}
 
 	// With no caller-provided proof, the default binds.

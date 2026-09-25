@@ -4,8 +4,11 @@
 package display
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -69,13 +72,19 @@ func TestDisplayDoesNotFeedVerificationPaths(t *testing.T) {
 	}
 }
 
+// displayImportPath is how a file reaches this package's symbols. The guard
+// reads the file's parsed import list, so an aliased or dot import is caught
+// and the path appearing in a comment or string literal is not.
+const displayImportPath = "github.com/luckyPipewrench/pipelock/internal/evidence/display"
+
 func containsDisplaySymbol(data []byte) bool {
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
-			continue
-		}
-		if strings.Contains(trimmed, "display.") {
+	file, err := parser.ParseFile(token.NewFileSet(), "", data, parser.ImportsOnly)
+	if err != nil {
+		// A file the parser cannot read is reported rather than skipped.
+		return true
+	}
+	for _, spec := range file.Imports {
+		if path, err := strconv.Unquote(spec.Path.Value); err == nil && path == displayImportPath {
 			return true
 		}
 	}

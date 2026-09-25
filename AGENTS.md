@@ -23,7 +23,7 @@ The code-checked capability manifest is docs/security/capability-manifest.json. 
 | HTTP, WebSocket, and proxy mediation | Free | pipelock run | Applies only to traffic routed through Pipelock; direct agent egress needs containment or network policy. |
 | MCP proxy scanning | Free | pipelock mcp proxy | Applies only to MCP transports that run through the Pipelock proxy. |
 | Signed action receipts | Free | flight_recorder |  |
-| Host containment for agent processes | Free | pipelock contain | Kernel-enforced containment requires Linux, nftables, and the managed identities; other targets cannot provide this containment path. |
+| Host containment for agent processes | Free | pipelock contain | Kernel-enforced containment requires Linux, nftables, and the managed identities. The recommended unprivileged systemd service emits signed pre-launch posture from a root signer that verifies its own managed namespace and proxy doorway; contain run instead signs a host-side preflight and also emits a post-session workspace statement. |
 | Single-agent process sandbox | Free | pipelock sandbox | Kernel isolation requires Linux user namespaces. Without them, best-effort network isolation only sets HTTP(S)_PROXY; seccomp adds restrictions only on linux/amd64. |
 | Global canary tokens | Free | canary_tokens |  |
 | Named agent profiles | Pro | agents.<profile> |  |

@@ -18,8 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const systemdRunPath = "/usr/bin/systemd-run"
-
 var privateTmpUnitSequence atomic.Uint64
 
 var (
@@ -36,13 +34,20 @@ var (
 // required because PrivateTmp creates the service's private mount namespace.
 // plk-launch remains the final process so the existing allow-list and
 // env-clearing contract still apply inside that namespace.
-func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, launchEnv, command []string, interactive, collect bool, unit string) []string {
+// display is the resolved DISPLAY value for this launch (operator-supplied or
+// the managed Xvfb fallback), never the raw config. A headed browser reaches
+// its X server through a Unix socket under /tmp/.X11-unix, which PrivateTmp
+// above hides along with the rest of the host /tmp; when display names a
+// local socket, that one socket is bound back in read-only so PrivateTmp
+// never ships without the one path a contained browser actually needs.
+func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir, display string, launchEnv, command []string, interactive, collect bool, unit string) []string {
 	args := []string{
 		"--wait",
 		"--service-type=oneshot",
 		"--expand-environment=no",
 		"--property=PrivateTmp=true",
-		"--slice=" + ownedLoopbackSlice,
+		"--property=PrivateNetwork=true",
+		"--property=JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
 		"--uid=" + strconv.FormatUint(uint64(uid), 10),
 		"--gid=" + strconv.FormatUint(uint64(gid), 10),
 		"--working-directory=" + homeDir,
@@ -55,6 +60,9 @@ func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir string, 
 	}
 	if supplementary := supplementaryGroupIDs(groups, gid); len(supplementary) > 0 {
 		args = append(args, "--property=SupplementaryGroups="+strings.Join(supplementary, " "))
+	}
+	if socket, ok := localDisplaySocket(display); ok {
+		args = append(args, "--property=BindReadOnlyPaths="+socket)
 	}
 	for _, entry := range launchEnv {
 		args = append(args, "--setenv="+entry)
@@ -86,10 +94,10 @@ func supplementaryGroupIDs(groups []uint32, primary uint32) []string {
 
 func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {
 	command := append([]string{defaultLaunchScript}, opts.args...)
-	launchEnv := containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
+	launchEnv := containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath, opts.display)
 	unit := fmt.Sprintf("pipelock-contain-%d-%d", os.Getpid(), privateTmpUnitSequence.Add(1))
 	cmd := exec.CommandContext(opts.ctx, systemdRunPath)
-	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, launchEnv, command, isTerminalReader(opts.stdin), false, unit)...)
+	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, opts.display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)...)
 	cmd.Stdin = opts.stdin
 	cmd.Stdout = opts.stdout
 	cmd.Stderr = opts.stderr
@@ -193,7 +201,7 @@ func privateTmpSystemdRunArgsForAgent(env *probeEnv, command []string) ([]string
 	if err != nil {
 		return nil, fmt.Errorf("group ids for %s: %w", env.agentUserName, err)
 	}
-	return privateTmpSystemdRunArgs(uint32(uid), uint32(gid), groups, u.HomeDir, nil, command, false, true, ""), nil
+	return privateTmpSystemdRunArgs(uint32(uid), uint32(gid), groups, u.HomeDir, "", nil, command, false, true, ""), nil
 }
 
 func isTerminalReader(reader any) bool {

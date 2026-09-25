@@ -332,6 +332,9 @@ func (c *Config) Clone() *Config {
 	if c.Containment.LoopbackServices != nil {
 		clone.Containment.LoopbackServices = append([]ContainmentLoopbackService(nil), c.Containment.LoopbackServices...)
 	}
+	if c.Containment.PublishedServices != nil {
+		clone.Containment.PublishedServices = append([]ContainmentPublishedService(nil), c.Containment.PublishedServices...)
+	}
 	clone.MCPToolPolicy.Rules = cloneToolPolicyRules(c.MCPToolPolicy.Rules)
 	// Deep-copy the follower audience-labels map so a runtime caller that
 	// mutates clone.Conductor.Labels never aliases back into the loaded config,

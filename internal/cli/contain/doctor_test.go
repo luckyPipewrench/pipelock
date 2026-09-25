@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +45,9 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	env.chainStructure = func(context.Context) doctorResult {
 		return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
 	}
+	env.doorwaySockets = func(context.Context) doctorResult {
+		return pass("all managed doorway sockets are enabled and active")
+	}
 	env.dialCtx = func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 		return &fakeConn{}, nil
 	}
@@ -67,6 +69,51 @@ func TestDoctorCounterProbeEnvUsesLiveDoctorOverrides(t *testing.T) {
 	}
 	if base.port != defaultProxyPort || base.agentUserName != defaultAgentUser {
 		t.Fatalf("base probe env was mutated: port=%d agent=%q", base.port, base.agentUserName)
+	}
+}
+
+func TestDoctorDoorwaySocketReaderConfigAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		readErr    error
+		wantStatus string
+		wantDetail string
+	}{
+		{"unreadable config", os.ErrPermission, statusUnknown, "could not be read"},
+		{"absent config", os.ErrNotExist, statusPass, "enabled and active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			base := &probeEnv{
+				configPath:               "/etc/pipelock/pipelock.yaml",
+				proxyForwarderSocketPath: "/etc/systemd/system/pipelock-agent-proxy.socket",
+				readFile: func(string) ([]byte, error) {
+					return nil, tc.readErr
+				},
+				runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
+					calls++
+					if name != "systemctl" || len(args) != 2 || args[1] != "pipelock-agent-proxy.socket" {
+						t.Fatalf("unexpected socket probe: %s %v", name, args)
+					}
+					if args[0] == "is-enabled" {
+						return systemctlEnabled, 0, nil
+					}
+					if args[0] == "is-active" {
+						return systemctlActive, 0, nil
+					}
+					t.Fatalf("unexpected socket probe: %s %v", name, args)
+					return "", 1, nil
+				},
+			}
+			doctor := &doctorEnv{port: defaultProxyPort, agentUserName: testAgentUser}
+			result := doctorDoorwaySocketReader(base, doctor)(context.Background())
+			if result.status != tc.wantStatus || !strings.Contains(result.detail, tc.wantDetail) {
+				t.Fatalf("result = (%q, %q), want %q containing %q", result.status, result.detail, tc.wantStatus, tc.wantDetail)
+			}
+			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 2 {
+				t.Fatalf("socket probe calls = %d for %s", calls, tc.name)
+			}
+		})
 	}
 }
 
@@ -177,146 +224,7 @@ func TestCheckGatewayHealth(t *testing.T) {
 	}
 }
 
-func TestCheckOwnedLoopback(t *testing.T) {
-	for _, tc := range []struct {
-		name, out, wantStatus, wantReason string
-		code                              int
-		err                               error
-	}{
-		{"same-slice reachable", "LOOPBACK_PASS", statusPass, "ephemeral loopback", 0, nil},
-		{"same-slice blocked", "LOOPBACK_FAIL: timed out", statusFail, "timed out", 1, nil},
-		{"wrong slice", "LOOPBACK_SETUP: transient service did not enter the owned slice", statusUnknown, "did not enter", 2, nil},
-		{"listener setup error", "LOOPBACK_SETUP: listener: [Errno 98] Address already in use", statusUnknown, "Address already in use", 2, nil},
-		{"service cannot start", "Failed to start transient service", statusUnknown, "could not complete", 1, nil},
-		{"runner error", "", statusUnknown, "could not run", 0, errors.New("systemd unavailable")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
-			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-				if name != "/usr/bin/systemd-run" || !argsContain(args, "--slice="+ownedLoopbackSlice, "--uid="+env.agentUserName, "--pipe", "127.0.0.1", "LOOPBACK_FAIL") {
-					t.Fatalf("probe did not run as a contained transient service: %s %v", name, args)
-				}
-				return tc.out, tc.code, tc.err
-			}
-			res := checkOwnedLoopback(t.Context(), env)
-			if res.status != tc.wantStatus || !strings.Contains(res.detail, tc.wantReason) {
-				t.Fatalf("result = %+v, want %s containing %q", res, tc.wantStatus, tc.wantReason)
-			}
-			if tc.wantStatus != statusPass && res.remediation == "" {
-				t.Fatal("non-pass result needs an operator action")
-			}
-		})
-	}
-}
-
-func TestCheckOwnedLoopbackRequiresInstalledModel(t *testing.T) {
-	env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
-	// A chain read that completed and confirmed a missing rule is a FAIL with
-	// install guidance: a reachable listener then proves nothing is contained.
-	env.chainStructure = func(context.Context) doctorResult {
-		res := unknownInfra("managed chain structure could not establish containment: owned loopback receiver chain is missing")
-		res.structureNotInstalled = true
-		return res
-	}
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, "receiver chain is missing") || !strings.Contains(got.remediation, "contain install") {
-		t.Fatalf("confirmed missing model = %+v, want FAIL with cause and install action", got)
-	}
-	// An inconclusive chain result that is not a confirmed miss stays UNKNOWN.
-	env.chainStructure = func(context.Context) doctorResult {
-		return unknownInfra("managed chain structure could not establish containment: owned loopback receiver chain is missing")
-	}
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.remediation, "contain verify") {
-		t.Fatalf("unconfirmed model = %+v, want UNKNOWN with verify action", got)
-	}
-	// A chain read that failed is inconclusive, even when its detail contains a
-	// word such as "missing"; it must not become a reinstall FAIL.
-	env.chainStructure = func(context.Context) doctorResult {
-		return unknownInfra("managed chain structure could not be read: nft command is missing")
-	}
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "nft command is missing") {
-		t.Fatalf("unreadable chain = %+v, want UNKNOWN, not FAIL", got)
-	}
-	// A definite bypass from the chain reader keeps its own FAIL and remedy.
-	env.chainStructure = func(context.Context) doctorResult {
-		return fail(classInfra, containmentBypassDetailPrefix+"test rule", "remove the offending nftables rule and rerun `pipelock contain install`")
-	}
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusFail || !strings.Contains(got.detail, containmentBypassDetailPrefix) {
-		t.Fatalf("bypass chain = %+v, want the reader's FAIL", got)
-	}
-	env.chainStructure = nil
-	if got := checkOwnedLoopback(t.Context(), env); got.status != statusUnknown || !strings.Contains(got.detail, "reader is unavailable") {
-		t.Fatalf("unavailable model reader = %+v, want UNKNOWN with cause", got)
-	}
-}
-
-// TestCheckOwnedLoopbackThroughRealReader drives the owned-loopback check
-// through doctorChainStructureReader and the classified containment probe, so
-// the FAIL/UNKNOWN split comes from the real reader rather than a stub: a
-// confirmed-missing anchor unit or receiver chain is a FAIL with install
-// guidance, while an anchor or receiver chain that cannot be read stays UNKNOWN.
-// The receiver-chain cases pass the anchor check and the rendered OUTPUT chain,
-// so they reach the receiver-chain query itself.
-func TestCheckOwnedLoopbackThroughRealReader(t *testing.T) {
-	anchorPath := filepath.Join(t.TempDir(), "pipelock-contained-anchor.service")
-	outputChain := strings.Replace(goodNFTContainmentOutput,
-		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n",
-		"\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept\n"+nftOwnedLoopbackOutputRules(987), 1)
-	if outputChain == goodNFTContainmentOutput {
-		t.Fatal("fixture must carry the rendered owned-loopback OUTPUT rules")
-	}
-	for _, tc := range []struct {
-		name       string
-		readErr    error
-		sysOut     string
-		sysCode    int
-		inputOut   string
-		inputCode  int
-		wantStatus string
-		wantDetail string
-		wantRemedy string
-	}{
-		{"anchor unit missing", os.ErrNotExist, "", 0, "", 0, statusFail, "is missing", "contain install"},
-		{"anchor unreadable", os.ErrPermission, "", 0, "", 0, statusUnknown, "could not be read", "contain verify"},
-		{"anchor confirmed inactive", nil, "inactive\n", 3, "", 0, statusFail, `is "inactive"`, "contain install"},
-		{"anchor state query failed", nil, "Failed to connect to bus: No such file or directory\n", 1, "", 0, statusUnknown, "could not be read", "contain verify"},
-		{"receiver chain confirmed absent", nil, systemctlActive + "\n", 0, "Error: No such file or directory; did you mean chain 'output_filter'?", 1, statusFail, "receiver chain", "contain install"},
-		{"receiver chain query failed", nil, systemctlActive + "\n", 0, "netlink: Error: cache initialization failed: Operation not supported", 1, statusUnknown, "", "contain verify"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := makeProbeEnv(t, func(e *probeEnv) {
-				e.lookupUser = containTestLookup
-				e.ownedLoopback = true
-				e.ownedLoopbackAnchorUnitPath = anchorPath
-				e.readFile = func(path string) ([]byte, error) {
-					if path == anchorPath {
-						if tc.readErr != nil {
-							return nil, tc.readErr
-						}
-						return []byte(renderOwnedLoopbackAnchorUnit()), nil
-					}
-					return nil, os.ErrNotExist
-				}
-				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-					if name == "systemctl" {
-						return tc.sysOut, tc.sysCode, nil
-					}
-					if len(args) > 0 && args[len(args)-1] == ownedLoopbackInputChain {
-						return tc.inputOut, tc.inputCode, nil
-					}
-					return outputChain, 0, nil
-				}
-			})
-			env := newDoctorEnv(t, func([]string) (string, int, error) { return "", 0, nil })
-			env.chainStructure = doctorChainStructureReader(base, env)
-			got := checkOwnedLoopback(t.Context(), env)
-			if got.status != tc.wantStatus || !strings.Contains(got.detail, tc.wantDetail) || !strings.Contains(got.remediation, tc.wantRemedy) {
-				t.Fatalf("got %+v, want status %s detail containing %q remediation containing %q", got, tc.wantStatus, tc.wantDetail, tc.wantRemedy)
-			}
-		})
-	}
-}
-
-func TestContainmentStateConfirmationHelpers(t *testing.T) {
+func TestNFTOutputConfirmsAbsent(t *testing.T) {
 	for out, want := range map[string]bool{
 		"Error: No such file or directory; did you mean chain 'x'?": true,
 		"Error: chain pipelock_owned_input does not exist":          true,
@@ -325,14 +233,6 @@ func TestContainmentStateConfirmationHelpers(t *testing.T) {
 	} {
 		if got := nftOutputConfirmsAbsent(out); got != want {
 			t.Errorf("nftOutputConfirmsAbsent(%q) = %t, want %t", out, got, want)
-		}
-	}
-	for out, want := range map[string]bool{
-		"inactive\n": true, "failed": true, "activating": true,
-		"active": false, "": false, "Failed to connect to bus": false,
-	} {
-		if got := systemctlConfirmedInactiveState(out); got != want {
-			t.Errorf("systemctlConfirmedInactiveState(%q) = %t, want %t", out, got, want)
 		}
 	}
 }
@@ -660,25 +560,26 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 		t.Fatalf("unexpected json:\n%s", out)
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
+		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
 		!strings.Contains(out, `"total":8`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
-	ownedLoopback := 0
+	doorwaySockets := 0
 	dec := json.NewDecoder(strings.NewReader(out))
 	for dec.More() {
 		var rec doctorRecord
 		if err := dec.Decode(&rec); err != nil {
 			t.Fatalf("decode doctor JSON record: %v\n%s", err, out)
 		}
-		if rec.Name == "owned_loopback" {
-			ownedLoopback++
+		if rec.Name == "managed_doorway_sockets" {
+			doorwaySockets++
 			if rec.Status != statusPass {
-				t.Fatalf("owned_loopback status = %q, want %q:\n%s", rec.Status, statusPass, out)
+				t.Fatalf("managed_doorway_sockets status = %q, want %q:\n%s", rec.Status, statusPass, out)
 			}
 		}
 	}
-	if ownedLoopback != 1 {
-		t.Fatalf("owned_loopback records = %d, want exactly 1:\n%s", ownedLoopback, out)
+	if doorwaySockets != 1 {
+		t.Fatalf("managed_doorway_sockets records = %d, want exactly 1:\n%s", doorwaySockets, out)
 	}
 }
 

@@ -146,8 +146,9 @@ func rollbackActions(opts rollbackOpts) []step {
 		// back. runUndo walks this slice in reverse, so executing first means
 		// sitting at a HIGHER index: below the restores, not above them.
 		actionRemoveBrowserCATrust(),
-		actionRemoveOwnedLoopbackAnchor(),
+		actionRemoveNetworkNamespace(),
 		actionRemoveNFTRules(),
+		actionRemoveAgentDisplay(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
@@ -157,31 +158,73 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveUtilityWrappers(),
 		actionRemovePath("login-shell runtime contract", profileScriptPathOrDefault),
 		actionRemoveAgentToolConfigs(),
+		actionRemoveAgentBrowserDefaults(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
 	}
 }
 
-func actionRemoveOwnedLoopbackAnchor() step {
+func actionRemoveNetworkNamespace() step {
 	return step{
-		name: "remove-owned-loopback-anchor",
-		desc: "remove the Pipelock-owned loopback cgroup anchor",
+		name: "remove-agent-network-namespace",
+		desc: "remove the contained-agent network namespace and proxy forwarder units",
 		undo: func(ctx context.Context, env *installEnv) error {
-			if !env.ownedLoopback {
-				return nil
+			var errs []error
+			// Close published endpoints first: their relays join the namespace
+			// removed below.
+			if err := removePublishedServices(ctx, env); err != nil {
+				errs = append(errs, err)
 			}
-			path := env.ownedLoopbackAnchorUnitPath
-			if path == "" {
-				return nil
+			if inv, err := readLoopbackForwarderInventory(env); err != nil {
+				errs = append(errs, err)
+			} else {
+				unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+				for _, record := range inv.Services {
+					socket := record.Unit + ".socket"
+					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", socket); err != nil {
+						errs = append(errs, err)
+					}
+					for _, suffix := range []string{".socket", ".service"} {
+						path := filepath.Join(unitDir, record.Unit+suffix)
+						if err := restoreBackup(env, path); err != nil {
+							errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+						}
+					}
+				}
 			}
-			unit := filepath.Base(path)
-			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
-				return fmt.Errorf("disable owned loopback anchor %s: %w", unit, err)
+			for _, path := range []string{env.proxyForwarderSocketPath, env.proxyForwarderServicePath, env.networkNamespaceUnitPath} {
+				if path == "" {
+					continue
+				}
+				unit := filepath.Base(path)
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+					errs = append(errs, fmt.Errorf("disable %s: %w", unit, err))
+				}
+				if err := restoreBackup(env, path); err != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+				}
 			}
-			if err := restoreBackup(env, path); err != nil {
-				return fmt.Errorf("restore %s: %w", path, err)
+			// Remove the prior release's cgroup anchor too. It is no longer a
+			// containment mechanism and must not survive as a second apparent
+			// source of truth after rollback or upgrade.
+			if path := env.ownedLoopbackAnchorUnitPath; path != "" {
+				unit := filepath.Base(path)
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+					errs = append(errs, fmt.Errorf("disable legacy %s: %w", unit, err))
+				}
+				if err := restoreBackup(env, path); err != nil {
+					errs = append(errs, fmt.Errorf("restore legacy %s: %w", path, err))
+				}
 			}
-			return runOrErr(ctx, env, "systemctl", "daemon-reload")
+			if env.loopbackForwarderInvPath != "" {
+				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
+				}
+			}
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				errs = append(errs, err)
+			}
+			return errors.Join(errs...)
 		},
 	}
 }

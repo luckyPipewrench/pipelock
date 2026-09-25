@@ -187,6 +187,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		readFile: func(p string) ([]byte, error) {
 			return os.ReadFile(filepath.Clean(p))
 		},
+		readDir:   os.ReadDir,
 		writeFile: writeFileAtomic,
 		removeFile: func(p string) error {
 			err := os.Remove(p)
@@ -199,8 +200,10 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		// chown/lchown can't really run under non-root tests; no-op so the
 		// orchestration progresses. Tests that need to assert ownership calls
 		// can substitute their own hooks.
-		chown:  func(string, int, int) error { return nil },
-		lchown: func(string, int, int) error { return nil },
+		chown:                func(string, int, int) error { return nil },
+		lchown:               func(string, int, int) error { return nil },
+		agentBrowserFchown:   func(*os.File, int, int) error { return nil },
+		agentBrowserDirOwner: func(*os.File, int) bool { return true },
 		// Unprivileged stand-in for the descriptor-based owner: keeps the
 		// symlink refusal and the mode change, drops only the chown, which
 		// needs root. The real one is exercised in browser_ca_test.go.
@@ -237,43 +240,49 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:                         out,
-		errOut:                      out,
-		operatorUser:                containInstallOperatorUser,
-		proxyUserName:               "pipelock-proxy",
-		agentUserName:               "pipelock-agent",
-		configDir:                   filepath.Join(root, "etc", "pipelock"),
-		dataDir:                     filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:                  filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath:              filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:                filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:                 filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		nftPersistUnitPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
-		ownedLoopbackAnchorUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock-contained-anchor.service"),
-		nftExpiryServicePath:        filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
-		nftExpiryTimerPath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
-		sudoersPath:                 filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:                filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		systemCABundlePath:          filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
-		caExportPath:                filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:                filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:                filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:               filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		workspaceInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
-		evidenceACLInvPath:          filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
-		guardScriptPath:             filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
-		guardServiceUnit:            filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
-		guardPathUnit:               filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
-		undiciShimPath:              filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
-		profileScriptPath:           filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
-		agentHome:                   filepath.Join(root, "home", "pipelock-agent"),
-		pipelockTarget:              filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		bashPath:                    "/bin/bash",
-		nologinPath:                 "/usr/sbin/nologin",
-		nftPath:                     testNFT,
-		curlPath:                    "/usr/bin/curl",
-		proxyPort:                   8888,
+		out:                           out,
+		errOut:                        out,
+		operatorUser:                  containInstallOperatorUser,
+		proxyUserName:                 "pipelock-proxy",
+		agentUserName:                 "pipelock-agent",
+		configDir:                     filepath.Join(root, "etc", "pipelock"),
+		dataDir:                       filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:                    filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:                filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:                  filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:                   filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		nftPersistUnitPath:            filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
+		networkNamespaceUnitPath:      filepath.Join(root, "etc", "systemd", "system", containedNetworkNamespaceUnit),
+		proxyForwarderSocketPath:      filepath.Join(root, "etc", "systemd", "system", containedProxyForwarderUnit+".socket"),
+		proxyForwarderServicePath:     filepath.Join(root, "etc", "systemd", "system", containedProxyForwarderUnit+".service"),
+		namespaceForwarderServicePath: filepath.Join(root, "etc", "systemd", "system", containedNamespaceForwarderUnit),
+		ownedLoopbackAnchorUnitPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock-contained-anchor.service"),
+		nftExpiryServicePath:          filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.service"),
+		nftExpiryTimerPath:            filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-expiry.timer"),
+		sudoersPath:                   filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:                  filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		systemCABundlePath:            filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
+		caExportPath:                  filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:                  filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:                  filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:                filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:                 filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		loopbackForwarderInvPath:      filepath.Join(root, "etc", "pipelock", "contain", "loopback-forwarders.json"),
+		evidenceACLInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		guardScriptPath:               filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit:              filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:                 filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
+		undiciShimPath:                filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
+		profileScriptPath:             filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
+		agentHome:                     filepath.Join(root, "home", "pipelock-agent"),
+		displayAuthorityPath:          filepath.Join(root, "var", "lib", "pipelock-agent", "Xauthority"),
+		pipelockTarget:                filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		bashPath:                      "/bin/bash",
+		nologinPath:                   "/usr/sbin/nologin",
+		nftPath:                       testNFT,
+		curlPath:                      "/usr/bin/curl",
+		proxyPort:                     8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -284,12 +293,6 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		t.Fatalf("write fake src: %v", err)
 	}
 	env.pipelockBinary = filepath.Join(root, "src", "pipelock")
-	runner.responses[argvFor("systemctl", "is-active", filepath.Base(env.ownedLoopbackAnchorUnitPath))] = struct {
-		out  string
-		code int
-		err  error
-	}{out: systemctlActive + "\n"}
-
 	// Pre-create the wrapperDir so wrapper writes don't fail.
 	if err := os.MkdirAll(env.wrapperDir, 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir wrapperDir: %v", err)
@@ -322,21 +325,8 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	}
 	runner.on(argvFor(testSudoCmd, "-n", "-u", env.proxyUserName, "--", env.pipelockTarget, "tls", "show-ca"), testPEMCA(t), 0, nil)
 
-	// Answers for the anchor and receiver-chain queries, so a test that DOES
-	// enable owned loopback has them available.
-	//
-	// This fixture leaves ownedLoopback false and therefore does not exercise
-	// those paths itself. Enabling it here fails 15 tests that build their live
-	// nft chain with the legacy renderer and then assert no drift: the new
-	// drift check correctly reports drift against a chain carrying no marking
-	// rules, so each failure is a true positive. Migrating those fixtures is
-	// tracked separately; the owned-loopback paths are covered directly in
-	// owned_loopback_test.go.
-	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), ownedLoopbackInputChain),
-		renderOwnedLoopbackInputChainTable(env.nftTableOrDefault()), 0, nil)
-	anchorUnit := filepath.Base(env.ownedLoopbackAnchorUnitPath)
-	runner.on(argvFor(testSystemctl, "is-active", anchorUnit), systemctlActive+"\n", 0, nil)
-	runner.on(argvFor(testSystemctl, "is-enabled", anchorUnit), systemctlEnabled+"\n", 0, nil)
+	runner.on(argvFor(env.nftPath, "-n", "list", "chain", "inet", env.nftTableOrDefault(), legacyOwnedLoopbackInputChain),
+		"No such file or directory", 1, nil)
 
 	nss := &fakeNSS{db: filepath.Join(env.agentHome, nssDBRelLegacy()), entries: make(map[string]fakeNSSEntry)}
 	env.lookPath = func(string) (string, error) { return "/usr/bin/certutil", nil }
@@ -1472,6 +1462,83 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	assertManagedChainReload(t, runner, env)
 }
 
+func TestStepInstallNFTRulesNewTableFailureNeedsRollback(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	body := renderNFTRules(1000, 988, 987, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, nil)
+	changed, err := stepInstallNFTRulesApply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "daemon-reload") {
+		t.Fatalf("later-step failure = %v, want daemon-reload error", err)
+	}
+	if !changed {
+		t.Fatal("new table was loaded but rollback was not requested")
+	}
+	loaded := false
+	for _, call := range runner.calls {
+		if call.name == testNFT && strings.Join(call.args, " ") == "-f "+env.nftRulesPath {
+			loaded = true
+		}
+	}
+	if !loaded {
+		t.Fatal("positive control: new nft table was not loaded")
+	}
+}
+
+func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	live := `table inet pipelock_containment {
+	chain output_filter { type filter hook output priority filter; policy accept;
+	meta skuid 987 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 70
+	meta skuid 987 oifname "lo" ip6 daddr ::1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 ct mark set 0x504c4b01 accept # handle 71
+	}
+}`
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	runner.on(argvFor(testNFT, "-n", "list", "chain", "inet", defaultNFTTable, legacyOwnedLoopbackInputChain), "No such file or directory", 1, nil)
+
+	var reloadScript string
+	writeFile := env.writeFile
+	env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == managedChainReloadPath(env) {
+			reloadScript = string(data)
+		}
+		return writeFile(path, data, mode)
+	}
+
+	applied, err := stepInstallNFTRules().apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("receiverless owned-loopback marks must trigger canonical rules reload")
+	}
+	for _, handle := range []int{70, 71} {
+		if !strings.Contains(reloadScript, "delete rule inet pipelock_containment output_filter handle "+itoa(handle)) {
+			t.Fatalf("reload script did not remove stale mark handle %d:\n%s", handle, reloadScript)
+		}
+	}
+	if strings.Contains(reloadScript, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) {
+		t.Fatalf("receiverless migration attempted to delete an absent receiver chain:\n%s", reloadScript)
+	}
+	assertManagedChainReload(t, runner, env)
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
@@ -2213,13 +2280,14 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 35 steps total after combining the runtime
+	// Sanity: the install flow has 38 steps total after combining the runtime
 	// contract steps, credential guard, operator evidence ACL, browser CA
-	// trust, config-mode repair, and final readiness gate. Changing this count
-	// changes documented dry-run output.
+	// trust, agent-browser defaults, config-mode repair, published services,
+	// and final readiness gate. Changing this count changes documented dry-run
+	// output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 35 {
-		t.Errorf("installSteps count: got %d, want 35", len(steps))
+	if len(steps) != 38 {
+		t.Errorf("installSteps count: got %d, want 38", len(steps))
 	}
 }
 
@@ -3094,4 +3162,45 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A UID change: the rules file on disk and the live chain were rendered with
+// earlier UIDs. Install must pass the UIDs from that file's header to reload,
+// so the reload script removes every rule of the old managed block.
+func TestStepInstallNFTRules_ReloadRemovesOldBlockAfterUIDChange(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, oldProxyUID, oldAgentUID := 1000, 1038, 1037
+	old := renderNFTRules(operatorUID, oldProxyUID, oldAgentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(old), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	live := nftListingFromRulesBodyForTest(old, 40)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	reloadPath := managedChainReloadPath(env)
+	var script string
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == reloadPath {
+			script = string(data)
+		}
+		return originalWrite(path, data, mode)
+	}
+
+	if _, err := stepInstallNFTRules().apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertManagedChainReload(t, runner, env)
+	oldRules := nftRulesWithHandles(live)
+	if len(oldRules) < 5 {
+		t.Fatalf("fixture has too few old rules: %d", len(oldRules))
+	}
+	for _, rule := range oldRules {
+		if !strings.Contains(script, fmt.Sprintf("delete rule inet %s %s handle %d\n", defaultNFTTable, defaultNFTChain, rule.handle)) {
+			t.Fatalf("old-UID rule %q (handle %d) survived the reload:\n%s", rule.line, rule.handle, script)
+		}
+	}
 }

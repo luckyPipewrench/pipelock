@@ -47,13 +47,15 @@ type containRunOptions struct {
 	port                  int
 	postureOutput         string
 	dryRun                bool
+	servicePrestart       bool
 	workspaceDiffCapBytes int64
 }
 
 type containRunEnv struct {
-	probe       *probeEnv
-	launch      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
-	emitPosture func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error)
+	probe                  *probeEnv
+	launch                 func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
+	emitPosture            func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error)
+	assertServiceNamespace func(context.Context, netnsAssertEnv) error
 	// loadConfig loads the ONE config snapshot reused for both posture
 	// capsule emission and workspace-statement signing key resolution (H2).
 	// Defaults to config.Load; overridable in tests that stub emitPosture
@@ -68,10 +70,11 @@ type postureEmission struct {
 
 func defaultContainRunEnv() containRunEnv {
 	return containRunEnv{
-		probe:       defaultProbeEnv(),
-		launch:      launchContainedAgent,
-		emitPosture: emitContainRunPosture,
-		loadConfig:  func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
+		probe:                  defaultProbeEnv(),
+		launch:                 launchContainedAgent,
+		emitPosture:            emitContainRunPosture,
+		assertServiceNamespace: assertManagedNetworkNamespace,
+		loadConfig:             func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
 	}
 }
 
@@ -155,6 +158,18 @@ func runContainRun(
 	if !addToolNamePattern.MatchString(tool) {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("invalid tool name %q (must match %s)", tool, containToolNameRegex))
 	}
+	if opts.servicePrestart {
+		if env.assertServiceNamespace == nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("service posture namespace assertion is unavailable"))
+		}
+		assertEnv := defaultNetnsAssertEnv()
+		assertEnv.agentUser = env.probe.agentUserName
+		assertEnv.proxyPort = env.probe.port
+		if err := env.assertServiceNamespace(ctx, assertEnv); err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("service posture signer is outside the managed agent namespace: %w", err))
+		}
+		env.probe.postureLauncher = servicePostureLauncher
+	}
 
 	// Read the workspace inventory ONCE, before preflight, so the workspace probe
 	// checks readability and expiry of every recorded grant in the same pass, and
@@ -171,7 +186,11 @@ func runContainRun(
 	grants := grantsForAgent(inv.Workspaces, env.probe.agentUserName)
 	env.probe.workspaceGrants = grants
 
-	_, _ = fmt.Fprintln(stdout, "pipelock contain run: verifying containment preflight")
+	commandLabel := "pipelock contain run"
+	if opts.servicePrestart {
+		commandLabel = "pipelock contain service-posture"
+	}
+	_, _ = fmt.Fprintf(stdout, "%s: verifying containment preflight\n", commandLabel)
 	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
 	if err != nil {
 		return err
@@ -189,6 +208,7 @@ func runContainRun(
 	env.probe.postureProofPath = proofPath
 
 	contract := buildSessionContract(env.probe, tool, entries, grants, proofPath)
+	contract.Command = commandLabel
 	// The contract is the operator's review surface. If it cannot be written
 	// (closed pipe, failed writer) nobody saw the boundary, so refuse to go on
 	// rather than emit a capsule and launch unreviewed (fail closed).
@@ -222,11 +242,15 @@ func runContainRun(
 	// this warns and proceeds with the statement unavailable for this
 	// session rather than refusing containment the operator otherwise
 	// qualifies for.
-	beforeSnapshots, snapErr := snapshotWorkspaces(grants, opts.workspaceDiffCapBytes)
-	if snapErr != nil {
-		beforeSnapshots = nil
-		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", snapErr)
-		_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, snapErr.Error())
+	var beforeSnapshots map[string]workspacediff.Manifest
+	if !opts.servicePrestart {
+		var snapErr error
+		beforeSnapshots, snapErr = snapshotWorkspaces(grants, opts.workspaceDiffCapBytes)
+		if snapErr != nil {
+			beforeSnapshots = nil
+			_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", snapErr)
+			_, _ = fmt.Fprintf(stdout, "%s reason=%q\n", workspaceStatementUnavailableLine, snapErr.Error())
+		}
 	}
 
 	// Resolve the workspace-statement signing key BEFORE launch, from the
@@ -248,7 +272,12 @@ func runContainRun(
 	if runCfgErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
 	}
-
+	xvfbPresent := false
+	if env.probe.stat != nil {
+		_, xvfbErr := env.probe.stat(env.probe.xvfbPath)
+		xvfbPresent = xvfbErr == nil
+	}
+	env.probe.display = resolveLaunchDisplay(runCfg, env.probe.display, xvfbPresent)
 	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(runCfg)
 	if len(grants) > 0 && workspaceSigningKeyErr != nil {
 		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", workspaceSigningKeyErr)
@@ -270,10 +299,14 @@ func runContainRun(
 	}
 	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s posture capsule: %w", commandLabel, err))
 	}
 	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posture.path)
 	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)
+	if opts.servicePrestart {
+		_, _ = fmt.Fprintln(stdout, "pipelock contain service-posture: signed evidence for the pending unprivileged service launch")
+		return nil
+	}
 	_, _ = fmt.Fprintf(stdout, "pipelock contain run: launching %s as %s\n", tool, env.probe.agentUserName)
 
 	launchErr := env.launch(ctx, env.probe, args, stdin, stdout, stderr)
@@ -431,6 +464,7 @@ func containRunNow(env *probeEnv) time.Time {
 // read), so the printed contract can never describe a boundary different from
 // the one that is enforced.
 type sessionContract struct {
+	Command         string
 	Tool            string
 	AgentUser       string
 	ProxyURL        string
@@ -509,7 +543,11 @@ func (f *firstErrWriter) Write(p []byte) (int, error) {
 // so a caller can refuse to launch a boundary the operator never saw.
 func renderSessionContract(w io.Writer, c sessionContract) error {
 	out := &firstErrWriter{w: w}
-	_, _ = fmt.Fprintf(out, "pipelock contain run: session contract for %s\n", c.Tool)
+	commandLabel := c.Command
+	if commandLabel == "" {
+		commandLabel = "pipelock contain run"
+	}
+	_, _ = fmt.Fprintf(out, "%s: session contract for %s\n", commandLabel, c.Tool)
 	_, _ = fmt.Fprintf(out, "  agent user:       %s\n", c.AgentUser)
 	_, _ = fmt.Fprintf(out, "  proxy egress:     %s (loopback proxy only; direct egress denied by nftables)\n", c.ProxyURL)
 	_, _ = fmt.Fprintf(out, "  posture capsule:  %s\n", c.PostureCapsule)
@@ -681,6 +719,9 @@ func parseAgentGIDs(ids []string, primary uint32) ([]uint32, error) {
 }
 
 func emitContainRunPosture(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error) {
+	if err := verifyAgentCannotReadSigningKey(context.Background(), env, cfg); err != nil {
+		return postureEmission{}, err
+	}
 	launchEvidence, err := containRunLaunchEvidence(env, args)
 	if err != nil {
 		return postureEmission{}, fmt.Errorf("build launch evidence: %w", err)
@@ -740,7 +781,7 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 		return posturepkg.ContainLaunchEvidence{}, err
 	}
 
-	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port, env.postureProofPath)
+	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port, env.postureProofPath, env.display)
 	envVars := make([]string, 0, len(launchEnv))
 	for _, entry := range launchEnv {
 		name, _, ok := strings.Cut(entry, "=")
@@ -758,8 +799,12 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("hash env: %w", err)
 	}
 
+	launcher := env.postureLauncher
+	if launcher == "" {
+		launcher = defaultLaunchScript
+	}
 	return posturepkg.ContainLaunchEvidence{
-		Launcher:     defaultLaunchScript,
+		Launcher:     launcher,
 		AgentUser:    env.agentUserName,
 		TargetUID:    strconv.FormatUint(uid, 10),
 		TargetGID:    strconv.FormatUint(gid, 10),

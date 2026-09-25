@@ -79,6 +79,116 @@ func TestActionRemoveAgentToolConfigs_RestoresPreExistingBackups(t *testing.T) {
 	}
 }
 
+func TestActionRemoveNetworkNamespaceRestoresOperatorState(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	record := loopbackForwarderRecord{
+		Unit:      loopbackForwarderUnitBase("127.0.0.1", 9200),
+		Host:      "127.0.0.1",
+		Port:      9200,
+		Owner:     "search-team",
+		Reason:    "local retrieval",
+		ExpiresAt: futureExpiryForTest,
+	}
+	data, err := json.MarshalIndent(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	dynamicSocket := filepath.Join(unitDir, record.Unit+".socket")
+	dynamicService := filepath.Join(unitDir, record.Unit+".service")
+	for _, path := range []string{dynamicSocket, dynamicService, env.proxyForwarderSocketPath, env.proxyForwarderServicePath, env.networkNamespaceUnitPath} {
+		if err := os.WriteFile(path, []byte("managed\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operatorBody := "[Service]\nExecStart=/usr/local/bin/operator-owned-listener\n"
+	for _, path := range []string{dynamicService, env.proxyForwarderServicePath} {
+		if err := os.WriteFile(path+".bak", []byte(operatorBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(env.ownedLoopbackAnchorUnitPath, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.ownedLoopbackAnchorUnitPath+".bak", []byte(operatorBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err != nil {
+		t.Fatalf("remove network namespace: %v", err)
+	}
+	for _, path := range []string{dynamicService, env.proxyForwarderServicePath, env.ownedLoopbackAnchorUnitPath} {
+		body, err := os.ReadFile(filepath.Clean(path))
+		if err != nil || string(body) != operatorBody {
+			t.Fatalf("operator unit %s = %q, %v", path, body, err)
+		}
+	}
+	for _, path := range []string{dynamicSocket, env.proxyForwarderSocketPath, env.networkNamespaceUnitPath, env.ownedLoopbackAnchorUnitPath + ".bak", env.loopbackForwarderInvPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("managed path %s survived rollback: %v", path, err)
+		}
+	}
+	for _, call := range []string{
+		"systemctl disable --now " + record.Unit + ".socket",
+		"systemctl disable --now " + filepath.Base(env.proxyForwarderSocketPath),
+		"systemctl daemon-reload",
+	} {
+		if !fakeRunnerCalled(runner, call) {
+			t.Fatalf("missing cleanup call %q: %v", call, runner.calls)
+		}
+	}
+}
+
+func TestActionRemoveNetworkNamespaceAggregatesCleanupFailures(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	record := loopbackForwarderRecord{Unit: loopbackForwarderUnitBase("127.0.0.1", 9200), Host: "127.0.0.1", Port: 9200}
+	data, err := json.Marshal(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	dynamicService := filepath.Join(unitDir, record.Unit+".service")
+	for _, path := range []string{filepath.Join(unitDir, record.Unit+".socket"), dynamicService, env.proxyForwarderSocketPath, env.proxyForwarderServicePath, env.ownedLoopbackAnchorUnitPath} {
+		if err := os.WriteFile(path, []byte("managed\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.networkNamespaceUnitPath = ""
+	runner.on(argvFor("systemctl", "disable", "--now", record.Unit+".socket"), "", 1, errors.New("dynamic disable failed"))
+	runner.on(argvFor("systemctl", "disable", "--now", filepath.Base(env.proxyForwarderSocketPath)), "", 1, errors.New("proxy disable failed"))
+	runner.on(argvFor("systemctl", "disable", "--now", filepath.Base(env.ownedLoopbackAnchorUnitPath)), "", 1, errors.New("legacy disable failed"))
+	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, errors.New("reload failed"))
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == dynamicService || path == env.proxyForwarderSocketPath || path == env.ownedLoopbackAnchorUnitPath || path == env.loopbackForwarderInvPath {
+			return errors.New("remove failed")
+		}
+		return originalRemove(path)
+	}
+
+	err = actionRemoveNetworkNamespace().undo(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected aggregated cleanup failure")
+	}
+	for _, want := range []string{"dynamic disable failed", "proxy disable failed", "legacy disable failed", "remove failed", "reload failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("cleanup error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func assertRestorePathPositiveControl(t *testing.T) {
 	t.Helper()
 	env, _, _ := newFakeEnv(t)

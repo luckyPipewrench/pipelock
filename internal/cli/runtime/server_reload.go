@@ -110,6 +110,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 
 	oldCfg := s.proxy.CurrentConfig()
 	loopbackServicesChanged := false
+	publishedServicesChanged := false
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at
@@ -170,6 +171,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// reconcile.
 		loopbackServicesChanged = s.containmentManaged &&
 			!reflect.DeepEqual(oldCfg.Containment.LoopbackServices, newCfg.Containment.LoopbackServices)
+		// Published services are reconciled by the same command and are
+		// equally untouched by a config reload.
+		publishedServicesChanged = s.containmentManaged &&
+			!reflect.DeepEqual(oldCfg.Containment.PublishedServices, newCfg.Containment.PublishedServices)
 		// Emit sinks own live workers, queues, network connections and, for the
 		// durable forwarder, exclusive spool/cursor locks. Replacing them after
 		// the proxy publishes a candidate can make Reload return an error after
@@ -636,6 +641,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	if loopbackServicesChanged {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
 			"run `pipelock contain reload-nft-rules` as root to apply the change to the live nftables boundary")
+	}
+	if publishedServicesChanged {
+		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.published_services changed — this reload updates policy only; "+
+			"run `pipelock contain reload-nft-rules` as root to open or close the published endpoints")
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())

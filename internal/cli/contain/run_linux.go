@@ -98,6 +98,7 @@ func launchContainedAgent(
 		homeDir:          homeDir,
 		proxyPort:        env.port,
 		postureProofPath: env.postureProofPath,
+		display:          env.display,
 		uid:              uint32(uid),
 		gid:              uint32(gid),
 		groups:           groups,
@@ -143,6 +144,7 @@ type containedAgentCommandOptions struct {
 	homeDir          string
 	proxyPort        int
 	postureProofPath string
+	display          string
 	uid              uint32
 	gid              uint32
 	groups           []uint32

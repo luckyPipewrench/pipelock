@@ -230,8 +230,9 @@ func TestBrowserDefaultsVerifyStates(t *testing.T) {
 }
 
 func TestBrowserDefaultsRollbackAfterOperatorReformat(t *testing.T) {
+	assertBrowserRollbackControl(t)
 	home := t.TempDir()
-	path, _ := browserPaths(home)
+	path, state := browserPaths(home)
 	if err := installBrowserDefaults(home); err != nil {
 		t.Fatal(err)
 	}
@@ -240,19 +241,32 @@ func TestBrowserDefaultsRollbackAfterOperatorReformat(t *testing.T) {
 	if err := os.WriteFile(path, []byte(reformatted), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "resolve manually") {
+		t.Fatalf("reformatted flag should require manual resolution: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != reformatted {
+		t.Fatalf("reformatted config changed: %q, %v", got, err)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("ownership record removed: %v", err)
+	}
+}
+
+func assertBrowserRollbackControl(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	path, state := browserPaths(home)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
 	if err := rollbackBrowserDefaults(home); err != nil {
-		t.Fatal(err)
+		t.Fatalf("unmodified rollback: %v", err)
 	}
-	obj, _, err := readBrowserConfig(path)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unmodified config was not removed: %v", err)
 	}
-	args, _ := browserArgs(obj)
-	if hasBrowserFlag(args) {
-		t.Fatalf("flag remains after rollback: %q", args)
-	}
-	if args != "--lang=en-US" {
-		t.Fatalf("operator arg lost: %q", args)
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unmodified record was not removed: %v", err)
 	}
 }
 
@@ -354,23 +368,22 @@ func TestBrowserDefaultsRollbackRefusals(t *testing.T) {
 // The operator removed their own args after install but left ours: rollback
 // removes only Pipelock's flag and does not resurrect what the operator removed.
 func TestBrowserDefaultsRollbackKeepsOperatorRemoval(t *testing.T) {
+	assertBrowserRollbackControl(t)
 	home := t.TempDir()
-	path, _ := browserPaths(home)
+	path, state := browserPaths(home)
 	writeBrowserTestFile(t, path, `{"args":"--lang=en-US"}`, 0o600)
 	if err := installBrowserDefaults(home); err != nil {
 		t.Fatal(err)
 	}
 	writeBrowserTestFile(t, path, `{"args":"`+browserFlag+`"}`, 0o600)
-	if err := rollbackBrowserDefaults(home); err != nil {
-		t.Fatal(err)
+	if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "resolve manually") {
+		t.Fatalf("moved flag should require manual resolution: %v", err)
 	}
-	obj, _, err := readBrowserConfig(path)
-	if err != nil {
-		t.Fatal(err)
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != `{"args":"`+browserFlag+`"}` {
+		t.Fatalf("operator edit changed: %q, %v", got, err)
 	}
-	if _, present := obj["args"]; present {
-		args, _ := browserArgs(obj)
-		t.Fatalf("args = %q, want the key removed", args)
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("ownership record removed: %v", err)
 	}
 }
 
@@ -776,23 +789,27 @@ func TestBrowserDefaultsRejectNull(t *testing.T) {
 // Rollback removes only the copy install appended; an identical flag the
 // operator added afterwards stays.
 func TestBrowserDefaultsRollbackKeepsOperatorDuplicate(t *testing.T) {
+	assertBrowserRollbackControl(t)
 	home := t.TempDir()
-	path, _ := browserPaths(home)
+	path, state := browserPaths(home)
 	writeBrowserTestFile(t, path, `{"args":"--lang=en-US"}`, 0o600)
 	if err := installBrowserDefaults(home); err != nil {
 		t.Fatal(err)
 	}
 	writeBrowserTestFile(t, path, `{"args":"--lang=en-US,`+browserFlag+`,`+browserFlag+`"}`, 0o600)
-	if err := rollbackBrowserDefaults(home); err != nil {
-		t.Fatal(err)
+	if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "resolve manually") {
+		t.Fatalf("duplicate flags should require manual resolution: %v", err)
 	}
 	obj, _, err := readBrowserConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	args, _ := browserArgs(obj)
-	if strings.Count(args, browserFlag) != 1 {
-		t.Fatalf("args = %q, want the operator's copy kept", args)
+	if strings.Count(args, browserFlag) != 2 {
+		t.Fatalf("args = %q, want both ambiguous copies kept", args)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("ownership record removed: %v", err)
 	}
 }
 

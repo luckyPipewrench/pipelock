@@ -158,6 +158,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveUtilityWrappers(),
 		actionRemovePath("login-shell runtime contract", profileScriptPathOrDefault),
 		actionRemoveAgentToolConfigs(),
+		actionRemoveAgentBrowserDefaults(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
 	}

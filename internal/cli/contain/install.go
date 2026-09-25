@@ -349,6 +349,9 @@ func installSteps(opts installOpts) []step {
 		stepWriteUtilityWrappers(),
 		stepWriteProfileScript(),
 		stepWriteAgentToolConfigs(),
+		// Chromium launch default for every contained agent that drives a browser
+		// through agent-browser. Its ownership record lives under configDir.
+		stepWriteAgentBrowserDefaults(),
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
 		stepWaitPipelockReady(),

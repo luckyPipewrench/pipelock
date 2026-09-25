@@ -134,7 +134,7 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 9. Drop the `plk-launch` wrapper, the root-owned contained launcher, and one wrapper per registered tool into `/usr/local/bin/`.
 10. Drop the known-good `pipelock-curl` / `pipelock-python` / `pipelock-node` wrappers into `/usr/local/bin/`.
 11. Write the login-shell runtime contract to `/etc/profile.d/pipelock-contain.sh`.
-12. Write per-tool proxy + CA config (`git` / `npm` / `pip` / `cargo`) into the agent home.
+12. Write per-tool proxy + CA config (`git` / `npm` / `pip` / `cargo`) into the agent home, then merge the Chromium launch default into the agent's agent-browser user config (see [Browser launch default](#browser-launch-default)).
 13. Write the wrapper inventory, then install the narrowly scoped sudoers entry that lets the operator invoke the root-owned contained launcher without a password prompt; it starts only the registered tool as `pipelock-agent` in the private network namespace.
 
 On systemd 253 or newer, newly installed `pipelock.service` units are `Type=notify-reload`, so `sudo systemctl reload pipelock` sends SIGHUP and waits for the daemon to finish evaluating the config. Older systemd (Debian 12, RHEL 9 and Ubuntu 22.04 ship 252 or earlier) cannot load that unit type, so `contain install` renders the previous `Type=simple` unit there; its reload only confirms signal delivery, and the verdict is in the journal. The version that decides is the running manager's, read from PID 1, not the installed `systemctl` binary's, so a host that upgraded the systemd package without rebooting keeps the older unit until it reboots and `contain install` runs again. A version the installer cannot read gets the legacy unit too, because that shape loads on every systemd. On the notify-reload unit only, exit status 0 means evaluation finished, not that the candidate policy was applied; check `sudo systemctl status pipelock` for the `Status` line and `sudo journalctl -u pipelock` for the verdict. A rejected trust expansion leaves the active policy unchanged and requires `sudo systemctl restart pipelock` to take effect.
@@ -397,7 +397,17 @@ The contract has four parts:
 
 4. **Per-tool config files** written into the agent home (`~/.gitconfig`, `~/.npmrc`, `~/.config/pip/pip.conf`, `~/.cargo/config.toml`). These tools read their own config regardless of environment, so config-driven invocations are proxy-correct on every exec path. The managed `.npmrc` sets `ignore-scripts=true`, and the runtime environment sets `npm_config_ignore_scripts=1`, so an untrusted project `.npmrc` cannot re-enable `package.json` lifecycle scripts during dependency installation on the contained runtime path. This is an install default, not an execution boundary: a caller can deliberately unset the environment variable or pass a command-line override, and a bare non-login npm invocation outside `plk-launch` does not inherit the runtime environment. Packages that compile or download native components during install will need an explicit override. For a known dependency, run that install as `npm install --ignore-scripts=false`; the command-line override applies only to that npm command, and the containment boundary still applies. Existing installations receive this contract after `pipelock contain install` is rerun; `contain upgrade` updates the binary but does not rewrite agent tool configuration.
 
+5. **Browser launch default** (`~/.agent-browser/config.json` in the agent home). See [Browser launch default](#browser-launch-default).
+
 A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
+
+### Browser launch default
+
+Under automation, Chromium advertises an automation marker that managed bot challenges can loop on. `pipelock contain install` adds `--disable-blink-features=AutomationControlled` to the `args` string in agent-browser's user config, `~/.agent-browser/config.json` in the contained agent's home. Every agent launched under containment runs as that one account, so every contained agent that drives Chromium through agent-browser gets the default, whichever agent it is. Existing keys and launch arguments are kept (comma- and newline-separated `args` both work), an existing file is backed up to `config.json.bak` before the change, and a flag that is already present is left alone. A file that is not valid JSON, an `args` value that is not a string, or a symlink at `~/.agent-browser` or at the file itself stops the install before anything is written; repair it and rerun `pipelock contain install`.
+
+This is the lowest-precedence setting agent-browser reads. A project `agent-browser.json`, an `AGENT_BROWSER_ARGS` value, or a CLI flag the agent passes replaces it, so an agent that sets its own launch arguments keeps them. That is also why containment does not export `AGENT_BROWSER_ARGS`: the variable would replace the agent's own arguments. Agents that launch Playwright's or Puppeteer's bundled browser directly read neither this file nor an environment variable for launch arguments; only the agent's own launch code can add the flag there.
+
+Install records what it added in `/etc/pipelock/contain/agent-browser-defaults.json`, a root-managed file the contained agent cannot write. `pipelock contain rollback` consults only that record: it removes Pipelock's copy of the flag, restores the previous `args` value exactly when nothing else changed, keeps edits made since install, and deletes the file only when install created it and nothing else was added. A flag that was already present before install has no record and is never removed. `contain verify` does not report this setting; it is a launch default, not part of the containment boundary.
 
 This makes compatible tooling work; it does **not** widen egress. Direct (proxy-bypassing) connections from the agent user remain blocked by the nftables owner-match rule.
 
@@ -492,7 +502,7 @@ Idempotently undoes `install`. Safe to re-run on a partial install, every step c
 sudo pipelock contain rollback
 ```
 
-Removes the `plk-*` and `pipelock-*` wrappers, the node undici shim, the `/etc/profile.d` runtime-contract script, the per-tool agent config, the sudoers entry, nftables rules, systemd unit migration, and the `pipelock-proxy` / `pipelock-agent` users by default. It preserves `/etc/pipelock` and `/var/lib/pipelock` unless you pass `--keep-data=false`.
+Removes the `plk-*` and `pipelock-*` wrappers, the node undici shim, the `/etc/profile.d` runtime-contract script, the per-tool agent config, Pipelock's recorded agent-browser launch flag, the sudoers entry, nftables rules, systemd unit migration, and the `pipelock-proxy` / `pipelock-agent` users by default. It preserves `/etc/pipelock` and `/var/lib/pipelock` unless you pass `--keep-data=false`.
 
 Flags:
 

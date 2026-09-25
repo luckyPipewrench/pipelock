@@ -1046,7 +1046,7 @@ func TestResetDelegationWithInvalidUTF8IssuerVerifiesAfterParse(t *testing.T) {
 		ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("f", 32),
 	})
 	if err != nil {
-		t.Skipf("issuer with invalid UTF-8 refused at mint: %v", err)
+		t.Fatalf("MintResetDelegation: %v", err)
 	}
 	parsed, err := ParseResetDelegation(resetDelegationBytes(t, d))
 	if err != nil {

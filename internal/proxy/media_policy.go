@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/media"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const contentTypeOctetStream = "application/octet-stream"
@@ -170,6 +171,25 @@ type mediaPolicyOptions struct {
 	// headers, when supplied, lets the SVG floor see every Content-Type value
 	// the client will combine, not only the first one.
 	headers http.Header
+	// host is the response host. Image metadata is left intact for a shipped
+	// bot-verification provider, whose challenge may read its images byte for
+	// byte; every type, size and parse check still applies.
+	host string
+}
+
+// isChallengeProviderHost reports whether host is a shipped bot-verification
+// provider. Their challenge assets are consumed byte for byte by the
+// challenge, so Pipelock does not rewrite them.
+func isChallengeProviderHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, provider := range config.ShippedChallengeProviderHosts() {
+		if scanner.MatchDomain(host, provider) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyMediaPolicy evaluates a response body against cfg.MediaPolicy and
@@ -327,7 +347,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 			// potentially booby-trapped content. The error surfaces in the
 			// exposure event for operator visibility.
 			exposure.Blocked = true
-			exposure.BlockReason = mediaParseBlockReason(mt, err)
+			exposure.BlockReason = mediaParseBlockReason(mt, body, err)
 			return MediaPolicyVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -335,11 +355,16 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 				Exposure:    exposureOrNil(cfg, exposure),
 			}
 		}
-		stripResult = sr
-		outBody = sr.Data
-		exposure.Format = sr.Format
-		exposure.MetadataRemoved = sr.SegmentsRemoved
-		exposure.BytesRemoved = sr.BytesRemoved
+		// A bot-verification challenge may read its own images byte for byte,
+		// so a challenge provider's image is parsed, and refused if malformed,
+		// but forwarded exactly as received.
+		if !isChallengeProviderHost(option.host) {
+			stripResult = sr
+			outBody = sr.Data
+			exposure.Format = sr.Format
+			exposure.MetadataRemoved = sr.SegmentsRemoved
+			exposure.BytesRemoved = sr.BytesRemoved
+		}
 	}
 
 	return MediaPolicyVerdict{
@@ -350,9 +375,9 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	}
 }
 
-func mediaParseBlockReason(mediaType string, err error) string {
+func mediaParseBlockReason(mediaType string, body []byte, err error) string {
 	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
-		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mediaType, media.DescribeBytes(body))
 	}
 	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }

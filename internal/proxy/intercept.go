@@ -805,6 +805,8 @@ func newInterceptHandler(
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: fail-closed block is still enforced below.
+				case urlResult.IsEntropyOnly():
+					// Heuristic evidence is visible but score-neutral.
 				case urlResult.IsConfigMismatch():
 					interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 				default:
@@ -833,7 +835,10 @@ func newInterceptHandler(
 			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 			baseAction := config.ActionWarn
 			level := interceptEscalationLevel(ic)
-			effectiveAction := decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
+			effectiveAction := baseAction
+			if !urlResult.IsEntropyOnly() {
+				effectiveAction = decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
+			}
 			if effectiveAction == config.ActionBlock {
 				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
@@ -844,6 +849,7 @@ func newInterceptHandler(
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: see scan path above for rationale.
+				case urlResult.IsEntropyOnly():
 				case urlResult.IsConfigMismatch():
 					interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 				default:
@@ -870,7 +876,7 @@ func newInterceptHandler(
 			// errors are score-neutral even here - resolver failures are not
 			// evidence of misbehavior and must not feed adaptive scoring via
 			// the audit path either.
-			if !urlResult.IsInfrastructureError() {
+			if !urlResult.IsAdaptiveNeutral() {
 				interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
 			}
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
@@ -1155,16 +1161,26 @@ func newInterceptHandler(
 					scannerLabel = scannerLabelBodyEntropy
 				}
 
+				blockCause := blockingBodyFinding(result, r.URL.Hostname(), ic.Config)
 				reason := result.Reason
 				if reason == "" {
+					// Name the finding that actually blocked; a finding that only
+					// warns can ride along with it. Without a single blocking
+					// finding, keep the injection, secret, entropy order.
 					injectionNames := responseMatchNames(result.InjectionMatches)
+					patternNames := dlpMatchNames(result.DLPMatches)
 					switch {
+					case blockCause == bodyBlockCauseEntropy:
+						reason = bodyEntropyReason(result)
+					case blockCause == bodyBlockCauseDLP:
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case len(injectionNames) > 0:
 						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+					case len(patternNames) > 0:
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					case result.EntropyFinding != nil:
 						reason = bodyEntropyReason(result)
 					default:
-						patternNames := dlpMatchNames(result.DLPMatches)
 						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 					}
 				}
@@ -1176,6 +1192,11 @@ func newInterceptHandler(
 				// Address protection findings and fail-closed body errors are NOT
 				// exempted - only DLP pattern matches.
 				bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, result, r.URL.Hostname(), ic.Config)
+				// Classify the block by its cause after the exemption decision,
+				// which keeps its own label rules.
+				if result.RedactionBlockReason == "" {
+					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
+				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {
@@ -2257,7 +2278,7 @@ func newInterceptHandler(
 		// Media policy on intercepted TLS responses. Runs after shield so
 		// HTML/JS rewriting happens on the original body and image/audio/
 		// video responses get transport-agnostic enforcement.
-		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: ic.TargetHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
 		if mediaVerdict.Blocked {

@@ -618,7 +618,7 @@ func TestCaptureMetadata_WebSocketTransport(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, "ws://"+ln.Addr().String()+"/ws?url=ws://"+backendAddr)
+	conn, err := wsTestDial(ctx, ws.Dialer{Extensions: nil}, "ws://"+ln.Addr().String()+"/ws?url=ws://"+backendAddr)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}

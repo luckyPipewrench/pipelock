@@ -327,7 +327,7 @@ func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 	actx := audit.LogContext{}
 
 	tail := strings.Repeat("TAIL", 80)
-	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script>` + tail + `</body></html>`)
+	body := []byte(`<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a>` + tail + `</body></html>`)
 	result, summary, _, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
 	if blocked != nil {
 		t.Error("scan_head should not block")

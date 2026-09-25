@@ -366,9 +366,10 @@ func TestShimInjection_AfterHead(t *testing.T) {
 		t.Error("shim script is not immediately after <head>")
 	}
 
-	// Check that both shims are present.
-	if !strings.Contains(res.Content, "var _fetch=window.fetch") {
-		t.Error("extension probe shim not found")
+	// Only the opt-in fingerprint shim is injected; the extension probe
+	// defense strips URLs and never replaces browser functions.
+	if strings.Contains(res.Content, "window.fetch=") {
+		t.Error("browser fetch was replaced; the extension shim must not be injected")
 	}
 	if !strings.Contains(res.Content, "var _toDataURL=HTMLCanvasElement") {
 		t.Error("fingerprint shim not found")
@@ -431,23 +432,24 @@ func TestCSPNonceExtraction(t *testing.T) {
 	}
 }
 
-func TestShimInjection_ExtensionOnly(t *testing.T) {
+func TestExtensionProbingNeverInjectsScript(t *testing.T) {
 	e := NewEngine(nil)
 	cfg := defaultShieldCfg()
+	cfg.StripExtensionProbing = true
 	cfg.InjectFingerprintShims = false
 	cfg.StripTrackingPixels = false
 	cfg.StripHiddenTraps = false
 
+	// Replacing native browser functions on every page is what bot
+	// verification tests for, so extension probing never injects a script.
 	res := e.Rewrite(testMinimalHTML, PipelineHTML, cfg)
-
-	if !res.ShimInjected {
-		t.Fatal("expected shim injection")
+	if res.ShimInjected || res.Rewritten || res.Content != testMinimalHTML {
+		t.Fatalf("clean HTML was modified: shim=%v rewritten=%v", res.ShimInjected, res.Rewritten)
 	}
-	if !strings.Contains(res.Content, "var _fetch=window.fetch") {
-		t.Error("extension probe shim not found")
-	}
-	if strings.Contains(res.Content, "var _toDataURL") {
-		t.Error("fingerprint shim should NOT be present when InjectFingerprintShims is false")
+	probe := `<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/p.html">x</a></body></html>`
+	res = e.Rewrite(probe, PipelineHTML, cfg)
+	if res.ExtensionHits != 1 || res.ShimInjected || strings.Contains(res.Content, "chrome-extension://") || strings.Contains(res.Content, "<script") {
+		t.Fatalf("extension URL handling: hits=%d shim=%v content=%q", res.ExtensionHits, res.ShimInjected, res.Content)
 	}
 }
 

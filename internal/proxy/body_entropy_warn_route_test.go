@@ -182,15 +182,19 @@ func TestCheckRedirectBindsEntropyWarningToAdmittedRoute(t *testing.T) {
 	}
 }
 
-func TestEntropyWarnRouteIsAdaptiveExemptButOrdinaryEntropyIsNot(t *testing.T) {
+func TestEntropyOnlyIsAdaptiveExemptWithOrWithoutWarnRoute(t *testing.T) {
 	cfg := config.Defaults()
 	matched := BodyScanResult{EntropyFinding: &ContentEntropyFinding{}, EntropyWarnRoute: &BodyEntropyWarnRouteMatch{Host: "upload.vendor.example", Path: "/v1/files"}}
 	if !isBodyAdaptiveExempt(scannerLabelBodyEntropy, matched, "upload.vendor.example", cfg) {
 		t.Fatal("authorized entropy warning would be re-promoted by adaptive enforcement")
 	}
 	ordinary := BodyScanResult{EntropyFinding: &ContentEntropyFinding{}}
-	if isBodyAdaptiveExempt(scannerLabelBodyEntropy, ordinary, "upload.vendor.example", cfg) {
-		t.Fatal("ordinary entropy finding was incorrectly exempted from adaptive enforcement")
+	if !isBodyAdaptiveExempt(scannerLabelBodyEntropy, ordinary, "upload.vendor.example", cfg) {
+		t.Fatal("ordinary entropy finding should retain its configured action")
+	}
+	mixed := BodyScanResult{EntropyFinding: &ContentEntropyFinding{}, DLPMatches: []scanner.TextDLPMatch{{}}}
+	if isBodyAdaptiveExempt(scannerLabelBodyDLP, mixed, "upload.vendor.example", cfg) {
+		t.Fatal("mixed entropy and DLP finding must remain eligible for adaptive enforcement")
 	}
 }
 

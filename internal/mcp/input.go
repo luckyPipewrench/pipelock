@@ -184,6 +184,20 @@ type InputVerdict struct {
 	RedactedDLPOnly bool `json:"redacted_dlp_only,omitempty"`
 }
 
+// IsEntropyOnly checks the findings rather than the transport's generic label.
+func (v InputVerdict) IsEntropyOnly() bool {
+	if len(v.URLFindings) == 0 || len(v.Matches) > 0 || len(v.Inject) > 0 ||
+		len(v.AddressFindings) > 0 || v.Error != "" || v.RedactedDLPOnly {
+		return false
+	}
+	for _, finding := range v.URLFindings {
+		if !finding.IsEntropyOnly() {
+			return false
+		}
+	}
+	return true
+}
+
 // BlockedRequest holds the ID and notification status of a blocked MCP request,
 // sent from the input scanning goroutine to the main goroutine via channel.
 // When SyntheticResponse is non-nil, the consumer sends it as-is instead of
@@ -1145,8 +1159,9 @@ func ForwardScannedInput(
 		}
 
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+		entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		originalAction := effectiveAction
-		if rec != nil {
+		if rec != nil && !entropyOnlyDecision {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 		}
 		if effectiveAction != originalAction {
@@ -1644,6 +1659,8 @@ func ForwardScannedInput(
 		// Signal recording: record after action is taken.
 		// Successful redirects are clean (not a block). Failed redirects escalate.
 		switch {
+		case entropyOnlyDecision:
+			// Heuristic URL entropy does not affect the adaptive score.
 		case effectiveAction == config.ActionBlock:
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:

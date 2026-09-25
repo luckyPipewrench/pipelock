@@ -210,6 +210,7 @@ func initCoreScanner() *compiledCoreScanner {
 			severity:                            p.severity,
 			credentialAudienceHosts:             append([]string(nil), p.credentialAudienceHosts...),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+			validate:                            builtinDLPValidatorForRegex(p.regex),
 		})
 	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)

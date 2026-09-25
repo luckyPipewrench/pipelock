@@ -2933,9 +2933,8 @@ func TestInterceptTunnel_URLScanAuditMode(t *testing.T) {
 	}
 }
 
-func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
-	// Verify that CEE entropy budget exceedance on intercepted requests
-	// records adaptive enforcement signals via ceeRecordSignals.
+func TestInterceptTunnel_CEEEntropyDoesNotScore(t *testing.T) {
+	// Intercepted entropy warnings stay visible and do not raise the score.
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -3021,19 +3020,15 @@ func TestInterceptTunnel_CEEAdaptiveSignalRecording(t *testing.T) {
 	sessionKey := CeeSessionKey("", "10.0.0.1")
 	sess := sm.GetOrCreate(sessionKey)
 	score := sess.ThreatScore()
-	if score == 0 {
-		t.Fatal("expected non-zero threat score after CEE entropy signal, got 0 (adaptive signal not recorded)")
-	}
-	// SignalEntropyBudget is 2 points.
-	if score < 2.0 {
-		t.Errorf("expected threat score >= 2.0 (SignalEntropyBudget), got %.1f", score)
+	if score != 0 {
+		t.Errorf("entropy-only CEE warning raised threat score to %.1f", score)
 	}
 }
 
 // TestInterceptTunnel_CEEBlocked verifies that CEE with action=block inside
 // a TLS intercepted tunnel returns 403 when the entropy budget is exceeded.
-// The existing CEEAdaptiveSignalRecording test only covers warn mode; this
-// covers the block action path (intercept.go ~line 367).
+// The entropy warning test covers forwarding; this covers the configured
+// block action path.
 func TestInterceptTunnel_CEEBlocked(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, "ok")
@@ -3355,8 +3350,8 @@ func TestInterceptHandler_CEELiveEnableUsesCurrentPolicyGeneration(t *testing.T)
 	if sm == nil {
 		t.Fatal("live session manager is nil")
 	}
-	if got := sm.GetOrCreate("203.0.113.10").EscalationLevel(); got == 0 {
-		t.Fatal("live adaptive threshold was not applied to the CEE signal")
+	if got := sm.GetOrCreate("203.0.113.10").ThreatScore(); got != 0 {
+		t.Fatalf("live CEE entropy raised adaptive score to %.1f", got)
 	}
 }
 
@@ -4849,6 +4844,52 @@ func TestInterceptTunnel_BodyEntropyWarnRecordsMetricAndForwards(t *testing.T) {
 	assertInterceptMetric(t, m, `pipelock_body_entropy_hits_total{action="warn",agent=""} 1`)
 }
 
+// A body carrying both a blocking secret and a warn-level entropy finding must
+// name the secret in the block reason. The entropy warning rode along with the
+// request; reporting it as the cause sends the operator to the wrong scanner.
+func TestInterceptTunnel_BodyBlockNamesSecretOverEntropyWarning(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.ContentEntropyEnabled = true
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	key := "AKIA" + strings.Join([]string{"QR2S", "TUVW", "XYZ2", "3456"}, "")
+	body := `{"blob":"` + opaqueHighEntropyBodyValue() + `","note":"` + key + `"}`
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/upload", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%q", resp.StatusCode, string(respBody))
+	}
+	if upstreamHit.Load() {
+		t.Fatal("blocked request reached upstream")
+	}
+	if !strings.Contains(string(respBody), "AWS Access ID") {
+		t.Fatalf("block reason must name the secret pattern; body=%q", string(respBody))
+	}
+	if strings.Contains(string(respBody), "high entropy") {
+		t.Fatalf("block reason must not blame the entropy warning; body=%q", string(respBody))
+	}
+}
+
 func assertInterceptMetric(t *testing.T, m *metrics.Metrics, want string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -5355,7 +5396,7 @@ func TestInterceptTunnel_ShieldOversizeTransportParity(t *testing.T) {
 }
 
 func TestInterceptTunnel_ShieldRewriteClearsBodyValidators(t *testing.T) {
-	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`)
+	body := []byte(`<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a></body></html>`)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("ETag", `"upstream-etag"`)
@@ -5406,7 +5447,7 @@ func TestInterceptTunnel_ShieldRewriteClearsBodyValidators(t *testing.T) {
 }
 
 func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.T) {
-	shimLen := len("<script>" + shield.ExtensionProbeShim + "</script>")
+	shimLen := len("<script>" + shield.FingerprintShim + "</script>")
 	extPrefix := "chrome-extension://"
 	if shimLen <= len(extPrefix) {
 		t.Fatalf("test invariant broken: shim length %d <= prefix length %d", shimLen, len(extPrefix))
@@ -5430,7 +5471,7 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 	cfg.BrowserShield.StripExtensionProbing = true
 	cfg.BrowserShield.StripHiddenTraps = false
 	cfg.BrowserShield.StripTrackingPixels = false
-	cfg.BrowserShield.InjectFingerprintShims = false
+	cfg.BrowserShield.InjectFingerprintShims = true
 	testLogger, _ := audit.New("json", "stdout", "", false, false)
 	p, err := New(cfg, testLogger, sc, m)
 	if err != nil {

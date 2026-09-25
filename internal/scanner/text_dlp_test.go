@@ -3635,7 +3635,7 @@ func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
 		{
 			name: "ocr prose",
 			text: strings.Join([]string{
-				"AIDA", "in", "product", "name", "generated", "by", "random",
+				"Southeast", "Asia", "region", "planning", "notes", "by", "random",
 				"OCR", "context", "for", "assistant", "safety", "review",
 			}, " "),
 			want: true,
@@ -3693,7 +3693,7 @@ func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
 	}
 
 	guardText := strings.Join([]string{
-		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"Southeast", "Asia", "region", "planning", "notes", "by", "random",
 		"OCR", "context", "for", "assistant", "safety", "review",
 	}, " ")
 	validWhitespaceSpan := MatchSpan{
@@ -3776,7 +3776,7 @@ func TestEnforceableInboundTextDLPMatches(t *testing.T) {
 	s := MustNew(testConfig())
 	ctx := context.Background()
 	lowConfidenceAWS := strings.Join([]string{
-		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"Southeast", "Asia", "region", "planning", "notes", "by", "random",
 		"OCR", "context", "for", "assistant", "safety", "review",
 	}, " ")
 

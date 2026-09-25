@@ -490,6 +490,56 @@ func jwtOnlyCookieHeader(result *BodyScanResult) bool {
 	return true
 }
 
+// bodyBlockCause names the body finding that blocks the request on its own.
+type bodyBlockCause int
+
+const (
+	// bodyBlockCauseUnknown means no single finding blocks by itself, for
+	// example when adaptive escalation upgraded a warning. Callers keep their
+	// existing naming order.
+	bodyBlockCauseUnknown bodyBlockCause = iota
+	bodyBlockCauseInjection
+	bodyBlockCauseDLP
+	bodyBlockCauseEntropy
+)
+
+// blockingBodyFinding reports which finding stops the request. Any finding can
+// ride along at warn level: a secret match under request_body_scanning.action
+// or a pattern_actions override, a prompt-injection match to a request-body
+// trusted host, or an entropy finding under content_entropy_action. The block
+// reason, label, and receipt must name the finding that actually blocked, in
+// the same precedence the enforcement paths apply.
+func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Config) bodyBlockCause {
+	if cfg == nil {
+		return bodyBlockCauseUnknown
+	}
+	switch {
+	case shouldHardBlockBodyPromptInjection(result, hostname, cfg):
+		return bodyBlockCauseInjection
+	case len(result.DLPMatches) > 0 &&
+		(requestBodyDLPAction(result.DLPMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions) == config.ActionBlock ||
+			shouldHardBlockBodyCriticalDLP(result, hostname, cfg)):
+		return bodyBlockCauseDLP
+	case result.EntropyFinding != nil && result.EntropyAction == config.ActionBlock:
+		return bodyBlockCauseEntropy
+	}
+	return bodyBlockCauseUnknown
+}
+
+// bodyBlockCauseLabel returns the scanner label for a blocking finding, or
+// current when no single finding blocks.
+func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
+	switch cause {
+	case bodyBlockCauseInjection:
+		return scannerLabelBodyPromptInjection
+	case bodyBlockCauseDLP:
+		return scannerLabelBodyDLP
+	case bodyBlockCauseEntropy:
+		return scannerLabelBodyEntropy
+	}
+	return current
+}
+
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if !shouldHardBlockRequestDLP(result.DLPMatches, cfg) {
 		return false
@@ -506,11 +556,17 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 }
 
 func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if scannerLabel == scannerLabelBodyEntropy && result.EntropyWarnRoute != nil {
+	if result.IsEntropyOnly() {
 		return true
 	}
 	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
 		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
+// IsEntropyOnly requires an actual entropy finding and no other body evidence.
+func (r BodyScanResult) IsEntropyOnly() bool {
+	return r.EntropyFinding != nil && len(r.DLPMatches) == 0 && len(r.InjectionMatches) == 0 &&
+		len(r.AddressFindings) == 0 && !r.RedactedDLPOnly && r.RedactionBlockReason == "" && r.HeaderName == ""
 }
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
@@ -1236,7 +1292,7 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	req.ContentEntropyThreshold = cfg.RequestBodyScanning.ContentEntropyThreshold
 	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
 	req.ContentEntropyTrusted = cfg.TrustedDomains
-	req.ContentEntropyExclusions = append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...)
+	req.ContentEntropyExclusions = append(append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...), config.ShippedChallengeProviderHosts()...)
 	req.ContentEntropyWarnRoutes = cfg.RequestBodyScanning.ContentEntropyWarnRoutes
 	for _, exclusions := range extraExclusions {
 		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)

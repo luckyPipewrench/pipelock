@@ -203,14 +203,24 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 	// form took time proportional to the square of the pad, so comparing a
 	// doubled pad against a generous multiple of the single-pad time
 	// distinguishes linear from quadratic without an uncancellable wait.
-	start := time.Now()
-	res := e.Rewrite(hostile, PipelineHTML, &cfg)
-	single := time.Since(start)
-
+	// Each size is timed three times and the fastest run kept: a scheduler
+	// pause or coverage instrumentation on a loaded machine can only add time,
+	// so the minimum is the closest reading of the algorithm's own cost.
+	fastest := func(doc string) (Result, time.Duration) {
+		var res Result
+		best := time.Duration(0)
+		for range 3 {
+			start := time.Now()
+			res = e.Rewrite(doc, PipelineHTML, &cfg)
+			if d := time.Since(start); best == 0 || d < best {
+				best = d
+			}
+		}
+		return res, best
+	}
+	res, single := fastest(hostile)
 	doubled := strings.Replace(hostile, strings.Repeat("x", padLen), strings.Repeat("x", padLen*2), 1)
-	start = time.Now()
-	e.Rewrite(doubled, PipelineHTML, &cfg)
-	double := time.Since(start)
+	_, double := fastest(doubled)
 
 	if !strings.Contains(res.Content, "var a = 1;") {
 		t.Errorf("script content was not preserved: %s", res.Content[:80])

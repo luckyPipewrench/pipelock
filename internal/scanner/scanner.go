@@ -3902,16 +3902,13 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
-			if len(segment) >= s.entropyMinLen {
-				entropy := payloadEntropy(segment)
-				if entropy > s.entropyThreshold {
-					return Result{
-						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-						Scanner: ScannerEntropy,
-						Class:   ClassHeuristicEntropy,
-						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
-					}
+			if entropy, blocked := s.pathSegmentEntropy(segment); blocked {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
+					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
+					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 				}
 			}
 		}
@@ -3926,7 +3923,9 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			return result
 		}
 	}
-	for key, values := range parsed.Query() {
+	query := parsed.Query()
+	s256 := pkceS256Declared(query[pkceMethodParam])
+	for key, values := range query {
 		if !excludedQuery && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
@@ -3943,23 +3942,14 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
 				return result
 			}
-			if !excludedQuery && len(v) >= s.entropyMinLen {
-				entropy := payloadEntropy(v)
-				if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
+			if excludedQuery || isPKCES256Challenge(key, v, s256) {
+				continue
+			}
+			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
+				if s.isQueryEntropyParamExcluded(parsed, key) {
 					continue
 				}
-				if entropy > s.entropyThreshold {
-					if s.isQueryEntropyParamExcluded(parsed, key) {
-						continue
-					}
-					return Result{
-						Allowed: false,
-						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-						Scanner: ScannerEntropy,
-						Class:   ClassHeuristicEntropy,
-						Score:   math.Min(entropy/8.0, 1.0),
-					}
-				}
+				return s.queryEntropyParamResult(key, finding)
 			}
 		}
 	}
@@ -3968,18 +3958,10 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 }
 
 func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
-	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool {
-		return r == '&' || r == ';'
-	}) {
-		rawKey, rawValue, _ := strings.Cut(pair, "=")
-		key, ok := strictQueryEntropyComponent(rawKey)
-		if !ok {
-			key = rawKey
-		}
-		value, ok := strictQueryEntropyComponent(rawValue)
-		if !ok {
-			value = rawValue
-		}
+	pairs := splitQueryEntropyPairs(rawQuery)
+	s256 := pkceS256Declared(queryEntropyPairValues(pairs, pkceMethodParam))
+	for _, p := range pairs {
+		key, value := p.key, p.value
 		if scanEntropy && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
@@ -3995,21 +3977,11 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
 			return result, true
 		}
-		if !scanEntropy || len(value) < s.entropyMinLen {
+		if !scanEntropy || isPKCES256Challenge(key, value, s256) {
 			continue
 		}
-		entropy := payloadEntropy(value)
-		if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
-			continue
-		}
-		if entropy > s.entropyThreshold {
-			return Result{
-				Allowed: false,
-				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-				Scanner: ScannerEntropy,
-				Class:   ClassHeuristicEntropy,
-				Score:   math.Min(entropy/8.0, 1.0),
-			}, true
+		if finding, blocked := s.queryValueEntropy(value, 0); blocked {
+			return s.queryEntropyParamResult(key, finding), true
 		}
 	}
 	return Result{}, false

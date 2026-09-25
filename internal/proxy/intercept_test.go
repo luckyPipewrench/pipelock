@@ -2311,39 +2311,58 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 	}
 }
 
+// In enforce mode a body prompt injection hard-blocks a non-provider
+// destination even with action warn. With enforce: false it follows the warn
+// action and is forwarded, the same as body DLP in audit mode.
 func TestInterceptTunnel_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *testing.T) {
-	var upstreamHit atomic.Bool
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamHit.Store(true)
-		_, _ = fmt.Fprint(w, "unexpected")
-	}))
-	defer upstream.Close()
+	for _, tt := range []struct {
+		name       string
+		enforce    bool
+		wantStatus int
+	}{
+		{name: "enforced", enforce: true, wantStatus: http.StatusForbidden},
+		{name: "audit only", enforce: false, wantStatus: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamHit atomic.Bool
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamHit.Store(true)
+				_, _ = fmt.Fprint(w, "ok")
+			}))
+			defer upstream.Close()
 
-	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
-	cfg.RequestBodyScanning.Enabled = true
-	cfg.RequestBodyScanning.Action = config.ActionWarn
-	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-	enforceOff := false
-	cfg.Enforce = &enforceOff
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(func() { sc.Close() })
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.Action = config.ActionWarn
+			cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+			enforce := tt.enforce
+			cfg.Enforce = &enforce
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(func() { sc.Close() })
 
-	addr := upstream.Listener.Addr().String()
-	body := trilingualPromptInjectionBody
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+			addr := upstream.Listener.Addr().String()
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(trilingualPromptInjectionBody))
+			req.Header.Set("Content-Type", "application/json")
 
-	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
-	defer func() { _ = resp.Body.Close() }()
+			resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+			defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (body prompt injection should hard block non-provider destination)", resp.StatusCode)
-	}
-	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.PromptInjection) {
-		t.Fatalf("block reason = %q, want %s", got, blockreason.PromptInjection)
-	}
-	if upstreamHit.Load() {
-		t.Fatal("upstream received body prompt injection, want blocked before forwarding")
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if tt.enforce {
+				if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.PromptInjection) {
+					t.Fatalf("block reason = %q, want %s", got, blockreason.PromptInjection)
+				}
+				if upstreamHit.Load() {
+					t.Fatal("upstream received body prompt injection, want blocked before forwarding")
+				}
+				return
+			}
+			if !upstreamHit.Load() {
+				t.Fatal("audit mode did not forward the request upstream")
+			}
+		})
 	}
 }
 

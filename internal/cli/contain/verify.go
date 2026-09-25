@@ -2200,9 +2200,15 @@ func chainLinesHaveAgentListenerGuard(lines []string, listener string, proxyUID 
 	return found == 1
 }
 
-// An earlier accept only bypasses the guard when its destination could be
-// the configured listener. Unknown nft expressions stay conservative.
+// An earlier accept only bypasses the guard when it could admit the first
+// packet of a new connection to the configured listener. A rule limited to
+// reply-direction or already-established traffic cannot open a connection,
+// and neither can one pinned to a different destination. Unknown nft
+// expressions stay conservative.
 func acceptMayReachAgentListener(fields []string, host, port string) bool {
+	if acceptCannotStartConnection(fields) {
+		return false
+	}
 	for i := 0; i+2 < len(fields); i++ {
 		if fields[i] == "tcp" && fields[i+1] == "dport" && fields[i+2] != port {
 			if _, err := strconv.Atoi(fields[i+2]); err == nil {
@@ -2227,6 +2233,51 @@ func acceptMayReachAgentListener(fields []string, host, port string) bool {
 		}
 	}
 	return true
+}
+
+// nfConntrackStateNew is the conntrack NEW bit as `nft -n` prints ct state
+// (invalid 0x1, established 0x2, related 0x4, new 0x8).
+const nfConntrackStateNew = 0x8
+
+// acceptCannotStartConnection reports whether a rule only matches packets
+// that belong to an existing connection: reply direction (`ct direction 1`,
+// as `nft -n` prints reply) or a single ct state value without NEW. Sets,
+// negations and anything unparsed return false, so the caller stays
+// conservative.
+func acceptCannotStartConnection(fields []string) bool {
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] != "ct" {
+			continue
+		}
+		switch fields[i+1] {
+		case "direction":
+			if fields[i+2] == "1" || fields[i+2] == "reply" {
+				return true
+			}
+		case "state":
+			value := fields[i+2]
+			if strings.HasPrefix(value, "0x") {
+				bits, err := strconv.ParseUint(value[2:], 16, 32)
+				if err == nil && bits != 0 && bits&nfConntrackStateNew == 0 {
+					return true
+				}
+				continue
+			}
+			names := strings.Split(value, ",")
+			known := len(names) > 0
+			for _, name := range names {
+				switch name {
+				case "established", "related":
+				default:
+					known = false
+				}
+			}
+			if known {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func chainLinesHaveAgentListenerGuardLine(lines []string) bool {

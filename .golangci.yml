@@ -23,6 +23,26 @@ linters:
     - wastedassign
   exclusions:
     rules:
+      # Go 1.26 deprecated the raw ecdsa coordinate fields. The Rekor log-key
+      # normalizer reads them to accept a P-256 key whose curve object is
+      # equivalent but not elliptic.P256() itself, which PublicKey.Bytes
+      # rejects, and its tests build such keys on purpose. Scoped to these
+      # files so a new raw-coordinate use elsewhere still fails lint.
+      - path: internal/anchor/(rekor|rekor_test|rekor_log_key_policy_test|normalize_p256_test)\.go
+        linters: [staticcheck]
+        text: 'SA1019: \(crypto/ecdsa\.PublicKey\)\.[XY] '
+      # The AARP SVID corpus generator derives fixed keys and signatures from
+      # raw scalars so the published corpus is reproducible byte for byte.
+      - path: sdk/conformance/aarp_svid_corpus_gen_test\.go
+        linters: [staticcheck]
+        text: 'SA1019: \(crypto/ecdsa\.(PrivateKey\)\.D|PublicKey\)\.[XY]) '
+      # Go 1.26 deprecated ReverseProxy.Director. Rewrite drops a
+      # client-supplied X-Forwarded-For instead of appending to it and sets
+      # the outbound Host, so moving these two proxies changes forwarding
+      # behavior and needs its own review.
+      - path: internal/(proxy/reverse|playground/broker/server)\.go
+        linters: [staticcheck]
+        text: 'SA1019: \(net/http/httputil\.ReverseProxy\)\.Director '
       - path: internal/proxy/proxy\.go
         linters: [gosec]
         text: "G704"

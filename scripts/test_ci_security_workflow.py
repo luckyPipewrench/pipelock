@@ -152,8 +152,9 @@ exit "$DEFAULT_STATUS"
         self.assertEqual(
             {
                 "security-scan",
-                "test-go125",
+                "changed-files",
                 "test-go126",
+                "test-go127",
                 "lint",
                 "test-cross-target",
                 "helm",
@@ -164,8 +165,8 @@ exit "$DEFAULT_STATUS"
         self.assertIn("if: ${{ always() }}", self.build)
         for result in (
             "SECURITY_SCAN_RESULT",
-            "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
+            "TEST_GO127_RESULT",
             "LINT_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
@@ -177,8 +178,8 @@ exit "$DEFAULT_STATUS"
         script = step_script(self.build, "Report required build evidence")
         result_names = (
             "SECURITY_SCAN_RESULT",
-            "TEST_GO125_RESULT",
             "TEST_GO126_RESULT",
+            "TEST_GO127_RESULT",
             "LINT_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
@@ -186,6 +187,7 @@ exit "$DEFAULT_STATUS"
         )
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in result_names})
+        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request"})
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             check=False,
@@ -208,6 +210,34 @@ exit "$DEFAULT_STATUS"
                         capture_output=True,
                     )
                     self.assertNotEqual(0, result.returncode)
+
+    def test_required_build_gate_requires_classifier_success_on_pull_requests(self) -> None:
+        # A failed changed-files classifier skips the upper-lane producers, and
+        # test (1.27) accepts a skip on pull_request. The required build gate
+        # must refuse that unless the classifier itself succeeded.
+        script = step_script(self.build, "Report required build evidence")
+        base_env = os.environ.copy()
+        base_env.update({
+            name: "success"
+            for name in (
+                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT",
+                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT",
+            )
+        })
+
+        def run(event: str, classifier: str) -> int:
+            env = base_env.copy()
+            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier})
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
+            ).returncode
+
+        self.assertEqual(0, run("pull_request", "success"))
+        for classifier in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(classifier=classifier):
+                self.assertNotEqual(0, run("pull_request", classifier))
+        # changed-files runs only on pull requests, so a push to main skips it.
+        self.assertEqual(0, run("push", "skipped"))
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)

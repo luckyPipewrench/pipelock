@@ -36,13 +36,13 @@ class CodecovUploadCountTest(unittest.TestCase):
                 ["bash", str(check)], capture_output=True, text=True, check=False, timeout=10
             )
 
-    def test_both_go125_build_variants_publish_their_profiles(self):
+    def test_both_go126_build_variants_publish_their_profiles(self):
         for variant, profile in (
             ("oss", "coverage-oss-"),
             ("enterprise", "coverage-"),
         ):
             with self.subTest(variant=variant):
-                steps = self.jobs[f"test-{variant}-go125"]["steps"]
+                steps = self.jobs[f"test-{variant}-go126"]["steps"]
                 uploads = [
                     step for step in steps
                     if str(step.get("uses", "")).startswith("codecov/codecov-action@")
@@ -74,7 +74,7 @@ class CodecovUploadCountTest(unittest.TestCase):
 
     def test_missing_core_upload_is_rejected(self):
         # Preserve the actual workflow formatting consumed by the shell check.
-        steps = self.jobs["test-oss-go125"]["steps"]
+        steps = self.jobs["test-oss-go126"]["steps"]
         uploads = [
             step for step in steps
             if str(step.get("uses", "")).startswith("codecov/codecov-action@")
@@ -82,11 +82,11 @@ class CodecovUploadCountTest(unittest.TestCase):
         self.assertEqual(len(uploads), 1)
         upload = uploads[0]
         start = self.workflow.index(
-            "      - name: " + upload["name"], self.workflow.index("  test-oss-go125:")
+            "      - name: " + upload["name"], self.workflow.index("  test-oss-go126:")
         )
-        end = self.workflow.index("\n  test-oss-go126:", start)
+        end = self.workflow.index("\n  test-oss-go127:", start)
         broken = self.workflow[:start] + self.workflow[end:]
-        broken_steps = yaml.safe_load(broken)["jobs"]["test-oss-go125"]["steps"]
+        broken_steps = yaml.safe_load(broken)["jobs"]["test-oss-go126"]["steps"]
         self.assertFalse(
             any("codecov/codecov-action@" in step.get("uses", "") for step in broken_steps)
         )

@@ -7,7 +7,7 @@
 # (except the recorder JSONL whose outer timestamp uses wall
 # clock; the receipt inside it is deterministic).
 #
-# Prerequisites: Go 1.25+ and the pipelock source tree.
+# Prerequisites: Go 1.26+ and the pipelock source tree.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

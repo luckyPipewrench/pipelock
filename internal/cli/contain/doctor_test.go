@@ -72,6 +72,51 @@ func TestDoctorCounterProbeEnvUsesLiveDoctorOverrides(t *testing.T) {
 	}
 }
 
+func TestDoctorDoorwaySocketReaderConfigAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		readErr    error
+		wantStatus string
+		wantDetail string
+	}{
+		{"unreadable config", os.ErrPermission, statusUnknown, "could not be read"},
+		{"absent config", os.ErrNotExist, statusPass, "enabled and active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			base := &probeEnv{
+				configPath:               "/etc/pipelock/pipelock.yaml",
+				proxyForwarderSocketPath: "/etc/systemd/system/pipelock-agent-proxy.socket",
+				readFile: func(string) ([]byte, error) {
+					return nil, tc.readErr
+				},
+				runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
+					calls++
+					if name != "systemctl" || len(args) != 2 || args[1] != "pipelock-agent-proxy.socket" {
+						t.Fatalf("unexpected socket probe: %s %v", name, args)
+					}
+					if args[0] == "is-enabled" {
+						return systemctlEnabled, 0, nil
+					}
+					if args[0] == "is-active" {
+						return systemctlActive, 0, nil
+					}
+					t.Fatalf("unexpected socket probe: %s %v", name, args)
+					return "", 1, nil
+				},
+			}
+			doctor := &doctorEnv{port: defaultProxyPort, agentUserName: testAgentUser}
+			result := doctorDoorwaySocketReader(base, doctor)(context.Background())
+			if result.status != tc.wantStatus || !strings.Contains(result.detail, tc.wantDetail) {
+				t.Fatalf("result = (%q, %q), want %q containing %q", result.status, result.detail, tc.wantStatus, tc.wantDetail)
+			}
+			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 2 {
+				t.Fatalf("socket probe calls = %d for %s", calls, tc.name)
+			}
+		})
+	}
+}
+
 func TestDoctorDropCounterReaderUsesLiveDoctorOverrides(t *testing.T) {
 	base := &probeEnv{}
 	doctor := &doctorEnv{port: 9443, agentUserName: "custom-agent"}

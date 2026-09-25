@@ -87,6 +87,71 @@ func TestProxyOneNetnsConnForwardsBothDirections(t *testing.T) {
 	}
 }
 
+func TestProxyOneNetnsConnPreservesHalfClosedResponse(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "reply.sock")
+	upstreamListener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upstreamListener.Close() })
+	serverDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := upstreamListener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		body, readErr := io.ReadAll(conn)
+		if readErr != nil {
+			serverDone <- readErr
+			return
+		}
+		if string(body) != "request" {
+			serverDone <- errors.New("server received wrong request")
+			return
+		}
+		_, writeErr := conn.Write([]byte("complete reply"))
+		serverDone <- writeErr
+	}()
+	downstreamListener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = downstreamListener.Close() })
+	client, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", downstreamListener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	forwarded, err := downstreamListener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwardDone := make(chan error, 1)
+	go func() { forwardDone <- proxyOneNetnsConn(context.Background(), forwarded, "unix", socketPath) }()
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := io.ReadAll(client)
+	if err != nil || string(reply) != "complete reply" {
+		t.Fatalf("reply after half-close = %q, %v; want complete reply", reply, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	if err := <-forwardDone; err != nil {
+		t.Fatalf("forwarder: %v", err)
+	}
+}
+
 func TestProxyOneNetnsConnFailsWhenDoorwayIsAbsent(t *testing.T) {
 	agent, forwarded := net.Pipe()
 	t.Cleanup(func() { _ = agent.Close() })

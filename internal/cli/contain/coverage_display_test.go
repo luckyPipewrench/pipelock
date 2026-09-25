@@ -493,6 +493,47 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 		}
 	})
 
+	t.Run("changed active unit restarts without restarting inactive or unchanged units", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			priorNumber int
+			active      bool
+			wantRestart bool
+		}{
+			{"changed active", 99, true, true},
+			{"changed inactive", 99, false, false},
+			{"unchanged active", 5, true, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				env, runner := covDispPrepareDisplayEnv(t)
+				covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")
+				prior := renderAgentDisplayUnit(&installEnv{agentUserName: env.agentUserName, displayNumber: tc.priorNumber, xvfbPath: env.xvfbPath})
+				if err := os.WriteFile(env.displayUnitPath, []byte(prior), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				unit := filepath.Base(env.displayUnitPath)
+				runner.on(argvFor(testSystemctl, "is-enabled", unit), "enabled\n", 0, nil)
+				state := "inactive\n"
+				if tc.active {
+					state = "active\n"
+				}
+				runner.on(argvFor(testSystemctl, "is-active", unit), state, 0, nil)
+				if _, err := stepProvisionAgentDisplay().apply(context.Background(), env); err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+				restarts := 0
+				for _, call := range runner.calls {
+					if call.name == testSystemctl && len(call.args) == 2 && call.args[0] == "restart" && call.args[1] == unit {
+						restarts++
+					}
+				}
+				if (restarts == 1) != tc.wantRestart {
+					t.Fatalf("restart calls = %d, want restart=%t; calls=%v", restarts, tc.wantRestart, runner.calls)
+				}
+			})
+		}
+	})
+
 	t.Run("enabled fails when daemon-reload fails", func(t *testing.T) {
 		env, runner := covDispPrepareDisplayEnv(t)
 		covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")

@@ -144,6 +144,9 @@ func doctorDoorwaySocketReader(base *probeEnv, env *doctorEnv) func(context.Cont
 		if unusable {
 			return fail(classInfra, "containment.loopback_services cannot be honored: "+problem, "correct the managed containment configuration and rerun `pipelock contain install`")
 		}
+		if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
+			return unknown("containment.loopback_services could not be determined: "+problem, "restore access to the managed containment configuration and rerun `pipelock contain doctor`")
+		}
 		status, detail := probeManagedDoorwaySockets(ctx, &probe, services)
 		if status != statusPass {
 			return fail(classInfra, detail, "reset and start the named managed doorway socket")

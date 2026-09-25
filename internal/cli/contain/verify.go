@@ -404,9 +404,10 @@ func allProbes() []probe {
 func probesForEnv(env *probeEnv) []probe {
 	probes := allProbes()
 	cfg, displayConfigErr := config.LoadForInspection(env.configPath)
-	_, displayUnitErr := env.stat(env.displayUnitPath)
+	displayUnitErr := os.ErrNotExist
 	displayXvfbPresent := true
 	if env.stat != nil {
+		_, displayUnitErr = env.stat(env.displayUnitPath)
 		_, xvfbErr := env.stat(env.xvfbPath)
 		displayXvfbPresent = xvfbErr == nil
 	}

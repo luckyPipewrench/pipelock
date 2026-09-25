@@ -187,6 +187,11 @@ func stepProvisionAgentDisplay() step {
 			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.displayUnitPath)); err != nil {
 				return true, err
 			}
+			if changed && env.prevDisplayActive {
+				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.displayUnitPath)); err != nil {
+					return true, err
+				}
+			}
 			reconciled := !env.prevDisplayEnabled || !env.prevDisplayActive
 			return changed || reconciled, nil
 		},

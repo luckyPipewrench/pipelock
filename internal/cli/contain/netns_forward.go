@@ -238,22 +238,38 @@ func proxyOneNetnsConn(ctx context.Context, downstream net.Conn, network, target
 	}
 	defer func() { _ = upstream.Close() }()
 
-	// Copy both directions and return once either side finishes, closing both
-	// so the other copy cannot outlive the connection.
+	// Propagate each EOF as a half-close so a peer can finish its response.
+	// Keep both connections open until both directions have finished.
+	type closeWriter interface{ CloseWrite() error }
 	done := make(chan error, 2)
 	go func() {
 		_, copyErr := io.Copy(upstream, downstream)
+		if copyErr == nil {
+			if writer, ok := upstream.(closeWriter); ok {
+				copyErr = writer.CloseWrite()
+			}
+		}
 		done <- copyErr
 	}()
 	go func() {
 		_, copyErr := io.Copy(downstream, upstream)
+		if copyErr == nil {
+			if writer, ok := downstream.(closeWriter); ok {
+				copyErr = writer.CloseWrite()
+			}
+		}
 		done <- copyErr
 	}()
-
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return nil
+	var firstErr error
+	for range 2 {
+		select {
+		case err := <-done:
+			if firstErr == nil {
+				firstErr = err
+			}
+		case <-ctx.Done():
+			return nil
+		}
 	}
+	return firstErr
 }

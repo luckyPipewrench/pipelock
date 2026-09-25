@@ -47,6 +47,8 @@ type coreDLPPattern struct {
 	severity                            string
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
+	credentialAudienceCarrierMask       uint8
+	credentialAudienceGitHosts          []string
 }
 
 // coreResponsePattern defines a single immutable response scanning pattern.
@@ -73,6 +75,8 @@ func coreDLPPatternDefs() []coreDLPPattern {
 			severity:                            pattern.Severity,
 			credentialAudienceHosts:             append([]string(nil), pattern.CredentialAudienceHosts...),
 			credentialAudienceAuthorizationOnly: pattern.CredentialAudienceAuthorizationOnly,
+			credentialAudienceCarrierMask:       pattern.CredentialAudienceCarrierMask,
+			credentialAudienceGitHosts:          append([]string(nil), pattern.CredentialAudienceGitHosts...),
 		})
 	}
 	return out
@@ -191,7 +195,7 @@ type compiledCoreScanner struct {
 // initCoreScanner compiles all core patterns and CIDRs. Called once from
 // scanner.New(). Panics on invalid patterns (these are compile-time constants,
 // so invalid patterns are programming errors caught in CI).
-func initCoreScanner() *compiledCoreScanner {
+func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 	cs := &compiledCoreScanner{}
 
 	// Compile core DLP patterns.
@@ -204,12 +208,20 @@ func initCoreScanner() *compiledCoreScanner {
 		if err != nil {
 			panic(fmt.Sprintf("BUG: core DLP pattern %q failed to compile: %v", p.name, err))
 		}
+		hosts := p.credentialAudienceHosts
+		var github, gitlab []string
+		if cfg != nil {
+			github = cfg.DLP.GitHubEnterpriseHosts
+			gitlab = cfg.DLP.GitLabHosts
+		}
 		cs.dlpPatterns = append(cs.dlpPatterns, &compiledPattern{
 			name:                                p.name,
 			re:                                  re,
 			severity:                            p.severity,
-			credentialAudienceHosts:             append([]string(nil), p.credentialAudienceHosts...),
+			credentialAudienceHosts:             config.AppendDeclaredCredentialAudienceHosts(p.name, hosts, github, gitlab),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+			credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+			credentialAudienceGitHosts:          config.AppendDeclaredCredentialAudienceHosts(p.name, p.credentialAudienceGitHosts, github, gitlab),
 			validate:                            builtinDLPValidatorForRegex(p.regex),
 		})
 	}
@@ -511,6 +523,8 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 				Severity:                            p.severity,
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
 			})
 		}
@@ -562,6 +576,8 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 				Encoded:                             encoding,
 				credentialAudienceHosts:             p.credentialAudienceHosts,
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
 			})
 		}

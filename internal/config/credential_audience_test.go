@@ -120,6 +120,38 @@ func TestMarkBuiltInCredentialAudienceHosts_ActionIsPartOfIdentity(t *testing.T)
 	}
 }
 
+// The git-over-HTTPS rule is audience metadata like the host list, so a
+// GitHub or GitLab pattern redefined with action: warn must lose it too, and a
+// clone carrying it must be cleared, not kept.
+func TestMarkBuiltInCredentialAudienceHosts_GitRuleFollowsIdentity(t *testing.T) {
+	for _, name := range []string{"GitHub Token", "GitHub Fine-Grained PAT", "GitLab PAT"} {
+		t.Run(name, func(t *testing.T) {
+			var builtIn DLPPattern
+			for _, p := range DefaultDLPPatterns() {
+				if p.Name == name {
+					builtIn = p
+				}
+			}
+			if len(builtIn.CredentialAudienceGitHosts) == 0 || builtIn.CredentialAudienceCarrierMask&CredentialAudienceCarrierGitBasic == 0 {
+				t.Fatalf("control: %s ships no git rule: %+v", name, builtIn)
+			}
+			exact := []DLPPattern{builtIn}
+			exact[0].CredentialAudienceGitHosts = nil
+			markBuiltInCredentialAudienceHosts(exact)
+			if len(exact[0].CredentialAudienceGitHosts) == 0 {
+				t.Fatal("control: an unmodified built-in must keep its git rule")
+			}
+			warned := builtIn // still carries the git hosts, as a clone would
+			warned.Action = ActionWarn
+			patterns := []DLPPattern{warned}
+			markBuiltInCredentialAudienceHosts(patterns)
+			if got := patterns[0]; len(got.CredentialAudienceGitHosts) != 0 || got.CredentialAudienceCarrierMask != 0 {
+				t.Fatalf("warn-redefined %s kept the git rule: hosts=%v mask=%d", name, got.CredentialAudienceGitHosts, got.CredentialAudienceCarrierMask)
+			}
+		})
+	}
+}
+
 func TestLoad_CredentialAudienceLegacySubsetControlsWarn(t *testing.T) {
 	const legacy = `version: 1
 mode: balanced

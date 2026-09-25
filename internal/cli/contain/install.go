@@ -1787,6 +1787,12 @@ func renderSystemUnit(env *installEnv) string {
 		"User=" + env.proxyUserName,
 		"Group=" + env.proxyUserName,
 		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
+		// Runtime state (issuer-bound cookie evidence) follows the XDG state
+		// convention. The service can write only under ReadWritePaths, and the
+		// service user's home is outside it, so the state home is placed in
+		// the data directory; otherwise every save would fail and the state
+		// would silently reset on each restart.
+		"Environment=XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state"),
 		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
 	}
 	lines = append(lines, reloadLines...)

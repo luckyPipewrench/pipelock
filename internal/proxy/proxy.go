@@ -596,6 +596,7 @@ type editionSnapshot struct{ edition.Edition }
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
 	cfgPtr               atomic.Pointer[config.Config]
+	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
 	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
@@ -808,6 +809,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		p.captureObs = capture.NopObserver{}
 	}
 	p.cfgPtr.Store(cfg)
+	issuerStore := newIssuerBoundCookieStore()
+	if issuerCookieEnabled(cfg) {
+		issuerStore = newPersistentIssuerCookieStore(logger)
+	} else if path, pathErr := issuerCookieStatePath(); pathErr == nil {
+		// Do not leave evidence available to a later enabled startup.
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && logger != nil {
+			logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), fmt.Errorf("issuer cookie state reset failed: %w", removeErr))
+		}
+	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore})
 	p.scannerPtr.Store(sc)
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
@@ -2366,6 +2377,31 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	oldIssuer := p.issuerCookieRuntime.Load()
+	issuerStore := newIssuerBoundCookieStore()
+	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
+		issuerStore = oldIssuer.store
+	} else if oldIssuer != nil && oldIssuer.store.hasPath() {
+		// A disabled prerequisite closes the evidence window, including its
+		// durable copy. Re-enabling this process starts with an empty store.
+		issuerStore.setPath(oldIssuer.store.retire())
+		issuerStore.logError = oldIssuer.store.logError
+		issuerStore.flush(time.Now(), true)
+		issuerStore.retire()
+	} else if issuerCookieEnabled(cfg) {
+		// The previous runtime was disabled; old on-disk evidence is not
+		// admissible even when this is the first enabled reload.
+		if path, pathErr := issuerCookieStatePath(); pathErr == nil {
+			issuerStore.setPath(path)
+			issuerStore.logError = func(err error) {
+				if p.logger != nil {
+					p.logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), err)
+				}
+			}
+			issuerStore.flush(time.Now(), true)
+		}
+	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
 	if p.wd != nil {
@@ -2764,6 +2800,9 @@ func (p *Proxy) updateCEEStats() {
 }
 
 func (p *Proxy) Close() {
+	if runtime := p.issuerCookieRuntime.Load(); runtime != nil {
+		runtime.store.flush(time.Now(), true)
+	}
 	if p.wd != nil {
 		p.wd.Stop()
 	}

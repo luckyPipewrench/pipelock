@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -870,6 +872,8 @@ type interceptRequestOptions struct {
 	Request    *http.Request
 	Recorder   session.Recorder
 	Proxy      *Proxy
+	Agent      string
+	ActorAuth  envelope.ActorAuth
 }
 
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
@@ -906,6 +910,8 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 			UpstreamRT: upstreamRT,
 			Recorder:   opts.Recorder,
 			Proxy:      opts.Proxy,
+			Agent:      opts.Agent,
+			ActorAuth:  opts.ActorAuth,
 		})
 	}()
 
@@ -1634,7 +1640,13 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cache, pool, cfg, _, _, m := testInterceptSetup(t)
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
@@ -1653,6 +1665,24 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (header DLP should block)", resp.StatusCode)
+	}
+	auditBytes, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocked map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(auditBytes), []byte("\n")) {
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["event"] == "blocked" && event["scanner"] == "header_dlp" {
+			blocked = event
+		}
+	}
+	if blocked == nil || blocked["header"] != "Authorization" || blocked["patterns"] == nil ||
+		bytes.Contains(auditBytes, []byte(secret)) {
+		t.Fatalf("blocked audit event must identify the header and pattern without exposing its value: %v", blocked)
 	}
 }
 

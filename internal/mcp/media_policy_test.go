@@ -805,7 +805,7 @@ func TestApplyMCPMediaPolicy_SignatureMismatchIsDiagnosed(t *testing.T) {
 	if !verdict.Blocked {
 		t.Fatal("declared MCP PNG with non-PNG bytes must be blocked")
 	}
-	if !strings.Contains(verdict.BlockReason, `declared image type "image/png" does not match response bytes`) {
+	if !strings.Contains(verdict.BlockReason, `declared image type "image/png" does not match response bytes (bytes look like application/octet-stream)`) {
 		t.Errorf("block reason = %q, want declared-type mismatch", verdict.BlockReason)
 	}
 }

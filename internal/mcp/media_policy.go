@@ -373,7 +373,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
 			exposure.Blocked = true
-			exposure.BlockReason = mcpMediaParseBlockReason(mt, err)
+			exposure.BlockReason = mcpMediaParseBlockReason(mt, body, err)
 			return mcpMediaVerdict{
 				Blocked:     true,
 				BlockReason: exposure.BlockReason,
@@ -396,9 +396,9 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	}
 }
 
-func mcpMediaParseBlockReason(mediaType string, err error) string {
+func mcpMediaParseBlockReason(mediaType string, body []byte, err error) string {
 	if errors.Is(err, media.ErrJPEGSignatureMismatch) || errors.Is(err, media.ErrPNGSignatureMismatch) {
-		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes", mediaType)
+		return fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mediaType, media.DescribeBytes(body))
 	}
 	return fmt.Sprintf("media_policy: image parse error: %v", err)
 }

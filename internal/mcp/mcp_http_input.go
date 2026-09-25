@@ -867,8 +867,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
+	entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	originalAction := effectiveAction
-	if rec != nil {
+	if rec != nil && !entropyOnlyDecision {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 	}
 	if effectiveAction != originalAction {
@@ -961,7 +962,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
-		recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+		if !entropyOnlyDecision {
+			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+		}
 		receiptVerdict = effectiveAction
 		blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
 		if bindingReason != "" && bindingAction == config.ActionBlock {
@@ -1193,7 +1196,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
-			recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
+			if !entropyOnlyDecision {
+				recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
+			}
 		}
 		// Cross-request exfiltration check even in warn mode.
 		// The MCP session key is the CEE key verbatim. It is issued by the

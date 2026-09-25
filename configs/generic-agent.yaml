@@ -333,7 +333,7 @@ response_scanning:
     - name: "New Instructions"
       regex: '(?i)(\b(system|developer|administrator|admin)\s*(message|prompt|instruction|directive)?(?:\s*[.!?:,;>=—-]+|[ \t]*[\r\n])[\s\W]*(new|updated|revised)\s+(instructions?|directives?|rules?|prompt)\b|\b(new|updated|revised)\s+(instructions?|directives?|rules?|prompt)\b(?:[\s\W]+(?:\w+[\s\W]+){0,3}(?:issued\s+)?(?:from|by)\s+(?:the\s+)?(?:system|developer|administrator|admin)\b|\s+(?:you\s+)?(?:must|shall|need\s+to|required\s+to)\s+(?:obey|execute|run|follow|comply|delete|override|replace|supersede|ignore|disregard|forget|abandon)\b|\s+(?:(?:says?|states?)\s+(?:to\s+)?|are\s+to\s+)(?:obey|execute|run|follow|comply|delete|override|replace|supersede|ignore|disregard|forget|abandon|send|upload|post|transmit|forward|email|exfiltrat\w*|leak|stream|relay|smuggle)\b|(?:\s*[.!?:,;>=—-]+|[ \t]*[\r\n])[\s\W]*(?:(?:please|you\s+(?:must|shall|should|need\s+to|required\s+to))\s+)?(?:obey|execute|run|follow|comply|delete|override|replace|supersede|ignore|disregard|forget|abandon|send|upload|post|transmit|forward|email|exfiltrat\w*|leak|stream|relay|smuggle)\b))'
     - name: "Jailbreak Attempt"
-      regex: '(?i)((?-i:\bDAN\b)|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
+      regex: '(?i)((?-i:[A-Za-z][ \t\r\n]+DAN\b|\bDAN[:,]?[ \t\r\n]+[A-Za-z])|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
     - name: "Hidden Instruction"
       regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instructions?\s*[:=]|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
     - name: "Behavior Override"

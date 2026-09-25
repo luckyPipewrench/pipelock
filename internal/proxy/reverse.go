@@ -2393,7 +2393,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// replaceWithMediaBlockResponse overwrites resp.Body
 			// while the original stream is still open, leaking the
 			// upstream TCP connection.
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
 				_ = resp.Body.Close()
@@ -2448,7 +2448,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				return nil
 			}
 			oversize := int64(len(body)) > maxRead
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			verdict = refusePartialMediaRewrite(resp.StatusCode, verdict)
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
@@ -3085,7 +3085,7 @@ responseScanning:
 	}
 	if isSVGResponse {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
 		if verdict.Blocked && svgRefusal != "" {
 			verdict.BlockReason = svgRefusal
 		}

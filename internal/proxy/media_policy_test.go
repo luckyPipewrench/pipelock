@@ -322,7 +322,7 @@ func TestApplyMediaPolicy_SignatureMismatchIsDiagnosed(t *testing.T) {
 	if !v.Blocked {
 		t.Fatal("declared PNG with non-PNG bytes must be blocked")
 	}
-	if !strings.Contains(v.BlockReason, `declared image type "image/png" does not match response bytes`) {
+	if !strings.Contains(v.BlockReason, `declared image type "image/png" does not match response bytes (bytes look like application/octet-stream)`) {
 		t.Errorf("block reason = %q, want declared-type mismatch", v.BlockReason)
 	}
 }

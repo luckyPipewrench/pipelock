@@ -280,6 +280,38 @@ func TestMCP_Adaptive_WarnRecordsNearMiss(t *testing.T) {
 	}
 }
 
+func TestMCP_Adaptive_EntropyResourceBlockDoesNotScore(t *testing.T) {
+	sc := newAdaptiveTestScanner()
+	defer sc.Close()
+	uri := "https://api.vendor.example/resource/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	msg := makeRequest(51, "resources/read", map[string]string{"uri": uri})
+	verdict := ScanRequest(t.Context(), []byte(msg), sc, config.ActionWarn, config.ActionBlock)
+	if !verdict.IsEntropyOnly() || verdict.Action != config.ActionBlock {
+		t.Fatalf("resource finding = %+v, want entropy-only block", verdict)
+	}
+
+	adaptiveCfg := adaptiveCfgEnabled()
+	adaptiveCfg.Levels.Elevated.UpgradeWarn = ptrStr(config.ActionBlock)
+	stdioRec := &mockRecorder{level: 1}
+	if forwarded := runAdaptiveInput(msg+"\n", stdioRec, adaptiveCfg, nil, config.ActionWarn); forwarded != "" {
+		t.Fatalf("blocked stdio resource was forwarded: %q", forwarded)
+	}
+	if len(stdioRec.signals) != 0 || stdioRec.ThreatScore() != 0 {
+		t.Fatalf("stdio entropy block scored: signals=%v score=%.1f", stdioRec.signals, stdioRec.ThreatScore())
+	}
+
+	httpRec := &mockRecorder{level: 1}
+	decision := scanHTTPInputDecision([]byte(msg), io.Discard, "entropy-session", "entropy-session", MCPProxyOpts{
+		Scanner: sc, InputCfg: newHTTPInputCfg(config.ActionWarn), Rec: httpRec, AdaptiveCfg: adaptiveCfg,
+	})
+	if decision.Blocked == nil {
+		t.Fatal("HTTP resource entropy block was forwarded")
+	}
+	if len(httpRec.signals) != 0 || httpRec.ThreatScore() != 0 {
+		t.Fatalf("HTTP entropy block scored: signals=%v score=%.1f", httpRec.signals, httpRec.ThreatScore())
+	}
+}
+
 // TestMCP_Adaptive_NilRecorderNoOp verifies that a nil recorder causes no panic
 // and that clean requests are still forwarded correctly.
 func TestMCP_Adaptive_NilRecorderNoOp(t *testing.T) {

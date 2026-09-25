@@ -547,13 +547,15 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_subscription ON imported_issuances(subscription_id);
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_issuer ON imported_issuances(issuer_key_id);
 
-	-- Self-serve license resends that were admitted for sending. email_sha256
+	-- Self-serve license resends that were admitted for sending, with the number
+	-- of emails each one sends. email_sha256
 	-- is the SHA-256 of the normalized address, so the rate limiter does not keep
 	-- a second plaintext copy of customer addresses. Rows older than the longest
 	-- limiter window are pruned on every admission.
 	CREATE TABLE IF NOT EXISTS license_resend_requests (
 		email_sha256 TEXT NOT NULL,
-		requested_at DATETIME NOT NULL
+		requested_at DATETIME NOT NULL,
+		sends        INTEGER NOT NULL DEFAULT 1
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_license_resend_email ON license_resend_requests(email_sha256, requested_at);

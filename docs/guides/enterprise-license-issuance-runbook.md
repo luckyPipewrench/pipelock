@@ -24,7 +24,9 @@ curl -sS -X POST https://licenses.vendor.example/v1/license/resend \
 
 What this does: queues a lookup and returns `202 Accepted` with the same body whether or not the address has a license. For every active, unexpired, unrevoked license whose persisted issuance is on record for that address, the service re-sends the existing token to the address on record. It never mints a new token, never moves an expiry, and never sends anything to an address other than the one stored for the license. An HTML form posting an `email` field works too. When `SELF_SERVE_RESEND_RETURN_URL` is set to an absolute `https` URL, a form submission is redirected there instead of receiving the plain-text reply.
 
-Admitted requests are limited per address (one per 15 minutes, three per 24 hours) and across the service (60 per hour). One admitted request re-sends every qualifying license for that address. The limits live in the service database, so a restart does not reset them. A refused send is recorded as `license_resend_throttled` in the audit ledger, and a completed one as `license_resent`. The caller cannot see either.
+Admitted requests are limited per address (one per 15 minutes, three per 24 hours). One admitted request re-sends up to 10 qualifying licenses for that address, and every email it sends counts against a service-wide budget of 60 per hour. The limits live in the service database, so a restart does not reset them. Each license is recorded as `license_resend_requested` in the audit ledger before it is sent, and is not sent if that entry cannot be written; completion is recorded as `license_resent` and a limiter refusal as `license_resend_throttled`. The caller cannot see any of these.
+
+When the pending-request queue is full, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service finishes the requests it already accepted before it exits, within the shutdown deadline.
 
 ## Feature Mapping
 

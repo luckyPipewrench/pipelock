@@ -124,7 +124,7 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully shuts down the server with the given context deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.srv.Shutdown(ctx)
-	s.stopResendWorker()
+	s.stopResendWorker(ctx)
 	return err
 }
 

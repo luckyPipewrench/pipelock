@@ -7,10 +7,13 @@
 package licenseservice
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -229,14 +232,14 @@ func TestAdmitLicenseResendGlobalCap(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()
 	for i := 0; i < resendGlobalHourlyMax; i++ {
-		if err := db.AdmitLicenseResend(t.Context(), strings.Repeat("x", i+1)+"@example.com", now); err != nil {
+		if err := db.AdmitLicenseResend(t.Context(), strings.Repeat("x", i+1)+"@example.com", 1, now); err != nil {
 			t.Fatalf("admit %d: %v", i, err)
 		}
 	}
-	if err := db.AdmitLicenseResend(t.Context(), "fresh@example.com", now); !errors.Is(err, ErrResendThrottled) {
+	if err := db.AdmitLicenseResend(t.Context(), "fresh@example.com", 1, now); !errors.Is(err, ErrResendThrottled) {
 		t.Fatalf("admit over global cap err = %v, want throttled", err)
 	}
-	if err := db.AdmitLicenseResend(t.Context(), "fresh@example.com", now.Add(time.Hour+time.Second)); err != nil {
+	if err := db.AdmitLicenseResend(t.Context(), "fresh@example.com", 1, now.Add(time.Hour+time.Second)); err != nil {
 		t.Fatalf("admit after the hour: %v", err)
 	}
 }
@@ -270,7 +273,7 @@ func newResendTestServer(t *testing.T, returnURL string) (*Server, *testSetup) {
 	cfg.SelfServeResendEnabled = true
 	cfg.SelfServeResendReturnURL = returnURL
 	s := NewServer(&cfg, ts.handler, ts.ledger, zerolog.New(zerolog.NewTestWriter(t)))
-	t.Cleanup(s.stopResendWorker)
+	t.Cleanup(func() { s.stopResendWorker(context.Background()) })
 	return s, ts
 }
 
@@ -357,19 +360,21 @@ func TestHandleLicenseResendDisabledByDefault(t *testing.T) {
 	if s.resend != nil {
 		t.Fatal("disabled endpoint started a worker")
 	}
-	s.stopResendWorker() // nil worker is a no-op
+	s.stopResendWorker(t.Context()) // nil worker is a no-op
 }
 
-func TestHandleLicenseResendDropsWhenQueueFull(t *testing.T) {
+func TestHandleLicenseResendRefusesWhenQueueFull(t *testing.T) {
 	s, _ := newResendTestServer(t, "")
 	// Stop the worker so nothing drains the queue, then fill it.
-	s.stopResendWorker()
+	s.stopResendWorker(t.Context())
 	for i := 0; i < resendQueueSize; i++ {
 		s.resend.queue <- "filler@example.com"
 	}
+	// Busy depends on load only, so a known and an unknown address get the
+	// same refusal, and the caller learns it was not accepted.
 	rr := postResend(t, s, "application/json", `{"email":"overflow@example.com"}`)
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("overflow status = %d, want the same accepted response", rr.Code)
+	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("overflow status = %d retry-after=%q, want 503 with Retry-After", rr.Code, rr.Header().Get("Retry-After"))
 	}
 	if got := len(s.resend.queue); got != resendQueueSize {
 		t.Fatalf("queue length = %d, want %d", got, resendQueueSize)
@@ -512,7 +517,7 @@ func TestResendFailsClosedOnDatabaseErrors(t *testing.T) {
 	if _, err := ts.handler.ResendLicensesForEmail(t.Context(), "dberr@example.com", now); err == nil {
 		t.Fatal("resend with an unreadable database must fail")
 	}
-	if err := ts.db.AdmitLicenseResend(t.Context(), "dberr@example.com", now); err == nil || errors.Is(err, ErrResendThrottled) {
+	if err := ts.db.AdmitLicenseResend(t.Context(), "dberr@example.com", 1, now); err == nil || errors.Is(err, ErrResendThrottled) {
 		t.Fatalf("admission with an unreadable database = %v; want a storage error", err)
 	}
 	if _, err := ts.handler.revokedLicenseIDs(t.Context()); err == nil {
@@ -553,9 +558,8 @@ func TestResendEnterpriseEvalDeliveryFailure(t *testing.T) {
 	}
 }
 
-// The email is the customer-visible outcome; a failed audit append after it
-// is logged, not reported as a failed resend that would invite a retry.
-func TestResendSucceedsWhenCompletionAuditFails(t *testing.T) {
+// A resend that cannot be attributed in the audit ledger is not sent.
+func TestResendRefusesToSendWithoutRequestAudit(t *testing.T) {
 	ts := newTestSetup(t)
 	issueResendTrial(t, ts, "order_free_resend_auditfail", "auditfail@example.com")
 	rec := recordEmails(t, ts.handler)
@@ -563,8 +567,82 @@ func TestResendSucceedsWhenCompletionAuditFails(t *testing.T) {
 		t.Fatalf("close ledger: %v", err)
 	}
 	sent, err := ts.handler.ResendLicensesForEmail(t.Context(), "auditfail@example.com", time.Now())
-	if err != nil || sent != 1 || len(rec.all()) != 1 {
-		t.Fatalf("resend with closed ledger = %d, %v, emails=%d; want 1, nil, 1", sent, err, len(rec.all()))
+	if err == nil || sent != 0 || len(rec.all()) != 0 {
+		t.Fatalf("resend with closed ledger = %d, %v, emails=%d; want 0, error, 0", sent, err, len(rec.all()))
+	}
+}
+
+func TestResendWritesRequestAuditBeforeCompletion(t *testing.T) {
+	ts := newTestSetup(t)
+	issueResendTrial(t, ts, "order_free_resend_auditorder", "auditorder@example.com")
+	recordEmails(t, ts.handler)
+	if sent, err := ts.handler.ResendLicensesForEmail(t.Context(), "auditorder@example.com", time.Now()); err != nil || sent != 1 {
+		t.Fatalf("resend = %d, %v", sent, err)
+	}
+	data, err := os.ReadFile(ts.ledger.path)
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	text := string(data)
+	req := strings.Index(text, `"event":"`+AuditLicenseResendRequested+`"`)
+	done := strings.Index(text, `"event":"`+AuditLicenseResent+`"`)
+	if req < 0 || done < 0 || req > done {
+		t.Fatalf("ledger order: requested at %d, resent at %d; want request first", req, done)
+	}
+}
+
+func TestAdmitLicenseResendCountsEmailsAgainstGlobalBudget(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	if err := db.AdmitLicenseResend(t.Context(), "many@example.com", resendGlobalHourlyMax-2, now); err != nil {
+		t.Fatalf("admit large batch: %v", err)
+	}
+	if err := db.AdmitLicenseResend(t.Context(), "three@example.com", 3, now); !errors.Is(err, ErrResendThrottled) {
+		t.Fatalf("batch over the email budget err = %v, want throttled", err)
+	}
+	if err := db.AdmitLicenseResend(t.Context(), "two@example.com", 2, now); err != nil {
+		t.Fatalf("batch that fits the email budget: %v", err)
+	}
+	if err := db.AdmitLicenseResend(t.Context(), "zero@example.com", 0, now); err == nil || errors.Is(err, ErrResendThrottled) {
+		t.Fatalf("zero-send admission = %v, want an argument error", err)
+	}
+}
+
+// Requests already accepted when the service shuts down are still delivered.
+func TestStopResendWorkerDrainsAcceptedRequests(t *testing.T) {
+	s, ts := newResendTestServer(t, "")
+	issueResendTrial(t, ts, "order_free_resend_drainone", "drainone@example.com")
+	rec := recordEmails(t, ts.handler)
+	// Park the worker inside the first job so the second stays queued.
+	ts.handler.processMu.Lock()
+	s.resend.queue <- "drainone@example.com"
+	testwait.For(t, 5*time.Second, func() bool { return len(s.resend.queue) == 0 }, "worker never took the first job")
+	s.resend.queue <- "drainone@example.com"
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.stopResendWorker(context.Background())
+	}()
+	ts.handler.processMu.Unlock()
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+			return false
+		}
+	}, "worker did not stop")
+	if got := len(s.resend.queue); got != 0 {
+		t.Fatalf("queue after stop = %d, want drained", got)
+	}
+	// The first job sent; the drained second job ran and was throttled by the
+	// per-address spacing, which proves it was processed rather than dropped.
+	if got := len(rec.all()); got != 1 {
+		t.Fatalf("emails = %d, want 1", got)
+	}
+	var rows int
+	if err := ts.db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM license_resend_requests`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("limiter rows = %d, %v", rows, err)
 	}
 }
 
@@ -580,19 +658,104 @@ func TestResendLookupForUnknownAddressDoesNotTakeWebhookLock(t *testing.T) {
 			ts.handler.processMu.Unlock()
 		}
 	})
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		_, _ = ts.handler.ResendLicensesForEmail(t.Context(), "stranger@example.com", time.Now())
+		_, err := ts.handler.ResendLicensesForEmail(t.Context(), "stranger@example.com", time.Now())
+		done <- err
 	}()
+	var lookupErr error
 	testwait.For(t, 5*time.Second, func() bool {
 		select {
-		case <-done:
+		case lookupErr = <-done:
 			return true
 		default:
 			return false
 		}
 	}, "unknown-address resend blocked on the webhook lock")
+	if lookupErr != nil {
+		t.Fatalf("unknown-address lookup failed: %v", lookupErr)
+	}
 	ts.handler.processMu.Unlock()
 	unlocked = true
+}
+
+// One request re-sends at most resendMaxLicensesPerRequest licenses however
+// many an address holds.
+func TestResendCapsLicensesPerRequest(t *testing.T) {
+	ts := newTestSetup(t)
+	const base = "order_free_resend_fanout"
+	issueResendTrial(t, ts, base, "fanout@example.com")
+	for i := 0; i < resendMaxLicensesPerRequest+2; i++ {
+		clone := fmt.Sprintf("%s_clone_%02d", base, i)
+		if _, err := ts.db.db.ExecContext(t.Context(), `
+			INSERT INTO entitlements SELECT ?, customer_email, product_id, tier, billing_interval, status,
+				current_period_end, founding, founding_reserved_at, org, features, ? || last_license_id,
+				last_license_issued_at, last_license_expires_at, last_license_period_end, last_license_tier,
+				last_license_interval, last_license_product_id, last_delivery_status, last_delivery_attempt_at,
+				next_refresh_at, created_at, updated_at
+			FROM entitlements WHERE subscription_id = ?`, clone, clone, base); err != nil {
+			t.Fatalf("clone entitlement: %v", err)
+		}
+		if _, err := ts.db.db.ExecContext(t.Context(), `
+			INSERT INTO license_issuances (license_id, subscription_id, expires_at, issued_at)
+			SELECT ? || license_id, ?, expires_at, issued_at FROM license_issuances WHERE subscription_id = ?`,
+			clone, clone, base); err != nil {
+			t.Fatalf("clone issuance: %v", err)
+		}
+	}
+	rec := recordEmails(t, ts.handler)
+	sent, err := ts.handler.ResendLicensesForEmail(t.Context(), "fanout@example.com", time.Now())
+	if err != nil || sent != resendMaxLicensesPerRequest {
+		t.Fatalf("fan-out resend = %d, %v; want %d", sent, err, resendMaxLicensesPerRequest)
+	}
+	if got := len(rec.all()); got != resendMaxLicensesPerRequest {
+		t.Fatalf("emails = %d, want %d", got, resendMaxLicensesPerRequest)
+	}
+}
+
+func TestResendThrottleStillRefusesWhenAuditUnavailable(t *testing.T) {
+	ts := newTestSetup(t)
+	issueResendTrial(t, ts, "order_free_resend_throttleaudit", "throttleaudit@example.com")
+	rec := recordEmails(t, ts.handler)
+	now := time.Now()
+	if sent, err := ts.handler.ResendLicensesForEmail(t.Context(), "throttleaudit@example.com", now); err != nil || sent != 1 {
+		t.Fatalf("first resend = %d, %v", sent, err)
+	}
+	if err := ts.ledger.Close(); err != nil {
+		t.Fatalf("close ledger: %v", err)
+	}
+	if _, err := ts.handler.ResendLicensesForEmail(t.Context(), "throttleaudit@example.com", now.Add(time.Minute)); !errors.Is(err, ErrResendThrottled) {
+		t.Fatalf("second resend err = %v, want throttled", err)
+	}
+	if got := len(rec.all()); got != 1 {
+		t.Fatalf("emails = %d, want 1", got)
+	}
+}
+
+// A shutdown whose deadline has passed abandons queued work instead of
+// waiting for it.
+func TestStopResendWorkerHonorsDeadline(t *testing.T) {
+	s, ts := newResendTestServer(t, "")
+	issueResendTrial(t, ts, "order_free_resend_deadline", "deadline@example.com")
+	recordEmails(t, ts.handler)
+	ts.handler.processMu.Lock()
+	s.resend.queue <- "deadline@example.com"
+	testwait.For(t, 5*time.Second, func() bool { return len(s.resend.queue) == 0 }, "worker never took the job")
+	s.resend.queue <- "deadline@example.com"
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.stopResendWorker(ctx)
+	}()
+	ts.handler.processMu.Unlock()
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+			return false
+		}
+	}, "worker did not stop after its deadline")
 }

@@ -47,20 +47,26 @@ const (
 	// resendWindow is the longest limiter window and the row retention period.
 	resendWindow = 24 * time.Hour
 	// resendGlobalHourlyMax bounds admitted sends across all addresses per hour.
-	// The customer base is small; a real recovery burst stays far below this.
+	// It counts emails, not requests. The customer base is small; a real
+	// recovery burst stays far below this.
 	resendGlobalHourlyMax = 60
+	// resendMaxLicensesPerRequest bounds how many licenses one request
+	// re-sends, so a single admission cannot fan out without limit.
+	resendMaxLicensesPerRequest = 10
 
-	// resendQueueSize bounds pending requests. When full, new requests are
-	// dropped and still receive the same accepted response.
+	// resendQueueSize bounds pending requests. When full, the endpoint
+	// answers 503, which depends only on load and never on the address.
 	resendQueueSize = 32
 	// maxResendBody caps the request body. An email address fits in far less.
 	maxResendBody = 4 << 10
 	// resendJobTimeout bounds one lookup plus delivery.
 	resendJobTimeout = 60 * time.Second
 
-	// AuditLicenseResent records a self-serve resend delivered to the address
-	// on record. AuditLicenseResendThrottled records a matching request the
-	// limiter refused.
+	// AuditLicenseResendRequested is written before a license is re-sent, and
+	// the send is refused if it cannot be written, so every delivered resend
+	// is attributable. AuditLicenseResent records completion and
+	// AuditLicenseResendThrottled a matching request the limiter refused.
+	AuditLicenseResendRequested = "license_resend_requested"
 	AuditLicenseResent          = "license_resent"
 	AuditLicenseResendThrottled = "license_resend_throttled"
 
@@ -112,11 +118,15 @@ func (e *EntitlementDB) ResendableSubscriptionIDsForEmail(ctx context.Context, n
 	return ids, nil
 }
 
-// AdmitLicenseResend records one send to normalizedEmail if the per-address
-// and global limits allow it, and returns ErrResendThrottled otherwise. The
-// check and the insert share one transaction so two processes on the same
-// database cannot both admit the last available send.
-func (e *EntitlementDB) AdmitLicenseResend(ctx context.Context, normalizedEmail string, now time.Time) (err error) {
+// AdmitLicenseResend records one request to normalizedEmail that will send
+// sends emails, if the per-address request limits and the global email budget
+// allow it, and returns ErrResendThrottled otherwise. The check and the insert
+// share one transaction so two processes on the same database cannot both
+// admit the last available send.
+func (e *EntitlementDB) AdmitLicenseResend(ctx context.Context, normalizedEmail string, sends int, now time.Time) (err error) {
+	if sends < 1 {
+		return fmt.Errorf("resend admission needs at least one send, got %d", sends)
+	}
 	now = now.UTC()
 	key := resendEmailKey(normalizedEmail)
 	tx, err := e.db.BeginTx(ctx, nil)
@@ -134,10 +144,10 @@ func (e *EntitlementDB) AdmitLicenseResend(ctx context.Context, normalizedEmail 
 	}
 	var global int
 	if err = tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM license_resend_requests WHERE requested_at > ?`, now.Add(-time.Hour)).Scan(&global); err != nil {
+		`SELECT COALESCE(SUM(sends), 0) FROM license_resend_requests WHERE requested_at > ?`, now.Add(-time.Hour)).Scan(&global); err != nil {
 		return fmt.Errorf("count global resends: %w", err)
 	}
-	if global >= resendGlobalHourlyMax {
+	if global+sends > resendGlobalHourlyMax {
 		err = ErrResendThrottled
 		return err
 	}
@@ -153,7 +163,7 @@ func (e *EntitlementDB) AdmitLicenseResend(ctx context.Context, normalizedEmail 
 		return err
 	}
 	if _, err = tx.ExecContext(ctx,
-		`INSERT INTO license_resend_requests (email_sha256, requested_at) VALUES (?, ?)`, key, now); err != nil {
+		`INSERT INTO license_resend_requests (email_sha256, requested_at, sends) VALUES (?, ?, ?)`, key, now, sends); err != nil {
 		return fmt.Errorf("record resend request: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -179,18 +189,23 @@ func (h *WebhookHandler) ResendLicensesForEmail(ctx context.Context, rawEmail st
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}
+	if len(ids) > resendMaxLicensesPerRequest {
+		ids = ids[:resendMaxLicensesPerRequest]
+	}
 	sent := 0
 	err = h.db.withTrialSupportLock(ctx, func() error {
 		h.processMu.Lock()
 		defer h.processMu.Unlock()
 
-		if err := h.db.AdmitLicenseResend(ctx, normalized, now); err != nil {
+		if err := h.db.AdmitLicenseResend(ctx, normalized, len(ids), now); err != nil {
 			if errors.Is(err, ErrResendThrottled) {
-				_ = h.ledger.Log(AuditEntry{
+				if lerr := h.ledger.Log(AuditEntry{
 					Event:         AuditLicenseResendThrottled,
 					CustomerEmail: normalized,
 					Detail:        resendReasonSelfServe,
-				})
+				}); lerr != nil {
+					h.log.Error().Err(lerr).Msg("record throttled license resend")
+				}
 			}
 			return err
 		}
@@ -264,6 +279,17 @@ func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized
 	if !matched {
 		return false, nil
 	}
+	if err := h.ledger.Log(AuditEntry{
+		Event:          AuditLicenseResendRequested,
+		SubscriptionID: ent.SubscriptionID,
+		CustomerEmail:  ent.CustomerEmail,
+		LicenseID:      ent.LastLicenseID,
+		Tier:           ent.LastLicenseTier,
+		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
+		Detail:         resendReasonSelfServe,
+	}); err != nil {
+		return false, fmt.Errorf("record license resend request: %w", err)
+	}
 	token, err := h.regenerateToken(ent)
 	if err != nil {
 		return false, err
@@ -292,7 +318,8 @@ func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized
 		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
 		Detail:         resendReasonSelfServe,
 	}); err != nil {
-		h.log.Error().Err(err).Str("subscription_id", ent.SubscriptionID).Msg("record license resend")
+		// The request entry above already makes this resend attributable.
+		h.log.Error().Err(err).Str("subscription_id", ent.SubscriptionID).Msg("record license resend completion")
 	}
 	return true, nil
 }
@@ -300,6 +327,7 @@ func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized
 // resendWorker runs self-serve resend jobs off the request path.
 type resendWorker struct {
 	queue  chan string
+	stop   chan struct{}
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
@@ -309,6 +337,7 @@ func (s *Server) startResendWorker() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &resendWorker{
 		queue:  make(chan string, resendQueueSize),
+		stop:   make(chan struct{}),
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
@@ -317,8 +346,16 @@ func (s *Server) startResendWorker() {
 		defer close(w.done)
 		for {
 			select {
-			case <-ctx.Done():
-				return
+			case <-w.stop:
+				// Finish the requests already accepted before exiting.
+				for {
+					select {
+					case email := <-w.queue:
+						s.runResendJob(ctx, email)
+					default:
+						return
+					}
+				}
 			case email := <-w.queue:
 				s.runResendJob(ctx, email)
 			}
@@ -337,13 +374,21 @@ func (s *Server) runResendJob(parent context.Context, email string) {
 	s.log.Info().Int("sent", sent).Bool("throttled", errors.Is(err, ErrResendThrottled)).Msg("self-serve license resend processed")
 }
 
-func (s *Server) stopResendWorker() {
+// stopResendWorker drains queued requests until ctx ends, then abandons any
+// job still running. Call it after the HTTP server stops accepting requests.
+func (s *Server) stopResendWorker(ctx context.Context) {
 	if s.resend == nil {
 		return
 	}
 	s.resend.once.Do(func() {
+		close(s.resend.stop)
+		select {
+		case <-s.resend.done:
+		case <-ctx.Done():
+			s.resend.cancel()
+			<-s.resend.done
+		}
 		s.resend.cancel()
-		<-s.resend.done
 	})
 }
 
@@ -389,7 +434,11 @@ func (s *Server) handleLicenseResend(w http.ResponseWriter, r *http.Request) {
 		select {
 		case s.resend.queue <- email:
 		default:
-			s.log.Warn().Msg("self-serve resend queue full; request dropped")
+			// Busy is a statement about load, the same for every address.
+			s.log.Warn().Msg("self-serve resend queue full; request refused")
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "busy, try again shortly", http.StatusServiceUnavailable)
+			return
 		}
 	}
 

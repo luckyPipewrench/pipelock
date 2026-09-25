@@ -367,7 +367,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// wsHasFinding excludes IsAdaptiveNeutral (protective + infrastructure errors)
 	// so DNS resolver failures don't taint downstream "finding" behavior. Fail-closed
 	// enforcement still fires via !result.Allowed.
-	wsHasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
+	wsHasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 	var wsGate ContractGateOutput
 
 	if !result.Allowed {
@@ -398,7 +398,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
@@ -1249,7 +1252,17 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
 	// can exfiltrate data in any of these values.
 	var allMatches []scanner.TextDLPMatch
+	var audienceAllows []scanner.CredentialAudienceAllow
 	matchedHeaders := make([]string, 0, 2)
+	defer func() {
+		// Record audience allows only when no header blocks the handshake.
+		if len(allMatches) > 0 {
+			return
+		}
+		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
+			p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent())
+		}
+	}()
 	for _, key := range []string{
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
@@ -1266,9 +1279,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if !result.Clean {
 			surface := scanner.CredentialAudienceHeaderSurface(key, scanVal)
 			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, surface)
-			for _, allow := range allows {
-				p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent())
-			}
+			audienceAllows = append(audienceAllows, allows...)
 			matches = filterBodyDLPMatches(matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
 				if p.logger != nil {
 					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", dropReason)
@@ -2171,7 +2182,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+	if !result.IsEntropyOnly() {
+		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+	}
 	if action != originalAction {
 		sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAction, ToAction: action, Scanner: scannerLabel, ClientIP: r.clientIP, RequestID: r.requestID})
@@ -2198,7 +2211,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+		if !result.IsEntropyOnly() {
+			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+		}
 		blockReason := reason
 		if !r.cfg.EnforceEnabled() && action != originalAction {
 			blockReason += " (escalated)"
@@ -2228,7 +2243,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
+		if !result.IsEntropyOnly() {
+			r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
+		}
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{
 				Target:    r.targetURL,
@@ -2994,7 +3011,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return bytesTransferred, textFrames, binaryFrames, true
 			}
 			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
+			mediaVerdict := applyMediaPolicy(r.cfg, "", msg, mediaPolicyOptions{host: r.hostname})
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)
 			if mediaVerdict.Blocked {
 				log.LogWSBlocked(audit.WSBlockedEvent{

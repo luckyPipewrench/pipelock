@@ -2393,7 +2393,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// replaceWithMediaBlockResponse overwrites resp.Body
 			// while the original stream is still open, leaking the
 			// upstream TCP connection.
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
 				_ = resp.Body.Close()
@@ -2448,7 +2448,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				return nil
 			}
 			oversize := int64(len(body)) > maxRead
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			verdict = refusePartialMediaRewrite(resp.StatusCode, verdict)
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
@@ -2768,12 +2768,16 @@ responseScanning:
 		}
 		// Initialize before the scanner goroutine can publish its terminal result.
 		recordReverseOutcome(resp.StatusCode, -1, "sse_stream")
-		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		// SSE is open-ended; the upstream Content-Length (if any) becomes
 		// meaningless once we strip events through the pipe. -1 instructs
-		// httputil.ReverseProxy to chunk the response.
+		// httputil.ReverseProxy to chunk the response. Both writes must land
+		// before HijackResponseForSSE starts the goroutine that can close the
+		// upstream body: Go 1.27's transport reads ContentLength when that body
+		// closes to decide whether to drain it, and a drain would read the
+		// stream the scanner is reading.
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
+		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 		return nil
 	}
@@ -3085,7 +3089,7 @@ responseScanning:
 	}
 	if isSVGResponse {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
 		if verdict.Blocked && svgRefusal != "" {
 			verdict.BlockReason = svgRefusal
 		}

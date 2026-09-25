@@ -94,6 +94,9 @@ const (
 	// burst of legitimate presigned-URL fetches must not poison the
 	// session score, but should also not earn clean-decay trust.
 	ClassStructuralExemption
+	// ClassHeuristicEntropy marks path, query, or subdomain entropy evidence.
+	// It remains a finding but does not contribute to adaptive enforcement.
+	ClassHeuristicEntropy
 )
 
 // WarnMatch describes a DLP pattern match from a warn-mode pattern.
@@ -130,6 +133,10 @@ const (
 	// error, server failure) that produce no usable IP. Kept distinct from
 	// timeout because operator alerting may want different treatment.
 	DNSErrorResolver DNSErrorKind = "resolver_error"
+	// DNSErrorSinkhole reports an answer made only of unspecified addresses
+	// (0.0.0.0 or ::), the convention DNS filters use for a blocked name. The
+	// request is still refused; it is not counted as an SSRF probe.
+	DNSErrorSinkhole DNSErrorKind = "sinkhole"
 )
 
 // Result describes the outcome of scanning a URL.
@@ -198,7 +205,13 @@ func (r Result) IsStructuralExemption() bool {
 // by design so repeated probing of misconfigured allowlists remains visible
 // to scoring.
 func (r Result) IsAdaptiveNeutral() bool {
-	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption()
+	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption() || r.IsEntropyOnly()
+}
+
+// IsEntropyOnly identifies heuristic URL findings. Structural hostname
+// exfiltration uses the subdomain scanner label but remains concrete evidence.
+func (r Result) IsEntropyOnly() bool {
+	return r.Class == ClassHeuristicEntropy
 }
 
 // IsHostnameExfilResult reports whether a URL scan result came from a
@@ -385,6 +398,8 @@ type compiledPattern struct {
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
 	credentialAudienceAuthorizationOnly bool     // compiled built-ins only; limits the allow to Authorization headers
+	credentialAudienceCarrierMask       uint8    // compiled built-ins only; which headers may carry the credential
+	credentialAudienceGitHosts          []string // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
 	bundle                              string   // empty for built-in/config patterns
 	bundleVersion                       string
 	warn                                bool // true when pattern action is "warn" - matches are informational only
@@ -473,7 +488,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	}
 
 	s := &Scanner{
-		core:                      initCoreScanner(),
+		core:                      initCoreScanner(cfg),
 		allowlist:                 allowlist,
 		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
 		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
@@ -483,7 +498,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
-		pathEntropyExclusions:     buildPathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions),
+		pathEntropyExclusions:     buildPathEntropyExclusions(effectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
 		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
 		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
@@ -528,8 +543,10 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		// none. A core-floor pattern may carry a compiled audience; it narrows
 		// where that immutable credential is enforced (its own issuing authority
 		// over an encrypted scheme) without letting operator YAML reach it.
-		cp.credentialAudienceHosts = append([]string(nil), p.CredentialAudienceHosts...)
+		cp.credentialAudienceHosts = append([]string(nil), config.AppendDeclaredCredentialAudienceHosts(p.Name, p.CredentialAudienceHosts, cfg.DLP.GitHubEnterpriseHosts, cfg.DLP.GitLabHosts)...)
 		cp.credentialAudienceAuthorizationOnly = p.CredentialAudienceAuthorizationOnly
+		cp.credentialAudienceCarrierMask = p.CredentialAudienceCarrierMask
+		cp.credentialAudienceGitHosts = config.AppendDeclaredCredentialAudienceHosts(p.Name, p.CredentialAudienceGitHosts, cfg.DLP.GitHubEnterpriseHosts, cfg.DLP.GitLabHosts)
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {
@@ -1407,6 +1424,21 @@ func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) R
 	// unspecified targets can never be exempted, so this pass runs BEFORE the
 	// trusted-domain allow below and wins over it.
 	if hit, found := destination.FirstFloorHit(parsed); found {
+		// A DNS filter answers a blocked name with the unspecified address.
+		// When that is the whole answer, the resolver refused the name, so
+		// the request is refused as an infrastructure result rather than
+		// scored as a probe of an internal host. Any other floor address in
+		// the answer, including cloud metadata, keeps the threat verdict.
+		if destination.AllUnspecified(parsed) {
+			return Result{
+				Allowed:      false,
+				Reason:       fmt.Sprintf("DNS for %s answered %s, the address DNS filters use for a blocked name", hostname, hit.Display),
+				Scanner:      ScannerSSRF,
+				Score:        1.0,
+				Class:        ClassInfrastructureError,
+				DNSErrorKind: DNSErrorSinkhole,
+			}
+		}
 		scannerLabel := ScannerSSRF
 		blockReason := fmt.Sprintf("SSRF blocked: %s resolves to non-overridable internal IP %s", hostname, hit.Display)
 		if isCloudMetadataIP(hit.IP) {
@@ -3871,12 +3903,13 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
 			if len(segment) >= s.entropyMinLen {
-				entropy := ShannonEntropy(segment)
+				entropy := payloadEntropy(segment)
 				if entropy > s.entropyThreshold {
 					return Result{
 						Allowed: false,
 						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
+						Class:   ClassHeuristicEntropy,
 						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 					}
 				}
@@ -3901,6 +3934,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					Allowed: false,
 					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}
 			}
@@ -3910,7 +3944,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				return result
 			}
 			if !excludedQuery && len(v) >= s.entropyMinLen {
-				entropy := ShannonEntropy(v)
+				entropy := payloadEntropy(v)
 				if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
 					continue
 				}
@@ -3922,6 +3956,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 						Allowed: false,
 						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
+						Class:   ClassHeuristicEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
 					}
 				}
@@ -3952,6 +3987,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 					Allowed: false,
 					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
 					Score:   math.Min(entropy/8.0, 1.0),
 				}, true
 			}
@@ -3962,7 +3998,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if !scanEntropy || len(value) < s.entropyMinLen {
 			continue
 		}
-		entropy := ShannonEntropy(value)
+		entropy := payloadEntropy(value)
 		if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
 			continue
 		}
@@ -3971,6 +4007,7 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 				Allowed: false,
 				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 				Scanner: ScannerEntropy,
+				Class:   ClassHeuristicEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}, true
 		}
@@ -4001,6 +4038,17 @@ type pathEntropyExclusion struct {
 	scheme     string
 	host       string
 	pathPrefix string
+}
+
+// effectivePathEntropyExclusions adds the shipped vendor routes to an
+// operator's list. An operator list used to replace the shipped set, so
+// adding one route silently dropped every vendor route. An explicitly empty
+// list still removes them all, which is the documented opt-out.
+func effectivePathEntropyExclusions(entries []config.PathEntropyExclusion) []config.PathEntropyExclusion {
+	if len(entries) == 0 {
+		return entries
+	}
+	return append(append([]config.PathEntropyExclusion(nil), entries...), config.ShippedPathEntropyExclusions()...)
 }
 
 func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEntropyExclusion {
@@ -4258,6 +4306,66 @@ func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 		}, true
 	}
 	return Result{}, false
+}
+
+// payloadEntropyMinDecoded is the shortest decoded text treated as the
+// payload of a base64 value. Shorter decodes are too small to judge.
+const payloadEntropyMinDecoded = 8
+
+// payloadEntropy measures what a URL segment or query value carries rather
+// than how it is written. Applications routinely base64-encode ordinary
+// identifiers (a UUID, a typed record id) into paths, and the encoding alone
+// lifts Shannon entropy over the threshold even though the same text written
+// plainly would pass. When value is base64 or base64url that decodes to
+// printable ASCII, the decoded text is measured instead. Random bytes decode
+// to non-printable data and keep the raw measurement, and decoded text is no
+// more capable than the same text sent unencoded, so this adds no channel.
+func payloadEntropy(value string) float64 {
+	raw := ShannonEntropy(value)
+	if decoded, ok := decodePrintableBase64(value); ok {
+		if d := ShannonEntropy(decoded); d < raw {
+			return d
+		}
+	}
+	return raw
+}
+
+// isBase64AlphabetByte reports whether c belongs to the standard or URL-safe
+// base64 alphabet, including padding.
+func isBase64AlphabetByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	}
+	return c == '+' || c == '/' || c == '-' || c == '_' || c == '='
+}
+
+// decodePrintableBase64 decodes value as standard or URL-safe base64, with or
+// without padding, and reports the result only when it is printable ASCII of
+// at least payloadEntropyMinDecoded bytes.
+func decodePrintableBase64(value string) (string, bool) {
+	for i := 0; i < len(value); i++ {
+		if !isBase64AlphabetByte(value[i]) {
+			return "", false
+		}
+	}
+	for _, enc := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding} {
+		b, err := enc.DecodeString(value)
+		if err != nil || len(b) < payloadEntropyMinDecoded {
+			continue
+		}
+		printable := true
+		for _, c := range b {
+			if c < 0x20 || c > 0x7e {
+				printable = false
+				break
+			}
+		}
+		if printable {
+			return string(b), true
+		}
+	}
+	return "", false
 }
 
 func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {
@@ -4590,6 +4698,7 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f > %.2f threshold)", label, entropy, s.subdomainEntropyThreshold),
 				Scanner: ScannerSubdomainEntropy,
+				Class:   ClassHeuristicEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
 			}
 		}

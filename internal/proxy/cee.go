@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/ceereason"
 
@@ -106,7 +107,9 @@ func captureSessionKeyAndOriginal(agent, clientIP string) (safe, original string
 	if key == "" {
 		key = agentAnonymous
 	}
-	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen {
+	// Invalid UTF-8 is hashed too: the key names the capture session, and the
+	// recorder refuses a session id that JSON cannot store byte for byte.
+	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen || !utf8.ValidString(key) {
 		sum := sha256.Sum256([]byte(key))
 		return "capture-" + hex.EncodeToString(sum[:]), key
 	}
@@ -524,7 +527,7 @@ type ceeResult struct {
 	// field instead: a receipt whose Pattern held a sentence carried no
 	// queryable evidence of which control fired.
 	BlockKind   string
-	EntropyHit  bool // entropy budget exceeded (for metrics/signals)
+	EntropyHit  bool // entropy budget exceeded (for metrics/audit; score-neutral)
 	FragmentHit bool // fragment DLP match (for metrics/signals)
 }
 
@@ -619,7 +622,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	// Entropy budget check (values + bare tokens + body + keys).
 	// Skip recording for exempt domains (e.g. API polling endpoints with
 	// tokens in URLs that would exhaust the budget on normal traffic).
-	entropyExempt := ceeEntropyExempt(targetURL, ceeCfg.EntropyBudget.ExemptDomains)
+	entropyExempt := ceeEntropyExempt(targetURL, append(append([]string(nil), ceeCfg.EntropyBudget.ExemptDomains...), config.ShippedChallengeProviderHosts()...))
 	if et != nil && ceeCfg.EntropyBudget.Enabled && !entropyExempt && (len(outbound) > 0 || len(keyPayload) > 0) {
 		if len(outbound) > 0 {
 			et.Record(identity, outbound)
@@ -881,9 +884,6 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		Session:   sessionKey,
 		ClientIP:  clientIP,
 		RequestID: requestID,
-	}
-	if result.EntropyHit {
-		decide.RecordSignal(sess, session.SignalEntropyBudget, ep)
 	}
 	if result.FragmentHit {
 		// Fragment DLP match is high-confidence (reconstructed secret from fragments).

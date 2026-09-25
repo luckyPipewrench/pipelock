@@ -114,7 +114,7 @@ func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCo
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount, key: key}
+	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount, key: key, raw: raw}
 	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
 		return jsonLeafBucketResult(state.payloads), false
 	}
@@ -135,6 +135,9 @@ type jsonLeafBucketState struct {
 	payloads    map[string][]byte
 	bucketCount int
 	key         []byte
+	// raw is the whole input, so an over-depth fold the decoder refuses to
+	// finish can still bucket the bytes it could not tokenize.
+	raw []byte
 }
 
 func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth int, limits JSONLeafLimits) bool {
@@ -216,7 +219,22 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 // the truncated-plus-digest path and no content is discarded. Object member
 // names are consumed but not bucketed, matching the value-only contract of the
 // recursive path. The fixed bucket count still bounds retained state.
-func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth, maxDepth int) bool {
+func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth, maxDepth int) (complete bool) {
+	// json.Decoder's own nesting limit differs by Go release (Go 1.27 stops
+	// at 10000 levels). When it refuses to go on, bucket the untokenized
+	// remainder of the input raw rather than drop it; the walk still reports
+	// incomplete, but the bytes reach the fragment scanner.
+	// resume is the input offset just past the last token the decoder
+	// returned, so the fallback scan neither repeats a leaf already bucketed
+	// nor skips one.
+	resume := decoder.InputOffset()
+	defer func() {
+		if !complete && resume >= 0 && resume < int64(len(state.raw)) {
+			foldRemainingJSONScalars(state.raw[resume:], func(value string) {
+				appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
+			})
+		}
+	}()
 	// stack element true = inside an object (tokens alternate key/value),
 	// false = inside an array (every element is a value).
 	var stack []bool
@@ -225,6 +243,7 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 	for {
 		if len(stack) > 0 && stack[len(stack)-1] && expectKey && decoder.More() {
 			// Consume and discard the object member name.
+			resume = decoder.InputOffset()
 			keyTok, err := decoder.Token()
 			if err != nil {
 				return false
@@ -234,6 +253,7 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 			}
 			expectKey = false
 		}
+		resume = decoder.InputOffset()
 		token, err := decoder.Token()
 		if err != nil {
 			return false
@@ -269,6 +289,83 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 			return true
 		}
 	}
+}
+
+// foldRemainingJSONScalars emits the scalar values in raw, in order, without
+// a nesting limit. It takes over when json.Decoder refuses to continue, so an
+// over-depth fold still buckets the leaves it could not tokenize. raw starts
+// part way through a document, so a closing delimiter with no matching opener
+// is skipped, and a string outside any container this scan opened is treated
+// as a value: over-including a member name is safe for fragment scanning,
+// dropping a value is not. Strings are decoded by encoding/json one literal at
+// a time, which has no depth to exceed; null is not a value, matching the
+// token walk. Malformed input ends the scan.
+func foldRemainingJSONScalars(raw []byte, emit func(string)) {
+	var inObject []bool
+	expectKey := false
+	for i := 0; i < len(raw); {
+		switch c := raw[i]; c {
+		case ' ', '\t', '\n', '\r', ',':
+			i++
+		case ':':
+			expectKey = false
+			i++
+		case '{', '[':
+			inObject = append(inObject, c == '{')
+			expectKey = c == '{'
+			i++
+		case '}', ']':
+			if len(inObject) > 0 {
+				inObject = inObject[:len(inObject)-1]
+			}
+			expectKey = false
+			i++
+		case '"':
+			end := jsonStringEnd(raw, i)
+			if end < 0 {
+				return
+			}
+			isKey := len(inObject) > 0 && inObject[len(inObject)-1] && expectKey
+			if !isKey {
+				var value string
+				if json.Unmarshal(raw[i:end], &value) != nil {
+					return
+				}
+				emit(value)
+			}
+			i = end
+		default:
+			end := i
+			for end < len(raw) && strings.IndexByte(" \t\n\r,:]}", raw[end]) < 0 {
+				end++
+			}
+			literal := string(raw[i:end])
+			if literal != "null" {
+				emit(literal)
+			}
+			if end == i {
+				return
+			}
+			i = end
+		}
+		if len(inObject) > 0 && inObject[len(inObject)-1] && i < len(raw) && raw[i] == ',' {
+			expectKey = true
+		}
+	}
+}
+
+// jsonStringEnd returns the index just past the closing quote of the JSON
+// string literal that starts at raw[start], or -1 when it is unterminated.
+func jsonStringEnd(raw []byte, start int) int {
+	for i := start + 1; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return -1
 }
 
 func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {

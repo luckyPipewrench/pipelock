@@ -421,7 +421,7 @@ func dialWSLiveLock(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		}),
 		Extensions: nil,
 	}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}

@@ -556,11 +556,17 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 }
 
 func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if scannerLabel == scannerLabelBodyEntropy && result.EntropyWarnRoute != nil {
+	if result.IsEntropyOnly() {
 		return true
 	}
 	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
 		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
+// IsEntropyOnly requires an actual entropy finding and no other body evidence.
+func (r BodyScanResult) IsEntropyOnly() bool {
+	return r.EntropyFinding != nil && len(r.DLPMatches) == 0 && len(r.InjectionMatches) == 0 &&
+		len(r.AddressFindings) == 0 && !r.RedactedDLPOnly && r.RedactionBlockReason == "" && r.HeaderName == ""
 }
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
@@ -690,10 +696,14 @@ type BodyScanRequest struct {
 // credential exfiltration and prompt injection.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final BodyScanResult) {
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
-		if req.OnCredentialAudienceAllow == nil {
+		// An audience allow is evidence that a credential was delivered. A
+		// pre-redaction DLP pass can collect one before redaction, content
+		// entropy, or injection scanning blocks the body, so emit only for a
+		// body whose final result is clean.
+		if req.OnCredentialAudienceAllow == nil || !final.Clean {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
@@ -762,8 +772,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		// this body cannot be parsed.
 		if extracted.Err == "" {
 			disabled := bodyDLPDisabledSet(req.DisablePatterns)
-			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)...)
+			// No allow is collected here: redaction may rewrite the credential
+			// before forwarding, and a credential that survives redaction is
+			// collected again by the post-redaction scan below.
+			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)...)
 		}
 	}
 
@@ -1286,7 +1299,7 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	req.ContentEntropyThreshold = cfg.RequestBodyScanning.ContentEntropyThreshold
 	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
 	req.ContentEntropyTrusted = cfg.TrustedDomains
-	req.ContentEntropyExclusions = append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...)
+	req.ContentEntropyExclusions = append(append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...), config.ShippedChallengeProviderHosts()...)
 	req.ContentEntropyWarnRoutes = cfg.RequestBodyScanning.ContentEntropyWarnRoutes
 	for _, exclusions := range extraExclusions {
 		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)
@@ -1313,13 +1326,10 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 	collectDropped := func(match scanner.TextDLPMatch, reason string) {
 		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
 	}
+	var audienceAllows []scanner.CredentialAudienceAllow
 	filterMatches := func(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch {
 		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, audienceSurface)
-		if onAudienceAllow != nil {
-			for _, allow := range allows {
-				onAudienceAllow(allow)
-			}
-		}
+		audienceAllows = append(audienceAllows, allows...)
 		return filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 	}
 	for _, text := range texts {
@@ -1343,6 +1353,12 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 		}
 	}
 	recordUniqueBodyDLPDrops(dropped, onDropped)
+	// Emit audience allows only for a clean result, matching the header path.
+	if onAudienceAllow != nil && len(allMatches) == 0 {
+		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
+			onAudienceAllow(allow)
+		}
+	}
 	return uniqueBodyDLPMatches(allMatches)
 }
 
@@ -2044,7 +2060,10 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	var dropped []droppedBodyDLPMatch
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
-		if onAudienceAllow == nil {
+		// An audience allow is evidence that a credential was delivered. It is
+		// emitted only when the whole header scan is clean, never for a request
+		// another header, decoded view, or joined match goes on to block.
+		if onAudienceAllow == nil || len(allMatches) > 0 {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
@@ -2127,7 +2146,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		for _, v := range values {
 			scanVal := headerValueForDLP(name, v, target, len(values))
 			joinedVal := scanVal
-			if strings.EqualFold(name, headerNameAuthorization) {
+			if scanner.CredentialAudienceHeaderSurface(name, scanVal) != "header" {
 				joinedVal = sc.ScrubAuthorizedCredentialFromJoinedHeaders(name, scanVal, target)
 			}
 			joinedValues = append(joinedValues, joinedHeaderValue{scanVal, joinedVal})

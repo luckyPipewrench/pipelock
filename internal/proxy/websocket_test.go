@@ -360,6 +360,38 @@ func setupWSProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func(*con
 // dialWSConn connects to the proxy /ws endpoint and returns the raw connection.
 // Compression is disabled to avoid "compressed frames not supported" errors
 // when the proxy relays frames without per-message deflate negotiation.
+// wsTestDial dials a WebSocket and keeps any frame bytes that arrived in the
+// same read as the handshake response. gobwas returns those bytes in a pooled
+// reader; discarding it loses a frame the proxy forwarded right after the
+// upgrade, which surfaced as an intermittent idle-timeout close.
+func wsTestDial(ctx context.Context, dialer ws.Dialer, target string) (net.Conn, error) {
+	conn, reader, _, err := dialer.Dial(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	if reader == nil {
+		return conn, nil
+	}
+	defer ws.PutReader(reader)
+	if n := reader.Buffered(); n > 0 {
+		prefix, peekErr := reader.Peek(n)
+		if peekErr != nil {
+			_ = conn.Close()
+			return nil, peekErr
+		}
+		return &wsTestPrefixedConn{Conn: conn, reader: io.MultiReader(bytes.NewReader(bytes.Clone(prefix)), conn)}, nil
+	}
+	return conn, nil
+}
+
+// wsTestPrefixedConn reads the preserved handshake-adjacent bytes before the socket.
+type wsTestPrefixedConn struct {
+	net.Conn
+	reader io.Reader
+}
+
+func (c *wsTestPrefixedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
 func dialWSConn(proxyAddr, backendAddr string) (net.Conn, error) {
 	return dialWSConnWithHeader(proxyAddr, backendAddr, nil)
 }
@@ -370,7 +402,7 @@ func dialWSConnToTarget(proxyAddr, targetURL string) (net.Conn, error) {
 
 	wsURL := fmt.Sprintf("ws://%s/ws?url=%s", proxyAddr, url.QueryEscape(targetURL))
 	dialer := ws.Dialer{Extensions: nil}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +420,7 @@ func dialWSConnWithHeader(proxyAddr, backendAddr string, header http.Header) (ne
 	if len(header) > 0 {
 		dialer.Header = ws.HandshakeHeaderHTTP(header)
 	}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		return nil, err
 	}
@@ -1462,6 +1494,22 @@ func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyWarnAudits(t *testi
 	}
 }
 
+func TestWSRelay_EntropyWarnAtElevatedLevel(t *testing.T) {
+	cfg := adaptiveConfig()
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	m := metrics.New()
+	sm := NewSessionManager(&cfg.SessionProfiling, nil, m)
+	defer sm.Close()
+	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
+	escalateRec(rec, 1)
+	before := rec.ThreatScore()
+	relay := &wsRelay{proxy: &Proxy{metrics: m}, cfg: cfg, rec: rec, hostname: "socket.vendor.example", agent: agentAnonymous, clientIP: adaptiveSessionKeyLoopback, targetURL: "wss://socket.vendor.example/socket"}
+	blocked := relay.handleClientMessageBodyResult(audit.NewNop(), []byte("opaque"), BodyScanResult{Action: config.ActionWarn, EntropyFinding: &ContentEntropyFinding{Entropy: 4.8, Threshold: 4.5, Length: 64}})
+	if blocked || rec.ThreatScore() != before {
+		t.Fatalf("elevated entropy warning blocked=%v score=%.1f, want forward and score %.1f", blocked, rec.ThreatScore(), before)
+	}
+}
+
 func TestWSRelay_HandleClientMessageBodyResult_ContentEntropyBlock(t *testing.T) {
 	rph := newReceiptProxyHelper(t)
 	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
@@ -2399,7 +2447,7 @@ func TestWSProxyHeaderDLPDisablePatternAllowsNonCore(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("disabled non-core header DLP should allow websocket dial: %v", err)
 	}
@@ -2512,7 +2560,7 @@ func TestWSProxyHeaderDLPPatternWarnOverrideAllowsNonCore(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("warn-only non-core header DLP should allow websocket dial: %v", err)
 	}
@@ -2578,7 +2626,7 @@ func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("expected dial to fail: header DLP must block secrets regardless of allowlist")
@@ -2612,7 +2660,7 @@ func TestWSProxyHeaderDLPSuppressedCriticalAllowed(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("expected suppressed header DLP to allow websocket dial: %v", err)
 	}
@@ -3468,7 +3516,7 @@ func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, ws.Dialer{Extensions: nil}, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}
@@ -3566,7 +3614,7 @@ func TestWSProxyWSSScheme(t *testing.T) {
 	// (maps scheme for scanning). The upstream dial may fail since the echo
 	// server isn't TLS, but this exercises the wss branch code path.
 	wsURL := fmt.Sprintf("ws://%s/ws?url=wss://%s/v1", proxyAddr, backendAddr)
-	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, ws.Dialer{Extensions: nil}, wsURL)
 	if err != nil {
 		// Expected: upstream dial fails because echo server isn't TLS.
 		// This is fine - the wss branch was exercised before the dial.
@@ -3658,7 +3706,7 @@ func TestWSProxyCookieForwarding(t *testing.T) {
 		}),
 		Timeout: 5 * time.Second,
 	}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -3695,7 +3743,7 @@ func TestWSProxySessionBlocked(t *testing.T) {
 	for _, d := range domains {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s:9999", proxyAddr, d)
-		conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
+		conn, err := wsTestDial(ctx, ws.Dialer{Extensions: nil}, wsURL)
 		cancel()
 		if err == nil {
 			_ = conn.Close()
@@ -3757,7 +3805,7 @@ func TestWSProxySubprotocol(t *testing.T) {
 		}),
 		Timeout: 5 * time.Second,
 	}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -4177,7 +4225,7 @@ func TestWSProxyAPIKeyHeader(t *testing.T) {
 		}),
 		Timeout: 5 * time.Second,
 	}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	conn, err := wsTestDial(ctx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

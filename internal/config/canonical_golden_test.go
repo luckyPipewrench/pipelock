@@ -435,7 +435,14 @@ const (
 	// Re-bumped when the built-in Google OAuth Token pattern gained the compiled
 	// audience *.googleapis.com, restricted to Bearer Authorization headers.
 	// Other carriers still block, and the binary policy identity moves.
-	goldenHashDefaults = "b381fd2e17249f072032831ba4b8ff82b868669499e79f0d742c276c0be3f109"
+	// Re-bumped when GitHub and GitLab token classes gained compiled audiences
+	// (GitHub Token, Fine-Grained PAT, GitLab PAT, CI job token) and the DLP
+	// section gained the declared enterprise host lists.
+	// Re-bumped when shipped path-entropy routes began merging beside operator
+	// entries instead of being replaced by them.
+	// Re-bumped when the built-in DAN jailbreak token began requiring word
+	// context, which changes a shipped response pattern.
+	goldenHashDefaults = "711d78a676f03171ad54be8f3db42e39fafb7e929025bd6aa3d56ac8bee5caac"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -669,7 +676,7 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "8f4feb3743a24ba04744eaa260b5406511e7ed2d59a7968bcf0dc3d3d460c698"
+	goldenHashRichConfig = "6cc8756c333eb5f988f95770aabc7364155256dc211340c715eaf9c935a81e20"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1240,8 +1247,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
 		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "8e3a8c2a0827e639ea7ac4df9e7e0e63bf478fdde4ce7aac164a56dd69312082"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "d340e48953f4c35a4e0adacefd0212ea8eb5f7d2cffccf839ef0d87c5faabfdd"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "a83f6527d67f9c59f154ae8627258f002bdb70179e7b21d525a7c41acb90e8b4"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1f1d03d0b418f6567f44ace8fecb799a7d3641b8c4f93ef5997c46643550b87f"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

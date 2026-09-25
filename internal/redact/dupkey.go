@@ -59,8 +59,8 @@ func NoDuplicateJSONKeys(body []byte) error {
 
 // maxDuplicateKeyScanDepth bounds the recursion in walkForDuplicates. The
 // token-streaming walk recurses one Go stack frame per JSON nesting level and,
-// unlike the value decoder, encoding/json's Token() API enforces no depth
-// limit - so a maliciously deep array (well within the 10MB line cap) would
+// before Go 1.27, encoding/json's Token() API enforced no depth limit (Go 1.27
+// stops it at 10000 levels) - so a maliciously deep array (well within the 10MB line cap) would
 // otherwise exhaust the goroutine stack and crash the process. The cap matches
 // encoding/json's own maxNestingDepth, so any body that survives this walk is
 // also accepted by the json.Unmarshal that immediately follows every caller:

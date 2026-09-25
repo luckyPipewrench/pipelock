@@ -445,7 +445,7 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 		w.Header().Set("Digest", "sha-256=upstream")
 		w.Header().Set("Content-MD5", "upstream-md5")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`))
+		_, _ = w.Write([]byte(`<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a></body></html>`))
 	}
 	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, upstream, shield.NewEngine(nil))
 

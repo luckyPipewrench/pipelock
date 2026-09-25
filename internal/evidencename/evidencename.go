@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -50,6 +51,8 @@ var ErrReservedSessionID = errors.New("session id uses reserved recorder syntax"
 //     a session ID (evidence filenames embed the session as one path
 //     component) and which a malicious or mistaken value could otherwise use
 //     to escape the evidence directory the writer computes it into;
+//   - invalid UTF-8, which evidence JSON cannot store byte for byte, so the
+//     written entries would no longer match the session's filename;
 //   - an empty ID, which is not a valid session or base name.
 //
 // It fails closed: an operator session ID that trips any of these is
@@ -63,6 +66,10 @@ func ValidateOperatorSessionID(id string) error {
 	if strings.Contains(id, RunInfix) {
 		return fmt.Errorf("%w: session id %q contains the reserved run-session infix %q; "+
 			"choose a session id that does not contain %q", ErrReservedSessionID, id, RunInfix, RunInfix)
+	}
+	if !utf8.ValidString(id) {
+		return fmt.Errorf("%w: session id %q is not valid UTF-8; "+
+			"choose a session id made of valid UTF-8 text", ErrReservedSessionID, id)
 	}
 	if strings.ContainsAny(id, "/\\") {
 		return fmt.Errorf("%w: session id %q contains a path separator; "+

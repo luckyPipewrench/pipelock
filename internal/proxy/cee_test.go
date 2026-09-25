@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/ceereason"
 
@@ -64,6 +65,20 @@ func TestCaptureSessionKey_SafeForRecorderDirectory(t *testing.T) {
 	}
 	if strings.ContainsAny(got, `/\`) || strings.Contains(got, "..") {
 		t.Fatalf("unsafe captureSessionKey produced invalid directory segment %q", got)
+	}
+}
+
+// TestCaptureSessionKey_HashesInvalidUTF8 pins that an agent identity with
+// invalid UTF-8 becomes a hashed capture key instead of reaching the recorder,
+// which refuses such a session id and would drop the capture.
+func TestCaptureSessionKey_HashesInvalidUTF8(t *testing.T) {
+	agent := "agent" + string([]byte{0xff})
+	safe, original := captureSessionKeyAndOriginal(agent, testCEEClientIP)
+	if !strings.HasPrefix(safe, "capture-") || !utf8.ValidString(safe) {
+		t.Fatalf("captureSessionKey = %q, want a hashed UTF-8 capture key", safe)
+	}
+	if original == safe {
+		t.Fatalf("original identity not preserved for audit: %q", original)
 	}
 }
 
@@ -554,17 +569,14 @@ func TestCeeRecordSignals_BothHits(t *testing.T) {
 		FragmentHit: true,
 	}
 
-	// Use a low threshold so signals trigger escalation.
-	// SignalEntropyBudget = 2 points, SignalFragmentDLP = 3 points.
-	// Total = 5 points, threshold = 1.0, so escalation should happen.
+	// Fragment DLP contributes three points; entropy is score-neutral.
 	threshold := 1.0
 	ceeRecordSignals(result, sm, testCEESessionKey, threshold, logger, m, testCEEClientIP, testCEERequestID)
 
 	sess := sm.GetOrCreate(testCEESessionKey)
 	score := sess.ThreatScore()
-	// SignalEntropyBudget (2) + SignalFragmentDLP (3) = 5 points exactly.
-	if score != 5.0 {
-		t.Errorf("expected threat score 5.0, got %.1f", score)
+	if score != 3.0 {
+		t.Errorf("expected fragment-only threat score 3.0, got %.1f", score)
 	}
 }
 
@@ -643,6 +655,21 @@ func TestCEERecordSignalsAndBlockAll_UsesCEEKey(t *testing.T) {
 	}
 	if rawLevel := sm.GetOrCreate(rawKey).EscalationLevel(); rawLevel != 0 {
 		t.Fatalf("raw per-agent recorder should not receive folded CEE signals, got level %d", rawLevel)
+	}
+}
+
+func TestCEEEntropyOnlyDoesNotScore(t *testing.T) {
+	cfg := &config.SessionProfiling{Enabled: true, MaxSessions: 100, SessionTTLMinutes: 30, CleanupIntervalSeconds: 60}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+	key := "entropy-only-session"
+	rec := ceeRecordSignals(ceeResult{EntropyHit: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
+	if rec == nil || rec.ThreatScore() != 0 {
+		t.Fatalf("entropy-only CEE score = %v, want 0", rec)
+	}
+	ceeRecordSignals(ceeResult{EntropyHit: true, FragmentHit: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
+	if rec.ThreatScore() == 0 {
+		t.Fatal("fragment DLP in mixed CEE result must still score")
 	}
 }
 

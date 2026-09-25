@@ -33,6 +33,28 @@ const (
 	testTrustedProviderPath = "/v1/provider/responses"
 )
 
+func TestBodyEntropyOnlyAdaptiveClassification(t *testing.T) {
+	finding := &ContentEntropyFinding{}
+	cases := []struct {
+		name   string
+		result BodyScanResult
+		want   bool
+	}{
+		{"entropy", BodyScanResult{EntropyFinding: finding}, true},
+		{"mixed DLP", BodyScanResult{EntropyFinding: finding, DLPMatches: []scanner.TextDLPMatch{{}}}, false},
+		{"mixed injection", BodyScanResult{EntropyFinding: finding, InjectionMatches: []scanner.ResponseMatch{{}}}, false},
+		{"fail closed", BodyScanResult{EntropyFinding: finding, RedactionBlockReason: "failed"}, false},
+		{"redacted DLP", BodyScanResult{EntropyFinding: finding, RedactedDLPOnly: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsEntropyOnly(); got != tc.want {
+				t.Fatalf("IsEntropyOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // testScannerConfig returns a config suitable for body scan tests.
 // SSRF is disabled (Internal=nil) to avoid DNS lookups in unit tests.
 func testScannerConfig() *config.Config {
@@ -3690,6 +3712,31 @@ func TestScanRequestBody_OverDepthJSON_FailClosed(t *testing.T) {
 	}
 	if result.Reason != "JSON body exceeds maximum inspectable nesting depth" {
 		t.Fatalf("Reason = %q, want over-depth JSON reason", result.Reason)
+	}
+}
+
+// TestScanRequestBody_BeyondDecoderDepthJSON_FailClosed covers nesting past
+// Go 1.27's json.Decoder limit of 10000 levels. There the body is refused by a
+// decoder error rather than by the inspectable-depth check, so the reason text
+// differs by Go release; the block must not.
+func TestScanRequestBody_BeyondDecoderDepthJSON_FailClosed(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	const depth = 12000
+	body := strings.Repeat("[", depth) + `"depth-regression-sentinel"` + strings.Repeat("]", depth)
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected fail-closed block for JSON nested past the decoder limit")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
 	}
 }
 

@@ -84,8 +84,12 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		// app-level tokens are presented only to the Web API. Slack Token is also a
 		// core-floor pattern, so these prove a compiled audience attaches to a core
 		// pattern (its issuing authorities) while YAML still cannot reach the floor.
-		"Slack Token":     {"slack.com", "mcp.slack.com"},
-		"Slack App Token": {"slack.com"},
+		"Slack Token":             {"slack.com", "mcp.slack.com"},
+		"Slack App Token":         {"slack.com"},
+		"GitHub Token":            {"api.github.com", "uploads.github.com"},
+		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com"},
+		"GitLab PAT":              {"gitlab.com"},
+		"GitLab CI Job Token":     {"gitlab.com"},
 	}
 	for name, hosts := range expected {
 		t.Run(name, func(t *testing.T) {

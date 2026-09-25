@@ -162,6 +162,74 @@ func TestProxyOneNetnsConnFailsWhenDoorwayIsAbsent(t *testing.T) {
 	}
 }
 
+type failingReadConn struct{ net.Conn }
+
+func (c failingReadConn) Read([]byte) (int, error) { return 0, errors.New("injected read failure") }
+
+func TestProxyOneNetnsConnClosesBothSidesOnCopyError(t *testing.T) {
+	target := newDoorwayEcho(t)
+	peer, downstream := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	done := make(chan error, 1)
+	go func() { done <- proxyOneNetnsConn(context.Background(), failingReadConn{downstream}, "unix", target) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "injected read failure") {
+			t.Fatalf("copy error = %v", err)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("copy error left the reverse direction blocked")
+	}
+	if _, err := peer.Write([]byte("closed")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("downstream remained open: %v", err)
+	}
+}
+
+type failingListener struct {
+	first    net.Conn
+	accepted chan struct{}
+	fail     chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	if l.first != nil {
+		conn := l.first
+		l.first = nil
+		close(l.accepted)
+		return conn, nil
+	}
+	<-l.fail
+	return nil, errors.New("injected accept failure")
+}
+
+func (l *failingListener) Close() error   { return nil }
+func (l *failingListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+func TestServeNetnsForwardAcceptErrorClosesActiveHandler(t *testing.T) {
+	target := newDoorwayEcho(t)
+	peer, downstream := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	listener := &failingListener{first: downstream, accepted: make(chan struct{}), fail: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- serveNetnsForward(context.Background(), listener, "test", netnsForwardOpts{target: target}, io.Discard)
+	}()
+	<-listener.accepted
+	// The open peer keeps both copy directions active until shutdown.
+	close(listener.fail)
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "injected accept failure") {
+			t.Fatalf("accept error = %v", err)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("accept error waited for an active handler")
+	}
+	if _, err := peer.Write([]byte("closed")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("active handler left downstream open: %v", err)
+	}
+}
+
 // The forwarder must refuse to listen at all when the host doorway is absent.
 // Accepting connections that cannot be forwarded would show the agent a
 // network fault it may retry around, instead of a refused connection that

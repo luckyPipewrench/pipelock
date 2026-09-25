@@ -194,24 +194,32 @@ func runNetnsForward(ctx context.Context, opts netnsForwardOpts, rawErrOut io.Wr
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", source, err)
 	}
+	return serveNetnsForward(ctx, ln, source, opts, errOut)
+}
+
+func serveNetnsForward(ctx context.Context, ln net.Listener, source string, opts netnsForwardOpts, errOut io.Writer) error {
 	defer func() { _ = ln.Close() }()
+	forwardCtx, cancelForward := context.WithCancel(ctx)
 
 	_, _ = fmt.Fprintf(errOut, "pipelock: contained-namespace proxy %s -> %s\n", source, opts.dialAddress())
 
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer func() {
+		cancelForward()
+		wg.Wait()
+	}()
 
 	// Closing the listener is what unblocks Accept on shutdown; Accept itself
 	// takes no context.
 	go func() {
-		<-ctx.Done()
+		<-forwardCtx.Done()
 		_ = ln.Close()
 	}()
 
 	for {
 		conn, acceptErr := ln.Accept()
 		if acceptErr != nil {
-			if ctx.Err() != nil {
+			if forwardCtx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("accept on %s: %w", source, acceptErr)
@@ -219,7 +227,7 @@ func runNetnsForward(ctx context.Context, opts netnsForwardOpts, rawErrOut io.Wr
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := proxyOneNetnsConn(ctx, conn, opts.dialNetwork(), opts.dialAddress()); err != nil {
+			if err := proxyOneNetnsConn(forwardCtx, conn, opts.dialNetwork(), opts.dialAddress()); err != nil {
 				_, _ = fmt.Fprintf(errOut, "pipelock: contained-namespace proxy connection failed: %v\n", err)
 			}
 		}()
@@ -237,6 +245,11 @@ func proxyOneNetnsConn(ctx context.Context, downstream net.Conn, network, target
 		return fmt.Errorf("dial host doorway %s: %w", target, err)
 	}
 	defer func() { _ = upstream.Close() }()
+	stop := context.AfterFunc(ctx, func() {
+		_ = downstream.Close()
+		_ = upstream.Close()
+	})
+	defer stop()
 
 	// Propagate each EOF as a half-close so a peer can finish its response.
 	// Keep both connections open until both directions have finished.
@@ -264,10 +277,16 @@ func proxyOneNetnsConn(ctx context.Context, downstream net.Conn, network, target
 	for range 2 {
 		select {
 		case err := <-done:
+			if err != nil {
+				_ = downstream.Close()
+				_ = upstream.Close()
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
 		case <-ctx.Done():
+			_ = downstream.Close()
+			_ = upstream.Close()
 			return nil
 		}
 	}

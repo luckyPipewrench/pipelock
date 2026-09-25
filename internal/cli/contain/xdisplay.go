@@ -33,7 +33,12 @@ const (
 	// down and probe 22 catches it.
 	displaySocketWaitAttempts = 200
 	displaySocketWaitInterval = "0.1"
+	// An Xauthority record is about 50 bytes; cap agent-owned input before
+	// privileged provisioning allocates memory for a rollback copy.
+	maxDisplayAuthorityBytes = 64 << 10
 )
+
+var errDisplayAuthorityOversize = errors.New("xauthority file exceeds size limit")
 
 func displayName(number int) string { return ":" + strconv.Itoa(number) }
 
@@ -424,7 +429,14 @@ func ensureDisplayAuthorityDir(env *installEnv, dir string) error {
 
 func readDisplayAuthority(env *installEnv) ([]byte, bool, error) {
 	path := displayAuthorityPath(env)
-	data, err := env.readFile(path)
+	reader := env.readFileBounded
+	if reader == nil {
+		reader = readContainFileBounded
+	}
+	data, err := reader(path, maxDisplayAuthorityBytes)
+	if errors.Is(err, errDisplayAuthorityOversize) {
+		return nil, false, nil
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -432,6 +444,22 @@ func readDisplayAuthority(env *installEnv) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("read Xauthority file: %w", err)
 	}
 	return data, true, nil
+}
+
+func readContainFileBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read bounded file: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w (%d bytes)", errDisplayAuthorityOversize, limit)
+	}
+	return data, nil
 }
 
 func removeDisplayAuthority(env *installEnv) error {

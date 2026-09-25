@@ -12,6 +12,23 @@ import (
 	"testing"
 )
 
+func TestDisplayAuthorityOversizeRegenerates(t *testing.T) {
+	env, _ := covDispPrepareDisplayEnv(t)
+	env.readFileBounded = readContainFileBounded
+	if err := os.WriteFile(env.displayAuthorityPath, bytes.Repeat([]byte{'x'}, maxDisplayAuthorityBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, exists, err := readDisplayAuthority(env); err != nil || exists || data != nil {
+		t.Fatalf("oversize authority = %d bytes, exists=%t, err=%v; want regeneration", len(data), exists, err)
+	}
+	if err := os.WriteFile(env.displayAuthorityPath, []byte("valid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, exists, err := readDisplayAuthority(env); err != nil || !exists || string(data) != "valid" {
+		t.Fatalf("valid authority = %q, exists=%t, err=%v", data, exists, err)
+	}
+}
+
 func TestDisplayAuthorityReadRemoveRestoreFailures(t *testing.T) {
 	env, _ := covDispPrepareDisplayEnv(t)
 	path := env.displayAuthorityPath
@@ -21,7 +38,7 @@ func TestDisplayAuthorityReadRemoveRestoreFailures(t *testing.T) {
 	if err := removeDisplayAuthority(env); err != nil {
 		t.Fatalf("remove absent: %v", err)
 	}
-	env.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+	env.readFileBounded = func(string, int64) ([]byte, error) { return nil, os.ErrPermission }
 	if _, exists, err := readDisplayAuthority(env); exists || !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("read denied = %v, %v", exists, err)
 	}
@@ -30,7 +47,7 @@ func TestDisplayAuthorityReadRemoveRestoreFailures(t *testing.T) {
 		t.Fatalf("remove denied: %v", err)
 	}
 	env.removeFile = os.Remove
-	env.readFile = os.ReadFile
+	env.readFileBounded = readContainFileBounded
 	if err := restoreDisplayAuthority(env, []byte("previous"), true); err != nil {
 		t.Fatalf("restore: %v", err)
 	}

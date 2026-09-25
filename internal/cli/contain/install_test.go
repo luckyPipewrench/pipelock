@@ -276,6 +276,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		undiciShimPath:                filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
 		profileScriptPath:             filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
 		agentHome:                     filepath.Join(root, "home", "pipelock-agent"),
+		displayAuthorityPath:          filepath.Join(root, "var", "lib", "pipelock-agent", "Xauthority"),
 		pipelockTarget:                filepath.Join(root, "usr", "local", "bin", "pipelock"),
 		bashPath:                      "/bin/bash",
 		nologinPath:                   "/usr/sbin/nologin",

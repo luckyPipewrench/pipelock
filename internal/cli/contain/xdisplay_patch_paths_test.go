@@ -41,12 +41,11 @@ func TestDisplayProvisionAuthorityFailures(t *testing.T) {
 			}
 			switch tc.fault {
 			case "read":
-				prior := env.readFile
-				env.readFile = func(path string) ([]byte, error) {
+				env.readFileBounded = func(path string, limit int64) ([]byte, error) {
 					if path == env.displayAuthorityPath {
 						return nil, os.ErrPermission
 					}
-					return prior(path)
+					return readContainFileBounded(path, limit)
 				}
 			case "remove":
 				prior := env.removeFile

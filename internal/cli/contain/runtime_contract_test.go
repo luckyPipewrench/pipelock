@@ -919,7 +919,7 @@ func TestLaunchExecEnvLines_EnvIClearsLeakAndForwardsPosture(t *testing.T) {
 	if strings.Contains(res.output, "XAUTHORITY=/x") || strings.Contains(res.output, "SUDO_USER=") {
 		t.Fatalf("env -i leaked operator XAUTHORITY or SUDO_USER:\n%s", res.output)
 	}
-	if !strings.Contains(res.output, "XAUTHORITY="+defaultDisplayAuthorityPath) {
+	if !strings.Contains(res.output, "XAUTHORITY="+displayAuthorityPath(env)) {
 		t.Fatalf("managed XAUTHORITY was not exported alongside DISPLAY:\n%s", res.output)
 	}
 

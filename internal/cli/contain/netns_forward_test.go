@@ -191,6 +191,93 @@ type failingListener struct {
 	fail     chan struct{}
 }
 
+type queuedListener struct {
+	connections chan net.Conn
+	closed      chan struct{}
+	once        sync.Once
+}
+
+func (l *queuedListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.connections:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *queuedListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *queuedListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+func TestServeNetnsForwardBoundsConnectionsAndRecovers(t *testing.T) {
+	const expectedLimit = 256
+	target := newDoorwayEcho(t)
+	listener := &queuedListener{connections: make(chan net.Conn), closed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- serveNetnsForward(ctx, listener, "test", netnsForwardOpts{target: target}, io.Discard) }()
+	peers := make([]net.Conn, 0, expectedLimit)
+	defer func() {
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	}()
+	for range expectedLimit {
+		peer, forwarded := net.Pipe()
+		listener.connections <- forwarded
+		if err := peer.SetDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peer.Write([]byte("x")); err != nil {
+			t.Fatalf("active connection write: %v", err)
+		}
+		var reply [1]byte
+		if _, err := io.ReadFull(peer, reply[:]); err != nil || reply[0] != 'x' {
+			t.Fatalf("active connection echo: %q, %v", reply, err)
+		}
+		peers = append(peers, peer)
+	}
+	overflow, rejected := net.Pipe()
+	listener.connections <- rejected
+	if err := overflow.SetReadDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	var reply [1]byte
+	if _, err := overflow.Read(reply[:]); !errors.Is(err, io.EOF) {
+		t.Fatalf("excess connection read = %v, want EOF", err)
+	}
+	_ = overflow.Close()
+	_ = peers[0].Close()
+	peers = peers[1:]
+	deadline := time.After(testwait.Deadline(5 * time.Second))
+	for {
+		peer, forwarded := net.Pipe()
+		listener.connections <- forwarded
+		_ = peer.SetDeadline(time.Now().Add(testwait.Deadline(time.Second)))
+		_, writeErr := peer.Write([]byte("r"))
+		_, readErr := io.ReadFull(peer, reply[:])
+		if writeErr == nil && readErr == nil && reply[0] == 'r' {
+			_ = peer.Close()
+			break
+		}
+		_ = peer.Close()
+		select {
+		case <-deadline:
+			t.Fatal("capacity did not recover after handler exit")
+		default:
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("forwarder shutdown: %v", err)
+	}
+}
+
 func (l *failingListener) Accept() (net.Conn, error) {
 	if l.first != nil {
 		conn := l.first

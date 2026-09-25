@@ -49,6 +49,9 @@ const (
 	// destination is a local unix socket, so a slow dial means the host side
 	// is unhealthy rather than distant.
 	netnsForwardDialTimeout = 5 * time.Second
+	// netnsForwardMaxConnections limits active forwarding pairs so a local
+	// client cannot consume unbounded goroutines and file descriptors.
+	netnsForwardMaxConnections = 256
 )
 
 type netnsForwardOpts struct {
@@ -204,6 +207,7 @@ func serveNetnsForward(ctx context.Context, ln net.Listener, source string, opts
 	_, _ = fmt.Fprintf(errOut, "pipelock: contained-namespace proxy %s -> %s\n", source, opts.dialAddress())
 
 	var wg sync.WaitGroup
+	active := make(chan struct{}, netnsForwardMaxConnections)
 	defer func() {
 		cancelForward()
 		wg.Wait()
@@ -224,9 +228,16 @@ func serveNetnsForward(ctx context.Context, ln net.Listener, source string, opts
 			}
 			return fmt.Errorf("accept on %s: %w", source, acceptErr)
 		}
+		select {
+		case active <- struct{}{}:
+		default:
+			_ = conn.Close()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-active }()
 			if err := proxyOneNetnsConn(forwardCtx, conn, opts.dialNetwork(), opts.dialAddress()); err != nil {
 				_, _ = fmt.Fprintf(errOut, "pipelock: contained-namespace proxy connection failed: %v\n", err)
 			}

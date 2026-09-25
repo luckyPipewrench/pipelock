@@ -212,10 +212,8 @@ func actionRemoveNetworkNamespace() step {
 				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
 					errs = append(errs, fmt.Errorf("disable legacy %s: %w", unit, err))
 				}
-				for _, candidate := range []string{path, path + ".bak"} {
-					if err := env.removeFile(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
-						errs = append(errs, fmt.Errorf("remove legacy %s: %w", candidate, err))
-					}
+				if err := restoreBackup(env, path); err != nil {
+					errs = append(errs, fmt.Errorf("restore legacy %s: %w", path, err))
 				}
 			}
 			if env.loopbackForwarderInvPath != "" {

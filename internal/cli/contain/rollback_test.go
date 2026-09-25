@@ -113,22 +113,23 @@ func TestActionRemoveNetworkNamespaceRestoresOperatorState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, path := range []string{env.ownedLoopbackAnchorUnitPath, env.ownedLoopbackAnchorUnitPath + ".bak"} {
-		if err := os.WriteFile(path, []byte("legacy\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(env.ownedLoopbackAnchorUnitPath, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.ownedLoopbackAnchorUnitPath+".bak", []byte(operatorBody), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err != nil {
 		t.Fatalf("remove network namespace: %v", err)
 	}
-	for _, path := range []string{dynamicService, env.proxyForwarderServicePath} {
+	for _, path := range []string{dynamicService, env.proxyForwarderServicePath, env.ownedLoopbackAnchorUnitPath} {
 		body, err := os.ReadFile(filepath.Clean(path))
 		if err != nil || string(body) != operatorBody {
 			t.Fatalf("operator unit %s = %q, %v", path, body, err)
 		}
 	}
-	for _, path := range []string{dynamicSocket, env.proxyForwarderSocketPath, env.networkNamespaceUnitPath, env.ownedLoopbackAnchorUnitPath, env.ownedLoopbackAnchorUnitPath + ".bak", env.loopbackForwarderInvPath} {
+	for _, path := range []string{dynamicSocket, env.proxyForwarderSocketPath, env.networkNamespaceUnitPath, env.ownedLoopbackAnchorUnitPath + ".bak", env.loopbackForwarderInvPath} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("managed path %s survived rollback: %v", path, err)
 		}

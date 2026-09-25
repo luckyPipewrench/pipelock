@@ -2381,17 +2381,18 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	issuerStore := newIssuerBoundCookieStore()
 	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
 		issuerStore = oldIssuer.store
-	} else if oldIssuer != nil && oldIssuer.store != nil && oldIssuer.store.path != "" {
+	} else if oldIssuer != nil && oldIssuer.store.hasPath() {
 		// A disabled prerequisite closes the evidence window, including its
 		// durable copy. Re-enabling this process starts with an empty store.
-		issuerStore.path = oldIssuer.store.retire()
+		issuerStore.setPath(oldIssuer.store.retire())
 		issuerStore.logError = oldIssuer.store.logError
 		issuerStore.flush(time.Now(), true)
+		issuerStore.retire()
 	} else if issuerCookieEnabled(cfg) {
 		// The previous runtime was disabled; old on-disk evidence is not
 		// admissible even when this is the first enabled reload.
 		if path, pathErr := issuerCookieStatePath(); pathErr == nil {
-			issuerStore.path = path
+			issuerStore.setPath(path)
 			issuerStore.logError = func(err error) {
 				if p.logger != nil {
 					p.logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), err)

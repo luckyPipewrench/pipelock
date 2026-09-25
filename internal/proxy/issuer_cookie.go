@@ -94,15 +94,17 @@ const (
 // it to the exact issuing host and port over HTTPS. Returning a value to the
 // origin that issued it discloses nothing that origin does not already hold.
 type issuerBoundCookieStore struct {
-	mu        sync.Mutex
-	key       [32]byte
-	sessions  map[string]*issuerCookieSession
-	disabled  bool
-	path      string
-	dirty     bool
-	lastWrite time.Time
-	timer     *time.Timer
-	logError  func(error)
+	mu          sync.Mutex
+	writeMu     sync.Mutex
+	key         [32]byte
+	sessions    map[string]*issuerCookieSession
+	disabled    bool
+	path        string
+	dirty       bool
+	lastWrite   time.Time
+	timer       *time.Timer
+	logError    func(error)
+	beforeWrite func() // test hook, called without mu
 }
 
 // A single atomic pointer ties requests to the current policy snapshot.
@@ -221,7 +223,7 @@ func newPersistentIssuerCookieStore(logger *audit.Logger) *issuerBoundCookieStor
 		s.report(fmt.Errorf("issuer cookie state unavailable: %w", err))
 		return s
 	}
-	s.path = path
+	s.setPath(path)
 	if err = s.load(time.Now()); err != nil {
 		s.report(fmt.Errorf("issuer cookie state ignored: %w", err))
 		// The generated key and empty map remain authoritative on any load error.
@@ -230,10 +232,11 @@ func newPersistentIssuerCookieStore(logger *audit.Logger) *issuerBoundCookieStor
 }
 
 func (s *issuerBoundCookieStore) load(now time.Time) error {
-	if err := issuerCookieCheckDir(filepath.Dir(s.path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	path := s.getPath()
+	if err := issuerCookieCheckDir(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	info, err := os.Lstat(s.path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -243,7 +246,7 @@ func (s *issuerBoundCookieStore) load(now time.Time) error {
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > issuerCookieMaxStateBytes {
 		return errors.New("state file type, permissions, or size invalid")
 	}
-	f, err := os.Open(filepath.Clean(s.path))
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return err
 	}
@@ -313,12 +316,14 @@ func issuerCookieCheckDir(dir string) error {
 }
 
 func (s *issuerBoundCookieStore) flush(now time.Time, force bool) {
-	if s == nil || s.path == "" {
+	if s == nil {
 		return
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.path == "" || s.disabled {
+		s.mu.Unlock()
 		return
 	}
 	if s.timer != nil && force {
@@ -326,12 +331,14 @@ func (s *issuerBoundCookieStore) flush(now time.Time, force bool) {
 		s.timer = nil
 	}
 	if !s.dirty && !force {
+		s.mu.Unlock()
 		return
 	}
 	if !force && !s.lastWrite.IsZero() && now.Sub(s.lastWrite) < issuerCookieWriteInterval {
 		if s.timer == nil {
 			s.timer = time.AfterFunc(issuerCookieWriteInterval-now.Sub(s.lastWrite), func() { s.flush(time.Now(), true) })
 		}
+		s.mu.Unlock()
 		return
 	}
 	// Throttle failed writes as well as successful ones.
@@ -354,43 +361,71 @@ func (s *issuerBoundCookieStore) flush(now time.Time, force bool) {
 			disk.Sessions = append(disk.Sessions, ds)
 		}
 	}
+	path := s.path
+	s.dirty = false
+	s.mu.Unlock()
+	if s.beforeWrite != nil {
+		s.beforeWrite()
+	}
 	raw, err := json.Marshal(disk)
 	if err != nil {
-		s.invalidateStaleFile(err)
+		s.invalidateStaleFile(path, err)
 		return
 	}
 	if len(raw) > issuerCookieMaxStateBytes {
-		s.invalidateStaleFile(errors.New("issuer cookie state exceeds limit"))
+		s.invalidateStaleFile(path, errors.New("issuer cookie state exceeds limit"))
 		return
 	}
-	dir := filepath.Dir(s.path)
+	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0o750); err == nil {
 		err = issuerCookieCheckDir(dir)
 	}
 	if err == nil {
-		err = atomicfile.Write(s.path, raw, 0o600)
+		err = atomicfile.Write(path, raw, 0o600)
 	}
 	if err != nil {
-		s.invalidateStaleFile(fmt.Errorf("issuer cookie state write failed: %w", err))
+		s.invalidateStaleFile(path, fmt.Errorf("issuer cookie state write failed: %w", err))
 		return
 	}
-	s.dirty = false
-	s.lastWrite = now
 }
 
 // A prior snapshot can contain an entry evicted from memory. If the newer
 // snapshot cannot be published, discard the prior one so restart scans it.
-func (s *issuerBoundCookieStore) invalidateStaleFile(writeErr error) {
+func (s *issuerBoundCookieStore) invalidateStaleFile(path string, writeErr error) {
 	s.report(writeErr)
-	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.report(fmt.Errorf("issuer cookie stale state removal failed: %w", err))
 	}
+	s.mu.Lock()
+	s.dirty = true
+	s.mu.Unlock()
+}
+
+func (s *issuerBoundCookieStore) hasPath() bool {
+	if s == nil {
+		return false
+	}
+	return s.getPath() != ""
+}
+
+func (s *issuerBoundCookieStore) getPath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.path
+}
+
+func (s *issuerBoundCookieStore) setPath(path string) {
+	s.mu.Lock()
+	s.path = path
+	s.mu.Unlock()
 }
 
 func (s *issuerBoundCookieStore) retire() string {
 	if s == nil {
 		return ""
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.timer != nil {
@@ -724,6 +759,7 @@ func issuerCookieScanHeaders(ctx context.Context, headers http.Header, sc *scann
 				}
 				allowance := issuerCookieAllowance{Name: name}
 				if sc != nil {
+					allowance.Name = loggableCookieName(ctx, pair, sc)
 					for _, match := range sc.ScanTextForDLP(ctx, pair).Matches {
 						allowance.Patterns = append(allowance.Patterns, match.PatternName)
 					}

@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -279,6 +280,26 @@ func TestIssuerCookiePrerequisiteReloadReset(t *testing.T) {
 			if !p.Reload(off, scanner.MustNew(off)) {
 				t.Fatal("disable reload rejected")
 			}
+			disabledStore := p.issuerCookieRuntime.Load().store
+			disabledStore.observeResponse(key, issuer, http.Header{"Set-Cookie": {"lb=" + value + "; Path=/; Max-Age=60"}}, true, time.Now())
+			if disabledStore.allows(key, issuer, "lb", value, time.Now()) {
+				t.Fatal("disabled runtime retained issuance evidence")
+			}
+			path, pathErr := issuerCookieStatePath()
+			if pathErr != nil {
+				t.Fatal(pathErr)
+			}
+			raw, readErr := os.ReadFile(filepath.Clean(path))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			var disk issuerCookieDisk
+			if jsonErr := json.Unmarshal(raw, &disk); jsonErr != nil {
+				t.Fatal(jsonErr)
+			}
+			if len(disk.Sessions) != 0 {
+				t.Fatalf("disabled runtime persisted %d sessions", len(disk.Sessions))
+			}
 			if (&InterceptContext{Proxy: p, Config: off, ActorAuth: envelope.ActorAuthBound}).issuerCookieStore() != nil {
 				t.Fatal("disabled prerequisite left allowance enabled")
 			}
@@ -290,6 +311,84 @@ func TestIssuerCookiePrerequisiteReloadReset(t *testing.T) {
 				t.Fatal("disabled evidence revived")
 			}
 		})
+	}
+}
+
+func TestIssuerCookieFlushAllowsDuringWrite(t *testing.T) {
+	now := time.Now()
+	s := newIssuerBoundCookieStore()
+	issuer, _ := url.Parse("https://app.vendor.example/account")
+	s.observeResponse("session", issuer, http.Header{"Set-Cookie": {"lb=value; Path=/; Max-Age=60"}}, true, now)
+	s.path = filepath.Join(t.TempDir(), "state", "issuer-cookies.json")
+	s.dirty = true
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	s.beforeWrite = func() { close(entered); <-release }
+	go func() { defer close(done); s.flush(now, true) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write did not start")
+	}
+	allowed := make(chan bool, 1)
+	go func() { allowed <- s.allows("session", issuer, "lb", "value", now) }()
+	select {
+	case ok := <-allowed:
+		if !ok {
+			t.Fatal("issued cookie was denied during write")
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		<-done
+		t.Fatal("allows blocked on disk write")
+	}
+	s.mu.Lock()
+	s.sessions["session"].entries = append(s.sessions["session"].entries, issuerCookieEntry{
+		digest: s.digest("new", "value"), host: "app.vendor.example", port: "443", path: "/",
+		expires: now.Add(time.Minute),
+	})
+	s.dirty = true
+	s.mu.Unlock()
+	close(release)
+	<-done
+	s.mu.Lock()
+	dirty := s.dirty
+	s.mu.Unlock()
+	if !dirty {
+		t.Fatal("change made during write was marked clean")
+	}
+	s.beforeWrite = nil
+	s.flush(now, true)
+	loaded := newIssuerBoundCookieStore()
+	loaded.path = s.path
+	if err := loaded.load(now); err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.allows("session", issuer, "new", "value", now) {
+		t.Fatal("change made during write was not persisted on retry")
+	}
+}
+
+func TestIssuerCookieFlushRetireConcurrent(t *testing.T) {
+	s := newIssuerBoundCookieStore()
+	path := filepath.Join(t.TempDir(), "state", "issuer-cookies.json")
+	s.path, s.dirty = path, true
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	s.beforeWrite = func() { close(entered); <-release }
+	go func() { defer close(done); s.flush(time.Now(), true) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write did not start")
+	}
+	retired := make(chan string, 1)
+	go func() { retired <- s.retire() }()
+	close(release)
+	<-done
+	if got := <-retired; got != path {
+		t.Fatalf("retired path = %q, want %q", got, path)
+	}
+	if s.hasPath() {
+		t.Fatal("retired store retained path")
 	}
 }
 
@@ -472,6 +571,52 @@ func TestCookieNamesWithDLPMatch(t *testing.T) {
 	}
 	if cookieNamesWithDLPMatch(ctx, headers, nil) != nil {
 		t.Fatal("a nil scanner must name nothing")
+	}
+}
+
+func TestIssuerCookieAllowanceRedactsCredentialShapedName(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	issuer, _ := url.Parse("https://app.vendor.example/account")
+	name := issuerUnissuedSecret()
+	store := newIssuerBoundCookieStore()
+	now := time.Now()
+	store.observeResponse("session", issuer, http.Header{"Set-Cookie": {name + "=value; Path=/"}}, true, now)
+	_, allowances := issuerCookieScanHeaders(t.Context(), http.Header{"Cookie": {name + "=value"}}, sc, store, "session", issuer, now)
+	if len(allowances) != 1 || allowances[0].Name != issuerCookieRedactedName || len(allowances[0].Patterns) == 0 {
+		t.Fatalf("allowance = %+v, want redacted name and pattern", allowances)
+	}
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: logger}
+	p.receiptEmitterPtr.Store(rph.emitter)
+	ctx, err := audit.NewHTTPLogContext(http.MethodGet, issuer.String(), "192.0.2.1", "req-1", "agent-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.recordIssuerCookieAllow(ctx, allowances[0].Patterns[0], allowances[0].Name, issuer.String(), "req-1", "agent-one", http.MethodGet)
+	logger.Close()
+	raw, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"cookie":"`+issuerCookieRedactedName+`"`)) || bytes.Contains(raw, []byte(name)) {
+		t.Fatalf("audit name not redacted: %s", raw)
+	}
+	r := rph.requireReceipt(t, issuerCookieReceiptExtensionKey)
+	var ext map[string]issuerCookieAllowMetadata
+	if err := json.Unmarshal(r.Ext, &ext); err != nil {
+		t.Fatal(err)
+	}
+	if got := ext[issuerCookieReceiptExtensionKey].Cookie; got != issuerCookieRedactedName || bytes.Contains(r.Ext, []byte(name)) {
+		t.Fatalf("receipt name = %q, extension = %s", got, r.Ext)
 	}
 }
 

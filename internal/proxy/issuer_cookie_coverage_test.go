@@ -27,16 +27,34 @@ import (
 // --- recordIssuerCookieAllow: name truncation and invalid target ---
 
 func TestRecordIssuerCookieAllow_NameTruncationAndInvalidTarget(t *testing.T) {
-	p := &Proxy{}
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	p := &Proxy{logger: logger}
 	ctx, err := audit.NewHTTPLogContext(http.MethodGet, "https://app.vendor.example/x", "192.0.2.1", "req-1", "agent-one")
 	if err != nil {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("n", issuerCookieMaxLoggedName+10)
-	// A nil logger and no receipt sink; this must not panic and must not
-	// grow the name past the bound (exercised through logging is not
-	// observable here, but the function must run the truncation branch).
 	p.recordIssuerCookieAllow(ctx, "AWS Access ID", long, "https://app.vendor.example/x", "req-1", "agent-one", http.MethodGet)
+	raw, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+	if len(lines) != 1 {
+		t.Fatalf("audit records = %d, want 1: %s", len(lines), raw)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(lines[0], &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["event"] != "dlp_issuer_cookie_allow" || record["cookie"] != long[:issuerCookieMaxLoggedName] {
+		t.Fatalf("unexpected truncated allowance record: %s", lines[0])
+	}
 
 	for _, target := range []string{
 		"not a url\x7f",               // url.Parse error
@@ -44,6 +62,14 @@ func TestRecordIssuerCookieAllow_NameTruncationAndInvalidTarget(t *testing.T) {
 		"https:///x",                  // empty hostname
 	} {
 		p.recordIssuerCookieAllow(ctx, "AWS Access ID", "cookie", target, "req-1", "agent-one", http.MethodGet)
+	}
+	logger.Close()
+	raw, err = os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(bytes.Split(bytes.TrimSpace(raw), []byte("\n"))); got != 1 {
+		t.Fatalf("invalid targets wrote %d records, want 1: %s", got, raw)
 	}
 }
 
@@ -176,6 +202,7 @@ func TestLoad_DirectoryPermissionInvalid(t *testing.T) {
 }
 
 func TestLoad_LstatNonNotExistError(t *testing.T) {
+	skipIfPermissionsBypassed(t)
 	base := t.TempDir()
 	dir := filepath.Join(base, "state")
 	validMode := os.FileMode(0o750)
@@ -358,6 +385,7 @@ func TestFlush_OversizedStateInvalidatesState(t *testing.T) {
 }
 
 func TestFlush_RemoveOnInvalidateFails(t *testing.T) {
+	skipIfPermissionsBypassed(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "issuer-cookies.json")
 	now := time.Now()
@@ -629,6 +657,7 @@ func TestCookieNamesWithDLPMatch_SkipsEmptySegments(t *testing.T) {
 // --- Proxy.New: startup cleanup of stale state when the feature is disabled ---
 
 func TestNew_DisabledFeatureRemovalFailureLogs(t *testing.T) {
+	skipIfPermissionsBypassed(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	dir := filepath.Join(stateHome, "pipelock", "proxy")
@@ -717,6 +746,7 @@ func TestReload_FirstEnableFromNeverEnabledStartsPersistentStore(t *testing.T) {
 // so the initial flush fails and the reload-installed logError closure runs
 // (proxy.go's issuerCookieRuntime install for a never-before-enabled store).
 func TestReload_FirstEnableFlushFailureLogsThroughProxyLogger(t *testing.T) {
+	skipIfPermissionsBypassed(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	dir := filepath.Join(stateHome, "pipelock", "proxy")

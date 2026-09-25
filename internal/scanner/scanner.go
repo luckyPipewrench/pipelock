@@ -4236,6 +4236,13 @@ func isDefaultEndpointPort(parsed *url.URL, scheme string) bool {
 	}
 }
 
+// rawQueryHasSingleExactDecodedKey reports whether exactly one query key
+// decodes to param. The key may arrive percent-encoded: services such as
+// OData APIs emit continuation links with "%24skiptoken" for "$skiptoken",
+// and the configured name can never contain '%', so requiring the literal
+// spelling made those exclusions unmatchable. Any other key decoding to the
+// same name, in any spelling, is a duplicate and refuses the exclusion, so a
+// second copy of the value cannot ride along unscanned.
 func rawQueryHasSingleExactDecodedKey(rawQuery, param string) bool {
 	if strings.Contains(rawQuery, ";") {
 		return false
@@ -4256,9 +4263,6 @@ func rawQueryHasSingleExactDecodedKey(rawQuery, param string) bool {
 		}
 		if decodedKey != param {
 			continue
-		}
-		if rawKey != param {
-			return false
 		}
 		count++
 	}

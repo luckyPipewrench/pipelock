@@ -6248,8 +6248,8 @@ func TestScan_QueryEntropyParamExclusion_MismatchesBlock(t *testing.T) {
 			url:  "https://api.vendor.example/v1/search/recent?query=" + highEntropy + "&query=small",
 		},
 		{
-			name: "percent-encoded key spelling",
-			url:  "https://api.vendor.example/v1/search/recent?qu%65ry=" + highEntropy,
+			name: "two percent-encoded spellings of the key",
+			url:  "https://api.vendor.example/v1/search/recent?qu%65ry=" + highEntropy + "&%71uery=small",
 		},
 		{
 			name: "percent-encoded duplicate key spelling",
@@ -6310,6 +6310,10 @@ func TestScan_QueryEntropyParamExclusion_DoesNotSkipDLP(t *testing.T) {
 		{
 			name: "secret in adjacent param",
 			url:  "https://api.vendor.example/v1/search/recent?query=normal&token=" + secret,
+		},
+		{
+			name: "secret in exempted param with percent-encoded key",
+			url:  "https://api.vendor.example/v1/search/recent?qu%65ry=" + secret,
 		},
 	}
 	for _, tt := range tests {
@@ -7241,4 +7245,48 @@ func TestScan_RequestPolicyPathExemption(t *testing.T) {
 			t.Error("policy-off scanner should not exempt")
 		}
 	})
+}
+
+// OData-style continuation links percent-encode the '$' in "$skiptoken". The
+// exclusion names the decoded key, so the encoded spelling must match it,
+// while a second key decoding to the same name still refuses the exclusion.
+func TestScan_QueryEntropyParamExclusion_PercentEncodedKey(t *testing.T) {
+	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+		Scheme: "https",
+		Host:   "api.vendor.example",
+		Path:   "/v1.0/me/messages",
+		Param:  "$skiptoken",
+	}}
+	s := MustNew(cfg)
+	defer s.Close()
+
+	base := "https://api.vendor.example/v1.0/me/messages?%24search=%22report%22&%24top=100&"
+	tests := []struct {
+		name  string
+		query string
+		allow bool
+	}{
+		{name: "literal key", query: "$skiptoken=" + highEntropy, allow: true},
+		{name: "percent-encoded key", query: "%24skiptoken=" + highEntropy, allow: true},
+		{name: "partly percent-encoded key", query: "%24%73kiptoken=" + highEntropy, allow: true},
+		{name: "literal and encoded duplicate", query: "$skiptoken=" + highEntropy + "&%24skiptoken=small", allow: false},
+		{name: "two encoded duplicates", query: "%24skiptoken=small&%24skiptoken=" + highEntropy, allow: false},
+		{name: "encoded key of a different name", query: "%24skip=" + highEntropy, allow: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), base+tt.query)
+			if result.Allowed != tt.allow {
+				t.Fatalf("Scan() allowed = %v, want %v; scanner=%s reason=%s", result.Allowed, tt.allow, result.Scanner, result.Reason)
+			}
+			if !tt.allow && result.Scanner != ScannerEntropy {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerEntropy, result.Reason)
+			}
+		})
+	}
 }

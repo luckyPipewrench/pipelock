@@ -232,7 +232,10 @@ fetch_proxy:
 The endpoint-parameter matcher is intentionally strict: empty `scheme` defaults
 to `https`, `host` is an exact DNS hostname without a port or wildcard, `path`
 must match the URL's canonical escaped path exactly, and the raw query string
-must contain exactly one key with the same unescaped spelling as `param`.
+must contain exactly one key that decodes to `param`. That key may arrive
+percent-encoded, as in an OData continuation link that sends `%24skiptoken`
+for `$skiptoken`; a second key decoding to the same name, in any spelling,
+refuses the exclusion.
 
 An optional `expires` here is a temporary incident control and may be at most 180 days ahead. Shorten it when the endpoint is repaired; if the parameter contract is permanent, govern the endpoint with an exact `request_policy` route instead.
 

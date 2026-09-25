@@ -215,18 +215,31 @@ func Remove(data []byte, rec Record) (out []byte, remove, changed bool, err erro
 	if !HasFlag(args) {
 		return nil, false, false, nil
 	}
-	// Install appends exactly one copy at the end, so remove only the last
-	// copy; an identical flag the operator added stays.
+	// An identical later addition makes ownership ambiguous. Keep the record
+	// so an operator can resolve it without losing either copy.
 	parts := ArgParts(args)
-	last := -1
+	match := -1
 	for i, part := range parts {
 		if strings.TrimSpace(part) == Flag {
-			last = i
+			if match != -1 {
+				return nil, false, false, errors.New("browser defaults: multiple matching flags; resolve manually")
+			}
+			match = i
 		}
+	}
+	if match != len(ArgParts(rec.OriginalArgs)) {
+		return nil, false, false, errors.New("browser defaults: flag position changed; resolve manually")
+	}
+	wantPrefix := rec.OriginalArgs
+	if wantPrefix != "" {
+		wantPrefix += ","
+	}
+	if !strings.HasPrefix(args, wantPrefix+Flag) {
+		return nil, false, false, errors.New("browser defaults: flag form changed; resolve manually")
 	}
 	kept := make([]string, 0, len(parts))
 	for i, part := range parts {
-		if i != last {
+		if i != match {
 			kept = append(kept, part)
 		}
 	}

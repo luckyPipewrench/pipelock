@@ -149,14 +149,11 @@ func TestRemoveKeepsLaterEditsAndOperatorCopy(t *testing.T) {
 		t.Fatalf("args %q", args)
 	}
 
-	// An operator copy before Pipelock's appended one survives removal.
+	// Identical copies make ownership ambiguous; neither copy is removed.
 	dup := []byte(`{"args":"` + Flag + `,` + Flag + `"}`)
-	back, _, _, err = Remove(dup, Record{OriginalArgs: Flag, HadArgs: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if args, _ := argsOf(t, back); args != Flag {
-		t.Fatalf("args %q", args)
+	back, remove, changed, err := Remove(dup, rec)
+	if err == nil || !strings.Contains(err.Error(), "multiple matching flags") || remove || changed || back != nil {
+		t.Fatalf("ambiguous copies: out=%s remove=%v changed=%v err=%v", back, remove, changed, err)
 	}
 
 	// Flag already gone: nothing to write.
@@ -169,7 +166,7 @@ func TestRemoveKeepsLaterEditsAndOperatorCopy(t *testing.T) {
 	obj, _ = Parse(out)
 	obj["headed"] = json.RawMessage("true")
 	edited, _ = Encode(obj)
-	back, remove, _, err := Remove(edited, rec)
+	back, remove, _, err = Remove(edited, rec)
 	if err != nil || remove {
 		t.Fatalf("created+edited: remove=%v err=%v", remove, err)
 	}

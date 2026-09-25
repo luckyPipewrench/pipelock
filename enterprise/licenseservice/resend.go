@@ -171,18 +171,19 @@ func (h *WebhookHandler) ResendLicensesForEmail(ctx context.Context, rawEmail st
 	if err != nil {
 		return 0, nil
 	}
+	// The lookup runs before the locks. Anyone can reach this with any
+	// address, and the limiter only applies after a match, so holding the
+	// locks here would let unmatched requests keep webhook processing waiting.
+	// resendOneLicense re-checks each reloaded row under the locks.
+	ids, err := h.db.ResendableSubscriptionIDsForEmail(ctx, normalized, now)
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
 	sent := 0
 	err = h.db.withTrialSupportLock(ctx, func() error {
 		h.processMu.Lock()
 		defer h.processMu.Unlock()
 
-		ids, err := h.db.ResendableSubscriptionIDsForEmail(ctx, normalized, now)
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			return nil
-		}
 		if err := h.db.AdmitLicenseResend(ctx, normalized, now); err != nil {
 			if errors.Is(err, ErrResendThrottled) {
 				_ = h.ledger.Log(AuditEntry{

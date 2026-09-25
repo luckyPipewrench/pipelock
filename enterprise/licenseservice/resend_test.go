@@ -567,3 +567,32 @@ func TestResendSucceedsWhenCompletionAuditFails(t *testing.T) {
 		t.Fatalf("resend with closed ledger = %d, %v, emails=%d; want 1, nil, 1", sent, err, len(rec.all()))
 	}
 }
+
+// An address with no license must not wait on, or hold, the lock that webhook
+// processing uses, because any caller can submit one.
+func TestResendLookupForUnknownAddressDoesNotTakeWebhookLock(t *testing.T) {
+	ts := newTestSetup(t)
+	issueResendTrial(t, ts, "order_free_resend_lockfree", "lockfree@example.com")
+	ts.handler.processMu.Lock()
+	unlocked := false
+	t.Cleanup(func() {
+		if !unlocked {
+			ts.handler.processMu.Unlock()
+		}
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = ts.handler.ResendLicensesForEmail(t.Context(), "stranger@example.com", time.Now())
+	}()
+	testwait.For(t, 5*time.Second, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, "unknown-address resend blocked on the webhook lock")
+	ts.handler.processMu.Unlock()
+	unlocked = true
+}

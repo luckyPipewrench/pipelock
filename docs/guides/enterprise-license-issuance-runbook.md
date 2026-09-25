@@ -24,7 +24,7 @@ curl -sS -X POST https://licenses.vendor.example/v1/license/resend \
 
 What this does: queues a lookup and returns `202 Accepted` with the same body whether or not the address has a license. For every active, unexpired, unrevoked license whose persisted issuance is on record for that address, the service re-sends the existing token to the address on record. It never mints a new token, never moves an expiry, and never sends anything to an address other than the one stored for the license. An HTML form posting an `email` field works too. When `SELF_SERVE_RESEND_RETURN_URL` is set to an absolute `https` URL, a form submission is redirected there instead of receiving the plain-text reply.
 
-Sends are limited per address (one per 15 minutes, three per 24 hours) and across the service (60 per hour). The limits live in the service database, so a restart does not reset them. A refused send is recorded as `license_resend_throttled` in the audit ledger, and a completed one as `license_resent`. The caller cannot see either.
+Admitted requests are limited per address (one per 15 minutes, three per 24 hours) and across the service (60 per hour). One admitted request re-sends every qualifying license for that address. The limits live in the service database, so a restart does not reset them. A refused send is recorded as `license_resend_throttled` in the audit ledger, and a completed one as `license_resent`. The caller cannot see either.
 
 ## Feature Mapping
 

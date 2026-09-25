@@ -243,10 +243,12 @@ func TestServeNetnsForwardBoundsConnectionsAndRecovers(t *testing.T) {
 		peers = append(peers, peer)
 	}
 	overflow, rejected := net.Pipe()
-	listener.connections <- rejected
+	// Arm the deadline before handing the connection over: the forwarder may
+	// close the rejected end first, and a deadline on a closed pipe errors.
 	if err := overflow.SetReadDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
 		t.Fatal(err)
 	}
+	listener.connections <- rejected
 	var reply [1]byte
 	if _, err := overflow.Read(reply[:]); !errors.Is(err, io.EOF) {
 		t.Fatalf("excess connection read = %v, want EOF", err)

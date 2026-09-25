@@ -498,13 +498,25 @@ func TestResendableSubscriptionIDsSkipsUnparseableStoredAddress(t *testing.T) {
 	ts := newTestSetup(t)
 	const orderID = "order_free_resend_garbled"
 	issueResendTrial(t, ts, orderID, "garbled@example.com")
+	// A second, valid row for the same address.
+	if _, err := ts.db.db.ExecContext(t.Context(), `
+		INSERT INTO entitlements SELECT ? , customer_email, product_id, tier, billing_interval, status,
+			current_period_end, founding, founding_reserved_at, org, features, last_license_id || '-valid',
+			last_license_issued_at, last_license_expires_at, last_license_period_end, last_license_tier,
+			last_license_interval, last_license_product_id, last_delivery_status, last_delivery_attempt_at,
+			next_refresh_at, created_at, updated_at
+		FROM entitlements WHERE subscription_id = ?`, orderID+"-valid", orderID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := ts.db.db.ExecContext(t.Context(),
 		`UPDATE entitlements SET customer_email = 'not an address' WHERE subscription_id = ?`, orderID); err != nil {
 		t.Fatal(err)
 	}
+	// The unparseable stored row is skipped; it neither fails the lookup nor
+	// hides the valid row for the same address.
 	ids, err := ts.db.ResendableSubscriptionIDsForEmail(t.Context(), "garbled@example.com", time.Now())
-	if err != nil || len(ids) != 0 {
-		t.Fatalf("ids = %v, %v; want none", ids, err)
+	if err != nil || len(ids) != 1 || ids[0] != orderID+"-valid" {
+		t.Fatalf("ids = %v, %v; want only the valid row", ids, err)
 	}
 }
 
@@ -846,5 +858,17 @@ func TestHandleLicenseResendRefusesAfterShutdown(t *testing.T) {
 	}
 	if got := len(s.resend.queue); got != 0 {
 		t.Fatalf("post-shutdown request was queued (%d)", got)
+	}
+}
+
+// A migration that cannot run and cannot confirm the column is present stops
+// startup rather than continuing without the column.
+func TestEnsureResendSendsColumnFailsClosed(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if err := db.ensureResendSendsColumn(t.Context()); err == nil {
+		t.Fatal("migration against an unusable database must fail")
 	}
 }

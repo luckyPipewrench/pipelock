@@ -577,16 +577,33 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 // created before the column existed. It follows the same attempt-then-inspect
 // shape as classifyLegacyTrialSlots so two starting processes cannot both fail.
 func (e *EntitlementDB) ensureResendSendsColumn(ctx context.Context) error {
-	_, execErr := e.db.ExecContext(ctx,
-		`ALTER TABLE license_resend_requests ADD COLUMN sends INTEGER NOT NULL DEFAULT 1`)
-	if execErr == nil {
-		// Rows written before the column existed recorded one row per request,
-		// and a request could send up to the per-request cap. Count them at
-		// the cap so an upgrade cannot admit more than the hourly budget.
-		if _, err := e.db.ExecContext(ctx,
+	// The column add and the backfill commit together, so an interrupted
+	// startup cannot leave the column present with legacy rows still counted
+	// as one email each. Rows written before the column existed recorded one
+	// row per request, and a request could send up to the per-request cap, so
+	// they are counted at the cap: an upgrade cannot admit more than the
+	// hourly budget.
+	execErr := func() (err error) {
+		tx, err := e.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err != nil {
+				_ = tx.Rollback()
+			}
+		}()
+		if _, err = tx.ExecContext(ctx,
+			`ALTER TABLE license_resend_requests ADD COLUMN sends INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx,
 			`UPDATE license_resend_requests SET sends = ?`, resendMaxLicensesPerRequest); err != nil {
 			return fmt.Errorf("count legacy license resend rows at the cap: %w", err)
 		}
+		return tx.Commit()
+	}()
+	if execErr == nil {
 		return nil
 	}
 	var present bool

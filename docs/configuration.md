@@ -170,6 +170,7 @@ The default threshold (4.5) allows typical commit hashes while flagging encrypte
 - A query value that is an `http` or `https` URL, such as an OAuth `redirect_uri` or a login `next` link, is percent-decoded and scored part by part: host labels, userinfo, path segments, query keys and values, and the fragment, each with the same length floor and threshold. A URL inside that URL's query is scored the same way, and anything nested deeper is scored as one string. Values in any other scheme, including `data:` and `javascript:`, are scored as one string. A structured callback URL no longer trips the gate as a whole, while a long random token anywhere inside it still does. A block names the part, for example `high entropy query param "next" nested URL path segment`.
 - A `code_challenge` value is not scored when it is exactly 43 unpadded base64url characters (the size of an S256 challenge, RFC 7636) and every `code_challenge_method` in the same query is exactly `S256`. A missing method, `plain`, a lower-case `s256`, or a second method value keeps the challenge scored, and so does any `code_challenge` value of another shape. OAuth `state`, `nonce` and `code` get no name-based relief; use an exact `query_entropy_param_exclusions` entry for those.
 - A path segment ending in `.js`, `.mjs`, `.css`, `.woff2` or `.map` (including a source map such as `.js.map`) has a trailing build-hash token of one to eight characters from `[A-Za-z0-9_-]` left out of its score, so `ChunkVendorsMap-webpack.Dk3mN8pQ.js` is scored on `ChunkVendorsMap-webpack`. A longer token is never partly trimmed, the extension match is case-sensitive, and a name that is all hash is scored whole.
+- A DNS-over-HTTPS request (RFC 8484), either a GET whose only query parameter is `dns` carrying unpadded base64url or a POST with media type `application/dns-message`, is parsed as a DNS message when it parses strictly: every name, record payload, EDNS option and fixed-width field is checked by DLP and the entropy gate on its own, with DNS labels compared case-insensitively. A message that does not parse strictly, including a trailing byte, a padded or duplicated `dns` value, or a query containing `;`, keeps the whole-value check. In a POST, a DLP match inside the message blocks even when request-body DLP is set to warn.
 
 **Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Defaults cover package/object hosts that use hash-like routing paths (`files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com`). This is also useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).
 
@@ -956,6 +957,8 @@ When `scan_env: true`, pipelock reads all environment variables at startup and f
 - Checked in raw form, base64, hex, and base32 encodings
 
 This catches leaked API keys even without a specific DLP pattern for that provider.
+
+DLP decoding accepts hex, percent-encoding, standard and URL-safe base64, RFC 4648 base32 in any ASCII case, RFC 4648 base32hex, JSON `\uXXXX` escapes, and HTML character references in URL query values. It does not decode Crockford base32, z-base-32, base58, ascii85, rot13, or reversed text.
 
 ## Seed Phrase Detection
 

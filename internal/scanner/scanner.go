@@ -2135,12 +2135,13 @@ type decodedResult struct {
 
 // Encoding labels for decoded results.
 const (
-	encodingHex     = "hex"
-	encodingBase64  = "base64"
-	encodingBase32  = "base32"
-	encodingURL     = "url"
-	encodingHTML    = "html_entity"
-	encodingDecimal = "decimal_character_codes"
+	encodingHex         = "hex"
+	encodingBase64      = "base64"
+	encodingBase32      = "base32"
+	encodingURL         = "url"
+	encodingHTML        = "html_entity"
+	encodingDecimal     = "decimal_character_codes"
+	encodingJSONUnicode = "json_unicode"
 )
 
 const (
@@ -2408,19 +2409,52 @@ func decodeEncodings(s string) []decodedResult {
 			}
 		}
 	}
-	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), encodingBase32})
+	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
+	// uppercase before decode accepts lower and mixed case without treating
+	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
+	// the fold as its own operation so older profiles stay case-sensitive.
+	foldedBase32 := normalize.ASCIIUpper(s)
+	out = appendBase32Decodes(out, foldedBase32)
+	if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32); normalized != "" && normalized != foldedBase32 {
+		out = appendBase32Decodes(out, normalized)
 	}
-	if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), encodingBase32})
+	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{decoded, encodingJSONUnicode})
 	}
-	if normalized := normalizeEncodedToken(s, encodedTokenBase32); normalized != "" {
-		if decoded, err := base32.StdEncoding.DecodeString(normalized); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase32})
+	return out
+}
+
+// decodeBase32Strings returns the distinct RFC 4648 base32 and base32hex
+// decodings of s after ASCII uppercase folding.
+func decodeBase32Strings(s string) []string {
+	folded := normalize.ASCIIUpper(strings.TrimSpace(s))
+	var out []string
+	seen := make(map[string]struct{})
+	for _, decoded := range appendBase32Decodes(nil, folded) {
+		if _, ok := seen[decoded.text]; ok {
+			continue
 		}
-		if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(normalized); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase32})
+		seen[decoded.text] = struct{}{}
+		out = append(out, decoded.text)
+	}
+	return out
+}
+
+// appendBase32Decodes appends every RFC 4648 base32 and base32hex decoding of
+// value. value is already ASCII-uppercased. Padding and no-padding are both
+// tried; a value matches at most one padding mode per alphabet.
+func appendBase32Decodes(out []decodedResult, value string) []decodedResult {
+	for _, enc := range []*base32.Encoding{
+		base32.StdEncoding,
+		base32.StdEncoding.WithPadding(base32.NoPadding),
+		base32.HexEncoding,
+		base32.HexEncoding.WithPadding(base32.NoPadding),
+	} {
+		decoded, err := enc.DecodeString(value)
+		if err != nil || len(decoded) == 0 {
+			continue
 		}
+		out = append(out, decodedResult{string(decoded), encodingBase32})
 	}
 	return out
 }
@@ -2519,6 +2553,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 			for _, d := range decodeEncodingsRecursive(decoded) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
+			if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
+				targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
+				for _, d := range decodeEncodingsRecursive(htmlDecoded) {
+					targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+				}
+			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -2566,6 +2606,14 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
 	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
+	if msg, ok := parseDNSQuery(parsed.RawQuery); ok {
+		for _, text := range msg.dlpTexts() {
+			targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+			for _, d := range decodeEncodingsRecursive(text) {
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			}
+		}
+	}
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
@@ -3925,6 +3973,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 	query := parsed.Query()
 	s256 := pkceS256Declared(query[pkceMethodParam])
+	dohMsg, dohQuery := parseDNSQuery(parsed.RawQuery)
 	for key, values := range query {
 		if !excludedQuery && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
@@ -3943,6 +3992,15 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				return result
 			}
 			if excludedQuery || isPKCES256Challenge(key, v, s256) {
+				continue
+			}
+			if dohQuery && key == dnsQueryParam {
+				if finding, blocked := s.dnsMessageEntropy(dohMsg); blocked {
+					if s.isQueryEntropyParamExcluded(parsed, key) {
+						continue
+					}
+					return s.queryEntropyParamResult(key, finding)
+				}
 				continue
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {

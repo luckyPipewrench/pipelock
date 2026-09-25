@@ -5,7 +5,6 @@ package scanner
 
 import (
 	"context"
-	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"html"
@@ -519,9 +518,9 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 			candidates = append(candidates, seedCandidate{decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching)})
 			appendInvisibleSpacedSeedCandidate(decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching))
 		}
-		// Base32-decoded variant
-		if decoded, err := base32.StdEncoding.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-			decodedText := string(decoded)
+		// Base32-decoded variant. Same alphabets and case fold as decodeEncodings:
+		// RFC 4648 base32 and base32hex, padded or not, any ASCII case.
+		for _, decodedText := range decodeBase32Strings(seedText) {
 			candidates = append(candidates, seedCandidate{decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching)})
 			appendInvisibleSpacedSeedCandidate(decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching))
 		}

@@ -252,6 +252,7 @@ func (s *Scanner) nestedURLEntropy(u *url.URL, depth int) (entropyFinding, bool)
 	}
 	pairs := splitQueryEntropyPairs(u.RawQuery)
 	s256 := pkceS256Declared(queryEntropyPairValues(pairs, pkceMethodParam))
+	dohMsg, dohQuery := parseDNSQuery(u.RawQuery)
 	for _, p := range pairs {
 		if len(p.key) >= s.entropyMinLen {
 			if entropy := ShannonEntropy(p.key); entropy > s.entropyThreshold {
@@ -259,6 +260,15 @@ func (s *Scanner) nestedURLEntropy(u *url.URL, depth int) (entropyFinding, bool)
 			}
 		}
 		if isPKCES256Challenge(p.key, p.value, s256) {
+			continue
+		}
+		if dohQuery && p.key == dnsQueryParam {
+			if f, blocked := s.dnsMessageEntropy(dohMsg); blocked {
+				if f.part == "" {
+					f.part = "nested URL DNS message"
+				}
+				return f, true
+			}
 			continue
 		}
 		if f, blocked := s.queryValueEntropy(p.value, depth); blocked {

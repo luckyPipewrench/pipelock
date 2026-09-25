@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -1740,27 +1739,12 @@ func ForwardScannedInput(
 	}
 }
 
-// jsonUnicodeEscapeRe matches JSON \uXXXX escape sequences (4 hex digits).
-var jsonUnicodeEscapeRe = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
-
 // unescapeJSONUnicode resolves JSON \uXXXX escape sequences to their UTF-8
-// representation. Works on arbitrary text (including malformed JSON) by using
-// regex replacement rather than JSON parsing. Handles surrogate pairs by
-// replacing each \uXXXX independently (the high surrogate alone produces a
-// replacement character, but the concatenated result still matches DLP patterns).
+// representation on arbitrary text, including malformed JSON. It is the same
+// decoder the URL and text DLP views use, so a surrogate pair becomes one
+// scalar and a malformed or unpaired escape stays as written.
 func unescapeJSONUnicode(s string) string {
-	if !strings.Contains(s, `\u`) {
-		return s
-	}
-	return jsonUnicodeEscapeRe.ReplaceAllStringFunc(s, func(match string) string {
-		// match is `\uXXXX` (6 chars). Parse the 4 hex digits into uint32.
-		// 4 hex digits max = 0xFFFF which fits in int32/rune without overflow.
-		code, err := strconv.ParseInt(match[2:], 16, 32)
-		if err != nil {
-			return match
-		}
-		return string(rune(code))
-	})
+	return normalize.DecodeJSONUnicodeEscapes(s)
 }
 
 // isRPCNotification returns true if the JSON-RPC ID represents a notification.

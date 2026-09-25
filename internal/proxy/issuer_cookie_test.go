@@ -175,7 +175,7 @@ func TestIssuerCookieDiskRoundTripAndFailures(t *testing.T) {
 			}
 		})
 	}
-	good, err := os.ReadFile(filepath.Clean(path)) //nolint:gosec // Test-owned temporary state file.
+	good, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,9 @@ func TestIssuerCookieWriteFailureDiscardsOldSnapshot(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("first snapshot missing:", err)
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil { //nolint:gosec // Deliberately insecure directory exercises fail-closed storage.
+	// A deliberately insecure directory exercises fail-closed storage.
+	insecureMode := os.FileMode(0o777)
+	if err := os.Chmod(filepath.Dir(path), insecureMode); err != nil {
 		t.Fatal(err)
 	}
 	store.observeResponse("agent-one", issuer, http.Header{"Set-Cookie": {"new=" + issuerAWSShapedValue() + "; Path=/"}}, true, now)
@@ -556,7 +558,7 @@ func TestInterceptIssuerBoundCookieEndToEnd(t *testing.T) {
 			Logger: logger, Metrics: metrics, Request: req, Proxy: p,
 			Agent: agent, ActorAuth: envelope.ActorAuthBound,
 		})
-		defer resp.Body.Close() //nolint:errcheck // test response
+		defer func() { _ = resp.Body.Close() }()
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return resp.StatusCode
 	}

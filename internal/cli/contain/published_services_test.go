@@ -562,3 +562,51 @@ func TestAgentNamespaceListensRealProcTable(t *testing.T) {
 		t.Fatal("pid 1 must be refused as a namespace holder")
 	}
 }
+
+func TestAgentNamespaceListensRejectsIPv6OnlyWildcardForIPv4(t *testing.T) {
+	if _, err := os.Stat("/proc/self/net/tcp6"); err != nil {
+		t.Skip("no /proc IPv6 socket table on this platform")
+	}
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::]:0")
+	if err != nil {
+		t.Skipf("IPv6 listener unavailable: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	port := ln.Addr().(*net.TCPAddr).Port
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp4", addr)
+	if dialErr == nil {
+		_ = conn.Close()
+		t.Fatalf("IPv6-only wildcard unexpectedly accepted IPv4 on %s", addr)
+	}
+	got, probeErr := agentNamespaceListens(&probeEnv{readFile: os.ReadFile}, "/proc", os.Getpid(), "127.0.0.1", port)
+	if probeErr != nil || got {
+		t.Fatalf("IPv6-only wildcard reported as IPv4 listener: got=%t err=%v", got, probeErr)
+	}
+}
+
+func TestAgentNamespaceListensIPv4WildcardFamilies(t *testing.T) {
+	const port = 9000
+	tcp6 := "  0: 00000000000000000000000000000000:2328 00000000000000000000000000000000:0000 0A\n"
+	tcp := "  0: 00000000:2328 00000000:0000 0A\n"
+	env := &probeEnv{readFile: func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "/tcp6") {
+			return []byte("header\n" + tcp6), nil
+		}
+		return []byte("header\n"), nil
+	}}
+	got, err := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	if err != nil || got {
+		t.Fatalf("IPv6 wildcard with unknown per-socket V6ONLY = %v, %v; want false, nil", got, err)
+	}
+	env.readFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "/tcp") {
+			return []byte("header\n" + tcp), nil
+		}
+		return []byte("header\n"), nil
+	}
+	got, err = agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	if err != nil || !got {
+		t.Fatalf("IPv4 wildcard = %v, %v; want true, nil", got, err)
+	}
+}

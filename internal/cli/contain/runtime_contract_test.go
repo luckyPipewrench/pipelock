@@ -62,6 +62,9 @@ func TestRuntimeContractVars_CoversAllSurfaces(t *testing.T) {
 	if m["NODE_USE_ENV_PROXY"] != "1" {
 		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", m["NODE_USE_ENV_PROXY"])
 	}
+	if m["XAUTHORITY"] != displayAuthorityPath(env) {
+		t.Errorf("XAUTHORITY = %q, want managed path %q", m["XAUTHORITY"], displayAuthorityPath(env))
+	}
 	if m["npm_config_ignore_scripts"] != "1" {
 		t.Errorf("npm_config_ignore_scripts = %q, want 1", m["npm_config_ignore_scripts"])
 	}
@@ -141,6 +144,7 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 		`"$TARGET" "$@"`,
 		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",
 		"NODE_USE_ENV_PROXY=1",
+		"XAUTHORITY=" + displayAuthorityPath(env),
 		"npm_config_ignore_scripts=1",
 	} {
 		if !strings.Contains(joined, want) {
@@ -912,10 +916,11 @@ func TestLaunchExecEnvLines_EnvIClearsLeakAndForwardsPosture(t *testing.T) {
 	if !strings.Contains(res.output, "DISPLAY=:0") {
 		t.Fatalf("operator DISPLAY did not win:\n%s", res.output)
 	}
-	for _, leak := range []string{"XAUTHORITY=", "SUDO_USER="} {
-		if strings.Contains(res.output, leak) {
-			t.Fatalf("env -i leaked operator variable %q:\n%s", leak, res.output)
-		}
+	if strings.Contains(res.output, "XAUTHORITY=/x") || strings.Contains(res.output, "SUDO_USER=") {
+		t.Fatalf("env -i leaked operator XAUTHORITY or SUDO_USER:\n%s", res.output)
+	}
+	if !strings.Contains(res.output, "XAUTHORITY="+displayAuthorityPath(env)) {
+		t.Fatalf("managed XAUTHORITY was not exported alongside DISPLAY:\n%s", res.output)
 	}
 
 	// With no caller-provided proof, the default binds.

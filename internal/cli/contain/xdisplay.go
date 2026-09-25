@@ -5,8 +5,11 @@ package contain
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,7 +33,12 @@ const (
 	// down and probe 22 catches it.
 	displaySocketWaitAttempts = 200
 	displaySocketWaitInterval = "0.1"
+	// An Xauthority record is about 50 bytes; cap agent-owned input before
+	// privileged provisioning allocates memory for a rollback copy.
+	maxDisplayAuthorityBytes = 64 << 10
 )
+
+var errDisplayAuthorityOversize = errors.New("xauthority file exceeds size limit")
 
 func displayName(number int) string { return ":" + strconv.Itoa(number) }
 
@@ -105,7 +113,7 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		"User=" + env.agentUserName,
 		"Group=" + env.agentUserName,
 		"UMask=0077",
-		"ExecStart=" + env.xvfbPath + " " + displayName(number) + " -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix",
+		"ExecStart=" + env.xvfbPath + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix",
 		"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ]; then chmod 0700 \"$1\"; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket,
 		"Restart=on-failure",
 		"RestartSec=2",
@@ -140,6 +148,8 @@ func captureDisplayPreState(ctx context.Context, env *installEnv) error {
 // when those wrappers render their systemd-run invocation.
 func stepProvisionAgentDisplay() step {
 	var removedManagedBody []byte
+	var previousAuthority []byte
+	var previousAuthorityExisted bool
 	return step{
 		name: "provision-agent-display",
 		desc: "provision the optional agent-owned Xvfb fallback display",
@@ -156,7 +166,12 @@ func stepProvisionAgentDisplay() step {
 			}
 			if !enabled {
 				if !env.prevDisplayUnitExisted {
-					return false, nil
+					previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
+					if err != nil {
+						return false, err
+					}
+					err := removeDisplayAuthority(env)
+					return err == nil && previousAuthorityExisted, err
 				}
 				body, readErr := env.readFile(env.displayUnitPath)
 				if readErr != nil {
@@ -165,6 +180,10 @@ func stepProvisionAgentDisplay() step {
 				if !strings.HasPrefix(string(body), displayUnitMarker+"\n") {
 					return false, fmt.Errorf("%s exists but is not Pipelock-managed", env.displayUnitPath)
 				}
+				previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
+				if err != nil {
+					return false, err
+				}
 				removedManagedBody = append([]byte(nil), body...)
 				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(env.displayUnitPath)); err != nil {
 					return true, err
@@ -172,28 +191,37 @@ func stepProvisionAgentDisplay() step {
 				if err := restoreBackup(env, env.displayUnitPath); err != nil {
 					return true, err
 				}
+				if err := removeDisplayAuthority(env); err != nil {
+					return true, err
+				}
 				return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
 			}
 			if _, err := env.stat(env.xvfbPath); err != nil {
 				return false, fmt.Errorf("display provisioning requires %s: %w", env.xvfbPath, err)
 			}
-			changed, err := ensureContainmentUnit(env, env.displayUnitPath, renderAgentDisplayUnit(env))
+			previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
 			if err != nil {
-				return changed, err
+				return false, err
+			}
+			if err := writeDisplayAuthority(env, rand.Reader); err != nil {
+				return false, errors.Join(err, restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted))
+			}
+			_, err = ensureContainmentUnit(env, env.displayUnitPath, renderAgentDisplayUnit(env))
+			if err != nil {
+				return true, err
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return changed, err
+				return true, err
 			}
 			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.displayUnitPath)); err != nil {
 				return true, err
 			}
-			if changed && env.prevDisplayActive {
+			if env.prevDisplayActive {
 				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.displayUnitPath)); err != nil {
 					return true, err
 				}
 			}
-			reconciled := !env.prevDisplayEnabled || !env.prevDisplayActive
-			return changed || reconciled, nil
+			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			if removedManagedBody != nil {
@@ -209,10 +237,18 @@ func stepProvisionAgentDisplay() step {
 						return err
 					}
 				}
+				if err := restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted); err != nil {
+					return err
+				}
 				if env.prevDisplayActive {
 					return runOrErr(ctx, env, "systemctl", "start", unit)
 				}
 				return nil
+			}
+			// Put the previous cookie back before the display restarts, so the
+			// restored Xvfb and the Xauthority file carry the same cookie.
+			if err := restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted); err != nil {
+				return err
 			}
 			return restoreAgentDisplay(ctx, env)
 		},
@@ -250,9 +286,214 @@ func actionRemoveAgentDisplay() step {
 				return nil
 			}
 			env.prevDisplayStateKnown = false
-			return restoreAgentDisplay(ctx, env)
+			if err := restoreAgentDisplay(ctx, env); err != nil {
+				return err
+			}
+			return removeDisplayAuthority(env)
 		},
 	}
+}
+
+const (
+	displayAuthorityFamilyLocal = 256
+	displayAuthorityName        = "MIT-MAGIC-COOKIE-1"
+	displayAuthorityCookieSize  = 16
+	displayAuthorityFileMode    = 0o600
+)
+
+func displayAuthorityPath(env *installEnv) string {
+	if env != nil && env.displayAuthorityPath != "" {
+		return env.displayAuthorityPath
+	}
+	return defaultDisplayAuthorityPath
+}
+
+func encodeDisplayAuthority(hostname, displayNumber string, cookie []byte) ([]byte, error) {
+	if len(cookie) != displayAuthorityCookieSize {
+		return nil, fmt.Errorf("xauthority cookie has %d bytes, want %d", len(cookie), displayAuthorityCookieSize)
+	}
+	var out strings.Builder
+	out.Grow(12 + len(hostname) + len(displayNumber) + len(displayAuthorityName) + len(cookie))
+	putU16 := func(n uint16) {
+		var b [2]byte
+		binary.BigEndian.PutUint16(b[:], n)
+		out.Write(b[:])
+	}
+	putField := func(s []byte) error {
+		if len(s) > int(^uint16(0)) {
+			return errors.New("xauthority field is too long")
+		}
+		length := len(s)
+		out.WriteByte(byte((length >> 8) & 0xff))
+		out.WriteByte(byte(length & 0xff))
+		out.Write(s)
+		return nil
+	}
+	putU16(displayAuthorityFamilyLocal)
+	for _, field := range [][]byte{[]byte(hostname), []byte(displayNumber), []byte(displayAuthorityName), cookie} {
+		if err := putField(field); err != nil {
+			return nil, err
+		}
+	}
+	return []byte(out.String()), nil
+}
+
+func writeDisplayAuthority(env *installEnv, random io.Reader) error {
+	if random == nil {
+		return errors.New("xauthority random source is nil")
+	}
+	path := displayAuthorityPath(env)
+	dir := filepath.Dir(path)
+	if err := ensureDisplayAuthorityDir(env, dir); err != nil {
+		return err
+	}
+	cookie := make([]byte, displayAuthorityCookieSize)
+	if _, err := io.ReadFull(random, cookie); err != nil {
+		return fmt.Errorf("generate Xauthority cookie: %w", err)
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("get hostname for Xauthority record: %w", err)
+	}
+	data, err := encodeDisplayAuthority(hostname, strconv.Itoa(env.displayNumber), cookie)
+	if err != nil {
+		return err
+	}
+	if err := ensureSafeWriteTarget(env, path); err != nil {
+		return err
+	}
+	if err := env.writeFile(path, data, displayAuthorityFileMode); err != nil {
+		return fmt.Errorf("write Xauthority file: %w", err)
+	}
+	uid, gid, err := uidGidFor(env, env.agentUserName)
+	if err != nil {
+		return errors.Join(err, env.removeFile(path))
+	}
+	if err := env.chown(path, uid, gid); err != nil {
+		removeErr := env.removeFile(path)
+		return errors.Join(fmt.Errorf("chown Xauthority file: %w", err), removeErr)
+	}
+	return nil
+}
+
+func ensureDisplayAuthorityDir(env *installEnv, dir string) error {
+	clean := filepath.Clean(dir)
+	if !filepath.IsAbs(clean) {
+		return fmt.Errorf("xauthority state directory %s is not absolute", clean)
+	}
+	if err := rejectSymlinkParents(env, dir); err != nil {
+		return err
+	}
+	for current := clean; ; current = filepath.Dir(current) {
+		info, err := env.lstat(current)
+		if errors.Is(err, os.ErrNotExist) && current == clean {
+			// The state directory may be created after validating every parent.
+		} else if err != nil {
+			return fmt.Errorf("stat Xauthority directory %s: %w", current, err)
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("xauthority parent %s is not a real directory", current)
+		} else if owner, ok := fileOwnerUID(info); !ok || owner != 0 {
+			return fmt.Errorf("xauthority parent %s is not root-owned", current)
+		} else if info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("xauthority parent %s is writable by non-root users", current)
+		}
+		if current == string(os.PathSeparator) {
+			break
+		}
+	}
+	info, err := env.lstat(clean)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := env.mkdirAll(clean, 0o711); err != nil {
+			return fmt.Errorf("create Xauthority state directory: %w", err)
+		}
+		info, err = env.lstat(clean)
+	}
+	if err != nil {
+		return fmt.Errorf("stat Xauthority state directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("xauthority state path %s is not a real directory", clean)
+	}
+	owner, ok := fileOwnerUID(info)
+	if !ok || owner != 0 {
+		return fmt.Errorf("xauthority state directory %s is not root-owned", clean)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("xauthority state directory %s is writable by non-root users", clean)
+	}
+	if info.Mode().Perm() != 0o711 {
+		if err := env.chmod(clean, 0o711); err != nil {
+			return fmt.Errorf("chmod Xauthority state directory: %w", err)
+		}
+	}
+	return nil
+}
+
+func readDisplayAuthority(env *installEnv) ([]byte, bool, error) {
+	path := displayAuthorityPath(env)
+	reader := env.readFileBounded
+	if reader == nil {
+		reader = readContainFileBounded
+	}
+	data, err := reader(path, maxDisplayAuthorityBytes)
+	if errors.Is(err, errDisplayAuthorityOversize) {
+		return nil, false, fmt.Errorf("xauthority file %s exceeds the size limit; remove or reduce it before provisioning the display: %w", path, err)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read Xauthority file: %w", err)
+	}
+	return data, true, nil
+}
+
+func readContainFileBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read bounded file: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w (%d bytes)", errDisplayAuthorityOversize, limit)
+	}
+	return data, nil
+}
+
+func removeDisplayAuthority(env *installEnv) error {
+	err := env.removeFile(displayAuthorityPath(env))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove Xauthority file: %w", err)
+	}
+	return nil
+}
+
+func restoreDisplayAuthority(env *installEnv, data []byte, existed bool) error {
+	if !existed {
+		return removeDisplayAuthority(env)
+	}
+	path := displayAuthorityPath(env)
+	if err := ensureDisplayAuthorityDir(env, filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := ensureSafeWriteTarget(env, path); err != nil {
+		return err
+	}
+	if err := env.writeFile(path, data, displayAuthorityFileMode); err != nil {
+		return fmt.Errorf("restore Xauthority file: %w", err)
+	}
+	uid, gid, err := uidGidFor(env, env.agentUserName)
+	if err != nil {
+		return err
+	}
+	if err := env.chown(path, uid, gid); err != nil {
+		return fmt.Errorf("restore Xauthority ownership: %w", err)
+	}
+	return nil
 }
 
 // isManagedDisplayUnitFile reports whether the unit file at path is the

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -2115,6 +2116,14 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return false, err
 	}
+	listenerData, err := env.readFile(managedPipelockConfigPath(env))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read managed listener config: %w", err)
+	}
+	agentListener, err := agentListenerFromConfigBytes(listenerData)
+	if err != nil {
+		return false, fmt.Errorf("managed listener config: %w", err)
+	}
 	body := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         proxyUID,
@@ -2123,12 +2132,21 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		Table:            env.nftTableOrDefault(),
 		Chain:            env.nftChainOrDefault(),
 		LoopbackServices: loopbackServices,
+		AgentListener:    agentListener,
 	})
 
 	rulesMatch := false
+	// The replaced rules file records the UIDs its managed block was rendered
+	// with. When they differ from the current ones, reload must recognize the
+	// live block by those as well, or the old block survives a UID change.
+	var priorUIDs []nftRulesHeaderUIDs
 	if existing, err := env.readFile(env.nftRulesPath); err == nil {
 		existingBody := string(existing)
 		rulesMatch = existingBody == body
+		if prior, ok, headerErr := parseNFTRulesHeaderUIDs(existing); ok && headerErr == nil &&
+			(prior.operatorUID != operatorUID || prior.proxyUID != proxyUID || prior.agentUID != agentUID) {
+			priorUIDs = append(priorUIDs, prior)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 	}
@@ -2175,7 +2193,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return persistUnitChanged || expiryUnitChanged, err
 	}
-	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
+	changed := rulesChanged || persistUnitChanged || expiryUnitChanged || !tableLoaded
 	if changed || !tableLoaded || liveRulesDrifted {
 		// Validate before loading.
 		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
@@ -2183,7 +2201,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		reloadedManagedChain := false
 		if tableLoaded && (rulesChanged || liveRulesDrifted) {
-			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID); err != nil {
+			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, priorUIDs...); err != nil {
 				return changed, err
 			}
 			reloadedManagedChain = true
@@ -2358,7 +2376,7 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	return nil
 }
 
-func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string, operatorUID, proxyUID, agentUID int) error {
+func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody string, operatorUID, proxyUID, agentUID int, prior ...nftRulesHeaderUIDs) error {
 	out, code, err := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
 	if err != nil {
 		return fmt.Errorf("list nft managed chain for reload: %w", err)
@@ -2379,7 +2397,7 @@ func reloadNFTManagedChain(ctx context.Context, env *installEnv, rulesBody strin
 	} else if !strings.Contains(strings.ToLower(input), "no such file") {
 		return fmt.Errorf("list legacy owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input))
 	}
-	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, receiverChainLive)
+	reloadScript := renderNFTManagedChainReloadScript(out, rulesBody, env.nftTableOrDefault(), env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, receiverChainLive, prior...)
 	reloadPath := env.nftRulesPath + ".reload"
 	if err := env.writeFile(reloadPath, []byte(reloadScript), modeConfigSecret); err != nil {
 		return fmt.Errorf("write nft managed chain reload file %s: %w", reloadPath, err)
@@ -2765,6 +2783,7 @@ type nftRuleOptions struct {
 	Table            string
 	Chain            string
 	LoopbackServices []config.ContainmentLoopbackService
+	AgentListener    string
 }
 
 // renderNFTRules emits the table definition with concrete UIDs interpolated.
@@ -2787,13 +2806,26 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 // services are reconciled into namespace-bound socket units. The host ruleset
 // contains only the implicit proxy-port exception, never a declared service.
 func renderNFTRulesWithServices(opts nftRuleOptions) string {
+	listenerRule := ""
+	if opts.AgentListener != "" {
+		host, port, err := net.SplitHostPort(opts.AgentListener)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			return "invalid containment.agent_listener\n"
+		}
+		family := "ip"
+		if ip.To4() == nil {
+			family = "ip6"
+		}
+		listenerRule = fmt.Sprintf("\t        meta skuid != { 0, %d } %s daddr %s tcp dport %s counter log prefix \"pipelock_agent_listener_blocked \" drop\n", opts.ProxyUID, family, host, port)
+	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d
 	table inet %s {
 	    chain %s {
 	        type filter hook output priority filter; policy accept;
 
-	        meta skuid %d accept
+%s	        meta skuid %d accept
 	        meta skuid %d accept
 
 	        meta skuid %d ip daddr 127.0.0.1 tcp dport %d accept
@@ -2802,7 +2834,7 @@ func renderNFTRulesWithServices(opts nftRuleOptions) string {
 	        meta skuid %d counter log prefix "%s " drop
 	    }
 }
-`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain,
+`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain, listenerRule,
 		opts.OperatorUID, opts.ProxyUID,
 		opts.AgentUID, opts.ProxyPort,
 		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),

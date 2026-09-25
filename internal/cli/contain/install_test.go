@@ -200,9 +200,10 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		// chown/lchown can't really run under non-root tests; no-op so the
 		// orchestration progresses. Tests that need to assert ownership calls
 		// can substitute their own hooks.
-		chown:              func(string, int, int) error { return nil },
-		lchown:             func(string, int, int) error { return nil },
-		agentBrowserFchown: func(*os.File, int, int) error { return nil },
+		chown:                func(string, int, int) error { return nil },
+		lchown:               func(string, int, int) error { return nil },
+		agentBrowserFchown:   func(*os.File, int, int) error { return nil },
+		agentBrowserDirOwner: func(*os.File, int) bool { return true },
 		// Unprivileged stand-in for the descriptor-based owner: keeps the
 		// symlink refusal and the mode change, drops only the chown, which
 		// needs root. The real one is exercised in browser_ca_test.go.
@@ -275,6 +276,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		undiciShimPath:                filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
 		profileScriptPath:             filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
 		agentHome:                     filepath.Join(root, "home", "pipelock-agent"),
+		displayAuthorityPath:          filepath.Join(root, "var", "lib", "pipelock-agent", "Xauthority"),
 		pipelockTarget:                filepath.Join(root, "usr", "local", "bin", "pipelock"),
 		bashPath:                      "/bin/bash",
 		nologinPath:                   "/usr/sbin/nologin",
@@ -1458,6 +1460,36 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	}
 
 	assertManagedChainReload(t, runner, env)
+}
+
+func TestStepInstallNFTRulesNewTableFailureNeedsRollback(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	body := renderNFTRules(1000, 988, 987, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, nil)
+	changed, err := stepInstallNFTRulesApply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "daemon-reload") {
+		t.Fatalf("later-step failure = %v, want daemon-reload error", err)
+	}
+	if !changed {
+		t.Fatal("new table was loaded but rollback was not requested")
+	}
+	loaded := false
+	for _, call := range runner.calls {
+		if call.name == testNFT && strings.Join(call.args, " ") == "-f "+env.nftRulesPath {
+			loaded = true
+		}
+	}
+	if !loaded {
+		t.Fatal("positive control: new nft table was not loaded")
+	}
 }
 
 func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T) {
@@ -3130,4 +3162,45 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A UID change: the rules file on disk and the live chain were rendered with
+// earlier UIDs. Install must pass the UIDs from that file's header to reload,
+// so the reload script removes every rule of the old managed block.
+func TestStepInstallNFTRules_ReloadRemovesOldBlockAfterUIDChange(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, oldProxyUID, oldAgentUID := 1000, 1038, 1037
+	old := renderNFTRules(operatorUID, oldProxyUID, oldAgentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(old), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	live := nftListingFromRulesBodyForTest(old, 40)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	reloadPath := managedChainReloadPath(env)
+	var script string
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == reloadPath {
+			script = string(data)
+		}
+		return originalWrite(path, data, mode)
+	}
+
+	if _, err := stepInstallNFTRules().apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertManagedChainReload(t, runner, env)
+	oldRules := nftRulesWithHandles(live)
+	if len(oldRules) < 5 {
+		t.Fatalf("fixture has too few old rules: %d", len(oldRules))
+	}
+	for _, rule := range oldRules {
+		if !strings.Contains(script, fmt.Sprintf("delete rule inet %s %s handle %d\n", defaultNFTTable, defaultNFTChain, rule.handle)) {
+			t.Fatalf("old-UID rule %q (handle %d) survived the reload:\n%s", rule.line, rule.handle, script)
+		}
+	}
 }

@@ -43,9 +43,8 @@ type ContainmentConfig struct {
 	// must be one of the listeners declared under agents.<name>.listeners, so
 	// the proxy attributes that traffic to the profile bound to the listener.
 	// Only processes inside the agent's network namespace can reach the
-	// doorway and only Pipelock's relay dials the listener, so the binding
-	// cannot be claimed by another local client or forged from inside the
-	// namespace. Empty keeps the shared proxy listener.
+	// doorway. The managed host nftables rule restricts the listener to the
+	// relay account and root. Empty keeps the shared proxy listener.
 	AgentListener string `yaml:"agent_listener,omitempty"`
 }
 
@@ -64,6 +63,11 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("containment.agent_listener %q must use a numeric loopback address (127.0.0.1 or ::1)", listener)
+	}
+	// An IPv4 address in IPv6 form (::ffff:127.0.0.1) selects the IPv4 rule
+	// family but cannot be written in an IPv4 address expression.
+	if ip.To4() != nil && strings.Contains(host, ":") {
+		return fmt.Errorf("containment.agent_listener %q uses an IPv4-mapped IPv6 address; write it as 127.0.0.1", listener)
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {

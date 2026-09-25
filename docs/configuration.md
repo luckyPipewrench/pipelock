@@ -1742,7 +1742,7 @@ containment:
   agent_listener: "127.0.0.1:8889"
 ```
 
-The proxy attributes traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Processes inside the agent namespace reach the listener only through the doorway. A host-local process that can connect to the loopback port is also attributed to the profile; the listener is not an authentication boundary against host-local processes. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
+The proxy attributes traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Processes inside the agent namespace reach the listener only through the doorway. On the host, the managed nftables output rule permits only the doorway relay's `pipelock-proxy` account and root to connect to this address and port; the kernel logs and drops connections from other local accounts. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
 
 ### Declared loopback services (containment)
 

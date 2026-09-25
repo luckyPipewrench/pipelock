@@ -192,6 +192,20 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	// without another contain install.
 	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
 	publishedServices := reconcileDeclaredContainmentPublishedServicesForReload(env, header.proxyPort)
+	agentListener := ""
+	if env.configPath != "" {
+		listenerData, listenerReadErr := env.readFile(env.configPath)
+		if errors.Is(listenerReadErr, os.ErrNotExist) && strings.Contains(string(persisted), "pipelock_agent_listener_blocked") {
+			return fmt.Errorf("managed listener config %s is missing; refusing to remove the existing listener guard", env.configPath)
+		}
+		if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+			return fmt.Errorf("read managed listener config %s: %w", env.configPath, listenerReadErr)
+		}
+		agentListener, err = agentListenerFromConfigBytes(listenerData)
+		if err != nil {
+			return fmt.Errorf("parse managed listener config: %w", err)
+		}
+	}
 	if env.pauseAfterSnapshot != nil {
 		env.pauseAfterSnapshot()
 	}
@@ -203,6 +217,7 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		Table:            env.table,
 		Chain:            env.chain,
 		LoopbackServices: loopbackServices,
+		AgentListener:    agentListener,
 	}))
 
 	// Persist the reconciled file FIRST, atomically, before touching the
@@ -532,11 +547,21 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // risk deleting an operator rule. Requiring the complete ordered six-rule
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
-func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
+// renderNFTManagedChainReloadScript deletes the live managed block and loads
+// rulesBody. prior lists UID sets recorded in the header of the rules file this
+// install is replacing: after a UID change the live block was rendered with
+// those UIDs, so it is recognized with them as well as with the current ones.
+// Only a complete managed block rendered for a recorded UID set is claimed, so
+// a foreign rule that merely resembles one rule of the block is left alone.
+func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool, prior ...nftRulesHeaderUIDs) string {
 	// A superseded owned-loopback rule can be found both inside a managed block
 	// and by the standalone scan. Deleting one handle twice fails the whole
 	// atomic nft transaction, so each handle is emitted once, in chain order.
 	handles := slices.Concat(legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID), legacyOwnedLoopbackMarkRuleHandles(live, agentUID))
+	for _, uids := range prior {
+		handles = append(handles, legacyManagedNFTRuleBlockHandles(live, uids.operatorUID, uids.proxyUID, uids.agentUID)...)
+		handles = append(handles, legacyOwnedLoopbackMarkRuleHandles(live, uids.agentUID)...)
+	}
 	slices.Sort(handles)
 	handles = slices.Compact(handles)
 	var script strings.Builder
@@ -655,6 +680,13 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 	if i+2 >= len(rules) {
 		return 0, nil
 	}
+	start := i
+	if lineHasAgentListenerGuardForProxy(rules[i].line, proxyUID) {
+		i++
+	}
+	if i+2 >= len(rules) {
+		return 0, nil
+	}
 	if !lineHasTerminalSkuidVerdict(rules[i].line, operatorUID, "accept") ||
 		!lineHasTerminalSkuidVerdict(rules[i+1].line, proxyUID, "accept") {
 		return 0, nil
@@ -670,9 +702,10 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 	for tailStart < len(rules) && lineHasAgentLoopbackAllowAnyPortAnyHost(rules[tailStart].line, agentUID) {
 		if tailStart+1 >= len(rules) || !lineHasAgentLoopbackReplyForForwardLine(rules[tailStart].line, rules[tailStart+1].line, agentUID) {
 			if length := legacyManagedNFTBlockLength(rules, i, operatorUID, proxyUID, agentUID); length > 0 {
-				return length, nil
+				return length + i - start, nil
 			}
-			return partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
+			length, foreign := partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
+			return length + i - start, foreign
 		}
 		tailStart += 2
 	}
@@ -692,7 +725,27 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 		!lineHasManagedCatchAllDrop(rules[tailStart+2].line, agentUID) {
 		return 0, nil
 	}
-	return tailStart + 3 - i, nil
+	return tailStart + 3 - start, nil
+}
+
+func lineHasAgentListenerGuardForProxy(line string, proxyUID int) bool {
+	fields := nftLineFields(line)
+	if len(fields) < 15 || !slices.Equal(fields[:7], []string{"meta", "skuid", "!=", "{", "0,", strconv.Itoa(proxyUID), "}"}) {
+		return false
+	}
+	return lineHasAgentListenerGuardSuffix(fields[7:])
+}
+
+func lineHasAgentListenerGuardSuffix(fields []string) bool {
+	if len(fields) < 8 || (fields[0] != "ip" && fields[0] != "ip6") || fields[1] != "daddr" ||
+		fields[3] != "tcp" || fields[4] != "dport" {
+		return false
+	}
+	port, err := strconv.Atoi(fields[5])
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	return fieldsHaveNFTCounterLogDrop(fields[6:], "pipelock_agent_listener_blocked ")
 }
 
 // legacyManagedNFTBlockLength recognizes the contiguous-forward format that

@@ -156,6 +156,9 @@ func runtimeContractVars(env *installEnv) []contractVar {
 		{"NODE_OPTIONS", "--require " + shim},
 		// Newer node fetch()/undici honors *_PROXY natively when this flag exists.
 		{"NODE_USE_ENV_PROXY", "1"},
+		// Xvfb requires its managed cookie from process startup. Keep the
+		// operator's ambient XAUTHORITY out; this path is owned by the agent.
+		{"XAUTHORITY", displayAuthorityPath(env)},
 	}
 }
 

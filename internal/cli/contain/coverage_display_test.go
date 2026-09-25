@@ -42,6 +42,28 @@ func covDispPrepareDisplayEnv(t *testing.T) (*installEnv, *fakeRunner) {
 		t.Fatalf("write fake xvfb binary: %v", err)
 	}
 	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
+	env.displayAuthorityPath = filepath.Join(t.TempDir(), "agent-state", "Xauthority")
+	authorityDir := filepath.Dir(env.displayAuthorityPath)
+	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+		t.Fatalf("create fake Xauthority parent: %v", err)
+	}
+	realLstat := env.lstat
+	trustedDirs := make(map[string]struct{})
+	for current := filepath.Clean(authorityDir); ; current = filepath.Dir(current) {
+		trustedDirs[current] = struct{}{}
+		if current == string(os.PathSeparator) {
+			break
+		}
+	}
+	env.lstat = func(path string) (os.FileInfo, error) {
+		info, err := realLstat(path)
+		if err == nil {
+			if _, ok := trustedDirs[filepath.Clean(path)]; ok && info.IsDir() {
+				return fakeFileInfo{mode: os.ModeDir | 0o755, sys: fakeFileSysWithUID(0)}, nil
+			}
+		}
+		return info, err
+	}
 	return env, runner
 }
 
@@ -446,8 +468,8 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 			return os.MkdirAll(path, mode)
 		}
 		applied, err := stepProvisionAgentDisplay().apply(context.Background(), env)
-		if applied || err == nil || !strings.Contains(err.Error(), "mkdir refused") {
-			t.Fatalf("apply() = (%v, %v), want (false, the underlying mkdir failure)", applied, err)
+		if !applied || err == nil || !strings.Contains(err.Error(), "mkdir refused") {
+			t.Fatalf("apply() = (%v, %v), want (true, the underlying mkdir failure after cookie creation)", applied, err)
 		}
 	})
 
@@ -493,7 +515,7 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 		}
 	})
 
-	t.Run("changed active unit restarts without restarting inactive or unchanged units", func(t *testing.T) {
+	t.Run("every active provision restarts Xvfb to rotate its cookie", func(t *testing.T) {
 		for _, tc := range []struct {
 			name        string
 			priorNumber int
@@ -502,11 +524,23 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 		}{
 			{"changed active", 99, true, true},
 			{"changed inactive", 99, false, false},
-			{"unchanged active", 5, true, false},
+			{"unchanged active", 5, true, true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				env, runner := covDispPrepareDisplayEnv(t)
 				covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")
+				hostname, err := os.Hostname()
+				if err != nil {
+					t.Fatal(err)
+				}
+				previousCookie := make([]byte, displayAuthorityCookieSize)
+				previousAuthority, err := encodeDisplayAuthority(hostname, "5", previousCookie)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(env.displayAuthorityPath, previousAuthority, displayAuthorityFileMode); err != nil {
+					t.Fatal(err)
+				}
 				prior := renderAgentDisplayUnit(&installEnv{agentUserName: env.agentUserName, displayNumber: tc.priorNumber, xvfbPath: env.xvfbPath})
 				if err := os.WriteFile(env.displayUnitPath, []byte(prior), 0o600); err != nil {
 					t.Fatal(err)
@@ -518,8 +552,25 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 					state = "active\n"
 				}
 				runner.on(argvFor(testSystemctl, "is-active", unit), state, 0, nil)
+				originalRun := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					if tc.active && name == testSystemctl && len(args) == 2 && args[0] == "restart" && args[1] == unit {
+						cookieAtRestart, readErr := os.ReadFile(env.displayAuthorityPath)
+						if readErr != nil || bytes.Equal(cookieAtRestart, previousAuthority) {
+							t.Fatalf("restart before new Xauthority cookie: read=%v unchanged=%t", readErr, bytes.Equal(cookieAtRestart, previousAuthority))
+						}
+					}
+					return originalRun(ctx, name, args...)
+				}
 				if _, err := stepProvisionAgentDisplay().apply(context.Background(), env); err != nil {
 					t.Fatalf("apply: %v", err)
+				}
+				rotatedAuthority, err := os.ReadFile(env.displayAuthorityPath)
+				if err != nil {
+					t.Fatalf("read rotated Xauthority: %v", err)
+				}
+				if bytes.Equal(rotatedAuthority, previousAuthority) {
+					t.Fatal("Xauthority cookie did not rotate during re-provision")
 				}
 				restarts := 0
 				for _, call := range runner.calls {
@@ -1480,5 +1531,57 @@ func TestCovDispProxyOneNetnsConnReturnsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("proxyOneNetnsConn did not return after context cancellation")
+	}
+}
+
+// Rolling back a re-provision must restore the previous cookie before the
+// restored display starts; otherwise Xvfb reads the new cookie while the
+// file ends up holding the old one.
+func TestCovDispUndoRestoresCookieBeforeDisplayStart(t *testing.T) {
+	env, runner := covDispPrepareDisplayEnv(t)
+	covDispWriteManagedConfig(t, env, "containment:\n  display:\n    enabled: true\n    number: 5\n")
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousAuthority, err := encodeDisplayAuthority(hostname, "99", make([]byte, displayAuthorityCookieSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.displayAuthorityPath, previousAuthority, displayAuthorityFileMode); err != nil {
+		t.Fatal(err)
+	}
+	prior := renderAgentDisplayUnit(&installEnv{agentUserName: env.agentUserName, displayNumber: 99, xvfbPath: env.xvfbPath})
+	if err := os.WriteFile(env.displayUnitPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Base(env.displayUnitPath)
+	runner.on(argvFor(testSystemctl, "is-enabled", unit), "enabled\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", unit), "active\n", 0, nil)
+	st := stepProvisionAgentDisplay()
+	if _, err := st.apply(context.Background(), env); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	rotated, err := os.ReadFile(env.displayAuthorityPath)
+	if err != nil || bytes.Equal(rotated, previousAuthority) {
+		t.Fatalf("apply did not rotate the cookie: err=%v", err)
+	}
+	starts := 0
+	originalRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == testSystemctl && len(args) == 2 && args[0] == "start" && args[1] == unit {
+			starts++
+			atStart, readErr := os.ReadFile(env.displayAuthorityPath)
+			if readErr != nil || !bytes.Equal(atStart, previousAuthority) {
+				t.Fatalf("display started before the previous cookie was restored: read=%v restored=%t", readErr, bytes.Equal(atStart, previousAuthority))
+			}
+		}
+		return originalRun(ctx, name, args...)
+	}
+	if err := st.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if starts != 1 {
+		t.Fatalf("undo start calls = %d, want 1; calls=%v", starts, runner.calls)
 	}
 }

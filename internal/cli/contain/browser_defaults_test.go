@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,6 +45,7 @@ func browserDefaultsEnv(t *testing.T) (*installEnv, *[]ownCall, string, string) 
 		}
 		return env.lchown(path, uid, gid)
 	}
+	env.agentBrowserDirOwner = func(_ *os.File, uid int) bool { return uid == 987 }
 	return env, &calls, agentBrowserConfigPath(env), agentBrowserDefaultsRecordPath(env)
 }
 
@@ -382,6 +385,128 @@ func TestStepWriteAgentBrowserDefaults_RefusesDirectorySwap(t *testing.T) {
 	}
 	if outsideChown {
 		t.Fatal("outside directory was chowned")
+	}
+	assertAbsent(t, record)
+}
+
+func TestStepWriteAgentBrowserDefaults_RefusesInHomeDirectorySwap(t *testing.T) {
+	env, _, path, record := browserDefaultsEnv(t)
+	dir := filepath.Dir(path)
+	target := filepath.Join(agentHomeDir(env), "other-browser")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "config.json")
+	if err := os.WriteFile(marker, []byte(`{"args":"keep"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorChown := env.agentBrowserFchown
+	targetChowned := false
+	env.agentBrowserFchown = func(f *os.File, uid, gid int) error {
+		opened, openErr := f.Stat()
+		if openErr == nil && os.SameFile(opened, before) {
+			targetChowned = true
+		}
+		return priorChown(f, uid, gid)
+	}
+	checks := 0
+	env.agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
+		if checks >= 2 && name == agentBrowserFile {
+			// Hold the old check result so the descriptor open is the guard
+			// this regression exercises.
+			return nil, os.ErrNotExist
+		}
+		info, err := root.Lstat(name)
+		if name == agentBrowserDir && err == nil {
+			checks++
+			if checks == 2 {
+				if err := os.Rename(dir, dir+".moved"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return info, err
+	}
+	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || applied || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("in-home directory swap accepted: applied=%v err=%v", applied, err)
+	}
+	if checks < 2 {
+		t.Fatalf("swap hook not reached: %d", checks)
+	}
+	if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != `{"args":"keep"}` {
+		t.Fatalf("target changed: %q err=%v", data, err)
+	}
+	after, err := os.Stat(marker)
+	if err != nil || after.Mode() != before.Mode() {
+		t.Fatalf("target mode changed: before=%v after=%v err=%v", before.Mode(), after.Mode(), err)
+	}
+	if targetChowned {
+		t.Fatal("in-home target was chowned")
+	}
+	assertAbsent(t, record)
+}
+
+func TestOpenAgentBrowserDir_RequiresAgentOwner(t *testing.T) {
+	env, _, path, _ := browserDefaultsEnv(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(agentHomeDir(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	env.agentBrowserDirOwner = nil
+	owned, err := openBrowserDir(env, root, false, os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatalf("agent-owned control refused: %v", err)
+	}
+	_ = owned.Close()
+	if dir, err := openBrowserDir(env, root, false, os.Getuid()+1, os.Getgid()); err == nil || dir != nil || !strings.Contains(err.Error(), "not agent-owned") {
+		t.Fatalf("wrong-owner directory accepted: dir=%v err=%v", dir, err)
+	}
+}
+
+func TestStepWriteAgentBrowserDefaults_RefusesWrongOwnerWithoutChanges(t *testing.T) {
+	env, _, path, record := browserDefaultsEnv(t)
+	writeAgentBrowserConfigFixture(t, path, `{"args":"keep"}`)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Choose an agent UID distinct from the runner's without risking overflow.
+	agentUID := os.Getuid() - 1
+	if os.Getuid() == 0 {
+		agentUID = 1
+	}
+	priorLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.agentUserName {
+			return &user.User{Uid: strconv.Itoa(agentUID), Gid: strconv.Itoa(os.Getgid()), Username: name}, nil
+		}
+		return priorLookup(name)
+	}
+	env.agentBrowserDirOwner = nil
+	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || applied || !strings.Contains(err.Error(), "not agent-owned") {
+		t.Fatalf("wrong-owner directory accepted: applied=%v err=%v", applied, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || string(data) != `{"args":"keep"}` {
+		t.Fatalf("target changed: %q err=%v", data, err)
+	}
+	after, err := os.Stat(path)
+	if err != nil || after.Mode() != before.Mode() {
+		t.Fatalf("target mode changed: before=%v after=%v err=%v", before.Mode(), after.Mode(), err)
 	}
 	assertAbsent(t, record)
 }

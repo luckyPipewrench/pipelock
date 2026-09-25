@@ -15,11 +15,13 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1734,6 +1736,20 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
 		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
+	listenerData, listenerReadErr := env.readFile(env.configPath)
+	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+		return statusFail, fmt.Sprintf("read managed listener config: %v", listenerReadErr), false
+	}
+	agentListener, listenerErr := agentListenerFromConfigBytes(listenerData)
+	if listenerErr != nil {
+		return statusFail, fmt.Sprintf("parse managed listener config: %v", listenerErr), false
+	}
+	if agentListener != "" && !chainLinesHaveAgentListenerGuard(lines, agentListener, current.proxyUID) {
+		return statusFail, "chain present but containment.agent_listener owner guard is missing or malformed", false
+	}
+	if agentListener == "" && chainLinesHaveAgentListenerGuardLine(lines) {
+		return statusFail, "chain contains a containment.agent_listener owner guard but no listener is configured", false
+	}
 	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
 		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID), false
 	}
@@ -1985,6 +2001,14 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		}
 	}
 	loopbackServices, _, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	listenerData, listenerReadErr := env.readFile(env.configPath)
+	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+		return fmt.Errorf("read managed listener config: %w", listenerReadErr)
+	}
+	agentListener, listenerErr := agentListenerFromConfigBytes(listenerData)
+	if listenerErr != nil {
+		return fmt.Errorf("parse managed listener config: %w", listenerErr)
+	}
 	want := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         current.proxyUID,
@@ -1993,6 +2017,7 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		Table:            env.nftTable,
 		Chain:            env.nftChain,
 		LoopbackServices: loopbackServices,
+		AgentListener:    agentListener,
 	})
 	if string(rules) != want {
 		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
@@ -2137,6 +2162,127 @@ func chainLinesHaveSkuidAcceptForUID(lines []string, uid int) bool {
 func chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines []string, agentUID, port int) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
 		return lineHasAgentProxyLoopbackAllow(line, agentUID, port)
+	})
+}
+
+func chainLinesHaveAgentListenerGuard(lines []string, listener string, proxyUID int) bool {
+	host, port, err := net.SplitHostPort(listener)
+	if err != nil {
+		return false
+	}
+	family := "ip"
+	if net.ParseIP(host).To4() == nil {
+		family = "ip6"
+	}
+	found := 0
+	for _, line := range lines {
+		fields := nftLineFields(line)
+		if len(fields) == 0 || fields[0] == "type" || fields[0] == "chain" || fields[0] == "{" || fields[0] == "}" {
+			continue
+		}
+		if found == 0 && lineHasAnyToken(line, "accept") && acceptMayReachAgentListener(fields, host, port) {
+			return false
+		}
+		if !strings.Contains(line, "pipelock_agent_listener_blocked") {
+			continue
+		}
+		if len(fields) < 13 || !slices.Equal(fields[:7], []string{"meta", "skuid", "!=", "{", "0,", strconv.Itoa(proxyUID), "}"}) {
+			return false
+		}
+		if fields[7] == family && fields[8] == "daddr" && fields[9] == host &&
+			fields[10] == "tcp" && fields[11] == "dport" && fields[12] == port &&
+			fieldsHaveNFTCounterLogDrop(fields[13:], "pipelock_agent_listener_blocked ") {
+			found++
+			continue
+		}
+		return false
+	}
+	return found == 1
+}
+
+// An earlier accept only bypasses the guard when it could admit the first
+// packet of a new connection to the configured listener. A rule limited to
+// reply-direction or already-established traffic cannot open a connection,
+// and neither can one pinned to a different destination. Unknown nft
+// expressions stay conservative.
+func acceptMayReachAgentListener(fields []string, host, port string) bool {
+	if acceptCannotStartConnection(fields) {
+		return false
+	}
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "tcp" && fields[i+1] == "dport" && fields[i+2] != port {
+			if _, err := strconv.Atoi(fields[i+2]); err == nil {
+				return false
+			}
+		}
+		if (fields[i] == "ip" || fields[i] == "ip6") && fields[i+1] == "daddr" {
+			if fields[i+2] == host {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(fields[i+2])
+			addr, addrErr := netip.ParseAddr(host)
+			if err == nil && addrErr == nil && !prefix.Contains(addr) {
+				return false
+			}
+			if err != nil {
+				other, parseErr := netip.ParseAddr(fields[i+2])
+				if parseErr == nil && addrErr == nil && other != addr {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// nfConntrackStateNew is the conntrack NEW bit as `nft -n` prints ct state
+// (invalid 0x1, established 0x2, related 0x4, new 0x8).
+const nfConntrackStateNew = 0x8
+
+// acceptCannotStartConnection reports whether a rule only matches packets
+// that belong to an existing connection: reply direction (`ct direction 1`,
+// as `nft -n` prints reply) or a single ct state value without NEW. Sets,
+// negations and anything unparsed return false, so the caller stays
+// conservative.
+func acceptCannotStartConnection(fields []string) bool {
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] != "ct" {
+			continue
+		}
+		switch fields[i+1] {
+		case "direction":
+			if fields[i+2] == "1" || fields[i+2] == "reply" {
+				return true
+			}
+		case "state":
+			value := fields[i+2]
+			if strings.HasPrefix(value, "0x") {
+				bits, err := strconv.ParseUint(value[2:], 16, 32)
+				if err == nil && bits != 0 && bits&nfConntrackStateNew == 0 {
+					return true
+				}
+				continue
+			}
+			names := strings.Split(value, ",")
+			known := len(names) > 0
+			for _, name := range names {
+				switch name {
+				case "established", "related":
+				default:
+					known = false
+				}
+			}
+			if known {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func chainLinesHaveAgentListenerGuardLine(lines []string) bool {
+	return chainLinesHaveLine(lines, func(line string) bool {
+		return strings.Contains(line, "pipelock_agent_listener_blocked")
 	})
 }
 
@@ -2289,6 +2435,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 			return false
 		}
 		if lineHasAgentProxyLoopbackAllow(line, uids.agentUID, proxyPort) {
+			return false
+		}
+		if lineHasAgentListenerGuardForProxy(line, uids.proxyUID) {
 			return false
 		}
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {

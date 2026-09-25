@@ -546,14 +546,76 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_subscription ON imported_issuances(subscription_id);
 	CREATE INDEX IF NOT EXISTS idx_imported_issuances_issuer ON imported_issuances(issuer_key_id);
+
+	-- Self-serve license resends that were admitted for sending, with the number
+	-- of emails each one sends. email_sha256
+	-- is the SHA-256 of the normalized address, so the rate limiter does not keep
+	-- a second plaintext copy of customer addresses. Rows older than the longest
+	-- limiter window are pruned on every admission.
+	CREATE TABLE IF NOT EXISTS license_resend_requests (
+		email_sha256 TEXT NOT NULL,
+		requested_at DATETIME NOT NULL,
+		sends        INTEGER NOT NULL DEFAULT 1
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_license_resend_email ON license_resend_requests(email_sha256, requested_at);
+	CREATE INDEX IF NOT EXISTS idx_license_resend_time ON license_resend_requests(requested_at);
 	`
 	if _, err := e.db.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	if err := e.ensureResendSendsColumn(ctx); err != nil {
 		return err
 	}
 	if err := e.classifyLegacyTrialSlots(ctx); err != nil {
 		return err
 	}
 	return e.backfillActiveTrialSlots(ctx)
+}
+
+// ensureResendSendsColumn adds license_resend_requests.sends to a table
+// created before the column existed. It follows the same attempt-then-inspect
+// shape as classifyLegacyTrialSlots so two starting processes cannot both fail.
+func (e *EntitlementDB) ensureResendSendsColumn(ctx context.Context) error {
+	// The column add and the backfill commit together, so an interrupted
+	// startup cannot leave the column present with legacy rows still counted
+	// as one email each. Rows written before the column existed recorded one
+	// row per request, and a request could send up to the per-request cap, so
+	// they are counted at the cap: an upgrade cannot admit more than the
+	// hourly budget.
+	execErr := func() (err error) {
+		tx, err := e.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err != nil {
+				_ = tx.Rollback()
+			}
+		}()
+		if _, err = tx.ExecContext(ctx,
+			`ALTER TABLE license_resend_requests ADD COLUMN sends INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx,
+			`UPDATE license_resend_requests SET sends = ?`, resendMaxLicensesPerRequest); err != nil {
+			return fmt.Errorf("count legacy license resend rows at the cap: %w", err)
+		}
+		return tx.Commit()
+	}()
+	if execErr == nil {
+		return nil
+	}
+	var present bool
+	if err := e.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pragma_table_info('license_resend_requests') WHERE name = 'sends')`,
+	).Scan(&present); err != nil {
+		return fmt.Errorf("inspect license resend sends column after add failed: %w", errors.Join(execErr, err))
+	}
+	if !present {
+		return fmt.Errorf("add license resend sends column: %w", execErr)
+	}
+	return nil
 }
 
 // classifyLegacyTrialSlots makes the one-time judgement needed for rows that

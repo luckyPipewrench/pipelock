@@ -23,6 +23,47 @@ import (
 
 const containMetricsListen = "127.0.0.1:9091"
 
+// agentListenerFromConfigBytes reads the managed listener without resolving
+// unrelated runtime files. An invalid declaration must not remove its guard.
+func agentListenerFromConfigBytes(data []byte) (string, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if errors.Is(err, io.EOF) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("parse managed config: %w", err)
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return "", errors.New("managed config must be a YAML mapping")
+	}
+	var fields struct {
+		Containment struct {
+			AgentListener string `yaml:"agent_listener"`
+		} `yaml:"containment"`
+	}
+	if err := mapping.Decode(&fields); err != nil {
+		return "", fmt.Errorf("decode containment.agent_listener: %w", err)
+	}
+	listener := fields.Containment.AgentListener
+	if listener == "" {
+		return "", nil
+	}
+	host, portText, err := net.SplitHostPort(listener)
+	if err != nil {
+		return "", fmt.Errorf("containment.agent_listener: %w", err)
+	}
+	ip := net.ParseIP(host)
+	port, err := strconv.Atoi(portText)
+	if ip == nil || !ip.IsLoopback() || err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("containment.agent_listener %q must be a numeric loopback address with a valid port", listener)
+	}
+	if ip.To4() != nil && strings.Contains(host, ":") {
+		return "", fmt.Errorf("containment.agent_listener %q uses an IPv4-mapped IPv6 address; write it as 127.0.0.1", listener)
+	}
+	return listener, nil
+}
+
 type migratedConfigArtifact struct {
 	path string
 	dir  bool

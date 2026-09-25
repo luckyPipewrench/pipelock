@@ -12,6 +12,24 @@ license that grants the `fleet` feature.
 
 The license service keeps `GET /health` as unconditional liveness, while `GET /ready` reports whether a Polar provider read has succeeded within `PROVIDER_SUCCESS_WINDOW` (default `15m`). Point readiness probes at `/ready` and liveness probes at `/health` so a provider outage removes the pod from service without restarting it.
 
+## License recovery
+
+A customer who lost their license email can ask the service to send it again. The endpoint is off by default; set `SELF_SERVE_RESEND_ENABLED=true` to expose `POST /v1/license/resend`.
+
+```bash
+curl -sS -X POST https://licenses.vendor.example/v1/license/resend \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"buyer@vendor.example"}'
+```
+
+What this does: queues a lookup and returns `202 Accepted` with the same body whether or not the address has a license. For every active, unexpired, unrevoked license whose persisted issuance is on record for that address, the service re-sends the existing token to the address on record. It never mints a new token, never moves an expiry, and never sends anything to an address other than the one stored for the license. An HTML form posting an `email` field works too. When `SELF_SERVE_RESEND_RETURN_URL` is set to an absolute `https` URL, a form submission is redirected there instead of receiving the plain-text reply.
+
+Admitted requests are limited per address (one per 15 minutes, three per 24 hours). One admitted request re-sends up to 10 qualifying licenses for that address, and every email it sends counts against a service-wide budget of 60 per hour. The limits live in the service database, so a restart does not reset them. Each license is recorded as `license_resend_requested` in the audit ledger before it is sent, and is not sent if that entry cannot be written; completion is recorded as `license_resent` and a limiter refusal as `license_resend_throttled`. The caller cannot see any of these.
+
+When the pending-request queue is full, or the service is shutting down, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service drains accepted requests while the shutdown deadline permits. Requests still queued or running when the deadline expires may be abandoned.
+
+Each caller may make five requests per 15 minutes before anything is queued or looked up; more get `429 Too Many Requests` with `Retry-After`, which depends only on the caller. The caller is the connection's remote address. When the service is reachable only through an ingress that records the client address in a header, set `SELF_SERVE_RESEND_CLIENT_IP_HEADER` to that header; the last comma-separated value is used, because the ingress appends it and the caller cannot. Do not set it when callers can reach the service directly, or they can choose their own identity. A per-client limit at the ingress is still a sensible second layer.
+
 ## Feature Mapping
 
 The license service maps commercial tiers to runtime feature flags in

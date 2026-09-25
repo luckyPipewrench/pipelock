@@ -186,7 +186,7 @@ func containedLaunchIdentityVars(agentUserName, homeDir string) []contractVar {
 // silently falling back to the default path (and grading containment UNKNOWN)
 // when --posture-output points elsewhere. An empty value falls back to the
 // default proof path.
-func containLaunchEnv(agentUserName, homeDir string, proxyPort int, postureProofPath string) []string {
+func containLaunchEnv(agentUserName, homeDir string, proxyPort int, postureProofPath, display string) []string {
 	var env []string
 	for _, v := range containedLaunchIdentityVars(agentUserName, homeDir) {
 		env = append(env, v.name+"="+v.value)
@@ -199,6 +199,7 @@ func containLaunchEnv(agentUserName, homeDir string, proxyPort int, postureProof
 		env = append(env, v.name+"="+v.value)
 	}
 	env = append(env, posturebinding.RuntimeProofEnv+"="+resolvedPostureProofPath(postureProofPath))
+	env = append(env, "DISPLAY="+display)
 	env = append(env, "PATH="+agentExecPath(agentUserName))
 	return env
 }
@@ -276,10 +277,23 @@ func launchExecEnvLines(env *installEnv) []string {
 	}
 	lines = append(lines,
 		"    "+posturebinding.RuntimeProofEnv+`="${`+posturebinding.RuntimeProofEnv+":-"+posturebinding.DefaultContainRunProofPath+`}" \`,
+		`    DISPLAY="${DISPLAY:-`+managedDisplayFallback(env)+`}" \`,
 		`    PATH="$AGENT_PATH" \`,
 		`    "$TARGET" "$@"`,
 	)
 	return lines
+}
+
+// managedDisplayFallback names the managed display used when the operator's
+// own DISPLAY is unset. plk-launch runs under `env -i`, so DISPLAY is unset
+// on every invocation regardless of what a login shell exported; the
+// operator's value is recovered by contain run / the contained-launch
+// wrapper passing DISPLAY through explicitly before this script execs.
+func managedDisplayFallback(env *installEnv) string {
+	if env.displayEnabled {
+		return displayName(env.displayNumber)
+	}
+	return ""
 }
 
 // renderProfileScript renders /etc/profile.d/pipelock-contain.sh. Sourced by

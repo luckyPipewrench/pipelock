@@ -974,3 +974,17 @@ func TestVerificationParsersRejectIncompleteSafetyEvidence(t *testing.T) {
 		}
 	})
 }
+
+func TestProbesForEnvNilStatKeepsDisplayDefault(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("containment:\n  display: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := &probeEnv{configPath: configPath, stat: nil}
+	for _, p := range probesForEnv(env) {
+		if p.name == "agent_display" {
+			return
+		}
+	}
+	t.Fatal("nil stat omitted the Xvfb-default agent_display probe")
+}

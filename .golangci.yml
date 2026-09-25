@@ -63,6 +63,22 @@ linters:
       - path: internal/mcp/fdexec_linux_test\.go
         linters: [gosec]
         text: "G302|G306"
+      # Containment install tests make the staged Pipelock binary executable,
+      # as the installed binary must be, so 0600 or less cannot express it.
+      - path: internal/cli/contain/install_review_fixes_test\.go
+        linters: [gosec]
+        text: "G302"
+      # The published-service probe test widens the endpoint socket to 0666 to
+      # prove the probe rejects a socket other users can connect to. The socket
+      # lives in the test's own temporary directory.
+      - path: internal/cli/contain/published_services_test\.go
+        linters: [gosec]
+        text: "G302"
+      # The unit validation test runs the fixed systemd-analyze program over
+      # unit files the test itself rendered into its temporary directory.
+      - path: internal/cli/contain/network_namespace_test\.go
+        linters: [gosec]
+        text: "G204"
       # File-sentry coverage tests make a directory unreadable to prove the
       # arming and doctor paths report an inaccessible subtree, then restore
       # traversal so the temporary-directory cleanup can delete it. Restoring

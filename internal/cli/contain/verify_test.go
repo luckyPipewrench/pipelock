@@ -577,6 +577,13 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "skuid drop rule",
 		},
 		{
+			name:       "stale owned-loopback mark is a failure",
+			stdout:     strings.Replace(goodNFTContainmentOutput, "\t\tmeta skuid 987 drop", "\t\tmeta skuid 987 oifname \"lo\" ip daddr 127.0.0.1 socket cgroupv2 level 1 \"pipelock_contained.slice\" ct state new ct mark set 0x504c4b01 accept # handle 70\n\t\tmeta skuid 987 drop", 1),
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "stale owned-loopback cgroup mark rule",
+		},
+		{
 			name: "established server reply remains compatible",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
@@ -2599,7 +2606,7 @@ func TestAgentUIDBareAcceptBeforeDrop(t *testing.T) {
 	}
 
 	uids := containmentUIDs{proxyUID: 988, agentUID: agentUID}
-	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort, nil) {
+	if chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{"meta skuid 12345 accept", "meta skuid 987 drop"}, uids, defaultProxyPort) {
 		t.Fatal("a terminal rule owned by another UID cannot admit agent packets and must not be flagged")
 	}
 }
@@ -3356,9 +3363,9 @@ func TestRunVerify_EnforcementOnlySkipsProxyLiveness(t *testing.T) {
 	env := allPassEnv(t)
 	var systemdCalled bool
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name == testSystemctl {
+		if name == testSystemctl && containsArg(args, testService) {
 			systemdCalled = true
-			return "", 1, errors.New("systemd should not run in enforcement-only mode")
+			return "", 1, errors.New("pipelock service liveness should not run in enforcement-only mode")
 		}
 		return defaultRunForAllPass(name, args)
 	}
@@ -3634,7 +3641,7 @@ func TestRunVerify_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 			}
 			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 				switch {
-				case name == testSystemctl:
+				case name == testSystemctl && containsArg(args, testService):
 					return "", -1, errors.New("systemctl unavailable")
 				case name == testSudoCmd && containsArg(args, testOperatorUser) && containsArg(args, curlPath):
 					return "curl: (22) HTTP 500", 22, nil
@@ -3932,9 +3939,21 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.browserCATrust = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test NSS browser CA trust passed"
 	}
+	env.networkNamespaceProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "test network namespace boundary passed"
+	}
+	env.agentProcessNetnsProbe = func(context.Context, *probeEnv, string) (string, string) {
+		return statusPass, "test live agent process namespaces passed"
+	}
 	env.operatorUser = testOperatorUser
 	env.nftRulesPath = filepath.Join(t.TempDir(), "50-pipelock-containment.nft")
 	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+	unitDir := t.TempDir()
+	env.networkNamespaceUnitPath = filepath.Join(unitDir, containedNetworkNamespaceUnit)
+	env.proxyForwarderSocketPath = filepath.Join(unitDir, containedProxyForwarderUnit+".socket")
+	env.proxyForwarderServicePath = filepath.Join(unitDir, containedProxyForwarderUnit+".service")
+	env.namespaceForwarderServicePath = filepath.Join(unitDir, containedNamespaceForwarderUnit)
+	env.loopbackForwarderInvPath = filepath.Join(t.TempDir(), "loopback-forwarders.json")
 
 	// Probe 1: both users present.
 	env.lookupUser = func(name string) (*user.User, error) {
@@ -4006,6 +4025,18 @@ func allPassEnv(t *testing.T) *probeEnv {
 		return defaultRunForAllPass(name, args)
 	}
 	env.readFile = func(path string) ([]byte, error) {
+		switch path {
+		case env.networkNamespaceUnitPath:
+			return []byte(renderContainedNetworkNamespaceUnit()), nil
+		case env.proxyForwarderSocketPath:
+			return []byte(renderContainedProxySocketUnit(env.agentUserName)), nil
+		case env.proxyForwarderServicePath:
+			return []byte(renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.port)), nil
+		case env.namespaceForwarderServicePath:
+			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)), nil
+		case env.loopbackForwarderInvPath:
+			return []byte("{\n  \"services\": []\n}\n"), nil
+		}
 		if path == env.configPath {
 			return []byte("metrics_listen: 127.0.0.1:9091\n"), nil
 		}
@@ -4023,9 +4054,19 @@ func allPassEnv(t *testing.T) *probeEnv {
 		if path == env.nftRulesPath {
 			return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 		}
+		if path == publishedServiceRecordPath(env.loopbackForwarderInvPath) {
+			// A host that never declared a published service has no record.
+			return nil, os.ErrNotExist
+		}
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}
 	env.readLink = func(path string) (string, error) {
+		if path == fmt.Sprintf("/proc/%d/ns/net", testServicePID) {
+			return "net:[200]", nil
+		}
+		if path == "/proc/1/ns/net" {
+			return "net:[100]", nil
+		}
 		if path != procExe {
 			return "", fmt.Errorf("unexpected readLink %s", path)
 		}
@@ -4054,6 +4095,12 @@ func allPassEnv(t *testing.T) *probeEnv {
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
 	case testSystemctl:
+		if containsArg(args, "is-enabled") {
+			return "enabled\n", 0, nil
+		}
+		if containsArg(args, "is-active") {
+			return "active\n", 0, nil
+		}
 		if containsArg(args, "--value") {
 			switch {
 			case containsArg(args, "--property=ExecStart"):
@@ -4066,6 +4113,16 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	case testNFT:
 		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:
+		// The identity-switch probe must succeed before the signing-key read
+		// probe can distinguish an unreadable key from sudo's own exit 1.
+		if containsArg(args, "test") && containsArg(args, "-e") && len(args) > 0 && args[len(args)-1] == "/" {
+			return "", 0, nil
+		}
+		// Containment posture signing must prove the managed agent cannot read
+		// the private signing key. Exit 1 is test(1)'s ordinary "not readable".
+		if containsArg(args, "test") && containsArg(args, "-r") && len(args) > 0 && strings.HasSuffix(args[len(args)-1], ".key") {
+			return "", 1, nil
+		}
 		// Probe 11: plk-launch allow-list probe invokes plk-launch with a
 		// sentinel tool name. Expect exit 5 = denial.
 		if containsArg(args, "plk-launch") || containsArg(args, probe11Sentinel) {

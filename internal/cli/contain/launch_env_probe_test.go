@@ -58,9 +58,9 @@ func TestProbeLaunchEnvAllowList(t *testing.T) {
 		},
 		{
 			name:       "an extra operator variable fails even under env -i",
-			body:       strings.Replace(canonical, "    PATH=", "    DISPLAY=\"$DISPLAY\" \\\n    PATH=", 1),
+			body:       strings.Replace(canonical, "    PATH=", "    TERM=\"$TERM\" \\\n    PATH=", 1),
 			wantStatus: statusFail,
-			wantDetail: "unexpected: DISPLAY",
+			wantDetail: "unexpected: TERM",
 		},
 		{
 			// env applies the LAST assignment of a repeated name, so a wrapper

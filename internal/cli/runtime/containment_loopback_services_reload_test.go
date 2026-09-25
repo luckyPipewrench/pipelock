@@ -385,3 +385,63 @@ func TestServer_ReloadDoesNotPromiseReconciliationForARejectedCandidate(t *testi
 		t.Errorf("an accepted change must still tell the operator to reconcile; stderr = %q", stderr.String())
 	}
 }
+
+// TestServer_ReloadWarnsOnContainmentPublishedServicesChange proves a changed
+// published_services set gets the same policy-only warning as loopback
+// services, naming the reconciliation command, and an unchanged set stays
+// silent.
+func TestServer_ReloadWarnsOnContainmentPublishedServicesChange(t *testing.T) {
+	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	metricsAddr := reserveTCPAddress(t, "127.0.0.1")
+	configWithPublication := func(port int) string {
+		return "mode: balanced\n" +
+			"metrics_listen: " + metricsAddr + "\n" +
+			"containment:\n" +
+			"  published_services:\n" +
+			"  - name: viewer\n" +
+			"    agent_port: " + strconv.Itoa(port) + "\n" +
+			"    operator_user: operator\n" +
+			"    owner: ops-team\n" +
+			"    reason: view the agent browser\n" +
+			"    expires_at: " + expiresAt + "\n"
+	}
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, configWithPublication(8075)),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            stderr,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(s.cleanup)
+
+	const wantWarning = "containment.published_services changed"
+	stderr.reset()
+	changed, err := loadServerTestConfig(t, configWithPublication(8076))
+	if err != nil {
+		t.Fatalf("load changed config: %v", err)
+	}
+	if err := s.Reload(changed); err != nil {
+		t.Fatalf("Reload with a changed publication must not be rejected: %v", err)
+	}
+	if !stderr.contains(wantWarning) || !stderr.contains("pipelock contain reload-nft-rules") {
+		t.Fatalf("stderr = %q, want a warning naming %q and the reload command", stderr.String(), wantWarning)
+	}
+
+	stderr.reset()
+	unchanged, err := loadServerTestConfig(t, configWithPublication(8076))
+	if err != nil {
+		t.Fatalf("load unchanged config: %v", err)
+	}
+	if err := s.Reload(unchanged); err != nil {
+		t.Fatalf("Reload with an unchanged publication: %v", err)
+	}
+	if stderr.contains(wantWarning) {
+		t.Fatalf("stderr = %q, an unchanged publication must not warn", stderr.String())
+	}
+}

@@ -6,6 +6,8 @@ package config
 import (
 	"fmt"
 	"net"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +34,91 @@ func ValidateContainmentMetricsListen(listen string, proxyPort int) error {
 // lifecycle. It is kept separate from ordinary proxy configuration because
 // the containment runtime owns the kernel boundary around the agent.
 type ContainmentConfig struct {
-	MetricsExposure  *ContainmentMetricsExposure  `yaml:"metrics_exposure"`
-	LoopbackServices []ContainmentLoopbackService `yaml:"loopback_services"`
+	MetricsExposure   *ContainmentMetricsExposure   `yaml:"metrics_exposure"`
+	LoopbackServices  []ContainmentLoopbackService  `yaml:"loopback_services"`
+	PublishedServices []ContainmentPublishedService `yaml:"published_services"`
+	Display           ContainmentDisplay            `yaml:"display"`
+	// AgentListener names the per-agent listener the containment doorway
+	// delivers the contained agent's traffic to, e.g. "127.0.0.1:8889". It
+	// must be one of the listeners declared under agents.<name>.listeners, so
+	// the proxy attributes that traffic to the profile bound to the listener.
+	// Only processes inside the agent's network namespace can reach the
+	// doorway and only Pipelock's relay dials the listener, so the binding
+	// cannot be claimed by another local client or forged from inside the
+	// namespace. Empty keeps the shared proxy listener.
+	AgentListener string `yaml:"agent_listener,omitempty"`
+}
+
+// ValidateContainmentAgentListener checks containment.agent_listener: a
+// numeric loopback host:port that is not the shared proxy listener and that
+// exactly matches a declared agents.<name>.listeners entry. An address no
+// profile binds would attribute the agent to nothing.
+func ValidateContainmentAgentListener(listener string, agents map[string]AgentProfile, proxyPort int) error {
+	if listener == "" {
+		return nil
+	}
+	host, portText, err := net.SplitHostPort(listener)
+	if err != nil {
+		return fmt.Errorf("containment.agent_listener %q: %w", listener, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("containment.agent_listener %q must use a numeric loopback address (127.0.0.1 or ::1)", listener)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("containment.agent_listener %q has an invalid port", listener)
+	}
+	if port == proxyPort {
+		return fmt.Errorf("containment.agent_listener %q is the shared proxy port; omit agent_listener to keep the shared listener", listener)
+	}
+	want := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	for _, profile := range agents {
+		for _, declared := range profile.Listeners {
+			dHost, dPort, splitErr := net.SplitHostPort(declared)
+			if splitErr != nil {
+				continue
+			}
+			if dIP := net.ParseIP(dHost); dIP != nil && net.JoinHostPort(dIP.String(), dPort) == want {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("containment.agent_listener %q is not declared under any agents.<name>.listeners; declare it on the contained agent's profile", listener)
+}
+
+// ContainmentDisplay configures the private Xvfb display installed for the
+// contained agent.
+//
+// Enabled is a POINTER so an omitted value is distinguishable from an
+// explicit false. Omitted means "provision where it is possible": a
+// contained agent cannot run a browser without a display, the browser tools
+// agents actually use have no headless mode, and requiring an operator to
+// discover this knob means the capability silently does not work out of the
+// box. An explicit false still turns it off, and a host without Xvfb
+// installed is left alone rather than failing its install.
+type ContainmentDisplay struct {
+	Enabled *bool `yaml:"enabled"`
+	Number  *int  `yaml:"number"`
+}
+
+// IsEnabled resolves the three states: explicitly on, explicitly off, and
+// omitted. Only the omitted case consults the host, and it provisions
+// exactly where a display can actually be created.
+func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
+	if d.Enabled != nil {
+		return *d.Enabled
+	}
+	return xvfbPresent
+}
+
+// EffectiveNumber returns the configured display number, or the conventional
+// fallback used when display provisioning is enabled.
+func (d ContainmentDisplay) EffectiveNumber() int {
+	if d.Number == nil {
+		return 99
+	}
+	return *d.Number
 }
 
 // ContainmentLoopbackService declares a second loopback destination the
@@ -203,6 +288,147 @@ func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, 
 			// detail, an operator's terminal) can still tell WHICH declared
 			// service is unusable without cross-referencing the index.
 			return fmt.Errorf("%s:%d (owner=%s): %w", host, svc.Port, svc.Owner, err)
+		}
+	}
+	return nil
+}
+
+// ContainmentPublishedService declares INBOUND publication of one listener the
+// contained agent runs on its own namespace loopback to a host endpoint the
+// operator can connect to. It is the inbound sibling of
+// ContainmentLoopbackService and carries the same owner/reason/expiry
+// lifecycle, so the doorway closes on expiry or removal without another
+// install.
+//
+// Everything that crosses this doorway is agent-controlled in both
+// directions: the agent chooses what the operator sees, and it sees whatever
+// the operator sends. Pipelock provides the doorway only, never a viewer or
+// remote access.
+type ContainmentPublishedService struct {
+	Name         string `yaml:"name"`
+	AgentHost    string `yaml:"agent_host"`
+	AgentPort    int    `yaml:"agent_port"`
+	HostSocket   string `yaml:"host_socket"`
+	OperatorUser string `yaml:"operator_user"`
+	HostListen   string `yaml:"host_listen"`
+	Owner        string `yaml:"owner"`
+	Reason       string `yaml:"reason"`
+	ExpiresAt    string `yaml:"expires_at"`
+}
+
+// ContainmentPublishedSocketDir holds the default published-service sockets.
+// It is deliberately NOT under /run/pipelock-contain: that directory is the
+// namespace holder's RuntimeDirectory, which systemd deletes whenever the
+// holder stops, and a socket unlinked out from under its listener can never
+// be reached again.
+const ContainmentPublishedSocketDir = "/run/pipelock-contain-published"
+
+// ValidPublishedServiceName reports whether name is usable as a published
+// service name, and so inside a systemd unit name and a socket path. Callers
+// that read back state Pipelock wrote use it so a tampered inventory cannot
+// name a unit outside the managed set.
+func ValidPublishedServiceName(name string) bool {
+	return publishedServiceNamePattern.MatchString(name)
+}
+
+// EffectiveAgentHost returns the in-namespace address being published.
+func (s ContainmentPublishedService) EffectiveAgentHost() string {
+	if s.AgentHost == "" {
+		return "127.0.0.1"
+	}
+	return s.AgentHost
+}
+
+// EffectiveHostSocket returns the host unix socket path for the publication.
+func (s ContainmentPublishedService) EffectiveHostSocket() string {
+	if s.HostSocket == "" {
+		return ContainmentPublishedSocketDir + "/" + s.Name + ".sock"
+	}
+	return s.HostSocket
+}
+
+var (
+	publishedServiceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	// A POSIX portable user name as useradd(8) accepts it by default.
+	publishedOperatorUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	// systemd.socket(5) ListenStream= takes the path verbatim; restricting the
+	// character set keeps the rendered unit and the validated value identical.
+	publishedSocketPathPattern = regexp.MustCompile(`^/run/[A-Za-z0-9._/-]+\.sock$`)
+)
+
+// ValidateContainmentPublishedServices enforces the declared-exception
+// lifecycle for every containment.published_services entry. loopback is the
+// declared outbound list, used only to refuse port collisions: a published
+// agent_port would collide with the in-namespace listener a declared loopback
+// service reserves, and a host_listen port with the host service that
+// declaration forwards to.
+func ValidateContainmentPublishedServices(services []ContainmentPublishedService, loopback []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+	reserved := make(map[int]string)
+	reserved[proxyPort] = "the agent-accessible proxy port"
+	for _, svc := range loopback {
+		reserved[svc.Port] = "a declared containment.loopback_services port"
+	}
+	names := map[string]struct{}{}
+	agentPorts := map[int]struct{}{}
+	sockets := map[string]struct{}{}
+	hostPorts := map[int]struct{}{}
+	for i, svc := range services {
+		field := fmt.Sprintf("containment.published_services[%d]", i)
+		if !publishedServiceNamePattern.MatchString(svc.Name) {
+			return fmt.Errorf("%s.name %q must be 1-32 lowercase letters, digits, or hyphens starting with a letter or digit", field, svc.Name)
+		}
+		if _, dup := names[svc.Name]; dup {
+			return fmt.Errorf("%s.name %q is declared more than once", field, svc.Name)
+		}
+		names[svc.Name] = struct{}{}
+		if svc.AgentHost != "" && svc.AgentHost != "127.0.0.1" && svc.AgentHost != "::1" {
+			return fmt.Errorf("%s.agent_host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace", field, svc.AgentHost)
+		}
+		if svc.AgentPort < 1 || svc.AgentPort > 65535 {
+			return fmt.Errorf("%s.agent_port %d must be between 1 and 65535", field, svc.AgentPort)
+		}
+		if what, taken := reserved[svc.AgentPort]; taken {
+			return fmt.Errorf("%s.agent_port %d collides with %s", field, svc.AgentPort, what)
+		}
+		if _, dup := agentPorts[svc.AgentPort]; dup {
+			return fmt.Errorf("%s.agent_port %d is already published by another entry", field, svc.AgentPort)
+		}
+		agentPorts[svc.AgentPort] = struct{}{}
+		if svc.HostSocket != "" {
+			if !publishedSocketPathPattern.MatchString(svc.HostSocket) || filepath.Clean(svc.HostSocket) != svc.HostSocket {
+				return fmt.Errorf("%s.host_socket %q must be a clean absolute path under /run/ ending in .sock", field, svc.HostSocket)
+			}
+			if strings.HasPrefix(filepath.Base(svc.HostSocket), "pipelock-agent-") || strings.HasPrefix(svc.HostSocket, "/run/pipelock-contain/") {
+				return fmt.Errorf("%s.host_socket %q is reserved for Pipelock's own containment doorways", field, svc.HostSocket)
+			}
+		}
+		socket := svc.EffectiveHostSocket()
+		if _, dup := sockets[socket]; dup {
+			return fmt.Errorf("%s.host_socket %q is already used by another entry", field, socket)
+		}
+		sockets[socket] = struct{}{}
+		if !publishedOperatorUserPattern.MatchString(svc.OperatorUser) {
+			return fmt.Errorf("%s.operator_user %q must name the one local user allowed to connect", field, svc.OperatorUser)
+		}
+		if svc.HostListen != "" {
+			host, portText, err := net.SplitHostPort(svc.HostListen)
+			if err != nil || (host != "127.0.0.1" && host != "::1") {
+				return fmt.Errorf("%s.host_listen %q must be 127.0.0.1:<port> or [::1]:<port>", field, svc.HostListen)
+			}
+			port, err := strconv.Atoi(portText)
+			if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != portText {
+				return fmt.Errorf("%s.host_listen %q has an invalid port", field, svc.HostListen)
+			}
+			if what, taken := reserved[port]; taken {
+				return fmt.Errorf("%s.host_listen port %d collides with %s", field, port, what)
+			}
+			if _, dup := hostPorts[port]; dup {
+				return fmt.Errorf("%s.host_listen port %d is already used by another entry", field, port)
+			}
+			hostPorts[port] = struct{}{}
+		}
+		if err := validateContainmentExceptionLifecycle(field, svc.Owner, svc.Reason, svc.ExpiresAt, now); err != nil {
+			return fmt.Errorf("published service %s (owner=%s): %w", svc.Name, svc.Owner, err)
 		}
 	}
 	return nil

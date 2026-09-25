@@ -114,6 +114,64 @@ func runBrowserCertutil(ctx context.Context, run runCommand, family string, args
 	return out, nil
 }
 
+// nssNicknames returns every nickname in a `certutil -L` listing, in order.
+// The listing is a two-column table whose trust column always carries exactly
+// two commas, which is what separates a real row from the header and from the
+// blank continuation line.
+func nssNicknames(out string) []string {
+	var names []string
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		trust := fields[len(fields)-1]
+		if strings.Count(trust, ",") != 2 {
+			continue
+		}
+		if name := strings.TrimSpace(strings.TrimSuffix(line, trust)); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// foreignNicknameForCA reports a nickname, other than the managed one, that
+// already holds this exact certificate.
+//
+// NSS will not create a second nickname for a certificate whose DER is already
+// in the database: `certutil -A` exits 0 having added nothing. Without this
+// check the install adds nothing, then fails its own post-add assertion with a
+// message saying the CA is not trusted, while `certutil -L` plainly shows it
+// trusted under the operator's own name. That happened on a real host whose
+// operator had trusted the CA by hand before this step existed.
+func foreignNicknameForCA(ctx context.Context, run runCommand, family, db, wantFingerprint string) (string, error) {
+	out, err := runBrowserCertutil(ctx, run, family, "-d", "sql:"+db, "-L")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range nssNicknames(out) {
+		if name == browserCANSSNickname {
+			continue
+		}
+		pemOut, err := runBrowserCertutil(ctx, run, family, "-d", "sql:"+db, "-L", "-n", name, "-a")
+		if err != nil {
+			// A nickname we cannot export is not evidence either way; keep
+			// looking rather than failing the install on an unrelated entry.
+			continue
+		}
+		fingerprint, err := firstCertFingerprint([]byte(pemOut))
+		if err != nil {
+			continue
+		}
+		if fingerprint == wantFingerprint {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
 func managedTrustFromList(out string) (string, bool) {
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(raw)
@@ -279,6 +337,17 @@ func establishAgentBrowserCATrust(ctx context.Context, env *installEnv) (bool, e
 			}
 			_, err = markerOwnedBy(env, db, fingerprint)
 			return false, err
+		}
+		foreign, err := foreignNicknameForCA(ctx, env.runCmd, env.platformFamily, db, fingerprint)
+		if err != nil {
+			return false, err
+		}
+		if foreign != "" {
+			return false, fmt.Errorf(
+				"the Pipelock CA is already trusted in %s under nickname %q, which this install did not create; "+
+					"NSS will not add the same certificate a second time, so containment cannot manage its own trust entry. "+
+					"Remove the existing entry and rerun install: certutil -D -d sql:%s -n %q",
+				db, foreign, db, foreign)
 		}
 	} else if _, err := runBrowserCertutil(ctx, env.runCmd, env.platformFamily, "-d", "sql:"+db, "-N", "--empty-password"); err != nil {
 		return true, fmt.Errorf("initialize NSS database %s: %w", db, err)

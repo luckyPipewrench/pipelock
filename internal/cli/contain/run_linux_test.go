@@ -399,7 +399,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr == nil {
 		t.Fatal("command stdio was not wired through")
 	}
-	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)
+	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof, "")
 	for _, entry := range wantEnv {
 		if !strings.Contains(args, "--setenv="+entry) {
 			t.Fatalf("args = %q, missing runtime environment %q", args, entry)

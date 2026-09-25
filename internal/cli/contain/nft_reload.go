@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +34,6 @@ type nftReloadEnv struct {
 	reconcileLockPath string
 	table             string
 	chain             string
-	ownedLoopback     bool
 	runCmd            runCommand
 	readFile          func(string) ([]byte, error)
 	writeFile         func(string, []byte, os.FileMode) error
@@ -62,7 +63,12 @@ type nftReloadEnv struct {
 	// held. Test-only: lets a race test deterministically widen the window
 	// between snapshot and apply to prove a concurrent `contain install`
 	// blocks on the shared lock instead of interleaving.
-	pauseAfterSnapshot func()
+	pauseAfterSnapshot  func()
+	reconcileForwarders func(context.Context, int, []config.ContainmentLoopbackService) error
+	// reconcilePublished closes, opens, or re-renders published agent
+	// services. Reload always runs it so an expired or removed publication
+	// is closed without another contain install.
+	reconcilePublished func(context.Context, []config.ContainmentPublishedService) error
 }
 
 var (
@@ -79,7 +85,6 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 		reconcileLockPath: containmentReconcileLockPathFor(defaultNFTRulesPath),
 		table:             defaultNFTTable,
 		chain:             defaultNFTChain,
-		ownedLoopback:     true,
 		runCmd:            realRunCommand,
 		readFile:          os.ReadFile,
 		// writeFileAtomic (temp file + fsync + rename + directory fsync in
@@ -95,7 +100,24 @@ func defaultNFTReloadEnv() *nftReloadEnv {
 			_, _ = fmt.Fprintln(os.Stderr, "WARNING: "+msg)
 		},
 		lockFn: withContainmentReconcileLock,
+		reconcileForwarders: func(ctx context.Context, proxyPort int, services []config.ContainmentLoopbackService) error {
+			installEnv := forwarderInstallEnv(proxyPort)
+			unitStep := stepInstallNetworkNamespaceWithServices(&services)
+			_, err := runSteps(ctx, installEnv, io.Discard, []step{unitStep})
+			return err
+		},
+		reconcilePublished: func(ctx context.Context, services []config.ContainmentPublishedService) error {
+			installEnv := defaultInstallEnv(io.Discard)
+			_, err := runSteps(ctx, installEnv, io.Discard, []step{stepInstallPublishedServices(&services)})
+			return err
+		},
 	}
+}
+
+func forwarderInstallEnv(proxyPort int) *installEnv {
+	env := defaultInstallEnv(io.Discard)
+	env.proxyPort = proxyPort
+	return env
 }
 
 func reloadNFTRulesCmd() *cobra.Command {
@@ -164,16 +186,12 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		return fmt.Errorf("nft rules %s is missing the managed uid header (empty or corrupt persisted rules file); rerun `pipelock contain install` to restore it", env.rulesPath)
 	}
 
-	// The persisted rules file is NOT the source of truth for declared
-	// loopback services: an operator can add, remove, or let an entry expire
-	// in the managed config without ever re-running `contain install`, and
-	// the persisted file would otherwise still carry a now-removed or
-	// now-expired accept forever. Every reload -- boot-time or the operator
-	// re-running `pipelock contain reload-nft-rules` by hand -- re-derives
-	// the managed block from the CURRENT managed config, the same reader
-	// `contain install` uses, so removed and expired entries are dropped
-	// here even if nobody re-runs install.
+	// The persisted nft file is not the source of truth for declared loopback
+	// services. Every reload snapshots the current managed config and reconciles
+	// the namespace socket forwarders, so removals and expirations take effect
+	// without another contain install.
 	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
+	publishedServices := reconcileDeclaredContainmentPublishedServicesForReload(env, header.proxyPort)
 	if env.pauseAfterSnapshot != nil {
 		env.pauseAfterSnapshot()
 	}
@@ -185,7 +203,6 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		Table:            env.table,
 		Chain:            env.chain,
 		LoopbackServices: loopbackServices,
-		OwnedLoopback:    env.ownedLoopback,
 	}))
 
 	// Persist the reconciled file FIRST, atomically, before touching the
@@ -234,66 +251,29 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 	} else if code != 0 {
 		return restoreOnFailure(fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out)))
 	}
-	// receiverChainLive records whether the receiver gate EXISTS IN THE KERNEL,
-	// which is the only thing that may decide whether the reload transaction
-	// deletes it. Deciding that from the canonical rules instead is a boot-time
-	// outage: after a reboot the ruleset is empty, the canonical file still
-	// describes the chain, and `nft delete chain` fails on a chain that is not
-	// there. That failure aborts the whole `nft -f` transaction, and since this
-	// unit is the only thing that loads containment at boot, the host comes up
-	// with no containment rule for the agent at all.
-	receiverChainLive := false
-	if env.ownedLoopback {
-		// Query the receiver chain on its OWN, not only when the OUTPUT chain
-		// is present. The two can exist independently: a partially torn-down
-		// ruleset can hold the receiver chain with no OUTPUT chain, and gating
-		// this query on `out` would then record the chain as absent, skip the
-		// delete, and try to add a base chain that is already there.
-		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, ownedLoopbackInputChain)
+	legacyReceiverLive := false
+	if legacyOwnedLoopbackOutputPresent(out) {
+		input, inputCode, inputErr := env.runCmd(ctx, env.nftPath, "-n", "list", "chain", "inet", env.table, legacyOwnedLoopbackInputChain)
 		if inputErr != nil {
-			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain: %w", inputErr))
+			return restoreOnFailure(fmt.Errorf("list legacy owned loopback receiver chain: %w", inputErr))
 		}
-		switch {
-		case inputCode == 0 && ownedLoopbackInputChainLooksManaged(input):
-			receiverChainLive = true
-		case inputCode != 0 && strings.Contains(strings.ToLower(input), "no such file"):
-			// Genuinely absent. Nothing to delete; the canonical rules create it.
-			receiverChainLive = false
-		case inputCode != 0:
-			return restoreOnFailure(fmt.Errorf("list owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input)))
-		default:
-			// Present under a name only this package creates, but not the
-			// contents this version writes. The reload rewrites the managed
-			// rules anyway and already deletes and recreates this chain in the
-			// same transaction when it is live, so treat it as live and let
-			// the canonical rules replace it. Refusing instead would wedge
-			// every reload after an upgrade, including the boot-time one.
-			receiverChainLive = true
-		}
-		// Refuse ONLY when the live OUTPUT chain already carries owned-loopback
-		// marking rules while its receiver gate is gone. That host is already
-		// fail-open and silently repairing it would tell nobody.
-		//
-		// `out != ""` alone is not that state: it only proves a managed OUTPUT
-		// chain exists, and a LEGACY chain has no marking rules at all. Gating
-		// on mere existence blocked every legacy host from ever migrating to
-		// owned loopback, because the canonical transaction that installs both
-		// the marks and the gate could never run.
-		if nftOutputHasOwnedLoopbackMarks(out, header.agentUID) && !receiverChainLive {
-			// A managed OUTPUT chain marks flows; without its receiver gate the
-			// host is already fail-open, so this is reported rather than
-			// silently repaired.
-			return restoreOnFailure(fmt.Errorf("owned loopback receiver chain %s is missing while the output chain already marks loopback flows; refusing to reload dynamic loopback rules", ownedLoopbackInputChain))
+		if inputCode == 0 {
+			legacyReceiverLive = true
+		} else if !strings.Contains(strings.ToLower(input), "no such file") {
+			return restoreOnFailure(fmt.Errorf("list legacy owned loopback receiver chain exit=%d: %s", inputCode, oneLine(input)))
 		}
 	}
-	if !fileChanged && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
+	if !fileChanged && !legacyReceiverLive && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
+		if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
+			return err
+		}
 		if env.report != nil {
 			env.report(nftReloadOutcome(false, 0, false, false))
 		}
 		return nil
 	}
 	managedHandles := legacyManagedNFTRuleBlockHandles(out, header.operatorUID, header.proxyUID, header.agentUID)
-	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID, receiverChainLive)
+	script := renderNFTManagedChainReloadScript(out, string(rules), env.table, env.chain, header.operatorUID, header.proxyUID, header.agentUID, legacyReceiverLive)
 	path := env.rulesPath + ".reload"
 	if err := env.writeFile(path, []byte(script), modeConfigSecret); err != nil {
 		return restoreOnFailure(fmt.Errorf("write nft managed chain reload file %s: %w", path, err))
@@ -311,10 +291,36 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
+	if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
+		return fmt.Errorf("nft boundary is current but %w", err)
+	}
 	if env.report != nil {
 		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == "", true))
 	}
 	return nil
+}
+
+// reconcileNamespaceDoorways reconciles both declared doorway kinds and
+// attempts each even when the other fails: a failing loopback forwarder must
+// not keep an expired publication open, and the reverse.
+func reconcileNamespaceDoorways(ctx context.Context, env *nftReloadEnv, proxyPort int, loopback []config.ContainmentLoopbackService, published []config.ContainmentPublishedService) error {
+	var errs []error
+	if env.reconcileForwarders != nil {
+		if err := env.reconcileForwarders(ctx, proxyPort, loopback); err != nil {
+			errs = append(errs, fmt.Errorf("namespace loopback forwarders failed to reconcile: %w", err))
+		}
+	}
+	if env.reconcilePublished != nil {
+		if err := env.reconcilePublished(ctx, published); err != nil {
+			errs = append(errs, fmt.Errorf("published services failed to reconcile: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func legacyOwnedLoopbackOutputPresent(live string) bool {
+	return strings.Contains(live, "ct mark set 0x504c4b01") &&
+		strings.Contains(live, `socket cgroupv2 level 1 "pipelock_contained.slice"`)
 }
 
 // partialManagedNFTBlockLength recovers a managed block whose declared-service
@@ -478,8 +484,8 @@ func canonicalManagedNFTLine(line string) string {
 }
 
 // reconcileDeclaredContainmentLoopbackServicesForReload resolves the
-// declared loopback services this reload should render, from the managed
-// config rather than the stale persisted rules file. On any failure to
+// declared loopback services whose namespace forwarders this reload should
+// reconcile, from the managed config rather than stale runtime state. On any failure to
 // read, parse, or validate the declaration -- unreadable managed config,
 // malformed YAML, or an expired/malformed entry -- it fails closed by
 // returning zero declared services (the agent stays contained and only
@@ -527,26 +533,89 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 // block preserves interleaved and standalone foreign rules, including narrow
 // established-reply allows.
 func renderNFTManagedChainReloadScript(live, rulesBody, table, chain string, operatorUID, proxyUID, agentUID int, receiverChainLive bool) string {
-	handles := legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID)
+	// A superseded owned-loopback rule can be found both inside a managed block
+	// and by the standalone scan. Deleting one handle twice fails the whole
+	// atomic nft transaction, so each handle is emitted once, in chain order.
+	handles := slices.Concat(legacyManagedNFTRuleBlockHandles(live, operatorUID, proxyUID, agentUID), legacyOwnedLoopbackMarkRuleHandles(live, agentUID))
+	slices.Sort(handles)
+	handles = slices.Compact(handles)
 	var script strings.Builder
-	if receiverChainLive && strings.Contains(rulesBody, "chain "+ownedLoopbackInputChain+" {") {
-		// A dynamic loopback update must replace the receiver gate in the
-		// same nft transaction as the OUTPUT rules. Leaving the old input
-		// chain in place would duplicate base chains; omitting this deletion
-		// would make a changed cgroup rule fail to load rather than silently
-		// widening it.
-		// Flush first: nftables refuses to delete a chain that still holds
-		// rules, and the receiver gate always does. A bare delete makes the
-		// `nft -c` preflight reject the transaction, which on the boot path
-		// means the host comes up with no containment at all.
-		_, _ = fmt.Fprintf(&script, "flush chain inet %s %s\n", table, ownedLoopbackInputChain)
-		_, _ = fmt.Fprintf(&script, "delete chain inet %s %s\n", table, ownedLoopbackInputChain)
+	if receiverChainLive {
+		// The cgroup receiver design is replaced, not layered beside the
+		// namespace boundary. Flush before delete because nft rejects deletion
+		// of a non-empty chain; keep both operations in the same validated
+		// transaction as the OUTPUT rewrite.
+		_, _ = fmt.Fprintf(&script, "flush chain inet %s %s\n", table, legacyOwnedLoopbackInputChain)
+		_, _ = fmt.Fprintf(&script, "delete chain inet %s %s\n", table, legacyOwnedLoopbackInputChain)
 	}
 	for _, handle := range handles {
 		_, _ = fmt.Fprintf(&script, "delete rule inet %s %s handle %d\n", table, chain, handle)
 	}
 	script.WriteString(rulesBody)
 	return script.String()
+}
+
+// legacyOwnedLoopbackMarkRuleHandles finds only the superseded cgroup-mark
+// rules. They can remain after an interrupted upgrade whose receiver chain was
+// already removed, and are no longer meaningful under the namespace boundary.
+func legacyOwnedLoopbackMarkRuleHandles(live string, agentUID int) []int {
+	var handles []int
+	for _, rule := range nftRulesWithHandles(live) {
+		if !lineIsLegacyOwnedLoopbackRule(rule.line, agentUID) {
+			continue
+		}
+		handles = append(handles, rule.handle)
+	}
+	return handles
+}
+
+// lineIsLegacyOwnedLoopbackRule matches any of the four rules the cgroup
+// loopback design rendered: the IPv4 and IPv6 marking accepts, and the two
+// established accepts keyed on that mark.
+func lineIsLegacyOwnedLoopbackRule(line string, agentUID int) bool {
+	return lineHasLegacyOwnedLoopbackMark(line, agentUID) || lineHasLegacyOwnedLoopbackEstablished(line)
+}
+
+// lineHasLegacyOwnedLoopbackEstablished matches
+// `ct mark <mark> ct state established oifname "lo" socket cgroupv2 level 1
+// "<slice>" ct direction original|reply accept`, in named or numeric form.
+func lineHasLegacyOwnedLoopbackEstablished(line string) bool {
+	fields := nftLineFields(line)
+	want := []string{"ct", "mark", legacyOwnedLoopbackMark, "ct", "state", "", "oifname", `"lo"`, "socket", "cgroupv2", "level", "1", `"` + legacyOwnedLoopbackSlice + `"`, "ct", "direction", "", "accept"}
+	if len(fields) != len(want) {
+		return false
+	}
+	for i, token := range want {
+		if token != "" && fields[i] != token {
+			return false
+		}
+	}
+	state, direction := fields[5], fields[15]
+	return (state == "established" || state == "0x2") &&
+		(direction == "original" || direction == "reply" || direction == "0" || direction == "1")
+}
+
+func lineHasLegacyOwnedLoopbackMark(line string, agentUID int) bool {
+	fields := nftLineFields(line)
+	if len(fields) != 21 || fields[0] != "meta" || fields[1] != "skuid" || fields[2] != strconv.Itoa(agentUID) ||
+		fields[3] != "oifname" || fields[4] != `"lo"` || fields[6] != "daddr" ||
+		(fields[5] != "ip" && fields[5] != "ip6") ||
+		(fields[5] == "ip" && fields[7] != "127.0.0.1") ||
+		(fields[5] == "ip6" && fields[7] != "::1") {
+		return false
+	}
+	want := []string{"socket", "cgroupv2", "level", "1", `"` + legacyOwnedLoopbackSlice + `"`, "ct", "state"}
+	for i, token := range want {
+		if fields[i+8] != token {
+			return false
+		}
+	}
+	// `nft -n` prints conntrack state as its bitmask: new is 0x8 (invalid 0x1,
+	// established 0x2, related 0x4). The reload reads the chain with -n, so the
+	// numeric form is the one that decides whether these rules are removed.
+	return (fields[15] == "new" || fields[15] == "0x8") &&
+		fields[16] == "ct" && fields[17] == "mark" && fields[18] == "set" &&
+		fields[19] == legacyOwnedLoopbackMark && fields[20] == "accept"
 }
 
 type nftRuleWithHandle struct {
@@ -606,6 +675,14 @@ func managedNFTBlockLength(rules []nftRuleWithHandle, i, operatorUID, proxyUID, 
 			return partialManagedNFTBlockLength(rules, i, loopbackStart, agentUID)
 		}
 		tailStart += 2
+	}
+	// Blocks written by the superseded cgroup loopback design carry its marking
+	// and established-mark rules here, between the service pairs and the DNS
+	// drops. They belong to the managed block and are removed with it; without
+	// this the whole block reads as foreign and a reload appends the canonical
+	// rules behind its catch-all drop, where they never match.
+	for tailStart < len(rules) && lineIsLegacyOwnedLoopbackRule(rules[tailStart].line, agentUID) {
+		tailStart++
 	}
 	if tailStart+2 >= len(rules) {
 		return 0, nil

@@ -1730,9 +1730,23 @@ containment:
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
 
+### Contained agent identity (containment)
+
+A contained agent reaches the proxy through its namespace doorway, which by default delivers to the shared proxy listener. Traffic there is attributed by the usual rules, so a profile whose `source_cidrs` covers loopback claims the contained agent along with every other local client. Set `containment.agent_listener` to one of the agent's own `agents.<name>.listeners` to deliver the doorway to that listener instead:
+
+```yaml
+agents:
+  contained-agent:
+    listeners: ["127.0.0.1:8889"]
+containment:
+  agent_listener: "127.0.0.1:8889"
+```
+
+The proxy attributes traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Processes inside the agent namespace reach the listener only through the doorway. A host-local process that can connect to the loopback port is also attributed to the profile; the listener is not an authentication boundary against host-local processes. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
+
 ### Declared loopback services (containment)
 
-The contained agent's only implicit loopback destination is the proxy port. `containment.loopback_services` declares any additional loopback TCP service the agent may reach, with the same reviewable lifecycle as `containment.metrics_exposure`:
+The contained agent runs in a private network namespace. Its own loopback listeners work on any port, while host loopback services are absent unless the operator declares them. `containment.loopback_services` declares each host loopback TCP service that Pipelock should expose as a socket inside the agent namespace:
 
 ```yaml
 containment:
@@ -1744,15 +1758,42 @@ containment:
       expires_at: 2026-12-01T00:00:00Z
 ```
 
-`host` must be a loopback literal, `127.0.0.1` or `::1`; a hostname, wildcard, or CIDR is rejected. `port` is a single TCP port (1-65535) distinct from the proxy port -- the proxy allow is implicit and does not need a declared entry. `owner`, `reason`, and `expires_at` (RFC3339, must remain in the future) are required, and an expired, malformed, duplicate, or proxy-port-colliding entry fails config validation, so `pipelock check` and `contain install` both fail closed rather than loading a ruleset that does not match the declaration.
+`host` must be `127.0.0.1` or `::1`; Pipelock rejects a hostname, wildcard, or CIDR. `port` is a single TCP port from 1 through 65535 and can't equal the proxy port. `owner`, `reason`, and a future RFC3339 `expires_at` value are required. An expired, malformed, duplicate, or proxy-port entry fails config validation.
 
-`contain install` renders each declared entry as a forward allow and a narrow established-reply allow. The reply path is limited to `lo`, the declared loopback address and source port, and reply-direction traffic.
+`contain install` creates a socket with the declared address and port inside the agent namespace. A socket-activated service in the host namespace forwards accepted connections to the same host loopback address and port. This exposes one listening socket without adding a network interface, gateway, or route.
 
-This declaration is intentionally separate from a listener created by a contained tool itself. When `contain install` has established Pipelock's owned containment slice, a tool launched through `plk-*` or `contain run` may connect to a loopback listener on any kernel-assigned TCP port only when the receiving socket is also in that slice. The nftables output hook marks the initiating flow and the input hook requires the receiving socket's slice before accepting it. A listener outside the slice, including one under the same Unix account, remains unreachable; there is no wildcard port range or blanket loopback exception.
+`pipelock contain install` warns when no TCP listener is reachable at the declared host address. The declaration is still installed because the host service may start later, but it immediately reserves the same address inside the agent namespace. Remove the declaration when the contained tool owns that port; otherwise the tool's bind fails with an address-in-use error even though no host TCP listener exists.
 
-The owned-slice anchor is created before nftables validation because nft resolves the cgroup path while loading rules. If the anchor or receiver gate is missing, unreadable, inactive, or unrecognized, Pipelock denies this dynamic path and `pipelock contain verify` names the failed control. Restore it with `sudo pipelock contain install`; editing `containment.loopback_services` cannot enable a dynamic listener.
+This declaration isn't needed for a listener that the contained tool starts. The tool and its child processes share the private namespace's loopback interface, so they can connect to a kernel-assigned port there. A listener on the host's loopback interface remains unreachable, including one owned by `pipelock-agent`.
 
-**Every add, remove, or expiry of an entry needs a reconciliation pass to reach the kernel: run `pipelock contain reload-nft-rules` as root after editing this list.** Editing the config alone is not enough -- the managed nftables chain and the persisted rules file only change on the next reconciliation, which is what that command (and the boot-time unit that runs it automatically on every boot) does. If the managed config is missing or unreadable, or the declared set as a whole contains a malformed or expired entry, reconciliation fails closed to zero declared loopback services and logs the config path and why (naming `pipelock contain install` as the recovery command for a missing config); it does not fail the reload. See "Declared loopback services" under `contain-cli.md` for how `contain install`, `contain reload-nft-rules`, and `contain verify` each honor this list.
+The built-in proxy uses a host pathname doorway: `pipelock-agent-proxy.socket` creates `/run/pipelock-agent-proxy.sock`, and the host `pipelock-agent-proxy.service` relay forwards it to the Pipelock listener. `pipelock-agent-netns-forward.service` creates the `127.0.0.1:<proxy-port>` listener inside the private namespace and connects it to the doorway. The runtime proxy URL stays `http://127.0.0.1:<proxy-port>`.
+
+Run `sudo pipelock contain reload-nft-rules` after every add, removal, or expiry. The command also reconciles the namespace socket units and their root-owned inventory. If the managed config is missing or unreadable, or the set contains a malformed or expired entry, reconciliation removes all declared forwarders and logs the reason. The base namespace and proxy socket stay active. See "Declared loopback services" in `contain-cli.md` for install, verification, and service-launch details.
+
+### Published services (containment)
+
+`containment.loopback_services` lets the agent reach a host service. `containment.published_services` works the other way: it publishes one listener that the agent runs on its own namespace loopback to one operator on the host.
+
+```yaml
+containment:
+  published_services:
+    - name: viewer
+      agent_port: 5900
+      operator_user: operator
+      owner: platform-team
+      reason: operator watches the agent's display through its own viewer
+      expires_at: 2026-12-01T00:00:00Z
+```
+
+`name` is 1 to 32 lowercase letters, digits, or hyphens and names the systemd units. `agent_host` defaults to `127.0.0.1` and may only be `127.0.0.1` or `::1`. `agent_port` can't equal the proxy port, a declared `loopback_services` port, or another publication's port. `operator_user` names the one local account allowed to connect. `owner`, `reason`, and a future RFC3339 `expires_at` value are required, with the same validation and expiry handling as `loopback_services`.
+
+By default the host endpoint is the unix socket `/run/pipelock-contain-published/<name>.sock`, owned by `operator_user` with mode `0600`, so only that account and root can connect. `host_socket` overrides the path; it must be a clean absolute path under `/run/` ending in `.sock`, and Pipelock refuses paths inside its own containment directories. `host_listen: 127.0.0.1:<port>` (or `[::1]:<port>`) adds a loopback TCP endpoint as an explicit opt-in. Any local account can connect to a TCP endpoint, so prefer the socket.
+
+A reverse proxy in front of the socket can change what the service sees. `tailscale serve unix:<path>` rewrites the request `Host` header to `localhost` and moves the original into `X-Forwarded-Host`, so a service that checks `Host` against the browser's `Origin` or `Referer` refuses every request. Point that proxy at a `host_listen` TCP endpoint instead, which keeps the original `Host`, and rely on the service's own authentication for the wider local reach.
+
+Treat everything that crosses a published service as untrusted agent content. The agent chooses what it shows the operator and sees everything the operator sends. Pipelock provides the endpoint only. It doesn't ship a viewer, and it doesn't serve the endpoint beyond the host. If you need remote access, put your own authenticated service in front of the socket.
+
+See "Published agent services" in `contain-cli.md` for install, verification, and reconciliation details.
 
 ## Kill Switch
 

@@ -398,12 +398,18 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // finding unless its destination is in request_body_scanning.trusted_hosts.
 // Trusted destinations retain request scanning and the configured action.
 // Response-scanning exemptions do not affect this request-side decision.
+// Like the critical-DLP floor, it applies only in enforcement mode: with
+// enforce: false the finding follows the configured action, so an audit-only
+// deployment observes injection instead of dropping the request.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if len(result.InjectionMatches) == 0 {
 		return false
 	}
 	if cfg == nil {
 		return true
+	}
+	if !cfg.EnforceEnabled() {
+		return false
 	}
 	// Request-side trust is its own list. The response_scanning exemptions
 	// describe inbound trust and are documented as never loosening outbound
@@ -912,6 +918,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	if !injectionResult.Clean {
 		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
 	}
+	// The per-field, in-order, and sorted scans overlap by design, so the same
+	// phrase is usually found by more than one of them. Report it once.
+	result.InjectionMatches = uniqueBodyInjectionMatches(result.InjectionMatches)
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp
@@ -1508,6 +1517,26 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 	unique := make([]scanner.TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
 		key := bodyDLPMatchKey(match)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, match)
+	}
+	return unique
+}
+
+// uniqueBodyInjectionMatches drops repeats of the same pattern on the same
+// text. Position is not part of the key because it is relative to whichever
+// scan view (single field or joined) produced the match.
+func uniqueBodyInjectionMatches(matches []scanner.ResponseMatch) []scanner.ResponseMatch {
+	if len(matches) <= 1 {
+		return matches
+	}
+	seen := make(map[string]struct{}, len(matches))
+	unique := make([]scanner.ResponseMatch, 0, len(matches))
+	for _, match := range matches {
+		key := match.PatternName + "\x00" + match.MatchText
 		if _, ok := seen[key]; ok {
 			continue
 		}

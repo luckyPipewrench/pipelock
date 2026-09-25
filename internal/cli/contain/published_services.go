@@ -752,7 +752,8 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 	if host == "::1" {
 		want["00000000000000000000000001000000"] = true
 	} else {
-		files = []string{"tcp", "tcp6"}
+		// A tcp6 wildcard may be IPv6-only; /proc does not expose IPV6_V6ONLY.
+		files = []string{"tcp"}
 		want["0100007F"] = true
 		want["00000000"] = true
 	}

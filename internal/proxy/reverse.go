@@ -1867,7 +1867,14 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	// Log the DLP finding.
 	patternNames := dlpMatchNames(result.DLPMatches)
 	injectionNames := responseMatchNames(result.InjectionMatches)
+	blockCause := blockingBodyFinding(result, rp.upstream.Hostname(), cfg)
 	reason := result.Reason
+	if reason == "" && blockCause == bodyBlockCauseEntropy {
+		reason = bodyEntropyReason(result)
+	}
+	if reason == "" && blockCause == bodyBlockCauseDLP {
+		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
+	}
 	if reason == "" && len(injectionNames) > 0 {
 		reason = fmt.Sprintf("prompt injection: %s", strings.Join(injectionNames, ", "))
 	}
@@ -1912,6 +1919,16 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		bodyBlockReason = blockreason.PromptInjection
 	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 		bodyBlockReason = blockreason.BodyEntropy
+	}
+	if result.RedactionBlockReason == "" {
+		switch blockCause {
+		case bodyBlockCauseInjection:
+			layer, bodyBlockReason = scannerLabelBodyPromptInjection, blockreason.PromptInjection
+		case bodyBlockCauseDLP:
+			layer, bodyBlockReason = "dlp", blockreason.DLPMatch
+		case bodyBlockCauseEntropy:
+			layer, bodyBlockReason = scannerLabelBodyEntropy, blockreason.BodyEntropy
+		}
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2376,7 +2393,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// replaceWithMediaBlockResponse overwrites resp.Body
 			// while the original stream is still open, leaking the
 			// upstream TCP connection.
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, nil, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
 				_ = resp.Body.Close()
@@ -2431,7 +2448,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				return nil
 			}
 			oversize := int64(len(body)) > maxRead
-			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body)
+			verdict := applyMediaPolicy(cfg, mediaCTForPolicy, body, mediaPolicyOptions{host: resp.Request.URL.Hostname()})
 			verdict = refusePartialMediaRewrite(resp.StatusCode, verdict)
 			// If oversized, synthesize a block verdict with an
 			// explicit exposure payload so the exposure event still
@@ -3068,7 +3085,7 @@ responseScanning:
 	}
 	if isSVGResponse {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
 		if verdict.Blocked && svgRefusal != "" {
 			verdict.BlockReason = svgRefusal
 		}

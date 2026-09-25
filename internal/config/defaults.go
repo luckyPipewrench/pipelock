@@ -51,6 +51,11 @@ const (
 
 // AWSAccessIDRegex is the canonical AWS access-key/user/role/policy ID shape
 // used by both default config DLP and the immutable core scanner floor.
+// URLKeywordAssignmentRegex is the built-in Credential in URL detector. A line-start
+// assignment counts only with no whitespace around '='; after '?', '&' or ';'
+// whitespace is tolerated because decoded query strings are the target.
+const URLKeywordAssignmentRegex = `(?m)(?:^\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[A-Za-z0-9_+/=~%.-][^\s&;]{3,}|[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,})`
+
 const AWSAccessIDRegex = `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`
 
 const (
@@ -240,6 +245,33 @@ const (
 
 const defaultGoogleDocsPathPrefix = "/document/d/"
 
+const (
+	defaultCloudflareChallengeHost       = "challenges.cloudflare.com"
+	defaultCloudflareChallengePathPrefix = "/cdn-cgi/challenge-platform/"
+)
+
+// ShippedPathEntropyExclusions returns the vendor routes Pipelock maintains.
+// The scanner applies them alongside an operator's own list; only an
+// explicitly empty list opts out of them.
+func ShippedPathEntropyExclusions() []PathEntropyExclusion {
+	return append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
+}
+
+// shippedChallengeProviderHosts are bot-verification services a browser must
+// be able to complete. Their challenge traffic is encrypted, per-challenge
+// data sent to the provider's own host, so it reads as high entropy by
+// construction. It is exempt from the ENTROPY heuristics only (request-body
+// content entropy and the cross-request entropy budget); DLP, SSRF and every
+// other scanner still run on it. A value placed there reaches the provider,
+// not a destination the agent chose.
+var shippedChallengeProviderHosts = []string{defaultCloudflareChallengeHost}
+
+// ShippedChallengeProviderHosts returns a copy of the shipped challenge hosts.
+// They apply in addition to an operator's own exclusion lists.
+func ShippedChallengeProviderHosts() []string {
+	return append([]string(nil), shippedChallengeProviderHosts...)
+}
+
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
@@ -309,6 +341,14 @@ func Defaults() *Config {
 					{Host: "docs.google.com", PathPrefix: "/presentation/d/", Reason: "Google Slides route; opaque vendor file id"},
 					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},
 					{Host: "drive.google.com", PathPrefix: "/file/d/", Reason: "Google Drive file route; opaque vendor file id"},
+					// Cloudflare's challenge host. Turnstile and the managed
+					// challenge load from challenges.cloudflare.com, and their
+					// requests sit under the reserved /cdn-cgi/ path with
+					// per-challenge tokens in path segments. Blocking them stops
+					// the challenge completing, so any Cloudflare-fronted site
+					// loops on its bot check. The host is Cloudflare's own, so
+					// the exemption reaches no third-party origin.
+					{Host: defaultCloudflareChallengeHost, PathPrefix: defaultCloudflareChallengePathPrefix, Reason: "Cloudflare challenge route; per-challenge tokens in the path"},
 				},
 			},
 		},
@@ -382,7 +422,15 @@ func Defaults() *Config {
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
 				{Name: "Role Override", Regex: `(?i)you\s+are\s+(now\s+)?(a\s+)?((?-i:\bDAN\b)|evil|unrestricted|jailbroken|unfiltered)`},
 				{Name: "New Instructions", Regex: NewInstructionsRegex},
-				{Name: "Jailbreak Attempt", Regex: `(?i)((?-i:\bDAN\b)|developer\s+mode|sudo\s+mode|unrestricted\s+mode)`},
+				// DAN counts only beside a word, as it appears in a jailbreak
+				// prompt ("act as DAN", "DAN mode", "DAN: sure"). A bare
+				// three-letter token turns up by chance inside long encoded
+				// or obfuscated responses, such as a bot-challenge payload,
+				// and blocked them. "you are DAN" is also Role Override. The
+				// separator is spelled [ \t\r\n]+ rather than \s+ so the
+				// optional-whitespace variant, which rewrites \s+ to \s*,
+				// cannot turn "SEDAN" into a match.
+				{Name: "Jailbreak Attempt", Regex: `(?i)((?-i:[A-Za-z][ \t\r\n]+DAN\b|\bDAN[:,]?[ \t\r\n]+[A-Za-z])|developer\s+mode|sudo\s+mode|unrestricted\s+mode)`},
 				{Name: "Hidden Instruction", Regex: `(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instructions?\s*[:=]|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)`},
 				{Name: "Behavior Override", Regex: `(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+`},
 				{Name: "Encoded Payload", Regex: `(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()`},

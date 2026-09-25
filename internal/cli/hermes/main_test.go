@@ -6,6 +6,7 @@ package hermes
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -28,6 +29,14 @@ func TestMain(m *testing.M) {
 	}
 	// An inherited value would turn verify's "present" into "overridden".
 	_ = os.Unsetenv("AGENT_BROWSER_ARGS")
+	// The command lock root comes from the account database, not the
+	// environment, so point it at the throwaway home for the whole package.
+	cache := filepath.Join(home, ".cache")
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "hermes tests: create cache: %v\n", err)
+		os.Exit(1)
+	}
+	hermesUserCacheDir = func() (string, error) { return cache, nil }
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

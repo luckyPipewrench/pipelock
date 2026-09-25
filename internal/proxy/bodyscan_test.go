@@ -33,6 +33,28 @@ const (
 	testTrustedProviderPath = "/v1/provider/responses"
 )
 
+func TestBodyEntropyOnlyAdaptiveClassification(t *testing.T) {
+	finding := &ContentEntropyFinding{}
+	cases := []struct {
+		name   string
+		result BodyScanResult
+		want   bool
+	}{
+		{"entropy", BodyScanResult{EntropyFinding: finding}, true},
+		{"mixed DLP", BodyScanResult{EntropyFinding: finding, DLPMatches: []scanner.TextDLPMatch{{}}}, false},
+		{"mixed injection", BodyScanResult{EntropyFinding: finding, InjectionMatches: []scanner.ResponseMatch{{}}}, false},
+		{"fail closed", BodyScanResult{EntropyFinding: finding, RedactionBlockReason: "failed"}, false},
+		{"redacted DLP", BodyScanResult{EntropyFinding: finding, RedactedDLPOnly: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.IsEntropyOnly(); got != tc.want {
+				t.Fatalf("IsEntropyOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // testScannerConfig returns a config suitable for body scan tests.
 // SSRF is disabled (Internal=nil) to avoid DNS lookups in unit tests.
 func testScannerConfig() *config.Config {

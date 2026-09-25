@@ -185,7 +185,7 @@ Inline `// pipelock:ignore` comments work automatically with no action config ne
 | System Override | `system:` at line start |
 | Role Override | "you are now DAN/evil/unrestricted" |
 | New Instructions | "new instructions/directives/rules" |
-| Jailbreak Attempt | "DAN", "developer mode", "sudo mode" |
+| Jailbreak Attempt | "act as DAN", "DAN mode", "developer mode", "sudo mode" |
 | Hidden Instruction | "do not reveal this to the user" |
 | Behavior Override | "from now on you will/must" |
 | Encoded Payload | "decode from base64 and execute" |

@@ -154,11 +154,17 @@ Because a content-addressed hash or an encrypted upload has the same shape as a
 hex-encoded secret, it can false-positive on legitimate opaque traffic.
 
 The detector ships `warn` in the general presets, so out of the box a false
-positive is an audit line, not a block. Tune before setting
+positive is an audit line, not a block. Entropy-only findings remain visible but
+do not raise the adaptive score or get upgraded in an elevated session. This
+also means a warning does not stop opaque exfiltration; set the entropy action
+to `block` where that traffic must be denied. Concrete DLP, injection, SSRF,
+policy, and structural hostname findings still score and upgrade. A session
+already at `block_all` because of concrete evidence denies all traffic.
+Tune before setting
 `request_body_scanning.content_entropy_action: block` for the deployment or
 selecting a blocking preset (strict/hostile presets already block):
 
-- **Narrowest first:** for an HTTPS request-body endpoint, add an exact,
+- **Narrowest first when the global action is `block`:** for an HTTPS request-body endpoint, add an exact,
   expiring `request_body_scanning.content_entropy_warn_routes` entry. The
   entropy finding remains visible while DLP, prompt injection, address, body
   size, and redirect checks keep their normal actions.
@@ -170,9 +176,9 @@ selecting a blocking preset (strict/hostile presets already block):
   fully trusted, `trusted_domains` covers it for
   entropy and other destination-trust checks at once.
 - **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`
-  lowers sensitivity for every destination. Prefer an exact route warning.
+  lowers sensitivity for every destination. When the global action is `block`, prefer an exact route warning.
 
 `content_entropy_min_length` applies to both individual leaves and their stable
 aggregate views. Raising it can reduce flags for one short identifier, but a
 collection of short identifiers may still exceed the aggregate floor. Prefer
-an exact route warning when opaque identifiers are normal at one HTTPS endpoint.
+an exact route warning when the global action is `block` and opaque identifiers are normal at one HTTPS endpoint.

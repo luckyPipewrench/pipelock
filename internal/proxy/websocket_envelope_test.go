@@ -102,7 +102,7 @@ func TestWSProxy_HandshakeSigned(t *testing.T) {
 	dialer := ws.Dialer{Extensions: nil}
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
-	conn, _, _, err := dialer.Dial(dialCtx, wsURL)
+	conn, err := wsTestDial(dialCtx, dialer, wsURL)
 	if err != nil {
 		t.Fatalf("ws dial through signing proxy: %v", err)
 	}

@@ -381,7 +381,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// errors) so resolver wobble doesn't taint downstream "finding" behavior like
 	// clean-decay suppression or CEE signal recording. Fail-closed enforcement
 	// still fires below via !result.Allowed.
-	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || connectHeaderHadFinding
+	hasFinding := (!result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())) || connectHeaderHadFinding
 	var connectGate ContractGateOutput
 
 	if !result.Allowed {
@@ -412,7 +412,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
@@ -497,11 +500,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				postCEERec = recorded
 			}
 			ceeAction := ceeEntropy.Config.EntropyBudget.Action
-			originalCEEAction := ceeAction
-			ceeAction = decide.UpgradeAction(ceeAction, sr.Level, &ceeEntropy.AdaptiveConfig)
-			if ceeAction != originalCEEAction {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: originalCEEAction, ToAction: ceeAction, Scanner: "cross_request_entropy", ClientIP: clientIP, RequestID: requestID})
-			}
 			if ceeAction == config.ActionBlock {
 				p.logger.LogBlocked(targetCtx, "cross_request_entropy", detail)
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -515,9 +513,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-check block_all after CONNECT CEE may have escalated the session. The
-	// CEE block above may fire ceeRecordSignals without blocking (e.g. entropy
-	// budget exceeded but action=warn), pushing the session to a block_all level.
-	// Use the live recorder for an up-to-date escalation level.
+	// CEE step above may record a fragment-DLP signal without blocking, pushing
+	// the session to a block_all level; entropy-budget findings are score-neutral
+	// and cannot. Use the live recorder for an up-to-date escalation level.
 	if postCEEAdaptive.Enabled {
 		if postCEERec != nil {
 			level := postCEERec.EscalationLevel()
@@ -1197,7 +1195,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
+	hasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 
 	if !result.Allowed {
 		status := http.StatusForbidden
@@ -1228,7 +1226,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
@@ -1578,9 +1579,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
 			bundleRules := dlpBundleRules(bodyResult.DLPMatches)
 			injectionNames := responseMatchNames(bodyResult.InjectionMatches)
+			blockCause := blockingBodyFinding(bodyResult, r.URL.Hostname(), cfg)
 			reason := bodyResult.Reason
 			if reason == "" {
 				switch {
+				case blockCause == bodyBlockCauseEntropy:
+					reason = bodyEntropyReason(bodyResult)
+				case blockCause == bodyBlockCauseDLP:
+					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
 				case len(injectionNames) > 0:
 					reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
 				case len(patternNames) > 0:
@@ -1591,6 +1597,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
 			bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, bodyResult, r.URL.Hostname(), cfg)
+			// Classify the block by its cause after the exemption decision,
+			// which keeps its own label rules.
+			if bodyResult.RedactionBlockReason == "" {
+				scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
+			}
 			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
 			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock
@@ -2795,7 +2806,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// media types (audio/video by default, oversized images, disallowed
 		// types). Runs after Browser Shield so HTML responses flow through
 		// unchanged and image responses are handled transport-agnostically.
-		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
 		if mediaVerdict.Blocked {

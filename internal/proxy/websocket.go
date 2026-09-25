@@ -367,7 +367,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// wsHasFinding excludes IsAdaptiveNeutral (protective + infrastructure errors)
 	// so DNS resolver failures don't taint downstream "finding" behavior. Fail-closed
 	// enforcement still fires via !result.Allowed.
-	wsHasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
+	wsHasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 	var wsGate ContractGateOutput
 
 	if !result.Allowed {
@@ -398,7 +398,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !result.IsEntropyOnly() {
+			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
@@ -2080,7 +2083,29 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		closeBlockReason = blockreason.RedactionFailure
 	}
 
+	blockCause := blockingBodyFinding(result, r.hostname, r.cfg)
+	if result.RedactionBlockReason == "" {
+		switch blockCause {
+		case bodyBlockCauseInjection:
+			scannerLabel, receiptLayer = scannerLabelBodyPromptInjection, scannerLabelBodyPromptInjection
+			closeReason, closeBlockReason = "prompt injection detected", blockreason.PromptInjection
+		case bodyBlockCauseDLP:
+			scannerLabel, receiptLayer = scannerLabelBodyDLP, audit.ScannerDLP
+			closeReason, closeBlockReason = "DLP violation", blockreason.DLPMatch
+		case bodyBlockCauseEntropy:
+			scannerLabel, receiptLayer = scannerLabelBodyEntropy, scannerLabelBodyEntropy
+			closeReason, closeBlockReason = "high entropy content detected", blockreason.BodyEntropy
+		}
+	}
+
 	reason := result.Reason
+	switch {
+	case reason != "":
+	case blockCause == bodyBlockCauseInjection:
+		reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(responseMatchNames(result.InjectionMatches), ", "))
+	case blockCause == bodyBlockCauseEntropy:
+		reason = contentEntropyReason(result.EntropyFinding)
+	}
 	if reason == "" {
 		patternNames := dlpMatchNames(result.DLPMatches)
 		if len(patternNames) > 0 {
@@ -2149,7 +2174,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+	if !result.IsEntropyOnly() {
+		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+	}
 	if action != originalAction {
 		sessionKey := sessionKeyFor(r.agent, r.clientIP, r.actorAuth)
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAction, ToAction: action, Scanner: scannerLabel, ClientIP: r.clientIP, RequestID: r.requestID})
@@ -2176,7 +2203,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+		if !result.IsEntropyOnly() {
+			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+		}
 		blockReason := reason
 		if !r.cfg.EnforceEnabled() && action != originalAction {
 			blockReason += " (escalated)"
@@ -2206,7 +2235,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
+		if !result.IsEntropyOnly() {
+			r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
+		}
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{
 				Target:    r.targetURL,
@@ -2972,7 +3003,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return bytesTransferred, textFrames, binaryFrames, true
 			}
 			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
+			mediaVerdict := applyMediaPolicy(r.cfg, "", msg, mediaPolicyOptions{host: r.hostname})
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)
 			if mediaVerdict.Blocked {
 				log.LogWSBlocked(audit.WSBlockedEvent{

@@ -554,17 +554,14 @@ func TestCeeRecordSignals_BothHits(t *testing.T) {
 		FragmentHit: true,
 	}
 
-	// Use a low threshold so signals trigger escalation.
-	// SignalEntropyBudget = 2 points, SignalFragmentDLP = 3 points.
-	// Total = 5 points, threshold = 1.0, so escalation should happen.
+	// Fragment DLP contributes three points; entropy is score-neutral.
 	threshold := 1.0
 	ceeRecordSignals(result, sm, testCEESessionKey, threshold, logger, m, testCEEClientIP, testCEERequestID)
 
 	sess := sm.GetOrCreate(testCEESessionKey)
 	score := sess.ThreatScore()
-	// SignalEntropyBudget (2) + SignalFragmentDLP (3) = 5 points exactly.
-	if score != 5.0 {
-		t.Errorf("expected threat score 5.0, got %.1f", score)
+	if score != 3.0 {
+		t.Errorf("expected fragment-only threat score 3.0, got %.1f", score)
 	}
 }
 
@@ -643,6 +640,21 @@ func TestCEERecordSignalsAndBlockAll_UsesCEEKey(t *testing.T) {
 	}
 	if rawLevel := sm.GetOrCreate(rawKey).EscalationLevel(); rawLevel != 0 {
 		t.Fatalf("raw per-agent recorder should not receive folded CEE signals, got level %d", rawLevel)
+	}
+}
+
+func TestCEEEntropyOnlyDoesNotScore(t *testing.T) {
+	cfg := &config.SessionProfiling{Enabled: true, MaxSessions: 100, SessionTTLMinutes: 30, CleanupIntervalSeconds: 60}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+	key := "entropy-only-session"
+	rec := ceeRecordSignals(ceeResult{EntropyHit: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
+	if rec == nil || rec.ThreatScore() != 0 {
+		t.Fatalf("entropy-only CEE score = %v, want 0", rec)
+	}
+	ceeRecordSignals(ceeResult{EntropyHit: true, FragmentHit: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
+	if rec.ThreatScore() == 0 {
+		t.Fatal("fragment DLP in mixed CEE result must still score")
 	}
 }
 

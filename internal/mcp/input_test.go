@@ -57,6 +57,25 @@ const (
 	mcpPlaceholderAWS            = "<pl:aws-access-key:1>"
 )
 
+func TestInputVerdictEntropyOnlyClassification(t *testing.T) {
+	cases := []struct {
+		name    string
+		verdict InputVerdict
+		want    bool
+	}{
+		{"entropy URL", InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerEntropy, Class: scanner.ClassHeuristicEntropy}}}, true},
+		{"mixed DLP", InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerEntropy, Class: scanner.ClassHeuristicEntropy}}, Matches: []scanner.TextDLPMatch{{}}}, false},
+		{"structural hostname", InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerSubdomainEntropy, Reason: "subdomain payload chunked across 4 encoded labels"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.verdict.IsEntropyOnly(); got != tc.want {
+				t.Fatalf("IsEntropyOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
 func intPtrInput(v int) *int       { return &v }

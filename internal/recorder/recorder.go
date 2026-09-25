@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/nacl/box"
 
@@ -513,6 +514,11 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 	}
 	if strings.ContainsAny(e.SessionID, `/\`) {
 		return Entry{}, fmt.Errorf("recorder: session_id contains path separator")
+	}
+	if !utf8.ValidString(e.SessionID) {
+		// The session ID names the evidence file and is stored in each entry
+		// as JSON, which cannot hold invalid UTF-8 byte for byte.
+		return Entry{}, fmt.Errorf("recorder: session_id is not valid UTF-8")
 	}
 	if r.sessionID == "" {
 		if err := r.resumeSessionLocked(e.SessionID); err != nil {
@@ -1568,11 +1574,12 @@ func (h EvidenceDirectoryHealth) FileCountVerdict() string {
 }
 
 // sanitizeEntryText replaces invalid UTF-8 in the entry's hashed text fields
+// (SessionID is refused instead, because it also names the evidence file)
 // the way encoding/json will when the entry is written. The hash covers these
 // strings as raw bytes, so without this a single invalid byte makes the stored
 // entry fail hash verification when it is read back.
 func sanitizeEntryText(e *Entry) {
-	for _, field := range []*string{&e.SessionID, &e.TraceID, &e.Type, &e.EventKind, &e.Transport, &e.Summary, &e.RawRef} {
+	for _, field := range []*string{&e.TraceID, &e.Type, &e.EventKind, &e.Transport, &e.Summary, &e.RawRef} {
 		*field = jsonscan.ReplaceInvalidUTF8(*field)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -48,5 +49,25 @@ func TestRecordedEntryWithInvalidUTF8VerifiesFromDisk(t *testing.T) {
 	}
 	if err := recorder.VerifyChain(entries); err != nil {
 		t.Fatalf("VerifyChain: %v", err)
+	}
+}
+
+// TestRecordRefusesNonUTF8SessionID pins that a session ID with invalid UTF-8
+// is refused rather than rewritten: it names the evidence file, so a
+// rewritten ID would write one filename while resume looked up another.
+func TestRecordRefusesNonUTF8SessionID(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir}, nil, priv)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+	err = rec.Record(recorder.Entry{SessionID: "agent" + string([]byte{0xff}), Type: "test", Transport: "forward"})
+	if err == nil || !strings.Contains(err.Error(), "not valid UTF-8") {
+		t.Fatalf("Record error = %v, want non-UTF-8 session refusal", err)
 	}
 }

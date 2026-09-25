@@ -1030,3 +1030,29 @@ func TestResetAuthorityRejectsSignedOverlongDelegationAndPreservesRemovalFailure
 		t.Fatalf("remove failure result = %q", got)
 	}
 }
+
+// TestResetDelegationWithInvalidUTF8IssuerVerifiesAfterParse covers a signed
+// string holding invalid UTF-8. The serialized delegation carries U+FFFD in
+// its place, and the verifier rebuilds the signing input from the parsed
+// value, so the signer must sign that same form on every Go release.
+func TestResetDelegationWithInvalidUTF8IssuerVerifiesAfterParse(t *testing.T) {
+	pub, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := MintResetDelegation(privateKey, ResetDelegationRequest{
+		Issuer: "operator-" + string([]byte{0xff}), Kind: ResetKindDrift, Target: "mcp://fixture-listener",
+		InstanceID: strings.Repeat("e", 32), Epoch: 7, IssuedAt: resetAuthorityTestNow,
+		ExpiresAt: resetAuthorityTestNow.Add(time.Minute), Nonce: strings.Repeat("f", 32),
+	})
+	if err != nil {
+		t.Skipf("issuer with invalid UTF-8 refused at mint: %v", err)
+	}
+	parsed, err := ParseResetDelegation(resetDelegationBytes(t, d))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := VerifyResetDelegationSignature(pub, parsed); err != nil {
+		t.Fatalf("verify after parse: %v", err)
+	}
+}

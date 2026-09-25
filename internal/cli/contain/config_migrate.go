@@ -58,6 +58,9 @@ func agentListenerFromConfigBytes(data []byte) (string, error) {
 	if ip == nil || !ip.IsLoopback() || err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("containment.agent_listener %q must be a numeric loopback address with a valid port", listener)
 	}
+	if ip.To4() != nil && strings.Contains(host, ":") {
+		return "", fmt.Errorf("containment.agent_listener %q uses an IPv4-mapped IPv6 address; write it as 127.0.0.1", listener)
+	}
 	return listener, nil
 }
 

@@ -61,6 +61,7 @@ func TestAgentListenerConfigBytesFailures(t *testing.T) {
 		{"zero port", "containment:\n  agent_listener: 127.0.0.1:0\n", "error"},
 		{"large port", "containment:\n  agent_listener: 127.0.0.1:65536\n", "error"},
 		{"text port", "containment:\n  agent_listener: 127.0.0.1:http\n", "error"},
+		{"ipv4-mapped", "containment:\n  agent_listener: '[::ffff:127.0.0.1]:8889'\n", "error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := agentListenerFromConfigBytes([]byte(tc.body))

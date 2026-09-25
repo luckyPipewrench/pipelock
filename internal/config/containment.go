@@ -64,6 +64,11 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 	if ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("containment.agent_listener %q must use a numeric loopback address (127.0.0.1 or ::1)", listener)
 	}
+	// An IPv4 address in IPv6 form (::ffff:127.0.0.1) selects the IPv4 rule
+	// family but cannot be written in an IPv4 address expression.
+	if ip.To4() != nil && strings.Contains(host, ":") {
+		return fmt.Errorf("containment.agent_listener %q uses an IPv4-mapped IPv6 address; write it as 127.0.0.1", listener)
+	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("containment.agent_listener %q has an invalid port", listener)

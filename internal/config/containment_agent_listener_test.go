@@ -28,6 +28,7 @@ func TestValidateContainmentAgentListener(t *testing.T) {
 		{name: "hostname is not numeric", listener: "localhost:8889", wantErr: "numeric loopback"},
 		{name: "missing port", listener: "127.0.0.1", wantErr: "containment.agent_listener"},
 		{name: "port out of range", listener: "127.0.0.1:70000", wantErr: "invalid port"},
+		{name: "ipv4-mapped ipv6 loopback", listener: "[::ffff:127.0.0.1]:8889", wantErr: "IPv4-mapped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

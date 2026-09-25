@@ -552,6 +552,16 @@ func TestCovDispStepProvisionAgentDisplayApply(t *testing.T) {
 					state = "active\n"
 				}
 				runner.on(argvFor(testSystemctl, "is-active", unit), state, 0, nil)
+				originalRun := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					if tc.active && name == testSystemctl && len(args) == 2 && args[0] == "restart" && args[1] == unit {
+						cookieAtRestart, readErr := os.ReadFile(env.displayAuthorityPath)
+						if readErr != nil || bytes.Equal(cookieAtRestart, previousAuthority) {
+							t.Fatalf("restart before new Xauthority cookie: read=%v unchanged=%t", readErr, bytes.Equal(cookieAtRestart, previousAuthority))
+						}
+					}
+					return originalRun(ctx, name, args...)
+				}
 				if _, err := stepProvisionAgentDisplay().apply(context.Background(), env); err != nil {
 					t.Fatalf("apply: %v", err)
 				}

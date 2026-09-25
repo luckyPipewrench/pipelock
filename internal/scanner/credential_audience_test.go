@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -67,6 +68,31 @@ func TestScan_CredentialAudienceHosts_FailsClosedForLookalikesAndCore(t *testing
 	}
 	if core.Scanner != ScannerCoreDLP {
 		t.Fatalf("core pattern scanner = %q, want %q", core.Scanner, ScannerCoreDLP)
+	}
+}
+
+// A carrier header with many fields is left unscrubbed rather than rescanned
+// field by field, so the joined scan keeps the match and the request blocks.
+func TestScrubAuthorizedEncodedFieldsBoundsFieldCount(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	basic := func(user, secret string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+secret))
+	}
+	gitTarget := "https://gitlab.com/group/project.git/info/refs?service=git-upload-pack"
+	within := basic("oauth2", "glpat-"+strings.Repeat("c", 20))
+	if got := s.scrubAuthorizedEncodedFields(within, gitTarget, credentialAudienceAuthorizationBasicSurface); got == within {
+		t.Fatalf("control: allowed git Basic credential was not scrubbed: %q", got)
+	}
+	// A Google token has no Basic carrier, so Basic keeps it visible.
+	google := basic("oauth2", "ya29."+strings.Repeat("a", 24))
+	if got := s.scrubAuthorizedEncodedFields(google, "https://gmail.googleapis.com/gmail/v1/users/me/profile", credentialAudienceAuthorizationBasicSurface); got != google {
+		t.Fatalf("Google token in Basic was scrubbed: %q", got)
+	}
+	padded := within + strings.Repeat(" x", maxAuthorizedEncodedFields)
+	if got := s.scrubAuthorizedEncodedFields(padded, gitTarget, credentialAudienceAuthorizationBasicSurface); got != padded {
+		t.Fatalf("over-limit header was rescanned and scrubbed: %q", got)
 	}
 }
 

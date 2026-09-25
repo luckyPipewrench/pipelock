@@ -1927,3 +1927,34 @@ func TestStepExportPipelockCARestoresPriorExportOnPostWriteFailure(t *testing.T)
 		})
 	}
 }
+
+// The proxy persists runtime state (issuer-bound cookie evidence) under the
+// XDG state home. Under ProtectSystem=strict the service can write only its
+// ReadWritePaths, so the state home must be set inside one of them; the
+// service user's home is not writable and saves there would silently fail.
+func TestRenderSystemUnit_StateHomeIsWritable(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	body := renderSystemUnit(env)
+	var stateHome string
+	var writable []string
+	for _, line := range strings.Split(body, "\n") {
+		if v, ok := strings.CutPrefix(line, "Environment=XDG_STATE_HOME="); ok {
+			stateHome = v
+		}
+		if v, ok := strings.CutPrefix(line, "ReadWritePaths="); ok {
+			writable = append(writable, strings.Fields(v)...)
+		}
+	}
+	if stateHome == "" {
+		t.Fatalf("system unit sets no XDG_STATE_HOME:\n%s", body)
+	}
+	inside := false
+	for _, dir := range writable {
+		if stateHome == dir || strings.HasPrefix(stateHome, strings.TrimSuffix(dir, "/")+"/") {
+			inside = true
+		}
+	}
+	if !inside {
+		t.Fatalf("XDG_STATE_HOME %q is outside ReadWritePaths %v", stateHome, writable)
+	}
+}

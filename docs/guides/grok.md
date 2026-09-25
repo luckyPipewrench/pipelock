@@ -33,7 +33,7 @@ Grok's enterprise docs load root certificates from the **OS trust store** (rustl
 Install Grok **before** exporting proxy env vars. With `pipelock run` already up, `curl`/`npm` install traffic would otherwise be forced through the proxy and can fail (or add install hosts to `NO_PROXY` / allow them in policy).
 
 ```bash
-# 1. Install pipelock (requires Go 1.25+)
+# 1. Install pipelock (requires Go 1.26+)
 git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock

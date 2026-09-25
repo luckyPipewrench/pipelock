@@ -194,7 +194,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 | NIST Subcategory | Description | Pipelock Feature | EU AI Act |
 |-----------------|-------------|-----------------|-----------|
 | MEASURE 1.1 | Metrics selected and documented | Prometheus: `pipelock_requests_total`, `pipelock_scanner_hits_total`, `pipelock_request_duration_seconds` | Art. 12 |
-| MEASURE 2.5 | System demonstrated valid and reliable | CI: eight required contexts (security scan; Go 1.25 and 1.26 aggregates; macOS test; lint; build with Helm as a transitive prerequisite; govulncheck on default and enterprise graphs; CodeQL), plus race-tested OSS and enterprise matrices (see [README](../../README.md#testing)) | Art. 15 |
+| MEASURE 2.5 | System demonstrated valid and reliable | CI: eight required contexts (security scan; Go 1.26 and 1.27 aggregates; macOS test; lint; build with Helm as a transitive prerequisite; govulncheck on default and enterprise graphs; CodeQL), plus race-tested OSS and enterprise matrices (see [README](../../README.md#testing)) | Art. 15 |
 | MEASURE 2.6 | Evaluated for misuse and abuse | Scanning layers target misuse: DLP catches exfiltration, SSRF catches internal probing of agent-chosen destinations, injection detection catches hijacking. Configured MCP upstream dialing still blocks cloud metadata endpoints. | Art. 9, 15 |
 | MEASURE 2.7 | Security and resilience evaluated | Security audit completed (26 of 32 items fixed); DNS rebinding protection; fail-closed architecture | Art. 15 |
 | MEASURE 3.1 | Risks tracked on ongoing basis | Prometheus real-time tracking; zerolog persistent timeline; both queryable and alertable | Art. 12 |

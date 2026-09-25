@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/nacl/box"
 
@@ -154,6 +155,9 @@ func sanitizeSessionID(id string) (string, error) {
 	}
 	if strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
 		return "", fmt.Errorf("invalid session ID %q: contains path separator or traversal", id)
+	}
+	if !utf8.ValidString(id) {
+		return "", fmt.Errorf("invalid session ID %q: not valid UTF-8", id)
 	}
 	// Use filepath.Base as defense in depth.
 	return filepath.Base(id), nil

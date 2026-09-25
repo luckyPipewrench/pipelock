@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
@@ -48,6 +49,9 @@ func (r *Recorder) AcquireSession(sessionID string) error {
 	}
 	if strings.ContainsAny(sessionID, `/\`) {
 		return fmt.Errorf("recorder: session_id contains path separator")
+	}
+	if !utf8.ValidString(sessionID) {
+		return fmt.Errorf("recorder: session_id is not valid UTF-8")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

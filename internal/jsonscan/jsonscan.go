@@ -26,8 +26,9 @@ var ErrDuplicateKey = fmt.Errorf("duplicate object key")
 // after case folding.
 var ErrCaseFoldedKey = errors.New("case-folded object key alias")
 
-// MaxNestingDepth bounds the scanner's recursion. json.Decoder.Token() (unlike
-// json.Unmarshal) does NOT enforce a nesting limit, so without this bound a
+// MaxNestingDepth bounds the scanner's recursion. Before Go 1.27,
+// json.Decoder.Token() (unlike json.Unmarshal) enforced no nesting limit, and
+// Go 1.27 stops it only at 10000 levels, so without this bound a
 // deeply nested document could overflow the goroutine stack and panic — and the
 // verify paths run this scan before json.Unmarshal, which would otherwise be the
 // depth backstop. The cap is the shared cross-language receipt-nesting limit:

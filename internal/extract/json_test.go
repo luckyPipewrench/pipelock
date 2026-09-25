@@ -378,6 +378,10 @@ func TestJSONLeafBucketPayloadsKeepsLeavesParsedBeforeError(t *testing.T) {
 // not caught, which is exactly why the depth must exceed the overflow point
 // rather than merely be "large". The over-depth leaf must also still be
 // bucketed, so a fix that dropped it fails the containsSecret assertion.
+// goDecoderNestingLimit is encoding/json's maxNestingDepth, which Go 1.27's
+// json.Decoder.Token enforces and earlier releases did not.
+const goDecoderNestingLimit = 10000
+
 func TestJSONLeafBucketPayloadsBoundsRecursionDepth(t *testing.T) {
 	limits := JSONLeafLimits{MaxDepth: 8, MaxPathBytes: 512}
 	secret := "AKI" + "AIOSFODNN7EXAMPLE"
@@ -400,7 +404,10 @@ func TestJSONLeafBucketPayloadsBoundsRecursionDepth(t *testing.T) {
 				buckets, valid = JSONLeafBucketPayloads(json.RawMessage(body), limits, 4096, testJSONLeafBucketKey)
 			}()
 			<-done
-			if !valid {
+			// Go 1.27's json.Decoder refuses to tokenize past
+			// goDecoderNestingLimit, so the walk may report incomplete beyond
+			// it; the leaf must still be bucketed either way.
+			if !valid && depth <= goDecoderNestingLimit {
 				t.Fatalf("depth %d: well-formed body reported incomplete", depth)
 			}
 			if !jsonLeafBucketsContain(buckets, secret) {
@@ -693,5 +700,91 @@ func TestJSONLeafBucketPayloadsOverDepthShapes(t *testing.T) {
 				t.Fatalf("leaf that completed before the cut was dropped: %#v", buckets)
 			}
 		})
+	}
+}
+
+func TestFoldRemainingJSONScalars(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		raw  string
+		want []string
+	}{
+		"array values":        {raw: `[["a",1,true,false,null]]`, want: []string{"a", "1", "true", "false"}},
+		"object keys skipped": {raw: `{"k":"v","n":{"k2":"v2"}}`, want: []string{"v", "v2"}},
+		"escapes decoded":     {raw: `["\u0041KIA","x\"y"]`, want: []string{"AKIA", `x"y`}},
+		"unmatched closers":   {raw: `]]}, "tail"]`, want: []string{"tail"}},
+		"mid-member start":    {raw: `: [["deep"]], "sib": "val"}`, want: []string{"deep", "sib", "val"}},
+		"unterminated string": {raw: `["ok", "cut`, want: []string{"ok"}},
+		"invalid escape":      {raw: `["ok", "\q"]`, want: []string{"ok"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			foldRemainingJSONScalars([]byte(tc.raw), func(v string) { got = append(got, v) })
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("foldRemainingJSONScalars(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJSONLeafBucketPayloadsKeepsLeavesPastDecoderLimit covers a document
+// whose deep member exceeds Go 1.27's decoder nesting limit next to a shallow
+// member: both leaves must still reach a bucket on every Go release.
+func TestJSONLeafBucketPayloadsKeepsLeavesPastDecoderLimit(t *testing.T) {
+	t.Parallel()
+
+	secret := "AKI" + "AIOSFODNN7EXAMPLE"
+	deep := goDecoderNestingLimit + 5
+	body := `{"a":"shallow-leaf","b":` + strings.Repeat("[", deep) + `"` + secret + `"` + strings.Repeat("]", deep) + `,"c":"after-leaf"}`
+	buckets, _ := JSONLeafBucketPayloads(json.RawMessage(body), JSONLeafLimits{MaxDepth: 8, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
+	for _, want := range []string{"shallow-leaf", secret, "after-leaf"} {
+		if !jsonLeafBucketsContain(buckets, want) {
+			t.Fatalf("leaf %q dropped: %#v", want, buckets)
+		}
+	}
+}
+
+// TestJSONLeafBucketPayloadsFoldDoesNotRepeatLeaves pins that when the
+// decoder gives up part way through an over-depth value, the fallback scan
+// resumes after the last token it returned: a leaf already bucketed must not
+// be emitted again, or a piece of a split secret appears twice and breaks the
+// cross-request join.
+func TestJSONLeafBucketPayloadsFoldDoesNotRepeatLeaves(t *testing.T) {
+	t.Parallel()
+
+	deep := goDecoderNestingLimit + 5
+	body := `{"w":["FIRST",` + strings.Repeat("[", deep) + `"SECOND"` + strings.Repeat("]", deep) + `]}`
+	// MaxDepth 0 makes the whole "w" array one over-depth fold, so FIRST is
+	// tokenized by the decoder before it gives up inside the deep element.
+	buckets, _ := JSONLeafBucketPayloads(json.RawMessage(body), JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
+	var all strings.Builder
+	for _, v := range buckets {
+		all.Write(v)
+	}
+	if got := strings.Count(all.String(), "FIRST"); got != 1 {
+		t.Fatalf("FIRST bucketed %d times, want 1: %#v", got, buckets)
+	}
+	if !strings.Contains(all.String(), "SECOND") {
+		t.Fatalf("SECOND dropped: %#v", buckets)
+	}
+
+	// A syntax error after FIRST runs the fallback fold on every Go release,
+	// not only where the decoder has a nesting limit.
+	buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"w":["FIRST",1 2 "RECOVERED"]}`), JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
+	if valid {
+		t.Fatalf("malformed body reported complete: %#v", buckets)
+	}
+	if !jsonLeafBucketsContain(buckets, "RECOVERED") {
+		t.Fatalf("malformed body dropped the leaf after the syntax error: %#v", buckets)
+	}
+	all.Reset()
+	for _, v := range buckets {
+		all.Write(v)
+	}
+	if got := strings.Count(all.String(), "FIRST"); got != 1 {
+		t.Fatalf("malformed body: FIRST bucketed %d times, want 1: %#v", got, buckets)
 	}
 }

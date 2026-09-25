@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // ErrFloatNotAllowed indicates a float appeared in a signable preimage.
@@ -55,7 +57,9 @@ func canonicalizeInto(buf *bytes.Buffer, v any) error {
 		if err != nil {
 			return fmt.Errorf("marshal string: %w", err)
 		}
-		buf.Write(b)
+		// Invalid UTF-8 must encode the same way on every Go release and in
+		// every verifier; see jsonscan.NormalizeReplacementEscapes.
+		buf.Write(jsonscan.NormalizeReplacementEscapes(b))
 		return nil
 	case int:
 		buf.WriteString(strconv.FormatInt(int64(x), 10))
@@ -139,7 +143,7 @@ func canonicalizeInto(buf *bytes.Buffer, v any) error {
 func ParseJSONStrict(data []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	val, err := parseStrictValue(dec)
+	val, err := parseStrictValue(dec, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -154,18 +158,24 @@ func ParseJSONStrict(data []byte) (any, error) {
 	return val, nil
 }
 
-// parseStrictValue walks a json.Decoder rejecting duplicate keys.
-func parseStrictValue(dec *json.Decoder) (any, error) {
+// parseStrictValue walks a json.Decoder rejecting duplicate keys. depth is
+// the number of containers already open around the value.
+func parseStrictValue(dec *json.Decoder, depth int) (any, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	return parseStrictFrom(dec, tok)
+	return parseStrictFrom(dec, tok, depth)
 }
 
-func parseStrictFrom(dec *json.Decoder, tok json.Token) (any, error) {
+func parseStrictFrom(dec *json.Decoder, tok json.Token, depth int) (any, error) {
 	switch t := tok.(type) {
 	case json.Delim:
+		// The walk recurses once per container, and json.Decoder's own
+		// nesting limit differs by Go release, so the bound is enforced here.
+		if (t == '{' || t == '[') && depth >= jsonscan.MaxNestingDepth {
+			return nil, fmt.Errorf("JSON nesting exceeds maximum depth %d", jsonscan.MaxNestingDepth)
+		}
 		switch t {
 		case '{':
 			obj := map[string]any{}
@@ -181,7 +191,7 @@ func parseStrictFrom(dec *json.Decoder, tok json.Token) (any, error) {
 				if _, exists := obj[key]; exists {
 					return nil, fmt.Errorf("%w: %q", ErrDuplicateKey, key)
 				}
-				val, err := parseStrictValue(dec)
+				val, err := parseStrictValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -194,7 +204,7 @@ func parseStrictFrom(dec *json.Decoder, tok json.Token) (any, error) {
 		case '[':
 			arr := []any{}
 			for dec.More() {
-				val, err := parseStrictValue(dec)
+				val, err := parseStrictValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}

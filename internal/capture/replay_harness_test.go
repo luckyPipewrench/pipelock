@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -540,6 +541,40 @@ func truncate(b []byte, n int) string {
 // human-readable provenance sidecar where this single field can vary.
 const stableManifestPlaceholder = "sha256:HARNESS-PLACEHOLDER"
 
+// stableManifestSignature replaces the manifest signature in golden
+// comparisons, after verifyHarnessManifestSignature has checked the real one.
+const stableManifestSignature = "ed25519:HARNESS-PLACEHOLDER"
+
+// verifyHarnessManifestSignature checks the compile manifest signature over
+// the unstabilized body with the harness key. Stabilizing replaces the
+// signature, so this is the check that keeps a signing regression visible.
+func verifyHarnessManifestSignature(raw []byte) error {
+	var env contract.CompileManifestEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return fmt.Errorf("unmarshal manifest envelope: %w", err)
+	}
+	sigHex, ok := strings.CutPrefix(env.Signature, "ed25519:")
+	if !ok {
+		return fmt.Errorf("manifest signature %q lacks ed25519: prefix", env.Signature)
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return fmt.Errorf("decode manifest signature: %w", err)
+	}
+	preimage, err := env.Body.SignablePreimage()
+	if err != nil {
+		return fmt.Errorf("manifest preimage: %w", err)
+	}
+	pub, ok := newHarnessSigner().priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return errors.New("harness signer public key is not ed25519")
+	}
+	if !ed25519.Verify(pub, preimage, sig) {
+		return errors.New("manifest signature does not verify against its body with the harness key")
+	}
+	return nil
+}
+
 // stableManifestModuleDigests is the redacted module_digests value the
 // stabilized manifest carries instead of the build-info-derived map.
 var stableManifestModuleDigestsValue = map[string]string{
@@ -555,10 +590,16 @@ var stableManifestModuleDigestsValue = map[string]string{
 // severity) for the original finding.
 func stabilizeManifest(t *testing.T, raw []byte) []byte {
 	t.Helper()
+	if err := verifyHarnessManifestSignature(raw); err != nil {
+		t.Fatal(err)
+	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
+	// The signature covers module_digests, so it drifts with them. It was
+	// verified against the real body above; replace it only after that.
+	doc["signature"] = stableManifestSignature
 	body, ok := doc["body"].(map[string]any)
 	if !ok {
 		t.Fatalf("manifest body is not a map: %T", doc["body"])
@@ -767,4 +808,82 @@ func TestReplayHarness_ReplayDiffMatchesGolden(t *testing.T) {
 	}
 
 	assertGolden(t, harnessGoldenReplayDiff, got)
+}
+
+// TestVerifyHarnessManifestSignatureRejectsTampering pins that the check the
+// golden comparison relies on rejects a changed body and a changed signature,
+// since the comparison itself replaces the signature with a placeholder.
+func TestVerifyHarnessManifestSignatureRejectsTampering(t *testing.T) {
+	t.Parallel()
+	entries := buildContinuousEntries(t)
+	result, _ := runHarnessCompile(t, entries)
+	if err := verifyHarnessManifestSignature(result.ManifestJSON); err != nil {
+		t.Fatalf("untampered manifest rejected: %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(result.ManifestJSON, &doc); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	body, ok := doc["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest body is not a map: %T", doc["body"])
+	}
+	body["compile_config_hash"] = "sha256:tampered"
+	tamperedBody, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal tampered body: %v", err)
+	}
+	if err := verifyHarnessManifestSignature(tamperedBody); err == nil {
+		t.Fatal("manifest with a changed body verified")
+	}
+
+	var sigDoc map[string]any
+	if err := json.Unmarshal(result.ManifestJSON, &sigDoc); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	sig, _ := sigDoc["signature"].(string)
+	if len(sig) < 2 {
+		t.Fatalf("manifest signature too short: %q", sig)
+	}
+	flipped := "0"
+	if sig[len(sig)-1] == '0' {
+		flipped = "1"
+	}
+	sigDoc["signature"] = sig[:len(sig)-1] + flipped
+	tamperedSig, err := json.Marshal(sigDoc)
+	if err != nil {
+		t.Fatalf("marshal tampered signature: %v", err)
+	}
+	if err := verifyHarnessManifestSignature(tamperedSig); err == nil {
+		t.Fatal("manifest with a changed signature verified")
+	}
+
+	malformed := map[string]struct {
+		signature string
+		raw       []byte
+		wantSub   string
+	}{
+		"malformed json":   {raw: []byte(`{"body":`), wantSub: "unmarshal manifest envelope"},
+		"missing prefix":   {signature: strings.TrimPrefix(sig, "ed25519:"), wantSub: "lacks ed25519: prefix"},
+		"invalid hex":      {signature: "ed25519:zz", wantSub: "decode manifest signature"},
+		"truncated digest": {signature: "ed25519:00", wantSub: "does not verify"},
+	}
+	for name, tc := range malformed {
+		raw := tc.raw
+		if raw == nil {
+			var caseDoc map[string]any
+			if err := json.Unmarshal(result.ManifestJSON, &caseDoc); err != nil {
+				t.Fatalf("%s: unmarshal manifest: %v", name, err)
+			}
+			caseDoc["signature"] = tc.signature
+			if raw, err = json.Marshal(caseDoc); err != nil {
+				t.Fatalf("%s: marshal manifest: %v", name, err)
+			}
+		}
+		err := verifyHarnessManifestSignature(raw)
+		if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("%s: error = %v, want substring %q", name, err, tc.wantSub)
+		}
+	}
 }

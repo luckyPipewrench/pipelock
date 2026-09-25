@@ -7,7 +7,7 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 | Item | Value |
 |------|-------|
 | Module | `github.com/luckyPipewrench/pipelock` |
-| Go | 1.25+; CI tests Go 1.25 and 1.26 |
+| Go | 1.26+; CI tests Go 1.26 and 1.27 |
 | License | Apache 2.0 core, ELv2 under `enterprise/` |
 | Binary | Single Go binary; size varies by OS, build tags, and release flags |
 | Dependencies | See `go.mod`. Run `make stats` before citing the current direct-dependency count. |

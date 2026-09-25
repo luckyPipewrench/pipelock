@@ -427,7 +427,7 @@ type hiddenTrapCandidate struct {
 	start, openEnd, closeStart, end int
 }
 
-// stripHiddenElementTraps removes each CSS-hidden div, span or p whose text
+// stripHiddenElementTraps removes each CSS-hidden or aria-hidden div, span or p whose text
 // carries instruction vocabulary. An element with no interface markup is
 // removed whole; one with interface markup keeps its markup and loses only the
 // text that carries the instruction words. A removed element goes from its
@@ -442,9 +442,9 @@ type hiddenTrapCandidate struct {
 // cannot make the rewrite quadratic. xml selects XHTML and SVG parsing, where a
 // self-closing tag ends its element.
 func stripHiddenElementTraps(s string, xml bool) (string, int) {
-	// Every candidate carries a style attribute, and an attribute name cannot
-	// be written with character references.
-	if !strings.Contains(asciiLower(s), "style") {
+	// Every candidate carries a style or aria-hidden attribute, and an
+	// attribute name cannot be written with character references.
+	if lower := asciiLower(s); !strings.Contains(lower, "style") && !strings.Contains(lower, "aria-hidden") {
 		return s, 0
 	}
 	type openElement struct {
@@ -479,7 +479,10 @@ func stripHiddenElementTraps(s string, xml bool) (string, int) {
 	}
 	openAt := func(tag string, start, end int, raw []byte) {
 		candidate := -1
-		if styleHides(string(raw)) {
+		// aria-hidden div, span and p elements are decided here too, so their
+		// text is read decoded and tag-free like any other hidden element.
+		// Other aria-hidden tags stay with the pattern pass in stripTraps.
+		if tag := string(raw); styleHides(tag) || ariaHiddenTrue(tag) {
 			candidate = len(candidates)
 			candidates = append(candidates, hiddenTrapCandidate{start: start, openEnd: end, closeStart: len(s), end: len(s)})
 		}

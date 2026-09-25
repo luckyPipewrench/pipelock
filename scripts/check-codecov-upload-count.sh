@@ -27,7 +27,7 @@ for f in "$WORKFLOW" "$CODECOV"; do
 done
 
 # The OSS and enterprise producers share the shard set; the workflow topology
-# tests enforce that equality. Only their Go 1.25 jobs upload coverage.
+# tests enforce that equality. Only their Go 1.26 jobs upload coverage.
 shard_line="$(grep -m1 "^ *shard: \[" "$WORKFLOW" || true)"
 if [[ -z "$shard_line" ]]; then
 	printf 'codecov-upload-count: no shard matrix found in %s\n' "$WORKFLOW" >&2

@@ -16,6 +16,13 @@ import (
 // reporting a nil emitter rather than the underlying cause. See
 // testposture.PinAbsent.
 func TestMain(m *testing.M) {
+	stateHome, stateErr := os.MkdirTemp("", "pipelock-proxy-state-test-")
+	if stateErr != nil {
+		panic(stateErr)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", stateHome); err != nil {
+		panic(err)
+	}
 	cleanup, err := testposture.PinAbsent()
 	if err != nil {
 		cleanup()
@@ -24,5 +31,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	cleanup()
+	_ = os.RemoveAll(stateHome)
 	os.Exit(code)
 }

@@ -175,6 +175,8 @@ func TestRunSidecar_InvalidMCPUpstream(t *testing.T) {
 		{name: "port zero", raw: "http://openclaw:0/mcp", wantSub: "must be 1-65535"},
 		{name: "trailing colon", raw: "http://openclaw:/mcp", wantSub: "malformed host/port syntax"},
 		{name: "extra port fragment", raw: "http://openclaw:65536:/mcp", wantSub: "malformed host/port syntax"},
+		{name: "valid port bad path escape", raw: "http://host:8080/%ZZ", wantSub: "must include http:// or https:// and a host"},
+		{name: "non-numeric port", raw: "http://host:80a/mcp", wantSub: "malformed host/port syntax"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -839,4 +841,45 @@ func itoa(n int) string {
 		return string(rune('0' + n))
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+func TestRawURLAuthority(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"http://openclaw:65536:/mcp": "openclaw:65536:",
+		"https://host:8080?x=1":      "host:8080",
+		"http://host#frag":           "host",
+		"http://[::1]:443/":          "[::1]:443",
+		"no-scheme-here":             "",
+	}
+	for raw, want := range cases {
+		if got := rawURLAuthority(raw); got != want {
+			t.Errorf("rawURLAuthority(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestMCPUpstreamHostHasMalformedPort(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"host":         false,
+		"host:8080":    false,
+		"host:":        true,
+		"host:80a":     true,
+		"a:b:c":        true,
+		"[::1]":        false,
+		"[::1]:443":    false,
+		"[::1]x":       true,
+		"[::1]:44a":    true,
+		"[::1]:":       true,
+		"[::1":         true,
+		"[::1]:443:80": true,
+	}
+	for host, want := range cases {
+		if got := mcpUpstreamHostHasMalformedPort(host); got != want {
+			t.Errorf("mcpUpstreamHostHasMalformedPort(%q) = %v, want %v", host, got, want)
+		}
+	}
 }

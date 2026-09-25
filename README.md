@@ -10,7 +10,7 @@
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet exam" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
-  <a href="go.mod"><img alt="Go 1.25+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
+  <a href="go.mod"><img alt="Go 1.26+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
 </p>
 
@@ -107,7 +107,7 @@ The full argument for why proof beats promises is in [demonstration over attesta
 ## Quick Start
 
 ```bash
-# Build the current release from source (Community edition, Go 1.25+)
+# Build the current release from source (Community edition, Go 1.26+)
 git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
@@ -750,7 +750,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
 | Scanner hot-path overhead | ~40us per URL scan (hot-path benchmark; see [docs/performance.md](docs/performance.md)) |
-| CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
+| CI matrix | Go 1.26 + 1.27, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
 Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).

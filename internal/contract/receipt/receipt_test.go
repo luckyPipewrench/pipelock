@@ -465,7 +465,7 @@ func TestVerifyV2BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			raw:        valid[:len(valid)-1],
 			pubKey:     pub,
 			signerID:   "receipt-key",
-			wantErrSub: "EOF",
+			wantErrSub: "EOF|unexpected end of JSON input",
 		},
 		{
 			name:       "null detail",
@@ -573,7 +573,7 @@ func TestVerifyV2BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			if err == nil {
 				t.Fatal("VerifyV2BytesWithKey error = nil, want rejection")
 			}
-			if !strings.Contains(err.Error(), tc.wantErrSub) {
+			if !errTextContainsAny(err, tc.wantErrSub) {
 				t.Fatalf("VerifyV2BytesWithKey error = %q, want substring %q", err, tc.wantErrSub)
 			}
 		})
@@ -787,4 +787,17 @@ func receiptTestSourceSpan(t *testing.T, eventID string) receipt.SourceSpan {
 	}
 	span.MatchHash = hash
 	return span
+}
+
+// errTextContainsAny reports whether err's text contains any "|"-separated
+// alternative in want. Go 1.27 reports truncated JSON as "unexpected end of
+// JSON input" where earlier releases said "EOF", so a truncation case lists
+// both spellings rather than pinning one toolchain's wording.
+func errTextContainsAny(err error, want string) bool {
+	for _, alt := range strings.Split(want, "|") {
+		if strings.Contains(err.Error(), alt) {
+			return true
+		}
+	}
+	return false
 }

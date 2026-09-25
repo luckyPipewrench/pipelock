@@ -94,11 +94,12 @@ type InterceptContext struct {
 	Logger    *audit.Logger
 	Metrics   *metrics.Metrics
 
-	ClientIP  string
-	RequestID string
-	Agent     string
-	Profile   string
-	ActorAuth envelope.ActorAuth
+	ClientIP      string
+	RequestID     string
+	Agent         string
+	Profile       string
+	ActorAuth     envelope.ActorAuth
+	IssuerRuntime *issuerCookieRuntime
 
 	UpstreamRT http.RoundTripper
 	SafeDial   dialFunc
@@ -1357,7 +1358,18 @@ func newInterceptHandler(
 
 		// Request header DLP scanning.
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
+			scanHeaders := r.Header
+			if issuerStore := ic.issuerCookieStore(); issuerStore != nil {
+				var allowances []issuerCookieAllowance
+				scanHeaders, allowances = issuerCookieScanHeaders(r.Context(), r.Header, ic.Scanner, issuerStore,
+					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now())
+				for _, allowance := range allowances {
+					for _, pattern := range allowance.Patterns {
+						ic.Proxy.recordIssuerCookieAllow(actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method)
+					}
+				}
+			}
+			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), scanHeaders, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {
 				if ic.Logger != nil {
 					ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", reason)
 				}
@@ -1426,7 +1438,10 @@ func newInterceptHandler(
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
 					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, reason)
-					ic.Logger.LogBlocked(actx, "header_dlp", reason)
+					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
+						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),
+						Cookies: cookieNamesWithDLPMatch(r.Context(), scanHeaders, ic.Scanner),
+					})
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
 					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
@@ -1953,6 +1968,9 @@ func newInterceptHandler(
 
 			flusher, _ := w.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, w, flusher, ic.Scanner, sseOpts)
+			if streamErr == nil {
+				recordDeliveredIssuerCookies(ic, r, resp, true)
+			}
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
 				// warn mode, A2A findings are logged as anomalies but don't
@@ -2046,7 +2064,8 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
-			written, _ := io.Copy(w, resp.Body)
+			written, copyErr := io.Copy(w, resp.Body)
+			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, "complete")
 			// Account streamed bytes against the per-domain data budget so a
@@ -2164,7 +2183,8 @@ func newInterceptHandler(
 					}
 					removeHopByHopHeaders(w.Header())
 					w.WriteHeader(resp.StatusCode)
-					written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					written, copyErr := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, "unscannable_passthrough")
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
@@ -2588,7 +2608,8 @@ func newInterceptHandler(
 		}
 		removeHopByHopHeaders(w.Header())
 		w.WriteHeader(resp.StatusCode)
-		written, _ := w.Write(respBody)
+		written, writeErr := w.Write(respBody)
+		recordDeliveredIssuerCookies(ic, r, resp, writeErr == nil && written == len(respBody))
 		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), "complete")
 	})
 }

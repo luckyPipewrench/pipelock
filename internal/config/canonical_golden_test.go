@@ -442,7 +442,9 @@ const (
 	// entries instead of being replaced by them.
 	// Re-bumped when the built-in DAN jailbreak token began requiring word
 	// context, which changes a shipped response pattern.
-	goldenHashDefaults = "711d78a676f03171ad54be8f3db42e39fafb7e929025bd6aa3d56ac8bee5caac"
+	// Re-bumped when issuer-bound session cookies became a request-body
+	// scanning default.
+	goldenHashDefaults = "c7ad6b0576d8d1c331898231fc69e85a423c9cd2855a3c310548b4e5551d4930"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

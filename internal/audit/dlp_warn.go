@@ -16,6 +16,7 @@ const (
 	// EventDLPCredentialAudienceAllow records the narrow compiled-in exception
 	// for a provider credential sent to its declared audience.
 	EventDLPCredentialAudienceAllow EventType = "dlp_credential_audience_allow" // #nosec G101 -- audit event identifier, not credential material
+	EventDLPIssuerCookieAllow       EventType = "dlp_issuer_cookie_allow"       // #nosec G101 -- audit event identifier, not credential material
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.
@@ -36,11 +37,27 @@ func (l *Logger) LogDLPDropped(ctx LogContext, patternName, severity, surface, r
 // destination has already been parsed by the proxy-owned scanner path and
 // contains no credential material.
 func (l *Logger) LogDLPCredentialAudienceAllow(ctx LogContext, patternName, surface, destination string) {
+	l.logDLPAllowance(ctx, EventDLPCredentialAudienceAllow, patternName, surface, destination, "DLP credential allowed for declared audience")
+}
+
+// LogDLPIssuerCookieAllow records a returned cookie pair left out of header
+// DLP because the destination issued it. It names the pattern, the cookie
+// name and the destination; the cookie value is never recorded.
+func (l *Logger) LogDLPIssuerCookieAllow(ctx LogContext, patternName, cookieName, destination string) {
+	l.logDLPAllowanceWithCookie(ctx, EventDLPIssuerCookieAllow, patternName, cookieName, "header", destination, "DLP cookie allowed for observed issuer")
+}
+
+func (l *Logger) logDLPAllowance(ctx LogContext, event EventType, patternName, surface, destination, message string) {
+	l.logDLPAllowanceWithCookie(ctx, event, patternName, "", surface, destination, message)
+}
+
+func (l *Logger) logDLPAllowanceWithCookie(ctx LogContext, event EventType, patternName, cookieName, surface, destination, message string) {
 	technique := TechniqueForScanner(ScannerDLP)
 	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, ScannerDLP)
 
-	e := newLogEntry(l.zl.Info(), EventDLPCredentialAudienceAllow).
+	e := newLogEntry(l.zl.Info(), event).
 		str("pattern", patternName).
+		optStr("cookie", cookieName).
 		str("surface", surface).
 		str("destination", destination).
 		str("mitre_technique", technique).
@@ -51,10 +68,10 @@ func (l *Logger) LogDLPCredentialAudienceAllow(ctx LogContext, patternName, surf
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
-	e.msg("DLP credential allowed for declared audience")
+	e.msg(message)
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventDLPCredentialAudienceAllow), e.fields)
+		l.emitter.Emit(context.Background(), string(event), e.fields)
 	}
 }
 

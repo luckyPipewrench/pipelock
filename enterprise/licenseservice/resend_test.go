@@ -803,11 +803,30 @@ func TestOpenEntitlementDBAddsResendSendsColumn(t *testing.T) {
 		`CREATE TABLE license_resend_requests (email_sha256 TEXT NOT NULL, requested_at DATETIME NOT NULL)`); err != nil {
 		t.Fatalf("create old table: %v", err)
 	}
+	// Five legacy rows inside the hour, each of which may have sent up to the
+	// per-request cap.
+	for i := 0; i < 5; i++ {
+		if _, err := old.ExecContext(t.Context(),
+			`INSERT INTO license_resend_requests (email_sha256, requested_at) VALUES (?, ?)`,
+			fmt.Sprintf("legacy%d", i), time.Now().UTC()); err != nil {
+			t.Fatalf("insert legacy row: %v", err)
+		}
+	}
 	_ = old.Close()
 	for i := 0; i < 2; i++ { // the second open is the ordinary restart
 		db, err := OpenEntitlementDB(t.Context(), path)
 		if err != nil {
 			t.Fatalf("open upgraded db (pass %d): %v", i, err)
+		}
+		if i == 0 {
+			var legacy int
+			if err := db.db.QueryRowContext(t.Context(),
+				`SELECT COALESCE(SUM(sends), 0) FROM license_resend_requests WHERE email_sha256 LIKE 'legacy%'`).Scan(&legacy); err != nil {
+				t.Fatalf("sum legacy sends: %v", err)
+			}
+			if legacy != 5*resendMaxLicensesPerRequest {
+				t.Fatalf("legacy rows count %d sends, want %d", legacy, 5*resendMaxLicensesPerRequest)
+			}
 		}
 		if err := db.AdmitLicenseResend(t.Context(), fmt.Sprintf("upgrade%d@example.com", i), 2, time.Now()); err != nil {
 			t.Fatalf("admission after upgrade (pass %d): %v", i, err)

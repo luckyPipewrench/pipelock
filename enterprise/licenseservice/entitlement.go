@@ -580,6 +580,13 @@ func (e *EntitlementDB) ensureResendSendsColumn(ctx context.Context) error {
 	_, execErr := e.db.ExecContext(ctx,
 		`ALTER TABLE license_resend_requests ADD COLUMN sends INTEGER NOT NULL DEFAULT 1`)
 	if execErr == nil {
+		// Rows written before the column existed recorded one row per request,
+		// and a request could send up to the per-request cap. Count them at
+		// the cap so an upgrade cannot admit more than the hourly budget.
+		if _, err := e.db.ExecContext(ctx,
+			`UPDATE license_resend_requests SET sends = ?`, resendMaxLicensesPerRequest); err != nil {
+			return fmt.Errorf("count legacy license resend rows at the cap: %w", err)
+		}
 		return nil
 	}
 	var present bool

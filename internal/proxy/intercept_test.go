@@ -2319,9 +2319,10 @@ func TestInterceptTunnel_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *tes
 		name       string
 		enforce    bool
 		wantStatus int
+		wantAction string
 	}{
-		{name: "enforced", enforce: true, wantStatus: http.StatusForbidden},
-		{name: "audit only", enforce: false, wantStatus: http.StatusOK},
+		{name: "enforced", enforce: true, wantStatus: http.StatusForbidden, wantAction: config.ActionBlock},
+		{name: "audit only", enforce: false, wantStatus: http.StatusOK, wantAction: config.ActionWarn},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var upstreamHit atomic.Bool
@@ -2331,7 +2332,8 @@ func TestInterceptTunnel_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *tes
 			}))
 			defer upstream.Close()
 
-			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cache, pool, cfg, _, _, m := testInterceptSetup(t)
+			logger, logPath := newAuditModeLogger(t)
 			cfg.RequestBodyScanning.Enabled = true
 			cfg.RequestBodyScanning.Action = config.ActionWarn
 			cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
@@ -2357,11 +2359,10 @@ func TestInterceptTunnel_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *tes
 				if upstreamHit.Load() {
 					t.Fatal("upstream received body prompt injection, want blocked before forwarding")
 				}
-				return
-			}
-			if !upstreamHit.Load() {
+			} else if !upstreamHit.Load() {
 				t.Fatal("audit mode did not forward the request upstream")
 			}
+			assertInterceptInjectionRecord(t, logger, logPath, tt.wantAction)
 		})
 	}
 }

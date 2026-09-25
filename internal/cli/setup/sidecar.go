@@ -484,9 +484,21 @@ func mcpUpstreamHostHasMalformedPort(host string) bool {
 		if closing == -1 {
 			return true
 		}
-		return strings.Contains(host[closing+1:], ":")
+		suffix := host[closing+1:]
+		if suffix == "" {
+			return false
+		}
+		if !strings.HasPrefix(suffix, ":") {
+			return true
+		}
+		return strings.Trim(suffix[1:], "0123456789") != ""
 	}
-	return strings.Contains(host, ":")
+	// A single colon followed only by digits is a well-formed port, so a
+	// parse failure elsewhere in the URL is not reported as a port problem.
+	if strings.Count(host, ":") != 1 {
+		return strings.Contains(host, ":")
+	}
+	return strings.Trim(host[strings.IndexByte(host, ':')+1:], "0123456789") != ""
 }
 
 // renderDiff produces a simple before/after comparison.

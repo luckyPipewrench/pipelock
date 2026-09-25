@@ -1114,7 +1114,7 @@ jobs:
   # The parallel binary and cross-target producers also flow through this gate,
   # so a compilation failure cannot present as a successful required build check.
   build:
-    needs: [security-scan, test-go126, test-go127, lint, test-cross-target, helm, build-binaries]
+    needs: [security-scan, changed-files, test-go126, test-go127, lint, test-cross-target, helm, build-binaries]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1128,8 +1128,18 @@ jobs:
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
+          CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          # test (1.27) accepts skipped upper-lane producers on a pull request
+          # because changed-files decided no CI-policy file changed. A failed or
+          # cancelled classifier skips them too, so a pull request needs a
+          # successful classifier here before that skip counts as intentional.
+          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" != success ]; then
+            echo "changed-files did not succeed, so skipped upper-lane tests are not evidence" >&2
+            exit 1
+          fi
           for result in \
             "$SECURITY_SCAN_RESULT" \
             "$TEST_GO126_RESULT" \

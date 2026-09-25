@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -547,31 +548,31 @@ const stableManifestSignature = "ed25519:HARNESS-PLACEHOLDER"
 // verifyHarnessManifestSignature checks the compile manifest signature over
 // the unstabilized body with the harness key. Stabilizing replaces the
 // signature, so this is the check that keeps a signing regression visible.
-func verifyHarnessManifestSignature(t *testing.T, raw []byte) {
-	t.Helper()
+func verifyHarnessManifestSignature(raw []byte) error {
 	var env contract.CompileManifestEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		t.Fatalf("unmarshal manifest envelope: %v", err)
+		return fmt.Errorf("unmarshal manifest envelope: %w", err)
 	}
 	sigHex, ok := strings.CutPrefix(env.Signature, "ed25519:")
 	if !ok {
-		t.Fatalf("manifest signature %q lacks ed25519: prefix", env.Signature)
+		return fmt.Errorf("manifest signature %q lacks ed25519: prefix", env.Signature)
 	}
 	sig, err := hex.DecodeString(sigHex)
 	if err != nil {
-		t.Fatalf("decode manifest signature: %v", err)
+		return fmt.Errorf("decode manifest signature: %w", err)
 	}
 	preimage, err := env.Body.SignablePreimage()
 	if err != nil {
-		t.Fatalf("manifest preimage: %v", err)
+		return fmt.Errorf("manifest preimage: %w", err)
 	}
 	pub, ok := newHarnessSigner().priv.Public().(ed25519.PublicKey)
 	if !ok {
-		t.Fatal("harness signer public key is not ed25519")
+		return errors.New("harness signer public key is not ed25519")
 	}
 	if !ed25519.Verify(pub, preimage, sig) {
-		t.Fatal("manifest signature does not verify against its body with the harness key")
+		return errors.New("manifest signature does not verify against its body with the harness key")
 	}
+	return nil
 }
 
 // stableManifestModuleDigests is the redacted module_digests value the
@@ -589,7 +590,9 @@ var stableManifestModuleDigestsValue = map[string]string{
 // severity) for the original finding.
 func stabilizeManifest(t *testing.T, raw []byte) []byte {
 	t.Helper()
-	verifyHarnessManifestSignature(t, raw)
+	if err := verifyHarnessManifestSignature(raw); err != nil {
+		t.Fatal(err)
+	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("unmarshal manifest: %v", err)
@@ -805,4 +808,54 @@ func TestReplayHarness_ReplayDiffMatchesGolden(t *testing.T) {
 	}
 
 	assertGolden(t, harnessGoldenReplayDiff, got)
+}
+
+// TestVerifyHarnessManifestSignatureRejectsTampering pins that the check the
+// golden comparison relies on rejects a changed body and a changed signature,
+// since the comparison itself replaces the signature with a placeholder.
+func TestVerifyHarnessManifestSignatureRejectsTampering(t *testing.T) {
+	t.Parallel()
+	entries := buildContinuousEntries(t)
+	result, _ := runHarnessCompile(t, entries)
+	if err := verifyHarnessManifestSignature(result.ManifestJSON); err != nil {
+		t.Fatalf("untampered manifest rejected: %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(result.ManifestJSON, &doc); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	body, ok := doc["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest body is not a map: %T", doc["body"])
+	}
+	body["compile_config_hash"] = "sha256:tampered"
+	tamperedBody, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal tampered body: %v", err)
+	}
+	if err := verifyHarnessManifestSignature(tamperedBody); err == nil {
+		t.Fatal("manifest with a changed body verified")
+	}
+
+	var sigDoc map[string]any
+	if err := json.Unmarshal(result.ManifestJSON, &sigDoc); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	sig, _ := sigDoc["signature"].(string)
+	if len(sig) < 2 {
+		t.Fatalf("manifest signature too short: %q", sig)
+	}
+	flipped := "0"
+	if sig[len(sig)-1] == '0' {
+		flipped = "1"
+	}
+	sigDoc["signature"] = sig[:len(sig)-1] + flipped
+	tamperedSig, err := json.Marshal(sigDoc)
+	if err != nil {
+		t.Fatalf("marshal tampered signature: %v", err)
+	}
+	if err := verifyHarnessManifestSignature(tamperedSig); err == nil {
+		t.Fatal("manifest with a changed signature verified")
+	}
 }

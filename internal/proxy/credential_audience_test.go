@@ -952,7 +952,12 @@ func TestInterceptTunnel_BuiltInCredentialAudience(t *testing.T) {
 		tokenPrefix string
 		pattern     string
 		core        bool
+		declareGHES bool
 	}{
+		{name: "GitHub REST token", host: "api.github.com", path: "/user", token: fakeGitHubToken(), tokenPrefix: "ghp_", pattern: "GitHub Token", core: true},
+		{name: "GitHub release upload", host: "uploads.github.com", path: "/repos/o/r/releases/1/assets", token: fakeGitHubToken(), tokenPrefix: "ghp_", pattern: "GitHub Token", core: true},
+		{name: "GitHub Enterprise declared host", host: "ghe.corp.example", path: "/api/v3/user", token: fakeGitHubToken(), tokenPrefix: "ghp_", pattern: "GitHub Token", core: true, declareGHES: true},
+		{name: "GitLab.com PAT", host: "gitlab.com", path: "/api/v4/user", token: fakeGitLabPAT(), tokenPrefix: "glpat-", pattern: "GitLab PAT", core: true},
 		{name: "Web API bot token", host: "slack.com", path: "/api/auth.test", token: fakeSlackBotToken(), tokenPrefix: "xoxb-", pattern: "Slack Token", core: true},
 		{name: "hosted MCP user token", host: "mcp.slack.com", path: "/mcp", token: "xoxp-" + strings.Repeat("a", 24), tokenPrefix: "xoxp-", pattern: "Slack Token", core: true},
 		{name: "Gmail API access token", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/profile", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
@@ -982,6 +987,9 @@ func TestInterceptTunnel_BuiltInCredentialAudience(t *testing.T) {
 			cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
 			if tc.core {
 				cfg.DLP.Patterns = nil
+			}
+			if tc.declareGHES {
+				cfg.DLP.GitHubEnterpriseHosts = []string{tc.host}
 			}
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)

@@ -290,6 +290,12 @@ func (c *Config) Clone() *Config {
 	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
+	if c.DLP.GitHubEnterpriseHosts != nil {
+		clone.DLP.GitHubEnterpriseHosts = append([]string(nil), c.DLP.GitHubEnterpriseHosts...)
+	}
+	if c.DLP.GitLabHosts != nil {
+		clone.DLP.GitLabHosts = append([]string(nil), c.DLP.GitLabHosts...)
+	}
 	clone.ResponseScanning.Patterns = cloneResponseScanPatterns(c.ResponseScanning.Patterns)
 	// ExemptDomains is a reload-sensitive exemption surface: operators
 	// remove entries via hot-reload and ValidateReload warns when the
@@ -369,6 +375,9 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 		}
 		if src[i].CredentialAudienceHosts != nil {
 			dst[i].CredentialAudienceHosts = append([]string(nil), src[i].CredentialAudienceHosts...)
+		}
+		if src[i].CredentialAudienceGitHosts != nil {
+			dst[i].CredentialAudienceGitHosts = append([]string(nil), src[i].CredentialAudienceGitHosts...)
 		}
 	}
 	return dst

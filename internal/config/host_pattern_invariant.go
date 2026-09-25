@@ -99,6 +99,11 @@ func (c *Config) hostPatternLists() []hostPatternList {
 		})
 	}
 
+	lists = append(lists,
+		hostPatternList{field: "dlp.github_enterprise_hosts", hosts: c.DLP.GitHubEnterpriseHosts, check: validateDeclaredCredentialHostList},
+		hostPatternList{field: "dlp.gitlab_hosts", hosts: c.DLP.GitLabHosts, check: validateDeclaredCredentialHostList},
+	)
+
 	for i := range c.DLP.Patterns {
 		p := &c.DLP.Patterns[i]
 		if len(p.ExemptDomains) == 0 {

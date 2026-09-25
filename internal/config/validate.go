@@ -1476,6 +1476,24 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 	if c.DLP.Action != "" {
 		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}
+	if err := validateDeclaredCredentialHostList(c.DLP.GitHubEnterpriseHosts, "dlp.github_enterprise_hosts"); err != nil {
+		return err
+	}
+	if err := validateDeclaredCredentialHostList(c.DLP.GitLabHosts, "dlp.gitlab_hosts"); err != nil {
+		return err
+	}
+	if warnings != nil && len(c.DLP.GitHubEnterpriseHosts) > 0 {
+		*warnings = append(*warnings, Warning{
+			Field:   "dlp.github_enterprise_hosts",
+			Message: fmt.Sprintf("dlp.github_enterprise_hosts %v receives GitHub Token and GitHub Fine-Grained PAT on an encrypted Authorization header; a declared host the operator does not control receives the credential by design", c.DLP.GitHubEnterpriseHosts),
+		})
+	}
+	if warnings != nil && len(c.DLP.GitLabHosts) > 0 {
+		*warnings = append(*warnings, Warning{
+			Field:   "dlp.gitlab_hosts",
+			Message: fmt.Sprintf("dlp.gitlab_hosts %v receives GitLab token classes on their compiled headers over an encrypted scheme; a declared host the operator does not control receives the credential by design", c.DLP.GitLabHosts),
+		})
+	}
 
 	// Validate DLP patterns compile as valid regexes
 	for i, p := range c.DLP.Patterns {
@@ -1539,6 +1557,31 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 
 	if err := validateCanaryTokens(c); err != nil {
 		return fmt.Errorf("canary_tokens: %w", err)
+	}
+	return nil
+}
+
+// validateDeclaredCredentialHostList accepts only exact DNS hostnames.
+// Wildcards, IP literals, URLs, and host:port values are rejected. The
+// encrypted-scheme requirement is enforced when the request is matched.
+func validateDeclaredCredentialHostList(hosts []string, field string) error {
+	seen := make(map[string]struct{}, len(hosts))
+	for i := range hosts {
+		normalized, err := NormalizeAndCheckHostPattern(hosts[i])
+		if err != nil {
+			return fmt.Errorf("%s[%d] %q: %w", field, i, hosts[i], err)
+		}
+		if strings.Contains(normalized, "*") {
+			return fmt.Errorf("%s[%d] %q: wildcards are not allowed; name the exact host", field, i, hosts[i])
+		}
+		if net.ParseIP(normalized) != nil {
+			return fmt.Errorf("%s[%d] %q: IP literals are not allowed", field, i, hosts[i])
+		}
+		if _, dup := seen[normalized]; dup {
+			return fmt.Errorf("%s[%d] %q duplicates %q", field, i, hosts[i], normalized)
+		}
+		seen[normalized] = struct{}{}
+		hosts[i] = normalized
 	}
 	return nil
 }

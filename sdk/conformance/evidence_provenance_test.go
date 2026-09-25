@@ -157,9 +157,24 @@ func TestEvidenceProvenanceTransformCorpus(t *testing.T) {
 }
 
 func TestEvidenceProvenanceTransformCorpusV2(t *testing.T) {
-	corpus := loadProvenanceCorpusVersion(t, "v2")
-	if corpus.ProfileDigest != normalize.EvidenceProvenanceProfileV2Digest {
-		t.Fatalf("profile digest = %q, want %q", corpus.ProfileDigest, normalize.EvidenceProvenanceProfileV2Digest)
+	replayProvenanceCorpus(t, "v2", normalize.EvidenceProvenanceProfileV2Digest)
+}
+
+// TestEvidenceProvenanceTransformCorpusV3 replays the shared v3 vectors that
+// the TypeScript, Python and Rust verifiers also replay, so the Go reference
+// implementation cannot drift from them.
+func TestEvidenceProvenanceTransformCorpusV3(t *testing.T) {
+	replayProvenanceCorpus(t, "v3", normalize.EvidenceProvenanceProfileV3Digest)
+}
+
+func replayProvenanceCorpus(t *testing.T, version, digest string) {
+	t.Helper()
+	corpus := loadProvenanceCorpusVersion(t, version)
+	if corpus.ProfileDigest != digest {
+		t.Fatalf("profile digest = %q, want %q", corpus.ProfileDigest, digest)
+	}
+	if len(corpus.Vectors) == 0 {
+		t.Fatalf("%s corpus has no vectors", version)
 	}
 	for _, vector := range corpus.Vectors {
 		t.Run(vector.ID, func(t *testing.T) {

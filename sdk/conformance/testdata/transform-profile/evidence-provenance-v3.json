@@ -1,0 +1,266 @@
+{
+  "format": "pipelock-evidence-transform-corpus/v1",
+  "profile_digest": "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e",
+  "vectors": [
+    {
+      "id": "lowercase-base32-match",
+      "input_b64": "bXp4dzY=",
+      "recipe": [
+        {
+          "kind": "ascii_upper"
+        },
+        {
+          "kind": "base32_decode_liberal"
+        }
+      ],
+      "output_b64": "Zm9v"
+    },
+    {
+      "id": "base32hex-strict",
+      "input_b64": "Q1BOTVU=",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "alphabet": "base32hex"
+        }
+      ],
+      "output_b64": "Zm9v"
+    },
+    {
+      "id": "base32hex-liberal",
+      "input_b64": "Q1BOTVU=",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal",
+          "alphabet": "base32hex"
+        }
+      ],
+      "output_b64": "Zm9v"
+    },
+    {
+      "id": "json-scalar-pair",
+      "input_b64": "XHUwMDQxXHVEODNEXHVERTgw",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "QfCfmoA="
+    },
+    {
+      "id": "matching-hangul-nfc",
+      "input_b64": "4YSA4YWh",
+      "recipe": [
+        {
+          "kind": "matching_normalize",
+          "profile": "pipelock-matching-v1"
+        }
+      ],
+      "output_b64": "6rCA"
+    },
+    {
+      "id": "v1-ascii-upper",
+      "input_b64": "YWJj",
+      "recipe": [
+        {
+          "kind": "ascii_upper"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
+    },
+    {
+      "id": "v2-ascii-upper",
+      "input_b64": "YWJj",
+      "recipe": [
+        {
+          "kind": "ascii_upper"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "v2-json-unicode-escape",
+      "input_b64": "XHUwMDQx",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "v1-base32-alphabet",
+      "input_b64": "TVpYVzY=",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "alphabet": "standard"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94"
+    },
+    {
+      "id": "v2-base32-alphabet",
+      "input_b64": "TVpYVzY=",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "alphabet": "standard"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "v2-liberal-base32-alphabet",
+      "input_b64": "TVpYVzY=",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal",
+          "alphabet": "standard"
+        }
+      ],
+      "want_error": "unsupported by transform profile",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "json-lone-high-surrogate-replaced",
+      "input_b64": "XHVEODNE",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "json-lone-low-surrogate-replaced",
+      "input_b64": "XHVERTgw",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "json-truncated-copied",
+      "input_b64": "XHUxMg==",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "XHUxMg=="
+    },
+    {
+      "id": "json-invalid-hex-copied",
+      "input_b64": "XHUxMlpa",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "XHUxMlpa"
+    },
+    {
+      "id": "base32hex-unknown-alphabet",
+      "input_b64": "Q1BOTVU=",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "alphabet": "wrong"
+        }
+      ],
+      "want_error": "unknown base32 alphabet"
+    },
+    {
+      "id": "ascii-upper-forbidden-param",
+      "input_b64": "YWJj",
+      "recipe": [
+        {
+          "kind": "ascii_upper",
+          "alphabet": "standard"
+        }
+      ],
+      "want_error": "unsupported alphabet"
+    },
+    {
+      "id": "json-escape-forbidden-param",
+      "input_b64": "XHUwMDQx",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape",
+          "decode_padding": false
+        }
+      ],
+      "want_error": "unsupported decode_padding"
+    },
+    {
+      "id": "json-multibyte-hex-copied",
+      "input_b64": "XHUxMsOpQQ==",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "XHUxMsOpQQ=="
+    },
+    {
+      "id": "v2-matching-retains-nfd",
+      "input_b64": "4YSA4YWh",
+      "recipe": [
+        {
+          "kind": "matching_normalize",
+          "profile": "pipelock-matching-v1"
+        }
+      ],
+      "output_b64": "4YSA4YWh",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "ascii-upper-is-not-unicode-uppercase",
+      "input_b64": "w6nDn2E=",
+      "recipe": [
+        {
+          "kind": "ascii_upper"
+        }
+      ],
+      "output_b64": "w6nDn0E="
+    },
+    {
+      "id": "json-no-escape-is-unchanged",
+      "input_b64": "b3JkaW5hcnkg8J+agA==",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "b3JkaW5hcnkg8J+agA=="
+    },
+    {
+      "id": "json-valid-then-lone-surrogate",
+      "input_b64": "XHUwMDQxS0lBXHVEQzAw",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "QUtJQe+/vQ=="
+    },
+    {
+      "id": "json-high-surrogate-then-scalar",
+      "input_b64": "XHVEODNEXHUwMDQx",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "77+9QQ=="
+    }
+  ]
+}

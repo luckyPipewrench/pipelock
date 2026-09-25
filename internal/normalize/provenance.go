@@ -4,6 +4,7 @@
 package normalize
 
 import (
+	"bytes"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -46,6 +47,117 @@ type Operation struct {
 	Alphabet      string        `json:"alphabet,omitempty"`
 	Indices       QueryIndices  `json:"indices,omitempty"`
 	MinimumLength uint32        `json:"minimum_length,omitempty"`
+
+	// explicit records which parameter keys a decoded recipe spelled out,
+	// including ones set to their zero value. The profile forbids a parameter
+	// by its presence, not its value, so `"decode_padding": false` on an
+	// operation that takes no parameters is a rejection. Without this record
+	// Go could not tell that key from an absent one and accepted recipes the
+	// TypeScript, Python and Rust verifiers reject. Go never emits a
+	// zero-valued parameter (every field is omitempty), so this cannot refuse
+	// a Go-issued recipe.
+	explicit operationParams
+}
+
+// operationParams is a set of Operation parameter keys.
+type operationParams uint16
+
+const (
+	paramComponent operationParams = 1 << iota
+	paramSelector
+	paramOccurrence
+	paramPasses
+	paramProfile
+	paramDecodePadding
+	paramAlphabet
+	paramIndices
+	paramMinimumLength
+)
+
+var operationParamKeys = map[string]operationParams{
+	"component":      paramComponent,
+	"selector":       paramSelector,
+	"occurrence":     paramOccurrence,
+	"passes":         paramPasses,
+	"profile":        paramProfile,
+	"decode_padding": paramDecodePadding,
+	"alphabet":       paramAlphabet,
+	"indices":        paramIndices,
+	"minimum_length": paramMinimumLength,
+}
+
+// operationParamOrder fixes the order presence errors are reported in, so a
+// recipe with two forbidden keys always names the same one.
+var operationParamOrder = []string{
+	"component", "selector", "occurrence", "passes", "profile",
+	"decode_padding", "alphabet", "indices", "minimum_length",
+}
+
+// UnmarshalJSON decodes an operation and records which parameter keys were
+// present. It rejects unknown keys itself: a custom decoder is not covered by
+// an enclosing decoder's DisallowUnknownFields, and silently accepting a
+// stray key would be a fail-open.
+func (op *Operation) UnmarshalJSON(data []byte) error {
+	type plainOperation Operation
+	var plain plainOperation
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&plain); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	*op = Operation(plain)
+	op.explicit = 0
+	for key := range keys {
+		// encoding/json matches field names case-insensitively, so
+		// "Decode_Padding" fills DecodePadding. Accept only the canonical
+		// spelling, as the other verifiers and the strict CLI decoder do;
+		// otherwise a folded key would set a parameter without its
+		// presence bit.
+		param, ok := operationParamKeys[key]
+		if !ok && key != "kind" {
+			return fmt.Errorf("unknown or non-canonical operation key %q", key)
+		}
+		op.explicit |= param
+	}
+	return nil
+}
+
+// without returns op with the given parameters cleared, value and presence
+// both, so noParametersForValidation checks only what remains.
+func (op Operation) without(params operationParams) Operation {
+	if params&paramComponent != 0 {
+		op.Component = ""
+	}
+	if params&paramSelector != 0 {
+		op.Selector = ""
+	}
+	if params&paramOccurrence != 0 {
+		op.Occurrence = 0
+	}
+	if params&paramPasses != 0 {
+		op.Passes = 0
+	}
+	if params&paramProfile != 0 {
+		op.Profile = ""
+	}
+	if params&paramDecodePadding != 0 {
+		op.DecodePadding = false
+	}
+	if params&paramAlphabet != 0 {
+		op.Alphabet = ""
+	}
+	if params&paramIndices != 0 {
+		op.Indices = nil
+	}
+	if params&paramMinimumLength != 0 {
+		op.MinimumLength = 0
+	}
+	op.explicit &^= params
+	return op
 }
 
 // QueryIndices is encoded as a JSON array of uint8 values. encoding/json treats
@@ -117,6 +229,8 @@ const (
 	OperationEncodedRun             OperationKind = "encoded_run"
 	OperationCanaryCanonicalize     OperationKind = "canary_canonicalize"
 	OperationASCIIAlphanumericStrip OperationKind = "ascii_alphanumeric_strip"
+	OperationASCIIUpper             OperationKind = "ascii_upper"
+	OperationJSONUnicodeEscape      OperationKind = "json_unicode_escape"
 )
 
 // SupportedOperationKinds is the union of the registered recipe vocabularies.
@@ -134,6 +248,7 @@ func SupportedOperationKinds() []OperationKind {
 		OperationWhitespaceCompact, OperationURLNoiseStrip, OperationOrderedQueryConcat,
 		OperationQuerySubsequence, OperationHostnameDotRemove, OperationEncodedRun,
 		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip,
+		OperationASCIIUpper, OperationJSONUnicodeEscape,
 	}
 }
 
@@ -141,14 +256,21 @@ func SupportedOperationKinds() []OperationKind {
 // registered transform profile. V1 stays frozen even when a later profile adds
 // an operation.
 func SupportedOperationKindsForProfile(digest string) []OperationKind {
+	// The vocabulary is one ordered list. v1 drops the last three kinds
+	// (ascii_alphanumeric_strip, ascii_upper, json_unicode_escape). v2 drops
+	// the last two. v3 is the full list. Inserting a kind anywhere but at the
+	// end changes a published profile.
 	kinds := SupportedOperationKinds()
-	if digest == EvidenceProvenanceProfileV1Digest {
-		return kinds[:len(kinds)-1]
-	}
-	if digest == EvidenceProvenanceProfileV2Digest {
+	switch digest {
+	case EvidenceProvenanceProfileV1Digest:
+		return kinds[:len(kinds)-3]
+	case EvidenceProvenanceProfileV2Digest:
+		return kinds[:len(kinds)-2]
+	case EvidenceProvenanceProfileV3Digest:
 		return kinds
+	default:
+		return nil
 	}
-	return nil
 }
 
 type Component string
@@ -197,7 +319,11 @@ const (
 	// EvidenceProvenanceProfileV2Digest identifies the profile whose token and
 	// URL-noise transforms match the current scanner keep-sets. Profiles are
 	// selected only by this exact digest; never by a profile name or fallback.
-	EvidenceProvenanceProfileV2Digest       = "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+	EvidenceProvenanceProfileV2Digest = "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+	// EvidenceProvenanceProfileV3Digest identifies the profile that adds ASCII
+	// uppercase folding, JSON unicode-escape decoding, base32hex, and NFC
+	// recomposition of matching_normalize.
+	EvidenceProvenanceProfileV3Digest       = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -207,6 +333,7 @@ type transformProfileVersion uint8
 const (
 	transformProfileV1 transformProfileVersion = iota + 1
 	transformProfileV2
+	transformProfileV3
 )
 
 type transformProfile struct {
@@ -223,6 +350,9 @@ var evidenceProvenanceProfiles = map[string]transformProfile{
 	},
 	EvidenceProvenanceProfileV2Digest: {
 		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV2,
+	},
+	EvidenceProvenanceProfileV3Digest: {
+		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV3,
 	},
 }
 
@@ -259,8 +389,29 @@ func (r Recipe) Validate() error {
 		if err := op.validate(); err != nil {
 			return fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
 		}
-		if op.Kind == OperationASCIIAlphanumericStrip && profile.version != transformProfileV2 {
-			return fmt.Errorf("recipe operation %d (%s): unsupported by transform profile", index, op.Kind)
+		if err := operationAllowedByProfile(op, profile.version); err != nil {
+			return fmt.Errorf("recipe operation %d (%s): %w", index, op.Kind, err)
+		}
+	}
+	return nil
+}
+
+// operationAllowedByProfile rejects operations and parameters a frozen
+// profile does not define. v1 and v2 documents stay on their published
+// vocabularies when a later profile adds a step.
+func operationAllowedByProfile(op Operation, version transformProfileVersion) error {
+	switch op.Kind {
+	case OperationASCIIAlphanumericStrip:
+		if version < transformProfileV2 {
+			return fmt.Errorf("unsupported by transform profile")
+		}
+	case OperationASCIIUpper, OperationJSONUnicodeEscape:
+		if version < transformProfileV3 {
+			return fmt.Errorf("unsupported by transform profile")
+		}
+	case OperationBase32Decode, OperationBase32DecodeLiberal:
+		if op.Alphabet != "" && version < transformProfileV3 {
+			return fmt.Errorf("unsupported by transform profile")
 		}
 	}
 	return nil
@@ -416,9 +567,9 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 		}
 		return string(decoded), nil
 	case OperationBase32Decode:
-		encoding := base32.StdEncoding
-		if !op.DecodePadding {
-			encoding = encoding.WithPadding(base32.NoPadding)
+		encoding, err := scannerBase32Encoding(op.Alphabet, op.DecodePadding)
+		if err != nil {
+			return "", err
 		}
 		decoded, err := encoding.DecodeString(value)
 		if err != nil {
@@ -456,7 +607,11 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 	case OperationInvisibleSpace:
 		return ReplaceInvisibleWithSpace(value), nil
 	case OperationMatchingNormalize:
-		return ForMatching(value), nil
+		return matchingNormalize(value, profile.version >= transformProfileV3), nil
+	case OperationASCIIUpper:
+		return ASCIIUpper(value), nil
+	case OperationJSONUnicodeEscape:
+		return DecodeJSONUnicodeEscapes(value), nil
 	case OperationHexDecodeLiberal:
 		decoded, err := hex.DecodeString(value)
 		if err != nil {
@@ -464,9 +619,9 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 		}
 		return string(decoded), nil
 	case OperationBase32DecodeLiberal:
-		encoding := base32.StdEncoding
-		if !op.DecodePadding {
-			encoding = encoding.WithPadding(base32.NoPadding)
+		encoding, err := scannerBase32Encoding(op.Alphabet, op.DecodePadding)
+		if err != nil {
+			return "", err
 		}
 		decoded, err := encoding.DecodeString(value)
 		if err != nil {
@@ -534,7 +689,8 @@ func (op Operation) validate() error {
 	case OperationIdentity, OperationLowercase, OperationInvisibleStrip, OperationLeetspeak, OperationVowelFold,
 		OperationQueryUnescape, OperationInvisibleSpace, OperationWhitespaceCompact,
 		OperationURLNoiseStrip, OperationOrderedQueryConcat, OperationHostnameDotRemove,
-		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip, OperationHTMLEntityDecode, OperationHexDecodeLiberal:
+		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip, OperationHTMLEntityDecode, OperationHexDecodeLiberal,
+		OperationASCIIUpper, OperationJSONUnicodeEscape:
 		return noParameters()
 	case OperationURLComponent:
 		switch op.Component {
@@ -552,63 +708,50 @@ func (op Operation) validate() error {
 		default:
 			return fmt.Errorf("unknown URL component %q", op.Component)
 		}
-		parameterless := op
-		parameterless.Component = ""
-		parameterless.Selector = ""
-		parameterless.Occurrence = 0
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramComponent | paramSelector | paramOccurrence).noParametersForValidation(reject)
 	case OperationPercentDecode:
 		if op.Passes == 0 || op.Passes > evidenceProvenanceProfileMaxDecodePasses {
 			return fmt.Errorf("percent decode passes must be 1..%d", evidenceProvenanceProfileMaxDecodePasses)
 		}
-		parameterless := op
-		parameterless.Passes = 0
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramPasses).noParametersForValidation(reject)
 	case OperationDLPNormalize:
 		if op.Profile != "pipelock-dlp-v1" {
 			return fmt.Errorf("unknown DLP profile %q", op.Profile)
 		}
-		parameterless := op
-		parameterless.Profile = ""
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramProfile).noParametersForValidation(reject)
 	case OperationHexDecode:
 		return noParameters()
-	case OperationBase32Decode, OperationBase64Decode:
-		parameterless := op
-		parameterless.DecodePadding = false
-		return parameterless.noParametersForValidation(reject)
+	case OperationBase32Decode:
+		if op.Alphabet != "" && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
+			return fmt.Errorf("unknown base32 alphabet %q", op.Alphabet)
+		}
+		return op.without(paramDecodePadding | paramAlphabet).noParametersForValidation(reject)
+	case OperationBase64Decode:
+		return op.without(paramDecodePadding).noParametersForValidation(reject)
 	case OperationMatchingNormalize:
 		if op.Profile != "pipelock-matching-v1" {
 			return fmt.Errorf("unknown matching profile %q", op.Profile)
 		}
-		parameterless := op
-		parameterless.Profile = ""
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramProfile).noParametersForValidation(reject)
 	case OperationBase32DecodeLiberal:
-		parameterless := op
-		parameterless.DecodePadding = false
-		return parameterless.noParametersForValidation(reject)
+		if op.Alphabet != "" && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
+			return fmt.Errorf("unknown base32 alphabet %q", op.Alphabet)
+		}
+		return op.without(paramDecodePadding | paramAlphabet).noParametersForValidation(reject)
 	case OperationBase64DecodeLiberal:
 		if op.Alphabet != "standard" && op.Alphabet != "url" {
 			return fmt.Errorf("unknown base64 alphabet %q", op.Alphabet)
 		}
-		parameterless := op
-		parameterless.Alphabet = ""
-		parameterless.DecodePadding = false
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramAlphabet | paramDecodePadding).noParametersForValidation(reject)
 	case OperationEncodedTokenNormalize:
 		switch op.Alphabet {
 		case "hex", "base32", "base64_standard", "base64_url":
 		default:
 			return fmt.Errorf("unknown encoded-token alphabet %q", op.Alphabet)
 		}
-		parameterless := op
-		parameterless.Alphabet = ""
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramAlphabet).noParametersForValidation(reject)
 	case OperationTextSegment:
-		parameterless := op
-		parameterless.Occurrence = 0
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramOccurrence).noParametersForValidation(reject)
 	case OperationQuerySubsequence:
 		if len(op.Indices) < evidenceProvenanceQueryMinIndices || len(op.Indices) > evidenceProvenanceQueryMaxIndices {
 			return fmt.Errorf("query subsequence indices must contain 2..4 entries")
@@ -621,17 +764,12 @@ func (op Operation) validate() error {
 				return fmt.Errorf("query subsequence indices must be strictly increasing")
 			}
 		}
-		parameterless := op
-		parameterless.Indices = nil
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramIndices).noParametersForValidation(reject)
 	case OperationEncodedRun:
 		if op.MinimumLength == 0 {
 			return fmt.Errorf("encoded run minimum_length must be positive")
 		}
-		parameterless := op
-		parameterless.Occurrence = 0
-		parameterless.MinimumLength = 0
-		return parameterless.noParametersForValidation(reject)
+		return op.without(paramOccurrence | paramMinimumLength).noParametersForValidation(reject)
 	default:
 		return fmt.Errorf("unknown operation %q", op.Kind)
 	}
@@ -657,9 +795,14 @@ func (op Operation) noParametersForValidation(reject func(string) error) error {
 		return reject("indices")
 	case op.MinimumLength != 0:
 		return reject("minimum_length")
-	default:
-		return nil
 	}
+	// A parameter spelled out with its zero value is still present.
+	for _, key := range operationParamOrder {
+		if op.explicit&operationParamKeys[key] != 0 {
+			return reject(key)
+		}
+	}
+	return nil
 }
 
 func (op Operation) selectURLComponent(value string) (string, error) {
@@ -709,6 +852,22 @@ func scannerQueryUnescape(value string, budget chargeBudget) (string, error) {
 		value = decoded
 	}
 	return value, nil
+}
+
+func scannerBase32Encoding(alphabet string, padded bool) (*base32.Encoding, error) {
+	var encoding *base32.Encoding
+	switch alphabet {
+	case "", "standard":
+		encoding = base32.StdEncoding
+	case "base32hex":
+		encoding = base32.HexEncoding
+	default:
+		return nil, fmt.Errorf("unknown base32 alphabet %q", alphabet)
+	}
+	if !padded {
+		encoding = encoding.WithPadding(base32.NoPadding)
+	}
+	return encoding, nil
 }
 
 func scannerBase64Encoding(alphabet string, padded bool) (*base64.Encoding, error) {

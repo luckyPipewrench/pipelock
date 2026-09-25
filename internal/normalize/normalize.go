@@ -535,12 +535,113 @@ func ForDLP(s string) string {
 //
 //pipelock:provenance-transform matching_normalize
 func ForMatching(s string) string {
+	return matchingNormalize(s, true)
+}
+
+// matchingNormalize is the response and injection pipeline. recompose adds
+// NFC after mark stripping. v1 and v2 recipes pass false so their output
+// stays the NFD fixed point those profiles published. ForDLP does not use
+// this function; the fragment buffer's concatenation invariant depends on
+// ForDLP staying in NFD.
+func matchingNormalize(s string, recompose bool) string {
 	s = StripZeroWidth(s)
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
+	if recompose {
+		s = norm.NFC.String(s)
+	}
 	s = Whitespace(s)
 	return s
+}
+
+// ASCIIUpper folds ASCII a-z to A-Z and leaves every other byte unchanged.
+// DNS 0x20 and RFC 4648 base32 case differences use this fold. It is not
+// Unicode case mapping.
+//
+//pipelock:provenance-transform ascii_upper
+func ASCIIUpper(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r - ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
+// DecodeJSONUnicodeEscapes replaces JSON-style \uXXXX escapes with their
+// Unicode scalars. A high surrogate immediately followed by a low surrogate
+// becomes one scalar, and an unpaired surrogate escape becomes U+FFFD, as
+// encoding/json decodes it. A truncated escape or non-hex digits are left
+// exactly as written. It never fails: a scanner view that one malformed escape could discard would
+// let a sender append one to hide every valid escape before it.
+//
+//pipelock:provenance-transform json_unicode_escape
+func DecodeJSONUnicodeEscapes(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if r, size, ok := jsonUnicodeScalar(s[i:]); ok {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// jsonUnicodeScalar decodes one escape at the start of s. ok is false when s
+// does not start with a decodable escape, and the caller copies the byte.
+func jsonUnicodeScalar(s string) (rune, int, bool) {
+	if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
+		return 0, 0, false
+	}
+	value, ok := parseHex4(s[2:6])
+	if !ok {
+		return 0, 0, false
+	}
+	if value >= 0xDC00 && value <= 0xDFFF {
+		return unicode.ReplacementChar, 6, true
+	}
+	if value < 0xD800 || value > 0xDBFF {
+		return value, 6, true
+	}
+	if len(s) < 12 || s[6] != '\\' || s[7] != 'u' {
+		return unicode.ReplacementChar, 6, true
+	}
+	low, ok := parseHex4(s[8:12])
+	if !ok || low < 0xDC00 || low > 0xDFFF {
+		return unicode.ReplacementChar, 6, true
+	}
+	return 0x10000 + ((value-0xD800)<<10 | (low - 0xDC00)), 12, true
+}
+
+func parseHex4(s string) (rune, bool) {
+	if len(s) != 4 {
+		return 0, false
+	}
+	var value rune
+	for i := 0; i < 4; i++ {
+		c := rune(s[i])
+		var digit rune
+		switch {
+		case c >= '0' && c <= '9':
+			digit = c - '0'
+		case c >= 'a' && c <= 'f':
+			digit = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			digit = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		value = value<<4 | digit
+	}
+	return value, true
 }
 
 // ForPolicy applies the same pipeline as ForMatching, but replaces invisible

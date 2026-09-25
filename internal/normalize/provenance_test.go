@@ -326,6 +326,59 @@ func TestTransformProfileV1DigestMatchesCanonicalDocument(t *testing.T) {
 	}
 }
 
+func TestTransformProfileV3RejectsOnOlderRecipes(t *testing.T) {
+	ops := []Operation{
+		{Kind: OperationASCIIUpper},
+		{Kind: OperationJSONUnicodeEscape},
+		{Kind: OperationBase32Decode, Alphabet: "base32hex", DecodePadding: true},
+	}
+	for _, digest := range []string{EvidenceProvenanceProfileV1Digest, EvidenceProvenanceProfileV2Digest} {
+		for _, op := range ops {
+			recipe := Recipe{TransformProfileDigest: digest, Operations: []Operation{op}}
+			if err := recipe.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported by transform profile") {
+				t.Fatalf("%s %s validate error = %v", digest, op.Kind, err)
+			}
+		}
+	}
+	got, err := (Recipe{TransformProfileDigest: EvidenceProvenanceProfileV3Digest, Operations: []Operation{{Kind: OperationASCIIUpper}}}).Apply("aB")
+	if err != nil || got != "AB" {
+		t.Fatalf("ascii_upper = %q, %v", got, err)
+	}
+}
+
+func TestTransformProfileV3DigestAndVocabulary(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "sdk", "conformance", "testdata", "transform-profile", "evidence-provenance-transform-v3.json"))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if got, want := "sha256:"+hex.EncodeToString(sum[:]), EvidenceProvenanceProfileV3Digest; got != want {
+		t.Fatalf("v3 digest = %q, want %q", got, want)
+	}
+	var profile struct {
+		Format              string `json:"format"`
+		Profile             string `json:"profile"`
+		Version             int    `json:"version"`
+		OperationVocabulary []struct {
+			Kind string `json:"kind"`
+		} `json:"operation_vocabulary"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Format != "pipelock-evidence-provenance-transform-profile/v3" || profile.Version != 3 {
+		t.Fatalf("profile identity = format %q version %d", profile.Format, profile.Version)
+	}
+	gotKinds := make([]OperationKind, 0, len(profile.OperationVocabulary))
+	for _, operation := range profile.OperationVocabulary {
+		gotKinds = append(gotKinds, OperationKind(operation.Kind))
+	}
+	if !slices.Equal(gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV3Digest)) {
+		t.Fatalf("v3 vocabulary = %v, want %v", gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV3Digest))
+	}
+}
+
 func TestTransformProfileV2DigestAndSemantics(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "sdk", "conformance", "testdata", "transform-profile", "evidence-provenance-transform-v2.json"))
 	data, err := os.ReadFile(path)
@@ -539,6 +592,8 @@ func TestSupportedOperationKinds(t *testing.T) {
 		OperationEncodedRun,
 		OperationCanaryCanonicalize,
 		OperationASCIIAlphanumericStrip,
+		OperationASCIIUpper,
+		OperationJSONUnicodeEscape,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("SupportedOperationKinds() = %v, want %v", got, want)
@@ -640,5 +695,66 @@ func TestRecipeApplyWithinBudgetDistinguishesBudgetFailures(t *testing.T) {
 	_, charged, err = perRecipe.ApplyWithinBudget(large, evidenceProvenanceMaxTotalBytes)
 	if !errors.Is(err, ErrEvidenceProvenanceProcessingBudget) || errors.Is(err, ErrEvidenceProvenanceFixtureProcessingBudget) || charged != evidenceProvenanceMaxTotalBytes {
 		t.Fatalf("per-recipe budget error = charged %d, err %v", charged, err)
+	}
+}
+
+// A forbidden parameter is rejected by its presence, even at its zero value,
+// in every profile; an unknown key inside an operation is still rejected; an
+// allowed parameter spelled at its zero value is still accepted; and a
+// recipe Go emits round-trips.
+func TestOperationParameterPresence(t *testing.T) {
+	decode := func(t *testing.T, recipeJSON string) (Recipe, error) {
+		t.Helper()
+		var r Recipe
+		err := json.Unmarshal([]byte(recipeJSON), &r)
+		return r, err
+	}
+	for _, digest := range []string{EvidenceProvenanceProfileV1Digest, EvidenceProvenanceProfileV2Digest, EvidenceProvenanceProfileV3Digest} {
+		for _, op := range []string{
+			`{"kind":"lowercase","decode_padding":false}`,
+			`{"kind":"lowercase","occurrence":0}`,
+			`{"kind":"lowercase","selector":""}`,
+			`{"kind":"percent_decode","passes":1,"minimum_length":0}`,
+		} {
+			r, err := decode(t, `{"transform_profile_digest":"`+digest+`","operations":[`+op+`]}`)
+			if err != nil {
+				t.Fatalf("%s: decode: %v", op, err)
+			}
+			if _, err := r.Apply("abc"); err == nil || !strings.Contains(err.Error(), "unsupported") {
+				t.Fatalf("%s under %s: err = %v, want an unsupported-parameter rejection", op, digest[:15], err)
+			}
+		}
+	}
+	if _, err := decode(t, `{"transform_profile_digest":"`+EvidenceProvenanceProfileV2Digest+`","operations":[{"kind":"lowercase","extra":1}]}`); err == nil {
+		t.Fatal("an unknown key inside an operation must be rejected")
+	}
+	for _, folded := range []string{
+		`{"kind":"json_unicode_escape","Decode_Padding":false}`,
+		`{"kind":"lowercase","DECODE_PADDING":false}`,
+		`{"kind":"lowercase","Occurrence":0}`,
+		`{"Kind":"lowercase"}`,
+	} {
+		if _, err := decode(t, `{"transform_profile_digest":"`+EvidenceProvenanceProfileV3Digest+`","operations":[`+folded+`]}`); err == nil {
+			t.Fatalf("case-folded key accepted: %s", folded)
+		}
+	}
+	r, err := decode(t, `{"transform_profile_digest":"`+EvidenceProvenanceProfileV2Digest+`","operations":[{"kind":"base32_decode_liberal","decode_padding":false}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Apply("MFRGG"); err != nil || got != "abc" {
+		t.Fatalf("allowed zero-valued parameter: got %q, err %v", got, err)
+	}
+	issued := Recipe{TransformProfileDigest: EvidenceProvenanceProfileV2Digest, Operations: []Operation{{Kind: OperationPercentDecode, Passes: 1}, {Kind: OperationLowercase}}}
+	data, err := json.Marshal(issued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := decode(t, string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := back.Apply("A%42C"); err != nil || got != "abc" {
+		t.Fatalf("Go-issued recipe round trip: got %q, err %v", got, err)
 	}
 }

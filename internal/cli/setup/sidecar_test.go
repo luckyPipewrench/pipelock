@@ -859,3 +859,27 @@ func TestRawURLAuthority(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPUpstreamHostHasMalformedPort(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]bool{
+		"host":         false,
+		"host:8080":    false,
+		"host:":        true,
+		"host:80a":     true,
+		"a:b:c":        true,
+		"[::1]":        false,
+		"[::1]:443":    false,
+		"[::1]x":       true,
+		"[::1]:44a":    true,
+		"[::1]:":       true,
+		"[::1":         true,
+		"[::1]:443:80": true,
+	}
+	for host, want := range cases {
+		if got := mcpUpstreamHostHasMalformedPort(host); got != want {
+			t.Errorf("mcpUpstreamHostHasMalformedPort(%q) = %v, want %v", host, got, want)
+		}
+	}
+}

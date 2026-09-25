@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -131,17 +132,28 @@ func TestWSRelayArmReadDeadline(t *testing.T) {
 			if !tc.cancelled {
 				go func() { _, _ = b.Write([]byte("x")) }()
 			}
-			done := make(chan error, 1)
+			type readResult struct {
+				n   int
+				buf []byte
+				err error
+			}
+			done := make(chan readResult, 1)
 			go func() {
-				_, err := a.Read(make([]byte, 1))
-				done <- err
+				buf := make([]byte, 1)
+				n, err := a.Read(buf)
+				done <- readResult{n, buf, err}
 			}()
 			select {
-			case err := <-done:
-				var nerr net.Error
-				timedOut := errors.As(err, &nerr) && nerr.Timeout()
-				if timedOut != tc.cancelled {
-					t.Fatalf("read err = %v, want timeout %v", err, tc.cancelled)
+			case got := <-done:
+				if tc.cancelled {
+					var nerr net.Error
+					if !errors.As(got.err, &nerr) || !nerr.Timeout() {
+						t.Fatalf("read err = %v, want a timeout", got.err)
+					}
+					return
+				}
+				if got.err != nil || got.n != 1 || string(got.buf) != "x" {
+					t.Fatalf("read = %d %q %v, want 1 %q <nil>", got.n, got.buf, got.err, "x")
 				}
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("read did not return")
@@ -158,10 +170,15 @@ func TestWakeRelayConnInterruptsBlockedWrite(t *testing.T) {
 	defer func() { _ = b.Close() }()
 	done := make(chan error, 1)
 	go func() {
-		// net.Pipe has no buffer and b never reads, so this write blocks.
+		// net.Pipe has no buffer, so this write blocks until b reads.
 		_, err := a.Write([]byte("frame"))
 		done <- err
 	}()
+	// Reading one byte proves the write is under way; b then stops reading,
+	// so the rest of the write stays blocked until the wake.
+	if _, err := b.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("read first byte: %v", err)
+	}
 	wakeRelayConn(a)
 	select {
 	case err := <-done:
@@ -171,5 +188,51 @@ func TestWakeRelayConnInterruptsBlockedWrite(t *testing.T) {
 		}
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("blocked write was not interrupted")
+	}
+}
+
+// A client that starts a normal close must get a close reply through the
+// relay, not an abrupt disconnect: ending one direction leaves the other
+// relayCloseGrace to carry the upstream's reply back.
+func TestWSRelayCompletesNormalCloseHandshake(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+	proxyAddr, _, cleanup := setupWSProxyWithHandlerDone(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.IdleTimeoutSeconds = 60
+		cfg.WebSocketProxy.MaxConnectionSeconds = 120
+	}, nil, nil)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, _, err := ws.Dial(ctx, fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	body := ws.NewCloseFrameBody(ws.StatusNormalClosure, "")
+	if err := ws.WriteFrame(conn, ws.MaskFrame(ws.NewCloseFrame(body))); err != nil {
+		t.Fatalf("write close: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	for {
+		hdr, err := ws.ReadHeader(conn)
+		if err != nil {
+			t.Fatalf("no close reply before the connection ended: %v", err)
+		}
+		payload := make([]byte, hdr.Length)
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			t.Fatalf("read frame payload: %v", err)
+		}
+		if hdr.OpCode != ws.OpClose {
+			continue
+		}
+		code, _ := ws.ParseCloseFrameData(payload)
+		if code != ws.StatusNormalClosure {
+			t.Fatalf("close code = %d, want %d", code, ws.StatusNormalClosure)
+		}
+		return
 	}
 }

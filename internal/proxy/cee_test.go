@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/ceereason"
 
@@ -64,6 +65,20 @@ func TestCaptureSessionKey_SafeForRecorderDirectory(t *testing.T) {
 	}
 	if strings.ContainsAny(got, `/\`) || strings.Contains(got, "..") {
 		t.Fatalf("unsafe captureSessionKey produced invalid directory segment %q", got)
+	}
+}
+
+// TestCaptureSessionKey_HashesInvalidUTF8 pins that an agent identity with
+// invalid UTF-8 becomes a hashed capture key instead of reaching the recorder,
+// which refuses such a session id and would drop the capture.
+func TestCaptureSessionKey_HashesInvalidUTF8(t *testing.T) {
+	agent := "agent" + string([]byte{0xff})
+	safe, original := captureSessionKeyAndOriginal(agent, testCEEClientIP)
+	if !strings.HasPrefix(safe, "capture-") || !utf8.ValidString(safe) {
+		t.Fatalf("captureSessionKey = %q, want a hashed UTF-8 capture key", safe)
+	}
+	if original == safe {
+		t.Fatalf("original identity not preserved for audit: %q", original)
 	}
 }
 

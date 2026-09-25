@@ -1181,3 +1181,47 @@ func TestPrintVerifyTable_WithFailures(t *testing.T) {
 		t.Errorf("expected 'Containment: exposed' in output:\n%s", out)
 	}
 }
+
+// TestSignVerifyReport_InvalidUTF8DetailVerifiesAfterParse covers a check
+// detail holding invalid UTF-8, for example an error string built from
+// system output. A verifier rebuilds the signed bytes from the parsed report,
+// so the signature must cover the form that parse produces.
+func TestSignVerifyReport_InvalidUTF8DetailVerifiesAfterParse(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating signing key: %v", err)
+	}
+	report := VerifyReport{Checks: []VerifyReportCheck{{
+		Name:     "no_direct_http",
+		Category: verifyCatContainment,
+		Status:   verifyStatusUnknown,
+		Detail:   "dial failed: " + string([]byte{0xff}),
+	}}}
+	keyPath := filepath.Join(t.TempDir(), "verify.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("saving signing key: %v", err)
+	}
+	if err := signVerifyReport(&report, keyPath); err != nil {
+		t.Fatalf("signing report: %v", err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshalling signed report: %v", err)
+	}
+	var decoded VerifyReport
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshalling signed report: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(decoded.Signature)
+	if err != nil {
+		t.Fatalf("decoding signature: %v", err)
+	}
+	decoded.Signature = ""
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("canonical marshal: %v", err)
+	}
+	if !ed25519.Verify(pub, canonical, sig) {
+		t.Fatal("signature does not verify over the parsed report")
+	}
+}

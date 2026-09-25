@@ -696,10 +696,14 @@ type BodyScanRequest struct {
 // credential exfiltration and prompt injection.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
-func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScanResult) {
+func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final BodyScanResult) {
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
-		if req.OnCredentialAudienceAllow == nil {
+		// An audience allow is evidence that a credential was delivered. A
+		// pre-redaction DLP pass can collect one before redaction, content
+		// entropy, or injection scanning blocks the body, so emit only for a
+		// body whose final result is clean.
+		if req.OnCredentialAudienceAllow == nil || !final.Clean {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {

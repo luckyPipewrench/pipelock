@@ -336,6 +336,11 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 
 const authorizedCredentialPlaceholder = "[authorized-credential]"
 
+// maxAuthorizedEncodedFields bounds the whitespace-separated fields rescanned
+// in one carrier header value. Authorization, PRIVATE-TOKEN, and JOB-TOKEN
+// carry a scheme plus one credential; the margin tolerates stray tokens.
+const maxAuthorizedEncodedFields = 8
+
 // scrubAuthorizedEncodedFields covers the decoded views the raw regex pass
 // cannot see, such as HTTP Basic credentials: base64("oauth2:<token>"). A
 // field is replaced only when every carrier-restricted match found in it is
@@ -343,7 +348,15 @@ const authorizedCredentialPlaceholder = "[authorized-credential]"
 // same decision the per-header scan reached for that occurrence. Unallowed and
 // unrestricted matches are still reported by the per-header scan.
 func (s *Scanner) scrubAuthorizedEncodedFields(value, target, surface string) string {
-	for _, field := range strings.Fields(value) {
+	fields := strings.Fields(value)
+	if len(fields) > maxAuthorizedEncodedFields {
+		// A carrier header holds a scheme and one credential. A value with
+		// many more fields is not a credential the audience rule describes,
+		// and rescanning each field would let a crafted header multiply scan
+		// work. Leave it unscrubbed so the joined scan keeps every match.
+		return value
+	}
+	for _, field := range fields {
 		if field == authorizedCredentialPlaceholder {
 			continue
 		}

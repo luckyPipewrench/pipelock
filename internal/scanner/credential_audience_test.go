@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -67,6 +68,24 @@ func TestScan_CredentialAudienceHosts_FailsClosedForLookalikesAndCore(t *testing
 	}
 	if core.Scanner != ScannerCoreDLP {
 		t.Fatalf("core pattern scanner = %q, want %q", core.Scanner, ScannerCoreDLP)
+	}
+}
+
+// A carrier header with many fields is left unscrubbed rather than rescanned
+// field by field, so the joined scan keeps the match and the request blocks.
+func TestScrubAuthorizedEncodedFieldsBoundsFieldCount(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	token := "ya29." + strings.Repeat("a", 24)
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+	within := "Basic " + base64.StdEncoding.EncodeToString([]byte("oauth2:"+token))
+	if got := s.scrubAuthorizedEncodedFields(within, target, CredentialAudienceAuthorizationHeaderSurface); got == within {
+		t.Fatalf("control: encoded qualified token was not scrubbed: %q", got)
+	}
+	padded := within + strings.Repeat(" x", maxAuthorizedEncodedFields)
+	if got := s.scrubAuthorizedEncodedFields(padded, target, CredentialAudienceAuthorizationHeaderSurface); got != padded {
+		t.Fatalf("over-limit header was rescanned and scrubbed: %q", got)
 	}
 }
 

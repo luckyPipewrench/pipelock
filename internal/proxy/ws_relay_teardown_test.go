@@ -35,10 +35,11 @@ func TestWSRelayEndsPromptlyWhenEitherSideLeaves(t *testing.T) {
 			// The upstream-leaves backend echoes once and then closes its own
 			// hijacked connection; http.Server.Close does not close hijacked
 			// connections, so closing the server would not end the relay.
-			backendAddr, backendCleanup := wsEchoServer(t)
+			newBackend := wsEchoServer
 			if !tc.closeClient {
-				backendAddr, backendCleanup = wsEchoOnceServer(t)
+				newBackend = wsEchoOnceServer
 			}
+			backendAddr, backendCleanup := newBackend(t)
 			defer backendCleanup()
 
 			done := make(chan struct{})
@@ -146,5 +147,29 @@ func TestWSRelayArmReadDeadline(t *testing.T) {
 				t.Fatal("read did not return")
 			}
 		})
+	}
+}
+
+// wakeRelayConn must interrupt a write blocked on a peer that stopped reading,
+// not only a blocked read.
+func TestWakeRelayConnInterruptsBlockedWrite(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() { _ = a.Close() }()
+	defer func() { _ = b.Close() }()
+	done := make(chan error, 1)
+	go func() {
+		// net.Pipe has no buffer and b never reads, so this write blocks.
+		_, err := a.Write([]byte("frame"))
+		done <- err
+	}()
+	wakeRelayConn(a)
+	select {
+	case err := <-done:
+		var nerr net.Error
+		if !errors.As(err, &nerr) || !nerr.Timeout() {
+			t.Fatalf("blocked write returned %v, want a timeout", err)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("blocked write was not interrupted")
 	}
 }

@@ -1389,6 +1389,16 @@ func (c *wsDialPrefixedConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
+// wakeRelayConn interrupts a read or write blocked on conn when the relay
+// ends, so a peer that stopped reading cannot hold the other direction's
+// write, and with it the whole relay, open. A final close frame still goes
+// out: the close-frame writers set their own write deadline first.
+func wakeRelayConn(conn net.Conn) {
+	now := time.Now()
+	_ = conn.SetReadDeadline(now)
+	_ = conn.SetWriteDeadline(now)
+}
+
 // armReadDeadline re-arms conn's idle read deadline for the next read. When
 // the relay is already cancelled it moves the deadline to now instead, so the
 // read wakes at once and the loop exits on its next check. The order matters:
@@ -1415,9 +1425,9 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	// Without this, a client that disconnected left the upstream reader
 	// waiting out the full idle timeout, holding the upstream socket and the
 	// scanner for that long.
-	stopUpstreamWake := context.AfterFunc(ctx, func() { _ = r.upstreamConn.SetReadDeadline(time.Now()) })
+	stopUpstreamWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.upstreamConn) })
 	defer stopUpstreamWake()
-	stopClientWake := context.AfterFunc(ctx, func() { _ = r.clientConn.SetReadDeadline(time.Now()) })
+	stopClientWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.clientConn) })
 	defer stopClientWake()
 
 	// Use separate per-direction counters to avoid data races. The goroutine

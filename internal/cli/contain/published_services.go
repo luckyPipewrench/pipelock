@@ -752,8 +752,8 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 	if host == "::1" {
 		want["00000000000000000000000001000000"] = true
 	} else {
-		// A tcp6 wildcard may be IPv6-only; /proc does not expose IPV6_V6ONLY.
-		files = []string{"tcp"}
+		// A tcp6 wildcard accepts IPv4 when the namespace default is dual-stack.
+		files = []string{"tcp", "tcp6"}
 		want["0100007F"] = true
 		want["00000000"] = true
 	}
@@ -773,6 +773,12 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			}
 			addr, p, ok := strings.Cut(fields[1], ":")
 			if ok && p == portHex && fields[3] == "0A" && want[addr] {
+				if name == "tcp6" && host != "::1" {
+					bindV6Only, readErr := env.readFile(filepath.Join(procRoot, "sys/net/ipv6/bindv6only"))
+					if readErr != nil || strings.TrimSpace(string(bindV6Only)) != "0" {
+						continue
+					}
+				}
 				return true, nil
 			}
 		}

@@ -563,19 +563,34 @@ func TestAgentNamespaceListensRealProcTable(t *testing.T) {
 	}
 }
 
-func TestAgentNamespaceListensIPv4RejectsIPv6Wildcard(t *testing.T) {
+func TestAgentNamespaceListensIPv4WildcardFamilies(t *testing.T) {
 	const port = 9000
 	tcp6 := "  0: 00000000000000000000000000000000:2328 00000000000000000000000000000000:0000 0A\n"
 	tcp := "  0: 00000000:2328 00000000:0000 0A\n"
+	bindValue := "1"
 	env := &probeEnv{readFile: func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "/bindv6only") {
+			if bindValue == "unreadable" {
+				return nil, os.ErrPermission
+			}
+			return []byte(bindValue), nil
+		}
 		if strings.HasSuffix(path, "/tcp6") {
 			return []byte("header\n" + tcp6), nil
 		}
 		return []byte("header\n"), nil
 	}}
-	got, err := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
-	if err != nil || got {
-		t.Fatalf("IPv6-only wildcard = %v, %v; want false, nil", got, err)
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"0", true}, {"1", false}, {"unreadable", false},
+	} {
+		bindValue = tc.value
+		got, err := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+		if err != nil || got != tc.want {
+			t.Fatalf("bindv6only %q = %v, %v; want %v, nil", tc.value, got, err, tc.want)
+		}
 	}
 	env.readFile = func(path string) ([]byte, error) {
 		if strings.HasSuffix(path, "/tcp") {
@@ -583,7 +598,7 @@ func TestAgentNamespaceListensIPv4RejectsIPv6Wildcard(t *testing.T) {
 		}
 		return []byte("header\n"), nil
 	}
-	got, err = agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	got, err := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
 	if err != nil || !got {
 		t.Fatalf("IPv4 wildcard = %v, %v; want true, nil", got, err)
 	}

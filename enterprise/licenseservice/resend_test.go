@@ -481,8 +481,17 @@ func TestResendOneLicenseRechecksTheReloadedRow(t *testing.T) {
 	rec := recordEmails(t, ts.handler)
 	now := time.Now()
 
-	// A webhook rewrote the address between the lookup and the reload.
-	if ok, err := ts.handler.resendOneLicense(t.Context(), orderID, "someone-else@example.com", map[string]bool{}, now); err != nil || ok {
+	// The lookup finds the license while the stored address matches.
+	ids, err := ts.db.ResendableSubscriptionIDsForEmail(t.Context(), "moved@example.com", now)
+	if err != nil || len(ids) != 1 || ids[0] != orderID {
+		t.Fatalf("lookup = %v, %v; want the license", ids, err)
+	}
+	// A webhook then rewrites the stored address before the reload.
+	if _, err := ts.db.db.ExecContext(t.Context(),
+		`UPDATE entitlements SET customer_email = 'new-owner@example.com' WHERE subscription_id = ?`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ts.handler.resendOneLicense(t.Context(), orderID, "moved@example.com", map[string]bool{}, now); err != nil || ok {
 		t.Fatalf("changed address = %v, %v; want refused", ok, err)
 	}
 	// The row disappeared.
@@ -506,6 +515,12 @@ func TestResendableSubscriptionIDsSkipsUnparseableStoredAddress(t *testing.T) {
 			last_license_interval, last_license_product_id, last_delivery_status, last_delivery_attempt_at,
 			next_refresh_at, created_at, updated_at
 		FROM entitlements WHERE subscription_id = ?`, orderID+"-valid", orderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.db.db.ExecContext(t.Context(), `
+		INSERT INTO license_issuances (license_id, subscription_id, expires_at, issued_at)
+		SELECT license_id || '-valid', ?, expires_at, issued_at FROM license_issuances WHERE subscription_id = ?`,
+		orderID+"-valid", orderID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.db.db.ExecContext(t.Context(),
@@ -870,5 +885,85 @@ func TestEnsureResendSendsColumnFailsClosed(t *testing.T) {
 	}
 	if err := db.ensureResendSendsColumn(t.Context()); err == nil {
 		t.Fatal("migration against an unusable database must fail")
+	}
+}
+
+func TestResendClientLimiter(t *testing.T) {
+	l := newResendClientLimiter()
+	now := time.Now()
+	for i := 0; i < resendClientMax; i++ {
+		if !l.allow("198.51.100.7", now) {
+			t.Fatalf("request %d refused inside the limit", i+1)
+		}
+	}
+	if l.allow("198.51.100.7", now) {
+		t.Fatal("request over the per-client limit was allowed")
+	}
+	if !l.allow("198.51.100.8", now) {
+		t.Fatal("a different client was refused")
+	}
+	if !l.allow("198.51.100.7", now.Add(resendClientWindow)) {
+		t.Fatal("the window did not reset")
+	}
+}
+
+func TestResendClientLimiterTableFull(t *testing.T) {
+	l := newResendClientLimiter()
+	now := time.Now()
+	for i := 0; i < resendClientTableMax; i++ {
+		l.clients[fmt.Sprintf("c%d", i)] = &resendClientWindowState{start: now, count: 1}
+	}
+	if l.allow("newcomer", now) {
+		t.Fatal("a new client was tracked past the table cap")
+	}
+	// Once the tracked windows expire, room is reclaimed.
+	if !l.allow("newcomer", now.Add(resendClientWindow)) {
+		t.Fatal("expired entries were not reclaimed")
+	}
+}
+
+func TestHandleLicenseResendLimitsPerClient(t *testing.T) {
+	s, _ := newResendTestServer(t, "")
+	post := func(remote, header string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/license/resend", strings.NewReader(`{"email":"someone@example.com"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remote
+		if header != "" {
+			req.Header.Set("X-Forwarded-For", header)
+		}
+		rr := httptest.NewRecorder()
+		s.mux.ServeHTTP(rr, req)
+		if rr.Code == http.StatusTooManyRequests && rr.Header().Get("Retry-After") == "" {
+			t.Fatal("429 without Retry-After")
+		}
+		return rr.Code
+	}
+	for i := 0; i < resendClientMax; i++ {
+		if code := post("203.0.113.9:4000", ""); code != http.StatusAccepted {
+			t.Fatalf("request %d = %d, want 202", i+1, code)
+		}
+	}
+	if code := post("203.0.113.9:4001", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("over-limit request = %d, want 429", code)
+	}
+	// Without a configured header, a forwarded address is ignored.
+	if code := post("203.0.113.9:4002", "192.0.2.50"); code != http.StatusTooManyRequests {
+		t.Fatalf("unconfigured header changed the client identity: %d", code)
+	}
+}
+
+func TestResendClientAddressFromTrustedHeader(t *testing.T) {
+	s, _ := newResendTestServer(t, "")
+	s.cfg.SelfServeResendClientIPHeader = "X-Forwarded-For"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/license/resend", nil)
+	req.RemoteAddr = "10.0.0.2:5000"
+	// The caller controls the first value; the ingress appends the last.
+	req.Header.Set("X-Forwarded-For", "192.0.2.99, 198.51.100.20")
+	if got := s.resendClientAddress(req); got != "198.51.100.20" {
+		t.Fatalf("client address = %q, want the value the ingress appended", got)
+	}
+	req.Header.Del("X-Forwarded-For")
+	if got := s.resendClientAddress(req); got != "10.0.0.2" {
+		t.Fatalf("client address without header = %q, want the remote address", got)
 	}
 }

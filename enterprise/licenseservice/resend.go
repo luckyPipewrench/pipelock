@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -420,10 +422,87 @@ func (s *Server) stopResendWorker(ctx context.Context) {
 	})
 }
 
+// Per-client limits run before a request is queued or looked up, so an
+// anonymous caller cannot fill the queue with lookups for addresses that
+// match nothing. They depend only on the caller, never on the address.
+const (
+	// resendClientWindow and resendClientMax allow a few retries from one
+	// caller, far more than a customer recovering a license needs.
+	resendClientWindow = 15 * time.Minute
+	resendClientMax    = 5
+	// resendClientTableMax bounds the tracked callers. When it is full and no
+	// entry has expired, new callers are refused rather than tracked, so the
+	// table cannot be grown without limit.
+	resendClientTableMax = 10000
+)
+
+type resendClientWindowState struct {
+	start time.Time
+	count int
+}
+
+type resendClientLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*resendClientWindowState
+}
+
+func newResendClientLimiter() *resendClientLimiter {
+	return &resendClientLimiter{clients: make(map[string]*resendClientWindowState)}
+}
+
+// allow reports whether client may submit another request at now.
+func (l *resendClientLimiter) allow(client string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st, ok := l.clients[client]; ok {
+		if now.Sub(st.start) >= resendClientWindow {
+			st.start, st.count = now, 0
+		}
+		if st.count >= resendClientMax {
+			return false
+		}
+		st.count++
+		return true
+	}
+	if len(l.clients) >= resendClientTableMax {
+		for key, st := range l.clients {
+			if now.Sub(st.start) >= resendClientWindow {
+				delete(l.clients, key)
+			}
+		}
+		if len(l.clients) >= resendClientTableMax {
+			return false
+		}
+	}
+	l.clients[client] = &resendClientWindowState{start: now, count: 1}
+	return true
+}
+
+// resendClientAddress identifies the caller for the per-client limit.
+func (s *Server) resendClientAddress(r *http.Request) string {
+	if h := s.cfg.SelfServeResendClientIPHeader; h != "" {
+		if v := r.Header.Get(h); v != "" {
+			parts := strings.Split(v, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
+			}
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 // handleLicenseResend accepts a JSON body {"email": "..."} or an HTML form
 // field "email". Every request that can be read gets the same response, and
 // the work happens on the background worker.
 func (s *Server) handleLicenseResend(w http.ResponseWriter, r *http.Request) {
+	if !s.clients.allow(s.resendClientAddress(r), s.now()) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(resendClientWindow/time.Second)))
+		http.Error(w, "too many requests, try again later", http.StatusTooManyRequests)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxResendBody+1))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)

@@ -28,7 +28,7 @@ Admitted requests are limited per address (one per 15 minutes, three per 24 hour
 
 When the pending-request queue is full, or the service is shutting down, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service drains accepted requests while the shutdown deadline permits. Requests still queued or running when the deadline expires may be abandoned.
 
-The service limits what gets sent, not how many lookups anonymous callers ask for. Before enabling the endpoint, put a per-client rate limit on `/v1/license/resend` at the ingress or load balancer that sees the real client address, so one caller cannot keep the queue full.
+Each caller may make five requests per 15 minutes before anything is queued or looked up; more get `429 Too Many Requests` with `Retry-After`, which depends only on the caller. The caller is the connection's remote address. When the service is reachable only through an ingress that records the client address in a header, set `SELF_SERVE_RESEND_CLIENT_IP_HEADER` to that header; the last comma-separated value is used, because the ingress appends it and the caller cannot. Do not set it when callers can reach the service directly, or they can choose their own identity. A per-client limit at the ingress is still a sensible second layer.
 
 ## Feature Mapping
 

@@ -9,6 +9,7 @@ package licenseservice
 import (
 	"crypto/ed25519"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -129,6 +130,13 @@ type Config struct {
 	// SelfServeResendReturnURL, when set, is where an HTML form submission is
 	// redirected after it is accepted. It must be an absolute https URL.
 	SelfServeResendReturnURL string
+
+	// SelfServeResendClientIPHeader names the header a trusted ingress sets to
+	// the caller's address, used for the per-client resend limit. The last
+	// comma-separated value is used, because an appending proxy writes it and
+	// the caller cannot. Leave empty unless the service is only reachable
+	// through that ingress; empty uses the connection's remote address.
+	SelfServeResendClientIPHeader string
 }
 
 // SubscriptionProductConfig pins a Polar subscription product to the server-side
@@ -311,6 +319,7 @@ func LoadConfig() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("SELF_SERVE_RESEND_ENABLED must be true or false, got %q", v)
 	}
+	cfg.SelfServeResendClientIPHeader = http.CanonicalHeaderKey(strings.TrimSpace(os.Getenv("SELF_SERVE_RESEND_CLIENT_IP_HEADER")))
 	if raw := strings.TrimSpace(os.Getenv("SELF_SERVE_RESEND_RETURN_URL")); raw != "" {
 		u, err := url.Parse(raw)
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {

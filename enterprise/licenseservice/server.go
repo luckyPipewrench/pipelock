@@ -44,6 +44,7 @@ type Server struct {
 	srv     *http.Server
 	now     func() time.Time
 	resend  *resendWorker
+	clients *resendClientLimiter
 
 	crlMu         sync.Mutex
 	crlCache      []byte
@@ -76,6 +77,7 @@ func NewServer(
 	s.mux.HandleFunc("GET /ready", s.handleReady)
 	if cfg.SelfServeResendEnabled {
 		s.startResendWorker()
+		s.clients = newResendClientLimiter()
 		s.mux.HandleFunc("POST /v1/license/resend", s.handleLicenseResend)
 	}
 

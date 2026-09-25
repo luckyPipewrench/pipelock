@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -2115,6 +2116,14 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return false, err
 	}
+	listenerData, err := env.readFile(managedPipelockConfigPath(env))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read managed listener config: %w", err)
+	}
+	agentListener, err := agentListenerFromConfigBytes(listenerData)
+	if err != nil {
+		return false, fmt.Errorf("managed listener config: %w", err)
+	}
 	body := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         proxyUID,
@@ -2123,6 +2132,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		Table:            env.nftTableOrDefault(),
 		Chain:            env.nftChainOrDefault(),
 		LoopbackServices: loopbackServices,
+		AgentListener:    agentListener,
 	})
 
 	rulesMatch := false
@@ -2765,6 +2775,7 @@ type nftRuleOptions struct {
 	Table            string
 	Chain            string
 	LoopbackServices []config.ContainmentLoopbackService
+	AgentListener    string
 }
 
 // renderNFTRules emits the table definition with concrete UIDs interpolated.
@@ -2787,13 +2798,26 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 // services are reconciled into namespace-bound socket units. The host ruleset
 // contains only the implicit proxy-port exception, never a declared service.
 func renderNFTRulesWithServices(opts nftRuleOptions) string {
+	listenerRule := ""
+	if opts.AgentListener != "" {
+		host, port, err := net.SplitHostPort(opts.AgentListener)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			return "invalid containment.agent_listener\n"
+		}
+		family := "ip"
+		if ip.To4() == nil {
+			family = "ip6"
+		}
+		listenerRule = fmt.Sprintf("\t        meta skuid != { 0, %d } %s daddr %s tcp dport %s counter log prefix \"pipelock_agent_listener_blocked \" drop\n", opts.ProxyUID, family, host, port)
+	}
 	return fmt.Sprintf(`# Pipelock containment ruleset (managed by pipelock contain install).
 	# operator=%d  pipelock-proxy=%d  pipelock-agent=%d  proxy-port=%d
 	table inet %s {
 	    chain %s {
 	        type filter hook output priority filter; policy accept;
 
-	        meta skuid %d accept
+%s	        meta skuid %d accept
 	        meta skuid %d accept
 
 	        meta skuid %d ip daddr 127.0.0.1 tcp dport %d accept
@@ -2802,7 +2826,7 @@ func renderNFTRulesWithServices(opts nftRuleOptions) string {
 	        meta skuid %d counter log prefix "%s " drop
 	    }
 }
-`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain,
+`, opts.OperatorUID, opts.ProxyUID, opts.AgentUID, opts.ProxyPort, opts.Table, opts.Chain, listenerRule,
 		opts.OperatorUID, opts.ProxyUID,
 		opts.AgentUID, opts.ProxyPort,
 		opts.AgentUID, nftLogPrefix(EgressClassDirectDNS),

@@ -43,9 +43,8 @@ type ContainmentConfig struct {
 	// must be one of the listeners declared under agents.<name>.listeners, so
 	// the proxy attributes that traffic to the profile bound to the listener.
 	// Only processes inside the agent's network namespace can reach the
-	// doorway and only Pipelock's relay dials the listener, so the binding
-	// cannot be claimed by another local client or forged from inside the
-	// namespace. Empty keeps the shared proxy listener.
+	// doorway. The managed host nftables rule restricts the listener to the
+	// relay account and root. Empty keeps the shared proxy listener.
 	AgentListener string `yaml:"agent_listener,omitempty"`
 }
 

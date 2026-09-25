@@ -1168,6 +1168,12 @@ func TestProbeNFTContainment(t *testing.T) {
 			env := makeProbeEnv(t, func(e *probeEnv) {
 				e.operatorUser = testOperatorUser
 				e.lookupUser = containTestLookup
+				e.readFile = func(path string) ([]byte, error) {
+					if path == e.configPath {
+						return nil, os.ErrNotExist
+					}
+					return rejectAllReadFile(path)
+				}
 				e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
 					return tc.stdout, tc.code, tc.runErr
 				}
@@ -1392,6 +1398,9 @@ func TestVerifyNFTPersistence_RequiresEveryManagedDirective(t *testing.T) {
 					if path == env.nftPersistUnitPath {
 						return []byte(canonical), nil
 					}
+					if path == env.configPath {
+						return nil, os.ErrNotExist
+					}
 					return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 				}
 			})
@@ -1405,6 +1414,9 @@ func TestVerifyNFTPersistence_RequiresEveryManagedDirective(t *testing.T) {
 			env.readFile = func(path string) ([]byte, error) {
 				if path == env.nftPersistUnitPath {
 					return []byte(body), nil
+				}
+				if path == env.configPath {
+					return nil, os.ErrNotExist
 				}
 				return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 			}
@@ -2659,6 +2671,12 @@ func TestProbeNFTContainment_JumpBeforeDropIsNeverPass(t *testing.T) {
 		env := makeProbeEnv(t, func(e *probeEnv) {
 			e.operatorUser = testOperatorUser
 			e.lookupUser = containTestLookup
+			e.readFile = func(path string) ([]byte, error) {
+				if path == e.configPath {
+					return nil, os.ErrNotExist
+				}
+				return rejectAllReadFile(path)
+			}
 			e.nftRulesPath = ""
 			e.nftPersistUnitPath = ""
 			e.runCmd = func(context.Context, string, ...string) (string, int, error) {

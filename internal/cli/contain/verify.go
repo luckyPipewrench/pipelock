@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1734,6 +1735,20 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
 		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
+	listenerData, listenerReadErr := env.readFile(env.configPath)
+	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+		return statusFail, fmt.Sprintf("read managed listener config: %v", listenerReadErr), false
+	}
+	agentListener, listenerErr := agentListenerFromConfigBytes(listenerData)
+	if listenerErr != nil {
+		return statusFail, fmt.Sprintf("parse managed listener config: %v", listenerErr), false
+	}
+	if agentListener != "" && !chainLinesHaveAgentListenerGuard(lines, agentListener, current.proxyUID) {
+		return statusFail, "chain present but containment.agent_listener owner guard is missing or malformed", false
+	}
+	if agentListener == "" && chainLinesHaveAgentListenerGuardLine(lines) {
+		return statusFail, "chain contains a containment.agent_listener owner guard but no listener is configured", false
+	}
 	if current.operatorKnown && !chainLinesHaveSkuidAcceptForUID(lines, current.operatorUID) {
 		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID), false
 	}
@@ -1985,6 +2000,14 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		}
 	}
 	loopbackServices, _, _ := declaredContainmentLoopbackServicesForVerify(env, env.port)
+	listenerData, listenerReadErr := env.readFile(env.configPath)
+	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
+		return fmt.Errorf("read managed listener config: %w", listenerReadErr)
+	}
+	agentListener, listenerErr := agentListenerFromConfigBytes(listenerData)
+	if listenerErr != nil {
+		return fmt.Errorf("parse managed listener config: %w", listenerErr)
+	}
 	want := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
 		ProxyUID:         current.proxyUID,
@@ -1993,6 +2016,7 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		Table:            env.nftTable,
 		Chain:            env.nftChain,
 		LoopbackServices: loopbackServices,
+		AgentListener:    agentListener,
 	})
 	if string(rules) != want {
 		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
@@ -2137,6 +2161,47 @@ func chainLinesHaveSkuidAcceptForUID(lines []string, uid int) bool {
 func chainLinesHaveAgentProxyLoopbackAllowBeforeDrop(lines []string, agentUID, port int) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
 		return lineHasAgentProxyLoopbackAllow(line, agentUID, port)
+	})
+}
+
+func chainLinesHaveAgentListenerGuard(lines []string, listener string, proxyUID int) bool {
+	host, port, err := net.SplitHostPort(listener)
+	if err != nil {
+		return false
+	}
+	family := "ip"
+	if net.ParseIP(host).To4() == nil {
+		family = "ip6"
+	}
+	found := 0
+	for _, line := range lines {
+		fields := nftLineFields(line)
+		if len(fields) == 0 || fields[0] == "type" || fields[0] == "chain" || fields[0] == "{" || fields[0] == "}" {
+			continue
+		}
+		if found == 0 && (lineHasTerminalSkuidVerdict(line, proxyUID, "accept") || lineHasAnyToken(line, "accept")) {
+			return false
+		}
+		if !strings.Contains(line, "pipelock_agent_listener_blocked") {
+			continue
+		}
+		if len(fields) < 13 || !slices.Equal(fields[:7], []string{"meta", "skuid", "!=", "{", "0,", strconv.Itoa(proxyUID), "}"}) {
+			return false
+		}
+		if fields[7] == family && fields[8] == "daddr" && fields[9] == host &&
+			fields[10] == "tcp" && fields[11] == "dport" && fields[12] == port &&
+			fieldsHaveNFTCounterLogDrop(fields[13:], "pipelock_agent_listener_blocked ") {
+			found++
+			continue
+		}
+		return false
+	}
+	return found == 1
+}
+
+func chainLinesHaveAgentListenerGuardLine(lines []string) bool {
+	return chainLinesHaveLine(lines, func(line string) bool {
+		return strings.Contains(line, "pipelock_agent_listener_blocked")
 	})
 }
 
@@ -2289,6 +2354,9 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 			return false
 		}
 		if lineHasAgentProxyLoopbackAllow(line, uids.agentUID, proxyPort) {
+			return false
+		}
+		if lineHasAgentListenerGuardForProxy(line, uids.proxyUID) {
 			return false
 		}
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {

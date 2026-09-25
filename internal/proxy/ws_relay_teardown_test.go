@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -103,4 +104,47 @@ func wsEchoOnceServer(t *testing.T) (string, func()) {
 	}
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr().String(), func() { _ = srv.Close() }
+}
+
+// armReadDeadline must wake a read at once when the relay is already
+// cancelled, and otherwise leave the read waiting for data.
+func TestWSRelayArmReadDeadline(t *testing.T) {
+	r := &wsRelay{clockStart: time.Now()}
+	for _, tc := range []struct {
+		name      string
+		cancelled bool
+	}{
+		{"cancelled relay wakes the read", true},
+		{"live relay waits for data", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := net.Pipe()
+			defer func() { _ = a.Close() }()
+			defer func() { _ = b.Close() }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancelled {
+				cancel()
+			}
+			r.armReadDeadline(ctx, a, time.Minute)
+			if !tc.cancelled {
+				go func() { _, _ = b.Write([]byte("x")) }()
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := a.Read(make([]byte, 1))
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				var nerr net.Error
+				timedOut := errors.As(err, &nerr) && nerr.Timeout()
+				if timedOut != tc.cancelled {
+					t.Fatalf("read err = %v, want timeout %v", err, tc.cancelled)
+				}
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Fatal("read did not return")
+			}
+		})
+	}
 }

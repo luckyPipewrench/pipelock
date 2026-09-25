@@ -197,6 +197,8 @@ func (h *WebhookHandler) ResendLicensesForEmail(ctx context.Context, rawEmail st
 		ids = ids[:resendMaxLicensesPerRequest]
 	}
 	sent := 0
+	var prepared []*preparedResend
+	var firstErr error
 	err = h.db.withTrialSupportLock(ctx, func() error {
 		h.processMu.Lock()
 		defer h.processMu.Unlock()
@@ -217,9 +219,8 @@ func (h *WebhookHandler) ResendLicensesForEmail(ctx context.Context, rawEmail st
 		if err != nil {
 			return err
 		}
-		var firstErr error
 		for _, subID := range ids {
-			ok, err := h.resendOneLicense(ctx, subID, normalized, revoked, now)
+			p, err := h.prepareResend(ctx, subID, normalized, revoked, now)
 			if err != nil {
 				h.log.Error().Err(err).Str("subscription_id", subID).Msg("self-serve license resend")
 				if firstErr == nil {
@@ -227,13 +228,31 @@ func (h *WebhookHandler) ResendLicensesForEmail(ctx context.Context, rawEmail st
 				}
 				continue
 			}
-			if ok {
-				sent++
+			if p != nil {
+				prepared = append(prepared, p)
 			}
 		}
-		return firstErr
+		return nil
 	})
-	return sent, err
+	if err != nil {
+		return 0, err
+	}
+	// Delivery runs after the locks are released: a slow mail provider must
+	// not hold up webhook processing. Each token was checked and its request
+	// audited under the locks. A webhook that lands in between can at most
+	// mean an already-verified address receives a token the revocation list
+	// then disables; it can never redirect a token to another address.
+	for _, p := range prepared {
+		if err := h.deliverPreparedResend(ctx, p, now); err != nil {
+			h.log.Error().Err(err).Str("subscription_id", p.ent.SubscriptionID).Msg("self-serve license resend")
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		sent++
+	}
+	return sent, firstErr
 }
 
 func (h *WebhookHandler) revokedLicenseIDs(ctx context.Context) (map[string]bool, error) {
@@ -248,30 +267,50 @@ func (h *WebhookHandler) revokedLicenseIDs(ctx context.Context) (map[string]bool
 	return revoked, nil
 }
 
-// resendOneLicense re-checks one entitlement under the lock and delivers its
-// existing token. It reports false without error when the entitlement stopped
-// qualifying between the lookup and now.
+// preparedResend is one license checked and audited under the locks, ready to
+// deliver after they are released.
+type preparedResend struct {
+	ent   *Entitlement
+	token string
+}
+
+// resendOneLicense prepares and delivers one license. The self-serve path
+// calls the two halves separately so delivery runs outside the locks.
 func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized string, revoked map[string]bool, now time.Time) (bool, error) {
+	p, err := h.prepareResend(ctx, subID, normalized, revoked, now)
+	if err != nil || p == nil {
+		return false, err
+	}
+	if err := h.deliverPreparedResend(ctx, p, now); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// prepareResend re-checks one entitlement, records the request in the audit
+// ledger and rebuilds its existing token. It returns nil without error when
+// the entitlement stopped qualifying between the lookup and now.
+func (h *WebhookHandler) prepareResend(ctx context.Context, subID, normalized string, revoked map[string]bool, now time.Time) (*preparedResend, error) {
 	ent, err := h.db.GetBySubscriptionID(ctx, subID)
 	if err != nil {
-		return false, fmt.Errorf("reload entitlement for resend: %w", err)
+		return nil, fmt.Errorf("reload entitlement for resend: %w", err)
 	}
 	if ent == nil || ent.Status != statusActive || ent.LastLicenseID == "" || revoked[ent.LastLicenseID] {
-		return false, nil
+		return nil, nil
 	}
 	if ent.LastLicenseExpiresAt == nil || !now.Before(*ent.LastLicenseExpiresAt) {
-		return false, nil
+		return nil, nil
 	}
 	// The address is compared again because the entitlement row may have been
 	// rewritten by a webhook between the lookup and this reload.
 	if canonical, nerr := NormalizeEmail(ent.CustomerEmail); nerr != nil || canonical != normalized {
-		return false, nil
+		return nil, nil
 	}
 	// Only a token whose issuance was durably recorded is re-sent, the same
 	// requirement the operator resend enforces.
 	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, subID, now)
 	if err != nil {
-		return false, fmt.Errorf("verify persisted issuance: %w", err)
+		return nil, fmt.Errorf("verify persisted issuance: %w", err)
 	}
 	matched := false
 	for _, issuance := range issuances {
@@ -281,7 +320,7 @@ func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized
 		}
 	}
 	if !matched {
-		return false, nil
+		return nil, nil
 	}
 	if err := h.ledger.Log(AuditEntry{
 		Event:          AuditLicenseResendRequested,
@@ -292,40 +331,46 @@ func (h *WebhookHandler) resendOneLicense(ctx context.Context, subID, normalized
 		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
 		Detail:         resendReasonSelfServe,
 	}); err != nil {
-		return false, fmt.Errorf("record license resend request: %w", err)
+		return nil, fmt.Errorf("record license resend request: %w", err)
 	}
 	token, err := h.regenerateToken(ent)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if ent.Tier == tierEnterpriseEval {
-		err = h.deliverEvalToken(ctx, ent, token)
+	return &preparedResend{ent: ent, token: token}, nil
+}
+
+// deliverPreparedResend sends a prepared license and confirms the delivery.
+func (h *WebhookHandler) deliverPreparedResend(ctx context.Context, p *preparedResend, now time.Time) error {
+	var err error
+	if p.ent.Tier == tierEnterpriseEval {
+		err = h.deliverEvalToken(ctx, p.ent, p.token)
 	} else {
-		err = h.deliverLicenseEmail(ctx, ent, token, ent.LastLicenseTier, now)
+		err = h.deliverLicenseEmail(ctx, p.ent, p.token, p.ent.LastLicenseTier, now)
 	}
 	if err != nil {
-		return false, fmt.Errorf("deliver license: %w", err)
+		return fmt.Errorf("deliver license: %w", err)
 	}
-	updated, err := h.db.GetBySubscriptionID(ctx, subID)
+	updated, err := h.db.GetBySubscriptionID(ctx, p.ent.SubscriptionID)
 	if err != nil {
-		return false, fmt.Errorf("confirm delivery status: %w", err)
+		return fmt.Errorf("confirm delivery status: %w", err)
 	}
 	if updated == nil || updated.LastDeliveryStatus != "sent" {
-		return false, fmt.Errorf("license %s email delivery failed", ent.LastLicenseID)
+		return fmt.Errorf("license %s email delivery failed", p.ent.LastLicenseID)
 	}
 	if err := h.ledger.Log(AuditEntry{
 		Event:          AuditLicenseResent,
-		SubscriptionID: ent.SubscriptionID,
-		CustomerEmail:  ent.CustomerEmail,
-		LicenseID:      ent.LastLicenseID,
-		Tier:           ent.LastLicenseTier,
-		ExpiresAt:      formatAuditExpiry(ent.LastLicenseExpiresAt),
+		SubscriptionID: p.ent.SubscriptionID,
+		CustomerEmail:  p.ent.CustomerEmail,
+		LicenseID:      p.ent.LastLicenseID,
+		Tier:           p.ent.LastLicenseTier,
+		ExpiresAt:      formatAuditExpiry(p.ent.LastLicenseExpiresAt),
 		Detail:         resendReasonSelfServe,
 	}); err != nil {
 		// The request entry above already makes this resend attributable.
-		h.log.Error().Err(err).Str("subscription_id", ent.SubscriptionID).Msg("record license resend completion")
+		h.log.Error().Err(err).Str("subscription_id", p.ent.SubscriptionID).Msg("record license resend completion")
 	}
-	return true, nil
+	return nil
 }
 
 // resendWorker runs self-serve resend jobs off the request path.
@@ -431,9 +476,13 @@ const (
 	resendClientWindow = 15 * time.Minute
 	resendClientMax    = 5
 	// resendClientTableMax bounds the tracked callers. When it is full and no
-	// entry has expired, new callers are refused rather than tracked, so the
-	// table cannot be grown without limit.
+	// entry has expired, new callers share one overflow allowance instead of
+	// being tracked, so the table cannot grow without limit and filling it
+	// cannot lock every new caller out.
 	resendClientTableMax = 10000
+	// resendOverflowMax is the shared allowance per window for callers that
+	// arrive while the table is full.
+	resendOverflowMax = 60
 )
 
 type resendClientWindowState struct {
@@ -442,8 +491,13 @@ type resendClientWindowState struct {
 }
 
 type resendClientLimiter struct {
-	mu      sync.Mutex
-	clients map[string]*resendClientWindowState
+	mu       sync.Mutex
+	clients  map[string]*resendClientWindowState
+	overflow resendClientWindowState
+	// nextExpiry is the earliest time any tracked window can expire. A full
+	// table is swept only once it passes, so new callers do not each pay for
+	// a scan of every entry.
+	nextExpiry time.Time
 }
 
 func newResendClientLimiter() *resendClientLimiter {
@@ -464,25 +518,42 @@ func (l *resendClientLimiter) allow(client string, now time.Time) bool {
 		st.count++
 		return true
 	}
-	if len(l.clients) >= resendClientTableMax {
+	if len(l.clients) >= resendClientTableMax && !now.Before(l.nextExpiry) {
+		l.nextExpiry = time.Time{}
 		for key, st := range l.clients {
 			if now.Sub(st.start) >= resendClientWindow {
 				delete(l.clients, key)
+				continue
+			}
+			if exp := st.start.Add(resendClientWindow); l.nextExpiry.IsZero() || exp.Before(l.nextExpiry) {
+				l.nextExpiry = exp
 			}
 		}
-		if len(l.clients) >= resendClientTableMax {
+	}
+	if len(l.clients) >= resendClientTableMax {
+		if now.Sub(l.overflow.start) >= resendClientWindow {
+			l.overflow.start, l.overflow.count = now, 0
+		}
+		if l.overflow.count >= resendOverflowMax {
 			return false
 		}
+		l.overflow.count++
+		return true
 	}
 	l.clients[client] = &resendClientWindowState{start: now, count: 1}
+	if exp := now.Add(resendClientWindow); l.nextExpiry.IsZero() || exp.Before(l.nextExpiry) {
+		l.nextExpiry = exp
+	}
 	return true
 }
 
 // resendClientAddress identifies the caller for the per-client limit.
 func (s *Server) resendClientAddress(r *http.Request) string {
 	if h := s.cfg.SelfServeResendClientIPHeader; h != "" {
-		if v := r.Header.Get(h); v != "" {
-			parts := strings.Split(v, ",")
+		// The ingress appends; the caller controls anything before it,
+		// including earlier header lines, so take the very last value.
+		if values := r.Header.Values(h); len(values) > 0 {
+			parts := strings.Split(values[len(values)-1], ",")
 			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
 				return last
 			}

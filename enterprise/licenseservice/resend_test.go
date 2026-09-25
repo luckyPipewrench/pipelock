@@ -379,6 +379,10 @@ func TestHandleLicenseResendRefusesWhenQueueFull(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") == "" {
 		t.Fatalf("overflow status = %d retry-after=%q, want 503 with Retry-After", rr.Code, rr.Header().Get("Retry-After"))
 	}
+	known := postResend(t, s, "application/json", `{"email":"`+testCustomerEmail+`"}`)
+	if known.Code != rr.Code || known.Body.String() != rr.Body.String() {
+		t.Fatalf("busy reply differs for a customer address: %d %q vs %d %q", known.Code, known.Body.String(), rr.Code, rr.Body.String())
+	}
 	if got := len(s.resend.queue); got != resendQueueSize {
 		t.Fatalf("queue length = %d, want %d", got, resendQueueSize)
 	}
@@ -913,12 +917,26 @@ func TestResendClientLimiterTableFull(t *testing.T) {
 	for i := 0; i < resendClientTableMax; i++ {
 		l.clients[fmt.Sprintf("c%d", i)] = &resendClientWindowState{start: now, count: 1}
 	}
-	if l.allow("newcomer", now) {
-		t.Fatal("a new client was tracked past the table cap")
+	l.nextExpiry = now.Add(resendClientWindow)
+	// A full table admits new callers through the shared overflow allowance
+	// without tracking them, and without locking every newcomer out.
+	for i := 0; i < resendOverflowMax; i++ {
+		if !l.allow(fmt.Sprintf("newcomer%d", i), now) {
+			t.Fatalf("overflow request %d refused", i+1)
+		}
+	}
+	if l.allow("one-more", now) {
+		t.Fatal("overflow allowance was not bounded")
+	}
+	if len(l.clients) != resendClientTableMax {
+		t.Fatalf("table grew to %d past its cap", len(l.clients))
 	}
 	// Once the tracked windows expire, room is reclaimed.
 	if !l.allow("newcomer", now.Add(resendClientWindow)) {
 		t.Fatal("expired entries were not reclaimed")
+	}
+	if _, tracked := l.clients["newcomer"]; !tracked || len(l.clients) != 1 {
+		t.Fatalf("after expiry the table holds %d entries, want only the new caller", len(l.clients))
 	}
 }
 
@@ -962,8 +980,56 @@ func TestResendClientAddressFromTrustedHeader(t *testing.T) {
 	if got := s.resendClientAddress(req); got != "198.51.100.20" {
 		t.Fatalf("client address = %q, want the value the ingress appended", got)
 	}
+	// The same holds when the ingress appends a separate header line.
+	req.Header.Set("X-Forwarded-For", "192.0.2.99")
+	req.Header.Add("X-Forwarded-For", "198.51.100.21")
+	if got := s.resendClientAddress(req); got != "198.51.100.21" {
+		t.Fatalf("client address across header lines = %q, want the last line", got)
+	}
 	req.Header.Del("X-Forwarded-For")
 	if got := s.resendClientAddress(req); got != "10.0.0.2" {
 		t.Fatalf("client address without header = %q, want the remote address", got)
+	}
+}
+
+// A slow mail provider must not hold the lock webhook processing needs.
+func TestResendDeliversOutsideTheWebhookLock(t *testing.T) {
+	ts := newTestSetup(t)
+	issueResendTrial(t, ts, "order_free_resend_slowmail", "slowmail@example.com")
+	release := make(chan struct{})
+	lockFree := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// While the provider is "sending", the webhook lock must be free.
+		free := ts.handler.processMu.TryLock()
+		if free {
+			ts.handler.processMu.Unlock()
+		}
+		lockFree <- free
+		<-release
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_slow"}`))
+	}))
+	t.Cleanup(srv.Close)
+	ts.handler.email = &EmailSender{apiKey: "re_test", fromEmail: "test@pipelock.dev", client: srv.Client(), apiURL: srv.URL}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ts.handler.ResendLicensesForEmail(t.Context(), "slowmail@example.com", time.Now())
+		done <- err
+	}()
+	var free bool
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case free = <-lockFree:
+			return true
+		default:
+			return false
+		}
+	}, "mail provider never called")
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+	if !free {
+		t.Fatal("the webhook lock was held while the email was being sent")
 	}
 }

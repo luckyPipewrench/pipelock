@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -608,6 +609,9 @@ func TestAdmitLicenseResendCountsEmailsAgainstGlobalBudget(t *testing.T) {
 	if err := db.AdmitLicenseResend(t.Context(), "zero@example.com", 0, now); err == nil || errors.Is(err, ErrResendThrottled) {
 		t.Fatalf("zero-send admission = %v, want an argument error", err)
 	}
+	if err := db.AdmitLicenseResend(t.Context(), "huge@example.com", math.MaxInt, now); err == nil || errors.Is(err, ErrResendThrottled) {
+		t.Fatalf("oversized admission = %v, want an argument error", err)
+	}
 }
 
 // Requests already accepted when the service shuts down are still delivered.
@@ -793,5 +797,19 @@ func TestOpenEntitlementDBAddsResendSendsColumn(t *testing.T) {
 			t.Fatalf("admission after upgrade (pass %d): %v", i, err)
 		}
 		_ = db.Close()
+	}
+}
+
+// Once shutdown has begun, a request that arrives late is refused rather than
+// accepted into a queue nothing will drain.
+func TestHandleLicenseResendRefusesAfterShutdown(t *testing.T) {
+	s, _ := newResendTestServer(t, "")
+	s.stopResendWorker(t.Context())
+	rr := postResend(t, s, "application/json", `{"email":"late@example.com"}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("post-shutdown status = %d, want 503", rr.Code)
+	}
+	if got := len(s.resend.queue); got != 0 {
+		t.Fatalf("post-shutdown request was queued (%d)", got)
 	}
 }

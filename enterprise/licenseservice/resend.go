@@ -124,8 +124,9 @@ func (e *EntitlementDB) ResendableSubscriptionIDsForEmail(ctx context.Context, n
 // share one transaction so two processes on the same database cannot both
 // admit the last available send.
 func (e *EntitlementDB) AdmitLicenseResend(ctx context.Context, normalizedEmail string, sends int, now time.Time) (err error) {
-	if sends < 1 {
-		return fmt.Errorf("resend admission needs at least one send, got %d", sends)
+	// Bounding sends by the budget also keeps global+sends from overflowing.
+	if sends < 1 || sends > resendGlobalHourlyMax {
+		return fmt.Errorf("resend admission needs 1 to %d sends, got %d", resendGlobalHourlyMax, sends)
 	}
 	now = now.UTC()
 	key := resendEmailKey(normalizedEmail)
@@ -331,6 +332,27 @@ type resendWorker struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
+
+	// admitMu orders enqueueing against shutdown: handlers enqueue under the
+	// read lock, and stop sets closed under the write lock before the worker
+	// is told to drain, so nothing is accepted after the final drain.
+	admitMu sync.RWMutex
+	closed  bool
+}
+
+// enqueue reports whether email was accepted for processing.
+func (w *resendWorker) enqueue(email string) bool {
+	w.admitMu.RLock()
+	defer w.admitMu.RUnlock()
+	if w.closed {
+		return false
+	}
+	select {
+	case w.queue <- email:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) startResendWorker() {
@@ -384,6 +406,9 @@ func (s *Server) stopResendWorker(ctx context.Context) {
 		return
 	}
 	s.resend.once.Do(func() {
+		s.resend.admitMu.Lock()
+		s.resend.closed = true
+		s.resend.admitMu.Unlock()
 		close(s.resend.stop)
 		select {
 		case <-s.resend.done:
@@ -433,11 +458,10 @@ func (s *Server) handleLicenseResend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.TrimSpace(email) != "" {
-		select {
-		case s.resend.queue <- email:
-		default:
-			// Busy is a statement about load, the same for every address.
-			s.log.Warn().Msg("self-serve resend queue full; request refused")
+		if !s.resend.enqueue(email) {
+			// Busy is a statement about load or shutdown, the same for every
+			// address.
+			s.log.Warn().Msg("self-serve resend queue full or closed; request refused")
 			w.Header().Set("Retry-After", "60")
 			http.Error(w, "busy, try again shortly", http.StatusServiceUnavailable)
 			return

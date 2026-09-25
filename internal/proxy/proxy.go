@@ -6095,7 +6095,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// through unchanged and image/audio/video responses get transport-
 	// agnostic enforcement. Blocks yield a structured FetchResponse so the
 	// client sees the policy reason, not a generic 403.
-	mediaVerdict := applyMediaPolicy(cfg, contentType, body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header})
+	mediaVerdict := applyMediaPolicy(cfg, contentType, body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: shieldHost})
 	mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
 	if mediaVerdict.Blocked {

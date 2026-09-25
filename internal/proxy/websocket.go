@@ -3003,7 +3003,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return bytesTransferred, textFrames, binaryFrames, true
 			}
 			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
+			mediaVerdict := applyMediaPolicy(r.cfg, "", msg, mediaPolicyOptions{host: r.hostname})
 			logMediaExposureIfPresent(log, actx, mediaVerdict, TransportWS)
 			if mediaVerdict.Blocked {
 				log.LogWSBlocked(audit.WSBlockedEvent{

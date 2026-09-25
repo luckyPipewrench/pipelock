@@ -374,8 +374,11 @@ func (s *Server) runResendJob(parent context.Context, email string) {
 	s.log.Info().Int("sent", sent).Bool("throttled", errors.Is(err, ErrResendThrottled)).Msg("self-serve license resend processed")
 }
 
-// stopResendWorker drains queued requests until ctx ends, then abandons any
-// job still running. Call it after the HTTP server stops accepting requests.
+// stopResendWorker drains queued requests until ctx ends. At the deadline it
+// cancels the running job and returns without waiting for it: a job can be
+// blocked on a lock that does not observe cancellation, and shutdown must not
+// outlive its deadline for it. Call it after the HTTP server stops accepting
+// requests.
 func (s *Server) stopResendWorker(ctx context.Context) {
 	if s.resend == nil {
 		return
@@ -385,8 +388,7 @@ func (s *Server) stopResendWorker(ctx context.Context) {
 		select {
 		case <-s.resend.done:
 		case <-ctx.Done():
-			s.resend.cancel()
-			<-s.resend.done
+			s.log.Warn().Int("queued", len(s.resend.queue)).Msg("self-serve resend worker still busy at shutdown deadline")
 		}
 		s.resend.cancel()
 	})

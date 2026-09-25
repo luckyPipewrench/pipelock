@@ -8,12 +8,14 @@ package licenseservice
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -749,7 +751,7 @@ func TestStopResendWorkerHonorsDeadline(t *testing.T) {
 		defer close(stopped)
 		s.stopResendWorker(ctx)
 	}()
-	ts.handler.processMu.Unlock()
+	// The worker is still parked on the lock; stop must return anyway.
 	testwait.For(t, 10*time.Second, func() bool {
 		select {
 		case <-stopped:
@@ -757,5 +759,39 @@ func TestStopResendWorkerHonorsDeadline(t *testing.T) {
 		default:
 			return false
 		}
-	}, "worker did not stop after its deadline")
+	}, "shutdown waited past its deadline for a blocked job")
+	ts.handler.processMu.Unlock()
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case <-s.resend.done:
+			return true
+		default:
+			return false
+		}
+	}, "abandoned worker never exited after the lock released")
+}
+
+// A database created by an earlier build has the requests table without the
+// sends column; opening it must add the column rather than break admission.
+func TestOpenEntitlementDBAddsResendSendsColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-resend.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := old.ExecContext(t.Context(),
+		`CREATE TABLE license_resend_requests (email_sha256 TEXT NOT NULL, requested_at DATETIME NOT NULL)`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	_ = old.Close()
+	for i := 0; i < 2; i++ { // the second open is the ordinary restart
+		db, err := OpenEntitlementDB(t.Context(), path)
+		if err != nil {
+			t.Fatalf("open upgraded db (pass %d): %v", i, err)
+		}
+		if err := db.AdmitLicenseResend(t.Context(), fmt.Sprintf("upgrade%d@example.com", i), 2, time.Now()); err != nil {
+			t.Fatalf("admission after upgrade (pass %d): %v", i, err)
+		}
+		_ = db.Close()
+	}
 }

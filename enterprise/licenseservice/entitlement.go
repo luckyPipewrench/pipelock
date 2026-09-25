@@ -564,10 +564,34 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	if _, err := e.db.ExecContext(ctx, ddl); err != nil {
 		return err
 	}
+	if err := e.ensureResendSendsColumn(ctx); err != nil {
+		return err
+	}
 	if err := e.classifyLegacyTrialSlots(ctx); err != nil {
 		return err
 	}
 	return e.backfillActiveTrialSlots(ctx)
+}
+
+// ensureResendSendsColumn adds license_resend_requests.sends to a table
+// created before the column existed. It follows the same attempt-then-inspect
+// shape as classifyLegacyTrialSlots so two starting processes cannot both fail.
+func (e *EntitlementDB) ensureResendSendsColumn(ctx context.Context) error {
+	_, execErr := e.db.ExecContext(ctx,
+		`ALTER TABLE license_resend_requests ADD COLUMN sends INTEGER NOT NULL DEFAULT 1`)
+	if execErr == nil {
+		return nil
+	}
+	var present bool
+	if err := e.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pragma_table_info('license_resend_requests') WHERE name = 'sends')`,
+	).Scan(&present); err != nil {
+		return fmt.Errorf("inspect license resend sends column after add failed: %w", errors.Join(execErr, err))
+	}
+	if !present {
+		return fmt.Errorf("add license resend sends column: %w", execErr)
+	}
+	return nil
 }
 
 // classifyLegacyTrialSlots makes the one-time judgement needed for rows that

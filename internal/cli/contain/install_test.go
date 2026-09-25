@@ -1460,6 +1460,36 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	assertManagedChainReload(t, runner, env)
 }
 
+func TestStepInstallNFTRulesNewTableFailureNeedsRollback(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	body := renderNFTRules(1000, 988, 987, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, nil)
+	changed, err := stepInstallNFTRulesApply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "daemon-reload") {
+		t.Fatalf("later-step failure = %v, want daemon-reload error", err)
+	}
+	if !changed {
+		t.Fatal("new table was loaded but rollback was not requested")
+	}
+	loaded := false
+	for _, call := range runner.calls {
+		if call.name == testNFT && strings.Join(call.args, " ") == "-f "+env.nftRulesPath {
+			loaded = true
+		}
+	}
+	if !loaded {
+		t.Fatal("positive control: new nft table was not loaded")
+	}
+}
+
 func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987

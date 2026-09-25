@@ -2175,7 +2175,7 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return persistUnitChanged || expiryUnitChanged, err
 	}
-	changed := rulesChanged || persistUnitChanged || expiryUnitChanged
+	changed := rulesChanged || persistUnitChanged || expiryUnitChanged || !tableLoaded
 	if changed || !tableLoaded || liveRulesDrifted {
 		// Validate before loading.
 		if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {

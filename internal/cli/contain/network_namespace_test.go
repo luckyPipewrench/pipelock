@@ -87,12 +87,18 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	if _, err := exec.LookPath("systemd-analyze"); err != nil {
 		t.Skip("systemd-analyze is unavailable")
 	}
+	// systemd-analyze requires ExecStart binaries to exist, so the units name
+	// this test binary rather than an install path the host may not have.
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	units := map[string]string{
 		containedNetworkNamespaceUnit:            renderContainedNetworkNamespaceUnit(),
 		containedProxyForwarderUnit + ".socket":  renderContainedProxySocketUnit("pipelock-agent"),
-		containedProxyForwarderUnit + ".service": renderContainedProxyForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", 8888),
-		containedNamespaceForwarderUnit:          renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", 8888),
+		containedProxyForwarderUnit + ".service": renderContainedProxyForwarderUnit(bin, "pipelock-proxy", 8888),
+		containedNamespaceForwarderUnit:          renderContainedNamespaceForwarderUnit(bin, "pipelock-agent", 8888),
 		"pipelock.service":                       "[Service]\nType=simple\nExecStart=/usr/bin/sleep infinity\n",
 	}
 	// Every unit the installer writes belongs here, including the per-service
@@ -102,8 +108,8 @@ func TestContainedNetworkNamespaceUnitsPassSystemdVerify(t *testing.T) {
 	declared := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
 	declaredBase := loopbackForwarderUnitBase(declared.Host, declared.Port)
 	units[declaredBase+".socket"] = renderDeclaredLoopbackSocketUnit("pipelock-agent", declared)
-	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit("/usr/local/bin/pipelock", "pipelock-proxy", declared)
-	units[declaredBase+"-netns.service"] = renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "pipelock-agent", declared)
+	units[declaredBase+".service"] = renderDeclaredLoopbackForwarderUnit(bin, "pipelock-proxy", declared)
+	units[declaredBase+"-netns.service"] = renderDeclaredLoopbackNamespaceForwarderUnit(bin, "pipelock-agent", declared)
 	paths := make([]string, 0, len(units))
 	for name, body := range units {
 		path := filepath.Join(dir, name)

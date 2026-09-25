@@ -69,13 +69,18 @@ func TestDisplayDoesNotFeedVerificationPaths(t *testing.T) {
 	}
 }
 
+// displayImportPath is how a file reaches this package's symbols. Matching the
+// import rather than a "display." prefix catches every use, including under
+// an import alias, without flagging unrelated identifiers named display.
+const displayImportPath = `"github.com/luckyPipewrench/pipelock/internal/evidence/display"`
+
 func containsDisplaySymbol(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
 			continue
 		}
-		if strings.Contains(trimmed, "display.") {
+		if strings.Contains(trimmed, displayImportPath) {
 			return true
 		}
 	}

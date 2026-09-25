@@ -375,8 +375,7 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 }
 
 func managedDoorwaySocketNames(proxySocketPath string, services []config.ContainmentLoopbackService) []string {
-	units := make([]string, 0, len(services)+1)
-	units = append(units, filepath.Base(proxySocketPath))
+	units := []string{filepath.Base(proxySocketPath)}
 	for _, service := range services {
 		units = append(units, loopbackForwarderUnitBase(service.Host, service.Port)+".socket")
 	}
@@ -912,7 +911,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 
-			previousSockets = make(map[string]unitRuntimeState, len(services)+len(oldInventory.Services)+1)
+			previousSockets = make(map[string]unitRuntimeState)
 			proxySocket := filepath.Base(env.proxyForwarderSocketPath)
 			previousSockets[proxySocket] = systemdUnitRuntimeState(ctx, env, proxySocket)
 			for _, record := range oldInventory.Services {
@@ -926,7 +925,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 			previousNamespace = systemdUnitRuntimeState(ctx, env, filepath.Base(env.networkNamespaceUnitPath))
-			previousNamespaceForwarders = make(map[string]unitRuntimeState, len(services)+len(oldInventory.Services)+1)
+			previousNamespaceForwarders = make(map[string]unitRuntimeState)
 			previousNamespaceForwarders[containedNamespaceForwarderUnit] = systemdUnitRuntimeState(ctx, env, containedNamespaceForwarderUnit)
 			for _, record := range oldInventory.Services {
 				unit := record.Unit + "-netns.service"

@@ -363,7 +363,7 @@ var (
 // service reserves, and a host_listen port with the host service that
 // declaration forwards to.
 func ValidateContainmentPublishedServices(services []ContainmentPublishedService, loopback []ContainmentLoopbackService, proxyPort int, now time.Time) error {
-	reserved := make(map[int]string, len(loopback)+1)
+	reserved := make(map[int]string)
 	reserved[proxyPort] = "the agent-accessible proxy port"
 	for _, svc := range loopback {
 		reserved[svc.Port] = "a declared containment.loopback_services port"

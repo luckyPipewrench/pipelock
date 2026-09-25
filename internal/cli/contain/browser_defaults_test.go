@@ -36,6 +36,15 @@ func browserDefaultsEnv(t *testing.T) (*installEnv, *[]ownCall, string, string) 
 		t.Fatalf("agent-browser defaults used symlink-following chown on %s", path)
 		return nil
 	}
+	prior := agentBrowserFchown
+	agentBrowserFchown = func(f *os.File, uid, gid int) error {
+		path := f.Name()
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(agentHomeDir(env), path)
+		}
+		return env.lchown(path, uid, gid)
+	}
+	t.Cleanup(func() { agentBrowserFchown = prior })
 	return env, &calls, agentBrowserConfigPath(env), agentBrowserDefaultsRecordPath(env)
 }
 
@@ -313,18 +322,112 @@ func TestStepWriteAgentBrowserDefaults_RefusesSymlinks(t *testing.T) {
 	})
 }
 
+func TestStepWriteAgentBrowserDefaults_RefusesDirectorySwap(t *testing.T) {
+	// A normal install is the positive control for the same path and operation.
+	control, _, controlPath, _ := browserDefaultsEnv(t)
+	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), control); err != nil || !applied {
+		t.Fatalf("control install: applied=%v err=%v", applied, err)
+	}
+	if got := readArgs(t, controlPath); got != browserdefaults.Flag {
+		t.Fatalf("control args %q", got)
+	}
+
+	env, _, path, record := browserDefaultsEnv(t)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	priorChown := agentBrowserFchown
+	outsideChown := false
+	agentBrowserFchown = func(f *os.File, uid, gid int) error {
+		opened, openErr := f.Stat()
+		outsideInfo, outsideErr := os.Stat(outside)
+		if openErr == nil && outsideErr == nil && os.SameFile(opened, outsideInfo) {
+			outsideChown = true
+		}
+		return priorChown(f, uid, gid)
+	}
+	t.Cleanup(func() { agentBrowserFchown = priorChown })
+	prior := agentBrowserLstat
+	checks := 0
+	agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
+		info, err := prior(root, name)
+		if name == agentBrowserDir && err == nil {
+			checks++
+			if checks == 2 {
+				if err := os.Rename(dir, dir+".moved"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return info, err
+	}
+	t.Cleanup(func() { agentBrowserLstat = prior })
+	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || applied {
+		t.Fatalf("swapped directory accepted: applied=%v err=%v", applied, err)
+	}
+	if checks < 2 {
+		t.Fatalf("swap did not run: %d checks", checks)
+	}
+	if info, err := os.Lstat(dir); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("directory was not swapped: %v", err)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("outside directory modified: entries=%v err=%v", entries, err)
+	}
+	if outsideChown {
+		t.Fatal("outside directory was chowned")
+	}
+	assertAbsent(t, record)
+}
+
+func TestRemoveAgentBrowserDefaults_DuplicateRetainsRecord(t *testing.T) {
+	env, _, path, record := browserDefaultsEnv(t)
+	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("install: applied=%v err=%v", applied, err)
+	}
+	// A single recorded flag is the positive control for normal removal.
+	control, _, controlPath, controlRecord := browserDefaultsEnv(t)
+	if _, err := stepWriteAgentBrowserDefaults().apply(context.Background(), control); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAgentBrowserDefaults(control); err != nil {
+		t.Fatalf("control rollback: %v", err)
+	}
+	assertAbsent(t, controlPath)
+	assertAbsent(t, controlRecord)
+
+	body := `{"args":"` + browserdefaults.Flag + `,` + browserdefaults.Flag + `"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeRecord, err := os.ReadFile(filepath.Clean(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAgentBrowserDefaults(env); err == nil || !strings.Contains(err.Error(), "manual") {
+		t.Fatalf("expected manual resolution error, got %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != body {
+		t.Fatalf("duplicate config changed: body=%s err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Clean(record)); err != nil || string(got) != string(beforeRecord) {
+		t.Fatalf("ownership record changed: body=%s err=%v", got, err)
+	}
+}
+
 func TestStepWriteAgentBrowserDefaults_FailureRestores(t *testing.T) {
 	const original = `{"args": "--keep"}`
 	t.Run("config write fails", func(t *testing.T) {
 		env, _, path, record := browserDefaultsEnv(t)
 		writeAgentBrowserConfigFixture(t, path, original)
-		realWrite := env.writeFile
-		env.writeFile = func(p string, data []byte, mode os.FileMode) error {
-			if filepath.Clean(p) == path {
-				return errors.New("disk full")
-			}
-			return realWrite(p, data, mode)
-		}
+		priorWrite := agentBrowserWrite
+		agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, errors.New("disk full") }
+		t.Cleanup(func() { agentBrowserWrite = priorWrite })
 		if _, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "disk full") {
 			t.Fatalf("expected write failure, got %v", err)
 		}
@@ -537,14 +640,15 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 		}
 	})
 	t.Run("config stat error", func(t *testing.T) {
-		env, _, path, _ := browserDefaultsEnv(t)
-		realLstat := env.lstat
-		env.lstat = func(p string) (os.FileInfo, error) {
-			if filepath.Clean(p) == path {
+		env, _, _, _ := browserDefaultsEnv(t)
+		priorLstat := agentBrowserLstat
+		agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
+			if name == agentBrowserFile {
 				return nil, os.ErrPermission
 			}
-			return realLstat(p)
+			return priorLstat(root, name)
 		}
+		t.Cleanup(func() { agentBrowserLstat = priorLstat })
 		if _, err := stepWriteAgentBrowserDefaults().apply(ctx, env); !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("got %v", err)
 		}
@@ -630,7 +734,9 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 	}
 	t.Run("rollback write fails", func(t *testing.T) {
 		rollbackFailure(t, func(env *installEnv, path string) {
-			env.writeFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+			priorWrite := agentBrowserWrite
+			agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, os.ErrPermission }
+			t.Cleanup(func() { agentBrowserWrite = priorWrite })
 		})
 	})
 	t.Run("rollback chown fails", func(t *testing.T) {
@@ -647,16 +753,18 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 		rollbackFailure(t, func(env *installEnv, _ string) { env.agentUserName = "nobody-here" })
 	})
 	t.Run("rollback remove fails", func(t *testing.T) {
-		env, _, path, record := browserDefaultsEnv(t)
+		env, _, _, record := browserDefaultsEnv(t)
 		if _, err := stepWriteAgentBrowserDefaults().apply(ctx, env); err != nil {
 			t.Fatal(err)
 		}
-		env.removeFile = func(p string) error {
-			if filepath.Clean(p) == path {
+		priorRemove := agentBrowserRemove
+		agentBrowserRemove = func(root *os.Root, name string) error {
+			if name == agentBrowserFile {
 				return os.ErrPermission
 			}
-			return os.Remove(p)
+			return priorRemove(root, name)
 		}
+		t.Cleanup(func() { agentBrowserRemove = priorRemove })
 		if err := removeAgentBrowserDefaults(env); !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("got %v", err)
 		}

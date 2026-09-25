@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/browserdefaults"
 )
@@ -16,6 +18,206 @@ import (
 // agentBrowserDefaultsRecordFile is the ownership record for the Chromium
 // default merged into the contained agent's agent-browser config.
 const agentBrowserDefaultsRecordFile = "agent-browser-defaults.json"
+
+// The descriptor is kept open across each home operation. Tests replace only
+// the ownership syscall, since they cannot chown files to the managed user.
+var (
+	agentBrowserFchown = func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }
+	agentBrowserWrite  = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
+	agentBrowserLstat  = func(root *os.Root, name string) (os.FileInfo, error) { return root.Lstat(name) }
+	agentBrowserRemove = func(root *os.Root, name string) error { return root.Remove(name) }
+)
+
+const (
+	agentBrowserDir  = ".agent-browser"
+	agentBrowserFile = agentBrowserDir + "/config.json"
+)
+
+func openAgentBrowserHome(env *installEnv) (*os.Root, error) {
+	home := agentHomeDir(env)
+	if err := ensureSafeDirectory(env, home); err != nil {
+		return nil, fmt.Errorf("agent home: %w", err)
+	}
+	if err := env.mkdirAll(home, modeDirPrivate); err != nil {
+		return nil, fmt.Errorf("mkdir agent home: %w", err)
+	}
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return nil, fmt.Errorf("open agent home: %w", err)
+	}
+	return root, nil
+}
+
+func agentBrowserLeaf(root *os.Root, name string) (os.FileInfo, error) {
+	info, err := agentBrowserLstat(root, name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is a symlink; refusing privileged access", name)
+	}
+	return info, nil
+}
+
+func agentBrowserDirReady(root *os.Root, create bool) error {
+	info, err := agentBrowserLeaf(root, agentBrowserDir)
+	if errors.Is(err, os.ErrNotExist) && create {
+		if err := root.Mkdir(agentBrowserDir, modeDirPrivate); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("mkdir agent-browser directory: %w", err)
+		}
+		info, err = agentBrowserLeaf(root, agentBrowserDir)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", agentBrowserDir)
+	}
+	return nil
+}
+
+func readAgentBrowserRoot(root *os.Root) ([]byte, bool, error) {
+	if err := agentBrowserDirReady(root, false); errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
+	}
+	info, err := agentBrowserLeaf(root, agentBrowserFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s exists and is not a regular file", agentBrowserFile)
+	}
+	f, err := root.OpenFile(agentBrowserFile, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false, fmt.Errorf("open agent-browser config: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err = f.Stat()
+	if err != nil {
+		return nil, false, fmt.Errorf("stat agent-browser config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s exists and is not a regular file", agentBrowserFile)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, false, fmt.Errorf("read agent-browser config: %w", err)
+	}
+	return data, true, nil
+}
+
+func writeAgentBrowserRoot(root *os.Root, name string, data []byte, uid, gid int) error {
+	if err := agentBrowserDirReady(root, true); err != nil {
+		return err
+	}
+	if info, err := agentBrowserLeaf(root, name); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s exists and is not a regular file", name)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, modeAgentConfig)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", name, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Chmod(modeAgentConfig); err != nil {
+		return fmt.Errorf("chmod %s: %w", name, err)
+	}
+	if _, err := agentBrowserWrite(f, data); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	if err := agentBrowserFchown(f, uid, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", name, err)
+	}
+	return nil
+}
+
+func ownAgentBrowserDirs(root *os.Root, uid, gid int) error {
+	for _, name := range []string{".", agentBrowserDir} {
+		if name != "." {
+			if err := agentBrowserDirReady(root, true); err != nil {
+				return err
+			}
+		}
+		f, err := root.Open(name)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", name, err)
+		}
+		if err := agentBrowserFchown(f, uid, gid); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("chown %s: %w", name, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func restoreAgentBrowserRoot(env *installEnv, root *os.Root) error {
+	if _, err := agentBrowserLeaf(root, agentBrowserFile+".bak"); err == nil {
+		if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove managed agent-browser config: %w", err)
+		}
+		if err := root.Rename(agentBrowserFile+".bak", agentBrowserFile); err != nil {
+			return fmt.Errorf("restore agent-browser config: %w", err)
+		}
+		if archive := popArchivedBackup(env, agentBrowserConfigPath(env)+".bak"); archive != "" {
+			if _, err := agentBrowserLeaf(root, filepath.Join(agentBrowserDir, filepath.Base(archive))); err != nil {
+				return fmt.Errorf("stat archived agent-browser backup: %w", err)
+			}
+			if err := root.Rename(filepath.Join(agentBrowserDir, filepath.Base(archive)), agentBrowserFile+".bak"); err != nil {
+				return fmt.Errorf("restore archived agent-browser backup: %w", err)
+			}
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove agent-browser config: %w", err)
+	}
+	return nil
+}
+
+func backupAndWriteAgentBrowserRoot(env *installEnv, root *os.Root, data []byte, uid, gid int) error {
+	if _, err := agentBrowserLeaf(root, agentBrowserFile); err == nil {
+		bak := agentBrowserFile + ".bak"
+		if _, err := agentBrowserLeaf(root, bak); err == nil {
+			archive := fmt.Sprintf("%s.archived-%s", bak, backupArchiveNow().UTC().Format(backupArchiveTimeFormat))
+			for i := 1; ; i++ {
+				if _, err := agentBrowserLeaf(root, archive); errors.Is(err, os.ErrNotExist) {
+					break
+				} else if err != nil {
+					return fmt.Errorf("stat archived agent-browser backup: %w", err)
+				}
+				archive = fmt.Sprintf("%s.archived-%s.%d", bak, backupArchiveNow().UTC().Format(backupArchiveTimeFormat), i)
+			}
+			if err := root.Rename(bak, archive); err != nil {
+				return fmt.Errorf("archive agent-browser backup: %w", err)
+			}
+			rememberArchivedBackup(env, agentBrowserConfigPath(env)+".bak", filepath.Join(agentHomeDir(env), archive))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := root.Rename(agentBrowserFile, bak); err != nil {
+			return fmt.Errorf("backup agent-browser config: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := writeAgentBrowserRoot(root, agentBrowserFile, data, uid, gid); err != nil {
+		return errors.Join(err, restoreAgentBrowserRoot(env, root))
+	}
+	return nil
+}
 
 // agentBrowserConfigPath is agent-browser's user config in the contained
 // agent's home. Every agent launched under containment runs as that one
@@ -37,30 +239,27 @@ func agentBrowserDefaultsRecordPath(env *installEnv) string {
 // agent owns, so a symlink there is an attempt to make root read or write
 // somewhere else: it is refused, never followed. A missing file is not an
 // error.
-func readAgentBrowserConfig(env *installEnv, path string) ([]byte, bool, error) {
-	clean := filepath.Clean(path)
-	if err := ensureSafeDirectory(env, filepath.Dir(clean)); err != nil {
-		return nil, false, fmt.Errorf("agent-browser config: %w", err)
-	}
-	info, err := env.lstat(clean)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
+func readAgentBrowserConfig(env *installEnv, _ string) ([]byte, bool, error) {
+	root, err := openAgentBrowserHome(env)
 	if err != nil {
-		return nil, false, fmt.Errorf("stat %s: %w", clean, err)
+		return nil, false, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, false, fmt.Errorf("%s is a symlink; refusing privileged read", clean)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("%s exists and is not a regular file", clean)
-	}
-	// O_NOFOLLOW read: the lstat above can be raced by a swap, the open cannot.
-	data, err := readRegularFileNoFollow(clean)
+	defer func() { _ = root.Close() }()
+	return readAgentBrowserRoot(root)
+}
+
+func restoreAgentBrowserConfig(env *installEnv) error {
+	root, err := openAgentBrowserHome(env)
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s: %w", clean, err)
+		return err
 	}
-	return data, true, nil
+	defer func() { _ = root.Close() }()
+	if err := agentBrowserDirReady(root, false); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return restoreAgentBrowserRoot(env, root)
 }
 
 // readAgentBrowserDefaultsRecord loads the root-side ownership record.
@@ -110,7 +309,7 @@ func stepWriteAgentBrowserDefaults() step {
 	restore := func(env *installEnv) error {
 		var errs []error
 		if wroteConfig {
-			if err := restoreBackup(env, agentBrowserConfigPath(env)); err != nil {
+			if err := restoreAgentBrowserConfig(env); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -166,7 +365,12 @@ func stepWriteAgentBrowserDefaults() step {
 				// step is undone.
 				prevRecord = old
 			}
-			if err := ensureAgentConfigDir(env, filepath.Dir(path), uid, gid); err != nil {
+			root, err := openAgentBrowserHome(env)
+			if err != nil {
+				return false, err
+			}
+			defer func() { _ = root.Close() }()
+			if err := ownAgentBrowserDirs(root, uid, gid); err != nil {
 				return false, err
 			}
 			// Record first: if the config write then fails, the record is
@@ -175,13 +379,10 @@ func stepWriteAgentBrowserDefaults() step {
 				return fail(err)
 			}
 			wroteRecord = true
-			if err := backupAndWrite(env, path, merged, modeAgentConfig); err != nil {
+			if err := backupAndWriteAgentBrowserRoot(env, root, merged, uid, gid); err != nil {
 				return fail(fmt.Errorf("write %s: %w", path, err))
 			}
 			wroteConfig = true
-			if err := chownAgentConfigFile(env, path, uid, gid); err != nil {
-				return fail(fmt.Errorf("chown %s: %w", path, err))
-			}
 			return true, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
@@ -223,7 +424,15 @@ func removeAgentBrowserDefaults(env *installEnv) error {
 		// Pipelock created the file and nothing else lives in it. The lstat in
 		// readAgentBrowserConfig proved it a regular file; unlink removes the
 		// name and never follows a link swapped in since.
-		if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		root, err := openAgentBrowserHome(env)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Close() }()
+		if err := agentBrowserDirReady(root, false); err != nil {
+			return err
+		}
+		if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	case changed:
@@ -231,14 +440,13 @@ func removeAgentBrowserDefaults(env *installEnv) error {
 		if err != nil {
 			return fmt.Errorf("resolve %s uid: %w", env.agentUserName, err)
 		}
-		if err := ensureSafeWriteTarget(env, path); err != nil {
+		root, err := openAgentBrowserHome(env)
+		if err != nil {
 			return err
 		}
-		if err := env.writeFile(path, out, modeAgentConfig); err != nil {
+		defer func() { _ = root.Close() }()
+		if err := writeAgentBrowserRoot(root, agentBrowserFile, out, uid, gid); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
-		}
-		if err := chownAgentConfigFile(env, path, uid, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", path, err)
 		}
 	}
 	return removeAgentBrowserDefaultsRecord(env)

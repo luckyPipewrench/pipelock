@@ -12,6 +12,20 @@ license that grants the `fleet` feature.
 
 The license service keeps `GET /health` as unconditional liveness, while `GET /ready` reports whether a Polar provider read has succeeded within `PROVIDER_SUCCESS_WINDOW` (default `15m`). Point readiness probes at `/ready` and liveness probes at `/health` so a provider outage removes the pod from service without restarting it.
 
+## License recovery
+
+A customer who lost their license email can ask the service to send it again. The endpoint is off by default; set `SELF_SERVE_RESEND_ENABLED=true` to expose `POST /v1/license/resend`.
+
+```bash
+curl -sS -X POST https://licenses.vendor.example/v1/license/resend \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"buyer@vendor.example"}'
+```
+
+What this does: queues a lookup and returns `202 Accepted` with the same body whether or not the address has a license. For every active, unexpired, unrevoked license whose persisted issuance is on record for that address, the service re-sends the existing token to the address on record. It never mints a new token, never moves an expiry, and never sends anything to an address other than the one stored for the license. An HTML form posting an `email` field works too. When `SELF_SERVE_RESEND_RETURN_URL` is set to an absolute `https` URL, a form submission is redirected there instead of receiving the plain-text reply.
+
+Sends are limited per address (one per 15 minutes, three per 24 hours) and across the service (60 per hour). The limits live in the service database, so a restart does not reset them. A refused send is recorded as `license_resend_throttled` in the audit ledger, and a completed one as `license_resent`. The caller cannot see either.
+
 ## Feature Mapping
 
 The license service maps commercial tiers to runtime feature flags in

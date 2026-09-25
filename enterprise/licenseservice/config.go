@@ -9,6 +9,7 @@ package licenseservice
 import (
 	"crypto/ed25519"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -119,6 +120,15 @@ type Config struct {
 	// disables legacy order.created fulfillment. Enterprise Eval uses its
 	// separate order.paid allowlist and is not configured here.
 	OrderProducts []OrderProductConfig
+
+	// SelfServeResendEnabled exposes POST /v1/license/resend, which re-sends an
+	// existing license to the address on record. Off unless the deployment
+	// opts in, because it is the service's only unauthenticated write path.
+	SelfServeResendEnabled bool
+
+	// SelfServeResendReturnURL, when set, is where an HTML form submission is
+	// redirected after it is accepted. It must be an absolute https URL.
+	SelfServeResendReturnURL string
 }
 
 // SubscriptionProductConfig pins a Polar subscription product to the server-side
@@ -292,6 +302,21 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.ResendAPIKey == "" {
 		return nil, fmt.Errorf("RESEND_API_KEY is required")
+	}
+
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("SELF_SERVE_RESEND_ENABLED"))); v {
+	case "", "0", "false", "no":
+	case "1", "true", "yes":
+		cfg.SelfServeResendEnabled = true
+	default:
+		return nil, fmt.Errorf("SELF_SERVE_RESEND_ENABLED must be true or false, got %q", v)
+	}
+	if raw := strings.TrimSpace(os.Getenv("SELF_SERVE_RESEND_RETURN_URL")); raw != "" {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return nil, fmt.Errorf("SELF_SERVE_RESEND_RETURN_URL must be an absolute https URL, got %q", raw)
+		}
+		cfg.SelfServeResendReturnURL = u.String()
 	}
 
 	return cfg, nil

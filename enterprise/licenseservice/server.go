@@ -43,6 +43,7 @@ type Server struct {
 	mux     *http.ServeMux
 	srv     *http.Server
 	now     func() time.Time
+	resend  *resendWorker
 
 	crlMu         sync.Mutex
 	crlCache      []byte
@@ -73,6 +74,10 @@ func NewServer(
 	s.mux.HandleFunc(http.MethodGet+" /intermediate.json", s.handleIntermediate)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /ready", s.handleReady)
+	if cfg.SelfServeResendEnabled {
+		s.startResendWorker()
+		s.mux.HandleFunc("POST /v1/license/resend", s.handleLicenseResend)
+	}
 
 	s.srv = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -118,7 +123,9 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully shuts down the server with the given context deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
+	err := s.srv.Shutdown(ctx)
+	s.stopResendWorker()
+	return err
 }
 
 // handleWebhook processes incoming Polar webhook events.

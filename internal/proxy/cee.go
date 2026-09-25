@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/ceereason"
 
@@ -106,7 +107,9 @@ func captureSessionKeyAndOriginal(agent, clientIP string) (safe, original string
 	if key == "" {
 		key = agentAnonymous
 	}
-	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen {
+	// Invalid UTF-8 is hashed too: the key names the capture session, and the
+	// recorder refuses a session id that JSON cannot store byte for byte.
+	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen || !utf8.ValidString(key) {
 		sum := sha256.Sum256([]byte(key))
 		return "capture-" + hex.EncodeToString(sum[:]), key
 	}

@@ -316,7 +316,15 @@ func validateSidecarMCPUpstream(raw string) error {
 		return nil
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
+		// Go 1.26 url.Parse rejects some malformed ports itself, so the
+		// malformed-port message is decided from the raw authority here too.
+		if mcpUpstreamHostHasMalformedPort(rawURLAuthority(raw)) {
+			return fmt.Errorf("--mcp-upstream %q has malformed host/port syntax", raw)
+		}
+		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
+	}
+	if parsed.Host == "" {
 		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
 	}
 	switch parsed.Scheme {
@@ -454,6 +462,19 @@ func rawWorkloadHasMCPState(raw map[string]interface{}) bool {
 	return false
 }
 
+// rawURLAuthority returns the authority of raw without parsing it: the text
+// after "://" up to the first path, query, or fragment delimiter.
+func rawURLAuthority(raw string) string {
+	_, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest
+}
+
 func mcpUpstreamHostHasMalformedPort(host string) bool {
 	if strings.HasSuffix(host, ":") {
 		return true
@@ -463,9 +484,21 @@ func mcpUpstreamHostHasMalformedPort(host string) bool {
 		if closing == -1 {
 			return true
 		}
-		return strings.Contains(host[closing+1:], ":")
+		suffix := host[closing+1:]
+		if suffix == "" {
+			return false
+		}
+		if !strings.HasPrefix(suffix, ":") {
+			return true
+		}
+		return strings.Trim(suffix[1:], "0123456789") != ""
 	}
-	return strings.Contains(host, ":")
+	// A single colon followed only by digits is a well-formed port, so a
+	// parse failure elsewhere in the URL is not reported as a port problem.
+	if strings.Count(host, ":") != 1 {
+		return strings.Contains(host, ":")
+	}
+	return strings.Trim(host[strings.IndexByte(host, ':')+1:], "0123456789") != ""
 }
 
 // renderDiff produces a simple before/after comparison.

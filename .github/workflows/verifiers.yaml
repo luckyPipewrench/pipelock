@@ -2,7 +2,7 @@ name: Verifiers
 
 # Gates the TypeScript and Rust reference verifiers under sdk/verifiers/.
 # The Go conformance suite under sdk/conformance/ is already gated by the
-# existing CI workflow's `test (1.25)` and `test (1.26)` aggregate jobs. This
+# existing CI workflow's `test (1.26)` and `test (1.27)` aggregate jobs. This
 # file adds matching CI coverage for the non-Go reference verifiers. Changes
 # that break either one fail at the PR stage instead of merging silently.
 #
@@ -192,7 +192,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -276,7 +276,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -404,7 +404,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Run containment direct-egress conformance gate
         run: bash sdk/conformance/containment-gate.sh

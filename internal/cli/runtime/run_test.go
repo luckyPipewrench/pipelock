@@ -921,6 +921,10 @@ logging:
 		}
 
 		// Shut down.
+		// Close the client's idle connections first: Go's server waits up to 5s
+		// for a connection that never sent a request, and Go 1.27's client can
+		// leave one open, which made this shutdown wait race its deadline.
+		client.CloseIdleConnections()
 		cancel()
 		select {
 		case err := <-cmdErr:
@@ -1114,6 +1118,10 @@ logging:
 			t.Fatalf("mcp input warning did not mark the finding redacted:\n%s", logs)
 		}
 
+		// Close the client's idle connections first: Go's server waits up to 5s
+		// for a connection that never sent a request, and Go 1.27's client can
+		// leave one open, which made this shutdown wait race its deadline.
+		http.DefaultClient.CloseIdleConnections()
 		cancel()
 		select {
 		case err := <-cmdErr:

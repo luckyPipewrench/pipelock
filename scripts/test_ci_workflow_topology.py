@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {"proxy", "scanner", "mcp", "rest-0", "rest-1", "rest-2"}
-MINORS = ("125", "126")
+MINORS = ("126", "127")
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
 NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
@@ -33,8 +33,8 @@ NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
 # tolerates, and the producer-side condition that makes tolerating them correct.
 # Named once so the gate's expectation and its justification cannot drift apart.
 EVENT_NAMES = ("push", "pull_request")
-SKIP_CARVEOUT_AGGREGATE = "test-go126"
-SKIP_CARVEOUT_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
+SKIP_CARVEOUT_AGGREGATE = "test-go127"
+SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # The COMPLETE approved predicate, not a fragment of it. A substring test here
 # is the weak form and was reproduced as a bypass: appending
 # `&& github.event.action != 'opened'` keeps the fragment, still skips an opened
@@ -49,8 +49,8 @@ SKIP_CARVEOUT_CONDITION = (
 )
 REQUIRED_PRODUCERS = {
     "security-scan",
-    "test-go125",
     "test-go126",
+    "test-go127",
     "test-macos",
     "lint",
     "build",
@@ -160,7 +160,7 @@ def execute_gate(run: str, results: dict[str, str], event_name: str) -> int:
 def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> list[str]:
     """Return failures from executing every aggregate result state.
 
-    Go 1.26 may accept a skipped shard producer only on a pull request.  Every
+    Go 1.27 may accept a skipped shard producer only on a pull request.  Every
     other omitted, unknown, cancelled, or failed producer result must red the
     aggregate required check.
     """
@@ -213,7 +213,7 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
 def skip_carveout_errors(jobs: dict) -> list[str]:
     """Return failures when a producer's skip carve-out is no longer justified.
 
-    `gate_execution_errors` accepts a `skipped` Go 1.26 producer on a pull
+    `gate_execution_errors` accepts a `skipped` Go 1.27 producer on a pull
     request and reds every other omitted result.  That acceptance is only
     correct while the producer skips for the single reason the carve-out was
     written for: the pull request touched no CI-policy path.  Nothing else
@@ -277,11 +277,11 @@ def topology_errors(jobs: dict) -> list[str]:
 
         aggregate_needs = set(jobs[aggregate].get("needs", []))
         expected = {"security-scan", oss, enterprise, replay}
-        if minor == "125":
+        if minor == "126":
             expected.add("test-subprocess-coverage")
         if aggregate_needs != expected:
             errors.append(f"{aggregate} needs {sorted(aggregate_needs)}, expected {sorted(expected)}")
-        opposite = "126" if minor == "125" else "125"
+        opposite = "127" if minor == "126" else "126"
         if any(f"go{opposite}" in dependency for dependency in aggregate_needs):
             errors.append(f"{aggregate} consumes Go {opposite} evidence")
         if jobs[aggregate].get("name") != f"test (1.{minor[1:]})":
@@ -344,8 +344,8 @@ def topology_errors(jobs: dict) -> list[str]:
         summary_run = report_step.get("run", "")
         for required_context in (
             "security-scan",
-            "test (1.25)",
             "test (1.26)",
+            "test (1.27)",
             "test-macos",
             "lint",
             "build",
@@ -392,12 +392,12 @@ class CIWorkflowTopologyTest(unittest.TestCase):
         # Positive control: the real workflow justifies the carve-out today.
         self.assertEqual(skip_carveout_errors(self.jobs), [])
         broken = copy.deepcopy(self.jobs)
-        original = broken["test-oss-go126"]["if"]
-        broken["test-oss-go126"]["if"] = "${{ always() }}"
-        self.assertNotEqual(original, broken["test-oss-go126"]["if"], "mutation did not change the fixture")
+        original = broken["test-oss-go127"]["if"]
+        broken["test-oss-go127"]["if"] = "${{ always() }}"
+        self.assertNotEqual(original, broken["test-oss-go127"]["if"], "mutation did not change the fixture")
         errors = skip_carveout_errors(broken)
         self.assertEqual(len(errors), 1)
-        self.assertIn("test-oss-go126", errors[0])
+        self.assertIn("test-oss-go127", errors[0])
         self.assertIn("CI-policy path", errors[0])
 
     def test_pull_request_only_swallow_fails_the_contract(self):
@@ -407,29 +407,29 @@ class CIWorkflowTopologyTest(unittest.TestCase):
         # `exit 1` becomes reachable only when the event is not a pull request.
         swallows_on_pull_request = """set -u
 test "${{ needs.security-scan.result }}" = "success"
-echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
-if ! test "${{ needs.test-oss-go126.result }}" = "success"; then
+echo "test-oss-go127 result: ${{ needs.test-oss-go127.result }}"
+if ! test "${{ needs.test-oss-go127.result }}" = "success"; then
   if [ "$EVENT_NAME" != "pull_request" ] || [ "skipped" != "skipped" ]; then
     exit 1
   fi
 fi
-echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
-if ! test "${{ needs.test-enterprise-go126.result }}" = "success"; then
-  if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go126.result }}" != "skipped" ]; then
+echo "test-enterprise-go127 result: ${{ needs.test-enterprise-go127.result }}"
+if ! test "${{ needs.test-enterprise-go127.result }}" = "success"; then
+  if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-enterprise-go127.result }}" != "skipped" ]; then
     exit 1
   fi
 fi
-echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
-test "${{ needs.test-replay-go126.result }}" = "success"
+echo "test-replay-go127 result: ${{ needs.test-replay-go127.result }}"
+test "${{ needs.test-replay-go127.result }}" = "success"
 """
-        dependencies = set(self.jobs["test-go126"]["needs"])
+        dependencies = set(self.jobs["test-go127"]["needs"])
         # Positive control: the gate the workflow actually ships passes.
         real_gate = next(
             step["run"]
-            for step in self.jobs["test-go126"]["steps"]
+            for step in self.jobs["test-go127"]["steps"]
             if step.get("name") == "Required check compatibility gate"
         )
-        self.assertEqual(gate_execution_errors("test-go126", real_gate, dependencies), [])
+        self.assertEqual(gate_execution_errors("test-go127", real_gate, dependencies), [])
         self.assertTrue(
             gate_script_is_safe(swallows_on_pull_request),
             "the fixture must pass the fence, or it proves nothing about event coverage",
@@ -439,15 +439,15 @@ test "${{ needs.test-replay-go126.result }}" = "success"
             0,
             "the fixture must green a wholly successful run",
         )
-        errors = gate_execution_errors("test-go126", swallows_on_pull_request, dependencies)
+        errors = gate_execution_errors("test-go127", swallows_on_pull_request, dependencies)
         self.assertTrue(
-            any("test-oss-go126=failure on pull_request" in error for error in errors),
+            any("test-oss-go127=failure on pull_request" in error for error in errors),
             f"a pull-request-only swallow went unreported: {errors}",
         )
 
     def test_broadened_skip_predicate_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        original = broken["test-oss-go126"]["if"]
+        original = broken["test-oss-go127"]["if"]
         broadened = original.replace("}}", "&& github.event.action != 'opened' }}")
         self.assertNotEqual(original, broadened, "mutation did not change the fixture")
         self.assertIn(
@@ -455,63 +455,63 @@ test "${{ needs.test-replay-go126.result }}" = "success"
             broadened,
             "the mutation must KEEP the approved words, or it does not test the substring weakness",
         )
-        broken["test-oss-go126"]["if"] = broadened
+        broken["test-oss-go127"]["if"] = broadened
         errors = skip_carveout_errors(broken)
         self.assertEqual(len(errors), 1)
-        self.assertIn("test-oss-go126", errors[0])
+        self.assertIn("test-oss-go127", errors[0])
 
-    def test_go126_failure_cannot_red_go125_aggregate(self):
-        aggregate_needs = set(self.jobs["test-go125"]["needs"])
+    def test_go127_failure_cannot_red_go126_aggregate(self):
+        aggregate_needs = set(self.jobs["test-go126"]["needs"])
         self.assertFalse(
-            any("go126" in dependency for dependency in aggregate_needs),
-            "a Go 1.26-only failure must not reach test (1.25)",
+            any("go127" in dependency for dependency in aggregate_needs),
+            "a Go 1.27-only failure must not reach test (1.26)",
         )
 
     def test_cross_minor_wiring_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        broken["test-go125"]["needs"].append("test-oss-go126")
-        self.assertIn("test-go125 consumes Go 126 evidence", topology_errors(broken))
+        broken["test-go126"]["needs"].append("test-oss-go127")
+        self.assertIn("test-go126 consumes Go 127 evidence", topology_errors(broken))
 
     def test_missing_replay_step_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        broken["test-replay-go126"]["steps"] = [
+        broken["test-replay-go127"]["steps"] = [
             step
-            for step in broken["test-replay-go126"]["steps"]
+            for step in broken["test-replay-go127"]["steps"]
             if step.get("run") != "make test-replay-harness"
         ]
         errors = topology_errors(broken)
-        self.assertIn("test-replay-go126 is not a singleton replay producer", errors)
+        self.assertIn("test-replay-go127 is not a singleton replay producer", errors)
 
     def test_replay_inside_a_shard_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        broken["test-oss-go125"]["steps"].append(
+        broken["test-oss-go126"]["steps"].append(
             {"name": "Replay harness", "run": "make test-replay-harness"}
         )
-        self.assertIn("test-oss-go125 runs replay inside every shard", topology_errors(broken))
+        self.assertIn("test-oss-go126 runs replay inside every shard", topology_errors(broken))
 
     def test_unguarded_replay_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        del broken["test-replay-go126"]["needs"]
+        del broken["test-replay-go127"]["needs"]
         self.assertIn(
-            "test-replay-go126 can execute PR code before a successful security scan",
+            "test-replay-go127 can execute PR code before a successful security scan",
             topology_errors(broken),
         )
 
     def test_aggregate_without_always_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        del broken["test-go125"]["if"]
+        del broken["test-go126"]["if"]
         self.assertIn(
-            "test-go125 is skipped instead of failing when a dependency fails",
+            "test-go126 is skipped instead of failing when a dependency fails",
             topology_errors(broken),
         )
 
     def test_skip_gated_compatibility_gate_fails_the_contract(self):
         broken = copy.deepcopy(self.jobs)
-        for step in broken["test-go126"]["steps"]:
+        for step in broken["test-go127"]["steps"]:
             if step.get("name") == "Required check compatibility gate":
                 step["if"] = SCAN_SUCCESS_CONDITION
         self.assertIn(
-            "test-go126 compatibility gate can skip and green after failed evidence",
+            "test-go127 compatibility gate can skip and green after failed evidence",
             topology_errors(broken),
         )
 
@@ -519,17 +519,17 @@ test "${{ needs.test-replay-go126.result }}" = "success"
         broken = copy.deepcopy(self.jobs)
         gate = next(
             step
-            for step in broken["test-go126"]["steps"]
+            for step in broken["test-go127"]["steps"]
             if step.get("name") == "Required check compatibility gate"
         )
         gate["run"] = "\n".join(
             line
             for line in gate["run"].splitlines()
-            if "needs.test-replay-go126.result" not in line
+            if "needs.test-replay-go127.result" not in line
         )
         self.assertTrue(
             any(
-                "test-replay-go126=failure" in error
+                "test-replay-go127=failure" in error
                 for error in topology_errors(broken)
             )
         )
@@ -539,35 +539,35 @@ test "${{ needs.test-replay-go126.result }}" = "success"
         broken = copy.deepcopy(self.jobs)
         gate = next(
             step
-            for step in broken["test-go126"]["steps"]
+            for step in broken["test-go127"]["steps"]
             if step.get("name") == "Required check compatibility gate"
         )
         gate["run"] = """\
 test "${{ needs.security-scan.result }}" = "success"
-test "${{ needs.test-oss-go126.result }}" = "success" || {
+test "${{ needs.test-oss-go127.result }}" = "success" || {
   [ "$EVENT_NAME" != "pull_request" ] &&
-  [ "${{ needs.test-oss-go126.result }}" != "skipped" ]
+  [ "${{ needs.test-oss-go127.result }}" != "skipped" ]
 }
-test "${{ needs.test-enterprise-go126.result }}" = "success"
-test "${{ needs.test-replay-go126.result }}" = "success"
+test "${{ needs.test-enterprise-go127.result }}" = "success"
+test "${{ needs.test-replay-go127.result }}" = "success"
 """
         gate_run = gate["run"]
-        self.assertIn('test "${{ needs.test-oss-go126.result }}" = "success"', gate_run)
+        self.assertIn('test "${{ needs.test-oss-go127.result }}" = "success"', gate_run)
         self.assertEqual(
             execute_gate(
                 gate_run,
                 {
                     "security-scan": "success",
-                    "test-oss-go126": "failure",
-                    "test-enterprise-go126": "success",
-                    "test-replay-go126": "success",
+                    "test-oss-go127": "failure",
+                    "test-enterprise-go127": "success",
+                    "test-replay-go127": "success",
                 },
                 "push",
             ),
             0,
         )
         self.assertTrue(
-            any("test-oss-go126=failure" in error for error in topology_errors(broken))
+            any("test-oss-go127=failure" in error for error in topology_errors(broken))
         )
 
     def test_execution_fence_refuses_shell_expansion(self):

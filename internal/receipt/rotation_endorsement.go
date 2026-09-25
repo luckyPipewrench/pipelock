@@ -156,6 +156,7 @@ func rotationEndorsementDigest(e RotationEndorsement) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal rotation endorsement: %w", err)
 	}
+	canonical = jsonscan.NormalizeReplacementEscapes(canonical)
 	sum := sha256.Sum256(append([]byte(rotationEndorsementDomain), canonical...))
 	return sum[:], nil
 }

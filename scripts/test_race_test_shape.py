@@ -14,10 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run-race-test.sh"
 CI_RACE_PRODUCERS = (
-    "test-oss-go125",
     "test-oss-go126",
-    "test-enterprise-go125",
+    "test-oss-go127",
     "test-enterprise-go126",
+    "test-enterprise-go127",
 )
 LEGACY_CI_RACE_PRODUCERS = ("test-oss", "test-enterprise")
 SHELL_ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=(?:[^\s\"']*|\"[^\"]*\"|'[^']*')"
@@ -162,7 +162,7 @@ class TestRaceTestShape(unittest.TestCase):
 
     def test_shortening_one_retry_budget_is_detected(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
-        name = "test-enterprise-go125"
+        name = "test-enterprise-go126"
         original = job_block(ci, name)
         shortened, count = re.subn(
             r"(?m)^    timeout-minutes: \d+$",
@@ -178,7 +178,7 @@ class TestRaceTestShape(unittest.TestCase):
 
     def test_package_timeout_cannot_substitute_for_an_attempt_deadline(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
-        name = "test-enterprise-go125"
+        name = "test-enterprise-go126"
         original = job_block(ci, name)
         unbounded, count = re.subn(r" --attempt-timeout-seconds [0-9]+", "", original)
         self.assertEqual(count, 1)
@@ -190,7 +190,7 @@ class TestRaceTestShape(unittest.TestCase):
 
     def test_attempt_deadline_changes_recompute_the_job_budget(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
-        name = "test-oss-go126"
+        name = "test-oss-go127"
         original = job_block(ci, name)
         longer, count = re.subn(r"--attempt-timeout-seconds [0-9]+", "--attempt-timeout-seconds 1800", original)
         self.assertEqual(count, 1)
@@ -246,7 +246,7 @@ class TestRaceTestShape(unittest.TestCase):
 
     def test_one_drifted_ci_race_job_fails_the_contract(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
-        first_producer = "test-oss-go125" if "  test-oss-go125:\n" in ci else "test-oss"
+        first_producer = "test-oss-go126" if "  test-oss-go126:\n" in ci else "test-oss"
         original_job = job_block(ci, first_producer)
         original_shape = 'go test -race -p="$package_parallelism" -parallel=2'
         self.assertEqual(original_job.count(original_shape), 1)
@@ -282,7 +282,7 @@ class TestRaceTestShape(unittest.TestCase):
 
     def test_partial_runner_delegation_fails_the_contract(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
-        first_producer = "test-oss-go125" if "  test-oss-go125:\n" in ci else "test-oss"
+        first_producer = "test-oss-go126" if "  test-oss-go126:\n" in ci else "test-oss"
         for prefix in ("", 'GOFLAGS="" ', "env GOFLAGS=-mod=readonly "):
             with self.subTest(prefix=prefix):
                 mixed = ci.replace(

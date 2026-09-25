@@ -773,9 +773,12 @@ func TestJSONLeafBucketPayloadsFoldDoesNotRepeatLeaves(t *testing.T) {
 
 	// A syntax error after FIRST runs the fallback fold on every Go release,
 	// not only where the decoder has a nesting limit.
-	buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"w":["FIRST",1 2]}`), JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
+	buckets, valid := JSONLeafBucketPayloads(json.RawMessage(`{"w":["FIRST",1 2 "RECOVERED"]}`), JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}, 4096, testJSONLeafBucketKey)
 	if valid {
 		t.Fatalf("malformed body reported complete: %#v", buckets)
+	}
+	if !jsonLeafBucketsContain(buckets, "RECOVERED") {
+		t.Fatalf("malformed body dropped the leaf after the syntax error: %#v", buckets)
 	}
 	all.Reset()
 	for _, v := range buckets {

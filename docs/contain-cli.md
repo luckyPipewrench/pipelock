@@ -266,7 +266,7 @@ The private namespace starts with one bridge to the host: the Pipelock proxy soc
 
 Some stock tools bind a loopback listener on a kernel-assigned TCP port and connect back to it. That works without a declared port because the tool and its child processes share the private namespace's loopback interface. A listener on the host's loopback interface remains unreachable, even when it runs under the same Unix account.
 
-`pipelock contain install` creates and starts `pipelock-agent-netns.service`, then starts the namespace-bound `pipelock-agent-proxy.socket`. The socket-activated service stays in the host namespace and forwards only accepted proxy connections to the real Pipelock listener. Pipelock doesn't add a veth pair, a gateway, or a default route. It also doesn't move the proxy into the agent namespace, because the proxy needs host-network egress.
+`pipelock contain install` creates and starts `pipelock-agent-netns.service`. The host-side `pipelock-agent-proxy.socket` creates the pathname doorway `/run/pipelock-agent-proxy.sock`; its `pipelock-agent-proxy.service` relay forwards connections to the host Pipelock listener. Inside the agent namespace, `pipelock-agent-netns-forward.service` creates the loopback proxy listener and connects it to that doorway. Pipelock doesn't add a veth pair, a gateway, or a default route. The proxy stays in the host namespace for network egress.
 
 ```yaml
 containment:

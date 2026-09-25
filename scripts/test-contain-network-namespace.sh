@@ -124,7 +124,15 @@ if ! systemd-run \
     --property="JoinsNamespaceOf=${namespace_unit}" \
     --uid="${agent_user}" \
     -- \
-    python3 -c 'import http.server, pathlib, sys; server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler); pathlib.Path(sys.argv[1]).write_text(str(server.server_port)); server.serve_forever()' "${inside_port_file}" >/dev/null; then
+    python3 -c 'import http.server, pathlib, sys
+class FixedHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok\n")
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixedHandler)
+pathlib.Path(sys.argv[1]).write_text(str(server.server_port))
+server.serve_forever()' "${inside_port_file}" >/dev/null; then
     fail "start listener inside the private namespace"
 else
     if ! wait_for test -s "${inside_port_file}"; then
@@ -153,7 +161,15 @@ if ! systemd-run \
     --unit="${host_listener_unit}" \
     --service-type=exec \
     -- \
-    python3 -c 'import http.server, pathlib, sys; server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler); pathlib.Path(sys.argv[1]).write_text(str(server.server_port)); server.serve_forever()' "${host_port_file}" >/dev/null; then
+    python3 -c 'import http.server, pathlib, sys
+class FixedHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok\n")
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixedHandler)
+pathlib.Path(sys.argv[1]).write_text(str(server.server_port))
+server.serve_forever()' "${host_port_file}" >/dev/null; then
     fail "start host-loopback listener"
 else
     if ! wait_for test -s "${host_port_file}"; then

@@ -1742,7 +1742,7 @@ containment:
   agent_listener: "127.0.0.1:8889"
 ```
 
-The proxy then attributes the contained agent's traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Only processes inside the agent's network namespace can reach the doorway, and only Pipelock's relay dials the listener, so no other local client and nothing inside the namespace can claim the identity. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
+The proxy attributes traffic to that profile through the listener binding, so its per-agent policy, receipts and audit records name it. Processes inside the agent namespace reach the listener only through the doorway. A host-local process that can connect to the loopback port is also attributed to the profile; the listener is not an authentication boundary against host-local processes. The value must be a numeric loopback address matching a declared listener and must differ from the shared proxy port; `contain install` refuses anything else. Inside the namespace the agent's proxy address does not change.
 
 ### Declared loopback services (containment)
 
@@ -1766,7 +1766,7 @@ containment:
 
 This declaration isn't needed for a listener that the contained tool starts. The tool and its child processes share the private namespace's loopback interface, so they can connect to a kernel-assigned port there. A listener on the host's loopback interface remains unreachable, including one owned by `pipelock-agent`.
 
-The built-in proxy uses the same shape. `pipelock-agent-proxy.socket` listens on `127.0.0.1:<proxy-port>` inside the private namespace, and its host-side service forwards to the real Pipelock listener. The runtime proxy URL stays `http://127.0.0.1:<proxy-port>`.
+The built-in proxy uses a host pathname doorway: `pipelock-agent-proxy.socket` creates `/run/pipelock-agent-proxy.sock`, and the host `pipelock-agent-proxy.service` relay forwards it to the Pipelock listener. `pipelock-agent-netns-forward.service` creates the `127.0.0.1:<proxy-port>` listener inside the private namespace and connects it to the doorway. The runtime proxy URL stays `http://127.0.0.1:<proxy-port>`.
 
 Run `sudo pipelock contain reload-nft-rules` after every add, removal, or expiry. The command also reconciles the namespace socket units and their root-owned inventory. If the managed config is missing or unreadable, or the set contains a malformed or expired entry, reconciliation removes all declared forwarders and logs the reason. The base namespace and proxy socket stay active. See "Declared loopback services" in `contain-cli.md` for install, verification, and service-launch details.
 

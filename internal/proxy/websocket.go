@@ -1389,6 +1389,35 @@ func (c *wsDialPrefixedConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
+// relayCloseGrace is how long the other direction may keep reading and
+// writing once one direction has ended. It lets a peer answer a forwarded
+// Close frame, so a normal close handshake completes (RFC 6455 section
+// 5.5.1), while a peer that went away holds the relay for this long instead
+// of the whole idle timeout.
+const relayCloseGrace = time.Second
+
+// wakeRelayConn bounds a read or write blocked on conn to relayCloseGrace
+// when the relay ends, so a peer that stopped reading or went silent cannot
+// hold the relay open. A final close frame still goes out: the close-frame
+// writers set their own write deadline first.
+func wakeRelayConn(conn net.Conn) {
+	deadline := time.Now().Add(relayCloseGrace)
+	_ = conn.SetReadDeadline(deadline)
+	_ = conn.SetWriteDeadline(deadline)
+}
+
+// armReadDeadline re-arms conn's idle read deadline for the next read. When
+// the relay is already ending it caps the read at relayCloseGrace instead, so
+// the read ends soon and the loop exits on its next check. The order matters:
+// a cancel that lands after the ctx check fires its own wake after this write,
+// and one that landed before it is caught by the check.
+func (r *wsRelay) armReadDeadline(ctx context.Context, conn net.Conn, idleTimeout time.Duration) {
+	_ = conn.SetReadDeadline(r.idleDeadline(idleTimeout))
+	if ctx.Err() != nil {
+		_ = conn.SetReadDeadline(time.Now().Add(relayCloseGrace))
+	}
+}
+
 // run starts bidirectional frame relay. Returns stats when both directions complete.
 func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	idleTimeout := time.Duration(r.cfg.WebSocketProxy.IdleTimeoutSeconds) * time.Second
@@ -1397,6 +1426,16 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Each direction cancels ctx when it ends. Wake the other direction's
+	// blocked read at once: it re-checks ctx on the next loop and returns.
+	// Without this, a client that disconnected left the upstream reader
+	// waiting out the full idle timeout, holding the upstream socket and the
+	// scanner for that long.
+	stopUpstreamWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.upstreamConn) })
+	defer stopUpstreamWake()
+	stopClientWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.clientConn) })
+	defer stopClientWake()
 
 	// Use separate per-direction counters to avoid data races. The goroutine
 	// writes c2s*, the main goroutine writes s2c*, and we sum after wg.Wait().
@@ -2375,7 +2414,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		_ = r.clientConn.SetReadDeadline(r.idleDeadline(idleTimeout))
+		r.armReadDeadline(ctx, r.clientConn, idleTimeout)
 
 		hdr, err := ws.ReadHeader(r.clientConn)
 		if err != nil {
@@ -2861,7 +2900,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		_ = r.upstreamConn.SetReadDeadline(r.idleDeadline(idleTimeout))
+		r.armReadDeadline(ctx, r.upstreamConn, idleTimeout)
 
 		hdr, err := ws.ReadHeader(r.upstreamConn)
 		if err != nil {

@@ -243,15 +243,11 @@ func assertConnectLiveLockEcho(t *testing.T, proxyAddr, target string, msg []byt
 func TestConnectLiveLock_NoActiveContractPassThrough(t *testing.T) {
 	ln := listenEcho(t)
 	defer func() { _ = ln.Close() }()
-	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, disableSNIVerify)
 	defer cleanup()
 	p.contractLoaderPtr.Store(emptyContractLoader(t))
 
-	resp := doConnectLiveLock(t, proxyAddr, ln.Addr().String())
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	assertConnectLiveLockEcho(t, proxyAddr, ln.Addr().String(), []byte("no-contract"))
 }
 
 func TestConnectLiveLock_AllowRulePasses(t *testing.T) {
@@ -316,16 +312,12 @@ func connectLiveLockObserveModeAllows(t *testing.T, mode contractruntime.Mode) {
 	t.Helper()
 	ln := listenEcho(t)
 	defer func() { _ = ln.Close() }()
-	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, disableSNIVerify)
 	defer cleanup()
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/", http.MethodConnect)
 	p.contractLoaderPtr.Store(testContractLoader(t, mode, rule))
 
-	resp := doConnectLiveLock(t, proxyAddr, ln.Addr().String())
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	assertConnectLiveLockEcho(t, proxyAddr, ln.Addr().String(), []byte("observe-only"))
 }
 
 func TestConnectLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {

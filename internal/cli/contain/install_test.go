@@ -200,8 +200,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		// chown/lchown can't really run under non-root tests; no-op so the
 		// orchestration progresses. Tests that need to assert ownership calls
 		// can substitute their own hooks.
-		chown:  func(string, int, int) error { return nil },
-		lchown: func(string, int, int) error { return nil },
+		chown:              func(string, int, int) error { return nil },
+		lchown:             func(string, int, int) error { return nil },
+		agentBrowserFchown: func(*os.File, int, int) error { return nil },
 		// Unprivileged stand-in for the descriptor-based owner: keeps the
 		// symlink refusal and the mode change, drops only the chown, which
 		// needs root. The real one is exercised in browser_ca_test.go.

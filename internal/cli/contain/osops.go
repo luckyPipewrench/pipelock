@@ -53,6 +53,12 @@ type installEnv struct {
 	// keep the descriptor-based implementation, because a path-based chmod in
 	// an agent-owned directory is redirectable by a swapped symlink.
 	ownLeafNoFollow func(path string, mode os.FileMode, uid, gid int) error
+	// Browser config operations stay under an opened os.Root. These optional
+	// descriptor hooks let unprivileged tests inject ownership and I/O faults.
+	agentBrowserFchown func(f *os.File, uid, gid int) error
+	agentBrowserWrite  func(f *os.File, data []byte) (int, error)
+	agentBrowserLstat  func(root *os.Root, name string) (os.FileInfo, error)
+	agentBrowserRemove func(root *os.Root, name string) error
 
 	// repairLeafMode reads and tightens a file's mode through a single
 	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable

@@ -19,14 +19,33 @@ import (
 // default merged into the contained agent's agent-browser config.
 const agentBrowserDefaultsRecordFile = "agent-browser-defaults.json"
 
-// The descriptor is kept open across each home operation. Tests replace only
-// the ownership syscall, since they cannot chown files to the managed user.
-var (
-	agentBrowserFchown = func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }
-	agentBrowserWrite  = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
-	agentBrowserLstat  = func(root *os.Root, name string) (os.FileInfo, error) { return root.Lstat(name) }
-	agentBrowserRemove = func(root *os.Root, name string) error { return root.Remove(name) }
-)
+func browserFchown(env *installEnv, f *os.File, uid, gid int) error {
+	if env.agentBrowserFchown != nil {
+		return env.agentBrowserFchown(f, uid, gid)
+	}
+	return f.Chown(uid, gid)
+}
+
+func browserWrite(env *installEnv, f *os.File, data []byte) (int, error) {
+	if env.agentBrowserWrite != nil {
+		return env.agentBrowserWrite(f, data)
+	}
+	return f.Write(data)
+}
+
+func browserLstat(env *installEnv, root *os.Root, name string) (os.FileInfo, error) {
+	if env.agentBrowserLstat != nil {
+		return env.agentBrowserLstat(root, name)
+	}
+	return root.Lstat(name)
+}
+
+func browserRemove(env *installEnv, root *os.Root, name string) error {
+	if env.agentBrowserRemove != nil {
+		return env.agentBrowserRemove(root, name)
+	}
+	return root.Remove(name)
+}
 
 const (
 	agentBrowserDir  = ".agent-browser"
@@ -48,8 +67,8 @@ func openAgentBrowserHome(env *installEnv) (*os.Root, error) {
 	return root, nil
 }
 
-func agentBrowserLeaf(root *os.Root, name string) (os.FileInfo, error) {
-	info, err := agentBrowserLstat(root, name)
+func agentBrowserLeaf(env *installEnv, root *os.Root, name string) (os.FileInfo, error) {
+	info, err := browserLstat(env, root, name)
 	if err != nil {
 		return nil, err
 	}
@@ -59,13 +78,13 @@ func agentBrowserLeaf(root *os.Root, name string) (os.FileInfo, error) {
 	return info, nil
 }
 
-func agentBrowserDirReady(root *os.Root, create bool) error {
-	info, err := agentBrowserLeaf(root, agentBrowserDir)
+func agentBrowserDirReady(env *installEnv, root *os.Root, create bool) error {
+	info, err := agentBrowserLeaf(env, root, agentBrowserDir)
 	if errors.Is(err, os.ErrNotExist) && create {
 		if err := root.Mkdir(agentBrowserDir, modeDirPrivate); err != nil && !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("mkdir agent-browser directory: %w", err)
 		}
-		info, err = agentBrowserLeaf(root, agentBrowserDir)
+		info, err = agentBrowserLeaf(env, root, agentBrowserDir)
 	}
 	if err != nil {
 		return err
@@ -76,13 +95,13 @@ func agentBrowserDirReady(root *os.Root, create bool) error {
 	return nil
 }
 
-func readAgentBrowserRoot(root *os.Root) ([]byte, bool, error) {
-	if err := agentBrowserDirReady(root, false); errors.Is(err, os.ErrNotExist) {
+func readAgentBrowserRoot(env *installEnv, root *os.Root) ([]byte, bool, error) {
+	if err := agentBrowserDirReady(env, root, false); errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	} else if err != nil {
 		return nil, false, err
 	}
-	info, err := agentBrowserLeaf(root, agentBrowserFile)
+	info, err := agentBrowserLeaf(env, root, agentBrowserFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -111,11 +130,11 @@ func readAgentBrowserRoot(root *os.Root) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-func writeAgentBrowserRoot(root *os.Root, name string, data []byte, uid, gid int) error {
-	if err := agentBrowserDirReady(root, true); err != nil {
+func writeAgentBrowserRoot(env *installEnv, root *os.Root, name string, data []byte, uid, gid int) error {
+	if err := agentBrowserDirReady(env, root, true); err != nil {
 		return err
 	}
-	if info, err := agentBrowserLeaf(root, name); err == nil {
+	if info, err := agentBrowserLeaf(env, root, name); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%s exists and is not a regular file", name)
 		}
@@ -130,19 +149,19 @@ func writeAgentBrowserRoot(root *os.Root, name string, data []byte, uid, gid int
 	if err := f.Chmod(modeAgentConfig); err != nil {
 		return fmt.Errorf("chmod %s: %w", name, err)
 	}
-	if _, err := agentBrowserWrite(f, data); err != nil {
+	if _, err := browserWrite(env, f, data); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := agentBrowserFchown(f, uid, gid); err != nil {
+	if err := browserFchown(env, f, uid, gid); err != nil {
 		return fmt.Errorf("chown %s: %w", name, err)
 	}
 	return nil
 }
 
-func ownAgentBrowserDirs(root *os.Root, uid, gid int) error {
+func ownAgentBrowserDirs(env *installEnv, root *os.Root, uid, gid int) error {
 	for _, name := range []string{".", agentBrowserDir} {
 		if name != "." {
-			if err := agentBrowserDirReady(root, true); err != nil {
+			if err := agentBrowserDirReady(env, root, true); err != nil {
 				return err
 			}
 		}
@@ -150,7 +169,7 @@ func ownAgentBrowserDirs(root *os.Root, uid, gid int) error {
 		if err != nil {
 			return fmt.Errorf("open %s: %w", name, err)
 		}
-		if err := agentBrowserFchown(f, uid, gid); err != nil {
+		if err := browserFchown(env, f, uid, gid); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("chown %s: %w", name, err)
 		}
@@ -162,15 +181,15 @@ func ownAgentBrowserDirs(root *os.Root, uid, gid int) error {
 }
 
 func restoreAgentBrowserRoot(env *installEnv, root *os.Root) error {
-	if _, err := agentBrowserLeaf(root, agentBrowserFile+".bak"); err == nil {
-		if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := agentBrowserLeaf(env, root, agentBrowserFile+".bak"); err == nil {
+		if err := browserRemove(env, root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove managed agent-browser config: %w", err)
 		}
 		if err := root.Rename(agentBrowserFile+".bak", agentBrowserFile); err != nil {
 			return fmt.Errorf("restore agent-browser config: %w", err)
 		}
 		if archive := popArchivedBackup(env, agentBrowserConfigPath(env)+".bak"); archive != "" {
-			if _, err := agentBrowserLeaf(root, filepath.Join(agentBrowserDir, filepath.Base(archive))); err != nil {
+			if _, err := agentBrowserLeaf(env, root, filepath.Join(agentBrowserDir, filepath.Base(archive))); err != nil {
 				return fmt.Errorf("stat archived agent-browser backup: %w", err)
 			}
 			if err := root.Rename(filepath.Join(agentBrowserDir, filepath.Base(archive)), agentBrowserFile+".bak"); err != nil {
@@ -181,19 +200,19 @@ func restoreAgentBrowserRoot(env *installEnv, root *os.Root) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := browserRemove(env, root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove agent-browser config: %w", err)
 	}
 	return nil
 }
 
 func backupAndWriteAgentBrowserRoot(env *installEnv, root *os.Root, data []byte, uid, gid int) error {
-	if _, err := agentBrowserLeaf(root, agentBrowserFile); err == nil {
+	if _, err := agentBrowserLeaf(env, root, agentBrowserFile); err == nil {
 		bak := agentBrowserFile + ".bak"
-		if _, err := agentBrowserLeaf(root, bak); err == nil {
+		if _, err := agentBrowserLeaf(env, root, bak); err == nil {
 			archive := fmt.Sprintf("%s.archived-%s", bak, backupArchiveNow().UTC().Format(backupArchiveTimeFormat))
 			for i := 1; ; i++ {
-				if _, err := agentBrowserLeaf(root, archive); errors.Is(err, os.ErrNotExist) {
+				if _, err := agentBrowserLeaf(env, root, archive); errors.Is(err, os.ErrNotExist) {
 					break
 				} else if err != nil {
 					return fmt.Errorf("stat archived agent-browser backup: %w", err)
@@ -213,7 +232,7 @@ func backupAndWriteAgentBrowserRoot(env *installEnv, root *os.Root, data []byte,
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := writeAgentBrowserRoot(root, agentBrowserFile, data, uid, gid); err != nil {
+	if err := writeAgentBrowserRoot(env, root, agentBrowserFile, data, uid, gid); err != nil {
 		return errors.Join(err, restoreAgentBrowserRoot(env, root))
 	}
 	return nil
@@ -245,7 +264,7 @@ func readAgentBrowserConfig(env *installEnv, _ string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer func() { _ = root.Close() }()
-	return readAgentBrowserRoot(root)
+	return readAgentBrowserRoot(env, root)
 }
 
 func restoreAgentBrowserConfig(env *installEnv) error {
@@ -254,7 +273,7 @@ func restoreAgentBrowserConfig(env *installEnv) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	if err := agentBrowserDirReady(root, false); errors.Is(err, os.ErrNotExist) {
+	if err := agentBrowserDirReady(env, root, false); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
@@ -370,7 +389,7 @@ func stepWriteAgentBrowserDefaults() step {
 				return false, err
 			}
 			defer func() { _ = root.Close() }()
-			if err := ownAgentBrowserDirs(root, uid, gid); err != nil {
+			if err := ownAgentBrowserDirs(env, root, uid, gid); err != nil {
 				return false, err
 			}
 			// Record first: if the config write then fails, the record is
@@ -429,10 +448,10 @@ func removeAgentBrowserDefaults(env *installEnv) error {
 			return err
 		}
 		defer func() { _ = root.Close() }()
-		if err := agentBrowserDirReady(root, false); err != nil {
+		if err := agentBrowserDirReady(env, root, false); err != nil {
 			return err
 		}
-		if err := agentBrowserRemove(root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := browserRemove(env, root, agentBrowserFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	case changed:
@@ -445,7 +464,7 @@ func removeAgentBrowserDefaults(env *installEnv) error {
 			return err
 		}
 		defer func() { _ = root.Close() }()
-		if err := writeAgentBrowserRoot(root, agentBrowserFile, out, uid, gid); err != nil {
+		if err := writeAgentBrowserRoot(env, root, agentBrowserFile, out, uid, gid); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}

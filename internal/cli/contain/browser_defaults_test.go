@@ -36,15 +36,13 @@ func browserDefaultsEnv(t *testing.T) (*installEnv, *[]ownCall, string, string) 
 		t.Fatalf("agent-browser defaults used symlink-following chown on %s", path)
 		return nil
 	}
-	prior := agentBrowserFchown
-	agentBrowserFchown = func(f *os.File, uid, gid int) error {
+	env.agentBrowserFchown = func(f *os.File, uid, gid int) error {
 		path := f.Name()
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(agentHomeDir(env), path)
 		}
 		return env.lchown(path, uid, gid)
 	}
-	t.Cleanup(func() { agentBrowserFchown = prior })
 	return env, &calls, agentBrowserConfigPath(env), agentBrowserDefaultsRecordPath(env)
 }
 
@@ -338,9 +336,9 @@ func TestStepWriteAgentBrowserDefaults_RefusesDirectorySwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	priorChown := agentBrowserFchown
+	priorChown := env.agentBrowserFchown
 	outsideChown := false
-	agentBrowserFchown = func(f *os.File, uid, gid int) error {
+	env.agentBrowserFchown = func(f *os.File, uid, gid int) error {
 		opened, openErr := f.Stat()
 		outsideInfo, outsideErr := os.Stat(outside)
 		if openErr == nil && outsideErr == nil && os.SameFile(opened, outsideInfo) {
@@ -348,11 +346,14 @@ func TestStepWriteAgentBrowserDefaults_RefusesDirectorySwap(t *testing.T) {
 		}
 		return priorChown(f, uid, gid)
 	}
-	t.Cleanup(func() { agentBrowserFchown = priorChown })
-	prior := agentBrowserLstat
+	t.Cleanup(func() { env.agentBrowserFchown = priorChown })
+	prior := env.agentBrowserLstat
 	checks := 0
-	agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
-		info, err := prior(root, name)
+	env.agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
+		info, err := root.Lstat(name)
+		if prior != nil {
+			info, err = prior(root, name)
+		}
 		if name == agentBrowserDir && err == nil {
 			checks++
 			if checks == 2 {
@@ -366,7 +367,7 @@ func TestStepWriteAgentBrowserDefaults_RefusesDirectorySwap(t *testing.T) {
 		}
 		return info, err
 	}
-	t.Cleanup(func() { agentBrowserLstat = prior })
+	t.Cleanup(func() { env.agentBrowserLstat = prior })
 	if applied, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || applied {
 		t.Fatalf("swapped directory accepted: applied=%v err=%v", applied, err)
 	}
@@ -425,9 +426,9 @@ func TestStepWriteAgentBrowserDefaults_FailureRestores(t *testing.T) {
 	t.Run("config write fails", func(t *testing.T) {
 		env, _, path, record := browserDefaultsEnv(t)
 		writeAgentBrowserConfigFixture(t, path, original)
-		priorWrite := agentBrowserWrite
-		agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, errors.New("disk full") }
-		t.Cleanup(func() { agentBrowserWrite = priorWrite })
+		priorWrite := env.agentBrowserWrite
+		env.agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, errors.New("disk full") }
+		t.Cleanup(func() { env.agentBrowserWrite = priorWrite })
 		if _, err := stepWriteAgentBrowserDefaults().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "disk full") {
 			t.Fatalf("expected write failure, got %v", err)
 		}
@@ -641,14 +642,17 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 	})
 	t.Run("config stat error", func(t *testing.T) {
 		env, _, _, _ := browserDefaultsEnv(t)
-		priorLstat := agentBrowserLstat
-		agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
+		priorLstat := env.agentBrowserLstat
+		env.agentBrowserLstat = func(root *os.Root, name string) (os.FileInfo, error) {
 			if name == agentBrowserFile {
 				return nil, os.ErrPermission
 			}
+			if priorLstat == nil {
+				return root.Lstat(name)
+			}
 			return priorLstat(root, name)
 		}
-		t.Cleanup(func() { agentBrowserLstat = priorLstat })
+		t.Cleanup(func() { env.agentBrowserLstat = priorLstat })
 		if _, err := stepWriteAgentBrowserDefaults().apply(ctx, env); !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("got %v", err)
 		}
@@ -734,9 +738,9 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 	}
 	t.Run("rollback write fails", func(t *testing.T) {
 		rollbackFailure(t, func(env *installEnv, path string) {
-			priorWrite := agentBrowserWrite
-			agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, os.ErrPermission }
-			t.Cleanup(func() { agentBrowserWrite = priorWrite })
+			priorWrite := env.agentBrowserWrite
+			env.agentBrowserWrite = func(_ *os.File, _ []byte) (int, error) { return 0, os.ErrPermission }
+			t.Cleanup(func() { env.agentBrowserWrite = priorWrite })
 		})
 	})
 	t.Run("rollback chown fails", func(t *testing.T) {
@@ -757,14 +761,17 @@ func TestAgentBrowserDefaults_ErrorPaths(t *testing.T) {
 		if _, err := stepWriteAgentBrowserDefaults().apply(ctx, env); err != nil {
 			t.Fatal(err)
 		}
-		priorRemove := agentBrowserRemove
-		agentBrowserRemove = func(root *os.Root, name string) error {
+		priorRemove := env.agentBrowserRemove
+		env.agentBrowserRemove = func(root *os.Root, name string) error {
 			if name == agentBrowserFile {
 				return os.ErrPermission
 			}
+			if priorRemove == nil {
+				return root.Remove(name)
+			}
 			return priorRemove(root, name)
 		}
-		t.Cleanup(func() { agentBrowserRemove = priorRemove })
+		t.Cleanup(func() { env.agentBrowserRemove = priorRemove })
 		if err := removeAgentBrowserDefaults(env); !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("got %v", err)
 		}

@@ -59,6 +59,8 @@ type installEnv struct {
 	agentBrowserWrite  func(f *os.File, data []byte) (int, error)
 	agentBrowserLstat  func(root *os.Root, name string) (os.FileInfo, error)
 	agentBrowserRemove func(root *os.Root, name string) error
+	// Test seam for synthetic user IDs in unprivileged browser fixtures.
+	agentBrowserDirOwner func(f *os.File, uid int) bool
 
 	// repairLeafMode reads and tightens a file's mode through a single
 	// O_NOFOLLOW descriptor and reports the mode it found, so a replaceable

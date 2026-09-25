@@ -444,6 +444,20 @@ func TestClone_RawBytesCopiedNotAliased(t *testing.T) {
 	}
 }
 
+func TestClone_DeclaredAudienceHostsCopiedNotAliased(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.GitHubEnterpriseHosts = []string{"github.corp.example"}
+	cfg.DLP.GitLabHosts = []string{"gitlab.corp.example"}
+
+	clone := cfg.Clone()
+	clone.DLP.GitHubEnterpriseHosts[0] = "evil.example"
+	clone.DLP.GitLabHosts[0] = "evil.example"
+
+	if cfg.DLP.GitHubEnterpriseHosts[0] != "github.corp.example" || cfg.DLP.GitLabHosts[0] != "gitlab.corp.example" {
+		t.Fatalf("Clone aliased declared audience hosts: %v %v", cfg.DLP.GitHubEnterpriseHosts, cfg.DLP.GitLabHosts)
+	}
+}
+
 func TestClone_LicenseIntermediateCertCopiedNotAliased(t *testing.T) {
 	cfg := Defaults()
 	cfg.LicenseIntermediateCert = []byte("intermediate-cert")

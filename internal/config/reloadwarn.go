@@ -60,6 +60,22 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Declared credential-audience hosts widen where a core credential may
+	// go. Adding one is a weakening with the zero (rejectable) disposition,
+	// so strict mode and require_receipts refuse it; removing one narrows.
+	if added := exactStringsAdded(old.DLP.GitHubEnterpriseHosts, updated.DLP.GitHubEnterpriseHosts); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.github_enterprise_hosts",
+			Message: "GitHub enterprise credential audience widened: " + strings.Join(added, ", ") + " — GitHub tokens are now allowed to these hosts on an encrypted Authorization header",
+		})
+	}
+	if added := exactStringsAdded(old.DLP.GitLabHosts, updated.DLP.GitLabHosts); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.gitlab_hosts",
+			Message: "GitLab credential audience widened: " + strings.Join(added, ", ") + " — GitLab PAT and CI job tokens are now allowed to these hosts on their documented headers",
+		})
+	}
+
 	// DLP patterns removed or weakened. Plain len() comparison misses
 	// same-length downgrades (e.g. swapping (?i)secret_key for (?i)key
 	// under the same pattern name). Pattern count stays constant but

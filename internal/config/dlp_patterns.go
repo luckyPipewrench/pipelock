@@ -21,6 +21,35 @@ const (
 	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
 )
 
+// Compiled credential-audience carriers. A zero mask means every scanned
+// surface may earn the allow, which is the Slack-shaped rule. A non-zero mask
+// allows only the named headers. Authorization is split by scheme so each
+// provider accepts only the schemes its clients document. Google's Bearer-only
+// rule predates the mask and stays on CredentialAudienceAuthorizationOnly.
+const (
+	CredentialAudienceCarrierAuthorizationBearer uint8 = 1 << iota
+	CredentialAudienceCarrierAuthorizationToken
+	CredentialAudienceCarrierAuthorizationBasic
+	CredentialAudienceCarrierPrivateToken
+	CredentialAudienceCarrierJobToken
+	// CredentialAudienceCarrierGitBasic is the separate git-over-HTTPS rule:
+	// Authorization Basic, https only, at a CredentialAudienceGitHosts host,
+	// and only on a git smart-HTTP or Git LFS path. It never widens the REST
+	// host list, and the REST hosts never accept Basic through it.
+	CredentialAudienceCarrierGitBasic
+)
+
+// githubTokenAudienceMask is the GitHub carriers: Authorization with the
+// Bearer or token scheme at the REST hosts, plus the git rule, which accepts
+// Basic at github.com only on a git transport path.
+const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken | CredentialAudienceCarrierGitBasic
+
+// gitlabTokenAudienceMask is the documented GitLab access-token carriers:
+// PRIVATE-TOKEN and Authorization Bearer for the API on any path, and
+// Authorization Basic (oauth2:<token>) through the git rule, which limits it
+// to git transport paths on the same host. Job tokens use JOB-TOKEN only.
+const gitlabTokenAudienceMask = CredentialAudienceCarrierPrivateToken | CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierGitBasic
+
 // defaultDLPPatternSet is the canonical shipped DLP pattern registry.
 // Defaults, generated presets, and drift tests read from this list instead of
 // carrying separate name/regex/severity copies.
@@ -67,18 +96,31 @@ var defaultDLPPatternSet = []DLPPattern{
 	// also contain dots and hyphens. Keep the broader alphabet scoped to ghs_ so
 	// the other short prefixes do not start matching dotted prose.
 	// Source: https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/
-	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical},
-	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
-	// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
-	{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
-	// Remaining GitLab token families. All documented prefixes share
+	// GitHub REST authentication sends the token in Authorization as Bearer or
+	// token. Release-asset upload uses the same header on uploads.github.com.
+	// github.com itself is git, not the API host, and is not an audience.
+	// Sources: https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api
+	// https://docs.github.com/en/rest/releases/assets
+	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	// GitLab personal, project, and group access tokens share glpat-.
+	// The API host is the instance host. gitlab.com is the public one.
+	// Source: https://docs.gitlab.com/api/rest/authentication/
+	{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gitlab.com"}, CredentialAudienceGitHosts: []string{"gitlab.com"}, CredentialAudienceCarrierMask: gitlabTokenAudienceMask},
+	// Remaining GitLab token families. Only the CI job token carries a
+	// compiled audience; the others are not documented as REST credentials on
+	// a header (runner, trigger, and OAuth application secrets travel in
+	// request bodies, deploy tokens also reach registry hosts), so they stay
+	// blocked on every destination. All documented prefixes share
 	// the gl<type>- + base64url shape (GitLab token overview). Optional
 	// suffix chars use the (?:x)? form so the DLP pre-filter extracts
 	// the shorter literal prefix (e.g. "glrt" gates glrt- and glrtr-).
 	// Source: https://docs.gitlab.com/security/tokens/
 	{Name: "GitLab Deploy Token", Regex: `gldt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
 	{Name: "GitLab Runner Token", Regex: `glrt(?:r)?-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
-	{Name: "GitLab CI Job Token", Regex: `glcbt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+	// Job tokens authenticate with the JOB-TOKEN header.
+	// Source: https://docs.gitlab.com/api/rest/authentication/
+	{Name: "GitLab CI Job Token", Regex: `glcbt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gitlab.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierJobToken},
 	{Name: "GitLab Pipeline Trigger Token", Regex: `glptt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
 	{Name: "GitLab OAuth Application Secret", Regex: `gloas-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
 	{Name: "GitLab SCIM Token", Regex: `glsoat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
@@ -450,6 +492,38 @@ func credentialAudienceHostsForPattern(name string) []string {
 		}
 	}
 	return nil
+}
+
+// AppendDeclaredCredentialAudienceHosts adds operator-named enterprise hosts
+// only onto a pattern that already carries its compiled audience. A redefined
+// pattern whose audience was cleared gets nothing from these lists.
+func AppendDeclaredCredentialAudienceHosts(name string, compiled, githubEnterprise, gitlab []string) []string {
+	if len(compiled) == 0 {
+		return append([]string(nil), compiled...)
+	}
+	var extra []string
+	switch {
+	case strings.EqualFold(name, "GitHub Token") || strings.EqualFold(name, "GitHub Fine-Grained PAT"):
+		extra = githubEnterprise
+	case strings.HasPrefix(strings.ToLower(name), "gitlab "):
+		extra = gitlab
+	}
+	if len(extra) == 0 {
+		return append([]string(nil), compiled...)
+	}
+	out := append([]string(nil), compiled...)
+	seen := make(map[string]struct{}, len(out)+len(extra))
+	for _, host := range out {
+		seen[host] = struct{}{}
+	}
+	for _, host := range extra {
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
 }
 
 // PresetDLPPatterns returns the generated DLP pattern set for a shipped preset

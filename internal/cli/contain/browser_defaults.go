@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/browserdefaults"
 )
@@ -111,7 +110,7 @@ func readAgentBrowserRoot(env *installEnv, root *os.Root) ([]byte, bool, error) 
 	if !info.Mode().IsRegular() {
 		return nil, false, fmt.Errorf("%s exists and is not a regular file", agentBrowserFile)
 	}
-	f, err := root.OpenFile(agentBrowserFile, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := root.OpenFile(agentBrowserFile, os.O_RDONLY|agentBrowserNoFollow, 0)
 	if err != nil {
 		return nil, false, fmt.Errorf("open agent-browser config: %w", err)
 	}
@@ -141,7 +140,7 @@ func writeAgentBrowserRoot(env *installEnv, root *os.Root, name string, data []b
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, modeAgentConfig)
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|agentBrowserNoFollow, modeAgentConfig)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", name, err)
 	}

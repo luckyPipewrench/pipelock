@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -168,5 +170,11 @@ func (dr DecisionRecord) Verify(pubKey ed25519.PublicKey) error {
 func (dr DecisionRecord) signable() ([]byte, error) {
 	noSig := dr
 	noSig.Signature = ""
-	return json.Marshal(noSig)
+	b, err := json.Marshal(noSig)
+	if err != nil {
+		return nil, err
+	}
+	// Invalid UTF-8 must sign the same bytes on every Go release; see
+	// jsonscan.NormalizeReplacementEscapes.
+	return jsonscan.NormalizeReplacementEscapes(b), nil
 }

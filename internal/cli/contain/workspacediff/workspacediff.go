@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // EntryKind names the filesystem object kind recorded for a path. Symlinks
@@ -728,7 +730,9 @@ func signablePayload(signed SignedStatement) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workspacediff: marshal signable payload: %w", err)
 	}
-	return b, nil
+	// Invalid UTF-8 must sign the bytes a verifier re-encodes after parsing, on
+	// every Go release; see jsonscan.NormalizeReplacementEscapes.
+	return jsonscan.NormalizeReplacementEscapes(b), nil
 }
 
 // WriteJSON atomically writes signed as indented JSON at 0o600 inside

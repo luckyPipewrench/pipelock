@@ -2768,12 +2768,16 @@ responseScanning:
 		}
 		// Initialize before the scanner goroutine can publish its terminal result.
 		recordReverseOutcome(resp.StatusCode, -1, "sse_stream")
-		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		// SSE is open-ended; the upstream Content-Length (if any) becomes
 		// meaningless once we strip events through the pipe. -1 instructs
-		// httputil.ReverseProxy to chunk the response.
+		// httputil.ReverseProxy to chunk the response. Both writes must land
+		// before HijackResponseForSSE starts the goroutine that can close the
+		// upstream body: Go 1.27's transport reads ContentLength when that body
+		// closes to decide whether to drain it, and a drain would read the
+		// stream the scanner is reading.
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
+		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 		return nil
 	}

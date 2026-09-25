@@ -151,9 +151,16 @@ func VerifyInternalConsistencyOnly(r Receipt) error {
 	return VerifyWithKey(r, r.SignerKey)
 }
 
-// Marshal returns the JSON encoding of a receipt.
+// Marshal returns the JSON encoding of a receipt. Invalid UTF-8 in a string
+// is written as a raw U+FFFD on every Go release, matching the signing
+// preimage and what a verifier re-encodes after parsing; see
+// jsonscan.NormalizeReplacementEscapes.
 func Marshal(r Receipt) ([]byte, error) {
-	return json.Marshal(r)
+	b, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	return jsonscan.NormalizeReplacementEscapes(b), nil
 }
 
 // ErrUnknownField is returned when a v1 receipt (or any of its signed nested

@@ -224,6 +224,10 @@ containment:
 		t.Fatal("valid containment reload did not restore metrics access")
 	}
 
+	// Close the client's idle connections first: Go's server waits up to 5s
+	// for a connection that never sent a request, and Go 1.27's client can
+	// leave one open, which made this shutdown wait race its deadline.
+	client.CloseIdleConnections()
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}

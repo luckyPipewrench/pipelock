@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -495,6 +496,9 @@ func (d ResetDelegation) signingInput() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal reset delegation signing input: %w", err)
 	}
+	// Invalid UTF-8 must sign the bytes a verifier re-encodes after parsing, on
+	// every Go release; see jsonscan.NormalizeReplacementEscapes.
+	raw = jsonscan.NormalizeReplacementEscapes(raw)
 	return append([]byte(resetDelegationPrefix), raw...), nil
 }
 

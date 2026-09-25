@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1334,5 +1335,37 @@ func TestSnapshot_RootStatErrorIsNotSilentlyEmpty(t *testing.T) {
 	}
 	if m.RootMissing {
 		t.Fatal("a permission failure must not be reported as a missing root")
+	}
+}
+
+// TestSignedStatementWithInvalidUTF8PathVerifiesFromDisk covers a workspace
+// file name holding invalid UTF-8, which the contained agent controls. The
+// written statement replaces each invalid byte with U+FFFD, so the signature
+// must cover that form or the whole statement is unverifiable once read back.
+func TestSignedStatementWithInvalidUTF8PathVerifiesFromDisk(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	name := "/granted/bad" + string([]byte{0xff}) + ".txt"
+	st := Statement{Root: "/granted", CapBytes: 1024, GeneratedAt: testNow, Added: []string{name}, Counts: Counts{Added: 1}}
+	signed, err := Sign([]Statement{st}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", priv)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	path, err := WriteJSON(t.TempDir(), signed)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var loaded SignedStatement
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := Verify(loaded, pub); err != nil {
+		t.Fatalf("verify after reading from disk: %v", err)
 	}
 }

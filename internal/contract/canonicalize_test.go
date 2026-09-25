@@ -307,7 +307,7 @@ func TestParseStrictFrom_UnexpectedDelimiter(t *testing.T) {
 	// Passing ']' exercises the default: branch inside the Delim switch (line 187-189).
 	// The decoder is not used for this token so any reader works.
 	dec := json.NewDecoder(bytes.NewReader([]byte(`null`)))
-	_, err := parseStrictFrom(dec, json.Delim(']'))
+	_, err := parseStrictFrom(dec, json.Delim(']'), 0)
 	if err == nil {
 		t.Error("expected error for unexpected delimiter ']', got nil")
 	}
@@ -318,7 +318,7 @@ func TestParseStrictFrom_UnexpectedTokenType(t *testing.T) {
 	// json.Token is interface{}. Passing a type that is not json.Delim, json.Number,
 	// string, bool, or nil hits the outer default: branch (line 194-196).
 	dec := json.NewDecoder(bytes.NewReader([]byte(`null`)))
-	_, err := parseStrictFrom(dec, 42) // int is not a recognized json.Token type
+	_, err := parseStrictFrom(dec, 42, 0) // int is not a recognized json.Token type
 	if err == nil {
 		t.Error("expected error for unrecognized token type int, got nil")
 	}
@@ -333,7 +333,7 @@ func TestParseStrictFrom_ObjectKeyTokenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected '{' token, got err: %v", err)
 	}
-	_, err = parseStrictFrom(dec, tok) // tok == json.Delim('{')
+	_, err = parseStrictFrom(dec, tok, 0) // tok == json.Delim('{')
 	if err == nil {
 		t.Error("expected error from truncated object key read, got nil")
 	}

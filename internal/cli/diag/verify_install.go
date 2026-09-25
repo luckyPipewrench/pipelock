@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
@@ -1053,6 +1054,9 @@ func signVerifyReport(report *VerifyReport, keyPath string) error {
 	if err != nil {
 		return fmt.Errorf("canonical marshal: %w", err)
 	}
+	// Invalid UTF-8 must sign the bytes a verifier re-encodes after parsing, on
+	// every Go release; see jsonscan.NormalizeReplacementEscapes.
+	canonical = jsonscan.NormalizeReplacementEscapes(canonical)
 
 	sig := ed25519.Sign(privKey, canonical)
 	report.Signature = base64.StdEncoding.EncodeToString(sig)

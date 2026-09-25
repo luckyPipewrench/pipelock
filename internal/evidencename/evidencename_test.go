@@ -135,3 +135,12 @@ func TestCheckNoDuplicateSeqStart(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOperatorSessionIDRefusesInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateOperatorSessionID("agent" + string([]byte{0xff}))
+	if err == nil || !strings.Contains(err.Error(), "not valid UTF-8") {
+		t.Fatalf("ValidateOperatorSessionID error = %v, want non-UTF-8 refusal", err)
+	}
+}

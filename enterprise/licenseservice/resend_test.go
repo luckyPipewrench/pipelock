@@ -709,6 +709,10 @@ func TestResendCapsLicensesPerRequest(t *testing.T) {
 			t.Fatalf("clone issuance: %v", err)
 		}
 	}
+	before, err := ts.db.ResendableSubscriptionIDsForEmail(t.Context(), "fanout@example.com", time.Now())
+	if err != nil || len(before) != resendMaxLicensesPerRequest+3 {
+		t.Fatalf("list before resend = %d, %v", len(before), err)
+	}
 	rec := recordEmails(t, ts.handler)
 	sent, err := ts.handler.ResendLicensesForEmail(t.Context(), "fanout@example.com", time.Now())
 	if err != nil || sent != resendMaxLicensesPerRequest {
@@ -716,6 +720,18 @@ func TestResendCapsLicensesPerRequest(t *testing.T) {
 	}
 	if got := len(rec.all()); got != resendMaxLicensesPerRequest {
 		t.Fatalf("emails = %d, want %d", got, resendMaxLicensesPerRequest)
+	}
+	// The next request starts with a license the first one did not reach.
+	after, err := ts.db.ResendableSubscriptionIDsForEmail(t.Context(), "fanout@example.com", time.Now())
+	if err != nil {
+		t.Fatalf("list after resend: %v", err)
+	}
+	reached := map[string]bool{}
+	for _, id := range before[:resendMaxLicensesPerRequest] {
+		reached[id] = true
+	}
+	if reached[after[0]] {
+		t.Fatalf("next request would start with %s, which the first request already re-sent", after[0])
 	}
 }
 

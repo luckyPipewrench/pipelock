@@ -26,7 +26,7 @@ What this does: queues a lookup and returns `202 Accepted` with the same body wh
 
 Admitted requests are limited per address (one per 15 minutes, three per 24 hours). One admitted request re-sends up to 10 qualifying licenses for that address, and every email it sends counts against a service-wide budget of 60 per hour. The limits live in the service database, so a restart does not reset them. Each license is recorded as `license_resend_requested` in the audit ledger before it is sent, and is not sent if that entry cannot be written; completion is recorded as `license_resent` and a limiter refusal as `license_resend_throttled`. The caller cannot see any of these.
 
-When the pending-request queue is full, or the service is shutting down, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service finishes the requests it already accepted before it exits, within the shutdown deadline.
+When the pending-request queue is full, or the service is shutting down, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service drains accepted requests while the shutdown deadline permits. Requests still queued or running when the deadline expires may be abandoned.
 
 The service limits what gets sent, not how many lookups anonymous callers ask for. Before enabling the endpoint, put a per-client rate limit on `/v1/license/resend` at the ingress or load balancer that sees the real client address, so one caller cannot keep the queue full.
 

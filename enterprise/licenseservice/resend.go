@@ -82,7 +82,8 @@ func resendEmailKey(normalizedEmail string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ResendableSubscriptionIDsForEmail returns the entitlements whose stored
+// ResendableSubscriptionIDsForEmail returns, least recently delivered first,
+// the entitlements whose stored
 // customer address normalizes to normalizedEmail and whose last license is
 // active and unexpired at now. Stored addresses are compared after
 // normalization, the same way the trial-slot count compares them.
@@ -90,7 +91,7 @@ func (e *EntitlementDB) ResendableSubscriptionIDsForEmail(ctx context.Context, n
 	const query = `
 	SELECT subscription_id, customer_email FROM entitlements
 	WHERE status = ? AND last_license_id != '' AND last_license_expires_at > ?
-	ORDER BY subscription_id ASC
+	ORDER BY last_delivery_attempt_at IS NOT NULL, last_delivery_attempt_at ASC, subscription_id ASC
 	`
 	rows, err := e.db.QueryContext(ctx, query, statusActive, now.UTC())
 	if err != nil {

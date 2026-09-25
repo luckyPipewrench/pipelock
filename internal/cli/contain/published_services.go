@@ -699,7 +699,7 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 			return statusFail, fmt.Sprintf("published service %s: agent listener state unknown: %v", service.Name, listenErr)
 		}
 		if !listening {
-			return statusFail, fmt.Sprintf("published service %s: absent listener: nothing in the agent namespace listens on %s", service.Name, publishedAgentTarget(service))
+			return statusFail, fmt.Sprintf("published service %s: absent listener: no matching listener on %s (an IPv6-only or unknown wildcard does not count for an IPv4 target)", service.Name, publishedAgentTarget(service))
 		}
 	}
 	for _, service := range services {
@@ -742,7 +742,7 @@ func probePublishedSocketAccess(env *probeEnv, service config.ContainmentPublish
 // agentNamespaceListens reads the socket table of the namespace holder.
 // /proc/<pid>/net/tcp reports the network namespace of that process (proc(5)),
 // so this sees the agent's listeners without entering the namespace. A
-// wildcard listener also counts, since it accepts loopback connections.
+// wildcard listener counts only within the target's address family.
 func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host string, port int) (bool, error) {
 	if holderPID <= 1 {
 		return false, fmt.Errorf("namespace holder pid %d is invalid", holderPID)
@@ -752,8 +752,9 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 	if host == "::1" {
 		want["00000000000000000000000001000000"] = true
 	} else {
-		// A tcp6 wildcard accepts IPv4 when the namespace default is dual-stack.
-		files = []string{"tcp", "tcp6"}
+		// IPV6_V6ONLY may be set per socket, independent of the namespace
+		// default. A tcp6 wildcard cannot prove IPv4 acceptance.
+		files = []string{"tcp"}
 		want["0100007F"] = true
 		want["00000000"] = true
 	}
@@ -773,12 +774,6 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			}
 			addr, p, ok := strings.Cut(fields[1], ":")
 			if ok && p == portHex && fields[3] == "0A" && want[addr] {
-				if name == "tcp6" && host != "::1" {
-					bindV6Only, readErr := env.readFile(filepath.Join(procRoot, "sys/net/ipv6/bindv6only"))
-					if readErr != nil || strings.TrimSpace(string(bindV6Only)) != "0" {
-						continue
-					}
-				}
 				return true, nil
 			}
 		}

@@ -24,8 +24,9 @@ import (
 
 // Published services are the INBOUND sibling of declared loopback services.
 // The agent runs a listener on its own namespace loopback; Pipelock publishes
-// it to exactly one operator on the host. The shape reuses the proxy doorway's
-// socket activation, reversed:
+// it through an operator-owned Unix socket on the host. An explicit TCP host
+// listener also admits other local accounts. The shape reuses the proxy
+// doorway's socket activation, reversed:
 //
 //	operator -> host pathname socket (systemd .socket, owner operator, 0600)
 //	         -> socket-activated `contain netns-forward --systemd-listener
@@ -373,7 +374,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				return false, fmt.Errorf("create published service record directory: %w", err)
 			}
 			unitDir := filepath.Dir(env.proxyForwarderSocketPath)
-			files := []publishedManagedFile{{recordPath, string(recordBytes)}}
+			var files []publishedManagedFile
 			desired := make(map[string]bool)
 			changedUnit := make(map[string]bool)
 			for _, service := range services {
@@ -445,6 +446,17 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 					}
 					retired[path] = body
 				}
+			}
+			// Keep revoked units recorded until every disable has completed.
+			if existing, readErr := env.readFile(recordPath); readErr == nil && bytes.Equal(existing, recordBytes) {
+				if err := env.chmod(recordPath, modeConfigSecret); err != nil {
+					return true, fmt.Errorf("chmod published service records: %w", err)
+				}
+			} else {
+				if err := backupAndWrite(env, recordPath, recordBytes, modeConfigSecret); err != nil {
+					return true, fmt.Errorf("write published service records: %w", err)
+				}
+				touched = append(touched, recordPath)
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				return true, fmt.Errorf("reload systemd after publishing services: %w", err)
@@ -688,6 +700,11 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 		}
 		if !listening {
 			return statusFail, fmt.Sprintf("published service %s: absent listener: nothing in the agent namespace listens on %s", service.Name, publishedAgentTarget(service))
+		}
+	}
+	for _, service := range services {
+		if service.HostListen != "" {
+			return statusPass, fmt.Sprintf("%d published service(s) reach their agent listener; Unix sockets admit only their operator, and TCP host listeners admit any local account on the host", len(services))
 		}
 	}
 	return statusPass, fmt.Sprintf("%d published service(s) reach their agent listener and admit only their operator", len(services))

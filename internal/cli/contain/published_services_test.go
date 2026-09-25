@@ -160,6 +160,35 @@ func TestInstallPublishedServicesLifecycle(t *testing.T) {
 	}
 }
 
+func TestPublishedReconcileKeepsRevokedUnitRecordedUntilDisabled(t *testing.T) {
+	env, runner := publishedInstallEnv(t, publishedTestConfig)
+	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+		t.Fatalf("positive control install: %v", err)
+	}
+	unit := "pipelock-published-viewer.socket"
+	disable := argvFor("systemctl", "disable", "--now", unit)
+	runner.on(disable, "", 1, errors.New("injected disable failure"))
+	empty := []config.ContainmentPublishedService{}
+	if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "injected disable failure") {
+		t.Fatalf("disable failure = %v", err)
+	}
+	if !runnerSaw(runner, "systemctl disable --now "+unit) {
+		t.Fatal("disable mutation was not reached")
+	}
+	records, err := readPublishedServiceRecords(env)
+	if err != nil || len(records.Services) != 1 || records.Services[0].Unit != "pipelock-published-viewer" {
+		t.Fatalf("failed disable lost revoked unit: %+v, %v", records, err)
+	}
+	runner.on(disable, "", 0, nil)
+	runner.calls = nil
+	if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !runnerSaw(runner, "systemctl disable --now "+unit) {
+		t.Fatal("retry did not disable recorded revoked unit")
+	}
+}
+
 func TestInstallPublishedServicesRollbackOnLaterFailure(t *testing.T) {
 	env, runner := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
@@ -472,6 +501,30 @@ func TestProbePublishedServicesOutcomes(t *testing.T) {
 				t.Fatalf("status=%s detail=%q, want FAIL containing %q", status, detail, tt.want)
 			}
 		})
+	}
+}
+
+func TestProbePublishedServicesDescribesEndpointAccess(t *testing.T) {
+	unix := newPublishedProbeFixture(t)
+	if status, detail := unix.probe(); status != statusPass || !strings.Contains(detail, "admit only their operator") {
+		t.Fatalf("Unix access detail: %s %q", status, detail)
+	}
+	tcp := newPublishedProbeFixture(t)
+	svc := publishedTestService()
+	svc.HostListen = "127.0.0.1:15900"
+	tcp.files[tcp.env.configPath] = strings.Replace(publishedTestConfig, "      operator_user: operator\n", "      operator_user: operator\n      host_listen: 127.0.0.1:15900\n", 1)
+	records, err := encodePublishedServiceRecords(desiredPublishedServices([]config.ContainmentPublishedService{svc}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp.files[publishedServiceRecordPath(tcp.env.loopbackForwarderInvPath)] = string(records)
+	for _, item := range publishedServiceFiles(filepath.Dir(tcp.env.proxyForwarderSocketPath), tcp.env.pipelockTarget, tcp.env.proxyUserName, svc) {
+		tcp.files[item.path] = item.body
+	}
+	tcp.states["is-enabled pipelock-published-viewer-tcp.socket"] = "enabled"
+	tcp.states["is-active pipelock-published-viewer-tcp.socket"] = "active"
+	if status, detail := tcp.probe(); status != statusPass || !strings.Contains(detail, "any local account on the host") {
+		t.Fatalf("TCP access detail: %s %q", status, detail)
 	}
 }
 

@@ -637,7 +637,16 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})
+	// An enabling emergency policy must be active before the proxy publishes
+	// the new generation. Keep a disabling policy active until publication.
+	preactivatedKillSwitch := newCfg.KillSwitch.Enabled && (oldCfg == nil || !oldCfg.KillSwitch.Enabled)
+	if preactivatedKillSwitch {
+		s.killswitch.Reload(newCfg)
+	}
 	if !s.proxy.Reload(newCfg, newSc) {
+		if preactivatedKillSwitch && oldCfg != nil {
+			s.killswitch.Reload(oldCfg)
+		}
 		return errors.New("reload failed: proxy kept previous config")
 	}
 	if s.containmentManaged {

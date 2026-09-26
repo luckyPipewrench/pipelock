@@ -62,6 +62,32 @@ func stepCreateViewerUser() step {
 	}}
 }
 
+func checkViewerOperatorIdentity(env *installEnv) error {
+	if !viewerRFBEnabled(env.displayConfig) {
+		return nil
+	}
+	operator, err := env.lookupUser(env.displayConfig.Viewer.OperatorUser)
+	if err != nil {
+		return fmt.Errorf("lookup viewer operator: %w", err)
+	}
+	for _, name := range []string{env.agentUserName, env.proxyUserName, viewerUserName} {
+		if name == "" {
+			continue
+		}
+		peer, lookupErr := env.lookupUser(name)
+		if errors.As(lookupErr, new(user.UnknownUserError)) && name == viewerUserName {
+			continue
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("lookup containment service account %s: %w", name, lookupErr)
+		}
+		if operator.Uid == peer.Uid {
+			return errors.New("viewer operator must have a distinct identity from containment service accounts")
+		}
+	}
+	return nil
+}
+
 func checkViewerGroup(ctx context.Context, run runCommand, gid string) error {
 	out, code, err := run(ctx, "getent", "group", viewerUserName)
 	if err != nil || code != 0 {

@@ -179,8 +179,12 @@ func (d ContainmentDisplay) Validate() error {
 	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.Viewer.OperatorUser == "" {
 		return fmt.Errorf("containment.display.viewer.operator_user is required when viewer is enabled")
 	}
-	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.Viewer.OperatorUser == DefaultContainmentAgentUser {
-		return fmt.Errorf("containment.display.viewer.operator_user must not be the contained agent account")
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		for _, reserved := range []string{DefaultContainmentAgentUser, "pipelock-proxy", "pipelock-viewer"} {
+			if d.Viewer.OperatorUser == reserved {
+				return fmt.Errorf("containment.display.viewer.operator_user must not be a containment service account")
+			}
+		}
 	}
 	if user := d.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
 		return fmt.Errorf("containment.display.viewer.operator_user must name one local user")

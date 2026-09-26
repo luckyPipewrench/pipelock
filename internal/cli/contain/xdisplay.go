@@ -317,6 +317,9 @@ func stepProvisionAgentDisplay() step {
 			}
 			enabled := display.IsEnabled(xvfbInstalled(env))
 			env.displayConfig = display
+			if err := checkViewerOperatorIdentity(env); err != nil {
+				return false, err
+			}
 			if display.EffectiveBackend() == "xvnc" && enabled {
 				path, findErr := findXvnc(env)
 				if findErr != nil {

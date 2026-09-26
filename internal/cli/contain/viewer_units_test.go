@@ -35,6 +35,25 @@ func TestViewerServiceUnitUsesControlSocket(t *testing.T) {
 	}
 }
 
+func TestViewerOperatorIdentityRejectsSharedUID(t *testing.T) {
+	yes := true
+	for _, name := range []string{"agent", "proxy", viewerUserName} {
+		t.Run(name, func(t *testing.T) {
+			env := &installEnv{agentUserName: "agent", proxyUserName: "proxy", displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
+			env.lookupUser = func(got string) (*user.User, error) {
+				uid := got
+				if got == name {
+					uid = "operator"
+				}
+				return &user.User{Uid: uid}, nil
+			}
+			if err := checkViewerOperatorIdentity(env); err == nil || !strings.Contains(err.Error(), "distinct identity") {
+				t.Fatalf("shared UID with %s accepted: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestViewerIdentityProvisioning(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+" "+viewerUserName+"\n", 0, nil)

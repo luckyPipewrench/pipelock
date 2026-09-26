@@ -80,6 +80,9 @@ func runViewerServe(ctx context.Context, deps serveDeps, opts serveOptions) erro
 	if uid == agentUID {
 		return errors.New("viewer operator and agent must have distinct identities")
 	}
+	if uid == uint64(currentViewerUID()) {
+		return errors.New("viewer operator and viewer service must have distinct identities")
+	}
 	if uint64(currentViewerUID()) == agentUID {
 		return errors.New("viewer service and agent must have distinct identities")
 	}

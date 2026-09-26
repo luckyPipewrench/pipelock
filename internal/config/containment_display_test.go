@@ -47,6 +47,17 @@ func TestContainmentDisplayBooleanStates(t *testing.T) {
 	}
 }
 
+func TestContainmentDisplayRejectsServiceOperators(t *testing.T) {
+	for _, name := range []string{"pipelock-agent", "pipelock-proxy", "pipelock-viewer"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadBytes([]byte("containment:\n  display:\n    viewer:\n      enabled: true\n      operator_user: " + name + "\n"))
+			if err == nil || !strings.Contains(err.Error(), "service account") {
+				t.Fatalf("reserved operator %q: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestContainmentDisplayReloadStates(t *testing.T) {
 	off, err := LoadBytes([]byte("containment:\n  display:\n    enabled: false\n"))
 	if err != nil {

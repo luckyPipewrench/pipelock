@@ -146,3 +146,57 @@ func TestViewerServiceProbeFailureDirections(t *testing.T) {
 		t.Fatalf("manager error: %s %s", status, detail)
 	}
 }
+
+func TestViewerServiceProbeControlSocketFailureDirections(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\ncontainment:\n  display:\n    enabled: true\n    viewer:\n      enabled: true\n      operator_user: operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	displayPath := filepath.Join(root, "display.service")
+	install := &installEnv{displayUnitPath: displayPath, displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: new(bool), OperatorUser: "operator"}}}
+	*install.displayConfig.Viewer.Enabled = true
+	service, _ := viewerUnitPaths(install)
+	if err := os.WriteFile(service, []byte(renderViewerServiceUnit(install)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual := filepath.Join(root, "control.sock")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := os.Chmod(actual, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := probeEnv{configPath: cfgPath, displayUnitPath: displayPath, readFile: os.ReadFile, stat: os.Lstat, lstat: func(path string) (os.FileInfo, error) {
+		if path == viewerControlSocket {
+			return os.Lstat(actual)
+		}
+		return os.Lstat(path)
+	}, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active", 0, nil }, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }}
+	for _, tc := range []struct {
+		name, want string
+		change     func(*probeEnv)
+	}{
+		{"missing socket", "viewer socket missing", func(e *probeEnv) { e.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist } }},
+		{"owner lookup", "owner lookup", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) { return nil, errors.New("lookup unavailable") }
+		}},
+		{"invalid owner uid", "invalid syntax", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "invalid"}, nil }
+		}},
+		{"wrong active text", "inactive", func(e *probeEnv) {
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) { return "activating", 0, nil }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := base
+			tc.change(&env)
+			status, detail := probeViewerService(context.Background(), &env)
+			if status != statusFail || !strings.Contains(detail, tc.want) {
+				t.Fatalf("probe = %s %q, want %q", status, detail, tc.want)
+			}
+		})
+	}
+}

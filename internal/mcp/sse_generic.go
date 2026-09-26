@@ -251,6 +251,9 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+		if err := checkSSEDLPContext(ctx); err != nil {
+			return err
+		}
 		droppedDLP.record(droppedMatches)
 		if dlpResult.Clean {
 			// Keep scanning the joined data payload too. The canonical
@@ -259,10 +262,16 @@ func ScanGenericSSEStreamWithOptions(
 			// split-secret patterns that are easier to recognize before
 			// those prefixes are reintroduced.
 			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
 			droppedDLP.record(droppedMatches)
 		}
 		if dlpResult.Clean && rollingText != "" {
 			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, rollingText), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
 			droppedDLP.record(droppedMatches)
 		}
 		if !dlpResult.Clean {
@@ -323,8 +332,14 @@ func ScanGenericSSEStreamWithOptions(
 		if !skipTailDLP && tail != "" {
 			combined := tail + rollingText
 			_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
 			droppedDLP.markSeen(priorTailDrops)
 			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
 			droppedDLP.record(droppedMatches)
 			if !tailDLPResult.Clean {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
@@ -341,6 +356,9 @@ func ScanGenericSSEStreamWithOptions(
 		}
 		if !skipTailDLP && !resetDLPTail && payloadTail != "" {
 			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, payloadTail+payloadText), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
 			droppedDLP.record(droppedMatches)
 			if !result.Clean {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
@@ -356,8 +374,14 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		if clearDLPTailAfterCurrent {
-			tail = ""
-			payloadTail = ""
+			if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
+				rollingText = rollingText[boundary+1:]
+			}
+			if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
+				payloadText = payloadText[boundary+1:]
+			}
+			tail = advanceSSERollingTail("", []byte(rollingText), true, "")
+			payloadTail = advanceSSERollingTail("", []byte(payloadText), true, "")
 		} else {
 			if resetDLPTail {
 				// Keep a distinct trailing fragment, but do not carry forward
@@ -397,6 +421,13 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+func checkSSEDLPContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: dlp scan incomplete: %w", ErrSSEStreamScanError, err)
+	}
+	return nil
 }
 
 // sseRollingEventText keeps the values from the canonical, wire-shaped event

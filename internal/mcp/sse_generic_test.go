@@ -74,6 +74,20 @@ type sseErrWriter struct{}
 
 func (sseErrWriter) Write(_ []byte) (int, error) { return 0, errors.New("write boom") }
 
+type sseCancelOnErrContext struct {
+	context.Context
+	checks int
+	limit  int
+}
+
+func (c *sseCancelOnErrContext) Err() error {
+	c.checks++
+	if c.checks >= c.limit {
+		return context.Canceled
+	}
+	return nil
+}
+
 // --- Happy paths: real-world LLM provider SSE shapes ---
 
 func TestScanGenericSSEStream_OpenAI_HappyPath(t *testing.T) {
@@ -1624,7 +1638,8 @@ func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
 	cfg := enabledSSECfg()
 	cfg.Action = config.ActionWarn
 	key := fakeAWSKey()
-	body := "data: harmless prefix\n\ndata: " + key + " " + key[:8] + "\n\ndata: " + key[8:] + "\n\n"
+	second := "AKIA" + strings.Repeat("Q", 16)
+	body := "data: harmless prefix\n\ndata: " + key + " " + second[:8] + "\n\ndata: " + second[8:] + "\n\n"
 	var out bytes.Buffer
 	var findings []error
 	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil,
@@ -1634,12 +1649,41 @@ func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("warn mode returned error: %v", err)
 	}
-	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "dlp") {
-		t.Fatalf("findings = %v, want one current-event DLP finding", findings)
+	if len(findings) != 2 || !strings.Contains(findings[0].Error(), "dlp") || !strings.Contains(findings[1].Error(), "dlp") {
+		t.Fatalf("findings = %v, want current-event and split DLP findings", findings)
 	}
-	if !strings.Contains(out.String(), key) || !strings.Contains(out.String(), "data: "+key[8:]) {
+	if !strings.Contains(out.String(), key) || !strings.Contains(out.String(), "data: "+second[8:]) {
 		t.Fatalf("warn mode did not forward subsequent events: %q", out.String())
 	}
+}
+
+func TestSSEDLPFailureIsScanErrorInWarnMode(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := checkSSEDLPContext(ctx)
+	if !errors.Is(err, ErrSSEStreamScanError) || errors.Is(err, ErrSSEStreamFinding) {
+		t.Fatalf("incomplete DLP result classified as %v, want scan error", err)
+	}
+}
+
+func TestScanGenericSSEStream_DLPFailureWarnDoesNotForward(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	for limit := 1; limit <= 100; limit++ {
+		ctx := &sseCancelOnErrContext{Context: t.Context(), limit: limit}
+		var out bytes.Buffer
+		var findings int
+		err := ScanGenericSSEStreamWithOptions(ctx, strings.NewReader("data: harmless\n\n"), &out, nil,
+			testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(error) { findings++ }})
+		if err == nil || !strings.Contains(err.Error(), "dlp scan incomplete") {
+			continue
+		}
+		if !errors.Is(err, ErrSSEStreamScanError) || findings != 0 || out.Len() != 0 {
+			t.Fatalf("DLP failure: err=%v findings=%d output=%q", err, findings, out.String())
+		}
+		return
+	}
+	t.Fatal("did not reach a DLP scan failure")
 }
 
 // TestScanGenericSSEStream_JoinedPayloadRescanWithSuppression proves the

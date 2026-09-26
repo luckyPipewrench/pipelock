@@ -340,8 +340,8 @@ func TestDoHQueryDLPWithExtraParameters(t *testing.T) {
 	wire = append(wire, '.', '.', '.', '.')
 	dns := base64.RawURLEncoding.EncodeToString(wire)
 	for _, q := range []string{"?dns=" + dns + "&ct=application/dns-message", "?ct=x&d%6es=" + dns} {
-		if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query"+q); r.Allowed {
-			t.Fatalf("%s: key split across names allowed beside other parameters", q)
+		if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query"+q); r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+			t.Fatalf("%s: allowed=%v scanner=%q, want a DLP block", q, r.Allowed, r.Scanner)
 		}
 	}
 }
@@ -363,8 +363,8 @@ func TestDoHTXTCharacterStringsJoined(t *testing.T) {
 		t.Fatal("premise: the raw RDATA must not already contain the key")
 	}
 	wire := dnsTXTRecordWire(t, rdata)
-	if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire)); r.Allowed {
-		t.Fatal("key split across TXT character-strings was allowed")
+	if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire)); r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block", r.Allowed, r.Scanner)
 	}
 }
 
@@ -378,4 +378,44 @@ func dnsTXTRecordWire(t *testing.T, rdata []byte) []byte {
 	wire = append(wire, 0)
 	wire = append(wire, 0x00, 0x10, 0x00, 0x01, 0, 0, 0, 0, byte(len(rdata)>>8), byte(len(rdata))) // #nosec G115 -- bounded
 	return append(wire, rdata...)
+}
+
+// A value split across two TXT records is read joined, and a TXT record whose
+// character-strings do not frame its RDATA exactly is not a strict message.
+func TestDoHTXTAcrossRecordsAndFraming(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	key := awsExampleAccessKeyID()
+	half := len(key) / 2
+	txt := func(value string) []byte {
+		rdata := append([]byte{byte(len(value))}, value...) // #nosec G115 -- short test value
+		rr := []byte{0}
+		// A TTL of printable '.' bytes breaks the value in the message's own
+		// decoded view, so only the record join can see it whole.
+		rr = append(rr, 0x00, 0x10, 0x00, 0x01, '.', '.', '.', '.', 0, byte(len(rdata))) // #nosec G115 -- short test value
+		return append(rr, rdata...)
+	}
+	wire := make([]byte, 12)
+	wire[5] = 1
+	wire[11] = 2
+	wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
+	wire = append(wire, 0x00, 0x01, 0x00, 0x01)
+	wire = append(wire, txt(key[:half])...)
+	wire = append(wire, txt(key[half:])...)
+	if _, ok := parseDNSMessage(wire); !ok {
+		t.Fatal("premise: the two-record message must parse")
+	}
+	r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
+	if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across TXT records", r.Allowed, r.Scanner)
+	}
+
+	if _, ok := parseDNSMessage(dnsTXTRecordWire(t, []byte{5, 'a', 'b'})); ok {
+		t.Fatal("TXT RDATA whose character-string overruns it parsed")
+	}
+	if _, ok := parseDNSMessage(dnsTXTRecordWire(t, []byte{0, 0})); !ok {
+		t.Fatal("a TXT record of empty character-strings is well formed and must parse")
+	}
 }

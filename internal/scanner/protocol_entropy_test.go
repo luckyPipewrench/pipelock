@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
@@ -100,6 +101,9 @@ func TestProtocolValueEntropy(t *testing.T) {
 		{"pkce method lower case", pkce("&code_challenge_method=s256"), true, ""},
 		{"pkce S256 and plain", pkce("&code_challenge_method=S256&code_challenge_method=plain"), true, ""},
 		{"pkce second challenge not hash shaped", pkce("&code_challenge_method=S256&code_challenge=" + rfc7636Challenge + "x"), true, ""},
+		// RFC 7636 sends one challenge; two hash-shaped values turn the
+		// exemption off so a query cannot carry several unscored tokens.
+		{"pkce two hash-shaped challenges", pkce("&code_challenge_method=S256&code_challenge=" + base64.RawURLEncoding.EncodeToString(dnsTestBytes("second-challenge", 32))), true, ""},
 		{"pkce padded challenge", "https://idp.vendor.example/authorize?code_challenge_method=S256&code_challenge=" + esc(rfc7636Challenge[:42]+"="), true, ""},
 		{"pkce challenge under another name", "https://idp.vendor.example/authorize?code_challenge_method=S256&state=" + rfc7636Challenge, true, ""},
 		// url.ParseQuery drops a pair containing ';', so the semicolon-aware

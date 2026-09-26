@@ -206,7 +206,14 @@ func consumeDNSRR(msg []byte, off int, out *dnsMessage) (int, bool) {
 		// A TXT record is one or more length-prefixed character-strings. The
 		// raw RDATA keeps each length octet between them, which can break a
 		// value split across strings, so the joined text is a view too.
-		if joined, ok := joinTXTStrings(rdata); ok {
+		joined, ok := joinTXTStrings(rdata)
+		if !ok {
+			// A TXT record whose character-strings do not frame its RDATA
+			// exactly is malformed, and a malformed message keeps the
+			// whole-value checks.
+			return 0, false
+		}
+		if len(joined) > 0 {
 			out.blobs = append(out.blobs, joined)
 		}
 	}
@@ -217,7 +224,8 @@ func consumeDNSRR(msg []byte, off int, out *dnsMessage) (int, bool) {
 }
 
 // joinTXTStrings concatenates the character-strings of TXT RDATA. It reports
-// false when the RDATA is not a whole sequence of character-strings.
+// false only when the RDATA is not a whole sequence of character-strings; a
+// record of empty strings is well formed and joins to nothing.
 func joinTXTStrings(rdata []byte) ([]byte, bool) {
 	var joined []byte
 	for off := 0; off < len(rdata); {
@@ -228,7 +236,7 @@ func joinTXTStrings(rdata []byte) ([]byte, bool) {
 		joined = append(joined, rdata[off+1:off+1+n]...)
 		off += 1 + n
 	}
-	return joined, len(joined) > 0
+	return joined, true
 }
 
 func appendEDNSOptionPayloads(rdata []byte, out *dnsMessage) bool {
@@ -345,6 +353,15 @@ func (m dnsMessage) dlpTexts() []string {
 	}
 	for _, blob := range m.blobs {
 		add(string(blob))
+	}
+	// Every record payload joined, so a value split across two records is
+	// seen whole, as the label join does for names.
+	if len(m.blobs) > 1 {
+		var joined []byte
+		for _, blob := range m.blobs {
+			joined = append(joined, blob...)
+		}
+		add(string(joined))
 	}
 	add(string(m.fixed))
 	return out

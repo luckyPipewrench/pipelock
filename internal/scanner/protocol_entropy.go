@@ -93,6 +93,15 @@ func pkceS256Declared(methods []string) bool {
 	return true
 }
 
+// pkceExemptionApplies reports whether a query may exempt its code_challenge
+// from entropy scoring: it declares only S256, and it carries exactly one
+// code_challenge value, as RFC 7636 requests do. A second challenge value,
+// even one of the accepted shape, turns the exemption off so a query cannot
+// carry several unscored hash-sized tokens.
+func pkceExemptionApplies(methods, challenges []string) bool {
+	return len(challenges) == 1 && pkceS256Declared(methods)
+}
+
 // isPKCES256Challenge reports whether one decoded value is an S256 PKCE code
 // challenge. The decision is per value, never per key: a second
 // code_challenge value that is not exactly 43 unpadded base64url characters
@@ -251,7 +260,7 @@ func (s *Scanner) nestedURLEntropy(u *url.URL, depth int) (entropyFinding, bool)
 		}
 	}
 	pairs := splitQueryEntropyPairs(u.RawQuery)
-	s256 := pkceS256Declared(queryEntropyPairValues(pairs, pkceMethodParam))
+	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
 	dohMsg, dohQuery := parseDNSQuery(u.RawQuery)
 	for _, p := range pairs {
 		if len(p.key) >= s.entropyMinLen {

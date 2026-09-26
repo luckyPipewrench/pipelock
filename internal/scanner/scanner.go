@@ -3970,7 +3970,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 		}
 	}
 	query := parsed.Query()
-	s256 := pkceS256Declared(query[pkceMethodParam])
+	s256 := pkceExemptionApplies(query[pkceMethodParam], query[pkceChallengeParam])
 	dohMsg, dohQuery := parseDNSQuery(parsed.RawQuery)
 	for key, values := range query {
 		if !excludedQuery && len(key) >= s.entropyMinLen {
@@ -4015,7 +4015,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 
 func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
 	pairs := splitQueryEntropyPairs(rawQuery)
-	s256 := pkceS256Declared(queryEntropyPairValues(pairs, pkceMethodParam))
+	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
 	for _, p := range pairs {
 		key, value := p.key, p.value
 		if scanEntropy && len(key) >= s.entropyMinLen {

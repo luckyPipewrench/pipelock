@@ -24,9 +24,8 @@ import (
 )
 
 // adminSubcommands are the offline admin operations the license-service binary
-// supports in addition to serving. They open the same DB the daemon uses and
-// mutate revocation / high-water state without bringing up the HTTP server, so
-// an operator can run them as one-shot jobs against the live database.
+// supports in addition to serving. Database commands inspect or mutate service
+// state; audit-summary reads only the audit ledger. None starts the HTTP server.
 var adminSubcommands = map[string]bool{
 	"revoke-intermediate":     true,
 	"revoke-imported-license": true,
@@ -36,6 +35,7 @@ var adminSubcommands = map[string]bool{
 	"inspect-trial":           true,
 	"resend-trial":            true,
 	"revoke-trial":            true,
+	"audit-summary":           true,
 }
 
 // dispatchAdmin runs an admin subcommand if os.Args names one, returning
@@ -64,6 +64,8 @@ func dispatchAdmin(log zerolog.Logger) (bool, error) {
 		return true, runResendTrial(log, args)
 	case "revoke-trial":
 		return true, runRevokeTrial(log, args)
+	case "audit-summary":
+		return true, runAuditSummary(args, os.Stdout)
 	default:
 		return true, fmt.Errorf("unknown admin subcommand %q", sub)
 	}

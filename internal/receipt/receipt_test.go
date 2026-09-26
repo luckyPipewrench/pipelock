@@ -738,6 +738,12 @@ func TestUnmarshalRejectsDuplicateKeys(t *testing.T) {
 }
 
 func TestUnmarshalRejectsConflictingFieldAlias(t *testing.T) {
+	if err := rejectReceiptAliases([]byte("{")); err == nil {
+		t.Fatal("malformed receipt alias input accepted")
+	}
+	if err := rejectReceiptAliases([]byte("null")); err != nil {
+		t.Fatalf("null must reach the schema decoder: %v", err)
+	}
 	pub, priv := generateTestKey(t)
 	signed := signValidReceipt(t, priv)
 	raw, err := json.Marshal(signed)

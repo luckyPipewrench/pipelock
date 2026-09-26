@@ -68,6 +68,10 @@ func readAssessVerifyFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	return readAssessVerifyStream(file)
+}
+
+func readAssessVerifyStream(file io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, maxAssessVerifyFileBytes+1))
 	if err != nil {
 		return nil, err
@@ -84,6 +88,10 @@ func hashAssessVerifyFile(path string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = file.Close() }()
+	return hashAssessVerifyStream(file)
+}
+
+func hashAssessVerifyStream(file io.Reader) (string, error) {
 	hash := sha256.New()
 	n, err := io.Copy(hash, io.LimitReader(file, maxAssessVerifyFileBytes+1))
 	if err != nil {

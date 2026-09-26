@@ -264,9 +264,6 @@ func (s *Scanner) nestedURLEntropy(u *url.URL, depth int) (entropyFinding, bool)
 		}
 		if dohQuery && p.key == dnsQueryParam {
 			if f, blocked := s.dnsMessageEntropy(dohMsg); blocked {
-				if f.part == "" {
-					f.part = "nested URL DNS message"
-				}
 				return f, true
 			}
 			continue

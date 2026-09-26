@@ -62,6 +62,47 @@ func TestAssessVerify_SignedValid(t *testing.T) {
 	}
 }
 
+func TestAssessVerify_RejectsOversizedManifestBeforeParsing(t *testing.T) {
+	runDir := t.TempDir()
+	f, err := os.OpenFile(filepath.Join(runDir, "manifest.json"), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate((8 << 20) + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, err := runAssessVerify(runDir, "", "")
+	if code != verifyExitTamperedArtifact || err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized manifest: code=%d err=%v", code, err)
+	}
+}
+
+func TestAssessVerify_RejectsOversizedArtifactBeforeHashing(t *testing.T) {
+	runDir := setupFinalizedRunUnsigned(t)
+	manifest := readTestManifest(t, runDir)
+	for name := range manifest.Artifacts {
+		file, err := os.OpenFile(filepath.Join(runDir, name), os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(maxAssessVerifyFileBytes + 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		code, err := runAssessVerify(runDir, "", "")
+		if code != verifyExitTamperedArtifact || err == nil || !strings.Contains(err.Error(), "exceeds") {
+			t.Fatalf("oversized artifact %s: code=%d err=%v", name, code, err)
+		}
+		return
+	}
+	t.Fatal("no artifacts in finalized manifest")
+}
+
 func TestAssessVerify_UnsignedIntegrityOK(t *testing.T) {
 	runDir := setupFinalizedRunUnsigned(t)
 

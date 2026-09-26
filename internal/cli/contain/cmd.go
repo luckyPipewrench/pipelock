@@ -57,6 +57,8 @@ planned actions without touching state.`,
 		reloadNFTRulesCmd(),
 		netnsForwardCmd(),
 		netnsAssertCmd(),
+		viewerCmd(),
+		viewCmd(),
 		upgradeCmd(),
 	)
 

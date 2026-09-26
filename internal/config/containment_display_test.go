@@ -83,3 +83,73 @@ func TestContainmentDisplayRejectsInvalidNumber(t *testing.T) {
 		t.Fatalf("boundary display number 999 rejected: %v", err)
 	}
 }
+
+func TestContainmentDisplayGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		geometry string
+		valid    bool
+	}{
+		{"", true},
+		{"1280x1024", true},
+		{"320x200", true},
+		{"65535x65535", true},
+		{"319x200", false},
+		{"320x199", false},
+		{"65536x200", false},
+		{"320x65536", false},
+		{"0x200", false},
+		{"320x0", false},
+		{"320", false},
+		{"320X200", false},
+		{" 320x200", false},
+		{"320x200 ", false},
+		{"1600x900 -ac", false},
+	} {
+		t.Run(tc.geometry, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte("containment:\n  display:\n    geometry: '" + tc.geometry + "'\n"))
+			if (err == nil) != tc.valid {
+				t.Fatalf("geometry %q: err = %v, valid = %v", tc.geometry, err, tc.valid)
+			}
+			if err == nil && tc.geometry == "" && cfg.Containment.Display.EffectiveGeometry() != "1280x1024" {
+				t.Fatal("omitted geometry default changed")
+			}
+		})
+	}
+}
+
+func TestContainmentDisplayViewerConfig(t *testing.T) {
+	tests := []struct {
+		name, yaml, backend string
+		enabled             bool
+		bad                 bool
+	}{
+		{"omitted", "mode: balanced\n", "xvfb", false, false},
+		{"null", "containment:\n  display: null\n", "xvfb", false, false},
+		{"viewer false", "containment:\n  display:\n    viewer:\n      enabled: false\n", "xvfb", false, false},
+		{"viewer null", "containment:\n  display:\n    viewer:\n      enabled: null\n", "xvfb", false, false},
+		{"viewer true", "containment:\n  display:\n    viewer:\n      enabled: true\n", "xvnc", true, false},
+		{"explicit xvnc", "containment:\n  display:\n    backend: xvnc\n", "xvnc", true, false},
+		{"conflict", "containment:\n  display:\n    backend: xvfb\n    viewer:\n      enabled: true\n", "", false, true},
+		{"bad backend", "containment:\n  display:\n    backend: other\n", "", false, true},
+		{"bad socket", "containment:\n  display:\n    viewer:\n      host_socket: ../viewer.sock\n", "", false, true},
+		{"bad user", "containment:\n  display:\n    viewer:\n      operator_user: 'a b'\n", "", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.yaml))
+			if tc.bad {
+				if err == nil {
+					t.Fatal("invalid display viewer config accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := cfg.Containment.Display
+			if d.EffectiveBackend() != tc.backend || d.IsEnabled(false) != tc.enabled {
+				t.Fatalf("backend=%s enabled=%t, want %s/%t", d.EffectiveBackend(), d.IsEnabled(false), tc.backend, tc.enabled)
+			}
+		})
+	}
+}

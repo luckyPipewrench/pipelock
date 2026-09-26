@@ -567,12 +567,29 @@ func TestAgentNamespaceListensRejectsIPv6OnlyWildcardForIPv4(t *testing.T) {
 	if _, err := os.Stat("/proc/self/net/tcp6"); err != nil {
 		t.Skip("no /proc IPv6 socket table on this platform")
 	}
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::]:0")
-	if err != nil {
-		t.Skipf("IPv6 listener unavailable: %v", err)
+	// The kernel picks the IPv6 port without regard to IPv4, so a parallel
+	// test can already hold the same number on 127.0.0.1. Keep only a port
+	// with no IPv4 listener, or the assertions below measure that listener.
+	var ln net.Listener
+	var port int
+	for attempt := 0; attempt < 20 && ln == nil; attempt++ {
+		candidate, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::]:0")
+		if err != nil {
+			t.Skipf("IPv6 listener unavailable: %v", err)
+		}
+		candidatePort := candidate.Addr().(*net.TCPAddr).Port
+		probe, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidatePort)))
+		if err != nil {
+			_ = candidate.Close()
+			continue
+		}
+		_ = probe.Close()
+		ln, port = candidate, candidatePort
+	}
+	if ln == nil {
+		t.Skip("no IPv6 port was also free on IPv4 loopback")
 	}
 	defer func() { _ = ln.Close() }()
-	port := ln.Addr().(*net.TCPAddr).Port
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp4", addr)
 	if dialErr == nil {

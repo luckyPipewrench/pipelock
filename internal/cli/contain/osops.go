@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // installEnv is the OS-facing dependency surface used by every mutating
@@ -123,6 +125,8 @@ type installEnv struct {
 	// that happens to have Xvfb installed does not change what the tests
 	// exercise.
 	xvfbPath          string
+	xvncPath          string
+	displayConfig     config.ContainmentDisplay
 	reconcileLockPath string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared

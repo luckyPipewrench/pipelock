@@ -291,6 +291,30 @@ func TestCovDispLoadContainmentDisplay(t *testing.T) {
 			t.Fatalf("got %+v, want enabled with number 42", got)
 		}
 	})
+
+	// Contain reads config without the daemon's validation, so the display
+	// values it renders into unit lines must be validated on this path too.
+	t.Run("valid geometry is accepted", func(t *testing.T) {
+		env, _ := covDispPrepareDisplayEnv(t)
+		covDispWriteManagedConfig(t, env, "containment:\n  display:\n    geometry: \"1600x900\"\n")
+		got, err := loadContainmentDisplay(env)
+		if err != nil || got.EffectiveGeometry() != "1600x900" {
+			t.Fatalf("got %+v, %v; want geometry 1600x900", got, err)
+		}
+	})
+	for name, body := range map[string]string{
+		"geometry carrying an extra server flag": "containment:\n  display:\n    geometry: \"1280x1024 -rfbport 5900\"\n",
+		"operator user carrying a newline":       "containment:\n  display:\n    backend: xvnc\n    viewer:\n      enabled: true\n      operator_user: \"op\\nExecStartPre=/bin/true\"\n",
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			env, _ := covDispPrepareDisplayEnv(t)
+			covDispWriteManagedConfig(t, env, body)
+			_, err := loadContainmentDisplay(env)
+			if err == nil || !strings.Contains(err.Error(), "containment.display.") {
+				t.Fatalf("err = %v, want a containment.display validation error", err)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

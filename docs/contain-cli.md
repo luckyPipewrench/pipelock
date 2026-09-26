@@ -303,6 +303,8 @@ An exclusive lock prevents `contain install` and `contain reload-nft-rules` from
 
 `containment.published_services` publishes a listener that the contained agent runs on its own namespace loopback to one operator on the host, for example a viewer the agent runs for its own display. See "Published services (containment)" in `configuration.md` for the fields.
 
+`containment.display.backend: xvnc` selects TigerVNC Xvnc instead of the existing Xvfb fallback. `contain install` requires the Xvnc binary and keeps RFB on an agent-owned `0600` Unix socket at `/home/pipelock-agent/.local/state/pipelock/display/rfb.sock`; TCP RFB is disabled. `contain verify` checks the display and RFB sockets separately. Install TigerVNC's Xvnc package if doctor reports it missing, then rerun `contain install` if the RFB socket is absent.
+
 For each entry, `contain install` writes a socket unit, `pipelock-published-<name>.socket`, and a socket-activated relay, `pipelock-published-<name>.service`. systemd creates the host socket owned by `operator_user` with mode `0600`. The relay runs `pipelock contain netns-forward` as the proxy service user and joins the agent's network namespace, so it dials the agent's own loopback. It never runs as `pipelock-agent`, and the agent gets no host-side process and no new outbound route. The nftables rules don't change. An optional `host_listen` adds a `pipelock-published-<name>-tcp` socket and relay pair. `contain install` refuses an `operator_user` that doesn't exist or that names the agent account.
 
 `contain reload-nft-rules`, the boot-time persistence unit, and the expiry timer reconcile publications from the managed config along with loopback services. A removed or expired entry has its socket disabled and its units removed at the next successful reconciliation, including after an earlier successful install. If the managed config declares a publication that Pipelock can't honor, reconciliation closes every publication and logs the reason. A failed install restores the previous units and their runtime state. `contain rollback` closes every recorded publication.
@@ -400,6 +402,10 @@ The contract has four parts:
 5. **Browser launch default** (`~/.agent-browser/config.json` in the agent home). See [Browser launch default](#browser-launch-default).
 
 A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
+
+`containment.display.geometry` sets the display size as one `WxH` token (default `1280x1024`, width 320–65535, height 200–65535). Rerun `contain install` after changing it.
+
+`pipelock contain view` starts a local Unix socket for a standard VNC client. Run it as the configured `operator_user`; add `--control` to allow keyboard and pointer input. The command prints the socket path and an SSH forwarding example.
 
 ### Xvfb display authorization
 

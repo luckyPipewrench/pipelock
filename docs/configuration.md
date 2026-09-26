@@ -1742,6 +1742,24 @@ containment:
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
 
+### Contained agent display (containment)
+
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–65535 and height 200–65535.
+
+```yaml
+containment:
+  display:
+    enabled: true
+    backend: xvnc
+    geometry: 1280x1024
+    viewer:
+      enabled: true
+      operator_user: operator
+      clipboard: false
+```
+
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. The viewer service runs as the proxy user and creates a `0600` control socket under `/run/pipelock-contain-viewer/`. Only the configured operator can connect through its ACL and peer-UID check. `pipelock contain view` exposes a local Unix socket for a standard VNC client. Clipboard transfer defaults off.
+
 ### Contained agent identity (containment)
 
 A contained agent reaches the proxy through its namespace doorway, which by default delivers to the shared proxy listener. Traffic there is attributed by the usual rules, so a profile whose `source_cidrs` covers loopback claims the contained agent along with every other local client. Set `containment.agent_listener` to one of the agent's own `agents.<name>.listeners` to deliver the doorway to that listener instead:

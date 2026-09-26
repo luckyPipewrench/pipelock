@@ -1501,6 +1501,50 @@ func TestScanGenericSSEStream_JoinedPayloadRescanCleanDoesNotBlock(t *testing.T)
 	}
 }
 
+func TestScanGenericSSEStream_CrossEventDLPWarnForwardsAndResetsTail(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	key := fakeAWSKey()
+	body := "data: " + key[:8] + "\n\ndata: " + key[8:] + "\n\ndata: ordinary followup\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) {
+			findings = append(findings, err)
+		}})
+	if err != nil {
+		t.Fatalf("warn mode returned error: %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "cross-event dlp") {
+		t.Fatalf("findings = %v, want one cross-event DLP finding", findings)
+	}
+	if !strings.Contains(out.String(), key[8:]) || !strings.Contains(out.String(), "ordinary followup") {
+		t.Fatalf("warn mode did not forward both events: %q", out.String())
+	}
+}
+
+func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	key := fakeAWSKey()
+	body := "data: harmless prefix\n\ndata: " + key + "\n\ndata: harmless suffix\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) {
+			findings = append(findings, err)
+		}})
+	if err != nil {
+		t.Fatalf("warn mode returned error: %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "dlp") {
+		t.Fatalf("findings = %v, want one current-event DLP finding", findings)
+	}
+	if !strings.Contains(out.String(), key) || !strings.Contains(out.String(), "harmless suffix") {
+		t.Fatalf("warn mode did not forward subsequent events: %q", out.String())
+	}
+}
+
 // TestScanGenericSSEStream_JoinedPayloadRescanWithSuppression proves the
 // suppress-list filter inside the new joined-payload rescan branch runs.
 // A DLP-matching pattern that would normally fire on the joined form gets

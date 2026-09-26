@@ -67,6 +67,7 @@ type EmergencyStore interface {
 type FileEmergencyStore struct {
 	dir               string
 	statePath         string
+	lockFile          *os.File
 	mu                sync.RWMutex
 	remoteKills       []StoredRemoteKill
 	remoteKillHashes  map[string]StoredRemoteKill
@@ -97,7 +98,12 @@ func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	lockFile, err := lockEmergencyDirectory(root)
+	if err != nil {
+		return nil, fmt.Errorf("conductor emergency control store directory %s is already in use: %w", root, err)
+	}
 	store := &FileEmergencyStore{
+		lockFile:          lockFile,
 		dir:               root,
 		statePath:         filepath.Join(root, emergencyStateFileName),
 		remoteKillHashes:  make(map[string]StoredRemoteKill),
@@ -106,9 +112,24 @@ func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
 		rollbackAuthIDMap: make(map[string]string),
 	}
 	if err := store.load(); err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *FileEmergencyStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return nil
+	}
+	file := s.lockFile
+	s.lockFile = nil
+	return file.Close()
 }
 
 func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.RemoteKillMessage, now time.Time) (StoredRemoteKill, bool, error) {
@@ -427,6 +448,9 @@ func (s *FileEmergencyStore) rollbackAuthorizationByHash(_ context.Context, hash
 }
 
 func (s *FileEmergencyStore) writeLocked() error {
+	if s.lockFile == nil {
+		return errors.New("conductor emergency control store closed")
+	}
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
 		RemoteKills:      s.remoteKills,
 		Rollbacks:        s.rollbacks,

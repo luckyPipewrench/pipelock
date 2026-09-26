@@ -456,6 +456,7 @@ func TestVerifiedEmergencyStore_RestartSurvival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen bundle store: %v", err)
 	}
+	_ = emergency.Close()
 	reopenEmergency, err := OpenFileEmergencyStore(emergencyDir)
 	if err != nil {
 		t.Fatalf("reopen emergency (must tolerate forged signature at load): %v", err)
@@ -572,7 +573,10 @@ func TestVerifiedEmergencyStore_IdempotentReQuarantine(t *testing.T) {
 	forged := forgedRollbackRecord(t, "idem-forged", 9, now, false)
 	dir := t.TempDir()
 	// Seed the disk state once; both opens below read the same bytes.
-	seedEmergencyStateOnDisk(t, dir, nil, []StoredRollbackAuthorization{legit, forged})
+	seeded := seedEmergencyStateOnDisk(t, dir, nil, []StoredRollbackAuthorization{legit, forged})
+	if err := seeded.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	for i := range 2 {
 		store, err := OpenFileEmergencyStore(dir)
@@ -590,6 +594,9 @@ func TestVerifiedEmergencyStore_IdempotentReQuarantine(t *testing.T) {
 		}
 		if rec.count() != 1 {
 			t.Fatalf("iter %d quarantine count = %d, want exactly 1 (deterministic)", i, rec.count())
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

@@ -451,6 +451,7 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	if latest.Bundle.BundleID != "bundle-reconcile-v2" {
 		t.Fatalf("Latest(before reconcile) bundle=%q, want unreconciled bundle-reconcile-v2", latest.Bundle.BundleID)
 	}
+	_ = emergencyStore.Close()
 	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
@@ -520,6 +521,7 @@ func TestRollbackHeadReconciliationDoesNotRearmSupersededAuthorization(t *testin
 	if err != nil {
 		t.Fatalf("OpenFileBundleStore(reopen) error = %v", err)
 	}
+	_ = emergencyStore.Close()
 	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)

@@ -87,14 +87,16 @@ type controlKeySpec struct {
 
 type serveHandler struct {
 	*controlplane.Handler
-	auditStore *controlplane.SQLiteAuditStore
+	auditStore     *controlplane.SQLiteAuditStore
+	emergencyStore *controlplane.FileEmergencyStore
 }
 
 func (h *serveHandler) Close() error {
 	if h == nil || h.auditStore == nil {
 		return nil
 	}
-	return h.auditStore.Close()
+	err := h.emergencyStore.Close()
+	return errors.Join(err, h.auditStore.Close())
 }
 
 func Cmd() *cobra.Command {
@@ -400,6 +402,12 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, h
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	keepEmergencyStore := false
+	defer func() {
+		if !keepEmergencyStore {
+			_ = emergencyControls.Close()
+		}
+	}()
 	emergencyKeys, err := buildControlKeyResolver(opts.trustedControlKeys)
 	if err != nil {
 		return nil, nil, nil, err
@@ -446,7 +454,8 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, h
 		return nil, nil, nil, err
 	}
 	keepAuditStore = true
-	return &serveHandler{Handler: handler, auditStore: auditStore}, handler.ProbeHandler(), tlsConfig, nil
+	keepEmergencyStore = true
+	return &serveHandler{Handler: handler, auditStore: auditStore, emergencyStore: emergencyControls}, handler.ProbeHandler(), tlsConfig, nil
 }
 
 func conductorRequestLogger(w io.Writer) *slog.Logger {

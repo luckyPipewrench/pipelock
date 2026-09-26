@@ -364,7 +364,16 @@ type RequestPolicyRule struct {
 	Route         RequestPolicyRoute          `yaml:"route"`
 	GraphQL       *RequestPolicyGraphQL       `yaml:"graphql,omitempty"`       // optional GraphQL operation predicate
 	Discriminator *RequestPolicyDiscriminator `yaml:"discriminator,omitempty"` // optional JSON discriminator-field predicate
+	Except        *RequestPolicyException     `yaml:"except,omitempty"`        // exact JSON values that exempt this block rule
 	Reason        string                      `yaml:"reason"`                  // operator-facing explanation (never logged with content)
+}
+
+// RequestPolicyException exempts a block only when an inspectable JSON object
+// contains one exact top-level string value. Missing, ambiguous, or unreadable
+// values never exempt the request.
+type RequestPolicyException struct {
+	Field  string   `yaml:"field"`
+	Values []string `yaml:"values"`
 }
 
 // RequestPolicyRoute selects which requests a rule applies to. An empty

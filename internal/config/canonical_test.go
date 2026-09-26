@@ -475,6 +475,43 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_ExactException(t *testing.T) {
+	base := func(c *Config) {
+		c.RequestPolicy.Enabled = true
+		c.RequestPolicy.Rules = []RequestPolicyRule{{
+			Name: "block-move", Action: ActionBlock,
+			Route: RequestPolicyRoute{
+				Hosts: []string{"api.service.example.com"}, Methods: []string{"POST"},
+				PathPatterns: []string{`/items/.+/move$`},
+			},
+		}}
+	}
+	hash := func(except *RequestPolicyException) string {
+		return canonicalHashOf(t, func(c *Config) {
+			base(c)
+			c.RequestPolicy.Rules[0].Except = except
+		})
+	}
+	without := hash(nil)
+	archive := hash(&RequestPolicyException{Field: "destinationId", Values: []string{"archive"}})
+	if archive == without {
+		t.Fatal("adding exact exception did not change canonical policy hash")
+	}
+	for _, tc := range []struct {
+		name   string
+		except *RequestPolicyException
+	}{
+		{"field", &RequestPolicyException{Field: "folderId", Values: []string{"archive"}}},
+		{"value", &RequestPolicyException{Field: "destinationId", Values: []string{"other"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hash(tc.except); got == archive {
+				t.Fatal("changing exact exception did not change canonical policy hash")
+			}
+		})
+	}
+}
+
 func TestCanonicalPolicyHash_AgentBestEffortAuthorizationIsInert(t *testing.T) {
 	bestEffort := true
 	first := canonicalHashOf(t, func(c *Config) {

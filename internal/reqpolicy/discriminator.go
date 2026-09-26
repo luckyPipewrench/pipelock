@@ -31,6 +31,43 @@ type discPredicate struct {
 	valueRes []*regexp.Regexp
 }
 
+type exactException struct {
+	field  string
+	values map[string]struct{}
+}
+
+func compileExactException(e *config.RequestPolicyException) *exactException {
+	if e == nil {
+		return nil
+	}
+	x := &exactException{field: strings.TrimSpace(e.Field), values: make(map[string]struct{}, len(e.Values))}
+	for _, value := range e.Values {
+		x.values[value] = struct{}{}
+	}
+	return x
+}
+
+// matches returns true only when the inspected body proves an exact exception.
+// A missing, duplicate, non-string, or unparsed field leaves the block active.
+func (e *exactException) matches(meta RequestMeta) bool {
+	if !meta.JSONBodyParsed {
+		return false
+	}
+	obj, ok := meta.JSONBody.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, duplicated := meta.JSONDupKeys[e.field]; duplicated {
+		return false
+	}
+	value, ok := obj[e.field].(string)
+	if !ok {
+		return false
+	}
+	_, ok = e.values[value]
+	return ok
+}
+
 // compileDiscriminatorPredicate compiles a rule's discriminator predicate,
 // returning nil when the rule has none. Field and patterns are validated at
 // config load, so a compile failure here is defense in depth.

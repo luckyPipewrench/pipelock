@@ -74,3 +74,80 @@ func FuzzStyleValueHidesCSS(f *testing.F) {
 		_ = styleValueHides(s)
 	})
 }
+
+func TestStyleValueHidesCSSDeclarationEdges(t *testing.T) {
+	tests := []struct {
+		name, style string
+		hide bool
+	}{
+		{"form feed whitespace", "\fdisplay\t:\nnone", true},
+		{"null replacement", "display:none; dis\x00play:block", true},
+		{"invalid utf8 in property", "dis\xffplay:none", false},
+		{"escaped punctuation in name", `dis\70 lay:none`, true},
+		{"nonhex escape in value", `display:n\one`, true},
+		{"escaped invalid scalar", `display:none; x:\110000`, true},
+		{"escaped zero scalar", `display:n\0 one`, false},
+		{"escaped uppercase hex", `display:\4E one`, true},
+		{"trailing backslash", `display:none; x:\`, true},
+		{"bad url quote", `background:url(a"b);display:none`, true},
+		{"bad url open paren", `background:url(a(b);display:none`, true},
+		{"bad url whitespace", `background:url(a b);display:none`, true},
+		{"bad url newline escape", "background:url(a\\\nb);display:none", true},
+		{"url quoted semicolon", `background:url("a;b");display:none`, true},
+		{"url unclosed", `background:url(a;display:none`, false},
+		{"string escaped newline", "content:'a\\\nb';display:none", true},
+		{"string escaped quote", `content:'a\'b;c';display:none`, true},
+		{"string newline recovery", "content:'a\nb';display:none", false},
+		{"at rule skipped", `@media screen {display:none};display:block`, false},
+		{"at rule followed by hide", `@x(a;b);display:none`, true},
+		{"hash not property", `#display:none;display:block`, false},
+		{"dimension not property", `2px: none;display:block`, false},
+		{"percentage not property", `2%:none;display:none`, true},
+		{"exponent not property", `2e+3:none;display:block`, false},
+		{"signed decimal not property", `-.5:none;display:none`, true},
+		{"nested bracket semicolon", `x:[a;b];display:none`, true},
+		{"mismatched bracket", `display:none];display:block`, false},
+		{"unclosed function", `display:none; x:f(a;b`, true},
+		{"malformed hide function", `display:f(a;b`, false},
+		{"important uppercase", `display:none !IMPORTANT;display:block`, true},
+		{"important in string", `display:none !"important";display:block`, false},
+		{"important without bang", `display:none important;display:block`, false},
+		{"bang without important", `display:none !;display:block`, false},
+		{"trailing semicolon", `display:none;`, true},
+		{"missing colon at end", `display`, false},
+		{"missing colon then hide", `display x;display:none`, true},
+		{"cdc recovery", `-->;display:none`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := styleValueHides(tc.style); got != tc.hide {
+				t.Fatalf("styleValueHides(%q)=%v, want %v", tc.style, got, tc.hide)
+			}
+		})
+	}
+}
+
+func TestCSSDeclarationTokenOutput(t *testing.T) {
+	tests := []struct {
+		style string
+		want []cssDeclaration
+	}{
+		{`x:+.5e-2%;display:none`, []cssDeclaration{{name: "x", value: "+.5e-2%"}, {name: "display", value: "none"}}},
+		{`x:2px #abc @foo;display:none`, []cssDeclaration{{name: "x", value: "2px abc foo"}, {name: "display", value: "none"}}},
+		{`x:url(a\)b);display:none`, []cssDeclaration{{name: "x", value: "url(a)b)"}, {name: "display", value: "none"}}},
+		{`x:"a\22 b";display:none`, []cssDeclaration{{name: "x", value: `"a"b"`}, {name: "display", value: "none"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.style, func(t *testing.T) {
+			got := cssDeclarations(tc.style)
+			if len(got) != len(tc.want) {
+				t.Fatalf("cssDeclarations(%q)=%+v, want %+v", tc.style, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("cssDeclarations(%q)[%d]=%+v, want %+v", tc.style, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

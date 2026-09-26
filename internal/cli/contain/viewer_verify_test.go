@@ -200,3 +200,60 @@ func TestViewerServiceProbeControlSocketFailureDirections(t *testing.T) {
 		})
 	}
 }
+
+func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
+	root := shortDisplayTestDir(t)
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	configBody := "mode: balanced\ncontainment:\n  display:\n    enabled: true\n    backend: xvnc\n    viewer:\n      enabled: true\n      operator_user: operator\n"
+	if err := os.WriteFile(cfgPath, []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rfbPath := filepath.Join(root, "agent", ".local/state/pipelock/display/rfb.sock")
+	if err := os.MkdirAll(filepath.Dir(rfbPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", rfbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := os.Chmod(rfbPath, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	base := probeEnv{configPath: cfgPath, agentHome: filepath.Join(root, "agent"), proxyUserName: "proxy", lstat: os.Lstat, runCmd: func(context.Context, string, ...string) (string, int, error) {
+		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+	}}
+	if status, detail := probeViewerRFBAccess(context.Background(), &base); status != statusPass || !strings.Contains(detail, "matches") {
+		t.Fatalf("valid RFB access = %s %q", status, detail)
+	}
+	for _, tc := range []struct {
+		name, want string
+		change     func(*probeEnv)
+	}{
+		{"config", "viewer config", func(e *probeEnv) { e.configPath = filepath.Join(root, "missing.yaml") }},
+		{"socket", "RFB socket", func(e *probeEnv) { e.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission } }},
+		{"mode", "want 0660", func(e *probeEnv) {
+			e.lstat = func(path string) (os.FileInfo, error) {
+				info, err := os.Lstat(path)
+				if err != nil {
+					return nil, err
+				}
+				return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o666}, nil
+			}
+		}},
+		{"ACL", "RFB ACL", func(e *probeEnv) {
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				return "", 1, errors.New("ACL unavailable")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := base
+			tc.change(&env)
+			status, detail := probeViewerRFBAccess(context.Background(), &env)
+			if status != statusFail || !strings.Contains(detail, tc.want) {
+				t.Fatalf("probe = %s %q, want %q", status, detail, tc.want)
+			}
+		})
+	}
+}

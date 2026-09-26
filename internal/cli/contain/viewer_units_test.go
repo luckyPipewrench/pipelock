@@ -119,6 +119,133 @@ func TestViewerRemovalRejectsForeignBackupAndCommandFailure(t *testing.T) {
 	}
 }
 
+func TestViewerProvisionRejectsInvalidDisplayAndCleanupFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, prior, command, want string
+		viewer, failRemove         bool
+	}{
+		{"invalid backend", "", "", "requires an enabled Xvnc", true, false},
+		{"legacy stop", "socket", "systemctl disable --now pipelock-contain-viewer.socket", "socket stop failed", true, false},
+		{"legacy removal", "socket", "", "remove failed", true, true},
+		{"disabled service stop", "service", "systemctl disable --now pipelock-contain-viewer.service", "service stop failed", false, false},
+		{"disabled service removal", "service", "", "remove failed", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+			env.displayEnabled = true
+			service, socket := viewerUnitPaths(env)
+			yes := tc.viewer
+			backend := "xvnc"
+			if tc.name == "invalid backend" {
+				backend = "xvfb"
+			}
+			env.displayConfig = config.ContainmentDisplay{Backend: backend, Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+			path := service
+			if tc.prior == "socket" {
+				path = socket
+			}
+			if tc.prior != "" {
+				if err := os.WriteFile(path, []byte(displayUnitMarker+"\n[Unit]\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.command != "" {
+				runner.on(tc.command, "", 1, errors.New(tc.want))
+			}
+			if tc.failRemove {
+				env.removeFile = func(string) error { return errors.New("remove failed") }
+			}
+			changed, err := stepProvisionViewer().apply(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("changed=%v err=%v, want %q", changed, err, tc.want)
+			}
+			if tc.prior != "" && !changed {
+				t.Fatal("failed cleanup did not report a change requiring rollback")
+			}
+			if tc.failRemove {
+				if _, statErr := os.Stat(path); statErr != nil {
+					t.Fatalf("failed removal lost unit: %v", statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoveManagedViewerUnitChecksEveryCandidate(t *testing.T) {
+	for _, tc := range []struct {
+		name, want                          string
+		failRead, failRemove, foreignBackup bool
+	}{
+		{"read", "read unavailable", true, false, false},
+		{"remove", "remove unavailable", false, true, false},
+		{"foreign backup", "not Pipelock-managed", false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			path := filepath.Join(t.TempDir(), "viewer.service")
+			if tc.foreignBackup {
+				if err := os.WriteFile(path+".bak", []byte("[Service]\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(displayUnitMarker+"\n[Service]\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.failRead {
+				env.readFile = func(string) ([]byte, error) { return nil, errors.New("read unavailable") }
+			}
+			if tc.failRemove {
+				env.removeFile = func(string) error { return errors.New("remove unavailable") }
+			}
+			err := removeManagedViewerUnit(env, path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("remove = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestViewerRollbackReportsRestorationFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, want string
+		failWrite           bool
+	}{
+		{"disable", "systemctl disable --now pipelock-contain-viewer.service", "disable failed", false},
+		{"write", "", "write failed", true},
+		{"reload", "systemctl daemon-reload", "reload failed", false},
+		{"enable", "systemctl enable pipelock-contain-viewer.service", "enable failed", false},
+		{"start", "systemctl start pipelock-contain-viewer.service", "start failed", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+			service, socket := viewerUnitPaths(env)
+			old := displayUnitMarker + "\n[Service]\nDescription=old\n"
+			for _, path := range []string{service, socket} {
+				if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runner.on("systemctl is-enabled "+filepath.Base(path), "enabled\n", 0, nil)
+				runner.on("systemctl is-active "+filepath.Base(path), "active\n", 0, nil)
+			}
+			step := stepProvisionViewer()
+			if changed, err := step.apply(context.Background(), env); err != nil || !changed {
+				t.Fatalf("apply changed=%v err=%v", changed, err)
+			}
+			if tc.command != "" {
+				runner.on(tc.command, "", 1, errors.New(tc.want))
+			}
+			if tc.failWrite {
+				env.writeFile = func(string, []byte, os.FileMode) error { return errors.New("write failed") }
+			}
+			err := step.undo(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("undo = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestViewerInstallRemovesLegacySocketUnit(t *testing.T) {
 	env, runner, out := newFakeEnv(t)
 	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")

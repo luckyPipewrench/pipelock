@@ -299,6 +299,110 @@ type failingViewWriter struct{}
 
 func (failingViewWriter) Write([]byte) (int, error) { return 0, errors.New("terminal closed") }
 
+type failNthViewWriter struct {
+	writes, failAt int
+	output         bytes.Buffer
+}
+
+func (w *failNthViewWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("terminal closed")
+	}
+	return w.output.Write(p)
+}
+
+type rejectViewListener struct{ net.Listener }
+
+func (rejectViewListener) Accept() (net.Conn, error) { return nil, errors.New("listener failed") }
+
+type failViewModeWriteConn struct{ net.Conn }
+
+func (failViewModeWriteConn) Write([]byte) (int, error) { return 0, errors.New("send failed") }
+
+func TestContainViewControlHandshakeFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		failWrite  bool
+	}{
+		{"request", "request viewer mode: send failed", true},
+		{"response", "read viewer response", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(shortDisplayTestDir(t), "local.sock")
+			listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = listener.Close() }()
+			client, err := (&net.Dialer{}).DialContext(context.Background(), "unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			local, err := listener.Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dial := func(context.Context, string, string) (net.Conn, error) {
+				remote, server := net.Pipe()
+				if tc.failWrite {
+					_ = server.Close()
+					return failViewModeWriteConn{remote}, nil
+				}
+				go func() { _, _ = io.ReadFull(server, make([]byte, len("view\n"))); _ = server.Close() }()
+				return remote, nil
+			}
+			err = bridgeViewClientWithDial(context.Background(), local, "control.sock", "view", currentViewerUID(), dial)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("bridge = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestContainViewReportsTerminalAndAcceptFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+		want   string
+	}{
+		{"ssh example", 2, "print SSH forwarding example"},
+		{"client example", 3, "print VNC connection example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(shortDisplayTestDir(t), "view.sock")
+			writer := &failNthViewWriter{failAt: tc.failAt}
+			err := runContainView(context.Background(), path, "unused", "view", currentViewerUID(), writer, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want+": terminal closed") {
+				t.Fatalf("error = %v", err)
+			}
+			if !strings.Contains(writer.output.String(), path) {
+				t.Fatalf("socket path was not printed: %q", writer.output.String())
+			}
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("socket remains: %v", err)
+			}
+		})
+	}
+	path := filepath.Join(shortDisplayTestDir(t), "view.sock")
+	deps := realViewDeps(io.Discard, io.Discard)
+	deps.listen = func(ctx context.Context, network, address string) (net.Listener, error) {
+		ln, err := (&net.ListenConfig{}).Listen(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return rejectViewListener{ln}, nil
+	}
+	err := runContainViewWithDeps(context.Background(), path, "unused", "view", currentViewerUID(), deps)
+	if err == nil || !strings.Contains(err.Error(), "accept VNC client: listener failed") {
+		t.Fatalf("accept error = %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket remains after accept failure: %v", err)
+	}
+}
+
 func TestContainViewRefusesUnsafePathsAndReportsOutputFailure(t *testing.T) {
 	root := t.TempDir()
 	for _, tc := range []struct{ name, path, mode, want string }{

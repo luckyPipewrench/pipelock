@@ -1811,22 +1811,21 @@ func (v *cfAccessVerifier) keySet(ctx context.Context) (*jose.JSONWebKeySet, err
 		return v.keys, nil
 	}
 
-	// Negative-cache: if a previous refetch failed and we have stale keys,
-	// serve them until nextRetry to avoid hammering the JWKS endpoint.
-	if v.keys != nil && now.Before(v.nextRetry) {
-		v.keysExp = now.Add(cfAccessNegativeCacheTTL)
+	// A failed refresh may reuse keys for one fixed grace period after their
+	// original expiry. Retrying must never renew that trust deadline.
+	staleUntil := v.keysExp.Add(cfAccessNegativeCacheTTL)
+	if v.keys != nil && now.Before(v.nextRetry) && now.Before(staleUntil) {
 		return v.keys, nil
 	}
 
 	keys, fetchErr := v.fetchKeys(ctx)
 	if fetchErr != nil {
 		// Fail-closed when there are no cached keys at all.
-		if v.keys == nil {
+		if v.keys == nil || !now.Before(staleUntil) {
 			return nil, fetchErr
 		}
-		// Stale keys exist: serve them and set a negative-cache window.
+		// Stale keys remain within their fixed grace period.
 		v.nextRetry = now.Add(cfAccessNegativeCacheTTL)
-		v.keysExp = v.nextRetry
 		return v.keys, nil
 	}
 	v.keys = keys

@@ -2133,6 +2133,13 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	if fetchCount != fetchesBefore {
 		t.Fatalf("fetch during negative-cache window: got %d additional fetches", fetchCount-fetchesBefore)
 	}
+
+	// Repeated outages must not extend trust beyond the original key lifetime.
+	now = now.Add(cfAccessNegativeCacheTTL)
+	jwt = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), jwt); err == nil {
+		t.Fatal("accepted stale Access key after original cache lifetime")
+	}
 }
 
 func TestCFAccessJWKS_NoCacheFailsClosed(t *testing.T) {

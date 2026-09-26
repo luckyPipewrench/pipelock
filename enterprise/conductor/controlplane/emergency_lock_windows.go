@@ -7,9 +7,10 @@
 package controlplane
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
 
 func lockEmergencyDirectory(dir string) (*os.File, error) {

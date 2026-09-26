@@ -171,13 +171,27 @@ func actionMaybeDeleteViewerUser(opts rollbackOpts) step {
 		if opts.keepUsers && !opts.purgeUsers {
 			return nil
 		}
-		if _, err := env.lookupUser(viewerUserName); err != nil {
+		createdUID, err := env.readFile(viewerCreationMarkerPath(env))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("viewer creation record: %w", err)
+		}
+		account, err := env.lookupUser(viewerUserName)
+		if err != nil {
 			if errors.As(err, new(user.UnknownUserError)) {
-				return nil
+				return env.removeFile(viewerCreationMarkerPath(env))
 			}
 			return fmt.Errorf("viewer user lookup: %w", err)
 		}
-		return runOrErr(ctx, env, "userdel", "-r", viewerUserName)
+		if strings.TrimSpace(string(createdUID)) != account.Uid {
+			return fmt.Errorf("viewer account UID differs from its creation record; preserving account")
+		}
+		if err := runOrErr(ctx, env, "userdel", "-r", viewerUserName); err != nil {
+			return err
+		}
+		return env.removeFile(viewerCreationMarkerPath(env))
 	}}
 }
 

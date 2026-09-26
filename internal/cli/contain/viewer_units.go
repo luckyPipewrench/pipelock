@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -51,15 +52,41 @@ func stepCreateViewerUser() step {
 		if !errors.As(err, new(user.UnknownUserError)) {
 			return false, fmt.Errorf("viewer account lookup: %w", err)
 		}
-		return true, runOrErr(ctx, env, "useradd", "--system", "--shell", env.nologinPath, "--home-dir", "/var/lib/"+viewerUserName, "--no-create-home", "--user-group", viewerUserName)
+		if err := runOrErr(ctx, env, "useradd", "--system", "--shell", env.nologinPath, "--home-dir", "/var/lib/"+viewerUserName, "--no-create-home", "--user-group", viewerUserName); err != nil {
+			return true, err
+		}
+		uid, code, err := env.runCmd(ctx, "id", "-u", viewerUserName)
+		if err != nil || code != 0 || strings.TrimSpace(uid) == "" {
+			return true, fmt.Errorf("lookup created viewer UID: %w", errors.Join(err, fmt.Errorf("exit %d", code)))
+		}
+		if parsed, parseErr := strconv.ParseUint(strings.TrimSpace(uid), 10, 32); parseErr != nil || parsed == 0 {
+			return true, errors.New("created viewer UID is invalid")
+		}
+		if err := env.writeFile(viewerCreationMarkerPath(env), []byte(strings.TrimSpace(uid)+"\n"), 0o600); err != nil {
+			return true, fmt.Errorf("record created viewer account: %w", err)
+		}
+		return true, nil
 	}, undo: func(ctx context.Context, env *installEnv) error {
 		if _, err := env.lookupUser(viewerUserName); errors.As(err, new(user.UnknownUserError)) {
+			if err := env.removeFile(viewerCreationMarkerPath(env)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 			return nil
 		} else if err != nil {
 			return err
 		}
-		return runOrErr(ctx, env, "userdel", "-r", viewerUserName)
+		if err := runOrErr(ctx, env, "userdel", "-r", viewerUserName); err != nil {
+			return err
+		}
+		if err := env.removeFile(viewerCreationMarkerPath(env)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
 	}}
+}
+
+func viewerCreationMarkerPath(env *installEnv) string {
+	return filepath.Join(filepath.Dir(env.displayUnitPath), viewerUnitBase+".user-created")
 }
 
 func checkViewerOperatorIdentity(env *installEnv) error {

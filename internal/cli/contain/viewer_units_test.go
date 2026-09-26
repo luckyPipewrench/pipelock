@@ -56,11 +56,13 @@ func TestViewerOperatorIdentityRejectsSharedUID(t *testing.T) {
 
 func TestViewerIdentityProvisioning(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(t.TempDir(), "display.service")
 	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+" "+viewerUserName+"\n", 0, nil)
 	if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "proxy account") {
 		t.Fatalf("proxy viewer-group membership accepted: %v", err)
 	}
 	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+"\n", 0, nil)
+	runner.on("id -u "+viewerUserName, "900\n", 0, nil)
 	changed, err := stepCreateViewerUser().apply(context.Background(), env)
 	if err != nil || !changed || !runnerSaw(runner, "useradd --system --shell "+env.nologinPath+" --home-dir /var/lib/"+viewerUserName+" --no-create-home --user-group "+viewerUserName) {
 		t.Fatalf("viewer account provisioning changed=%v err=%v calls=%v", changed, err, runner.calls)

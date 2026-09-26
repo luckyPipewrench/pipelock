@@ -403,6 +403,8 @@ The contract has four parts:
 
 A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
 
+`containment.display.geometry` sets the display size as one `WxH` token (default `1280x1024`, width 320–65535, height 200–65535). Rerun `contain install` after changing it.
+
 ### Xvfb display authorization
 
 When the managed display is enabled, `pipelock contain install` creates a fresh 128-bit MIT-MAGIC-COOKIE-1 record in `/var/lib/pipelock-agent/Xauthority`. The root-owned state directory is mode `0711`; the cookie file belongs to `pipelock-agent` and has mode `0600`. Xvfb starts with `-auth` pointing at the file, and the contained launch environment sets `XAUTHORITY` to the same path. Re-running install rotates the cookie and restarts an active Xvfb. `pipelock contain rollback` removes the managed cookie file.

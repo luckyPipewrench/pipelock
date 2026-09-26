@@ -1735,13 +1735,14 @@ The proxy will not dial its own configured metrics address and port. That rule r
 
 ### Contained agent display (containment)
 
-`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`.
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–65535 and height 200–65535.
 
 ```yaml
 containment:
   display:
     enabled: true
     backend: xvnc
+    geometry: 1280x1024
     viewer:
       enabled: true
       operator_user: operator

@@ -41,6 +41,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+var containmentGeometryPattern = regexp.MustCompile(`^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$`)
+
 // ValidateTrustedDomains validates and normalizes a slice of trusted domain
 // entries. Each entry is lowercased, trimmed, and checked for: empty values,
 // URL/host:port formats, bare wildcards, over-broad wildcards (e.g. *.com),
@@ -665,6 +667,17 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
 	}
 	display := c.Containment.Display
+	if display.Geometry != "" {
+		parts := strings.Split(display.Geometry, "x")
+		if len(parts) != 2 || !containmentGeometryPattern.MatchString(display.Geometry) {
+			return warnings, fmt.Errorf("containment.display.geometry must be WxH with decimal dimensions")
+		}
+		width, _ := strconv.Atoi(parts[0])
+		height, _ := strconv.Atoi(parts[1])
+		if width < 320 || width > 65535 || height < 200 || height > 65535 {
+			return warnings, fmt.Errorf("containment.display.geometry must be 320..65535 wide and 200..65535 high")
+		}
+	}
 	if display.Backend != "" && display.Backend != "xvfb" && display.Backend != "xvnc" {
 		return warnings, fmt.Errorf("containment.display.backend must be xvfb or xvnc")
 	}

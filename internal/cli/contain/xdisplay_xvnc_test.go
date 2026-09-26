@@ -28,7 +28,7 @@ Type=simple
 User=pipelock-agent
 Group=pipelock-agent
 UMask=0077
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix
+ExecStart=/usr/bin/Xvfb :99 -auth /var/lib/pipelock-agent/Xauthority -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix
 ExecStartPost=/usr/bin/bash -c 'for i in {1..200}; do if [ -S "$1" ]; then chmod 0700 "$1"; exit; fi; sleep 0.1; done; exit 1' _ /tmp/.X11-unix/X99
 Restart=on-failure
 RestartSec=2
@@ -38,6 +38,20 @@ WantedBy=multi-user.target
 `
 	if got := renderAgentDisplayUnit(env); got != want {
 		t.Fatalf("omitted config Xvfb unit changed:\n%s", got)
+	}
+}
+
+func TestDisplayGeometryChangesUnit(t *testing.T) {
+	for _, backend := range []string{"xvfb", "xvnc"} {
+		t.Run(backend, func(t *testing.T) {
+			env := &installEnv{agentUserName: testAgentUser, agentHome: "/home/pipelock-agent", displayNumber: 99, xvfbPath: "/usr/bin/Xvfb", xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: backend}}
+			original := renderAgentDisplayUnit(env)
+			env.displayConfig.Geometry = "1600x900"
+			changed := renderAgentDisplayUnit(env)
+			if original == changed || !strings.Contains(changed, "1600x900") {
+				t.Fatalf("geometry change did not change %s unit", backend)
+			}
+		})
 	}
 }
 

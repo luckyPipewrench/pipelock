@@ -103,10 +103,11 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 // box. An explicit false still turns it off, and a host without Xvfb
 // installed is left alone rather than failing its install.
 type ContainmentDisplay struct {
-	Enabled *bool                    `yaml:"enabled"`
-	Number  *int                     `yaml:"number"`
-	Backend string                   `yaml:"backend"`
-	Viewer  ContainmentDisplayViewer `yaml:"viewer"`
+	Enabled  *bool                    `yaml:"enabled"`
+	Number   *int                     `yaml:"number"`
+	Backend  string                   `yaml:"backend"`
+	Geometry string                   `yaml:"geometry"`
+	Viewer   ContainmentDisplayViewer `yaml:"viewer"`
 }
 
 type ContainmentDisplayViewer struct {
@@ -116,6 +117,13 @@ type ContainmentDisplayViewer struct {
 	Source       string `yaml:"source"`
 	Clipboard    *bool  `yaml:"clipboard"`
 	PublicOrigin string `yaml:"public_origin"`
+}
+
+func (d ContainmentDisplay) EffectiveGeometry() string {
+	if d.Geometry == "" {
+		return "1280x1024"
+	}
+	return d.Geometry
 }
 
 // ValidateViewerOrigin requires one HTTPS authority without path or credentials.

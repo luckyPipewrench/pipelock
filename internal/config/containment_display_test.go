@@ -84,6 +84,39 @@ func TestContainmentDisplayRejectsInvalidNumber(t *testing.T) {
 	}
 }
 
+func TestContainmentDisplayGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		geometry string
+		valid    bool
+	}{
+		{"", true},
+		{"1280x1024", true},
+		{"320x200", true},
+		{"65535x65535", true},
+		{"319x200", false},
+		{"320x199", false},
+		{"65536x200", false},
+		{"320x65536", false},
+		{"0x200", false},
+		{"320x0", false},
+		{"320", false},
+		{"320X200", false},
+		{" 320x200", false},
+		{"320x200 ", false},
+		{"1600x900 -ac", false},
+	} {
+		t.Run(tc.geometry, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte("containment:\n  display:\n    geometry: '" + tc.geometry + "'\n"))
+			if (err == nil) != tc.valid {
+				t.Fatalf("geometry %q: err = %v, valid = %v", tc.geometry, err, tc.valid)
+			}
+			if err == nil && tc.geometry == "" && cfg.Containment.Display.EffectiveGeometry() != "1280x1024" {
+				t.Fatal("omitted geometry default changed")
+			}
+		})
+	}
+}
+
 func TestContainmentDisplayViewerConfig(t *testing.T) {
 	tests := []struct {
 		name, yaml, backend string

@@ -1708,6 +1708,17 @@ func TestScanRequest_UnknownEnvelopeFieldDLP(t *testing.T) {
 	}
 }
 
+func TestMCPListenerSessionHeaderDLP(t *testing.T) {
+	sc := testInputScanner(t)
+	headers := make(http.Header)
+	headers.Set("Mcp-Session-Id", testSecretPrefix+strings.Repeat("b", 25))
+	for _, cfg := range []*config.RequestBodyScanning{nil, {Enabled: true, ScanHeaders: false}, {Enabled: true, ScanHeaders: true, HeaderMode: config.HeaderModeAll, IgnoreHeaders: []string{"Mcp-Session-Id"}}} {
+		if got := scanMCPListenerHeadersForDLP(t.Context(), headers, sc, cfg); got == nil || got.header != "Mcp-Session-Id" || len(got.matches) == 0 {
+			t.Fatalf("session header escaped DLP with config %+v: %+v", cfg, got)
+		}
+	}
+}
+
 func TestScanRequest_ActionSetOnDLPMatch(t *testing.T) {
 	sc := testInputScanner(t)
 

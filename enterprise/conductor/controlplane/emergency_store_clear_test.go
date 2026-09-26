@@ -176,6 +176,92 @@ func TestClearedRollbackAuthorizationCannotReplay(t *testing.T) {
 	}
 }
 
+func TestRollbackCounterFloorValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		floor rollbackCounterFloor
+	}{
+		{"missing org", rollbackCounterFloor{FleetID: "fleet", Counter: 1}},
+		{"missing fleet", rollbackCounterFloor{OrgID: "org", Counter: 1}},
+		{"zero counter", rollbackCounterFloor{OrgID: "org", FleetID: "fleet"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateRollbackCounterFloor(tc.floor); err == nil {
+				t.Fatal("invalid floor accepted")
+			}
+			if err := writeEmergencyState(filepath.Join(t.TempDir(), emergencyStateFileName), emergencyStateRecord{
+				RollbackCounters: []rollbackCounterFloor{tc.floor},
+			}); err == nil {
+				t.Fatal("invalid floor written")
+			}
+			data, err := json.Marshal(emergencyStateRecord{RollbackCounters: []rollbackCounterFloor{tc.floor}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, emergencyStateFileName), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenFileEmergencyStore(dir); err == nil {
+				t.Fatal("invalid persisted floor loaded")
+			}
+		})
+	}
+}
+
+func TestRollbackCounterFloorDuplicateScopeRejected(t *testing.T) {
+	floor := rollbackCounterFloor{OrgID: "org", FleetID: "fleet", Counter: 1}
+	data, err := json.Marshal(emergencyStateRecord{RollbackCounters: []rollbackCounterFloor{floor, floor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, emergencyStateFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("duplicate floor error=%v", err)
+	}
+}
+
+func TestClearRollbackAuthorizationUpdatesCounterFloor(t *testing.T) {
+	store, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		id      string
+		counter uint64
+		want    uint64
+	}{
+		{"first", 100, 100},
+		{"lower", 99, 100},
+		{"higher", 101, 101},
+	} {
+		auth := signedTestRollback(t, tc.id, now, tc.counter)
+		// Seed a record directly so lower counter handling on clear can be tested.
+		hash, err := auth.CanonicalHash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := StoredRollbackAuthorization{Authorization: auth, AuthorizationHash: hash, PublishedAt: now}
+		store.rollbackHashes[hash] = record
+		store.rollbackAuthIDMap[tc.id] = hash
+		store.rollbacks = append(store.rollbacks, record)
+		if cleared, err := store.ClearRollbackAuthorization(t.Context(), tc.id); err != nil || !cleared {
+			t.Fatalf("clear %s: cleared=%v err=%v", tc.id, cleared, err)
+		}
+		if got, ok := store.maxRollbackCounterForOrgFleetLocked(auth.OrgID, auth.FleetID); !ok || got != tc.want {
+			t.Fatalf("floor after %s=%d, %v; want %d", tc.id, got, ok, tc.want)
+		}
+	}
+	store.rollbackAuthIDMap["orphan"] = "missing-hash"
+	if cleared, err := store.ClearRollbackAuthorization(t.Context(), "orphan"); cleared || !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("orphan clear: cleared=%v err=%v", cleared, err)
+	}
+}
+
 // TestClearRollbackAuthorization_RestoresStateOnWriteFailure proves the
 // in-memory state is left intact (matching disk) when the durable write fails
 // mid-clear, so a failed clear cannot silently stop an authorization from

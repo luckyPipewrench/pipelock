@@ -55,12 +55,17 @@ func viewCmd() *cobra.Command {
 			if control {
 				mode = "control"
 			}
-			return runContainView(cmd.Context(), socket, viewerControlSocket, mode, uint32(os.Geteuid()), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runContainView(cmd.Context(), socket, viewerControlSocket, mode, currentViewerUID(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&control, "control", false, "allow keyboard and pointer control")
 	cmd.Flags().StringVar(&socket, "socket", "", "local Unix socket for the VNC client")
 	return cmd
+}
+
+func currentViewerUID() uint32 {
+	// Linux uid_t is uint32; Geteuid returns that nonnegative value as an int.
+	return uint32(os.Geteuid()) //nolint:gosec // Linux uid_t fits uint32.
 }
 
 func runContainView(ctx context.Context, socketPath, controlPath, mode string, uid uint32, out, errOut io.Writer) error {
@@ -137,7 +142,9 @@ func removeStaleViewSocket(path string, uid uint32) error {
 	if !ok || owner != uid {
 		return errors.New("viewer socket is not owned by the caller")
 	}
-	active, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+	probeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	active, dialErr := (&net.Dialer{}).DialContext(probeCtx, "unix", path)
 	if dialErr == nil {
 		_ = active.Close()
 		return errors.New("viewer socket is already active")

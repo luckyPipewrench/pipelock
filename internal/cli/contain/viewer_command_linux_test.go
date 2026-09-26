@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,10 +21,10 @@ func TestViewerControlProtocolAndPeer(t *testing.T) {
 		name, mode, response string
 		uid                  uint32
 	}{
-		{"view", "view\n", "ok\n", uint32(os.Geteuid())},
-		{"control", "control\n", "ok\n", uint32(os.Geteuid())},
-		{"unknown mode", "other\n", "denied\n", uint32(os.Geteuid())},
-		{"wrong peer", "view\n", "denied\n", uint32(os.Geteuid() + 1)},
+		{"view", "view\n", "ok\n", currentViewerUID()},
+		{"control", "control\n", "ok\n", currentViewerUID()},
+		{"unknown mode", "other\n", "denied\n", currentViewerUID()},
+		{"wrong peer", "view\n", "denied\n", currentViewerUID() + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "control.sock")

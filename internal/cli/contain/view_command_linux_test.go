@@ -59,7 +59,7 @@ func TestContainViewRelayAndBusy(t *testing.T) {
 			stderr := viewSignalWriter{lines: make(chan string, 4)}
 			done := make(chan error, 1)
 			go func() {
-				done <- runContainView(ctx, localPath, controlPath, tc.mode, uint32(os.Geteuid()), stdout, stderr)
+				done <- runContainView(ctx, localPath, controlPath, tc.mode, currentViewerUID(), stdout, stderr)
 			}()
 			select {
 			case path := <-stdout.lines:
@@ -120,7 +120,7 @@ func TestContainViewRejectsWrongLocalPeer(t *testing.T) {
 	errors := viewSignalWriter{lines: make(chan string, 4)}
 	done := make(chan error, 1)
 	go func() {
-		done <- runContainView(ctx, path, filepath.Join(root, "absent.sock"), "view", uint32(os.Geteuid()+1), out, errors)
+		done <- runContainView(ctx, path, filepath.Join(root, "absent.sock"), "view", currentViewerUID()+1, out, errors)
 	}()
 	<-out.lines
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -154,14 +154,14 @@ func TestContainViewStaleSocketAndSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
-	if err := removeStaleViewSocket(path, uint32(os.Geteuid())); err == nil || !strings.Contains(err.Error(), "already active") {
+	if err := removeStaleViewSocket(path, currentViewerUID()); err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("active socket = %v", err)
 	}
 	_ = ln.Close()
-	if err := removeStaleViewSocket(path, uint32(os.Geteuid()+1)); err == nil || !strings.Contains(err.Error(), "not owned") {
+	if err := removeStaleViewSocket(path, currentViewerUID()+1); err == nil || !strings.Contains(err.Error(), "not owned") {
 		t.Fatalf("wrong owner = %v", err)
 	}
-	if err := removeStaleViewSocket(path, uint32(os.Geteuid())); err != nil {
+	if err := removeStaleViewSocket(path, currentViewerUID()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
@@ -170,7 +170,7 @@ func TestContainViewStaleSocketAndSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "target"), path); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeStaleViewSocket(path, uint32(os.Geteuid())); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if err := removeStaleViewSocket(path, currentViewerUID()); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("symlink = %v", err)
 	}
 	if _, err := os.Lstat(path); err != nil {
@@ -182,7 +182,7 @@ func TestContainViewStaleSocketAndSymlink(t *testing.T) {
 	if err := os.WriteFile(path, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeStaleViewSocket(path, uint32(os.Geteuid())); err == nil || !strings.Contains(err.Error(), "not a socket") {
+	if err := removeStaleViewSocket(path, currentViewerUID()); err == nil || !strings.Contains(err.Error(), "not a socket") {
 		t.Fatalf("regular file = %v", err)
 	}
 }

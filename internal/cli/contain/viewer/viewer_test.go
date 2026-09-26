@@ -70,7 +70,7 @@ func TestViewerModesAndLease(t *testing.T) {
 				_ = server.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
 				if _, err := server.Read(make([]byte, 1)); err == nil {
 					t.Fatal("view mode forwarded key input")
-				} else if e, ok := err.(net.Error); !ok || !e.Timeout() {
+				} else if !isTimeout(err) {
 					t.Fatalf("view mode read: %v", err)
 				}
 			}
@@ -214,7 +214,7 @@ func TestViewerFilterDisplayMessagesAndInput(t *testing.T) {
 					_ = server.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
 					if _, err := server.Read(make([]byte, 1)); err == nil {
 						t.Fatalf("message %d unexpectedly forwarded", i)
-					} else if e, ok := err.(net.Error); !ok || !e.Timeout() {
+					} else if !isTimeout(err) {
 						t.Fatalf("message %d read: %v", i, err)
 					}
 				}
@@ -223,6 +223,11 @@ func TestViewerFilterDisplayMessagesAndInput(t *testing.T) {
 			<-done
 		})
 	}
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func TestViewerLeaseRenewsWhileConnected(t *testing.T) {

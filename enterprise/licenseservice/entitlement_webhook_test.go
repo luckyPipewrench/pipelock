@@ -9,7 +9,42 @@ package licenseservice
 import (
 	"errors"
 	"testing"
+	"time"
 )
+
+func TestTerminalWebhookRevocationFailureLeavesDeliveryRetryable(t *testing.T) {
+	ts := newTestSetup(t)
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseID = "lic_terminal_test"
+	expires := time.Now().Add(time.Hour)
+	existing.LastLicenseExpiresAt = &expires
+	if err := ts.db.Upsert(t.Context(), existing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.db.db.ExecContext(t.Context(), "CREATE TRIGGER fail_terminal_revocation BEFORE INSERT ON license_revocations BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END"); err != nil {
+		t.Fatal(err)
+	}
+	ended := *existing
+	ended.Status = statusCanceled
+	const msgID = "msg_terminal_revocation_failure"
+	if err := ts.handler.handleEnded(t.Context(), &ended, existing, EventSubscriptionCanceled, msgID); err == nil {
+		t.Fatal("terminal webhook accepted failed revocation")
+	}
+	committed, err := ts.db.WebhookCommitted(t.Context(), msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed {
+		t.Fatal("delivery committed before revocation")
+	}
+	got, err := ts.db.GetBySubscriptionID(t.Context(), testSubscriptionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusActive {
+		t.Fatalf("status = %q after failed revocation, want active", got.Status)
+	}
+}
 
 // UpsertWithWebhook is the atomic path for subscription events that change
 // entitlement state without minting a token. The entitlement row and the

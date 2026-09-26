@@ -825,10 +825,7 @@ func (h *WebhookHandler) regenerateToken(ent *Entitlement) (string, error) {
 }
 
 // handleEnded processes a canceled/revoked/unpaid subscription. The terminal
-// entitlement state and the webhook delivery marker are persisted in one
-// transaction, before any non-idempotent side effect, so a crash between them
-// cannot leave the subscription ended while the marker is absent and a Polar
-// redelivery reprocesses the same terminal event.
+// entitlement state, revocations, and delivery marker are persisted together.
 func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, existing *Entitlement, eventType, msgID string) error {
 	// Clear the refresh schedule.
 	ent.NextRefreshAt = nil
@@ -848,19 +845,18 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 		ent.LastDeliveryAttemptAt = existing.LastDeliveryAttemptAt
 	}
 
-	// Upsert the entitlement to record the ended status, committing the webhook
-	// marker in the same transaction when this came from a delivery.
-	if err := h.db.UpsertWithWebhook(ctx, ent, msgID, eventType); err != nil {
+	lastLicenseID := ""
+	if existing != nil {
+		lastLicenseID = existing.LastLicenseID
+	}
+	revoked, err := h.db.endWithWebhook(ctx, ent, msgID, eventType, lastLicenseID, time.Now().UTC())
+	if err != nil {
 		if !errors.Is(err, ErrWebhookAlreadyCommitted) {
-			return fmt.Errorf("persist ended entitlement: %w", err)
+			return fmt.Errorf("persist ended entitlement and revocations: %w", err)
 		}
 	}
-
-	if existing != nil {
-		reason := "subscription_" + ent.Status
-		if err := h.revokeSubscriptionLicenses(ctx, ent, existing, reason); err != nil {
-			return err
-		}
+	for _, id := range revoked {
+		_ = h.ledger.LogLicenseRevoked(ent.SubscriptionID, ent.CustomerEmail, id, "subscription_"+ent.Status)
 	}
 
 	// Send cancellation email if we have a last-issued license.
@@ -887,44 +883,6 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 		Str("status", ent.Status).
 		Msg("subscription ended")
 
-	return nil
-}
-
-func (h *WebhookHandler) revokeSubscriptionLicenses(ctx context.Context, ent, existing *Entitlement, reason string) error {
-	now := time.Now().UTC()
-	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, ent.SubscriptionID, now)
-	if err != nil {
-		_ = h.ledger.LogError(ent.SubscriptionID, "list license issuances for revocation", err)
-		return fmt.Errorf("list license issuances for revocation: %w", err)
-	}
-	if existing.LastLicenseID != "" {
-		found := false
-		for _, issuance := range issuances {
-			if issuance.LicenseID == existing.LastLicenseID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			issuances = append(issuances, LicenseIssuance{
-				LicenseID:      existing.LastLicenseID,
-				SubscriptionID: ent.SubscriptionID,
-				IssuedAt:       now,
-			})
-		}
-	}
-	for _, issuance := range issuances {
-		if err := h.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
-			LicenseID:      issuance.LicenseID,
-			SubscriptionID: ent.SubscriptionID,
-			Reason:         reason,
-			RevokedAt:      now,
-		}); err != nil {
-			_ = h.ledger.LogError(ent.SubscriptionID, "record license revocation", err)
-			return fmt.Errorf("record license revocation: %w", err)
-		}
-		_ = h.ledger.LogLicenseRevoked(ent.SubscriptionID, ent.CustomerEmail, issuance.LicenseID, reason)
-	}
 	return nil
 }
 

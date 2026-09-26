@@ -3317,6 +3317,35 @@ func TestForwardProxy_GzipContentEncoding_Blocked(t *testing.T) {
 	}
 }
 
+func TestForwardProxy_RepeatedContentEncodingBlocked(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+	})
+	defer cleanup()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/test", strings.NewReader("encoded body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Add("Content-Encoding", "identity")
+	req.Header.Add("Content-Encoding", "gzip")
+	client := &http.Client{Transport: &http.Transport{Proxy: func(_ *http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+	}}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("repeated encoding should block, got %d", resp.StatusCode)
+	}
+}
+
 func TestForwardProxy_OctetStreamBypass_Blocked(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

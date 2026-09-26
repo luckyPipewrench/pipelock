@@ -85,11 +85,17 @@ manifest digest cannot.
 The chart itself is published as an OCI artifact next to the images, at
 `ghcr.io/luckypipewrench/charts/pipelock`. From v3.6.0 on it carries the same
 kind of provenance attestation as the container images above; earlier charts
-have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step. Verify
-the chart, keep the digest the attestation names, and confirm the archive you
-pull has that same digest:
+have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step, and
+look its commit up again, because the source check must name the commit of the
+release you are verifying. Verify the chart, keep the digest the attestation
+names, and confirm the archive you pull has that same digest:
 
 ```bash
+PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
+  "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
+  | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
+test -n "$PIPELOCK_COMMIT"
+
 PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
   "oci://ghcr.io/luckypipewrench/charts/pipelock:${PIPELOCK_RELEASE#v}" \
   --repo luckyPipewrench/pipelock \

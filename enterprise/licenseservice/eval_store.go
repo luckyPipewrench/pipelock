@@ -456,6 +456,12 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 	if p.Entitlement == nil || p.EvalOrder == nil {
 		return errors.New("eval mint params incomplete")
 	}
+	// The active-eval query compares emails exactly, so the order email must
+	// already be in canonical form or an existing eval could be missed.
+	canonicalEmail, err := NormalizeEmail(p.EvalOrder.NormalizedEmail)
+	if err != nil || canonicalEmail != p.EvalOrder.NormalizedEmail {
+		return errors.New("eval mint order email is not canonical")
+	}
 	// The active-eval limit is checked against the order's normalized email,
 	// so the entitlement being written must carry that same email.
 	if p.Entitlement.CustomerEmail != p.EvalOrder.NormalizedEmail {

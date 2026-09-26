@@ -51,6 +51,15 @@ func TestEndWithWebhookFailurePaths(t *testing.T) {
 			}
 			if tt.name != "duplicate delivery" {
 				assertWebhookUncommitted(t, db, tt.msgID)
+				if tt.name == "entitlement storage failure" {
+					var revoked int
+					if err := db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM license_revocations WHERE license_id = ?`, "lic_last").Scan(&revoked); err != nil {
+						t.Fatal(err)
+					}
+					if revoked != 0 {
+						t.Fatalf("entitlement failure left %d lic_last revocations, want 0", revoked)
+					}
+				}
 			} else {
 				// A rejected duplicate must leave the committed state untouched.
 				got, err := db.GetBySubscriptionID(t.Context(), testSubscriptionID)
@@ -124,4 +133,23 @@ func TestFulfillEvalMintRejectsMismatchedEmails(t *testing.T) {
 	if got, err := db.GetBySubscriptionID(t.Context(), testSubscriptionID); err != nil || got != nil {
 		t.Fatalf("entitlement written despite refusal: %+v, %v", got, err)
 	}
+	assertWebhookUncommitted(t, db, "msg_mismatch")
+}
+
+// The active-eval query compares emails exactly, so a noncanonical order
+// email must be refused before it can miss an existing eval.
+func TestFulfillEvalMintRejectsNoncanonicalEmail(t *testing.T) {
+	db := openTestDB(t)
+	ent := testEntitlement(testSubscriptionID)
+	ent.CustomerEmail = "Buyer@Vendor.example"
+	err := db.FulfillEvalMint(t.Context(), EvalMintParams{
+		Entitlement:  ent,
+		EvalOrder:    &EvalOrder{OrderID: "ord_case", NormalizedEmail: "Buyer@Vendor.example"},
+		WebhookMsgID: "msg_case",
+		EventType:    "order.paid",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not canonical") {
+		t.Fatalf("error = %v, want noncanonical email refusal", err)
+	}
+	assertWebhookUncommitted(t, db, "msg_case")
 }

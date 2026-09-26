@@ -185,140 +185,137 @@ func ScanGenericSSEStreamWithOptions(
 			return findingErr
 		}
 
-		if len(event) > 0 {
-			droppedDLP := newSSEDLPDropRecorder(opts)
-			// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
-			// would be silently mapped to U+FFFD by Go's string(...) view
-			// while the original bytes still get re-emitted to the client,
-			// creating a parser-differential where the scanner regexes
-			// inspect different bytes than the client receives. Fail
-			// closed in scan-enabled mode (matching the oversize-event
-			// pattern: warn-mode drops the event and continues, block
-			// mode terminates the stream). Passthrough mode (cfg disabled
-			// or nil) does not enter this branch and forwards bytes
-			// verbatim, which is the correct behavior for opt-out.
-			if !utf8.Valid(event) {
-				findingErr := fmt.Errorf("%w: %w (size=%d)",
-					ErrSSEStreamFinding, ErrSSEInvalidUTF8, len(event))
-				if cfg.Action == config.ActionWarn {
-					if opts.OnFinding != nil {
-						opts.OnFinding(findingErr)
-					}
-					continue
+		droppedDLP := newSSEDLPDropRecorder(opts)
+		// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
+		// would be silently mapped to U+FFFD by Go's string(...) view
+		// while the original bytes still get re-emitted to the client,
+		// creating a parser-differential where the scanner regexes
+		// inspect different bytes than the client receives. Fail
+		// closed in scan-enabled mode (matching the oversize-event
+		// pattern: warn-mode drops the event and continues, block
+		// mode terminates the stream). Passthrough mode (cfg disabled
+		// or nil) does not enter this branch and forwards bytes
+		// verbatim, which is the correct behavior for opt-out.
+		if !utf8.Valid(event) {
+			findingErr := fmt.Errorf("%w: %w (size=%d)",
+				ErrSSEStreamFinding, ErrSSEInvalidUTF8, len(event))
+			if cfg.Action == config.ActionWarn {
+				if opts.OnFinding != nil {
+					opts.OnFinding(findingErr)
 				}
+				continue
+			}
+			return findingErr
+		}
+
+		// canonicalSSEEventText includes event:/id:/retry: metadata
+		// alongside the data: payload so scanning sees the full event
+		// the client would observe. Without this, DLP content or
+		// prompt-injection content placed in the metadata fields
+		// rides through unscanned (external review finding #2).
+		text := canonicalSSEEventText(event, reader)
+
+		clearDLPTailAfterCurrent := false
+		clearInjectionTailAfterCurrent := false
+		skipTailInjection := false
+		skipTailDLP := false
+		injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+		observedCore.record(injectResult)
+		if injectResult.Failed() {
+			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
+		}
+		if !injectResult.Clean {
+			findingErr := fmt.Errorf("%w: injection: %s",
+				ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
+			if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+				if opts.OnFinding != nil {
+					opts.OnFinding(findingErr)
+				}
+				clearInjectionTailAfterCurrent = true
+				skipTailInjection = true
+			} else {
 				return findingErr
 			}
+		}
 
-			// canonicalSSEEventText includes event:/id:/retry: metadata
-			// alongside the data: payload so scanning sees the full event
-			// the client would observe. Without this, DLP content or
-			// prompt-injection content placed in the metadata fields
-			// rides through unscanned (external review finding #2).
-			text := canonicalSSEEventText(event, reader)
-
-			clearDLPTailAfterCurrent := false
-			clearInjectionTailAfterCurrent := false
-			skipTailInjection := false
-			skipTailDLP := false
-			injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
-			observedCore.record(injectResult)
-			if injectResult.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
+		dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+		droppedDLP.record(droppedMatches)
+		if dlpResult.Clean {
+			// Keep scanning the joined data payload too. The canonical
+			// wire-shaped text preserves per-line data: prefixes for
+			// metadata visibility, while the joined payload catches
+			// split-secret patterns that are easier to recognize before
+			// those prefixes are reintroduced.
+			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+			droppedDLP.record(droppedMatches)
+		}
+		if !dlpResult.Clean {
+			findingErr := fmt.Errorf("%w: dlp: %s",
+				ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+			if cfg.Action == config.ActionWarn {
+				if opts.OnFinding != nil {
+					opts.OnFinding(findingErr)
+				}
+				clearDLPTailAfterCurrent = true
+				skipTailDLP = true
+			} else {
+				return findingErr
 			}
-			if !injectResult.Clean {
-				findingErr := fmt.Errorf("%w: injection: %s",
-					ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
+		}
+
+		resetInjectionTail := false
+		if !skipTailInjection && injectionTail != "" {
+			combined := injectionTail + " " + string(event)
+			tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
+			observedCore.record(tailInjectResult)
+			if tailInjectResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
+			}
+			if !tailInjectResult.Clean {
+				findingErr := fmt.Errorf("%w: cross-event injection: %s",
+					ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					clearInjectionTailAfterCurrent = true
-					skipTailInjection = true
+					resetInjectionTail = true
 				} else {
 					return findingErr
 				}
 			}
+		}
 
-			dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+		resetDLPTail := false
+		if !skipTailDLP && tail != "" {
+			combined := tail + string(event)
+			_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
+			droppedDLP.markSeen(priorTailDrops)
+			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
 			droppedDLP.record(droppedMatches)
-			if dlpResult.Clean {
-				// Keep scanning the joined data payload too. The canonical
-				// wire-shaped text preserves per-line data: prefixes for
-				// metadata visibility, while the joined payload catches
-				// split-secret patterns that are easier to recognize before
-				// those prefixes are reintroduced.
-				dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
-				droppedDLP.record(droppedMatches)
-			}
-			if !dlpResult.Clean {
-				findingErr := fmt.Errorf("%w: dlp: %s",
-					ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+			if !tailDLPResult.Clean {
+				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
+					ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
 				if cfg.Action == config.ActionWarn {
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					clearDLPTailAfterCurrent = true
-					skipTailDLP = true
+					resetDLPTail = true
 				} else {
 					return findingErr
 				}
 			}
-
-			resetInjectionTail := false
-			if !skipTailInjection && injectionTail != "" {
-				combined := injectionTail + " " + string(event)
-				tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
-				observedCore.record(tailInjectResult)
-				if tailInjectResult.Failed() {
-					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
-				}
-				if !tailInjectResult.Clean {
-					findingErr := fmt.Errorf("%w: cross-event injection: %s",
-						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
-					if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-						if opts.OnFinding != nil {
-							opts.OnFinding(findingErr)
-						}
-						resetInjectionTail = true
-					} else {
-						return findingErr
-					}
-				}
-			}
-
-			resetDLPTail := false
-			if !skipTailDLP && tail != "" {
-				combined := tail + string(event)
-				_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
-				droppedDLP.markSeen(priorTailDrops)
-				tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
-				droppedDLP.record(droppedMatches)
-				if !tailDLPResult.Clean {
-					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
-						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
-					if cfg.Action == config.ActionWarn {
-						if opts.OnFinding != nil {
-							opts.OnFinding(findingErr)
-						}
-						resetDLPTail = true
-					} else {
-						return findingErr
-					}
-				}
-			}
-
-			if clearDLPTailAfterCurrent {
-				tail = ""
-			} else {
-				tail = advanceSSERollingTail(tail, event, resetDLPTail, "")
-			}
-			if clearInjectionTailAfterCurrent {
-				injectionTail = ""
-			} else {
-				injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail, " ")
-			}
 		}
 
+		if clearDLPTailAfterCurrent {
+			tail = ""
+		} else {
+			tail = advanceSSERollingTail(tail, event, resetDLPTail, "")
+		}
+		if clearInjectionTailAfterCurrent {
+			injectionTail = ""
+		} else {
+			injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail, " ")
+		}
 		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the
 			// reverse-proxy hijack was closed by the client). Returning

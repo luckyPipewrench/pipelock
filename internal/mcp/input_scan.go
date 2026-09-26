@@ -443,8 +443,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		}
 	}
 
-	// Extract all strings (keys + values) from params.
-	extracted := extract.AllStringsFromJSONResult(rpc.Params)
+	// The forwarded envelope can contain extension fields outside params.
+	// Inspect all of it before treating the request as clean.
+	extracted := extract.AllStringsFromJSONResult(trimmed)
 	if extracted.Truncated {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
@@ -469,7 +470,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	dlpResult := sc.ScanTextForDLP(ctx, joined)
 
 	// Catch secrets split across multiple JSON fields.
-	dlpResult = scanSplitSecret(ctx, rpc.Params, joined, sc, dlpResult)
+	dlpResult = scanSplitSecret(ctx, trimmed, joined, sc, dlpResult)
 
 	// Scan each extracted string individually for encoded secrets (base64,
 	// hex). The joined string is not valid base64/hex as a unit, so encoding
@@ -479,6 +480,14 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			if r := sc.ScanTextForDLP(ctx, s); !r.Clean {
 				dlpResult = r
 			}
+		}
+	}
+	if dlpResult.Clean {
+		dlpResult = sc.ScanTextForDLP(ctx, string(trimmed))
+	}
+	if dlpResult.Clean {
+		if unescaped := unescapeJSONUnicode(string(trimmed)); unescaped != string(trimmed) {
+			dlpResult = sc.ScanTextForDLP(ctx, unescaped)
 		}
 	}
 

@@ -87,7 +87,7 @@ func TestViewerProvisionFailuresAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, path := range []string{service, socket} {
-			body, err := os.ReadFile(path)
+			body, err := os.ReadFile(filepath.Clean(path))
 			if err != nil || string(body) != old {
 				t.Fatalf("restored %s = %q, %v", path, body, err)
 			}

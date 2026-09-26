@@ -217,10 +217,14 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if err := os.Chmod(rfbPath, 0o660); err != nil {
-		t.Fatal(err)
+	wideStat := func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil || path != rfbPath {
+			return info, err
+		}
+		return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o660}, nil
 	}
-	base := probeEnv{configPath: cfgPath, agentHome: filepath.Join(root, "agent"), proxyUserName: "proxy", lstat: os.Lstat, runCmd: func(context.Context, string, ...string) (string, int, error) {
+	base := probeEnv{configPath: cfgPath, agentHome: filepath.Join(root, "agent"), proxyUserName: "proxy", lstat: wideStat, runCmd: func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
 	}}
 	if status, detail := probeViewerRFBAccess(context.Background(), &base); status != statusPass || !strings.Contains(detail, "matches") {

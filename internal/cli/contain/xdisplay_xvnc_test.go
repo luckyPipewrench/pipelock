@@ -510,10 +510,10 @@ func TestXvncProvisionReportsFailedControl(t *testing.T) {
 			realStat, realLstat := env.stat, env.lstat
 			env.stat = func(path string) (os.FileInfo, error) {
 				if path == xPath {
-					return fakeFileInfo{mode: os.ModeSocket | managedXSocketMode, sys: fakeFileSysWithUID(uint32(os.Getuid()))}, nil
+					return fakeFileInfo{mode: os.ModeSocket | managedXSocketMode, sys: fakeFileSysWithUID(currentViewerUID())}, nil
 				}
 				if path == rfbPath {
-					return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithUID(uint32(os.Getuid()))}, nil
+					return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithUID(currentViewerUID())}, nil
 				}
 				return realStat(path)
 			}
@@ -642,9 +642,15 @@ func TestDoctorViewerChecksReportConfiguredRemedies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if err := os.Chmod(rfb, 0o660); err != nil {
-		t.Fatal(err)
+	realStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		info, err := realStat(path)
+		if err != nil || path != rfb {
+			return info, err
+		}
+		return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o660}, nil
 	}
+	env.lstat = env.stat
 	env.proxyUserName = "proxy"
 	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
@@ -723,7 +729,7 @@ func TestProbeAgentDisplayRFBViewerModeAndBackend(t *testing.T) {
 	}
 	env.readFile = os.ReadFile
 	env.stat = func(string) (os.FileInfo, error) {
-		return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithUID(uint32(os.Getuid()))}, nil
+		return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithUID(currentViewerUID())}, nil
 	}
 	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil

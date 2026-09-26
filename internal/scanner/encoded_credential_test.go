@@ -436,7 +436,11 @@ func TestEntityEscapedThenEncodedKey(t *testing.T) {
 		mutate func(*config.Config)
 	}{
 		{"configured DLP", func(*config.Config) {}},
-		{"core floor only", func(c *config.Config) { c.DLP.Patterns = nil }},
+		{"core floor only", func(c *config.Config) {
+			c.DLP.Patterns = nil
+			off := false
+			c.DLP.IncludeDefaults = &off
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
@@ -447,6 +451,9 @@ func TestEntityEscapedThenEncodedKey(t *testing.T) {
 			r := s.Scan(context.Background(), "https://api.vendor.example/x?d="+url.QueryEscape(value))
 			if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
 				t.Fatalf("allowed=%v scanner=%q, want a DLP block", r.Allowed, r.Scanner)
+			}
+			if tc.name == "core floor only" && r.Scanner != ScannerCoreDLP {
+				t.Fatalf("scanner=%q, want the core floor with no configured patterns", r.Scanner)
 			}
 		})
 	}

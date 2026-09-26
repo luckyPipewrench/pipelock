@@ -80,6 +80,18 @@ func TestParseDNSQueryEntryRules(t *testing.T) {
 	if _, ok := parseDNSQuery("dns=" + encoded); !ok {
 		t.Fatal("premise: the canonical query parses")
 	}
+	// A label whose bytes encode to '+' and '/' in the standard alphabet, so
+	// the standard and URL-safe encodings of one valid message differ only in
+	// alphabet. RFC 8484 requires the URL-safe one.
+	altWire := dnsQueryWire(t, []string{"\xfb\xff", "example", "test"})
+	altURL := base64.RawURLEncoding.EncodeToString(altWire)
+	altStd := base64.RawStdEncoding.EncodeToString(altWire)
+	if altStd == altURL || !strings.ContainsAny(altStd, "+/") {
+		t.Fatalf("premise: standard encoding %q must differ from URL-safe %q", altStd, altURL)
+	}
+	if _, ok := parseDNSQuery("dns=" + altURL); !ok {
+		t.Fatal("premise: the URL-safe encoding of the same message parses")
+	}
 	for name, raw := range map[string]string{
 		"empty":             "",
 		"empty pair":        "dns=" + encoded + "&",
@@ -87,7 +99,7 @@ func TestParseDNSQueryEntryRules(t *testing.T) {
 		"other parameter":   "dns=" + encoded + "&ct=x",
 		"bad escape":        "dns=%zz",
 		"empty value":       "dns=",
-		"standard base64":   "dns=" + strings.NewReplacer("-", "+", "_", "/").Replace(encoded) + "+",
+		"standard base64":   "dns=" + url.QueryEscape(altStd),
 		"non-canonical b64": "dns=" + encoded[:len(encoded)-1] + "B",
 	} {
 		if _, ok := parseDNSQuery(raw); ok {

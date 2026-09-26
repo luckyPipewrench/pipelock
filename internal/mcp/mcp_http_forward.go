@@ -298,6 +298,12 @@ func RunHTTPProxy(
 					SessionID:         deferredReq.SessionID,
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
+				BeforeAllow: func() (func(), bool) {
+					if fwdOpts.KillSwitch == nil {
+						return func() {}, true
+					}
+					return fwdOpts.KillSwitch.ClaimDeferredSend()
+				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false
 					if res.FinalDecision == config.ActionAllow {

@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -45,6 +46,153 @@ func deferApprovalPolicy(profile config.DeferResolverProfile) *policy.Config {
 				},
 			},
 		},
+	}
+}
+
+func TestDeferredStdioReleaseChecksLiveKillSwitch(t *testing.T) {
+	testDeferredStdioKillSwitchRelease(t, false)
+}
+
+func TestDeferredStdioConcurrentActivation(t *testing.T) {
+	testDeferredStdioKillSwitchRelease(t, true)
+}
+
+func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	ks := killswitch.New(config.Defaults())
+	inputR, inputW := io.Pipe()
+	var upstream, logBuf syncBuffer
+	blocked := make(chan BlockedRequest, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
+			config.ActionWarn, config.ActionBlock, blocked, nil, nil,
+			MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter,
+				Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+			})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
+	held := manager.Snapshot()[0]
+	activatedBeforeResolve := !concurrent
+	if concurrent {
+		start := make(chan struct{})
+		activated := make(chan struct{})
+		resolved := make(chan error, 1)
+		order := make(chan bool, 1)
+		go func() { <-start; ks.SetAPI(true); close(activated) }()
+		go func() {
+			<-start
+			select {
+			case <-activated:
+				order <- true
+			default:
+				order <- false
+			}
+			resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext)
+		}()
+		close(start)
+		<-activated
+		if err := <-resolved; err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+		activatedBeforeResolve = <-order
+	} else {
+		ks.SetAPI(true)
+		if err := manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+	}
+	if got := upstream.String(); got != "" && activatedBeforeResolve {
+		t.Errorf("deferred call reached stdio upstream after activation: %s", got)
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
+}
+
+func TestDeferredHTTPReleaseChecksLiveKillSwitch(t *testing.T) {
+	testDeferredHTTPKillSwitchRelease(t, false)
+}
+
+func TestDeferredHTTPConcurrentActivation(t *testing.T) {
+	testDeferredHTTPKillSwitchRelease(t, true)
+}
+
+func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	ks := killswitch.New(config.Defaults())
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil,
+			MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter, KillSwitch: ks})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
+	held := manager.Snapshot()[0]
+	activatedBeforeResolve := !concurrent
+	if concurrent {
+		start := make(chan struct{})
+		activated := make(chan struct{})
+		resolved := make(chan error, 1)
+		order := make(chan bool, 1)
+		go func() { <-start; ks.SetAPI(true); close(activated) }()
+		go func() {
+			<-start
+			select {
+			case <-activated:
+				order <- true
+			default:
+				order <- false
+			}
+			resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext)
+		}()
+		close(start)
+		<-activated
+		if err := <-resolved; err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+		activatedBeforeResolve = <-order
+	} else {
+		ks.SetAPI(true)
+		if err := manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 0 && activatedBeforeResolve {
+		t.Errorf("deferred call reached HTTP upstream after activation: %d", got)
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy returned error: %v", err)
 	}
 }
 

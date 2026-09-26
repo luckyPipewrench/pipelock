@@ -1414,6 +1414,12 @@ func ForwardScannedInput(
 					SessionID:         receiptSessionID,
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
+				BeforeAllow: func() (func(), bool) {
+					if opts.KillSwitch == nil {
+						return func() {}, true
+					}
+					return opts.KillSwitch.ClaimDeferredSend()
+				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false
 					if res.FinalDecision == config.ActionAllow {

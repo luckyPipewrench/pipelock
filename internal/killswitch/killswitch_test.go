@@ -39,6 +39,42 @@ func testConfig() *config.Config {
 	return cfg
 }
 
+func TestDeferredSendClaimOrdersActivation(t *testing.T) {
+	for name, activate := range map[string]func(*Controller){
+		"api":           func(c *Controller) { c.SetAPI(true) },
+		"signal":        func(c *Controller) { c.ToggleSignal() },
+		"remote":        func(c *Controller) { c.SetConductorRemote(true, "") },
+		"stale":         func(c *Controller) { c.SetConductorStale(true, "") },
+		"apply failure": func(c *Controller) { c.SetConductorApplyFailure(true, "") },
+		"reload": func(c *Controller) {
+			cfg := testConfig()
+			cfg.KillSwitch.Enabled = true
+			c.Reload(cfg)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := New(testConfig())
+			release, ok := c.ClaimDeferredSend()
+			if !ok || c.DeferredInFlight() != 1 {
+				t.Fatal("send claim was not recorded in flight")
+			}
+			done := make(chan struct{})
+			go func() { activate(c); close(done) }()
+			<-done
+			if _, ok := c.ClaimDeferredSend(); ok {
+				t.Fatal("send claimed after activation")
+			}
+			if c.DeferredInFlight() != 1 {
+				t.Fatal("activation lost an existing in-flight claim")
+			}
+			release()
+			if c.DeferredInFlight() != 0 {
+				t.Fatal("in-flight claim was not released")
+			}
+		})
+	}
+}
+
 func TestController_ConfigEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true

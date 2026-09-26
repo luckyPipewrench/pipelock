@@ -4683,7 +4683,9 @@ func TestInterceptTunnel_A2AHeaderScanningBlocked(t *testing.T) {
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
-	// A2A-Extensions header with a private IP URI triggers SSRF scanning.
+	// A metadata URI in A2A-Extensions must be denied. Generic header checks
+	// also inspect a single field line, so this proves the block, not which
+	// layer made it; the repeated-line tests isolate the A2A-Extensions scan.
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"https://"+addr+"/message:send", strings.NewReader(`{"method":"tasks/send"}`))
 	req.Header.Set("Content-Type", "application/a2a+json")
@@ -4692,11 +4694,8 @@ func TestInterceptTunnel_A2AHeaderScanningBlocked(t *testing.T) {
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
-	// Block mode with metadata IP in A2A-Extensions: expect 403 if the scanner
-	// detects it, or 200 if the header format doesn't trigger. Either way the
-	// A2A header scanning code path is exercised.
-	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 403 (blocked) or 200 (not detected), got unexpected code", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for a metadata URI in A2A-Extensions", resp.StatusCode)
 	}
 }
 

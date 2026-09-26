@@ -64,6 +64,7 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 	names := []string{
 		launchManifestFile,
 		orchestratorDelegationFile,
+		replayArchiveAuthorizationFile,
 		witnessFile,
 		redWitnessFile,
 		hostContainmentWitnessFile,
@@ -97,6 +98,17 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 				t.Fatal("VerifyRun passed after an artifact read failure")
 			}
 		})
+	}
+}
+
+func TestVerifyRunRejectsMissingRunDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	rep, err := VerifyRun(dir, "test-root")
+	if err == nil || !strings.Contains(err.Error(), "open run directory") {
+		t.Fatalf("VerifyRun report=%+v error=%v, want directory error", rep, err)
+	}
+	if rep.OK || rep.OrchestratorKey != "test-root" {
+		t.Fatalf("failure report = %+v", rep)
 	}
 }
 

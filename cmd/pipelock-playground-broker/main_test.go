@@ -2507,6 +2507,8 @@ func TestValidateAdminListenScope(t *testing.T) {
 		{name: "ula_rejected", listen: "[fd00::1]:9090", wantErr: true},
 		{name: "private_with_unsafe_ok", listen: "10.0.0.5:9090", unsafePublic: true},
 		{name: "localhost_ok", listen: "localhost:9090", wantErr: false},
+		{name: "hostname_with_unsafe_ok", listen: "admin.example:9090", unsafePublic: true, wantErr: false},
+		{name: "hostname_rejected", listen: "admin.example:9090", wantErr: true},
 		{name: "unspecified_rejected", listen: "0.0.0.0:9090", wantErr: true},
 		{name: "unspecified_v6_rejected", listen: "[::]:9090", wantErr: true},
 		{name: "empty_host_rejected", listen: ":9090", wantErr: true},

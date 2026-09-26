@@ -2264,6 +2264,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		airlockCfg = &cfg.Airlock
 	}
 	var stagedSessionMgr *SessionManager
+	var reconfigureBaseline *SessionManager
 	if oldCfg != nil {
 		wasSessionProfilingEnabled := oldCfg.SessionProfiling.Enabled
 		isSessionProfilingEnabled := cfg.SessionProfiling.Enabled
@@ -2285,18 +2286,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 				stagedSessionMgr.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 			}
 		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
-			if sm := p.sessionMgrPtr.Load(); sm != nil {
-				if err := sm.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
-					p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-						fmt.Errorf("baseline reload failed, keeping old config: %w", err))
-					sc.Close()
-					if newEd != nil {
-						newEd.Close()
-					}
-					return false
-				}
-				sm.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
-			}
+			reconfigureBaseline = p.sessionMgrPtr.Load()
 		}
 	}
 	// Staging above may load keys and build evidence components. Keep that I/O
@@ -2342,6 +2332,20 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 			return false
 		}
+	}
+	// Keep the live baseline snapshot unchanged until the last fallible receipt
+	// operation succeeds. A failed reload must leave its old enforcement action.
+	if reconfigureBaseline != nil {
+		if err := reconfigureBaseline.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+		reconfigureBaseline.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 	}
 
 	// Publish both emitters now that staging has fully succeeded. The

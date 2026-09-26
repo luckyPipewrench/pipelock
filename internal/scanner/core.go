@@ -746,9 +746,9 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
+			// The floor sees the same decoded views configured DLP does, so an
+			// empty configured pattern list cannot reopen an encoding.
+			targets = append(targets, queryValueDecodedTargets(decoded)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -786,6 +786,16 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 
 	// Ordered query-value concatenation (catches secrets split across params).
 	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
+
+	// A DNS-over-HTTPS query is also read as the message it carries. Every
+	// name, record payload and fixed-width field, and their decodings, reach
+	// the floor, which configured exemptions never narrow.
+	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
+		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+		}
+	}
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.

@@ -4,6 +4,7 @@
 package rules
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -2657,13 +2658,24 @@ func TestRulesUpdate_AllWithFailures(t *testing.T) {
 	newData := []byte(secondVersionBundleYAML)
 	sig := ed25519.Sign(priv, newData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
+	recoveredData := []byte(strings.Replace(secondVersionBundleYAML, "name: test-bundle", "name: other-bundle", 1))
+	recoveredSig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, recoveredData)) + "\n"
+	var recovered atomic.Bool
 
 	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Serve the good bundle for test-bundle, 404 for other-bundle.
+		// The second source recovers after the first mixed update.
 		if strings.Contains(r.URL.Path, "other-bundle") {
-			http.NotFound(w, r)
+			if !recovered.Load() {
+				http.NotFound(w, r)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, ".sig") {
+				_, _ = w.Write([]byte(recoveredSig))
+				return
+			}
+			_, _ = w.Write(recoveredData)
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -2727,6 +2739,33 @@ func TestRulesUpdate_AllWithFailures(t *testing.T) {
 	if err := domrules.WriteLockFile(filepath.Join(otherDir, "bundle.lock"), otherLF); err != nil {
 		t.Fatalf("writing lock: %v", err)
 	}
+	failedBundleBefore, err := os.ReadFile(filepath.Clean(filepath.Join(otherDir, "bundle.yaml")))
+	if err != nil {
+		t.Fatalf("reading failed bundle before update: %v", err)
+	}
+	failedLockBefore, err := os.ReadFile(filepath.Clean(filepath.Join(otherDir, "bundle.lock")))
+	if err != nil {
+		t.Fatalf("reading failed lock before update: %v", err)
+	}
+
+	// A local bundle is intentionally skipped even when another update fails.
+	localName := "local-bundle"
+	localDir := filepath.Join(rulesDir, localName)
+	if err := os.MkdirAll(localDir, 0o750); err != nil {
+		t.Fatalf("creating local bundle directory: %v", err)
+	}
+	localData := []byte(strings.Replace(validBundleYAML, "name: test-bundle", "name: "+localName, 1))
+	if err := os.WriteFile(filepath.Join(localDir, "bundle.yaml"), localData, 0o600); err != nil {
+		t.Fatalf("writing local bundle: %v", err)
+	}
+	localLF := &domrules.LockFile{InstalledVersion: "2026.03.1", Source: "/local/bundle.yaml", Unsigned: true}
+	if err := domrules.WriteLockFile(filepath.Join(localDir, "bundle.lock"), localLF); err != nil {
+		t.Fatalf("writing local lock: %v", err)
+	}
+	localLockBefore, err := os.ReadFile(filepath.Clean(filepath.Join(localDir, "bundle.lock")))
+	if err != nil {
+		t.Fatalf("reading local lock before update: %v", err)
+	}
 
 	cmd := testRootCmd()
 	buf := &strings.Builder{}
@@ -2745,6 +2784,115 @@ func TestRulesUpdate_AllWithFailures(t *testing.T) {
 	// The error output should mention the failing bundle.
 	if !strings.Contains(errBuf.String(), otherName) {
 		t.Errorf("expected failing bundle name in stderr, got: %q", errBuf.String())
+	}
+	if !strings.Contains(buf.String(), "Updated "+testBundleName+": v2026.03.1 -> v2026.04.1") {
+		t.Errorf("successful update missing from stdout: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "skipping "+localName+": installed from local path") {
+		t.Errorf("local skip missing from stdout: %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "Updated "+otherName) {
+		t.Errorf("failed bundle reported updated: %q", buf.String())
+	}
+
+	updatedData, err := os.ReadFile(filepath.Clean(filepath.Join(bundleDir, "bundle.yaml")))
+	if err != nil || !bytes.Equal(updatedData, newData) {
+		t.Fatalf("successful bundle was not installed: data=%q err=%v", updatedData, err)
+	}
+	updatedSig, err := os.ReadFile(filepath.Clean(filepath.Join(bundleDir, "bundle.yaml.sig")))
+	if err != nil || string(updatedSig) != sigEncoded {
+		t.Fatalf("successful signature was not installed: sig=%q err=%v", updatedSig, err)
+	}
+	updatedLF, err := domrules.ReadLockFile(filepath.Join(bundleDir, "bundle.lock"))
+	if err != nil {
+		t.Fatalf("reading updated lock: %v", err)
+	}
+	if updatedLF.InstalledVersion != "2026.04.1" || updatedLF.BundleSHA256 != sha256Hex(newData) || updatedLF.SignerFingerprint != hex.EncodeToString(pub) {
+		t.Fatalf("updated lock does not identify the installed signed bundle: %+v", updatedLF)
+	}
+	for _, unchanged := range []struct {
+		name string
+		path string
+		want []byte
+	}{
+		{"failed bundle", filepath.Join(otherDir, "bundle.yaml"), failedBundleBefore},
+		{"failed lock", filepath.Join(otherDir, "bundle.lock"), failedLockBefore},
+		{"local bundle", filepath.Join(localDir, "bundle.yaml"), localData},
+		{"local lock", filepath.Join(localDir, "bundle.lock"), localLockBefore},
+	} {
+		got, readErr := os.ReadFile(filepath.Clean(unchanged.path))
+		if readErr != nil || !bytes.Equal(got, unchanged.want) {
+			t.Errorf("%s changed during mixed update: got=%q err=%v", unchanged.name, got, readErr)
+		}
+	}
+	// Neither the committed nor the failed update may leave recovery artifacts.
+	for _, name := range []string{testBundleName, otherName, localName} {
+		if _, statErr := os.Stat(filepath.Join(rulesDir, name+".bak")); !os.IsNotExist(statErr) {
+			t.Errorf("%s backup left after mixed update: %v", name, statErr)
+		}
+	}
+	if pending, _ := filepath.Glob(filepath.Join(rulesDir, ".pipelock-state", "rules-transactions", "*")); len(pending) != 0 {
+		t.Errorf("transaction records left after mixed update: %v", pending)
+	}
+
+	recovered.Store(true)
+	retryCmd := testRootCmd()
+	retryOut := &strings.Builder{}
+	retryErr := &strings.Builder{}
+	retryCmd.SetOut(retryOut)
+	retryCmd.SetErr(retryErr)
+	retryCmd.SetArgs([]string{"rules", "update", "--rules-dir", rulesDir})
+	if err := retryCmd.Execute(); err != nil {
+		t.Fatalf("retry after source recovery failed: %v; stderr=%q", err, retryErr.String())
+	}
+	if strings.Contains(retryErr.String(), "error updating") {
+		t.Errorf("retry reported a bundle failure: %q", retryErr.String())
+	}
+	for _, want := range []string{
+		"Updated " + otherName + ": v2026.03.1 -> v2026.04.1",
+		testBundleName + " v2026.04.1: already up to date",
+		"skipping " + localName + ": installed from local path",
+	} {
+		if !strings.Contains(retryOut.String(), want) {
+			t.Errorf("retry output missing %q: %q", want, retryOut.String())
+		}
+	}
+	recoveredBundle, err := os.ReadFile(filepath.Clean(filepath.Join(otherDir, "bundle.yaml")))
+	if err != nil || !bytes.Equal(recoveredBundle, recoveredData) {
+		t.Fatalf("recovered bundle was not installed: data=%q err=%v", recoveredBundle, err)
+	}
+	recoveredSignature, err := os.ReadFile(filepath.Clean(filepath.Join(otherDir, "bundle.yaml.sig")))
+	if err != nil || string(recoveredSignature) != recoveredSig {
+		t.Fatalf("recovered signature was not installed: sig=%q err=%v", recoveredSignature, err)
+	}
+	recoveredLF, err := domrules.ReadLockFile(filepath.Join(otherDir, "bundle.lock"))
+	if err != nil {
+		t.Fatalf("reading recovered lock: %v", err)
+	}
+	if recoveredLF.InstalledVersion != "2026.04.1" || recoveredLF.BundleSHA256 != sha256Hex(recoveredData) || recoveredLF.SignerFingerprint != hex.EncodeToString(pub) {
+		t.Fatalf("recovered lock does not identify its signed bundle: %+v", recoveredLF)
+	}
+	for _, unchanged := range []struct {
+		name string
+		path string
+		want []byte
+	}{
+		{"previously updated bundle", filepath.Join(bundleDir, "bundle.yaml"), newData},
+		{"previously updated signature", filepath.Join(bundleDir, "bundle.yaml.sig"), []byte(sigEncoded)},
+		{"local bundle", filepath.Join(localDir, "bundle.yaml"), localData},
+		{"local lock", filepath.Join(localDir, "bundle.lock"), localLockBefore},
+	} {
+		got, readErr := os.ReadFile(filepath.Clean(unchanged.path))
+		if readErr != nil || !bytes.Equal(got, unchanged.want) {
+			t.Errorf("%s changed during retry: got=%q err=%v", unchanged.name, got, readErr)
+		}
+	}
+	retriedLF, err := domrules.ReadLockFile(filepath.Join(bundleDir, "bundle.lock"))
+	if err != nil {
+		t.Fatalf("reading already updated lock after retry: %v", err)
+	}
+	if retriedLF.InstalledVersion != updatedLF.InstalledVersion || retriedLF.BundleSHA256 != updatedLF.BundleSHA256 || retriedLF.SignerFingerprint != updatedLF.SignerFingerprint {
+		t.Fatalf("retry changed prior installed identity: before=%+v after=%+v", updatedLF, retriedLF)
 	}
 }
 

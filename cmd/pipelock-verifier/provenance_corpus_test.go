@@ -417,6 +417,8 @@ func successfulOperationCases() []corpusOperationCase {
 		// it runs. Keeping it in the same list preserves the guarantee that
 		// every supported operation owns a known-answer fixture.
 		{"ascii-alphanumeric-strip", normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest, Operations: []normalize.Operation{{Kind: normalize.OperationASCIIAlphanumericStrip}}}, "Ab-c_d=e.f", "Abcdef"},
+		{"ascii-upper", normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV3Digest, Operations: []normalize.Operation{{Kind: normalize.OperationASCIIUpper}}}, "mfrgg-9", "MFRGG-9"},
+		{"json-unicode-escape", normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV3Digest, Operations: []normalize.Operation{{Kind: normalize.OperationJSONUnicodeEscape}}}, `\u0041b\uD83D\uDE80`, "Ab\U0001F680"},
 	}
 }
 

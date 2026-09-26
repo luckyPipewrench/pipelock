@@ -2135,12 +2135,13 @@ type decodedResult struct {
 
 // Encoding labels for decoded results.
 const (
-	encodingHex     = "hex"
-	encodingBase64  = "base64"
-	encodingBase32  = "base32"
-	encodingURL     = "url"
-	encodingHTML    = "html_entity"
-	encodingDecimal = "decimal_character_codes"
+	encodingHex         = "hex"
+	encodingBase64      = "base64"
+	encodingBase32      = "base32"
+	encodingURL         = "url"
+	encodingHTML        = "html_entity"
+	encodingDecimal     = "decimal_character_codes"
+	encodingJSONUnicode = "json_unicode"
 )
 
 const (
@@ -2408,19 +2409,52 @@ func decodeEncodings(s string) []decodedResult {
 			}
 		}
 	}
-	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), encodingBase32})
+	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
+	// uppercase before decode accepts lower and mixed case without treating
+	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
+	// the fold as its own operation so older profiles stay case-sensitive.
+	foldedBase32 := normalize.ASCIIUpper(s)
+	out = appendBase32Decodes(out, foldedBase32)
+	if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32); normalized != "" && normalized != foldedBase32 {
+		out = appendBase32Decodes(out, normalized)
 	}
-	if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), encodingBase32})
+	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{decoded, encodingJSONUnicode})
 	}
-	if normalized := normalizeEncodedToken(s, encodedTokenBase32); normalized != "" {
-		if decoded, err := base32.StdEncoding.DecodeString(normalized); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase32})
+	return out
+}
+
+// decodeBase32Strings returns the distinct RFC 4648 base32 and base32hex
+// decodings of s after ASCII uppercase folding.
+func decodeBase32Strings(s string) []string {
+	folded := normalize.ASCIIUpper(strings.TrimSpace(s))
+	var out []string
+	seen := make(map[string]struct{})
+	for _, decoded := range appendBase32Decodes(nil, folded) {
+		if _, ok := seen[decoded.text]; ok {
+			continue
 		}
-		if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(normalized); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase32})
+		seen[decoded.text] = struct{}{}
+		out = append(out, decoded.text)
+	}
+	return out
+}
+
+// appendBase32Decodes appends every RFC 4648 base32 and base32hex decoding of
+// value. value is already ASCII-uppercased. Padding and no-padding are both
+// tried; a value matches at most one padding mode per alphabet.
+func appendBase32Decodes(out []decodedResult, value string) []decodedResult {
+	for _, enc := range []*base32.Encoding{
+		base32.StdEncoding,
+		base32.StdEncoding.WithPadding(base32.NoPadding),
+		base32.HexEncoding,
+		base32.HexEncoding.WithPadding(base32.NoPadding),
+	} {
+		decoded, err := enc.DecodeString(value)
+		if err != nil || len(decoded) == 0 {
+			continue
 		}
+		out = append(out, decodedResult{string(decoded), encodingBase32})
 	}
 	return out
 }
@@ -2516,9 +2550,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
+			targets = append(targets, queryValueDecodedTargets(decoded)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -2566,6 +2598,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
 	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
+	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
+		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+		}
+	}
 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
@@ -3902,16 +3940,13 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
-			if len(segment) >= s.entropyMinLen {
-				entropy := payloadEntropy(segment)
-				if entropy > s.entropyThreshold {
-					return Result{
-						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-						Scanner: ScannerEntropy,
-						Class:   ClassHeuristicEntropy,
-						Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
-					}
+			if entropy, blocked := s.pathSegmentEntropy(segment); blocked {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
+					Scanner: ScannerEntropy,
+					Class:   ClassHeuristicEntropy,
+					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 				}
 			}
 		}
@@ -3926,7 +3961,10 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			return result
 		}
 	}
-	for key, values := range parsed.Query() {
+	query := parsed.Query()
+	s256 := pkceExemptionApplies(query[pkceMethodParam], query[pkceChallengeParam])
+	dohMsg, dohQuery := parseDNSQuery(parsed.RawQuery)
+	for key, values := range query {
 		if !excludedQuery && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
@@ -3943,23 +3981,23 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
 				return result
 			}
-			if !excludedQuery && len(v) >= s.entropyMinLen {
-				entropy := payloadEntropy(v)
-				if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
-					continue
-				}
-				if entropy > s.entropyThreshold {
+			if excludedQuery || isPKCES256Challenge(key, v, s256) {
+				continue
+			}
+			if dohQuery && key == dnsQueryParam {
+				if finding, blocked := s.dnsMessageEntropy(dohMsg); blocked {
 					if s.isQueryEntropyParamExcluded(parsed, key) {
 						continue
 					}
-					return Result{
-						Allowed: false,
-						Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-						Scanner: ScannerEntropy,
-						Class:   ClassHeuristicEntropy,
-						Score:   math.Min(entropy/8.0, 1.0),
-					}
+					return s.queryEntropyParamResult(key, finding)
 				}
+				continue
+			}
+			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
+				if s.isQueryEntropyParamExcluded(parsed, key) {
+					continue
+				}
+				return s.queryEntropyParamResult(key, finding)
 			}
 		}
 	}
@@ -3968,18 +4006,10 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 }
 
 func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
-	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool {
-		return r == '&' || r == ';'
-	}) {
-		rawKey, rawValue, _ := strings.Cut(pair, "=")
-		key, ok := strictQueryEntropyComponent(rawKey)
-		if !ok {
-			key = rawKey
-		}
-		value, ok := strictQueryEntropyComponent(rawValue)
-		if !ok {
-			value = rawValue
-		}
+	pairs := splitQueryEntropyPairs(rawQuery)
+	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
+	for _, p := range pairs {
+		key, value := p.key, p.value
 		if scanEntropy && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
@@ -3995,21 +4025,11 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
 			return result, true
 		}
-		if !scanEntropy || len(value) < s.entropyMinLen {
+		if !scanEntropy || isPKCES256Challenge(key, value, s256) {
 			continue
 		}
-		entropy := payloadEntropy(value)
-		if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
-			continue
-		}
-		if entropy > s.entropyThreshold {
-			return Result{
-				Allowed: false,
-				Reason:  fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-				Scanner: ScannerEntropy,
-				Class:   ClassHeuristicEntropy,
-				Score:   math.Min(entropy/8.0, 1.0),
-			}, true
+		if finding, blocked := s.queryValueEntropy(value, 0); blocked {
+			return s.queryEntropyParamResult(key, finding), true
 		}
 	}
 	return Result{}, false
@@ -4821,4 +4841,28 @@ func baseDomain(hostname string) string {
 // does not touch the scanner, proxy, CLI, session or content-entropy consumers.
 func MatchDomain(hostname, pattern string) bool {
 	return destination.MatchDomain(hostname, pattern)
+}
+
+// queryValueDecodedTargets returns the decoded DLP views of one query value:
+// every recursive base64, hex, and base32 decoding, and the HTML-entity
+// decoding in both orders. Entities are decoded on the raw value and on each
+// decoded result, so a value that is entity-escaped and then encoded is seen
+// as well as one encoded and then entity-escaped. Configured DLP and the core
+// floor both use it so they cannot drift apart.
+func queryValueDecodedTargets(decoded string) []dlpTarget {
+	var targets []dlpTarget
+	addDecoded := func(text string) {
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			if h := decodeHTMLEntities(d.text); h != d.text {
+				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})
+			}
+		}
+	}
+	addDecoded(decoded)
+	if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
+		targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
+		addDecoded(htmlDecoded)
+	}
+	return targets
 }

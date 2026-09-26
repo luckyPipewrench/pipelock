@@ -9,7 +9,9 @@ export const EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST =
   "sha256:3de14968449593cae58da869cfc97855cb098e491494390a12ba742cb0b70f94";
 export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
   "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
-type ProfileVersion = "v1" | "v2";
+export const EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST =
+  "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
+type ProfileVersion = "v1" | "v2" | "v3";
 
 const MAX_INPUT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 1 << 20;
@@ -46,6 +48,8 @@ const kinds = new Set([
   "encoded_run",
   "canary_canonicalize",
   "ascii_alphanumeric_strip",
+  "ascii_upper",
+  "json_unicode_escape",
 ]);
 
 export function supportedOperationKinds(): string[] {
@@ -54,9 +58,11 @@ export function supportedOperationKinds(): string[] {
 
 export function supportedOperationKindsForProfile(digest: string): string[] {
   const profile = resolveEvidenceProvenanceProfile(digest);
-  return profile === "v1"
-    ? [...kinds].filter((kind) => kind !== "ascii_alphanumeric_strip")
-    : [...kinds];
+  return [...kinds].filter(
+    (kind) =>
+      (profile !== "v1" || kind !== "ascii_alphanumeric_strip") &&
+      (profile === "v3" || (kind !== "ascii_upper" && kind !== "json_unicode_escape")),
+  );
 }
 
 /** Unicode 15.0.0's Simple_Lowercase_Mapping table, pinned by dependency. */
@@ -73,7 +79,7 @@ const unicode15SimpleLowercase =
     number
   >;
 
-function unicode15Normalize(value: string, form: "NFD" | "NFKC"): string {
+function unicode15Normalize(value: string, form: "NFD" | "NFKC" | "NFC"): string {
   // ICU in Node 24 uses Unicode 17. Normalizing an assigned Unicode-15 run is
   // compatible with Go/x/text's Unicode-15 tables; newer code points are kept
   // as opaque scalars, so Node cannot introduce a post-profile mapping.
@@ -197,6 +203,7 @@ function resolveEvidenceProvenanceProfile(digest: unknown): ProfileVersion {
     fail("recipe: transform profile digest: invalid SHA-256 digest");
   if (digest === EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST) return "v1";
   if (digest === EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST) return "v2";
+  if (digest === EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST) return "v3";
   fail("recipe: transform profile digest: unknown profile");
 }
 
@@ -217,7 +224,15 @@ export function validateEvidenceProvenanceRecipe(
     const kind = opString(op, "kind", true)!;
     if (!kinds.has(kind)) fail(`recipe operation ${index} (${kind}): unknown operation`);
     validateOperation(op, kind);
-    if (kind === "ascii_alphanumeric_strip" && profile !== "v2")
+    if (kind === "ascii_alphanumeric_strip" && profile === "v1")
+      fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
+    if ((kind === "ascii_upper" || kind === "json_unicode_escape") && profile !== "v3")
+      fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
+    if (
+      (kind === "base32_decode" || kind === "base32_decode_liberal") &&
+      op.alphabet !== undefined &&
+      profile !== "v3"
+    )
       fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
   }
 }
@@ -241,6 +256,8 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
     case "hostname_dot_remove":
     case "canary_canonicalize":
     case "ascii_alphanumeric_strip":
+    case "ascii_upper":
+    case "json_unicode_escape":
       assertFields(op, kind, none);
       return;
     case "url_component": {
@@ -273,8 +290,16 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
         fail("unknown matching profile");
       return;
     case "base32_decode":
-    case "base64_decode":
     case "base32_decode_liberal":
+      assertFields(op, kind, ["kind", "decode_padding", "alphabet"]);
+      opBool(op, "decode_padding");
+      if (
+        op.alphabet !== undefined &&
+        !["standard", "base32hex"].includes(opString(op, "alphabet")!)
+      )
+        fail(`unknown base32 alphabet ${JSON.stringify(op.alphabet)}`);
+      return;
+    case "base64_decode":
       assertFields(op, kind, ["kind", "decode_padding"]);
       opBool(op, "decode_padding");
       return;
@@ -416,9 +441,19 @@ function base64Decode(
     fail("base64 decode: non-canonical encoding");
   return text(bytes, `${canonical ? "base64 decode" : "liberal base64 decode"} output`);
 }
-function base32Decode(value: string, padded: boolean, canonical: boolean): string {
+function base32Decode(
+  value: string,
+  padded: boolean,
+  canonical: boolean,
+  selected = "standard",
+): string {
+  const alphabet =
+    selected === "base32hex"
+      ? "0123456789ABCDEFGHIJKLMNOPQRSTUV"
+      : "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const valid = selected === "base32hex" ? /^[0-9A-V]*={0,6}$/u : /^[A-Z2-7]*={0,6}$/u;
   if (
-    !/^[A-Z2-7]*={0,6}$/u.test(value) ||
+    !valid.test(value) ||
     (padded && (value.length % 8 !== 0 || /=[^=]/u.test(value))) ||
     (!padded &&
       (value.includes("=") ||
@@ -427,7 +462,6 @@ function base32Decode(value: string, padded: boolean, canonical: boolean): strin
         value.length % 8 === 6))
   )
     fail(`${canonical ? "base32" : "liberal base32"} decode: invalid encoding`);
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = 0,
     count = 0;
   const out: number[] = [];
@@ -526,12 +560,47 @@ function dlp(value: string): string {
     unicode15Normalize(confusableAscii(unicode15Normalize(withoutControls, "NFKC")), "NFD"),
   );
 }
-function matching(value: string): string {
-  return mapUnicode15ExoticWhitespace(
-    removeUnicode15NonspacingMarks(
-      unicode15Normalize(confusableAscii(unicode15Normalize(stripInvisible(value), "NFKC")), "NFD"),
-    ),
+function matching(value: string, profile: ProfileVersion): string {
+  const stripped = removeUnicode15NonspacingMarks(
+    unicode15Normalize(confusableAscii(unicode15Normalize(stripInvisible(value), "NFKC")), "NFD"),
   );
+  return mapUnicode15ExoticWhitespace(
+    profile === "v3" ? unicode15Normalize(stripped, "NFC") : stripped,
+  );
+}
+
+function jsonUnicodeEscape(value: string): string {
+  // Lenient by profile: a well-formed escape or surrogate pair decodes, an
+  // unpaired surrogate escape becomes U+FFFD, and any other text beginning
+  // with \u is copied unchanged. Nothing rejects.
+  const hex4 = (at: number): number | undefined => {
+    const digits = value.slice(at, at + 4);
+    return /^[0-9a-fA-F]{4}$/u.test(digits) ? Number.parseInt(digits, 16) : undefined;
+  };
+  let result = "";
+  let i = 0;
+  while (i < value.length) {
+    const high = value.slice(i, i + 2) === "\\u" ? hex4(i + 2) : undefined;
+    if (high === undefined) {
+      result += value[i++]!;
+      continue;
+    }
+    if (high < 0xd800 || high > 0xdfff) {
+      result += String.fromCodePoint(high);
+    } else if (high <= 0xdbff && value.slice(i + 6, i + 8) === "\\u") {
+      const low = hex4(i + 8);
+      if (low !== undefined && low >= 0xdc00 && low <= 0xdfff) {
+        result += String.fromCodePoint(0x10000 + ((high - 0xd800) << 10) + low - 0xdc00);
+        i += 12;
+        continue;
+      }
+      result += "\ufffd";
+    } else {
+      result += "\ufffd";
+    }
+    i += 6;
+  }
+  return result;
 }
 // Deny-list mirroring scanner.go's normalizeHex (alphabet === "hex") and
 // normalizeEncodedToken/isEncodedTokenByte (other alphabets): keep only the
@@ -702,12 +771,21 @@ function apply(
       return dlp(value);
     case "lowercase":
       return unicode15Lowercase(value);
+    case "ascii_upper":
+      return value.replace(/[a-z]/gu, (c) => c.toUpperCase());
+    case "json_unicode_escape":
+      return jsonUnicodeEscape(value);
     case "invisible_strip":
       return stripInvisible(value);
     case "hex_decode":
       return hexDecode(value, true);
     case "base32_decode":
-      return base32Decode(value, opBool(op, "decode_padding"), true);
+      return base32Decode(
+        value,
+        opBool(op, "decode_padding"),
+        true,
+        (op.alphabet as string | undefined) ?? "standard",
+      );
     case "base64_decode":
       return base64Decode(value, "standard", opBool(op, "decode_padding"), true);
     case "leetspeak":
@@ -723,14 +801,21 @@ function apply(
     case "invisible_space":
       return stripInvisible(value, " ");
     case "matching_normalize":
-      return matching(value);
+      return matching(value, profile);
     case "hex_decode_liberal":
       return hexDecode(value, false);
+    // The liberal decoders reproduce Go's scanner, whose RFC 4648 decoders
+    // ignore carriage returns and line feeds anywhere in the input.
     case "base32_decode_liberal":
-      return base32Decode(value, opBool(op, "decode_padding"), false);
+      return base32Decode(
+        stripLineBreaks(value),
+        opBool(op, "decode_padding"),
+        false,
+        (op.alphabet as string | undefined) ?? "standard",
+      );
     case "base64_decode_liberal":
       return base64Decode(
-        value,
+        stripLineBreaks(value),
         op.alphabet as "standard" | "url",
         opBool(op, "decode_padding"),
         false,
@@ -786,4 +871,8 @@ function apply(
     default:
       return fail(`unknown operation ${JSON.stringify(kind)}`);
   }
+}
+
+function stripLineBreaks(value: string): string {
+  return value.replace(/[\r\n]/gu, "");
 }

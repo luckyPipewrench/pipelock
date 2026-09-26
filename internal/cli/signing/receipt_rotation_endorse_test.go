@@ -658,10 +658,11 @@ func emitClosedIntoWithReason(
 		t.Fatalf("recorder.New: %v", err)
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:  rec,
-		PrivKey:   priv,
-		Principal: "test",
-		Actor:     "test",
+		Recorder:        rec,
+		PrivKey:         priv,
+		Principal:       "test",
+		Actor:           "test",
+		PriorSignerKeys: priorKeysFor(dir, priv),
 	})
 	if err := emitter.InitError(); err != nil {
 		t.Fatalf("emitter init error: %v", err)

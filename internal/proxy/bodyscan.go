@@ -36,7 +36,8 @@ import (
 const (
 	// contentTypeJSON is the canonical JSON media type. Used in multiple
 	// redaction and body-text extraction gates; extracted to satisfy goconst.
-	contentTypeJSON = "application/json"
+	contentTypeJSON     = "application/json"
+	dnsMessageMediaType = "application/dns-message"
 
 	// maxMultipartParts caps the number of multipart form parts parsed.
 	// 100 is well above typical form submissions (usually <20 fields) while
@@ -309,6 +310,11 @@ func matchUnscannablePassthrough(req unscannablePassthroughRequest, entries []co
 		return unscannablePassthroughMatch{Entry: entry, ContentType: mediaType}, true
 	}
 	return unscannablePassthroughMatch{}, false
+}
+
+func isDNSMessageMediaType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(contentType)))
+	return err == nil && mediaType == dnsMessageMediaType
 }
 
 func responseMediaType(contentType string) string {
@@ -769,6 +775,20 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return buf, BodyScanResult{Clean: true}
 	}
 
+	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
+	// names, record payloads and fixed-width fields. Those pieces join the
+	// ordinary body DLP pipeline below, so suppressions, disabled patterns,
+	// credential-audience allows and pattern actions apply as for any body,
+	// and a critical match hard-blocks the same way. Entropy is measured on
+	// the pieces, all in one ScanTexts call so its joined check still sees
+	// data split across many short fields; the wire bytes themselves are not
+	// scored as text. A body that is not a strict DNS message keeps the
+	// opaque-body checks.
+	var dnsInspection scanner.DNSPayloadInspection
+	if isDNSMessageMediaType(req.ContentType) {
+		dnsInspection = req.Scanner.InspectDNSPayload(buf)
+	}
+
 	allowEmbeddedSigV4 := matchBodySigV4CredentialRoute(req, time.Now().UTC())
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
@@ -842,6 +862,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 	texts := dlpExtracted.GenericTexts
+	if dnsInspection.Parsed {
+		dlpExtracted.Texts = append(dlpExtracted.Texts, dnsInspection.DLPTexts...)
+	}
 
 	if len(texts) == 0 {
 		if len(preRedactionDLP) > 0 {
@@ -875,7 +898,12 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			action = config.StrongestAction(action, requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions))
 		}
 	}
-	if finding := scanBodyTextsForContentEntropy(texts, req); finding != nil {
+	entropyTexts := texts
+	if dnsInspection.Parsed {
+		entropyTexts = dnsInspection.EntropyTexts
+	}
+	finding := scanBodyTextsForContentEntropy(entropyTexts, req)
+	if finding != nil {
 		result.EntropyFinding = finding
 		result.EntropyAction = req.ContentEntropyAction
 		if matched := matchBodyEntropyWarnRoute(req, time.Now().UTC()); matched != nil {

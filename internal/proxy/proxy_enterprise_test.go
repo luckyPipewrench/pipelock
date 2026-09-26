@@ -805,7 +805,6 @@ func TestAgentListenerBinding(t *testing.T) {
 		t.Fatalf("failed to get free port: %v", listenErr)
 	}
 	agentAddr := agentLn.Addr().String()
-	_ = agentLn.Close() // free the port for the proxy to bind
 
 	enforceFalse := false
 
@@ -819,6 +818,13 @@ func TestAgentListenerBinding(t *testing.T) {
 		t.Fatalf("failed to get free port for main: %v", mainErr)
 	}
 	cfg.FetchProxy.Listen = mainLn.Addr().String()
+	// Both probe listeners stay open until both ports are chosen: closing the
+	// agent probe first let the kernel hand the same port to the main probe,
+	// so the proxy then tried to bind one address twice.
+	if agentAddr == cfg.FetchProxy.Listen {
+		t.Fatalf("premise: agent and main listeners share %s", agentAddr)
+	}
+	_ = agentLn.Close() // free the ports for the proxy to bind
 	_ = mainLn.Close()
 
 	cfg.Agents = map[string]config.AgentProfile{

@@ -23,12 +23,16 @@ func buildSessionBoundRotatedChain(t *testing.T, keys ...ed25519.PrivateKey) ([]
 	t.Helper()
 	dir := t.TempDir()
 	boundaries := make([]int, 0, len(keys)-1)
+	prior := ""
 	for keyIndex, key := range keys {
 		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, key)
 		if err != nil {
 			t.Fatalf("recorder.New: %v", err)
 		}
-		emitter := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, Principal: "test", Actor: "test"})
+		// Each rotation models a signer-rotating reload: the new emitter is
+		// told the key the previous one signed with.
+		emitter := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, Principal: "test", Actor: "test", PriorSignerKeys: []string{prior}})
+		prior = fmt.Sprintf("%x", key.Public().(ed25519.PublicKey))
 		if err := emitter.InitError(); err != nil {
 			t.Fatalf("emitter InitError: %v", err)
 		}

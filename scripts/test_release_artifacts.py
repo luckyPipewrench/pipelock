@@ -719,6 +719,49 @@ class TestReleaseArtifacts(unittest.TestCase):
             )
         self.assertIn("dist/release-images.json", self.workflow)
 
+    def test_helm_chart_attestation_is_confined_and_fail_closed(self) -> None:
+        """The chart is attested by digest in a job that holds the signing
+        permissions only for GitHub's first-party attestation action."""
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        promote = parsed["jobs"]["release-promote"]
+        self.assertNotIn("id-token", promote["permissions"])
+        self.assertNotIn("attestations", promote["permissions"])
+        self.assertEqual(
+            promote["outputs"]["chart_digest"],
+            "${{ steps.publish-helm-chart.outputs.chart_digest }}",
+        )
+        publish = next(step for step in promote["steps"] if step.get("id") == "publish-helm-chart")
+        self.assertIn("could not read the chart digest from helm output", publish["run"])
+        # Both branches take the digest from helm's own output, and the step
+        # exports it for the attestation job.
+        extract = """awk '$1 == "Digest:" { print $2 }'"""
+        self.assertIn(f'printf \'%s\\n\' "$chart_lookup_output" | {extract}', publish["run"])
+        self.assertIn(f'printf \'%s\\n\' "$push_output" | {extract}', publish["run"])
+        self.assertIn('echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"', publish["run"])
+
+        attest_job = parsed["jobs"]["release-attest-chart"]
+        self.assertEqual(attest_job["needs"], ["release-promote"])
+        self.assertEqual(
+            attest_job["permissions"],
+            {"contents": "read", "id-token": "write", "attestations": "write"},
+        )
+        uses = [step["uses"] for step in attest_job["steps"] if "uses" in step]
+        self.assertTrue(uses)
+        for action in uses:
+            self.assertTrue(
+                action.startswith("actions/attest-build-provenance@"),
+                f"{action} runs in the job that holds id-token: write",
+            )
+        attest = next(step for step in attest_job["steps"] if step.get("id") == "attest-helm-chart")
+        self.assertEqual(
+            attest["with"]["subject-digest"],
+            "${{ needs.release-promote.outputs.chart_digest }}",
+        )
+        self.assertNotIn("push-to-registry", attest["with"])
+        self.assertIn(
+            "steps.attest-helm-chart.outcome != 'success'",
+            str([step.get("if") for step in attest_job["steps"]]),
+        )
 
 if __name__ == "__main__":
     unittest.main()

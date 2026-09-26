@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -122,6 +123,9 @@ type Emitter struct {
 	// the bare recorderSessionID constant, so a caller-supplied run session
 	// is actually honored end to end.
 	session string
+	// priorSignerKeys is EmitterConfig.PriorSignerKeys: the different keys a
+	// resumed tail may be signed by.
+	priorSignerKeys []string
 	// chainLink is the signed continuity link published at the first
 	// receipt, or nil. Written once under chainMu.
 	chainLink *ChainLink
@@ -217,6 +221,16 @@ type EmitterConfig struct {
 	// linking (for example a corrupt predecessor tail that was skipped).
 	// Nil writes to os.Stderr.
 	Notices io.Writer
+	// PriorSignerKeys are the hex public keys this process has signed the
+	// session's receipts with before this emitter, set by a reload that
+	// rotates the signing key. More than one is possible: a reload whose
+	// session_open was written but not confirmed leaves the new key on the
+	// tail while the old emitter stays published. These are the only keys a
+	// resumed tail may carry when it differs from PrivKey's: a tail signed by
+	// any other key, even validly under its own embedded key, is refused.
+	// Empty (every fresh start, where the session was just minted) accepts no
+	// rotation.
+	PriorSignerKeys []string
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -256,6 +270,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		postureAvailability: cfg.PostureAvailability,
 		heartbeatSeconds:    cfg.HeartbeatSeconds,
 		session:             session,
+		priorSignerKeys:     slices.Clone(cfg.PriorSignerKeys),
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -1457,20 +1472,19 @@ func (e *Emitter) resumeChain() error {
 	//
 	//  1. Tail signed by the CURRENT key, signature valid  -> resume the
 	//     same chain segment (the common case).
-	//  2. Tail signed by a DIFFERENT key, but self-valid under its OWN
-	//     embedded signer_key -> a legitimate signing-key rotation. The
-	//     operator regenerated the key (e.g. `contain install`); the prior
-	//     chain is intact, it is simply sealed under the old key. Open a NEW
-	//     segment anchored to the prior tail's hash and stamp a transition
-	//     marker on the next receipt, instead of bricking emission forever.
+	//  2. Tail signed by a DIFFERENT key, self-valid under its OWN embedded
+	//     signer_key, AND that key is the one this process signed with
+	//     before a signer-rotating reload (EmitterConfig.PriorSignerKeys) ->
+	//     a legitimate rotation. Open a NEW segment anchored to the prior
+	//     tail's hash and stamp a transition marker on the next receipt.
+	//     Any other different-key tail is refused.
 	//  3. Tail's OWN signature is INVALID (corrupt / tampered, regardless of
 	//     key) -> FAIL CLOSED. This is the tamper case and must never be
 	//     weakened into a silent reset.
 	//
-	// Why case 2 is safe: we require the tail to be self-consistently signed
-	// by the key embedded in it (VerifyInternalConsistencyOnly). An attacker who can only write a
-	// forged tail with a bad signature lands in case 3 and is rejected, so a
-	// forged tail cannot force a silent segment reset that hides history. A
+	// Why case 2 is safe: the prior key must be one this process held, so a
+	// tail self-signed with a key an attacker chose is refused rather than
+	// vouched for, and a tail with a bad signature lands in case 3. A
 	// rotation reset preserves continuity two ways: the new segment's first
 	// receipt carries the prior tail's hash as its ChainPrevHash plus an
 	// explicit KeyTransition marker (prior signer key + prior seq + prior
@@ -1487,7 +1501,19 @@ func (e *Emitter) resumeChain() error {
 
 		currentKeyHex := fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
 		if lastReceipt.SignerKey != currentKeyHex {
-			// Case 2: legitimate rotation. Open a new segment.
+			// Case 2: a rotation is legitimate only when this process itself
+			// signed the tail with the key it is rotating away from. A tail
+			// that is merely self-consistent proves nothing about who wrote
+			// it: anyone can sign a receipt with a key of their own, and
+			// accepting it would have the live key vouch for that key in the
+			// KeyTransition, which auto-anchor then trusts. Every run mints a
+			// fresh session, so outside a signer-rotating reload an existing
+			// tail under a different key has no legitimate source.
+			if !slices.Contains(e.priorSignerKeys, lastReceipt.SignerKey) {
+				return fmt.Errorf("refusing to resume session %q: its last receipt (seq %d) is signed by key %s, which this process did not sign with; the evidence directory may have been altered, so inspect it and restart to begin a new session",
+					e.session, lastReceipt.ActionRecord.ChainSeq, lastReceipt.SignerKey)
+			}
+			// Open a new segment.
 			hash, err := ReceiptHash(*lastReceipt)
 			if err != nil {
 				return fmt.Errorf("hashing prior segment tail: %w", err)

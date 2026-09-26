@@ -25,6 +25,9 @@ PROFILE_DIGEST_V1 = (
 PROFILE_DIGEST_V2 = (
     "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
 )
+PROFILE_DIGEST_V3 = (
+    "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
+)
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
 PROFILE_DIGEST = PROFILE_DIGEST_V1
@@ -62,6 +65,8 @@ _KINDS = (
     "encoded_run",
     "canary_canonicalize",
     "ascii_alphanumeric_strip",
+    "ascii_upper",
+    "json_unicode_escape",
 )
 _FIELDS = {
     "kind",
@@ -82,9 +87,13 @@ def profile_version(digest: str) -> str:
         return "v1"
     if digest == PROFILE_DIGEST_V2:
         return "v2"
+    if digest == PROFILE_DIGEST_V3:
+        return "v3"
     raise ProvenanceError(
-        "recipe: transform profile digest: unknown profile " f"{digest!r}"
+        f"recipe: transform profile digest: unknown profile {digest!r}"
     )
+
+
 _CONFUSABLES = {
     "А": "A",
     "В": "B",
@@ -199,9 +208,13 @@ def supported_operation_kinds() -> tuple[str, ...]:
 
 
 def supported_operation_kinds_for_profile(digest: str) -> tuple[str, ...]:
-    if profile_version(digest) == "v1":
-        return tuple(kind for kind in _KINDS if kind != "ascii_alphanumeric_strip")
-    return _KINDS
+    version = profile_version(digest)
+    return tuple(
+        kind
+        for kind in _KINDS
+        if (version != "v1" or kind != "ascii_alphanumeric_strip")
+        and (version == "v3" or kind not in {"ascii_upper", "json_unicode_escape"})
+    )
 
 
 def _unicode() -> Any:
@@ -316,6 +329,39 @@ def _query_unescape(value: str, charge: Callable[[str], None]) -> str:
     return value
 
 
+def _json_unicode_escape(value: str) -> str:
+    # Lenient by profile: a well-formed escape or surrogate pair decodes, an
+    # unpaired surrogate escape becomes U+FFFD, and any other text beginning
+    # with \u is copied unchanged. Nothing rejects.
+    def hex4(at: int) -> int | None:
+        digits = value[at : at + 4]
+        if len(digits) == 4 and re.fullmatch(r"[0-9A-Fa-f]{4}", digits):
+            return int(digits, 16)
+        return None
+
+    result: list[str] = []
+    i = 0
+    while i < len(value):
+        high = hex4(i + 2) if value[i : i + 2] == "\\u" else None
+        if high is None:
+            result.append(value[i])
+            i += 1
+            continue
+        if not 0xD800 <= high <= 0xDFFF:
+            result.append(chr(high))
+        elif high <= 0xDBFF and value[i + 6 : i + 8] == "\\u":
+            low = hex4(i + 8)
+            if low is not None and 0xDC00 <= low <= 0xDFFF:
+                result.append(chr(0x10000 + ((high - 0xD800) << 10) + low - 0xDC00))
+                i += 12
+                continue
+            result.append("\ufffd")
+        else:
+            result.append("\ufffd")
+        i += 6
+    return "".join(result)
+
+
 def _decode(
     value: str,
     kind: str,
@@ -333,7 +379,11 @@ def _decode(
             if not padded and "=" in value:
                 raise ValueError("unexpected padding")
             source = value + ("=" * (-len(value) % 8) if not padded else "")
-            raw = base64.b32decode(source, casefold=False)
+            raw = (
+                base64.b32hexdecode(source)
+                if alphabet == "base32hex"
+                else base64.b32decode(source, casefold=False)
+            )
         else:
             if not padded and "=" in value:
                 raise ValueError("unexpected padding")
@@ -390,10 +440,12 @@ class Recipe:
         kind = op.get("kind")
         if not isinstance(kind, str) or kind not in _KINDS:
             raise ProvenanceError(f"unknown operation {kind!r}")
-        if kind == "ascii_alphanumeric_strip" and profile != "v2":
+        if kind == "ascii_alphanumeric_strip" and profile == "v1":
             raise ProvenanceError(
                 "ascii_alphanumeric_strip is unsupported by transform profile"
             )
+        if kind in {"ascii_upper", "json_unicode_escape"} and profile != "v3":
+            raise ProvenanceError(f"{kind} is unsupported by transform profile")
         for field in ("selector", "profile"):
             if field in op and (not isinstance(op[field], str) or _control(op[field])):
                 raise ProvenanceError(f"{field} for {kind} contains control character")
@@ -440,6 +492,17 @@ class Recipe:
                 )
         elif kind in {"base32_decode", "base64_decode", "base32_decode_liberal"}:
             allowed.add("decode_padding")
+            if kind.startswith("base32") and "alphabet" in op:
+                if profile != "v3":
+                    raise ProvenanceError(
+                        "alphabet is unsupported by transform profile"
+                    )
+                allowed.add("alphabet")
+                if not isinstance(op["alphabet"], str) or op["alphabet"] not in {
+                    "standard",
+                    "base32hex",
+                }:
+                    raise ProvenanceError(f"unknown base32 alphabet {op['alphabet']!r}")
         elif kind == "base64_decode_liberal":
             allowed |= {"decode_padding", "alphabet"}
             required.add("alphabet")
@@ -555,17 +618,26 @@ class Recipe:
             return _dlp(v)
         if k == "lowercase":
             return _simple_lower(v)
+        if k == "ascii_upper":
+            return re.sub(r"[a-z]", lambda match: match.group().upper(), v)
+        if k == "json_unicode_escape":
+            return _json_unicode_escape(v)
         if k == "invisible_strip":
             return "".join(ch for ch in v if not _invisible(ch))
         if k in {"hex_decode", "base32_decode", "base64_decode"}:
             kind = k.removesuffix("_decode")
             padded = op.get("decode_padding", False)
-            out = _decode(v, kind, padded)
+            alphabet = op.get("alphabet", "standard")
+            out = _decode(v, kind, padded, alphabet)
             encoded = (
                 out.encode().hex()
                 if kind == "hex"
                 else (
-                    base64.b32encode(out.encode()).decode()
+                    (
+                        base64.b32hexencode(out.encode()).decode()
+                        if alphabet == "base32hex"
+                        else base64.b32encode(out.encode()).decode()
+                    )
                     if kind == "base32"
                     else base64.b64encode(out.encode()).decode()
                 )
@@ -594,9 +666,15 @@ class Recipe:
                 for ch in unicode.normalize("NFD", normalized)
                 if unicode.category(ch) != "Mn"
             )
+            if profile == "v3":
+                normalized = unicode.normalize("NFC", normalized)
             return _matching_whitespace(normalized)
         if k.endswith("_liberal"):
             base = k.removesuffix("_decode_liberal")
+            if base in ("base32", "base64"):
+                # Go's RFC 4648 decoders, which the liberal operations
+                # reproduce, ignore carriage returns and line feeds.
+                v = v.replace("\r", "").replace("\n", "")
             return _decode(
                 v,
                 base,
@@ -634,7 +712,9 @@ class Recipe:
         if k == "url_noise_strip":
             if profile == "v1":
                 return v.translate(str.maketrans("", "", "./ +,;|\t\n\r"))
-            return "".join(ch for ch in v if ch.isascii() and (ch.isalnum() or ch in "_-="))
+            return "".join(
+                ch for ch in v if ch.isascii() and (ch.isalnum() or ch in "_-=")
+            )
         if k == "ordered_query_concat":
             return "".join(
                 _query_unescape(x.partition("=")[2], charge)

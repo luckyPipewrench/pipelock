@@ -279,3 +279,58 @@ func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
 	_ = operator.Close()
 	<-done
 }
+
+func TestViewerDeniesRFBConnectionFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dial func() (net.Conn, error)
+		peer func(net.Conn) (uint32, error)
+		want string
+	}{
+		{"dial", func() (net.Conn, error) { return nil, errors.New("socket unavailable") }, nil, "dial RFB: socket unavailable"},
+		{"peer inspection", nil, func(net.Conn) (uint32, error) { return 0, errors.New("peer credentials unavailable") }, "inspect RFB peer: peer credentials unavailable"},
+		{"wrong owner", nil, func(net.Conn) (uint32, error) { return 43, nil }, "peer uid 43 differs from expected uid 42"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testViewer(t)
+			if tc.dial != nil {
+				v.cfg.Dial = tc.dial
+			} else {
+				v.cfg.Dial = func() (net.Conn, error) {
+					upstream, server := net.Pipe()
+					t.Cleanup(func() { _ = server.Close() })
+					return upstream, nil
+				}
+			}
+			if tc.peer != nil {
+				v.cfg.PeerUID = tc.peer
+			}
+			client, operator := net.Pipe()
+			defer func() { _ = operator.Close() }()
+			done := make(chan error, 1)
+			go func() { done <- v.Serve(context.Background(), client, "view") }()
+			line, err := bufio.NewReader(operator).ReadString('\n')
+			if err != nil || line != "denied\n" {
+				t.Fatalf("denial response=%q err=%v", line, err)
+			}
+			if err := <-done; err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("reason=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestViewerRejectsMalformedRFBWithoutForwarding(t *testing.T) {
+	v := testViewer(t)
+	operator, server, done := startViewer(t, v, "view")
+	if _, err := operator.Write([]byte("RFB 003.003\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "unsupported RFB version") {
+		t.Fatalf("malformed client result=%v", err)
+	}
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	if n, err := server.Read(make([]byte, 1)); n != 0 || err == nil {
+		t.Fatalf("malformed bytes reached display: n=%d err=%v", n, err)
+	}
+}

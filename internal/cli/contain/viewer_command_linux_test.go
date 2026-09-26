@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain/viewer"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestViewerControlProtocolAndPeer(t *testing.T) {
@@ -101,18 +102,10 @@ func TestViewerServeDependencies(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- runViewerServe(ctx, base, opts) }()
-	deadline := time.After(time.Second)
-	for {
-		if _, err := os.Lstat(path); err == nil {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("positive control did not listen")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+	testwait.For(t, time.Second, func() bool {
+		_, err := os.Lstat(path)
+		return err == nil
+	}, "positive control did not listen on %s", path)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)

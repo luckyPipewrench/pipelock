@@ -381,6 +381,31 @@ func TestFileBundleStoreApplyRollbackHeadDurableAndTTLIndependent(t *testing.T) 
 	}
 }
 
+func TestRollbackHeadRejectsAuthorizationForAnotherTenant(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{id: "tenant-bound-v1", version: 1, audience: conductor.Audience{InstanceIDs: []string{"*"}}})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{id: "tenant-bound-v2", version: 2, previousHash: r1.BundleHash, audience: conductor.Audience{InstanceIDs: []string{"*"}}})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	auth := signedRollbackAuthorizationForBundles(t, "tenant-bound-rollback", v2, v1, testNow)
+	auth.OrgID = "other-org"
+	if _, err := store.PreviewRollbackHead(t.Context(), auth); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("preview error = %v, want invalid rollback", err)
+	}
+	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("apply error = %v, want invalid rollback", err)
+	}
+}
+
 func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

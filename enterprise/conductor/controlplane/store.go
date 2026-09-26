@@ -504,6 +504,9 @@ func (s *FileBundleStore) rollbackHeadDecisionLocked(auth conductor.RollbackAuth
 	if err != nil {
 		return PublishedBundle{}, rollbackHeadApply, err
 	}
+	if target.Bundle.OrgID != auth.OrgID || target.Bundle.FleetID != auth.FleetID {
+		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback target is outside authorization scope", conductor.ErrInvalidRollback)
+	}
 	if auth.CurrentVersion <= target.Bundle.Version {
 		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback current version must exceed target version", conductor.ErrInvalidRollback)
 	}

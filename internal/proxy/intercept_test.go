@@ -5699,3 +5699,37 @@ func TestInterceptTunnel_ExemptDomainKeepsEncodedBytes(t *testing.T) {
 		t.Errorf("body was re-encoded: got %d bytes, want the original %d encoded bytes", len(body), len(encoded))
 	}
 }
+
+// TestInterceptTunnel_A2ARepeatedExtensionsHeaderBlocked proves every
+// A2A-Extensions field line is scanned: a clean first line must not hide a
+// blocked URI on a later line.
+func TestInterceptTunnel_A2ARepeatedExtensionsHeaderBlocked(t *testing.T) {
+	var reached atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = fmt.Fprint(w, "should not reach")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/message:send", strings.NewReader(`{"method":"tasks/send"}`))
+	req.Header.Set("Content-Type", "application/a2a+json")
+	req.Header.Add("A2A-Extensions", "https://ext.example.com/v1")
+	req.Header.Add("A2A-Extensions", "file:///etc/passwd")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a blocked URI on a repeated A2A-Extensions line", resp.StatusCode)
+	}
+	if reached.Load() {
+		t.Fatal("request reached upstream despite a blocked repeated A2A-Extensions line")
+	}
+}

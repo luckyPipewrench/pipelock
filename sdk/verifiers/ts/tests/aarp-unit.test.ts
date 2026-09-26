@@ -41,7 +41,7 @@ import {
   validateStructure,
 } from "../src/aarp/envelope.js";
 import { verifyChain } from "../src/aarp/chain.js";
-import { comparableAppraisal, verify } from "../src/aarp/appraise.js";
+import { classifyClaims, comparableAppraisal, verify } from "../src/aarp/appraise.js";
 import { TrustFileError, emptyTrust, loadTrustFile, unmarshal } from "../src/aarp/index.js";
 
 // Shared corpus path for the few tests that exercise the real crypto-verify path.
@@ -240,6 +240,7 @@ test("suite: checkCriticalExtensions rejects empty/dup/unknown, accepts undefine
   assert.throws(() => checkCriticalExtensions([""]), MalformedCritError);
   assert.throws(() => checkCriticalExtensions(["a", "a"]), MalformedCritError);
   assert.throws(() => checkCriticalExtensions(["unknown"]), UnknownCritError);
+  assert.throws(() => checkCriticalExtensions(["constructor"]), UnknownCritError);
 });
 
 // ---- envelope ----
@@ -313,6 +314,8 @@ test("envelope: validateStructure enforces profile, receipt type, empty sigs", (
 test("envelope: validateStructure rejects bad receipt type and grammar", () => {
   const badType = baseEnvelopeObject();
   (badType.subject as Record<string, unknown>).receipt_type = "nope";
+  assert.throws(() => validateStructure(decodeEnvelope(badType)), SchemaError);
+  (badType.subject as Record<string, unknown>).receipt_type = "constructor";
   assert.throws(() => validateStructure(decodeEnvelope(badType)), SchemaError);
 
   const badDigest = baseEnvelopeObject();
@@ -493,6 +496,29 @@ test("appraise: per-signature statuses for unknown suite, unimplemented, unknown
   assert.equal(ap.signatures[1]!.status, "unimplemented");
   assert.equal(ap.signatures[2]!.status, "unknown_key");
   assert.equal(ap.assertion_signed, false);
+});
+
+test("appraise: inherited registry names remain unknown", () => {
+  const obj = baseEnvelopeObject();
+  const signature = (obj.signatures as Array<Record<string, unknown>>)[0]!;
+  (signature.protected as Record<string, unknown>).signer_role = "toString";
+  const ap = verify(decodeEnvelope(obj), emptyTrust());
+  assert.equal(ap.signatures[0]!.status, "malformed");
+
+  (signature.protected as Record<string, unknown>).signer_role = "mediator";
+  (signature.protected as Record<string, unknown>).alg = "constructor";
+  const unknownAlgorithm = verify(decodeEnvelope(obj), emptyTrust());
+  assert.equal(unknownAlgorithm.signatures[0]!.status, "unknown_suite");
+
+  const claims = {
+    verified_claims: [],
+    assurance_claimed: ["toString", "constructor"],
+    claimed_unverified: [],
+    warnings: [],
+  } as unknown as Parameters<typeof classifyClaims>[0];
+  assert.doesNotThrow(() => classifyClaims(claims));
+  assert.deepEqual(claims.claimed_unverified, ["toString", "constructor"]);
+  assert.equal(claims.warnings.length, 2);
 });
 
 test("appraise: malformed signature on key-type mismatch and bad role", () => {

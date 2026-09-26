@@ -6,11 +6,10 @@ use crate::signing::{
 };
 use crate::types::ReceiptReport;
 use crate::util::{
-    parse_json_text, reject_duplicate_keys, resolve_signer_key, string_at, u64_at, Result,
-    VerifierError,
+    parse_json_text, read_verifier_text, reject_duplicate_keys, resolve_signer_key, string_at,
+    u64_at, Result,
 };
 use serde_json::Value;
-use std::fs;
 use std::path::PathBuf;
 
 pub fn run_receipt(
@@ -22,8 +21,7 @@ pub fn run_receipt(
     let key_hex = resolve_signer_key(signer_key)?;
     // Read the raw text so duplicate-key detection sees every key occurrence,
     // not the last-wins map serde_json would build.
-    let text = fs::read_to_string(&clean)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", clean.display())))?;
+    let text = read_verifier_text(&clean)?;
     let mut report = ReceiptReport {
         path: clean.display().to_string(),
         valid: false,

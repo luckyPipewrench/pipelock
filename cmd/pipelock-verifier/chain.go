@@ -141,10 +141,10 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			}
 			return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 		}
-		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
+		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, bareData, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr
 		}
-		receipts, extractErr := actionreceipt.ExtractReceipts(clean)
+		receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
 		if extractErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
 		}
@@ -173,7 +173,7 @@ func isBareActionReceiptJSONL(path string) (bool, []byte, error) {
 		}
 		r, unmarshalErr := actionreceipt.Unmarshal(raw)
 		if unmarshalErr != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
-			return false, nil, nil
+			return false, data, nil
 		}
 		found = true
 	}
@@ -264,9 +264,12 @@ func runEvidenceChainWith(stdout, stderr io.Writer, label, keyHex string, opts c
 	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
 }
 
-func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
+func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label, keyHex string, opts chainOptions) (bool, error) {
+	if int64(len(data)) > maxVerifierInputBytes {
+		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("evidence input exceeds %d bytes", maxVerifierInputBytes))
+	}
 	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
-		return contractreceipt.ExtractEvidenceReceipts(clean)
+		return contractreceipt.ExtractEvidenceReceiptsBytes(data)
 	})
 }
 

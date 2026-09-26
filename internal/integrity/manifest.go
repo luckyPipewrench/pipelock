@@ -9,6 +9,7 @@
 package integrity
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // ManifestVersion is the current manifest schema version.
@@ -52,7 +54,26 @@ func Load(path string) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
+	return parseManifest(data)
+}
 
+// LoadVerified parses the exact manifest bytes authenticated by its detached signature.
+func LoadVerified(path string, pubKey ed25519.PublicKey) (*Manifest, error) {
+	data, err := securefile.Read(path, securefile.Options{MaxBytes: maxManifestBytes, DisallowedPerms: securefile.DisallowGroupOrWorldWrite})
+	if err != nil {
+		return nil, fmt.Errorf("reading manifest: %w", err)
+	}
+	sig, err := signing.LoadSignature(path + signing.SigExtension)
+	if err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(pubKey, data, sig) {
+		return nil, fmt.Errorf("signature verification failed")
+	}
+	return parseManifest(data)
+}
+
+func parseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)

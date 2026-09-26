@@ -99,7 +99,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 
 	cleanDir := filepath.Clean(runDir)
 	attPath := filepath.Join(cleanDir, "attestation.json")
-	data, err := os.ReadFile(filepath.Clean(attPath))
+	data, err := readAssessVerifyFile(attPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return verifyExitUnsigned, fmt.Errorf("attestation not present")
@@ -138,7 +138,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 	// Safe: att.PrimaryArtifact is validated as "assessment.json" above,
 	// so this Join cannot escape cleanDir.
 	artifactPath := filepath.Join(cleanDir, att.PrimaryArtifact)
-	actualHash, err := hashFile(artifactPath)
+	actualHash, err := hashAssessVerifyFile(artifactPath)
 	if err != nil {
 		return verifyExitTamperedArtifact, fmt.Errorf("hashing primary artifact: %w", err)
 	}
@@ -184,7 +184,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 		}
 	}
 
-	sig, err := signing.LoadSignature(sigPath)
+	sig, err := loadAssessVerifySignature(sigPath)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("loading attestation signature: %w", err)
 	}
@@ -196,7 +196,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 	// Verify badge integrity if attestation claims one.
 	if att.BadgeSHA256 != "" {
 		badgePath := filepath.Join(cleanDir, "badge.svg")
-		badgeHash, err := hashFile(badgePath)
+		badgeHash, err := hashAssessVerifyFile(badgePath)
 		if err != nil {
 			return verifyExitTamperedArtifact, fmt.Errorf("badge.svg referenced in attestation but: %w", err)
 		}

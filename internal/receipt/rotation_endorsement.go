@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -166,6 +167,9 @@ func rotationEndorsementDigest(e RotationEndorsement) ([]byte, error) {
 // security claim covered by the retiring key's signature.
 func UnmarshalRotationEndorsement(data []byte) (RotationEndorsement, error) {
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return RotationEndorsement{}, fmt.Errorf("unmarshal rotation endorsement: %w", err)
+	}
+	if err := rejectStructAliases(data, reflect.TypeFor[RotationEndorsement]()); err != nil {
 		return RotationEndorsement{}, fmt.Errorf("unmarshal rotation endorsement: %w", err)
 	}
 	var endorsement RotationEndorsement

@@ -325,6 +325,11 @@ func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
 	return extractEvidenceReceiptsFromBytes(data, filepath.Clean(path))
 }
 
+// ExtractEvidenceReceiptsBytes parses an already-read evidence snapshot.
+func ExtractEvidenceReceiptsBytes(data []byte) ([]EvidenceReceipt, error) {
+	return extractEvidenceReceiptsFromBytes(data, "evidence bytes")
+}
+
 // ExtractEvidenceReceiptsFromSessionDir reads all recorder JSONL files for a
 // session and returns v2 EvidenceReceipts in chain order. Files are ordered by
 // their numeric sequence suffix, matching recorder.QuerySession's v1 behavior.

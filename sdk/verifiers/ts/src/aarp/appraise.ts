@@ -229,23 +229,23 @@ function appraiseSignature(
     res.reason = "empty key_id";
     return { result: res, ok: false };
   }
-  if (!knownSignerRoles[s.protected.signer_role]) {
+  if (!Object.hasOwn(knownSignerRoles, s.protected.signer_role)) {
     res.status = "malformed";
     res.reason = "unknown signer_role";
     return { result: res, ok: false };
   }
-  const wantKeyType = keyTypeForAlg[s.protected.alg];
-  if (wantKeyType === undefined) {
+  if (!Object.hasOwn(keyTypeForAlg, s.protected.alg)) {
     res.status = "unknown_suite";
     res.reason = "unrecognized algorithm; no fallback";
     return { result: res, ok: false };
   }
+  const wantKeyType = keyTypeForAlg[s.protected.alg];
   if (s.protected.key_type !== wantKeyType) {
     res.status = "malformed";
     res.reason = `key_type ${JSON.stringify(s.protected.key_type)} != ${JSON.stringify(wantKeyType)} required by alg`;
     return { result: res, ok: false };
   }
-  if (!implementedAlgs[s.protected.alg]) {
+  if (!Object.hasOwn(implementedAlgs, s.protected.alg)) {
     res.status = "unimplemented";
     res.reason = "recognized suite, verifier not yet built";
     return { result: res, ok: false };
@@ -397,12 +397,12 @@ export function classifyClaims(ap: Appraisal): void {
   for (const claimed of ap.assurance_claimed) {
     if (seenClaim.has(claimed)) continue;
     seenClaim.add(claimed);
-    const required = claimVerifiedBy[claimed];
-    if (required === undefined) {
+    if (!Object.hasOwn(claimVerifiedBy, claimed)) {
       ap.claimed_unverified.push(claimed);
       ap.warnings.push(`unknown assurance claim reported claim-only: ${claimed}`);
       continue;
     }
+    const required = claimVerifiedBy[claimed];
     if (required.length === 0) {
       ap.claimed_unverified.push(claimed);
       continue;

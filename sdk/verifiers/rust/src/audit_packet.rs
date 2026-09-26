@@ -13,7 +13,6 @@ use crate::util::{
     bool_at, parse_json_text, reject_duplicate_keys, resolve_artifact_path, resolve_packet_path,
     resolve_signer_key, sha256_hex, string_at, string_vec_at, u64_at, Result,
 };
-use std::fs;
 
 #[derive(Debug, Clone)]
 pub struct AuditPacketOptions {
@@ -26,9 +25,7 @@ pub struct AuditPacketOptions {
 
 pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<AuditPacketReport> {
     let (packet_path, base_dir) = resolve_packet_path(target)?;
-    let raw_packet = fs::read(&packet_path).map_err(|err| {
-        crate::util::VerifierError::Runtime(format!("read {}: {err}", packet_path.display()))
-    })?;
+    let raw_packet = crate::util::read_verifier_bytes(&packet_path)?;
     let packet_path_string = packet_path.display().to_string();
     let mut report = report_from_packet(&packet_path_string, None);
 

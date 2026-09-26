@@ -27,6 +27,7 @@ func TestValidateRequestPolicyException(t *testing.T) {
 		want string
 	}{
 		{"valid", func(*RequestPolicyRule) {}, ""},
+		{"QUERY method", func(r *RequestPolicyRule) { r.Route.Methods = []string{methodQuery} }, ""},
 		{"warn rule", func(r *RequestPolicyRule) { r.Action = ActionWarn }, "requires an enforced block rule"},
 		{"shadow rule", func(r *RequestPolicyRule) { r.Shadow = true }, "requires an enforced block rule"},
 		{"no host", func(r *RequestPolicyRule) { r.Route.Hosts = nil }, "scoped by host"},

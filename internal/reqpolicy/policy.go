@@ -142,7 +142,7 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 		if r.Except != nil {
 			for _, method := range r.Route.Methods {
 				switch strings.ToUpper(method) {
-				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, "QUERY":
 				default:
 					return nil, fmt.Errorf("request_policy rule %q: exact exception requires a body-carrying method", r.Name)
 				}

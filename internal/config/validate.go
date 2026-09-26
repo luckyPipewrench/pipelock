@@ -2827,7 +2827,7 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 			}
 			for _, method := range r.Route.Methods {
 				switch method {
-				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
 				default:
 					return fmt.Errorf("request_policy rule %q except requires a body-carrying HTTP method", r.Name)
 				}

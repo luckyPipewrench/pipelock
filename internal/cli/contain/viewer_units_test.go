@@ -98,6 +98,41 @@ func TestViewerProvisionFailuresAndRollback(t *testing.T) {
 	})
 }
 
+func TestViewerActiveDisabledRollbackAfterLaterFailure(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+	env.displayEnabled = true
+	yes := true
+	env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+	service, _ := viewerUnitPaths(env)
+	unit := renderViewerServiceUnit(env)
+	if err := os.WriteFile(service, []byte(unit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.on("systemctl is-enabled "+filepath.Base(service), "disabled\n", 1, nil)
+	runner.on("systemctl is-active "+filepath.Base(service), "active\n", 0, nil)
+	steps := []step{stepProvisionViewer(), {name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
+		return false, errors.New("later step failed")
+	}}}
+	outcomes, err := runSteps(context.Background(), env, out, steps)
+	if err == nil || !strings.Contains(err.Error(), "later step failed") {
+		t.Fatalf("install error = %v", err)
+	}
+	if !outcomes[0].applied || !strings.Contains(out.String(), "undo provision-display-viewer") {
+		t.Fatalf("viewer change skipped rollback: outcomes=%+v output=%s", outcomes, out.String())
+	}
+	if !runnerSaw(runner, "systemctl enable --now "+filepath.Base(service)) || !runnerSaw(runner, "systemctl disable --now "+filepath.Base(service)) || !runnerSaw(runner, "systemctl start "+filepath.Base(service)) {
+		t.Fatalf("viewer enabled state or active state not restored: %+v", runner.calls)
+	}
+	if runnerSaw(runner, "systemctl enable "+filepath.Base(service)) {
+		t.Fatal("rollback enabled a previously disabled viewer")
+	}
+	got, readErr := os.ReadFile(filepath.Clean(service))
+	if readErr != nil || string(got) != unit {
+		t.Fatalf("restored unit = %q, %v", got, readErr)
+	}
+}
+
 func TestViewerRemovalRejectsForeignBackupAndCommandFailure(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")

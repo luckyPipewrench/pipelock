@@ -108,7 +108,7 @@ func stepProvisionViewer() step {
 		if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(service)); err != nil {
 			return true, err
 		}
-		return changed || prior[1].exists || !prior[0].active, nil
+		return changed || prior[1].exists || !prior[0].active || !prior[0].enabled, nil
 	}, undo: func(ctx context.Context, env *installEnv) error {
 		service, socket := viewerUnitPaths(env)
 		paths := []string{service, socket}

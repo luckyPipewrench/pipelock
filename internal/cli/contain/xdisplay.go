@@ -832,7 +832,7 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	// Carry the probe's own X server path into the expectation, or the
 	// rendered comparison asks for an empty ExecStart and every real unit
 	// fails a check that looks like a tampering alarm.
-	checkEnv := &installEnv{agentUserName: env.agentUserName, agentHome: env.agentHome, displayNumber: number, xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, displayConfig: display}
+	checkEnv := &installEnv{agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, agentHome: env.agentHome, displayNumber: number, xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, displayConfig: display}
 	renderedLines := strings.Split(renderAgentDisplayUnit(checkEnv), "\n")
 	wantExec, wantExecPost := "", ""
 	for _, line := range renderedLines {

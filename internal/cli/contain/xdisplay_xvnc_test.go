@@ -81,6 +81,43 @@ func TestDisplayGeometryVerifyRejectsStaleExecStart(t *testing.T) {
 	}
 }
 
+func TestViewerDisplayRenderedUnitPassesVerify(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n    viewer:\n      enabled: true\n      operator_user: operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForInspection(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitPath := filepath.Join(root, "display.service")
+	install := &installEnv{agentUserName: testAgentUser, proxyUserName: "proxy", agentHome: filepath.Join(root, "agent"), displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: cfg.Containment.Display}
+	unit := renderAgentDisplayUnit(install)
+	if !strings.Contains(unit, "setfacl -n -m u:proxy:rw") {
+		t.Fatal("viewer unit lacks proxy ACL grant")
+	}
+	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := &probeEnv{
+		configPath: cfgPath, displayUnitPath: unitPath, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, agentHome: install.agentHome, xvncPath: install.xvncPath, readFile: os.ReadFile,
+		stat: func(string) (os.FileInfo, error) {
+			return fakeFileInfo{mode: os.ModeSocket | managedXSocketMode, sys: fakeFileSysWithUID(4242)}, nil
+		},
+		lookupUser: func(string) (*user.User, error) { return &user.User{Uid: "4242"}, nil },
+	}
+	probe.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+		if len(args) > 0 && args[0] == "is-active" {
+			return "active\n", 0, nil
+		}
+		return "enabled\n", 0, nil
+	}
+	if status, detail := probeAgentDisplay(context.Background(), probe); status != statusPass {
+		t.Fatalf("rendered viewer unit verify = %s: %s", status, detail)
+	}
+}
+
 func TestXvncUnitClipboardModes(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -791,9 +828,10 @@ func TestProbeAgentDisplayRFBViewerModeAndBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.readFile = os.ReadFile
-	env.stat = func(string) (os.FileInfo, error) {
+	env.lstat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithUID(fakeDisplayUID)}, nil
 	}
+	env.stat = func(string) (os.FileInfo, error) { return nil, errors.New("RFB probe must use lstat") }
 	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
 	}

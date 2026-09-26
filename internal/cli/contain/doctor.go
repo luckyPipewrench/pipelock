@@ -236,9 +236,6 @@ func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
 	}
 	cfg, err := config.LoadForInspection(env.configPath)
 	if err != nil {
-		if strings.Contains(err.Error(), "containment.display.viewer.public_origin") {
-			checks = append(checks, doctorCheck{10, "viewer_service", "viewer configuration and socket are usable", checkDoctorViewerService})
-		}
 		return checks
 	}
 	if cfg.Containment.Display.IsEnabled(true) && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
@@ -272,7 +269,7 @@ func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {
 	cfg, err := config.LoadForInspection(env.configPath)
 	if err != nil {
-		return fail(classInfra, "viewer config missing: "+err.Error(), "configure display viewer public_origin")
+		return fail(classInfra, "viewer config missing: "+err.Error(), "check display viewer configuration")
 	}
 	if !viewerRFBEnabled(cfg.Containment.Display) {
 		status, detail := probeViewerService(ctx, doctorViewerProbeEnv(env))
@@ -280,9 +277,6 @@ func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult 
 			return fail(classInfra, detail, "rerun contain install")
 		}
 		return pass(detail)
-	}
-	if err := config.ValidateViewerOrigin(cfg.Containment.Display.Viewer.PublicOrigin); err != nil {
-		return fail(classInfra, err.Error(), "configure display viewer public_origin")
 	}
 	if env.lookPath != nil {
 		if _, err := env.lookPath("setfacl"); err != nil {

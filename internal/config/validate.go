@@ -684,19 +684,8 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if display.Viewer.Enabled != nil && *display.Viewer.Enabled && display.EffectiveBackend() != "xvnc" {
 		return warnings, fmt.Errorf("containment.display.viewer.enabled requires backend xvnc")
 	}
-	if display.Viewer.Enabled != nil && *display.Viewer.Enabled {
-		if err := ValidateViewerOrigin(display.Viewer.PublicOrigin); err != nil {
-			return warnings, err
-		}
-	}
-	if display.Viewer.Source != "" && display.Viewer.Source != "managed" && display.Viewer.Source != "external_rfb" {
-		return warnings, fmt.Errorf("containment.display.viewer.source must be managed or external_rfb")
-	}
 	if user := display.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
 		return warnings, fmt.Errorf("containment.display.viewer.operator_user must name one local user")
-	}
-	if path := display.Viewer.HostSocket; path != "" && (!publishedSocketPathPattern.MatchString(path) || filepath.Clean(path) != path) {
-		return warnings, fmt.Errorf("containment.display.viewer.host_socket must be a clean absolute path under /run/ ending in .sock")
 	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err

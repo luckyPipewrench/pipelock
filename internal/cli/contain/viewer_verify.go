@@ -30,11 +30,13 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 		}
 		return statusPass, "viewer disabled"
 	}
-	if err := config.ValidateViewerOrigin(cfg.Containment.Display.Viewer.PublicOrigin); err != nil {
+	install := &installEnv{displayUnitPath: env.displayUnitPath, agentHome: env.agentHome, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, displayNumber: cfg.Containment.Display.EffectiveNumber(), displayConfig: cfg.Containment.Display}
+	if _, err := env.stat(socket); err == nil {
+		return statusFail, "legacy viewer HTTP socket unit remains"
+	} else if !os.IsNotExist(err) {
 		return statusFail, err.Error()
 	}
-	install := &installEnv{displayUnitPath: env.displayUnitPath, agentHome: env.agentHome, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, displayNumber: cfg.Containment.Display.EffectiveNumber(), displayConfig: cfg.Containment.Display}
-	for path, want := range map[string]string{service: renderViewerServiceUnit(install), socket: renderViewerSocketUnit(cfg.Containment.Display.Viewer)} {
+	for path, want := range map[string]string{service: renderViewerServiceUnit(install)} {
 		body, err := env.readFile(path)
 		if err != nil {
 			return statusFail, fmt.Sprintf("viewer unit %s: %v", path, err)
@@ -43,10 +45,10 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 			return statusFail, "viewer unit drift: " + path
 		}
 	}
-	if out, code, err := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(socket)); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
-		return statusFail, "viewer socket unit is inactive"
+	if out, code, err := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(service)); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
+		return statusFail, "viewer service unit is inactive"
 	}
-	path := viewerHostSocket(cfg.Containment.Display.Viewer)
+	path := viewerControlSocket
 	statSocket := env.lstat
 	if statSocket == nil {
 		statSocket = env.stat
@@ -58,7 +60,7 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
 		return statusFail, fmt.Sprintf("viewer socket mode is %s, want socket 0600", info.Mode())
 	}
-	account, err := env.lookupUser(cfg.Containment.Display.Viewer.OperatorUser)
+	account, err := env.lookupUser(env.proxyUserName)
 	if err != nil {
 		return statusFail, fmt.Sprintf("viewer socket owner lookup: %v", err)
 	}
@@ -70,7 +72,7 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if !ok || uint64(ownerUID) != uid {
 		return statusFail, "viewer socket admits wrong user"
 	}
-	return statusPass, "viewer socket unit active with operator-owned 0600 socket"
+	return statusPass, "viewer service active with proxy-owned 0600 control socket"
 }
 
 func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {

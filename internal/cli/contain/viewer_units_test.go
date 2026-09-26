@@ -13,92 +13,48 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-func TestViewerUnitsAndNestedHomeACL(t *testing.T) {
+func TestViewerServiceUnitUsesControlSocket(t *testing.T) {
 	yes := true
-	env := &installEnv{agentHome: "/srv/agents/current", agentUserName: "agent", proxyUserName: "proxy", pipelockTarget: "/usr/local/bin/pipelock", displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayUnitPath: "/etc/systemd/system/pipelock-agent-display.service", displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator", PublicOrigin: "https://viewer.example"}}}
-	display := renderAgentDisplayUnit(env)
-	for _, path := range []string{"/srv/agents/current", "/srv/agents/current/.local", "/srv/agents/current/.local/state", "/srv/agents/current/.local/state/pipelock", "/srv/agents/current/.local/state/pipelock/display"} {
-		if !strings.Contains(display, "u:proxy:--x \""+path+"\"") {
-			t.Errorf("missing traverse ACL on %s", path)
-		}
-	}
-	if !strings.Contains(display, "u:proxy:rw,g::---,o::---,m::rw \"$2\"") {
-		t.Fatal("socket ACL absent from ExecStartPost")
-	}
-	service := renderViewerServiceUnit(env)
-	for _, want := range []string{"User=proxy", "--agent-user agent", "--operator-user operator", "--origin https://viewer.example", "ProtectSystem=strict", "ProtectHome=read-only", "RuntimeDirectory=pipelock-contain-viewer"} {
-		if !strings.Contains(service, want) {
+	env := &installEnv{agentHome: "/srv/agents/current", agentUserName: "agent", proxyUserName: "proxy", pipelockTarget: "/usr/local/bin/pipelock", displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
+	unit := renderViewerServiceUnit(env)
+	for _, want := range []string{"User=proxy", "--agent-user agent", "--operator-user operator", "RuntimeDirectory=pipelock-contain-viewer", "ProtectSystem=strict"} {
+		if !strings.Contains(unit, want) {
 			t.Errorf("service missing %q", want)
 		}
 	}
-	socket := renderViewerSocketUnit(env.displayConfig.Viewer)
-	for _, want := range []string{"ListenStream=/run/pipelock-contain-published/viewer.sock", "SocketUser=operator", "SocketMode=0600", "RemoveOnStop=true"} {
-		if !strings.Contains(socket, want) {
-			t.Errorf("socket missing %q", want)
+	for _, absent := range []string{"--origin", "Requires=pipelock-contain-viewer.socket", "ListenStream="} {
+		if strings.Contains(unit, absent) {
+			t.Errorf("service retains %q", absent)
 		}
-	}
-	a, b := viewerUnitPaths(env)
-	if filepath.Base(a) != viewerUnitBase+".service" || filepath.Base(b) != viewerUnitBase+".socket" {
-		t.Fatal(a, b)
 	}
 }
 
-func TestViewerInstallAndFailureCleanup(t *testing.T) {
-	for _, failStart := range []bool{false, true} {
-		t.Run(map[bool]string{false: "enable and disable", true: "failed start"}[failStart], func(t *testing.T) {
-			env, runner, out := newFakeEnv(t)
-			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
-			env.agentHome = "/home/agent"
-			env.displayNumber = 99
-			env.displayEnabled = true
-			shown := true
-			env.displayConfig = config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &shown, OperatorUser: "operator", PublicOrigin: "https://viewer.example"}}
-			service, socket := viewerUnitPaths(env)
-			if failStart {
-				runner.on(argvFor("systemctl", "start", filepath.Base(service)), "failed", 1, nil)
-			}
-			_, err := runSteps(context.Background(), env, out, []step{stepProvisionViewer()})
-			if failStart {
-				if err == nil {
-					t.Fatal("service start failure accepted")
-				}
-				for _, path := range []string{service, socket} {
-					if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-						t.Fatalf("failed install left %s: %v", path, statErr)
-					}
-				}
-				if !runnerSaw(runner, "systemctl disable --now "+filepath.Base(socket)) {
-					t.Fatal("failed install did not stop listening socket")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, path := range []string{service, socket} {
-				if _, statErr := os.Stat(path); statErr != nil {
-					t.Fatal(statErr)
-				}
-			}
-			env.displayConfig.Viewer.PublicOrigin = "https://updated.example"
-			_, err = runSteps(context.Background(), env, out, []step{stepProvisionViewer()})
-			if err != nil {
-				t.Fatal("rerun: ", err)
-			}
-			shown = false
-			env.displayConfig.Viewer.Enabled = &shown
-			_, err = runSteps(context.Background(), env, out, []step{stepProvisionViewer()})
-			if err != nil {
-				t.Fatal("disable: ", err)
-			}
-			for _, path := range []string{service, socket} {
-				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-					t.Fatalf("disable left %s: %v", path, statErr)
-				}
-				if _, statErr := os.Stat(path + ".bak"); !os.IsNotExist(statErr) {
-					t.Fatalf("disable left backup %s: %v", path, statErr)
-				}
-			}
-		})
+func TestViewerInstallRemovesLegacySocketUnit(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
+	env.agentHome = "/home/agent"
+	env.displayNumber = 99
+	env.displayEnabled = true
+	yes := true
+	env.displayConfig = config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+	service, socket := viewerUnitPaths(env)
+	legacy := displayUnitMarker + "\n[Socket]\nListenStream=/run/legacy.sock\n"
+	if err := os.WriteFile(socket, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSteps(context.Background(), env, out, []step{stepProvisionViewer()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(service); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("legacy socket unit remains: %v", err)
+	}
+	if !runnerSaw(runner, "systemctl disable --now "+filepath.Base(socket)) {
+		t.Fatal("legacy socket was not stopped")
+	}
+	if !runnerSaw(runner, "systemctl enable --now "+filepath.Base(service)) {
+		t.Fatal("viewer service was not enabled")
 	}
 }

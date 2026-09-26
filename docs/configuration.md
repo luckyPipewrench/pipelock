@@ -1746,13 +1746,10 @@ containment:
     viewer:
       enabled: true
       operator_user: operator
-      host_socket: /run/pipelock-viewer.sock
-      public_origin: https://viewer.example
-      source: managed
       clipboard: false
 ```
 
-`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. `public_origin` is required for an enabled viewer and must be an HTTPS origin without a path. `contain viewer open` prints a single-use URL with the ticket in its fragment. The viewer socket is owned by `operator_user` with mode `0600`; the viewer service runs as the proxy user. Clipboard transfer defaults off. `viewer.source` accepts `managed` or `external_rfb`; `host_socket`, when set, must be a clean `/run/*.sock` path. The browser client bundle is a separate slice.
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. The viewer service runs as the proxy user and creates a `0600` control socket under `/run/pipelock-contain-viewer/`. Only the configured operator can connect through its ACL and peer-UID check. `pipelock contain view` exposes a local Unix socket for a standard VNC client. Clipboard transfer defaults off.
 
 ### Contained agent identity (containment)
 

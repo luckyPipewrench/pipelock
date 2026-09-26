@@ -94,6 +94,7 @@ func TestDisplayBackendMigrationRestoresActiveXvfbOnFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			prepareMigrationAuthority(t, env)
 			env.agentHome = filepath.Join(shortDisplayTestDir(t), "agent")
 			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
 			env.xvfbPath = "/usr/bin/Xvfb"
@@ -149,7 +150,9 @@ func TestDisplayBackendMigrationRestoresActiveXvfbOnFailure(t *testing.T) {
 				}
 				return originalLstat(path)
 			}
-			env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }
+			env.lookupUser = func(string) (*user.User, error) {
+				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+			}
 			_, err = runSteps(context.Background(), env, out, []step{stepProvisionAgentDisplay()})
 			if (err != nil) != tc.wantFailure {
 				t.Fatalf("migration error=%v, want failure=%v", err, tc.wantFailure)
@@ -231,6 +234,7 @@ func TestDisplayBackendMigrationRestoresActiveXvncOnFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			prepareMigrationAuthority(t, env)
 			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
 			env.xvfbPath = filepath.Join(shortDisplayTestDir(t), "Xvfb")
 			if err := os.WriteFile(env.xvfbPath, nil, 0o600); err != nil {
@@ -265,6 +269,30 @@ func TestDisplayBackendMigrationRestoresActiveXvncOnFailure(t *testing.T) {
 				t.Fatal("reverse migration did not install Xvfb unit")
 			}
 		})
+	}
+}
+
+func prepareMigrationAuthority(t *testing.T, env *installEnv) {
+	t.Helper()
+	env.displayAuthorityPath = filepath.Join(t.TempDir(), "agent-state", "Xauthority")
+	dir := filepath.Dir(env.displayAuthorityPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realLstat := env.lstat
+	trusted := make(map[string]bool)
+	for current := dir; ; current = filepath.Dir(current) {
+		trusted[current] = true
+		if current == string(os.PathSeparator) {
+			break
+		}
+	}
+	env.lstat = func(path string) (os.FileInfo, error) {
+		info, err := realLstat(path)
+		if err == nil && trusted[filepath.Clean(path)] && info.IsDir() {
+			return fakeFileInfo{mode: os.ModeDir | 0o755, sys: fakeFileSysWithUID(0)}, nil
+		}
+		return info, err
 	}
 }
 

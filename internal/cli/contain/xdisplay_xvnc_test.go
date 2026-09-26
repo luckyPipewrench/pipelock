@@ -55,6 +55,30 @@ func TestDisplayGeometryChangesUnit(t *testing.T) {
 	}
 }
 
+func TestDisplayGeometryVerifyRejectsStaleExecStart(t *testing.T) {
+	for _, backend := range []string{"xvfb", "xvnc"} {
+		t.Run(backend, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+			configBody := "containment:\n  display:\n    enabled: true\n    backend: " + backend + "\n    geometry: 1600x900\n"
+			if err := os.WriteFile(cfgPath, []byte(configBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := &installEnv{agentUserName: testAgentUser, agentHome: "/home/pipelock-agent", displayNumber: 99, xvfbPath: "/usr/bin/Xvfb", xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: backend}}
+			stale := renderAgentDisplayUnit(env)
+			env.displayConfig.Geometry = "1600x900"
+			current := renderAgentDisplayUnit(env)
+			if stale == current {
+				t.Fatal("geometry change did not rewrite display unit")
+			}
+			probe := &probeEnv{configPath: cfgPath, agentUserName: env.agentUserName, agentHome: env.agentHome, displayUnitPath: filepath.Join(t.TempDir(), "display.service"), xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, readFile: func(string) ([]byte, error) { return []byte(stale), nil }}
+			status, detail := probeAgentDisplay(context.Background(), probe)
+			if status != statusFail || !strings.Contains(detail, "missing exact ExecStart=") || !strings.Contains(detail, "1600x900") {
+				t.Fatalf("stale geometry verification = %s: %s", status, detail)
+			}
+		})
+	}
+}
+
 func TestXvncUnitClipboardModes(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

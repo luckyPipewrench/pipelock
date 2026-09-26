@@ -100,6 +100,62 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 	}
 }
 
+func TestVerifyRunRejectsOversizedArtifact(t *testing.T) {
+	dir := t.TempDir()
+	file, err := os.Create(filepath.Join(dir, launchManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxBundleMemberBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized artifact error = %v, want size rejection", err)
+	}
+}
+
+func TestVerifyRunRejectsSymlinkArtifact(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, launchManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink artifact error = %v, want type rejection", err)
+	}
+}
+
+func TestVerifyRunRejectsAggregateArtifactSize(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{launchManifestFile, orchestratorDelegationFile} {
+		file, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(maxBundleMemberBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, replayArchiveAuthorizationFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("aggregate artifact error = %v, want size rejection", err)
+	}
+}
+
 func TestHardeningVerifierReasonsRemainFailClosedAndSpecific(t *testing.T) {
 	t.Parallel()
 

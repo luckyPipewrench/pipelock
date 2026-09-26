@@ -214,6 +214,8 @@ func ScanGenericSSEStreamWithOptions(
 		// prompt-injection content placed in the metadata fields
 		// rides through unscanned (external review finding #2).
 		text := canonicalSSEEventText(event, reader)
+		rollingText := sseRollingEventText(text, "")
+		rollingInjectionText := sseRollingEventText(text, " ")
 
 		clearDLPTailAfterCurrent := false
 		clearInjectionTailAfterCurrent := false
@@ -223,6 +225,13 @@ func ScanGenericSSEStreamWithOptions(
 		observedCore.record(injectResult)
 		if injectResult.Failed() {
 			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
+		}
+		if injectResult.Clean && rollingInjectionText != "" {
+			injectResult = sc.ScanResponseWithSuppress(ctx, rollingInjectionText, opts.Target, opts.Suppress)
+			observedCore.record(injectResult)
+			if injectResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
+			}
 		}
 		if !injectResult.Clean {
 			findingErr := fmt.Errorf("%w: injection: %s",
@@ -249,6 +258,10 @@ func ScanGenericSSEStreamWithOptions(
 			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
 			droppedDLP.record(droppedMatches)
 		}
+		if dlpResult.Clean && rollingText != "" {
+			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, rollingText), opts.Target, opts.Suppress)
+			droppedDLP.record(droppedMatches)
+		}
 		if !dlpResult.Clean {
 			findingErr := fmt.Errorf("%w: dlp: %s",
 				ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
@@ -263,8 +276,6 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		rollingText := sseRollingEventText(text, "")
-		rollingInjectionText := sseRollingEventText(text, " ")
 		resetInjectionTail := false
 		if !skipTailInjection && injectionTail != "" {
 			combined := injectionTail + " " + rollingInjectionText
@@ -308,12 +319,22 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		if clearDLPTailAfterCurrent || resetDLPTail {
+		if clearDLPTailAfterCurrent {
 			tail = ""
 		} else {
+			if resetDLPTail {
+				// Keep a distinct trailing fragment, but do not carry forward
+				// the same prefix that just produced the cross-event finding.
+				if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
+					rollingText = rollingText[boundary+1:]
+					if strings.HasSuffix(tail, rollingText) {
+						rollingText = ""
+					}
+				}
+			}
 			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
 		}
-		if clearInjectionTailAfterCurrent || resetInjectionTail {
+		if clearInjectionTailAfterCurrent {
 			injectionTail = ""
 		} else {
 			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")

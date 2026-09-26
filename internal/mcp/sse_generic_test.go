@@ -1536,6 +1536,43 @@ func TestScanGenericSSEStream_CrossEventDLPWarnForwardsAndResetsTail(t *testing.
 	}
 }
 
+func TestScanGenericSSEStream_FinalMultilineCredential(t *testing.T) {
+	key := "ghp_" + strings.Repeat("D", 40)
+	body := "event: " + key[:4] + "\ndata: " + key[4:8] + "\ndata: " + key[8:] + "\n\n"
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := enabledSSECfg()
+			cfg.Action = action
+			var out bytes.Buffer
+			var findings []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+				testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+			if action == config.ActionBlock {
+				if !errors.Is(err, ErrSSEStreamFinding) || out.Len() != 0 {
+					t.Fatalf("block: err=%v out=%q", err, out.String())
+				}
+			} else if err != nil || len(findings) != 1 || !strings.Contains(out.String(), key[8:]) {
+				t.Fatalf("warn: err=%v findings=%v out=%q", err, findings, out.String())
+			}
+		})
+	}
+}
+
+func TestScanGenericSSEStream_CrossEventWarnRetainsDistinctSuffix(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	first := fakeAWSKey()
+	second := "AKIA" + strings.Repeat("Q", 16)
+	body := "data: " + first[:8] + "\n\ndata: " + first[8:] + " " + second[:8] + "\n\ndata: " + second[8:] + "\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("err=%v findings=%v out=%q; want two distinct cross-event findings", err, findings, out.String())
+	}
+}
+
 func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
 	cfg := enabledSSECfg()
 	cfg.Action = config.ActionWarn

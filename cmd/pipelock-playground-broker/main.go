@@ -742,9 +742,10 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		return ids
 	}
 	reaper, err := broker.NewReaper(broker.ReaperConfig{
-		Provider:  provider,
-		ActiveIDs: activeIDsFn,
-		Log:       out,
+		Provider:            provider,
+		ActiveIDs:           activeIDsFn,
+		RetryFailedDestroys: lm.RetryFailedDestroys,
+		Log:                 out,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err

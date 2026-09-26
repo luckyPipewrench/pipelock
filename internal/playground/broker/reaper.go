@@ -37,6 +37,8 @@ type ReaperConfig struct {
 	// ActiveIDs returns provider machine IDs protected from orphan cleanup:
 	// active leases plus any warm-pool machines or in-flight warm handoffs.
 	ActiveIDs func() map[string]struct{}
+	// RetryFailedDestroys reattempts lease teardown before orphan reconciliation.
+	RetryFailedDestroys func(context.Context)
 	// Now returns the current time. Injectable for tests; nil uses time.Now.
 	Now func() time.Time
 	// Grace is the minimum machine age before the reaper considers it
@@ -53,12 +55,13 @@ type ReaperConfig struct {
 // Reaper reconciles actual provider machines against live leases and destroys
 // strays. It is safe for concurrent use.
 type Reaper struct {
-	provider  MachineProvider
-	activeIDs func() map[string]struct{}
-	now       func() time.Time
-	grace     time.Duration
-	interval  time.Duration
-	log       io.Writer
+	provider            MachineProvider
+	activeIDs           func() map[string]struct{}
+	retryFailedDestroys func(context.Context)
+	now                 func() time.Time
+	grace               time.Duration
+	interval            time.Duration
+	log                 io.Writer
 
 	mu                     sync.Mutex
 	managedZeroConsecutive int
@@ -89,12 +92,13 @@ func NewReaper(cfg ReaperConfig) (*Reaper, error) {
 		log = io.Discard
 	}
 	return &Reaper{
-		provider:  cfg.Provider,
-		activeIDs: cfg.ActiveIDs,
-		now:       now,
-		grace:     grace,
-		interval:  interval,
-		log:       log,
+		provider:            cfg.Provider,
+		activeIDs:           cfg.ActiveIDs,
+		retryFailedDestroys: cfg.RetryFailedDestroys,
+		now:                 now,
+		grace:               grace,
+		interval:            interval,
+		log:                 log,
 	}, nil
 }
 
@@ -107,6 +111,9 @@ func NewReaper(cfg ReaperConfig) (*Reaper, error) {
 // the list call itself fails; individual destroy errors are logged and
 // skipped.
 func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
+	if r.retryFailedDestroys != nil {
+		r.retryFailedDestroys(ctx)
+	}
 	machines, err := r.provider.ListManagedMachines(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("reaper: list managed machines: %w", err)

@@ -623,13 +623,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			// A non-nil InitError means every Emit will fail until resolved,
 			// so name the cause and the remediation here.
 			if initErr := s.receiptEmitter.InitError(); initErr != nil {
-				_, _ = fmt.Fprintf(opts.Stderr,
-					"  Receipts: ERROR - chain could not be resumed: %v\n"+
-						"            Receipt emission is DISABLED until resolved. If the flight-recorder\n"+
-						"            signing key was rotated, the prior chain is sealed under the old key;\n"+
-						"            a corrupt or tampered evidence tail fails closed. Inspect the evidence\n"+
-						"            directory and the configured signing_key_path.\n",
-					initErr)
+				_, _ = io.WriteString(opts.Stderr, receiptResumeFailureNotice(initErr))
 			} else {
 				if openErr := emitStartupSessionOpen(s.receiptEmitter); openErr != nil {
 					if cfg.FlightRecorder.RequireReceipts {
@@ -760,4 +754,15 @@ func (o ServerOpts) expiry() expireFunc {
 		return o.expireForTesting
 	}
 	return defaultExpire
+}
+
+// receiptResumeFailureNotice is the startup message for a receipt chain that
+// could not be resumed. Each run begins a new recorder session, so the cause is
+// a corrupt, tampered, or foreign-key evidence tail or an evidence read error,
+// never a routine key change, and restarting is what begins a clean session.
+func receiptResumeFailureNotice(err error) string {
+	return fmt.Sprintf("  Receipts: ERROR - chain could not be resumed: %v\n"+
+		"            Receipt emission is DISABLED until resolved. A corrupt, tampered, or\n"+
+		"            foreign-key evidence tail fails closed. Inspect the evidence directory\n"+
+		"            and the configured signing_key_path, then restart to begin a new session.\n", err)
 }

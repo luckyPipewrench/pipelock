@@ -244,7 +244,7 @@ func TestAutoAnchorRestartAfterKeyRotationUsesReceiptCountAndPreservesBundles(t 
 		t.Fatalf("recorder.New B: %v", err)
 	}
 	t.Cleanup(func() { _ = recB.Close() })
-	emitterB := receipt.NewEmitter(receipt.EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: "rotation-b", Principal: "tester", Actor: "runtime-test", Metrics: m})
+	emitterB := receipt.NewEmitter(receipt.EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: "rotation-b", Principal: "tester", Actor: "runtime-test", Metrics: m, PriorSignerKeys: []string{fmt.Sprintf("%x", privA.Public().(ed25519.PublicKey))}})
 	if emitterB == nil || emitterB.InitError() != nil {
 		t.Fatalf("NewEmitter B = %v, init err = %v", emitterB, emitterB.InitError())
 	}
@@ -1743,7 +1743,7 @@ func newRotatedAutoAnchorChain(t *testing.T) (*recorder.Recorder, *receipt.Emitt
 	}
 	t.Cleanup(func() { _ = recB.Close() })
 	m := metrics.New()
-	emitterB := receipt.NewEmitter(receipt.EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: "rotation-b", Principal: "tester", Actor: "runtime-test", Metrics: m})
+	emitterB := receipt.NewEmitter(receipt.EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: "rotation-b", Principal: "tester", Actor: "runtime-test", Metrics: m, PriorSignerKeys: []string{fmt.Sprintf("%x", privA.Public().(ed25519.PublicKey))}})
 	if emitterB == nil || emitterB.InitError() != nil {
 		t.Fatalf("rotated NewEmitter = %v, init err = %v", emitterB, emitterB.InitError())
 	}

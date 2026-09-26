@@ -432,6 +432,9 @@ func probesForEnv(env *probeEnv) []probe {
 			probes = append(probes, probe{25, "viewer_rfb_access", "RFB socket mode and group match viewer setting", probeViewerRFBAccess})
 		}
 	}
+	if env.agentHome != "" {
+		probes = append(probes, probe{26, "legacy_viewer_acl", "obsolete agent-home viewer access is absent", probeLegacyViewerACL})
+	}
 	if !env.verifyRunningImage {
 		for i := range probes {
 			if probes[i].name == "binary_integrity_pin" {

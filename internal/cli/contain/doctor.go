@@ -6,6 +6,7 @@ package contain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -244,7 +245,32 @@ func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
 		checks = append(checks, doctorCheck{10, "viewer_service", "viewer socket is available to its operator", checkDoctorViewerService})
 		checks = append(checks, doctorCheck{11, "viewer_rfb_access", "viewer RFB socket group is exact", checkDoctorViewerRFBAccess})
 	}
+	// Runs whenever the config loaded, independent of the configured
+	// backend: a leftover legacy grant from a PRIOR install must still be
+	// caught even if the operator has since switched away from xvnc.
+	if env.agentHome != "" {
+		checks = append(checks, doctorCheck{12, "legacy_viewer_acl", "obsolete agent-home viewer access is absent", checkDoctorLegacyViewerACL})
+	}
 	return checks
+}
+
+func checkDoctorLegacyViewerACL(ctx context.Context, env *doctorEnv) doctorResult {
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fail(classInfra, "viewer config: "+err.Error(), "check display viewer configuration")
+	}
+	operator := ""
+	if err == nil {
+		operator = cfg.Containment.Display.Viewer.OperatorUser
+	}
+	lstat := env.lstat
+	if lstat == nil {
+		lstat = env.stat
+	}
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, operator); err != nil {
+		return fail(classInfra, err.Error(), "rerun contain install")
+	}
+	return pass("obsolete agent-home viewer access is absent")
 }
 
 func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {

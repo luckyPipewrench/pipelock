@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +15,35 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+func probeLegacyViewerACL(ctx context.Context, env *probeEnv) (string, string) {
+	operator := ""
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err == nil {
+		operator = cfg.Containment.Display.Viewer.OperatorUser
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return statusFail, fmt.Sprintf("viewer config: %v", err)
+	}
+	lstat := env.lstat
+	if lstat == nil {
+		lstat = env.stat
+	}
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, operator); err != nil {
+		return statusFail, err.Error()
+	}
+	return statusPass, "obsolete agent-home viewer access is absent"
+}
+
 func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	cfg, err := config.LoadForInspection(env.configPath)
 	if err != nil {
 		return statusFail, fmt.Sprintf("viewer config: %v", err)
+	}
+	lstat := env.lstat
+	if lstat == nil {
+		lstat = env.stat
+	}
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, cfg.Containment.Display.Viewer.OperatorUser); err != nil {
+		return statusFail, err.Error()
 	}
 	service, socket := viewerUnitPaths(&installEnv{displayUnitPath: env.displayUnitPath})
 	if !viewerRFBEnabled(cfg.Containment.Display) {

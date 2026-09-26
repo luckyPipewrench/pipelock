@@ -232,9 +232,8 @@ func displayRFBPath(override string) string {
 	return viewerRFBSocket
 }
 
-func hasLegacyViewerSocket(unit []byte, agentHome string) bool {
-	legacy := filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")
-	return strings.HasPrefix(string(unit), displayUnitMarker+"\n") && strings.Contains(string(unit), " -rfbunixpath "+legacy+" ")
+func legacyViewerSocketPath(agentHome string) string {
+	return filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")
 }
 
 // viewerTraverseDirs lists the legacy home-directory ACL chain for upgrade cleanup.
@@ -252,30 +251,162 @@ func viewerTraverseDirs(agentHome string) []string {
 	return dirs
 }
 
-// removeViewerTraverseACL revokes the proxy user's traverse-only entries when
-// the viewer is off or the display is removed. setfacl -x exits 0 when the
-// entry is already absent, so this is safe to repeat; missing directories are
-// skipped because there is nothing left to revoke on them.
+// removeViewerTraverseACL removes the obsolete home-socket access independently
+// of the unit text. A failed cleanup is retried on the next install or rollback.
 func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
-	if env.proxyUserName == "" || env.agentHome == "" {
+	if env.agentHome == "" {
 		return nil
 	}
+	stat := env.lstat
+	if stat == nil {
+		stat = env.stat
+	}
+	if stat == nil {
+		return errors.New("legacy viewer ACL stat unavailable")
+	}
 	for _, dir := range viewerTraverseDirs(env.agentHome) {
-		if _, err := env.stat(dir); errors.Is(err, os.ErrNotExist) {
+		info, err := stat(dir)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return fmt.Errorf("inspect viewer traverse directory %s: %w", dir, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("legacy viewer traverse path %s is not a real directory", dir)
 		}
 		if err := revokeViewerTraverseDir(ctx, env, dir); err != nil {
 			return err
 		}
 	}
+	socket := legacyViewerSocketPath(env.agentHome)
+	info, err := stat(socket)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy RFB socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("legacy RFB path %s is not a socket", socket)
+	}
+	if err := revokeViewerTraverseDir(ctx, env, socket); err != nil {
+		return err
+	}
+	if err := env.removeFile(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove legacy RFB socket: %w", err)
+	}
 	return nil
 }
 
 func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) error {
-	if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
-		return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+	acl, err := readAccessACL(ctx, env.runCmd, dir)
+	if err != nil {
+		return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
+	}
+	if env.proxyUserName != "" {
+		if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
+			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+		}
+	}
+	for _, raw := range strings.Split(acl, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		parts := strings.Split(line, ":")
+		prefix := ""
+		if len(parts) == 4 && parts[0] == "default" {
+			prefix, parts = "d:", parts[1:]
+		}
+		if len(parts) != 3 || parts[1] == "" || (parts[0] != "user" && parts[0] != "group") {
+			continue
+		}
+		if parts[0] == "user" && parts[1] == env.operatorUser {
+			continue
+		}
+		if parts[0] == "user" && parts[1] == env.proxyUserName && prefix == "" {
+			continue
+		}
+		entry := prefix + string(parts[0][0]) + ":" + parts[1]
+		if err := runOrErr(ctx, env, "setfacl", "-x", entry, dir); err != nil {
+			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+		}
+	}
+	// setfacl normally recalculates the mask after -x. An old mask with no
+	// remaining named entries must not retain permissions beyond group::.
+	groupPerms := aclGroupPermissions(acl)
+	if groupPerms == "" {
+		return fmt.Errorf("legacy viewer ACL on %s lacks group permissions", dir)
+	}
+	if err := runOrErr(ctx, env, "setfacl", "--mask", "-m", "g::"+groupPerms, dir); err != nil {
+		return fmt.Errorf("restore legacy viewer ACL mask on %s: %w", dir, err)
+	}
+	return nil
+}
+
+func aclGroupPermissions(acl string) string {
+	for _, line := range strings.Split(acl, "\n") {
+		if strings.HasPrefix(line, "group::") {
+			return strings.TrimSpace(strings.SplitN(strings.TrimPrefix(line, "group::"), "#", 2)[0])
+		}
+	}
+	return ""
+}
+
+func checkLegacyViewerACL(ctx context.Context, run runCommand, stat func(string) (os.FileInfo, error), home, operator string) error {
+	if home == "" {
+		return nil
+	}
+	if stat == nil {
+		return errors.New("legacy viewer ACL stat unavailable")
+	}
+	for _, dir := range viewerTraverseDirs(home) {
+		info, err := stat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect legacy viewer ACL: %w", err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("legacy viewer path %s is not a real directory", dir)
+		}
+		acl, err := readAccessACL(ctx, run, dir)
+		if err != nil {
+			return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
+		}
+		group, mask, operatorEntry := "", "", false
+		for _, raw := range strings.Split(acl, "\n") {
+			line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+			parts := strings.Split(line, ":")
+			// getfacl -p prints the unqualified group and mask entries as
+			// "group::perm" / "mask::perm" (tag, empty qualifier, perms), so
+			// these are 3 fields with an empty middle field, not 2.
+			if len(parts) == 3 && parts[1] == "" {
+				switch parts[0] {
+				case "group":
+					group = parts[2]
+				case "mask":
+					mask = parts[2]
+				}
+			}
+			if len(parts) == 4 && parts[0] == "default" && (parts[1] == "user" || parts[1] == "group") && parts[2] != "" && (parts[1] != "user" || parts[2] != operator) {
+				return fmt.Errorf("legacy viewer ACL retains default named entry on %s", dir)
+			}
+			if len(parts) == 3 && parts[1] != "" {
+				if parts[0] == "user" && parts[1] == operator {
+					operatorEntry = true
+				} else if parts[0] == "user" || parts[0] == "group" {
+					return fmt.Errorf("legacy viewer ACL retains non-operator entry on %s", dir)
+				}
+			}
+		}
+		if group == "" || (!operatorEntry && mask != "" && mask != group) {
+			return fmt.Errorf("legacy viewer ACL mask is not restored on %s", dir)
+		}
+	}
+	socket := legacyViewerSocketPath(home)
+	if _, err := stat(socket); err == nil {
+		return fmt.Errorf("legacy RFB socket remains at %s", socket)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect legacy RFB socket: %w", err)
 	}
 	return nil
 }
@@ -335,21 +466,12 @@ func stepProvisionAgentDisplay() step {
 			if err := captureDisplayPreState(ctx, env); err != nil {
 				return false, err
 			}
-			legacyViewerACL := false
-			if env.prevDisplayUnitExisted {
-				priorUnit, readErr := env.readFile(env.displayUnitPath)
-				if readErr != nil {
-					return false, fmt.Errorf("read display unit: %w", readErr)
-				}
-				legacyViewerACL = hasLegacyViewerSocket(priorUnit, env.agentHome)
+			// Revoke before changing the unit so a failed revoke remains retryable.
+			if err := removeViewerTraverseACL(ctx, env); err != nil {
+				return false, err
 			}
 			if !enabled {
 				if !env.prevDisplayUnitExisted {
-					// A prior interrupted removal can leave the old traverse
-					// grant after its unit file is gone.
-					if err := removeViewerTraverseACL(ctx, env); err != nil {
-						return false, err
-					}
 					previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
 					if err != nil {
 						return false, err
@@ -377,11 +499,6 @@ func stepProvisionAgentDisplay() step {
 				}
 				if err := removeDisplayAuthority(env); err != nil {
 					return true, err
-				}
-				if legacyViewerACL {
-					if err := removeViewerTraverseACL(ctx, env); err != nil {
-						return true, err
-					}
 				}
 				return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
 			}
@@ -416,11 +533,6 @@ func stepProvisionAgentDisplay() step {
 			// A prior install may have granted the proxy traverse access to the
 			// agent home. The runtime socket never needs that grant, including
 			// when the viewer remains enabled across an upgrade.
-			if legacyViewerACL {
-				if err := removeViewerTraverseACL(ctx, env); err != nil {
-					return true, err
-				}
-			}
 			if display.EffectiveBackend() == "xvnc" {
 				stat := env.lstat
 				if stat == nil {
@@ -566,25 +678,13 @@ func actionRemoveAgentDisplay() step {
 		desc: "stop and remove the managed agent display unit",
 		undo: func(ctx context.Context, env *installEnv) error {
 			if env.displayUnitPath == "" {
-				return nil
-			}
-			legacyViewerACL := false
-			if body, err := env.readFile(env.displayUnitPath); err == nil {
-				legacyViewerACL = hasLegacyViewerSocket(body, env.agentHome)
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			env.prevDisplayStateKnown = false
-			if err := restoreAgentDisplay(ctx, env); err != nil {
-				return err
-			}
-			if err := removeDisplayAuthority(env); err != nil {
-				return err
-			}
-			if legacyViewerACL {
 				return removeViewerTraverseACL(ctx, env)
 			}
-			return nil
+			env.prevDisplayStateKnown = false
+			restoreErr := restoreAgentDisplay(ctx, env)
+			authorityErr := removeDisplayAuthority(env)
+			aclErr := removeViewerTraverseACL(ctx, env)
+			return errors.Join(restoreErr, authorityErr, aclErr)
 		},
 	}
 }
@@ -867,7 +967,7 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	renderedLines := strings.Split(renderAgentDisplayUnit(checkEnv), "\n")
 	wantExec, wantExecPost := "", ""
 	wantGroup := env.agentUserName
-	if display.EffectiveBackend() == "xvnc" && viewerRFBEnabled(display) {
+	if display.EffectiveBackend() == "xvnc" {
 		wantGroup = viewerUserName
 	}
 	for _, line := range renderedLines {

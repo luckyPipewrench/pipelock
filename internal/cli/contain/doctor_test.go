@@ -1092,7 +1092,7 @@ func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 		t.Fatal(err)
 	}
-	if agg.Aggregate.Total != 11 || len(lines) != 12 {
-		t.Fatalf("aggregate total = %d, records = %d; want 11 checks", agg.Aggregate.Total, len(lines)-1)
+	if agg.Aggregate.Total != 12 || len(lines) != 13 {
+		t.Fatalf("aggregate total = %d, records = %d; want 12 checks", agg.Aggregate.Total, len(lines)-1)
 	}
 }

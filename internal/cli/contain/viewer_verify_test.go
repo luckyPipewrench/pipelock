@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -27,10 +26,28 @@ func (v viewerModeInfo) Mode() os.FileMode { return v.mode }
 
 type viewerRuntimeInfo struct {
 	viewerModeInfo
-	owner syscall.Stat_t
+	owner any
 }
 
-func (v viewerRuntimeInfo) Sys() any { return &v.owner }
+func (v viewerRuntimeInfo) Sys() any { return v.owner }
+
+func TestProbeViewerServiceFallsBackToStatWhenLstatIsNil(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "agent")
+	if err := os.MkdirAll(home, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n    viewer:\n      enabled: true\n      operator_user: operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := &probeEnv{configPath: cfgPath, agentHome: home, stat: os.Lstat, readFile: os.ReadFile, displayUnitPath: filepath.Join(root, "display.service"), runCmd: func(context.Context, string, ...string) (string, int, error) {
+		return "user::rwx\ngroup::---\nother::---\n", 0, nil
+	}}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "viewer unit") {
+		t.Fatalf("lstat fallback did not reach the unit check: %s %s", status, detail)
+	}
+}
 
 func TestViewerServiceProbe(t *testing.T) {
 	root := t.TempDir()
@@ -196,6 +213,101 @@ func TestViewerServiceProbeFailureDirections(t *testing.T) {
 	}
 }
 
+func TestProbeViewerServiceConfigAndDisabledUnitErrors(t *testing.T) {
+	t.Run("invalid config", func(t *testing.T) {
+		root := t.TempDir()
+		cfgPath := filepath.Join(root, "pipelock.yaml")
+		if err := os.WriteFile(cfgPath, []byte("containment: ["), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := &probeEnv{configPath: cfgPath, lstat: os.Lstat}
+		if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "viewer config") {
+			t.Fatalf("invalid config = %s %s", status, detail)
+		}
+	})
+	t.Run("disabled viewer unit stat error", func(t *testing.T) {
+		root := t.TempDir()
+		cfgPath := filepath.Join(root, "pipelock.yaml")
+		if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := &probeEnv{configPath: cfgPath, displayUnitPath: filepath.Join(root, "display.service"), lstat: os.Lstat, stat: func(string) (os.FileInfo, error) { return nil, os.ErrPermission }}
+		if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "permission denied") {
+			t.Fatalf("disabled unit stat error = %s %s", status, detail)
+		}
+	})
+}
+
+func TestProbeViewerServiceGroupAndProxyIsolationFailures(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\ncontainment:\n  display:\n    enabled: true\n    viewer:\n      enabled: true\n      operator_user: operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	displayPath := filepath.Join(root, "display.service")
+	install := &installEnv{displayUnitPath: displayPath, proxyUserName: "proxy", displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: new(bool), OperatorUser: "operator"}}}
+	*install.displayConfig.Viewer.Enabled = true
+	service, _ := viewerUnitPaths(install)
+	if err := os.WriteFile(service, []byte(renderViewerServiceUnit(install)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual := filepath.Join(root, "control.sock")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := os.Chmod(actual, 0o660); err != nil { // #nosec G302 -- fixture models a named-operator ACL mask.
+		t.Fatal(err)
+	}
+	base := probeEnv{configPath: cfgPath, displayUnitPath: displayPath, proxyUserName: "proxy", readFile: os.ReadFile, stat: os.Lstat, lstat: func(path string) (os.FileInfo, error) {
+		if path == viewerControlSocket {
+			return os.Lstat(actual)
+		}
+		return os.Lstat(path)
+	}, lookupUser: func(string) (*user.User, error) {
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+	}, runCmd: func(_ context.Context, name string, _ ...string) (string, int, error) {
+		if name == "getfacl" {
+			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+		}
+		return "active", 0, nil
+	}}
+	t.Run("viewer group mismatch", func(t *testing.T) {
+		env := base
+		env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+			if name == "getfacl" {
+				return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+			}
+			if name == "getent" {
+				return "", 1, nil
+			}
+			return "active", 0, nil
+		}
+		if status, detail := probeViewerService(context.Background(), &env); status != statusFail || !strings.Contains(detail, "inspect viewer group") {
+			t.Fatalf("viewer group failure = %s %s", status, detail)
+		}
+	})
+	t.Run("proxy isolation failure", func(t *testing.T) {
+		env := base
+		env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+			if name == "getfacl" {
+				return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+			}
+			if name == "getent" {
+				return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
+			}
+			if name == "id" {
+				return viewerUserName, 0, nil
+			}
+			return "active", 0, nil
+		}
+		if status, detail := probeViewerService(context.Background(), &env); status != statusFail || !strings.Contains(detail, "must not be in the viewer group") {
+			t.Fatalf("proxy isolation failure = %s %s", status, detail)
+		}
+	})
+}
+
 func TestViewerServiceProbeControlSocketFailureDirections(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, "pipelock.yaml")
@@ -275,7 +387,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 			return info, err
 		}
 		if path == filepath.Dir(rfbPath) {
-			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, syscall.Stat_t{Uid: 0, Gid: uint32(os.Getgid())}}, nil
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
 		}
 		if path != rfbPath {
 			return info, nil
@@ -311,7 +423,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 				if err != nil || path != filepath.Dir(rfbPath) {
 					return info, err
 				}
-				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, syscall.Stat_t{Uid: 4242, Gid: uint32(os.Getgid())}}, nil
+				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(4242, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
 			}
 		}},
 		{"mode", "want 0660", func(e *probeEnv) {
@@ -326,6 +438,15 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 		{"wrong group", "wrong owner or group", func(e *probeEnv) {
 			e.lookupUser = func(string) (*user.User, error) {
 				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid() + 1)}, nil
+			}
+		}},
+		{"socket group mismatch, directory group still correct", "not owned by the " + viewerUserName + " group", func(e *probeEnv) {
+			e.lstat = func(path string) (os.FileInfo, error) {
+				info, err := wideStat(path)
+				if err != nil || path != rfbPath {
+					return info, err
+				}
+				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(uint32(os.Getuid()), 4242)}, nil //nolint:gosec // G115: os.Getuid() fits in uint32.
 			}
 		}},
 	} {
@@ -351,7 +472,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o600}, nil
 		}
 		if path == filepath.Dir(rfbPath) {
-			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, syscall.Stat_t{Uid: 0, Gid: uint32(os.Getgid())}}, nil
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
 		}
 		return info, nil
 	}

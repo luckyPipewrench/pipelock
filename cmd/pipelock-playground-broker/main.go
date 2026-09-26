@@ -1040,9 +1040,8 @@ func validateAdminFlags(f *serveFlags) error {
 	return nil
 }
 
-// validateAdminListenScope rejects admin listen addresses that bind to public
-// or unspecified IPs unless the operator explicitly opts in with
-// --unsafe-admin-listen-public. Loopback and RFC1918/ULA/link-local are safe.
+// validateAdminListenScope permits plaintext admin credentials on loopback only
+// unless the operator explicitly opts in with --unsafe-admin-listen-public.
 func validateAdminListenScope(listen string, unsafePublic bool) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -1055,7 +1054,7 @@ func validateAdminListenScope(listen string, unsafePublic bool) error {
 		if unsafePublic {
 			return nil
 		}
-		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use loopback or pass --unsafe-admin-listen-public")
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
@@ -1067,28 +1066,21 @@ func validateAdminListenScope(listen string, unsafePublic bool) error {
 		if unsafePublic {
 			return nil
 		}
-		return fmt.Errorf("--admin-listen host %q is not a recognized private address; use a loopback/private address or pass --unsafe-admin-listen-public", host)
+		return fmt.Errorf("--admin-listen host %q is not loopback; use loopback or pass --unsafe-admin-listen-public", host)
 	}
 	if addr.IsUnspecified() {
 		if unsafePublic {
 			return nil
 		}
-		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use loopback or pass --unsafe-admin-listen-public")
 	}
-	if isPrivateOrLoopback(addr) {
+	if addr.IsLoopback() {
 		return nil
 	}
 	if unsafePublic {
 		return nil
 	}
-	return fmt.Errorf("--admin-listen address %s is public; use a loopback/private address or pass --unsafe-admin-listen-public", addr)
-}
-
-// isPrivateOrLoopback returns true for loopback, link-local, RFC1918, and ULA
-// addresses — the address classes safe for an admin listener without explicit
-// opt-in.
-func isPrivateOrLoopback(addr netip.Addr) bool {
-	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast()
+	return fmt.Errorf("--admin-listen address %s is not loopback; use loopback or pass --unsafe-admin-listen-public", addr)
 }
 
 func validateHumanGateFlags(f *serveFlags) error {

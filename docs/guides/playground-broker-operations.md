@@ -188,10 +188,10 @@ graceful HTTP shutdown. For remote operation, run the authenticated admin API on
 a separate listener with `--admin-listen` plus `--admin-token-file` or
 `--admin-token-env`.
 
-Bind `--admin-listen` to loopback or a private interface, never the public
-internet, and use a long random token (e.g. `openssl rand -hex 32`). The token is
+Bind `--admin-listen` to loopback and use a long random token (e.g. `openssl rand -hex 32`). The token is
 compared in constant time, but the endpoint has no rate limiting or lockout by
-design, so a weak token on a reachable interface is brute-forceable.
+design. To operate it remotely, use an authenticated, encrypted tunnel to the
+loopback listener; do not send the bearer token over plaintext network HTTP.
 
 On a single host:
 

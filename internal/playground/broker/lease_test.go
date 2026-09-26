@@ -32,6 +32,18 @@ type fakeProvider struct {
 	listErr         error
 }
 
+type failingDestroyProvider struct {
+	*fakeProvider
+	fail bool
+}
+
+func (p *failingDestroyProvider) DestroyMachine(ctx context.Context, id string) error {
+	if p.fail {
+		return errors.New("provider teardown unavailable")
+	}
+	return p.fakeProvider.DestroyMachine(ctx, id)
+}
+
 func (f *fakeProvider) CreateMachine(_ context.Context, spec MachineSpec) (*Machine, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -230,6 +242,40 @@ func TestReleaseDestroysAndFreesSlot(t *testing.T) {
 	// Slot freed: can lease again on the cap-1 limiter.
 	if _, err := lm.Lease(context.Background(), "sess-2", nil); err != nil {
 		t.Fatalf("slot leaked after release: %v", err)
+	}
+}
+
+func TestReleaseDestroyFailureRetainsCapacityUntilRetry(t *testing.T) {
+	provider := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
+	lm := newManager(t, provider, 1)
+	lease, err := lm.Lease(context.Background(), "sess-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm.Release(context.Background(), "sess-1")
+	if _, ok := lm.LeaseFor("sess-1"); ok {
+		t.Fatal("released session remains routable")
+	}
+	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; !ok {
+		t.Fatal("failed teardown lost machine identity")
+	}
+	if _, err := lm.Lease(context.Background(), "sess-2", nil); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("lease after failed teardown = %v, want capacity refusal", err)
+	}
+	provider.fail = false
+	if _, err := lm.Lease(context.Background(), "sess-2", nil); err != nil {
+		t.Fatalf("lease after teardown recovery: %v", err)
+	}
+}
+
+func TestWaitFailureDestroyFailureRetainsCapacity(t *testing.T) {
+	provider := &failingDestroyProvider{fakeProvider: &fakeProvider{waitErr: errors.New("not ready")}, fail: true}
+	lm := newManager(t, provider, 1)
+	if _, err := lm.Lease(context.Background(), "sess-1", nil); err == nil {
+		t.Fatal("expected readiness error")
+	}
+	if _, err := lm.Lease(context.Background(), "sess-2", nil); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("lease after failed readiness teardown = %v, want capacity refusal", err)
 	}
 }
 

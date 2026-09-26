@@ -2133,6 +2133,13 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	if fetchCount != fetchesBefore {
 		t.Fatalf("fetch during negative-cache window: got %d additional fetches", fetchCount-fetchesBefore)
 	}
+
+	// Repeated outages must not extend trust beyond the original key lifetime.
+	now = now.Add(cfAccessNegativeCacheTTL)
+	jwt = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), jwt); err == nil {
+		t.Fatal("accepted stale Access key after original cache lifetime")
+	}
 }
 
 func TestCFAccessJWKS_NoCacheFailsClosed(t *testing.T) {
@@ -2493,12 +2500,15 @@ func TestValidateAdminListenScope(t *testing.T) {
 	}{
 		{name: "loopback_ok", listen: "127.0.0.1:9090", wantErr: false},
 		{name: "loopback_v6_ok", listen: "[::1]:9090", wantErr: false},
-		{name: "private_rfc1918_ok", listen: "10.0.0.5:9090", wantErr: false},
-		{name: "private_172_ok", listen: "172.16.0.1:9090", wantErr: false},
-		{name: "private_192_ok", listen: "192.168.1.1:9090", wantErr: false},
-		{name: "link_local_ok", listen: "169.254.1.1:9090", wantErr: false},
-		{name: "ula_ok", listen: "[fd00::1]:9090", wantErr: false},
+		{name: "private_rfc1918_rejected", listen: "10.0.0.5:9090", wantErr: true},
+		{name: "private_172_rejected", listen: "172.16.0.1:9090", wantErr: true},
+		{name: "private_192_rejected", listen: "192.168.1.1:9090", wantErr: true},
+		{name: "link_local_rejected", listen: "169.254.1.1:9090", wantErr: true},
+		{name: "ula_rejected", listen: "[fd00::1]:9090", wantErr: true},
+		{name: "private_with_unsafe_ok", listen: "10.0.0.5:9090", unsafePublic: true},
 		{name: "localhost_ok", listen: "localhost:9090", wantErr: false},
+		{name: "hostname_with_unsafe_ok", listen: "admin.example:9090", unsafePublic: true, wantErr: false},
+		{name: "hostname_rejected", listen: "admin.example:9090", wantErr: true},
 		{name: "unspecified_rejected", listen: "0.0.0.0:9090", wantErr: true},
 		{name: "unspecified_v6_rejected", listen: "[::]:9090", wantErr: true},
 		{name: "empty_host_rejected", listen: ":9090", wantErr: true},

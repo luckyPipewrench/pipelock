@@ -111,6 +111,30 @@ func TestReaperReconcileOnce(t *testing.T) {
 	}
 }
 
+func TestReaperRetriesFailedDestroysBeforeListing(t *testing.T) {
+	fp := &fakeProvider{}
+	retried := false
+	reaper, err := NewReaper(ReaperConfig{
+		Provider: fp,
+		ActiveIDs: func() map[string]struct{} {
+			if !retried {
+				t.Fatal("active IDs read before failed destroys were retried")
+			}
+			return nil
+		},
+		RetryFailedDestroys: func(context.Context) { retried = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !retried {
+		t.Fatal("failed destroys were not retried")
+	}
+}
+
 func TestReaperReconcileHeartbeatLog(t *testing.T) {
 	baseTime := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 

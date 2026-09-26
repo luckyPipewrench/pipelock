@@ -323,46 +323,71 @@ func VerifyArchivedReplay(dir, orchestratorPubHex string) (VerifyReport, error) 
 
 func verifyRun(dir, orchestratorPubHex string, archive bool) (VerifyReport, error) {
 	cleanDir := filepath.Clean(dir)
+	root, err := os.OpenRoot(cleanDir)
+	if err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, fmt.Errorf("open run directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	remaining := int64(maxBundleExpandedBytes)
 	var artifacts RunArtifacts
-	var err error
-	if artifacts.LaunchManifest, err = readRunArtifact(cleanDir, launchManifestFile); err != nil {
+	if artifacts.LaunchManifest, err = readRunArtifact(root, &remaining, launchManifestFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.OrchestratorDelegation, err = readRunArtifact(cleanDir, orchestratorDelegationFile); err != nil {
+	if artifacts.OrchestratorDelegation, err = readRunArtifact(root, &remaining, orchestratorDelegationFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.ReplayArchiveAuthorization, err = readRunArtifact(cleanDir, replayArchiveAuthorizationFile); err != nil {
+	if artifacts.ReplayArchiveAuthorization, err = readRunArtifact(root, &remaining, replayArchiveAuthorizationFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.Witness, err = readRunArtifact(cleanDir, witnessFile); err != nil {
+	if artifacts.Witness, err = readRunArtifact(root, &remaining, witnessFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.RedWitness, err = readRunArtifact(cleanDir, redWitnessFile); err != nil {
+	if artifacts.RedWitness, err = readRunArtifact(root, &remaining, redWitnessFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.HostContainmentWitness, err = readRunArtifact(cleanDir, hostContainmentWitnessFile); err != nil {
+	if artifacts.HostContainmentWitness, err = readRunArtifact(root, &remaining, hostContainmentWitnessFile); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.PacketJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetJSONFile)); err != nil {
+	if artifacts.PacketJSON, err = readRunArtifact(root, &remaining, filepath.Join(packetSubdir, packetJSONFile)); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.PacketEvidenceJSONL, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetEvidenceFile)); err != nil {
+	if artifacts.PacketEvidenceJSONL, err = readRunArtifact(root, &remaining, filepath.Join(packetSubdir, packetEvidenceFile)); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
-	if artifacts.PacketManifestJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetManifestFile)); err != nil {
+	if artifacts.PacketManifestJSON, err = readRunArtifact(root, &remaining, filepath.Join(packetSubdir, packetManifestFile)); err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
 	return verifyRunArtifacts(artifacts, orchestratorPubHex, archive)
 }
 
-func readRunArtifact(cleanDir, name string) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, name)))
+func readRunArtifact(root *os.Root, remaining *int64, name string) ([]byte, error) {
+	info, err := root.Lstat(name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("cannot read %s: %w", name, err)
 	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cannot read %s: artifact must be a regular file", name)
+	}
+	if info.Size() > maxBundleMemberBytes || info.Size() > *remaining {
+		return nil, fmt.Errorf("cannot read %s: artifact exceeds size limit", name)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", name, err)
+	}
+	defer func() { _ = file.Close() }()
+	limit := min(int64(maxBundleMemberBytes), *remaining)
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", name, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("cannot read %s: artifact exceeds size limit", name)
+	}
+	*remaining -= int64(len(data))
 	return data, nil
 }
 

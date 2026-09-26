@@ -742,9 +742,10 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		return ids
 	}
 	reaper, err := broker.NewReaper(broker.ReaperConfig{
-		Provider:  provider,
-		ActiveIDs: activeIDsFn,
-		Log:       out,
+		Provider:            provider,
+		ActiveIDs:           activeIDsFn,
+		RetryFailedDestroys: lm.RetryFailedDestroys,
+		Log:                 out,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -1040,9 +1041,8 @@ func validateAdminFlags(f *serveFlags) error {
 	return nil
 }
 
-// validateAdminListenScope rejects admin listen addresses that bind to public
-// or unspecified IPs unless the operator explicitly opts in with
-// --unsafe-admin-listen-public. Loopback and RFC1918/ULA/link-local are safe.
+// validateAdminListenScope permits plaintext admin credentials on loopback only
+// unless the operator explicitly opts in with --unsafe-admin-listen-public.
 func validateAdminListenScope(listen string, unsafePublic bool) error {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -1055,7 +1055,7 @@ func validateAdminListenScope(listen string, unsafePublic bool) error {
 		if unsafePublic {
 			return nil
 		}
-		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use loopback or pass --unsafe-admin-listen-public")
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
@@ -1067,28 +1067,21 @@ func validateAdminListenScope(listen string, unsafePublic bool) error {
 		if unsafePublic {
 			return nil
 		}
-		return fmt.Errorf("--admin-listen host %q is not a recognized private address; use a loopback/private address or pass --unsafe-admin-listen-public", host)
+		return fmt.Errorf("--admin-listen host %q is not loopback; use loopback or pass --unsafe-admin-listen-public", host)
 	}
 	if addr.IsUnspecified() {
 		if unsafePublic {
 			return nil
 		}
-		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use loopback or pass --unsafe-admin-listen-public")
 	}
-	if isPrivateOrLoopback(addr) {
+	if addr.IsLoopback() {
 		return nil
 	}
 	if unsafePublic {
 		return nil
 	}
-	return fmt.Errorf("--admin-listen address %s is public; use a loopback/private address or pass --unsafe-admin-listen-public", addr)
-}
-
-// isPrivateOrLoopback returns true for loopback, link-local, RFC1918, and ULA
-// addresses — the address classes safe for an admin listener without explicit
-// opt-in.
-func isPrivateOrLoopback(addr netip.Addr) bool {
-	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast()
+	return fmt.Errorf("--admin-listen address %s is not loopback; use loopback or pass --unsafe-admin-listen-public", addr)
 }
 
 func validateHumanGateFlags(f *serveFlags) error {
@@ -1819,22 +1812,21 @@ func (v *cfAccessVerifier) keySet(ctx context.Context) (*jose.JSONWebKeySet, err
 		return v.keys, nil
 	}
 
-	// Negative-cache: if a previous refetch failed and we have stale keys,
-	// serve them until nextRetry to avoid hammering the JWKS endpoint.
-	if v.keys != nil && now.Before(v.nextRetry) {
-		v.keysExp = now.Add(cfAccessNegativeCacheTTL)
+	// A failed refresh may reuse keys for one fixed grace period after their
+	// original expiry. Retrying must never renew that trust deadline.
+	staleUntil := v.keysExp.Add(cfAccessNegativeCacheTTL)
+	if v.keys != nil && now.Before(v.nextRetry) && now.Before(staleUntil) {
 		return v.keys, nil
 	}
 
 	keys, fetchErr := v.fetchKeys(ctx)
 	if fetchErr != nil {
 		// Fail-closed when there are no cached keys at all.
-		if v.keys == nil {
+		if v.keys == nil || !now.Before(staleUntil) {
 			return nil, fetchErr
 		}
-		// Stale keys exist: serve them and set a negative-cache window.
+		// Stale keys remain within their fixed grace period.
 		v.nextRetry = now.Add(cfAccessNegativeCacheTTL)
-		v.keysExp = v.nextRetry
 		return v.keys, nil
 	}
 	v.keys = keys

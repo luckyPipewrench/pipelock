@@ -56,9 +56,10 @@ type Lease struct {
 // LeaseManager owns the lifecycle of per-visitor VMs and the concurrency cap. It
 // is safe for concurrent use.
 type LeaseManager struct {
-	cfg    LeaseConfig
-	mu     sync.Mutex
-	leases map[string]*Lease
+	cfg        LeaseConfig
+	mu         sync.Mutex
+	leases     map[string]*Lease
+	quarantine map[string]*Lease
 }
 
 // NewLeaseManager validates cfg and returns a LeaseManager. It rejects a missing
@@ -76,7 +77,7 @@ func NewLeaseManager(cfg LeaseConfig) (*LeaseManager, error) {
 	// BaseEnv reaches every visitor VM. Retain a broker-owned copy so a caller
 	// cannot change the configuration after validation and construction.
 	cfg.BaseEnv = maps.Clone(cfg.BaseEnv)
-	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease)}, nil
+	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease), quarantine: make(map[string]*Lease)}, nil
 }
 
 // Lease provisions one VM for sessionKey. It acquires a concurrency slot, creates
@@ -89,6 +90,7 @@ func (lm *LeaseManager) Lease(ctx context.Context, sessionKey string, sessionEnv
 	if sessionKey == "" {
 		return nil, errors.New("broker: empty session key")
 	}
+	lm.RetryFailedDestroys(context.WithoutCancel(ctx))
 
 	lm.mu.Lock()
 	if _, exists := lm.leases[sessionKey]; exists {
@@ -118,10 +120,7 @@ func (lm *LeaseManager) Lease(ctx context.Context, sessionKey string, sessionEnv
 	}
 
 	if werr := lm.cfg.Provider.WaitReady(ctx, m.ID); werr != nil {
-		// Fail-closed: the machine never became usable. Tear it down (best
-		// effort) and free the slot rather than returning a half-started VM.
-		_ = lm.cfg.Provider.DestroyMachine(context.WithoutCancel(ctx), m.ID)
-		release()
+		lm.destroyOrQuarantine(context.WithoutCancel(ctx), &Lease{Machine: m, release: release})
 		return nil, fmt.Errorf("broker: machine %s not ready: %w", m.ID, werr)
 	}
 
@@ -129,10 +128,9 @@ func (lm *LeaseManager) Lease(ctx context.Context, sessionKey string, sessionEnv
 
 	lm.mu.Lock()
 	if _, exists := lm.leases[sessionKey]; exists {
-		// Lost a race to another Lease(sessionKey): destroy ours, free the slot.
+		// Lost a race to another Lease(sessionKey): destroy ours before freeing the slot.
 		lm.mu.Unlock()
-		_ = lm.cfg.Provider.DestroyMachine(context.WithoutCancel(ctx), m.ID)
-		release()
+		lm.destroyOrQuarantine(context.WithoutCancel(ctx), &Lease{Machine: m, release: release})
 		return nil, ErrDuplicateLease
 	}
 	lm.leases[sessionKey] = lease
@@ -140,21 +138,41 @@ func (lm *LeaseManager) Lease(ctx context.Context, sessionKey string, sessionEnv
 	return lease, nil
 }
 
-// Release destroys the VM for sessionKey and frees its concurrency slot. It is
-// idempotent: an unknown or already-released session key is a no-op. Teardown
-// never wedges because DestroyMachine is idempotent and the slot is always freed.
+// Release stops routing the session and frees its slot only after VM deletion.
+// Failed deletes remain counted in quarantine for retry.
 func (lm *LeaseManager) Release(ctx context.Context, sessionKey string) {
 	lm.mu.Lock()
 	lease, ok := lm.leases[sessionKey]
 	if ok {
 		delete(lm.leases, sessionKey)
+		lm.quarantine[lease.Machine.ID] = lease
+		lm.destroyQuarantinedLocked(context.WithoutCancel(ctx), lease)
 	}
 	lm.mu.Unlock()
-	if !ok {
-		return
+}
+
+func (lm *LeaseManager) destroyOrQuarantine(ctx context.Context, lease *Lease) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.quarantine[lease.Machine.ID] = lease
+	lm.destroyQuarantinedLocked(ctx, lease)
+}
+
+func (lm *LeaseManager) destroyQuarantinedLocked(ctx context.Context, lease *Lease) {
+	if err := lm.cfg.Provider.DestroyMachine(ctx, lease.Machine.ID); err == nil {
+		delete(lm.quarantine, lease.Machine.ID)
+		lease.release()
 	}
-	_ = lm.cfg.Provider.DestroyMachine(ctx, lease.Machine.ID)
-	lease.release()
+}
+
+// RetryFailedDestroys retries quarantined VMs and returns capacity only after
+// confirmed deletion. The reaper and new lease attempts both call it.
+func (lm *LeaseManager) RetryFailedDestroys(ctx context.Context) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	for _, lease := range lm.quarantine {
+		lm.destroyQuarantinedLocked(ctx, lease)
+	}
 }
 
 // LeaseFor returns the active lease for sessionKey, if any. The broker uses it to
@@ -201,11 +219,14 @@ func (lm *LeaseManager) AdoptWarm(sessionKey string, machine *Machine, release f
 func (lm *LeaseManager) ActiveMachineIDs() map[string]struct{} {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	ids := make(map[string]struct{}, len(lm.leases))
+	ids := make(map[string]struct{}, len(lm.leases)+len(lm.quarantine))
 	for _, lease := range lm.leases {
 		if lease.Machine != nil {
 			ids[lease.Machine.ID] = struct{}{}
 		}
+	}
+	for id := range lm.quarantine {
+		ids[id] = struct{}{}
 	}
 	return ids
 }

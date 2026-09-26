@@ -7,12 +7,44 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
 )
+
+// tinyFileSizeChildEnv marks the child process that runs a test body under a
+// lowered file-size limit. The limit applies to every file the process writes,
+// including the test framework's own log when test caching is on, so the limited
+// body runs in a child that writes no such log.
+const tinyFileSizeChildEnv = "PIPELOCK_TEST_TINY_FSIZE_CHILD"
+
+// runInTinyFileSizeChild re-runs the named test in a child process and fails
+// the parent when the child fails. It returns true in the child, where the
+// caller runs the limited body.
+func runInTinyFileSizeChild(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(tinyFileSizeChildEnv) == "1" {
+		return true
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	cmd := exec.CommandContext(t.Context(), exe, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 -- fixed self-test binary and test name.
+	cmd.Env = append(os.Environ(), tinyFileSizeChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("limited child test failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: "+t.Name()) {
+		t.Fatalf("limited child test did not run:\n%s", out)
+	}
+	return false
+}
 
 // A file created and then failed mid-write is the case that separates "created"
 // from "written". It cannot be reached by passing a bad path, because an
@@ -46,6 +78,9 @@ func withTinyFileSizeLimit(t *testing.T, limit uint64) {
 // directory from being removed, leaving exactly the half-published artifact set
 // the all-or-nothing publish exists to prevent.
 func TestPublishArchiveArtifacts_RollsBackAFileCreatedThenFailedMidWrite(t *testing.T) {
+	if !runInTinyFileSizeChild(t) {
+		return
+	}
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, "replay-bundle.tar.gz")
 	kitDir := filepath.Join(dir, "kits")
@@ -80,6 +115,9 @@ func TestPublishArchiveArtifacts_RollsBackAFileCreatedThenFailedMidWrite(t *test
 // is the worse case of the two: besides surviving, it keeps the kit directory
 // non-empty so that cannot be removed either.
 func TestPublishArchiveArtifacts_RollsBackAKitCreatedThenFailedMidWrite(t *testing.T) {
+	if !runInTinyFileSizeChild(t) {
+		return
+	}
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, "replay-bundle.tar.gz")
 	kitDir := filepath.Join(dir, "kits")

@@ -105,12 +105,14 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 	v := testViewer(t)
 	for _, tc := range []struct {
 		mode, line, reason string
-		uid                uint32
+		uid, expected      uint32
 	}{
-		{"other", "denied\n", "invalid mode", 42},
-		{"view", "denied\n", "peer uid", 43},
+		{"other", "denied\n", "invalid mode", 42, 42},
+		{"view", "denied\n", "peer uid", 43, 42},
+		{"view", "denied\n", "peer uid", 1, 0},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
+			v.cfg.ExpectedUID = tc.expected
 			v.cfg.PeerUID = func(net.Conn) (uint32, error) { return tc.uid, nil }
 			client, operator := net.Pipe()
 			upstream, server := net.Pipe()
@@ -128,6 +130,12 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 			_ = server.Close()
 		})
 	}
+	v.cfg.ExpectedUID = 0
+	v.cfg.PeerUID = func(net.Conn) (uint32, error) { return 0, nil }
+	rootOperator, _, rootDone := startViewer(t, v, "view")
+	_ = rootOperator.Close()
+	<-rootDone
+	v.cfg.ExpectedUID = 42
 	v.cfg.PeerUID = func(net.Conn) (uint32, error) { return 42, nil }
 	operator, _, done := startViewer(t, v, "view")
 	_ = operator.Close()

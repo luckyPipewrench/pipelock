@@ -111,16 +111,14 @@ func (v *Viewer) Serve(ctx context.Context, client net.Conn, mode string) error 
 		return fmt.Errorf("viewer: dial RFB: %w", err)
 	}
 	defer func() { _ = upstream.Close() }()
-	if v.cfg.ExpectedUID != 0 {
-		uid, peerErr := v.cfg.PeerUID(upstream)
-		if peerErr != nil {
-			_, _ = io.WriteString(client, "denied\n")
-			return fmt.Errorf("viewer: inspect RFB peer: %w", peerErr)
-		}
-		if uid != v.cfg.ExpectedUID {
-			_, _ = io.WriteString(client, "denied\n")
-			return fmt.Errorf("viewer: RFB peer uid %d differs from expected uid %d", uid, v.cfg.ExpectedUID)
-		}
+	uid, peerErr := v.cfg.PeerUID(upstream)
+	if peerErr != nil {
+		_, _ = io.WriteString(client, "denied\n")
+		return fmt.Errorf("viewer: inspect RFB peer: %w", peerErr)
+	}
+	if uid != v.cfg.ExpectedUID {
+		_, _ = io.WriteString(client, "denied\n")
+		return fmt.Errorf("viewer: RFB peer uid %d differs from expected uid %d", uid, v.cfg.ExpectedUID)
 	}
 	if _, err := io.WriteString(client, "ok\n"); err != nil {
 		return fmt.Errorf("viewer: acknowledge operator: %w", err)

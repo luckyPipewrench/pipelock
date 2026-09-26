@@ -158,3 +158,33 @@ func TestEvaluateBatch_ExactException(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateBatch_ExactExceptionRejectsAmbiguousEnvelope(t *testing.T) {
+	cfg := &config.RequestPolicy{
+		Enabled:      true,
+		OnParseError: config.ActionAllow,
+		Rules:        []config.RequestPolicyRule{exactExceptionRule()},
+		Batch: []config.RequestPolicyBatch{{
+			Route:         config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+			RequestsField: "requests", MethodField: "method", URLField: "url", BodyField: "body", MaxSubRequests: 4,
+		}},
+	}
+	m, err := NewMatcher(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := RequestMeta{Host: "api.service.example.com", Method: http.MethodPost, Path: "/$batch"}
+	for _, tc := range []struct{ name, body string }{
+		{"duplicate body", `{"requests":[{"method":"POST","url":"/messages/1/move","body":{"destinationId":"deleteditems"},"body":{"destinationId":"archive"}}]}`},
+		{"duplicate method", `{"requests":[{"method":"DELETE","method":"POST","url":"/messages/1/move","body":{"destinationId":"archive"}}]}`},
+		{"duplicate url", `{"requests":[{"method":"POST","url":"/messages/1/delete","url":"/messages/1/move","body":{"destinationId":"archive"}}]}`},
+		{"duplicate requests", `{"requests":[{"method":"POST","url":"/messages/1/move","body":{"destinationId":"deleteditems"}}],"requests":[{"method":"POST","url":"/messages/1/move","body":{"destinationId":"archive"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.EvaluateBatch(meta, []byte(tc.body))
+			if ok || got.Action != config.ActionBlock {
+				t.Fatalf("ambiguous batch = %+v, parseOK=%t; want block and parse failure", got, ok)
+			}
+		})
+	}
+}

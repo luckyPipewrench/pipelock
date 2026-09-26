@@ -256,3 +256,27 @@ func TestDoHPostBodyJoinedEntropyCoversSplitLabels(t *testing.T) {
 		t.Fatalf("ordinary query produced an entropy finding: %+v", benign.EntropyFinding)
 	}
 }
+
+// A key split across two labels appears only in the parsed message's joined
+// view, never in the raw body, so this proves the DNS pieces reach body DLP.
+func TestDoHPostBodySplitLabelKeyReachesDLP(t *testing.T) {
+	sc := newBodyDLPScanner(t)
+	key := awsExampleAccessKeyID()
+	half := len(key) / 2
+	// Each label is 35 bytes, so the length octet between them is a printable
+	// '#' that the raw-body views keep, splitting the key there. A '.' would
+	// not do: the subdomain view drops dots and would rejoin the halves.
+	pad := strings.Repeat("-", 35-half)
+	wire := dohQueryWire([]string{pad + key[:half], key[half:] + pad, "exfil", "test"})
+	if strings.Contains(string(wire), key) {
+		t.Fatal("premise: the raw body must not carry the key contiguously")
+	}
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			r := scanDoHBody(t, sc, scheme, wire)
+			if r.Clean || !dohHasMatch(r, "AWS Access ID") {
+				t.Fatalf("split key = clean %v matches %+v", r.Clean, r.DLPMatches)
+			}
+		})
+	}
+}

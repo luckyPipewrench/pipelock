@@ -17,12 +17,31 @@ const (
 	// for a provider credential sent to its declared audience.
 	EventDLPCredentialAudienceAllow EventType = "dlp_credential_audience_allow" // #nosec G101 -- audit event identifier, not credential material
 	EventDLPIssuerCookieAllow       EventType = "dlp_issuer_cookie_allow"       // #nosec G101 -- audit event identifier, not credential material
+	EventIssuerQueryAllow           EventType = "entropy_issuer_query_allow"
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.
 // Transport identifies the scanning surface (e.g., "fetch", "forward", "mcp_input", "body").
 func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport string) {
 	l.logDLPInformational(ctx, patternName, severity, transport, "warn", "warn")
+}
+
+// LogIssuerQueryAllow records a query entropy allowance without recording
+// the returned value or the URL that carried it.
+func (l *Logger) LogIssuerQueryAllow(ctx LogContext, destination string) {
+	e := newLogEntry(l.zl.Info(), EventIssuerQueryAllow).
+		str("pattern", "query_value_entropy").
+		str("surface", "url_query").
+		str("destination", destination).
+		str("mitre_technique", TechniqueForScanner(scannerpkg.ScannerEntropy)).
+		str("method", ctx.Method()).
+		optStr("client_ip", ctx.ClientIP()).
+		optStr("request_id", ctx.RequestID()).
+		agentField(ctx.Agent(), ctx.AgentAuth())
+	e.msg("query value allowed for observed issuer")
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventIssuerQueryAllow), e.fields)
+	}
 }
 
 // LogDLPDropped records a DLP match deliberately left unenforced by policy.

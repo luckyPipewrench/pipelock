@@ -44,6 +44,17 @@ test("receipt command accepts a valid Go-generated receipt", async () => {
   assert.match(report.error ?? "", /UNPINNED/u);
 });
 
+test("receipt command bounds untrusted input before parsing", async () => {
+  const pathname = writeTempJSON("oversized", Buffer.alloc((8 << 20) + 1));
+  try {
+    const report = await runReceipt(pathname, "");
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /exceeds/u);
+  } finally {
+    removeTempJSON(pathname);
+  }
+});
+
 test("receipt command explicitly allows unpinned structural verification", async () => {
   const report = await runReceipt(validSingle, "", true);
   assert.equal(report.valid, true);

@@ -6,7 +6,7 @@
 // internal/aarp/envelope.go (Unmarshal) and cmd/pipelock-verifier/aarp.go
 // (loadTrustFile). The CLI subcommand composes these.
 
-import { readFileSync } from "node:fs";
+import { readVerifierBytes } from "../util.js";
 import { Appraisal, TrustEntry, VerifyOptions, comparableAppraisal, verify } from "./appraise.js";
 import { comparableChain, verifyChain } from "./chain.js";
 import { Envelope, decodeEnvelope } from "./envelope.js";
@@ -49,7 +49,7 @@ export function loadTrustFile(path: string): VerifyOptions {
   if (path === "") return emptyTrust();
   let raw: string;
   try {
-    raw = readFileSync(path, "utf8");
+    raw = readVerifierBytes(path).toString("utf8");
   } catch (err) {
     throw new TrustFileError(`read trust file: ${(err as Error).message}`);
   }

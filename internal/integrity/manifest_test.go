@@ -5,6 +5,8 @@ package integrity
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,7 +14,42 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestLoadVerifiedSignatureBoundaries(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if _, err := LoadVerified(path, pub); err == nil || !strings.Contains(err.Error(), "reading manifest") {
+		t.Fatalf("missing manifest: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"files":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadVerified(path, pub); err == nil {
+		t.Fatal("missing signature accepted")
+	}
+	if err := signing.SaveSignature(ed25519.Sign(priv, []byte("other")), path+signing.SigExtension); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadVerified(path, pub); err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("wrong signature: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SaveSignature(ed25519.Sign(priv, data), path+signing.SigExtension); err != nil {
+		t.Fatal(err)
+	}
+	if manifest, err := LoadVerified(path, pub); err != nil || manifest.Version != ManifestVersion {
+		t.Fatalf("valid signature: %+v, %v", manifest, err)
+	}
+}
 
 func TestHashFile(t *testing.T) {
 	dir := t.TempDir()

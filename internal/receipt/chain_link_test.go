@@ -1387,6 +1387,14 @@ func TestChainLink_SignVerifyValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bodyAlias, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliased := append([]byte(`{"VERSION":99,`), bodyAlias[1:]...)
+	if _, err := UnmarshalChainLink(aliased); err == nil {
+		t.Fatal("signed chain link with case-variant alias accepted")
+	}
 	if err := VerifyChainLink(signed); err != nil {
 		t.Fatalf("VerifyChainLink: %v", err)
 	}

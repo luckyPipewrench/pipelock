@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const V2_GOLDEN_PUBLIC_KEY: &str =
     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
@@ -24,6 +25,21 @@ fn write_canonical_v2_receipt(source: &Path, name: &str) -> PathBuf {
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
     path
+}
+
+#[test]
+fn oversized_receipt_is_rejected_before_parse() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("pipelock-verifier-input-{stamp}.json"));
+    let file = fs::File::create(&path).unwrap();
+    file.set_len((8 << 20) + 1).unwrap();
+    drop(file);
+    let result = run_receipt(path.to_str().unwrap(), "", false);
+    fs::remove_file(&path).unwrap();
+    assert!(result.unwrap_err().to_string().contains("exceeds"));
 }
 
 #[test]

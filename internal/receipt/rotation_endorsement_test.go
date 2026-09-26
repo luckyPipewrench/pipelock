@@ -466,6 +466,15 @@ func TestRotationEndorsementRejectsMalformedFields(t *testing.T) {
 		t.Fatalf("SignRotationEndorsement: %v", err)
 	}
 
+	bodyAlias, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliased := append([]byte(`{"VERSION":99,`), bodyAlias[1:]...)
+	if _, err := UnmarshalRotationEndorsement(aliased); err == nil {
+		t.Fatal("signed rotation endorsement with case-variant alias accepted")
+	}
+
 	cases := map[string]struct {
 		mutate  func(*RotationEndorsement)
 		wantErr string

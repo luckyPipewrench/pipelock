@@ -81,6 +81,27 @@ func TestEvaluate_ExactException(t *testing.T) {
 	}
 }
 
+func TestEvaluate_ExactExceptionQueryMethod(t *testing.T) {
+	rule := exactExceptionRule()
+	rule.Route.Methods = []string{"QUERY"}
+	m, err := NewMatcher(&config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := RequestMeta{Host: "api.service.example.com", Method: "QUERY", Path: "/messages/1/move", JSONBodyParsed: true}
+	if !m.NeedsBodyPredicate(meta) {
+		t.Fatal("QUERY route must inspect the body")
+	}
+	meta.JSONBody = jsonBody(t, `{"destinationId":"archive"}`)
+	if got := m.Evaluate(meta).Action; got != "" {
+		t.Fatalf("exact QUERY exception action = %q, want no block", got)
+	}
+	meta.JSONBody = jsonBody(t, `{"destinationId":"deleteditems"}`)
+	if got := m.Evaluate(meta).Action; got != config.ActionBlock {
+		t.Fatalf("other QUERY destination action = %q, want block", got)
+	}
+}
+
 func TestNewMatcher_RejectsUnsafeExactException(t *testing.T) {
 	for _, tc := range []struct {
 		name string

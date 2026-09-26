@@ -725,7 +725,7 @@ Use `except` when a narrowly scoped block rule must permit one exact top-level J
         values: ["archive"]
 ```
 
-`except` requires an enforced `block` rule scoped by host, a body-carrying method (`POST`, `PUT`, `PATCH`, or `DELETE`), and path. It cannot be combined with `graphql` or `discriminator`. Values are exact and case-sensitive. A batch sub-request is inspected with the same rule. This exception is a narrow allowance within the named rule; other matching rules still apply.
+`except` requires an enforced `block` rule scoped by host, a body-carrying method (`POST`, `PUT`, `PATCH`, `DELETE`, or `QUERY`), and path. It cannot be combined with `graphql` or `discriminator`. Values are exact and case-sensitive. A batch sub-request is inspected with the same rule. This exception is a narrow allowance within the named rule; other matching rules still apply.
 
 ### Batch endpoints
 

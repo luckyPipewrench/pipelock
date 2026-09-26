@@ -387,7 +387,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 			return info, err
 		}
 		if path == filepath.Dir(rfbPath) {
-			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, testGID())}, nil
 		}
 		if path != rfbPath {
 			return info, nil
@@ -423,7 +423,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 				if err != nil || path != filepath.Dir(rfbPath) {
 					return info, err
 				}
-				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(4242, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
+				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(4242, testGID())}, nil
 			}
 		}},
 		{"mode", "want 0660", func(e *probeEnv) {
@@ -446,7 +446,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 				if err != nil || path != rfbPath {
 					return info, err
 				}
-				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(uint32(os.Getuid()), 4242)}, nil //nolint:gosec // G115: os.Getuid() fits in uint32.
+				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(testUID(), 4242)}, nil
 			}
 		}},
 	} {
@@ -472,7 +472,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o600}, nil
 		}
 		if path == filepath.Dir(rfbPath) {
-			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, fakeFileSysWithOwner(0, testGID())}, nil
 		}
 		return info, nil
 	}

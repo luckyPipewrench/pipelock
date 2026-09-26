@@ -648,7 +648,7 @@ func TestDoctorDisplayRFBPassesWithViewerEnabled(t *testing.T) {
 		}
 	}, lstat: func(path string) (os.FileInfo, error) {
 		if path == filepath.Dir(rfb) {
-			return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
+			return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, testGID())}, nil
 		}
 		return os.Lstat(path)
 	}}
@@ -749,7 +749,7 @@ func TestDoctorViewerChecksReportConfiguredRemedies(t *testing.T) {
 			return info, err
 		}
 		if path == root {
-			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(0, uint32(os.Getgid()))}, nil //nolint:gosec // G115: os.Getgid() fits in uint32.
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, fakeFileSysWithOwner(0, testGID())}, nil
 		}
 		if path != rfb {
 			return info, err
@@ -1387,7 +1387,7 @@ func TestCheckDisplaySocketWrongMode(t *testing.T) {
 func TestCheckRFBRuntimeDirectoryLookupUnavailableAndErrors(t *testing.T) {
 	dir := t.TempDir()
 	stat := func(string) (os.FileInfo, error) {
-		return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, 0)}, nil //nolint:gosec // G115: literal fits in uint32.
+		return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, 0)}, nil
 	}
 	socket := filepath.Join(dir, "rfb.sock")
 	t.Run("nil lookup", func(t *testing.T) {

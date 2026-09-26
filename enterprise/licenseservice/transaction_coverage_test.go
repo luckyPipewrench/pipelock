@@ -51,6 +51,19 @@ func TestEndWithWebhookFailurePaths(t *testing.T) {
 			}
 			if tt.name != "duplicate delivery" {
 				assertWebhookUncommitted(t, db, tt.msgID)
+			} else {
+				// A rejected duplicate must leave the committed state untouched.
+				got, err := db.GetBySubscriptionID(t.Context(), testSubscriptionID)
+				if err != nil || got == nil || got.Status != statusActive {
+					t.Fatalf("entitlement after duplicate = %+v, %v; want still active", got, err)
+				}
+				var revoked int
+				if err := db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM license_revocations WHERE license_id = ?`, "lic_last").Scan(&revoked); err != nil {
+					t.Fatal(err)
+				}
+				if revoked != 0 {
+					t.Fatalf("duplicate delivery recorded %d lic_last revocations, want 0", revoked)
+				}
 			}
 		})
 	}
@@ -91,4 +104,24 @@ func TestHandleOrderPaidEvalMintStoreFailure(t *testing.T) {
 		t.Fatalf("error = %v, want mint storage failure", err)
 	}
 	assertWebhookUncommitted(t, s.db, "msg_eval_store_failure")
+}
+
+// The active-eval check reads the order's normalized email, so a caller that
+// passes a different entitlement email must be refused before any write.
+func TestFulfillEvalMintRejectsMismatchedEmails(t *testing.T) {
+	db := openTestDB(t)
+	ent := testEntitlement(testSubscriptionID)
+	ent.CustomerEmail = "first@vendor.example"
+	err := db.FulfillEvalMint(t.Context(), EvalMintParams{
+		Entitlement:  ent,
+		EvalOrder:    &EvalOrder{OrderID: "ord_mismatch", NormalizedEmail: "second@vendor.example"},
+		WebhookMsgID: "msg_mismatch",
+		EventType:    "order.paid",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("error = %v, want email mismatch refusal", err)
+	}
+	if got, err := db.GetBySubscriptionID(t.Context(), testSubscriptionID); err != nil || got != nil {
+		t.Fatalf("entitlement written despite refusal: %+v, %v", got, err)
+	}
 }

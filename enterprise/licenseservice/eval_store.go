@@ -456,6 +456,11 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 	if p.Entitlement == nil || p.EvalOrder == nil {
 		return errors.New("eval mint params incomplete")
 	}
+	// The active-eval limit is checked against the order's normalized email,
+	// so the entitlement being written must carry that same email.
+	if p.Entitlement.CustomerEmail != p.EvalOrder.NormalizedEmail {
+		return errors.New("eval mint entitlement email does not match the order email")
+	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin eval mint transaction: %w", err)

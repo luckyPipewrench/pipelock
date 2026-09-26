@@ -68,7 +68,7 @@ func TestXvncUnitClipboardModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &installEnv{agentUserName: testAgentUser, agentHome: "/home/pipelock-agent", displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Clipboard: tc.clipboard}}}
 			got := renderAgentDisplayUnit(env)
-			for _, arg := range []string{"ExecStart=/usr/bin/Xvnc :99 -geometry 1280x1024 -depth 24", "-rfbunixpath /home/pipelock-agent/.local/state/pipelock/display/rfb.sock", "-rfbunixmode 0600", "-rfbport -1", "-SecurityTypes None", "-AlwaysShared", "-nolisten tcp -nolisten local -listen unix"} {
+			for _, arg := range []string{"ExecStart=/usr/bin/Xvnc :99 -auth /var/lib/pipelock-agent/Xauthority -geometry 1280x1024 -depth 24", "-rfbunixpath /home/pipelock-agent/.local/state/pipelock/display/rfb.sock", "-rfbunixmode 0600", "-rfbport -1", "-SecurityTypes None", "-AlwaysShared", "-nolisten tcp -nolisten local -listen unix"} {
 				if !strings.Contains(got, arg) {
 					t.Errorf("Xvnc unit missing %q", arg)
 				}

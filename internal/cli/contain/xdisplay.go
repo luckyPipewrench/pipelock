@@ -189,7 +189,7 @@ func renderAgentDisplayUnit(env *installEnv) string {
 			"After=systemd-tmpfiles-setup.service", "", "[Service]", "Type=simple",
 			"User=" + env.agentUserName, "Group=" + env.agentUserName, "UMask=0077",
 			"ExecStartPre=/usr/bin/mkdir -p " + filepath.Dir(rfbSocket),
-			"ExecStart=" + xvnc + " " + displayName(number) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode 0600 -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
+			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode 0600 -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
 			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
 			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
 		}, "\n")

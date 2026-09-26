@@ -4,6 +4,7 @@
 package support
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,5 +23,20 @@ func TestWriteArchive_RemovesPartialOutputOnFailure(t *testing.T) {
 	}
 	if err := writeArchive(path, manifest{}, nil); err != nil {
 		t.Fatalf("retry to the same path failed: %v", err)
+	}
+}
+
+func TestWriteArchive_CloseFailureRemovesOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bundle.tar.gz")
+	closeErr := errors.New("injected close failure")
+	err := writeArchiveWithClose(path, manifest{}, nil, func(f *os.File) error {
+		_ = f.Close()
+		return closeErr
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("writeArchive error = %v, want close error", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("archive survived failed close: %v", statErr)
 	}
 }

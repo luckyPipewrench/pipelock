@@ -49,6 +49,38 @@ func fakeAnthropicKey() string { return testAnthropicKeyPart1 + testAnthropicKey
 func fakeWebhookToken() string { return "wh-t0k3n-" + testAWSKeySuffix }
 func fakeLogAWSKey() string    { return testAWSKeyPrefix + strings.Repeat("Z", 16) }
 
+func TestBundle_ManifestCollisionRemovesNewArchive(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "bundle.tar.gz")
+	manifestPath := filepath.Join(dir, "bundle-manifest.json")
+	if err := os.WriteFile(filepath.Clean(manifestPath), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func() error {
+		cmd := support.BundleCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--output", archivePath, "--json"})
+		err := cmd.Execute()
+		if err != nil && strings.Contains(out.String(), "Support bundle written") {
+			t.Fatalf("reported archive success before manifest completed: %s", out.String())
+		}
+		return err
+	}
+	if err := run(); err == nil {
+		t.Fatal("expected manifest collision")
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archive left after manifest collision: %v", err)
+	}
+	if err := os.Remove(filepath.Clean(manifestPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("retry after removing manifest: %v", err)
+	}
+}
+
 // makeSecretConfig returns a config seeded with several fake secrets in
 // different positions: top-level token, nested field, webhook URL userinfo,
 // and webhook URL query param.

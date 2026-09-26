@@ -163,15 +163,17 @@ func runBundle(cmd *cobra.Command, configFile, outputPath string, writeJSON bool
 		return fmt.Errorf("writing archive: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
-
 	// Optionally write a companion manifest.json.
 	if writeJSON {
 		manifestPath := strings.TrimSuffix(outputPath, ".tar.gz") + "-manifest.json"
 		if err := writeManifestJSON(manifestPath, m); err != nil {
+			_ = os.Remove(filepath.Clean(outputPath))
 			return fmt.Errorf("writing manifest JSON: %w", err)
 		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Manifest written to:       %s\n", manifestPath)
+	} else {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
 	}
 
 	return nil
@@ -386,6 +388,10 @@ func marshalIndent(v any) ([]byte, error) {
 // writeArchive creates a gzip-compressed tar archive at path containing a
 // manifest header and all bundle entries.
 func writeArchive(path string, m manifest, entries []bundleEntry) (err error) {
+	return writeArchiveWithClose(path, m, entries, (*os.File).Close)
+}
+
+func writeArchiveWithClose(path string, m manifest, entries []bundleEntry, closeFile func(*os.File) error) (err error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(path), bundleDirMode); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
@@ -398,7 +404,9 @@ func writeArchive(path string, m manifest, entries []bundleEntry) (err error) {
 	// This call created the file exclusively, so a failure after creation
 	// removes it; otherwise a partial archive would block a retry to the same path.
 	defer func() {
-		_ = f.Close()
+		if closeErr := closeFile(f); err == nil {
+			err = closeErr
+		}
 		if err != nil {
 			_ = os.Remove(filepath.Clean(path))
 		}

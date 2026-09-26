@@ -34,6 +34,21 @@ import (
 
 // Test helpers ---------------------------------------------------------------
 
+func TestReadAccessACLUnavailableAndExitFailure(t *testing.T) {
+	if _, err := readAccessACL(context.Background(), nil, "/unused"); err == nil || !strings.Contains(err.Error(), "ACL reader unavailable") {
+		t.Fatalf("missing ACL reader error = %v", err)
+	}
+	run := func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name != "getfacl" || len(args) != 2 || args[0] != "-p" || args[1] != "/unused" {
+			t.Fatalf("ACL command = %s %v", name, args)
+		}
+		return "permission denied\n", 2, nil
+	}
+	if _, err := readAccessACL(context.Background(), run, "/unused"); err == nil || !strings.Contains(err.Error(), "getfacl exit 2: permission denied") {
+		t.Fatalf("ACL command failure = %v", err)
+	}
+}
+
 const (
 	testProxyUser    = "pipelock-proxy"
 	testAgentUser    = "pipelock-agent"

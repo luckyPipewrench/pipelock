@@ -57,6 +57,23 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	return env
 }
 
+func TestDoctorViewerMissingConfigurationAndRFB(t *testing.T) {
+	root := t.TempDir()
+	env := &doctorEnv{
+		configPath: filepath.Join(root, "missing.yaml"),
+		agentHome:  root,
+		stat:       os.Stat,
+	}
+	service := checkDoctorViewerService(context.Background(), env)
+	if service.status != statusFail || !strings.Contains(service.detail, "viewer config missing:") || !strings.Contains(service.remediation, "check display viewer configuration") {
+		t.Fatalf("missing viewer config = %+v", service)
+	}
+	rfb := checkDoctorDisplayRFB(context.Background(), env)
+	if rfb.status != statusFail || !strings.Contains(rfb.detail, "TigerVNC Xvnc missing") {
+		t.Fatalf("missing RFB server = %+v", rfb)
+	}
+}
+
 func TestDoctorCounterProbeEnvUsesLiveDoctorOverrides(t *testing.T) {
 	base := &probeEnv{port: defaultProxyPort, agentUserName: defaultAgentUser}
 	doctor := &doctorEnv{port: 9443, agentUserName: "custom-agent"}

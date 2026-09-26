@@ -90,6 +90,109 @@ func TestViewCommandDependencies(t *testing.T) {
 	}
 }
 
+func TestViewCommandControlModeAndFailurePaths(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "view.sock")
+	deps := realViewDeps(io.Discard, io.Discard)
+	deps.load = func(string) (*config.Config, error) {
+		cfg := config.Defaults()
+		yes := true
+		cfg.Containment.Display.Viewer.Enabled = &yes
+		cfg.Containment.Display.Viewer.OperatorUser = "operator"
+		return cfg, nil
+	}
+	deps.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	deps.getenv = func(string) string { return root }
+	deps.geteuid = os.Geteuid
+	deps.listen = func(_ context.Context, network, address string) (net.Listener, error) {
+		if network != "unix" || address != path {
+			t.Fatalf("listener = %s %s", network, address)
+		}
+		return nil, errors.New("listener refused")
+	}
+	if err := runContainViewCommand(context.Background(), deps, viewOptions{socket: path, control: true}); err == nil || !strings.Contains(err.Error(), "listen for VNC client: listener refused") {
+		t.Fatalf("control listener error = %v", err)
+	}
+	for _, uid := range []int{-1, int(^uint32(0))} {
+		if got := viewerUID(uid); got != ^uint32(0) {
+			t.Fatalf("viewerUID(%d) = %d, want rejected UID", uid, got)
+		}
+	}
+	if err := os.WriteFile(path, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContainViewWithDeps(context.Background(), path, "", "view", currentViewerUID(), deps); err == nil || !strings.Contains(err.Error(), "not a socket") {
+		t.Fatalf("occupied path error = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		return (&net.ListenConfig{}).Listen(context.Background(), "unix", filepath.Join(root, "other.sock"))
+	}
+	if err := runContainViewWithDeps(context.Background(), path, "", "view", currentViewerUID(), deps); err == nil || !strings.Contains(err.Error(), "inspect VNC socket") {
+		t.Fatalf("missing listener socket error = %v", err)
+	}
+}
+
+func TestViewCommandControlSendsRequestedMode(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "view.sock")
+	ready := viewSignalWriter{lines: make(chan string, 4)}
+	deps := realViewDeps(ready, io.Discard)
+	deps.load = func(string) (*config.Config, error) {
+		cfg := config.Defaults()
+		yes := true
+		cfg.Containment.Display.Viewer.Enabled = &yes
+		cfg.Containment.Display.Viewer.OperatorUser = "operator"
+		return cfg, nil
+	}
+	deps.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	deps.geteuid = os.Geteuid
+	modeSeen := make(chan string, 1)
+	deps.dial = func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer func() { _ = server.Close() }()
+			mode, err := readViewerMode(server)
+			if err == nil {
+				modeSeen <- mode
+				_, _ = io.WriteString(server, "busy\n")
+			}
+		}()
+		return client, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runContainViewCommand(ctx, deps, viewOptions{socket: path, control: true}) }()
+	select {
+	case printed := <-ready.lines:
+		if printed != path+"\n" {
+			t.Fatalf("printed socket = %q", printed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("viewer socket did not become ready")
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	select {
+	case mode := <-modeSeen:
+		if mode != "control\n" {
+			t.Fatalf("requested mode = %q, want control", mode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("viewer did not send control mode")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContainViewControlDialFailure(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())

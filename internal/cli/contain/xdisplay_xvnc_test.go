@@ -447,6 +447,7 @@ func TestProbeAgentDisplayRFBReportsFailedControl(t *testing.T) {
 }
 
 func TestXvncProvisionReportsFailedControl(t *testing.T) {
+	const fakeDisplayUID = 4242
 	for _, tc := range []struct {
 		name, want string
 		change     func(*installEnv, *fakeRunner)
@@ -467,7 +468,7 @@ func TestXvncProvisionReportsFailedControl(t *testing.T) {
 				if calls > 1 {
 					return nil, errors.New("identity unavailable")
 				}
-				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+				return &user.User{Uid: strconv.Itoa(fakeDisplayUID), Gid: strconv.Itoa(fakeDisplayUID)}, nil
 			}
 		}},
 		{"parse owner", "parse RFB owner uid", func(e *installEnv, _ *fakeRunner) {
@@ -477,18 +478,18 @@ func TestXvncProvisionReportsFailedControl(t *testing.T) {
 				if calls > 1 {
 					return &user.User{Uid: "bad"}, nil
 				}
-				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+				return &user.User{Uid: strconv.Itoa(fakeDisplayUID), Gid: strconv.Itoa(fakeDisplayUID)}, nil
 			}
 		}},
 		{"wrong owner", "not owned by the contained agent", func(e *installEnv, _ *fakeRunner) {
 			calls := 0
 			e.lookupUser = func(string) (*user.User, error) {
 				calls++
-				uid := os.Getuid()
+				uid := fakeDisplayUID
 				if calls > 1 {
 					uid++
 				}
-				return &user.User{Uid: strconv.Itoa(uid), Gid: strconv.Itoa(os.Getgid())}, nil
+				return &user.User{Uid: strconv.Itoa(uid), Gid: strconv.Itoa(fakeDisplayUID)}, nil
 			}
 		}},
 	} {
@@ -510,10 +511,10 @@ func TestXvncProvisionReportsFailedControl(t *testing.T) {
 			realStat, realLstat := env.stat, env.lstat
 			env.stat = func(path string) (os.FileInfo, error) {
 				if path == xPath {
-					return fakeFileInfo{mode: os.ModeSocket | managedXSocketMode, sys: fakeFileSysWithUID(currentViewerUID())}, nil
+					return fakeFileInfo{mode: os.ModeSocket | managedXSocketMode, sys: fakeFileSysWithUID(fakeDisplayUID)}, nil
 				}
 				if path == rfbPath {
-					return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithUID(currentViewerUID())}, nil
+					return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithUID(fakeDisplayUID)}, nil
 				}
 				return realStat(path)
 			}
@@ -525,7 +526,7 @@ func TestXvncProvisionReportsFailedControl(t *testing.T) {
 			}
 			runner.on("getfacl -p "+rfbPath, "user::rw-\ngroup::---\nother::---\n", 0, nil)
 			env.lookupUser = func(string) (*user.User, error) {
-				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+				return &user.User{Uid: strconv.Itoa(fakeDisplayUID), Gid: strconv.Itoa(fakeDisplayUID)}, nil
 			}
 			tc.change(env, runner)
 			changed, err := stepProvisionAgentDisplay().apply(context.Background(), env)
@@ -707,6 +708,7 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 }
 
 func TestProbeAgentDisplayRFBViewerModeAndBackend(t *testing.T) {
+	const fakeDisplayUID = 4242
 	root := shortDisplayTestDir(t)
 	cfgPath := filepath.Join(root, "pipelock.yaml")
 	if err := os.WriteFile(cfgPath, []byte("mode: balanced\ncontainment:\n  display:\n    enabled: true\n    backend: xvfb\n"), 0o600); err != nil {
@@ -729,12 +731,12 @@ func TestProbeAgentDisplayRFBViewerModeAndBackend(t *testing.T) {
 	}
 	env.readFile = os.ReadFile
 	env.stat = func(string) (os.FileInfo, error) {
-		return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithUID(currentViewerUID())}, nil
+		return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithUID(fakeDisplayUID)}, nil
 	}
 	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
 	}
-	env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }
+	env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(fakeDisplayUID)}, nil }
 	status, detail := probeAgentDisplayRFB(context.Background(), env)
 	if status != statusPass || !strings.Contains(detail, "private") {
 		t.Fatalf("viewer RFB probe = %s %q", status, detail)

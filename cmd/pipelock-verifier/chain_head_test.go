@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
+
+func TestChainV2RejectsOversizedEvidenceAtExtractor(t *testing.T) {
+	data := make([]byte, maxVerifierInputBytes+1)
+	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", "", chainOptions{})
+	if !handled || err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized v2 evidence: handled=%t err=%v", handled, err)
+	}
+}
 
 // evidenceTipHash returns the ReceiptHash of the fixture's final receipt, which
 // is what trusted external context would pin as the expected head.

@@ -1,7 +1,6 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
 import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } from "./types.js";
 import { computeTotals, verifyChain } from "./chain.js";
 import { analyzeLifecycle } from "./lifecycle.js";
@@ -9,6 +8,7 @@ import { extractReceipts } from "./recorder.js";
 import { validateAuditPacket } from "./schema.js";
 import {
   decodeUTF8,
+  readVerifierBytes,
   rejectDuplicateKeys,
   resolveArtifactPath,
   resolvePacketPath,
@@ -121,7 +121,7 @@ export async function verifyAuditPacket(
   opts: AuditPacketOptions,
 ): Promise<AuditPacketReport> {
   const { packetPath, baseDir } = resolvePacketPath(target);
-  const rawPacket = readFileSync(packetPath);
+  const rawPacket = readVerifierBytes(packetPath);
   const report = reportFromPacket(packetPath);
 
   if (opts.expectSha256 !== "") {

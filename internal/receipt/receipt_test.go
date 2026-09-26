@@ -737,6 +737,37 @@ func TestUnmarshalRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestUnmarshalRejectsConflictingFieldAlias(t *testing.T) {
+	if err := rejectReceiptAliases([]byte("{")); err == nil {
+		t.Fatal("malformed receipt alias input accepted")
+	}
+	if err := rejectReceiptAliases([]byte("null")); err != nil {
+		t.Fatalf("null must reach the schema decoder: %v", err)
+	}
+	pub, priv := generateTestKey(t)
+	signed := signValidReceipt(t, priv)
+	raw, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(raw), `"action_record":{`, `"action_record":{"detected_patterns":[],`, 1)
+	for name, modified := range map[string][]byte{
+		"receipt version":       append([]byte(`{"VERSION":999,`), raw[1:]...),
+		"action verdict":        []byte(strings.Replace(string(raw), `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
+		"legacy action verdict": []byte(strings.Replace(legacy, `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := Unmarshal(modified)
+			if err == nil {
+				if verifyErr := VerifyWithKey(parsed, hex.EncodeToString(pub)); verifyErr == nil {
+					t.Fatal("modified receipt with conflicting field alias verified")
+				}
+				t.Fatalf("field alias accepted: %+v", parsed)
+			}
+		})
+	}
+}
+
 // flipHexByte flips the first hex character in a hex string to produce
 // a different but still valid hex string.
 func flipHexByte(h string) string {

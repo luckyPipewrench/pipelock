@@ -82,7 +82,7 @@ export function checkCriticalExtensions(crit: string[] | undefined): void {
     seen.add(name);
   }
   for (const name of seen) {
-    if (!knownCriticalExtensions[name]) {
+    if (!Object.hasOwn(knownCriticalExtensions, name)) {
       throw new UnknownCritError(`unknown critical extension ${JSON.stringify(name)}`);
     }
   }

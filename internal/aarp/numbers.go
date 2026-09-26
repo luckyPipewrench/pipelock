@@ -200,6 +200,12 @@ func ValidateTimestamp(s string) error {
 	if s == "" {
 		return fmt.Errorf("%w: empty timestamp", ErrBadGrammar)
 	}
+	if len(s) >= 6 && (s[len(s)-6] == '+' || s[len(s)-6] == '-') {
+		hour, minute := s[len(s)-5:len(s)-3], s[len(s)-2:]
+		if hour > "23" || minute > "59" {
+			return fmt.Errorf("%w: timestamp %q has invalid zone offset", ErrBadGrammar, s)
+		}
+	}
 	if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
 		return fmt.Errorf("%w: timestamp %q is not RFC3339Nano: %w", ErrBadGrammar, s, err)
 	}

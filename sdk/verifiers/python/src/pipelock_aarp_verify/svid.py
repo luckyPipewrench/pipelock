@@ -61,6 +61,7 @@ from .appraise import (
 )
 from .canonical import canonicalize
 from .envelope import Envelope
+from .input_file import read_verifier_file
 from .timestamp import validate_timestamp
 
 # ContextSVIDBinding is the domain separator for the SVID proof-of-possession
@@ -907,8 +908,7 @@ def load_svid_file(path: str) -> tuple[dict[str, Any], SVIDVerifyOptions]:
     fail-closed by :func:`verify_svid_binding`.
     """
     try:
-        with open(path, "rb") as fh:
-            data = fh.read()
+        data = read_verifier_file(path)
     except OSError as exc:
         raise SVIDConfigError(f"read svid file: {exc}") from exc
 

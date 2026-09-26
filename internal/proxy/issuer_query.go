@@ -60,13 +60,16 @@ func (ic *InterceptContext) issuerQueryStore() *issuerQueryStore {
 	return runtime.query
 }
 
-func (s *issuerQueryStore) digest(host, port, path, name, value string) [32]byte {
+// digest binds the scheme as well as host, port and path. The origin check
+// already admits only https, so the scheme field is defense in depth against
+// that check ever widening.
+func (s *issuerQueryStore) digest(scheme, host, port, path, name, value string) [32]byte {
 	// Each field is written as its byte length then its raw bytes, so the
 	// tuple is unambiguous and byte-exact: no field boundary can be forged,
 	// and invalid UTF-8 is hashed as-is rather than normalized.
 	mac := hmac.New(sha256.New, s.key[:])
 	var size [8]byte
-	for _, field := range [...]string{host, port, path, name, value} {
+	for _, field := range [...]string{scheme, host, port, path, name, value} {
 		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
 		_, _ = mac.Write(size[:])
 		_, _ = mac.Write([]byte(field))
@@ -88,7 +91,7 @@ func (s *issuerQueryStore) remember(session string, target *url.URL, name, value
 	if path == "" {
 		path = "/"
 	}
-	digest := s.digest(host, port, path, name, value)
+	digest := s.digest(strings.ToLower(target.Scheme), host, port, path, name, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.sessions[session]; !exists && len(s.sessions) >= issuerCookieMaxSessions {
@@ -127,7 +130,7 @@ func (s *issuerQueryStore) allows(session string, target *url.URL, name, value s
 	if path == "" {
 		path = "/"
 	}
-	digest := s.digest(host, port, path, name, value)
+	digest := s.digest(strings.ToLower(target.Scheme), host, port, path, name, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, entry := range s.sessions[session] {

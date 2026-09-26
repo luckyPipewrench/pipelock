@@ -219,10 +219,15 @@ func (s *Scanner) queryValueEntropy(value string, depth int) (entropyFinding, bo
 		parts = strings.FieldsFunc(value, func(r rune) bool {
 			return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
 		})
-		if joined := asciiAlnumOnly(value); len(joined) >= s.entropyMinLen {
-			if entropy := payloadEntropy(joined); entropy > s.entropyThreshold {
-				return entropyFinding{entropy: entropy}, true
-			}
+		joined := asciiAlnumOnly(value)
+		scored := joined
+		// Too few letters and digits to score on their own: score the whole
+		// value as before, so punctuation-heavy text cannot skip the check.
+		if len(joined) < s.entropyMinLen {
+			scored = value
+		}
+		if entropy := payloadEntropy(scored); entropy > s.entropyThreshold {
+			return entropyFinding{entropy: entropy}, true
 		}
 	}
 	for _, part := range parts {

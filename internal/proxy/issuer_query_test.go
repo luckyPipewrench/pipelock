@@ -553,15 +553,18 @@ func TestIssuerQueryJSONPositions(t *testing.T) {
 // an allowance, and moving bytes across a field boundary must change it.
 func TestIssuerQueryDigestIsByteExact(t *testing.T) {
 	s := &issuerQueryStore{}
-	a := s.digest("api.vendor.example", "443", "/page", "cursor", "tok\xff")
-	b := s.digest("api.vendor.example", "443", "/page", "cursor", "tok\xfe")
+	a := s.digest("https", "api.vendor.example", "443", "/page", "cursor", "tok\xff")
+	b := s.digest("https", "api.vendor.example", "443", "/page", "cursor", "tok\xfe")
 	if a == b {
 		t.Fatal("values differing only in invalid UTF-8 bytes share a digest")
 	}
-	if s.digest("api.vendor.example", "443", "/page", "cursor", "tok\xff") != a {
+	if s.digest("https", "api.vendor.example", "443", "/page", "cursor", "tok\xff") != a {
 		t.Fatal("digest is not stable for identical input")
 	}
-	if s.digest("api.vendor.example", "443", "/page", "cursorx", "y") == s.digest("api.vendor.example", "443", "/page", "cursor", "xy") {
+	if s.digest("http", "api.vendor.example", "443", "/page", "cursor", "tok\xff") == a {
+		t.Fatal("an https allowance matches the same tuple under http")
+	}
+	if s.digest("https", "api.vendor.example", "443", "/page", "cursorx", "y") == s.digest("https", "api.vendor.example", "443", "/page", "cursor", "xy") {
 		t.Fatal("moving bytes across the name/value boundary kept the digest")
 	}
 }

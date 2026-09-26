@@ -29,6 +29,8 @@ func TestQueryValueEntropyTokens(t *testing.T) {
 		// with punctuation and spacing removed.
 		{"short chunks", strings.Join([]string{blob[:12], blob[12:24], blob[24:36], blob[36:]}, " "), true},
 		{"tiny chunks", strings.Join([]string{blob[:5], blob[5:10], blob[10:15], blob[15:20], blob[20:25]}, " "), true},
+		// Few letters or digits: the whole value is scored instead.
+		{"punctuation-heavy chunks", "a!b@ c#d$ e%f^ g&h* i(j) k_l+ m=n~ o[p]", true},
 		{"search with dates", "#rustlang OR #golang min_faves:100 since:2026-09-01 until:2026-09-25", false},
 		{"compact blob", blob, true},
 	}

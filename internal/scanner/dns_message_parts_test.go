@@ -290,8 +290,8 @@ func TestDoHQueryKeySplitAcrossNamesWithPrintableGap(t *testing.T) {
 		t.Fatal("premise: fixture must parse")
 	}
 	r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
-	if r.Allowed {
-		t.Fatal("key split across two names was allowed")
+	if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across two names", r.Allowed, r.Scanner)
 	}
 }
 
@@ -456,39 +456,60 @@ func TestDoHTXTAcrossRecordsWithPrintableLengths(t *testing.T) {
 	}
 }
 
-// EDNS option data split across two OPT records is read joined, with the
-// second record's option code and length (both printable here) left out.
-func TestDoHEDNSAcrossOPTRecords(t *testing.T) {
+// EDNS option data split across two options, or across two OPT records, is
+// read joined, with the option code and length (both printable here) left out.
+// RFC 6891 allows one OPT record, but the parser reads a second rather than
+// dropping the message to the whole-value check, which would miss this split.
+func TestDoHEDNSAcrossOptions(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
 	defer s.Close()
 	key := awsExampleAccessKeyID()
 	half := len(key) / 2
-	opt := func(value string) []byte {
-		// Option code '..' and a length of 46 ('.'), so the raw RDATA view
-		// holds printable bytes between the two halves.
+	pad := strings.Repeat("-", 46-half)
+	option := func(value string) []byte {
+		// Option code '..' and a length of 46 ('.'), so the raw RDATA holds
+		// printable bytes between the two halves.
 		if len(value) != 46 {
 			t.Fatalf("premise: option length %d, want 46", len(value))
 		}
-		rdata := append([]byte{'.', '.', 0, byte(len(value))}, value...) // #nosec G115 -- 46
+		return append([]byte{'.', '.', 0, byte(len(value))}, value...) // #nosec G115 -- 46
+	}
+	optRecord := func(rdata []byte) []byte {
 		rr := []byte{0}
-		rr = append(rr, 0x00, 0x29, 0x10, 0x00, '.', '.', '.', '.', 0, byte(len(rdata))) // #nosec G115 -- 50
+		rr = append(rr, 0x00, 0x29, 0x10, 0x00, '.', '.', '.', '.', byte(len(rdata)>>8), byte(len(rdata))) // #nosec G115 -- under 256
 		return append(rr, rdata...)
 	}
-	pad := strings.Repeat("-", 46-half)
-	wire := make([]byte, 12)
-	wire[5] = 1
-	wire[11] = 2
-	wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
-	wire = append(wire, 0x00, 0x01, 0x00, 0x01)
-	wire = append(wire, opt(pad+key[:half])...)
-	wire = append(wire, opt(key[half:]+pad)...)
-	if _, ok := parseDNSMessage(wire); !ok {
-		t.Fatal("premise: the two-OPT message must parse")
+	message := func(records ...[]byte) []byte {
+		wire := make([]byte, 12)
+		wire[5] = 1
+		wire[11] = byte(len(records)) // #nosec G115 -- at most two
+		wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
+		wire = append(wire, 0x00, 0x01, 0x00, 0x01)
+		for _, rr := range records {
+			wire = append(wire, rr...)
+		}
+		return wire
 	}
-	r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
-	if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+	scan := func(wire []byte) *Result {
+		r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
+		return &r
+	}
+
+	one := message(optRecord(append(option(pad+key[:half]), option(key[half:]+pad)...)))
+	if _, ok := parseDNSMessage(one); !ok {
+		t.Fatal("premise: a single OPT record with two options must parse")
+	}
+	if r := scan(one); r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across options", r.Allowed, r.Scanner)
+	}
+
+	two := message(optRecord(option(pad+key[:half])), optRecord(option(key[half:]+pad)))
+	if _, ok := parseDNSMessage(two); !ok {
+		t.Fatal("premise: a message with two OPT records must parse")
+	}
+	if r := scan(two); r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
 		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across OPT records", r.Allowed, r.Scanner)
 	}
 }

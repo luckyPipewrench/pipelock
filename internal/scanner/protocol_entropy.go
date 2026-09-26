@@ -78,19 +78,12 @@ func splitQueryEntropyPairs(rawQuery string) []queryEntropyPair {
 }
 
 // pkceS256Declared reports whether a query declares the S256 challenge method
-// and nothing else. Every code_challenge_method value must be exactly S256: a
-// second value of plain, a lower-case s256, or an absent method all return
-// false, so the challenge keeps its entropy score.
+// and nothing else: exactly one code_challenge_method value, and it is exactly
+// S256, as RFC 7636 requests send. A second value (even another S256), plain,
+// a lower-case s256, or an absent method all return false, so the challenge
+// keeps its entropy score.
 func pkceS256Declared(methods []string) bool {
-	if len(methods) == 0 {
-		return false
-	}
-	for _, m := range methods {
-		if m != pkceMethodS256 {
-			return false
-		}
-	}
-	return true
+	return len(methods) == 1 && methods[0] == pkceMethodS256
 }
 
 // pkceExemptionApplies reports whether a query may exempt its code_challenge

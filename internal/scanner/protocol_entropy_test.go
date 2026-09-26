@@ -100,6 +100,7 @@ func TestProtocolValueEntropy(t *testing.T) {
 		{"pkce method plain", pkce("&code_challenge_method=plain"), true, ""},
 		{"pkce method lower case", pkce("&code_challenge_method=s256"), true, ""},
 		{"pkce S256 and plain", pkce("&code_challenge_method=S256&code_challenge_method=plain"), true, ""},
+		{"pkce S256 declared twice", pkce("&code_challenge_method=S256&code_challenge_method=S256"), true, ""},
 		{"pkce second challenge not hash shaped", pkce("&code_challenge_method=S256&code_challenge=" + rfc7636Challenge + "x"), true, ""},
 		// RFC 7636 sends one challenge; two hash-shaped values turn the
 		// exemption off so a query cannot carry several unscored tokens.
@@ -208,7 +209,7 @@ func TestPKCES256Declared(t *testing.T) {
 	}{
 		{nil, false},
 		{[]string{"S256"}, true},
-		{[]string{"S256", "S256"}, true},
+		{[]string{"S256", "S256"}, false},
 		{[]string{"S256", "plain"}, false},
 		{[]string{"s256"}, false},
 		{[]string{""}, false},

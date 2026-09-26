@@ -225,6 +225,9 @@ func consumeDNSRR(msg []byte, off int, out *dnsMessage) (int, bool) {
 			out.payloads = append(out.payloads, joined)
 		}
 	}
+	// RFC 6891 allows one OPT record per message, but a second is read the
+	// same way rather than refused: refusing it would drop the message to the
+	// whole-value check, which cannot see a value split by printable framing.
 	if typ == dnsTypeOPT && !appendEDNSOptionPayloads(rdata, out) {
 		return 0, false
 	}

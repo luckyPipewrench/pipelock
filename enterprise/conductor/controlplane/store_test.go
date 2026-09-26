@@ -381,6 +381,39 @@ func TestFileBundleStoreApplyRollbackHeadDurableAndTTLIndependent(t *testing.T) 
 	}
 }
 
+func TestRollbackHeadRejectsAuthorizationForAnotherTenant(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{id: "tenant-bound-v1", version: 1, audience: conductor.Audience{InstanceIDs: []string{"*"}}})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{id: "tenant-bound-v2", version: 2, previousHash: r1.BundleHash, audience: conductor.Audience{InstanceIDs: []string{"*"}}})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	auth := signedRollbackAuthorizationForBundles(t, "tenant-bound-rollback", v2, v1, testNow)
+	auth.OrgID = "other-org"
+	if _, err := store.PreviewRollbackHead(t.Context(), auth); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("preview error = %v, want invalid rollback", err)
+	}
+	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("apply error = %v, want invalid rollback", err)
+	}
+	fleetAuth := signedRollbackAuthorizationForBundles(t, "tenant-bound-fleet-rollback", v2, v1, testNow)
+	fleetAuth.FleetID = "other-fleet"
+	if _, err := store.PreviewRollbackHead(t.Context(), fleetAuth); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("fleet preview error = %v, want invalid rollback", err)
+	}
+	if err := store.ApplyRollbackHead(t.Context(), fleetAuth, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("fleet apply error = %v, want invalid rollback", err)
+	}
+}
+
 func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {
@@ -426,6 +459,7 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	if latest.Bundle.BundleID != "bundle-reconcile-v2" {
 		t.Fatalf("Latest(before reconcile) bundle=%q, want unreconciled bundle-reconcile-v2", latest.Bundle.BundleID)
 	}
+	_ = emergencyStore.Close()
 	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
@@ -495,6 +529,7 @@ func TestRollbackHeadReconciliationDoesNotRearmSupersededAuthorization(t *testin
 	if err != nil {
 		t.Fatalf("OpenFileBundleStore(reopen) error = %v", err)
 	}
+	_ = emergencyStore.Close()
 	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)

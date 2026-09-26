@@ -102,7 +102,7 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 
 func TestVerifyRunRejectsOversizedArtifact(t *testing.T) {
 	dir := t.TempDir()
-	file, err := os.Create(filepath.Join(dir, launchManifestFile))
+	file, err := os.Create(filepath.Clean(filepath.Join(dir, launchManifestFile)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestVerifyRunRejectsSymlinkArtifact(t *testing.T) {
 func TestVerifyRunRejectsAggregateArtifactSize(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{launchManifestFile, orchestratorDelegationFile} {
-		file, err := os.Create(filepath.Join(dir, name))
+		file, err := os.Create(filepath.Clean(filepath.Join(dir, name)))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,4 +171,98 @@ func TestViewerCancellation(t *testing.T) {
 	}
 	_ = operator.Close()
 	_ = server.Close()
+}
+
+func TestViewerFilterDisplayMessagesAndInput(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		clipboard  bool
+	}{
+		{"view", "view", false},
+		{"control", "control", false},
+		{"control clipboard", "control", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testViewer(t)
+			v.cfg.Clipboard = tc.clipboard
+			operator, server, done := startViewer(t, v, tc.mode)
+			handshake := []byte("RFB 003.008\n\x01\x01")
+			go func() { _, _ = operator.Write(handshake) }()
+			got := make([]byte, len(handshake))
+			_ = server.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := io.ReadFull(server, got); err != nil {
+				t.Fatal(err)
+			}
+			messages := [][]byte{
+				make([]byte, 20),
+				{2, 0, 0, 0},
+				{3, 0, 0, 0, 0, 0, 0, 1, 0, 1},
+				{4, 1, 0, 0, 0, 0, 0, 65},
+				{5, 1, 0, 1, 0, 1},
+				{6, 0, 0, 0, 0, 0, 0, 3, 'a', 'b', 'c'},
+			}
+			for i, message := range messages {
+				go func() { _, _ = operator.Write(message) }()
+				wantForward := i < 3 || (tc.mode == "control" && (i < 5 || tc.clipboard))
+				if wantForward {
+					got := make([]byte, len(message))
+					_ = server.SetReadDeadline(time.Now().Add(time.Second))
+					if _, err := io.ReadFull(server, got); err != nil || string(got) != string(message) {
+						t.Fatalf("message %d = %v: %v", i, got, err)
+					}
+				} else {
+					_ = server.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+					if _, err := server.Read(make([]byte, 1)); err == nil {
+						t.Fatalf("message %d unexpectedly forwarded", i)
+					} else if e, ok := err.(net.Error); !ok || !e.Timeout() {
+						t.Fatalf("message %d read: %v", i, err)
+					}
+				}
+			}
+			_ = operator.Close()
+			<-done
+		})
+	}
+}
+
+func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
+	var seconds atomic.Int64
+	base := time.Now()
+	v := testViewer(t)
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	operator, server, done := startViewer(t, v, "control")
+	handshake := []byte("RFB 003.008\n\x01\x01")
+	go func() { _, _ = operator.Write(handshake) }()
+	got := make([]byte, len(handshake))
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(server, got); err != nil {
+		t.Fatal(err)
+	}
+	seconds.Store(20)
+	deadline := time.After(12 * time.Second)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		v.mu.Lock()
+		expires := v.lease.expires
+		v.mu.Unlock()
+		if expires.Equal(base.Add(50 * time.Second)) {
+			break
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("live control lease was not renewed")
+		}
+	}
+	seconds.Store(35)
+	key := []byte{4, 1, 0, 0, 0, 0, 0, 65}
+	go func() { _, _ = operator.Write(key) }()
+	got = make([]byte, len(key))
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(server, got); err != nil || string(got) != string(key) {
+		t.Fatalf("renewed control input = %v: %v", got, err)
+	}
+	_ = operator.Close()
+	<-done
 }

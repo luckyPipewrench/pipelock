@@ -211,15 +211,6 @@ func receiverName(expr ast.Expr) string {
 	}
 }
 
-// receiverVarName returns the receiver variable name of a method, or "" for a
-// plain function or an unnamed receiver.
-func receiverVarName(fn *ast.FuncDecl) string {
-	if fn.Recv == nil || len(fn.Recv.List) == 0 || len(fn.Recv.List[0].Names) == 0 {
-		return ""
-	}
-	return fn.Recv.List[0].Names[0].Name
-}
-
 func functionKey(packagePath, name string) string {
 	return packagePath + ":" + name
 }
@@ -264,6 +255,65 @@ func reachesPayloadKind(fn *productionFunction, kind PayloadKind, functions map[
 	return false
 }
 
+func TestCalledProductionFunctionsIgnoresShadowedReceiver(t *testing.T) {
+	const source = `package sample
+type emitter struct{}
+func (e *emitter) emit() {}
+func (e *emitter) outer() {
+	{
+		e := struct{ emit func() }{emit: func() {}}
+		e.emit()
+	}
+}`
+	file, err := parser.ParseFile(token.NewFileSet(), "sample.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := map[string]*productionFunction{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		key := functionKey("sample", productionFunctionName(fn))
+		functions[key] = &productionFunction{packagePath: "sample", name: productionFunctionName(fn), decl: fn}
+	}
+	outer := functions[functionKey("sample", "(*emitter).outer")]
+	if outer == nil {
+		t.Fatal("outer method missing")
+	}
+	if got := calledProductionFunctions(outer, functions); len(got) != 0 {
+		t.Fatalf("shadowed receiver resolved to enclosing method: %v", got)
+	}
+}
+
+func TestCalledProductionFunctionsResolvesOwnReceiver(t *testing.T) {
+	const source = `package sample
+type emitter struct{}
+func (e *emitter) emit() {}
+func (e *emitter) outer() { e.emit() }`
+	file, err := parser.ParseFile(token.NewFileSet(), "sample.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := map[string]*productionFunction{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		key := functionKey("sample", productionFunctionName(fn))
+		functions[key] = &productionFunction{packagePath: "sample", name: productionFunctionName(fn), decl: fn}
+	}
+	outer := functions[functionKey("sample", "(*emitter).outer")]
+	if outer == nil {
+		t.Fatal("outer method missing")
+	}
+	if got := calledProductionFunctions(outer, functions); len(got) != 1 || got[0] != functions[functionKey("sample", "(*emitter).emit")] {
+		t.Fatalf("own receiver call resolved to %v, want emit", got)
+	}
+}
+
 func calledProductionFunctions(fn *productionFunction, functions map[string]*productionFunction) []*productionFunction {
 	var called []*productionFunction
 	invoked := invokedFuncLits(fn.decl.Body)
@@ -286,9 +336,11 @@ func calledProductionFunctions(fn *productionFunction, functions map[string]*pro
 			ident, ok := callee.X.(*ast.Ident)
 			if ok && fn.imports[ident.Name] != "" {
 				key = functionKey(fn.imports[ident.Name], callee.Sel.Name)
-			} else if ok && ident.Name == receiverVarName(fn.decl) {
-				// A method called on the function's own receiver (`e.emit()`)
-				// is a static call to a method of the same type.
+			} else if ok && fn.decl.Recv != nil && len(fn.decl.Recv.List) > 0 &&
+				len(fn.decl.Recv.List[0].Names) > 0 &&
+				ident.Obj != nil && ident.Obj == fn.decl.Recv.List[0].Names[0].Obj {
+				// ParseFile resolves lexical objects by default. Object identity
+				// excludes a same-named local that shadows the receiver.
 				key = functionKey(fn.packagePath, receiverName(fn.decl.Recv.List[0].Type)+"."+callee.Sel.Name)
 			}
 		}

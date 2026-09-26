@@ -213,6 +213,16 @@ func TestAuditSummarySnapshotByteBoundary(t *testing.T) {
 	}
 }
 
+func TestAuditSummaryTruncatedSnapshot(t *testing.T) {
+	line := `{"ts":"2026-09-26T00:00:00Z","event":"license_issued"}` + "\n"
+	for _, source := range []string{"", line} {
+		_, err := summarizeAuditSnapshot(strings.NewReader(source), int64(len(line)*2), time.Time{}, time.Time{}, auditSummary{Counts: map[string]int{}})
+		if err == nil || !strings.Contains(err.Error(), "shorter than its observed size") {
+			t.Fatalf("truncated snapshot of %d bytes: got %v", len(source), err)
+		}
+	}
+}
+
 func TestDispatchAuditSummaryWithoutServiceEnvironment(t *testing.T) {
 	clearLicenseServiceEnv(t)
 	path := testSummaryLedger(t, licenseservice.AuditEntry{Event: licenseservice.AuditLicenseIssued})

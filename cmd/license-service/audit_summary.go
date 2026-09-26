@@ -158,10 +158,14 @@ func readAuditSummary(path string, since, until time.Time) (auditSummary, error)
 }
 
 func summarizeAuditSnapshot(source io.Reader, size int64, since, until time.Time, result auditSummary) (auditSummary, error) {
-	reader := bufio.NewReaderSize(io.LimitReader(source, size), maxAuditSummaryLine)
+	snapshot := &io.LimitedReader{R: source, N: size}
+	reader := bufio.NewReaderSize(snapshot, maxAuditSummaryLine)
 	for lineNumber := 1; ; lineNumber++ {
 		line, readErr := reader.ReadSlice('\n')
 		if errors.Is(readErr, io.EOF) && len(line) == 0 {
+			if snapshot.N != 0 {
+				return result, errors.New("audit ledger became shorter than its observed size; use a stable, complete copy")
+			}
 			break
 		}
 		if errors.Is(readErr, bufio.ErrBufferFull) {

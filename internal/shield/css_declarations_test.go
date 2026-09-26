@@ -81,6 +81,17 @@ func TestStyleValueHidesCSSDeclarationEdges(t *testing.T) {
 		hide        bool
 	}{
 		{"form feed whitespace", "\fdisplay\t:\nnone", true},
+		// A browser treats these values as invalid and keeps the element
+		// visible, so a dropped token delimiter must not turn them into none.
+		{"hash value", "display:#none", false},
+		{"at-keyword value", "display:@none", false},
+		{"hash visibility", "visibility:#hidden", false},
+		{"double-quoted value", `display:"none"`, false},
+		{"single-quoted value", `display:'none'`, false},
+		{"url value", "display:url(none)", false},
+		{"function value", "display:none()", false},
+		{"bracketed value", "display:[none]", false},
+		{"escaped ident is still none", `display:\6e one`, true},
 		{"null replacement", "display:none; dis\x00play:block", true},
 		{"invalid utf8 in property", "dis\xffplay:none", false},
 		{"escaped punctuation in name", `dis\70 lay:none`, true},
@@ -133,7 +144,7 @@ func TestCSSDeclarationTokenOutput(t *testing.T) {
 		want  []cssDeclaration
 	}{
 		{`x:+.5e-2%;display:none`, []cssDeclaration{{name: "x", value: "+.5e-2%"}, {name: "display", value: "none"}}},
-		{`x:2px #abc @foo;display:none`, []cssDeclaration{{name: "x", value: "2px abc foo"}, {name: "display", value: "none"}}},
+		{`x:2px #abc @foo;display:none`, []cssDeclaration{{name: "x", value: "2px #abc @foo"}, {name: "display", value: "none"}}},
 		{`x:url(a\)b);display:none`, []cssDeclaration{{name: "x", value: "url(a)b)"}, {name: "display", value: "none"}}},
 		{`x:"a\22 b";display:none`, []cssDeclaration{{name: "x", value: `"a"b"`}, {name: "display", value: "none"}}},
 	}

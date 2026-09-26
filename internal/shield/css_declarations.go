@@ -262,14 +262,14 @@ func (l *cssLexer) token() cssToken {
 	if c == '@' {
 		l.i++
 		if l.ident(0) {
-			return cssToken{cssAt, l.name(), false}
+			return cssToken{cssAt, "@" + l.name(), false}
 		}
 		return cssToken{'@', "@", false}
 	}
 	if c == '#' {
 		l.i++
 		if cssName(l.at(0)) || l.escape() {
-			return cssToken{cssHash, l.name(), false}
+			return cssToken{cssHash, "#" + l.name(), false}
 		}
 		return cssToken{'#', "#", false}
 	}

@@ -32,6 +32,81 @@ import (
 // administrator who was only ever authorized for the original. A double can
 // show the handler passes the hash; only the store can show the hash is
 // honoured.
+func TestFileEmergencyStoreLockOpenAndClose(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".emergency-controls.lock"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("lock open error=%v, want directory context", err)
+	}
+	if err := os.Remove(filepath.Join(dir, ".emergency-controls.lock")); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	var nilStore *FileEmergencyStore
+	if err := nilStore.Close(); err != nil {
+		t.Fatalf("nil close: %v", err)
+	}
+	kill := signedRemoteKillMessage(t, "closed-store-kill", 1, conductor.KillSwitchActive, time.Now().UTC())
+	if _, _, err := store.PublishRemoteKill(t.Context(), kill, time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("write after close error=%v", err)
+	}
+}
+
+func TestFileEmergencyStoreRejectsConcurrentOwner(t *testing.T) {
+	dir := t.TempDir()
+	first, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	now := time.Now().UTC()
+	auth := signedTestRollback(t, "owner-rollback", now, 100)
+	if _, created, err := first.PublishRollbackAuthorization(t.Context(), auth, now); err != nil || !created {
+		t.Fatalf("publish created=%v err=%v", created, err)
+	}
+	second, err := OpenFileEmergencyStore(dir)
+	if second == nil && (err == nil || !strings.Contains(err.Error(), dir)) {
+		t.Fatalf("second owner error=%v, want directory conflict", err)
+	}
+	if cleared, err := first.ClearRollbackAuthorization(t.Context(), auth.AuthorizationID); err != nil || !cleared {
+		t.Fatalf("clear=%v err=%v", cleared, err)
+	}
+	if second != nil {
+		kill := signedRemoteKillMessage(t, "other-owner-kill", 1, conductor.KillSwitchActive, now)
+		if _, created, err := second.PublishRemoteKill(t.Context(), kill, now); err != nil || !created {
+			t.Fatalf("stale remote kill publication created=%v err=%v", created, err)
+		}
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if _, exists, err := reopened.RollbackAuthorizationByID(t.Context(), auth.AuthorizationID); err != nil || exists {
+		t.Fatalf("cleared authorization exists=%v err=%v", exists, err)
+	}
+	if _, _, err := reopened.PublishRollbackAuthorization(t.Context(), auth, now); !errors.Is(err, ErrEmergencyStaleCounter) {
+		t.Fatalf("lost floor: %v", err)
+	}
+}
+
 func TestClearRollbackAuthorizationMatching_RefusesAReplacedRecord(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenFileEmergencyStore(dir)
@@ -128,6 +203,7 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	}
 
 	// Verify persistence: reopen the store and confirm empty.
+	_ = store.Close()
 	store2, err := OpenFileEmergencyStore(dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore (reopen): %v", err)
@@ -138,6 +214,128 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	}
 	if len(all2) != 0 {
 		t.Fatalf("expected 0 rollbacks after reopen, got %d", len(all2))
+	}
+}
+
+func TestClearedRollbackAuthorizationCannotReplay(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	auth := signedTestRollback(t, "cleared-replay", now, 100)
+	if _, created, err := store.PublishRollbackAuthorization(t.Context(), auth, now); err != nil || !created {
+		t.Fatalf("publish created=%v error=%v", created, err)
+	}
+	if cleared, err := store.ClearRollbackAuthorization(t.Context(), auth.AuthorizationID); err != nil || !cleared {
+		t.Fatalf("clear cleared=%v error=%v", cleared, err)
+	}
+	if _, _, err := store.PublishRollbackAuthorization(t.Context(), auth, now); !errors.Is(err, ErrEmergencyStaleCounter) {
+		t.Fatalf("replay error=%v, want stale counter", err)
+	}
+	_ = store.Close()
+	reopenedFirst, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reopenedFirst.PublishRollbackAuthorization(t.Context(), auth, now); !errors.Is(err, ErrEmergencyStaleCounter) {
+		t.Fatalf("reopened replay error=%v, want stale counter", err)
+	}
+	_ = reopenedFirst.Close()
+	reopened, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := signedTestRollback(t, "after-cleared-replay", now, 101)
+	if _, created, err := reopened.PublishRollbackAuthorization(t.Context(), fresh, now); err != nil || !created {
+		t.Fatalf("higher counter created=%v error=%v", created, err)
+	}
+}
+
+func TestRollbackCounterFloorValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		floor rollbackCounterFloor
+	}{
+		{"missing org", rollbackCounterFloor{FleetID: "fleet", Counter: 1}},
+		{"missing fleet", rollbackCounterFloor{OrgID: "org", Counter: 1}},
+		{"zero counter", rollbackCounterFloor{OrgID: "org", FleetID: "fleet"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateRollbackCounterFloor(tc.floor); err == nil {
+				t.Fatal("invalid floor accepted")
+			}
+			if err := writeEmergencyState(filepath.Join(t.TempDir(), emergencyStateFileName), emergencyStateRecord{
+				RollbackCounters: []rollbackCounterFloor{tc.floor},
+			}); err == nil {
+				t.Fatal("invalid floor written")
+			}
+			data, err := json.Marshal(emergencyStateRecord{RollbackCounters: []rollbackCounterFloor{tc.floor}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, emergencyStateFileName), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenFileEmergencyStore(dir); err == nil {
+				t.Fatal("invalid persisted floor loaded")
+			}
+		})
+	}
+}
+
+func TestRollbackCounterFloorDuplicateScopeRejected(t *testing.T) {
+	floor := rollbackCounterFloor{OrgID: "org", FleetID: "fleet", Counter: 1}
+	data, err := json.Marshal(emergencyStateRecord{RollbackCounters: []rollbackCounterFloor{floor, floor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, emergencyStateFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("duplicate floor error=%v", err)
+	}
+}
+
+func TestClearRollbackAuthorizationUpdatesCounterFloor(t *testing.T) {
+	store, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		id      string
+		counter uint64
+		want    uint64
+	}{
+		{"first", 100, 100},
+		{"lower", 99, 100},
+		{"higher", 101, 101},
+	} {
+		auth := signedTestRollback(t, tc.id, now, tc.counter)
+		// Seed a record directly so lower counter handling on clear can be tested.
+		hash, err := auth.CanonicalHash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := StoredRollbackAuthorization{Authorization: auth, AuthorizationHash: hash, PublishedAt: now}
+		store.rollbackHashes[hash] = record
+		store.rollbackAuthIDMap[tc.id] = hash
+		store.rollbacks = append(store.rollbacks, record)
+		if cleared, err := store.ClearRollbackAuthorization(t.Context(), tc.id); err != nil || !cleared {
+			t.Fatalf("clear %s: cleared=%v err=%v", tc.id, cleared, err)
+		}
+		if got, ok := store.maxRollbackCounterForOrgFleetLocked(auth.OrgID, auth.FleetID); !ok || got != tc.want {
+			t.Fatalf("floor after %s=%d, %v; want %d", tc.id, got, ok, tc.want)
+		}
+	}
+	store.rollbackAuthIDMap["orphan"] = "missing-hash"
+	if cleared, err := store.ClearRollbackAuthorization(t.Context(), "orphan"); cleared || !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("orphan clear: cleared=%v err=%v", cleared, err)
 	}
 }
 

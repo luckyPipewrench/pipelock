@@ -208,6 +208,12 @@ func startConductor(ctx context.Context, layout Layout, storageDir string, opts 
 		_ = auditStore.Close()
 		return nil, err
 	}
+	keepEmergencyStore := false
+	defer func() {
+		if !keepEmergencyStore {
+			_ = emergencyControls.Close()
+		}
+	}()
 	emergencyKeys, err := bootstrapRemoteKillKeyResolver(layout)
 	if err != nil {
 		_ = auditStore.Close()
@@ -286,12 +292,13 @@ func startConductor(ctx context.Context, layout Layout, storageDir string, opts 
 	}
 	go func() { _ = httpServer.ServeTLS(listener, "", "") }()
 
+	keepEmergencyStore = true
 	return &conductorServer{
 		httpServer: httpServer,
 		listener:   listener,
 		addr:       listener.Addr().String(),
 		auditStore: auditStore,
-		closers:    []func() error{auditStore.Close},
+		closers:    []func() error{auditStore.Close, emergencyControls.Close},
 	}, nil
 }
 

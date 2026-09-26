@@ -321,3 +321,61 @@ func TestDoHQueryJoinedEntropy(t *testing.T) {
 		s.Close()
 	}
 }
+
+// DLP reads the DNS message even when the query carries other parameters,
+// which keep the whole-value entropy check but no longer hide the message's
+// names from DLP.
+func TestDoHQueryDLPWithExtraParameters(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	key := awsExampleAccessKeyID()
+	half := len(key) / 2
+	wire := make([]byte, 12)
+	wire[5] = 2
+	wire = append(wire, dnsNameWire([]string{key[:half]})...)
+	wire = append(wire, '.', '.', '.', '.')
+	wire = append(wire, dnsNameWire([]string{key[half:]})...)
+	wire = append(wire, '.', '.', '.', '.')
+	dns := base64.RawURLEncoding.EncodeToString(wire)
+	for _, q := range []string{"?dns=" + dns + "&ct=application/dns-message", "?ct=x&d%6es=" + dns} {
+		if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query"+q); r.Allowed {
+			t.Fatalf("%s: key split across names allowed beside other parameters", q)
+		}
+	}
+}
+
+// A value split across two TXT character-strings is read joined. The length
+// octet between the halves here is '-' (45), which alone breaks the match.
+func TestDoHTXTCharacterStringsJoined(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	key := awsExampleAccessKeyID()
+	first := strings.Repeat("x", 45-8) + key[:8]
+	second := key[8:] + strings.Repeat("y", 45-len(key[8:]))
+	rdata := append([]byte{byte(len(first))}, first...) // #nosec G115 -- 45
+	rdata = append(rdata, byte(len(second)))            // #nosec G115 -- 45
+	rdata = append(rdata, second...)
+	if strings.Contains(string(rdata), key) {
+		t.Fatal("premise: the raw RDATA must not already contain the key")
+	}
+	wire := dnsTXTRecordWire(t, rdata)
+	if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire)); r.Allowed {
+		t.Fatal("key split across TXT character-strings was allowed")
+	}
+}
+
+func dnsTXTRecordWire(t *testing.T, rdata []byte) []byte {
+	t.Helper()
+	wire := make([]byte, 12)
+	wire[5] = 1
+	wire[11] = 1
+	wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
+	wire = append(wire, 0x00, 0x01, 0x00, 0x01)
+	wire = append(wire, 0)
+	wire = append(wire, 0x00, 0x10, 0x00, 0x01, 0, 0, 0, 0, byte(len(rdata)>>8), byte(len(rdata))) // #nosec G115 -- bounded
+	return append(wire, rdata...)
+}

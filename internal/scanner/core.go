@@ -798,12 +798,10 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	// A DNS-over-HTTPS query is also read as the message it carries. Every
 	// name, record payload and fixed-width field, and their decodings, reach
 	// the floor, which configured exemptions never narrow.
-	if msg, ok := parseDNSQuery(parsed.RawQuery); ok {
-		for _, text := range msg.dlpTexts() {
-			targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-			for _, d := range decodeEncodingsRecursive(text) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
+	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
+		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
 

@@ -23,6 +23,7 @@ const (
 	dnsMaxLabelLen   = 63
 	dnsMaxNameSteps  = 128
 	dnsTypeOPT       = 41
+	dnsTypeTXT       = 16
 	dnsPointerMarker = 0xC0
 	dnsLabelTypeMask = 0xC0
 
@@ -101,6 +102,12 @@ func parseDNSQuery(rawQuery string) (dnsMessage, bool) {
 	if found != 1 {
 		return dnsMessage{}, false
 	}
+	return parseDNSQueryValue(rawValue)
+}
+
+// parseDNSQueryValue decodes one raw dns query value: canonical unpadded
+// base64url of a message the strict parser accepts.
+func parseDNSQueryValue(rawValue string) (dnsMessage, bool) {
 	decoded, err := url.QueryUnescape(rawValue)
 	if err != nil || decoded == "" || strings.ContainsRune(decoded, '=') {
 		return dnsMessage{}, false
@@ -110,6 +117,29 @@ func parseDNSQuery(rawQuery string) (dnsMessage, bool) {
 		return dnsMessage{}, false
 	}
 	return parseDNSMessage(wire)
+}
+
+// dnsQueryDLPTexts returns the DLP views of every DNS message a query may
+// carry, for DLP only. Unlike parseDNSQuery it does not require the query to
+// be a pure RFC 8484 request: any parameter whose key decodes to dns, in any
+// spelling, beside any other parameters, is tried. These views only add
+// targets, so reading more than the strict form cannot relax a verdict; the
+// entropy relief stays on parseDNSQuery's strict form.
+func dnsQueryDLPTexts(rawQuery string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		rawKey, rawValue, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		if key, err := url.QueryUnescape(rawKey); err != nil || key != dnsQueryParam {
+			continue
+		}
+		if msg, ok := parseDNSQueryValue(rawValue); ok {
+			out = append(out, msg.dlpTexts()...)
+		}
+	}
+	return out
 }
 
 func parseDNSMessage(msg []byte) (dnsMessage, bool) {
@@ -172,10 +202,33 @@ func consumeDNSRR(msg []byte, off int, out *dnsMessage) (int, bool) {
 	}
 	rdata := append([]byte(nil), msg[rdataAt:rdataAt+rdlen]...)
 	out.blobs = append(out.blobs, rdata)
+	if typ == dnsTypeTXT {
+		// A TXT record is one or more length-prefixed character-strings. The
+		// raw RDATA keeps each length octet between them, which can break a
+		// value split across strings, so the joined text is a view too.
+		if joined, ok := joinTXTStrings(rdata); ok {
+			out.blobs = append(out.blobs, joined)
+		}
+	}
 	if typ == dnsTypeOPT && !appendEDNSOptionPayloads(rdata, out) {
 		return 0, false
 	}
 	return rdataAt + rdlen, true
+}
+
+// joinTXTStrings concatenates the character-strings of TXT RDATA. It reports
+// false when the RDATA is not a whole sequence of character-strings.
+func joinTXTStrings(rdata []byte) ([]byte, bool) {
+	var joined []byte
+	for off := 0; off < len(rdata); {
+		n := int(rdata[off])
+		if off+1+n > len(rdata) {
+			return nil, false
+		}
+		joined = append(joined, rdata[off+1:off+1+n]...)
+		off += 1 + n
+	}
+	return joined, len(joined) > 0
 }
 
 func appendEDNSOptionPayloads(rdata []byte, out *dnsMessage) bool {

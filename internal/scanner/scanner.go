@@ -2606,12 +2606,10 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
 	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
-	if msg, ok := parseDNSQuery(parsed.RawQuery); ok {
-		for _, text := range msg.dlpTexts() {
-			targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-			for _, d := range decodeEncodingsRecursive(text) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
+	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
+		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
 

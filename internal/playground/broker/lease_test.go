@@ -4,15 +4,66 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
+
+func TestReleaseDestroyDeadlineRetainsCapacityAndRetries(t *testing.T) {
+	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 2), allow: make(chan struct{})}
+	lm := newManager(t, p, 1)
+	lm.destroyTimeout = 20 * time.Millisecond
+	lease, err := lm.Lease(context.Background(), "first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { lm.Release(context.Background(), "first"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("destroy did not return after deadline")
+	}
+	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; !ok {
+		t.Fatal("timed-out VM lost from quarantine")
+	}
+	if _, err := lm.Lease(context.Background(), "second", nil); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("capacity after timeout = %v", err)
+	}
+	close(p.allow)
+	lm.RetryFailedDestroys(context.Background())
+	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; ok {
+		t.Fatal("retry did not clear quarantine")
+	}
+}
+
+func TestDestroyFailuresAreLoggedOnEveryPath(t *testing.T) {
+	p := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
+	var log bytes.Buffer
+	lm, err := NewLeaseManager(LeaseConfig{Provider: p, Concurrency: livechat.NewConcurrencyLimiter(1), Image: "playground:test", Log: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := lm.Lease(context.Background(), "first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm.Release(context.Background(), "first")
+	if _, err := lm.Lease(context.Background(), "second", nil); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("lease retry = %v", err)
+	}
+	lm.RetryFailedDestroys(context.Background())
+	if got := strings.Count(log.String(), lease.Machine.ID+" failed: provider teardown unavailable"); got != 3 {
+		t.Fatalf("logged destroy failures = %d, want 3; log=%q", got, log.String())
+	}
+}
 
 // fakeProvider is an in-memory MachineProvider for testing the lease lifecycle
 // and the orphan reaper.

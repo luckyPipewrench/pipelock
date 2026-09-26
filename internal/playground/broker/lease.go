@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"sync"
 	"time"
 
@@ -42,6 +44,8 @@ type LeaseConfig struct {
 	// shared secrets). Per-session values are layered on top at Lease time and
 	// override BaseEnv. Never logged.
 	BaseEnv map[string]string
+	// Log receives teardown failures. Nil uses stderr.
+	Log io.Writer
 }
 
 // Lease is one active per-visitor VM held by the broker.
@@ -57,13 +61,20 @@ type Lease struct {
 // LeaseManager owns the lifecycle of per-visitor VMs and the concurrency cap. It
 // is safe for concurrent use.
 type LeaseManager struct {
-	cfg        LeaseConfig
-	mu         sync.Mutex
-	leases     map[string]*Lease
-	quarantine map[string]*Lease
-	destroying map[string]struct{}
-	nextRetry  time.Time
+	cfg            LeaseConfig
+	mu             sync.Mutex
+	leases         map[string]*Lease
+	quarantine     map[string]*Lease
+	destroying     map[string]struct{}
+	nextRetry      time.Time
+	log            io.Writer
+	logMu          sync.Mutex
+	destroyTimeout time.Duration
 }
+
+// leaseDestroyTimeout matches the warm-pool teardown deadline. A timed-out
+// deletion remains quarantined and keeps its capacity slot until a retry succeeds.
+const leaseDestroyTimeout = 30 * time.Second
 
 // NewLeaseManager validates cfg and returns a LeaseManager. It rejects a missing
 // provider, concurrency limiter, or image: each is a fail-open hole if absent.
@@ -80,7 +91,11 @@ func NewLeaseManager(cfg LeaseConfig) (*LeaseManager, error) {
 	// BaseEnv reaches every visitor VM. Retain a broker-owned copy so a caller
 	// cannot change the configuration after validation and construction.
 	cfg.BaseEnv = maps.Clone(cfg.BaseEnv)
-	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease), quarantine: make(map[string]*Lease), destroying: make(map[string]struct{})}, nil
+	log := cfg.Log
+	if log == nil {
+		log = os.Stderr
+	}
+	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease), quarantine: make(map[string]*Lease), destroying: make(map[string]struct{}), log: log, destroyTimeout: leaseDestroyTimeout}, nil
 }
 
 // Lease provisions one VM for sessionKey. It acquires a concurrency slot, creates
@@ -166,7 +181,9 @@ func (lm *LeaseManager) destroyOrQuarantine(ctx context.Context, lease *Lease) {
 }
 
 func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
-	err := lm.cfg.Provider.DestroyMachine(ctx, lease.Machine.ID)
+	destroyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lm.destroyTimeout)
+	err := lm.cfg.Provider.DestroyMachine(destroyCtx, lease.Machine.ID)
+	cancel()
 	lm.mu.Lock()
 	delete(lm.destroying, lease.Machine.ID)
 	if err == nil {
@@ -174,6 +191,11 @@ func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
 		lease.release()
 	}
 	lm.mu.Unlock()
+	if err != nil {
+		lm.logMu.Lock()
+		_, _ = fmt.Fprintf(lm.log, "broker: destroy machine %s failed: %v\n", lease.Machine.ID, err)
+		lm.logMu.Unlock()
+	}
 }
 
 // RetryFailedDestroys retries quarantined VMs and returns capacity only after

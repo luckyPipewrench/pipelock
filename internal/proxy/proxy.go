@@ -1872,12 +1872,15 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		// confirmed leaves its key on the tail while the old emitter stays.
 		PriorSignerKeys: append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex()),
 	})
-	p.noteReceiptSignerKey(emitter.SignerKeyHex())
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", initErr)
 		}
 	}
+	// Recorded only once the emitter initialized, so a key whose emitter was
+	// refused never becomes a prior key. It is recorded before publication,
+	// so a session_open written by a reload that then fails still counts.
+	p.noteReceiptSignerKey(emitter.SignerKeyHex())
 
 	return receiptEmitterStage{
 		emitter: emitter,

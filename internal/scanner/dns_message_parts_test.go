@@ -419,3 +419,76 @@ func TestDoHTXTAcrossRecordsAndFraming(t *testing.T) {
 		t.Fatal("a TXT record of empty character-strings is well formed and must parse")
 	}
 }
+
+// The record join reads decoded TXT text only. A raw RDATA view carries each
+// character-string's length byte, and a piece 46 bytes long puts a printable
+// '.' there, which would split the value in any join of raw record bytes.
+func TestDoHTXTAcrossRecordsWithPrintableLengths(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	key := awsExampleAccessKeyID()
+	half := len(key) / 2
+	pad := strings.Repeat("-", 46-half)
+	txt := func(value string) []byte {
+		if len(value) != 46 {
+			t.Fatalf("premise: piece length %d, want 46 so its length byte is '.'", len(value))
+		}
+		rdata := append([]byte{byte(len(value))}, value...) // #nosec G115 -- 46
+		rr := []byte{0}
+		rr = append(rr, 0x00, 0x10, 0x00, 0x01, '.', '.', '.', '.', 0, byte(len(rdata))) // #nosec G115 -- 47
+		return append(rr, rdata...)
+	}
+	wire := make([]byte, 12)
+	wire[5] = 1
+	wire[11] = 2
+	wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
+	wire = append(wire, 0x00, 0x01, 0x00, 0x01)
+	wire = append(wire, txt(pad+key[:half])...)
+	wire = append(wire, txt(key[half:]+pad)...)
+	if _, ok := parseDNSMessage(wire); !ok {
+		t.Fatal("premise: the two-record message must parse")
+	}
+	r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
+	if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across TXT records", r.Allowed, r.Scanner)
+	}
+}
+
+// EDNS option data split across two OPT records is read joined, with the
+// second record's option code and length (both printable here) left out.
+func TestDoHEDNSAcrossOPTRecords(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	key := awsExampleAccessKeyID()
+	half := len(key) / 2
+	opt := func(value string) []byte {
+		// Option code '..' and a length of 46 ('.'), so the raw RDATA view
+		// holds printable bytes between the two halves.
+		if len(value) != 46 {
+			t.Fatalf("premise: option length %d, want 46", len(value))
+		}
+		rdata := append([]byte{'.', '.', 0, byte(len(value))}, value...) // #nosec G115 -- 46
+		rr := []byte{0}
+		rr = append(rr, 0x00, 0x29, 0x10, 0x00, '.', '.', '.', '.', 0, byte(len(rdata))) // #nosec G115 -- 50
+		return append(rr, rdata...)
+	}
+	pad := strings.Repeat("-", 46-half)
+	wire := make([]byte, 12)
+	wire[5] = 1
+	wire[11] = 2
+	wire = append(wire, dnsNameWire([]string{"www", "example", "test"})...)
+	wire = append(wire, 0x00, 0x01, 0x00, 0x01)
+	wire = append(wire, opt(pad+key[:half])...)
+	wire = append(wire, opt(key[half:]+pad)...)
+	if _, ok := parseDNSMessage(wire); !ok {
+		t.Fatal("premise: the two-OPT message must parse")
+	}
+	r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query?dns="+base64.RawURLEncoding.EncodeToString(wire))
+	if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+		t.Fatalf("allowed=%v scanner=%q, want a DLP block for a key split across OPT records", r.Allowed, r.Scanner)
+	}
+}

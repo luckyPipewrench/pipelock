@@ -112,6 +112,7 @@ test("evidence provenance: v3 corpus executes every vector byte-exactly", () => 
     vectors: Vector[];
   };
   assert.equal(v3.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST);
+  assert.ok(v3.vectors.length > 0, "v3 corpus has no vectors");
   for (const vector of v3.vectors) {
     const recipe: { transform_profile_digest: string; operations: unknown[] } = {
       transform_profile_digest: vector.transform_profile_digest ?? v3.profile_digest,

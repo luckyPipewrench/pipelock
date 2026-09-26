@@ -22,7 +22,7 @@ func awsExampleAccessKeyID() string {
 }
 
 func githubClassicToken() string {
-	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
+	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
 }
 
 func TestEncodedCredentialCoverage(t *testing.T) {

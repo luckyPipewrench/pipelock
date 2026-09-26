@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"net/url"
@@ -44,6 +45,12 @@ type dnsMessage struct {
 	// blobs are record RDATA values and, for OPT records, each EDNS option
 	// payload. Padding is included; it is ordinary RDATA.
 	blobs [][]byte
+	// payloads are the values unpacked from inside RDATA, in message order:
+	// each TXT record's character-strings joined, and each EDNS option's
+	// data. They are also in blobs, but there each one sits beside its raw
+	// RDATA, whose length and option octets would split a value spread across
+	// records.
+	payloads [][]byte
 	// fixed is every fixed-width field the parse consumed: the header, each
 	// question's type and class, each record's type, class, TTL and length,
 	// each EDNS option code and length, and every compression pointer. None of it is a name or a payload,
@@ -215,6 +222,7 @@ func consumeDNSRR(msg []byte, off int, out *dnsMessage) (int, bool) {
 		}
 		if len(joined) > 0 {
 			out.blobs = append(out.blobs, joined)
+			out.payloads = append(out.payloads, joined)
 		}
 	}
 	if typ == dnsTypeOPT && !appendEDNSOptionPayloads(rdata, out) {
@@ -251,7 +259,9 @@ func appendEDNSOptionPayloads(rdata []byte, out *dnsMessage) bool {
 		if length < 0 || off+length > len(rdata) {
 			return false
 		}
-		out.blobs = append(out.blobs, append([]byte(nil), rdata[off:off+length]...))
+		payload := append([]byte(nil), rdata[off:off+length]...)
+		out.blobs = append(out.blobs, payload)
+		out.payloads = append(out.payloads, payload)
 		off += length
 	}
 	return true
@@ -354,15 +364,13 @@ func (m dnsMessage) dlpTexts() []string {
 	for _, blob := range m.blobs {
 		add(string(blob))
 	}
-	// Every record payload joined, so a value split across two records is
-	// seen whole, as the label join does for names.
-	if len(m.blobs) > 1 {
-		var joined []byte
-		for _, blob := range m.blobs {
-			joined = append(joined, blob...)
-		}
-		add(string(joined))
-	}
+	// Every record payload joined, and every unpacked value joined on its
+	// own, so a value split across two records is seen whole, as the label
+	// join does for names. The unpacked join leaves out raw RDATA, whose
+	// length and option octets can be printable and would sit between the
+	// two halves.
+	add(string(bytes.Join(m.blobs, nil)))
+	add(string(bytes.Join(m.payloads, nil)))
 	add(string(m.fixed))
 	return out
 }

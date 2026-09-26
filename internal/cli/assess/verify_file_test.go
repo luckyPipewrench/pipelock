@@ -62,13 +62,18 @@ func TestAssessVerifyFileBoundaries(t *testing.T) {
 	if err := os.WriteFile(path, []byte("abc"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := openAssessVerifyFile(link); err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Fatalf("symlink input: %v", err)
-	}
+	t.Run("symlink", func(t *testing.T) {
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(path, link); err != nil {
+			if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrInvalid) || errors.Is(err, errors.ErrUnsupported) {
+				t.Skipf("host cannot create symlinks: %v", err)
+			}
+			t.Fatal(err)
+		}
+		if _, err := openAssessVerifyFile(link); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("symlink input: %v", err)
+		}
+	})
 	got, err := readAssessVerifyFile(path)
 	if err != nil || string(got) != "abc" {
 		t.Fatalf("short read: %q, %v", got, err)

@@ -207,6 +207,9 @@ func Unmarshal(data []byte) (Receipt, error) {
 			if strings.Contains(err.Error(), `"detected_patterns"`) {
 				legacy, legacyErr := unmarshalLegacyDetectedPatterns(data)
 				if legacyErr == nil {
+					if err := rejectReceiptAliases(data); err != nil {
+						return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
+					}
 					return legacy, nil
 				}
 			}

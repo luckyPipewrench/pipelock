@@ -750,9 +750,11 @@ func TestUnmarshalRejectsConflictingFieldAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy := strings.Replace(string(raw), `"action_record":{`, `"action_record":{"detected_patterns":[],`, 1)
 	for name, modified := range map[string][]byte{
-		"receipt version": append([]byte(`{"VERSION":999,`), raw[1:]...),
-		"action verdict":  []byte(strings.Replace(string(raw), `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
+		"receipt version":       append([]byte(`{"VERSION":999,`), raw[1:]...),
+		"action verdict":        []byte(strings.Replace(string(raw), `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
+		"legacy action verdict": []byte(strings.Replace(legacy, `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			parsed, err := Unmarshal(modified)

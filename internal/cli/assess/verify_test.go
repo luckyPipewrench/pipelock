@@ -64,7 +64,7 @@ func TestAssessVerify_SignedValid(t *testing.T) {
 
 func TestAssessVerify_RejectsOversizedManifestBeforeParsing(t *testing.T) {
 	runDir := t.TempDir()
-	f, err := os.OpenFile(filepath.Join(runDir, "manifest.json"), os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(filepath.Join(runDir, "manifest.json")), os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestAssessVerify_RejectsOversizedArtifactBeforeHashing(t *testing.T) {
 	runDir := setupFinalizedRunUnsigned(t)
 	manifest := readTestManifest(t, runDir)
 	for name := range manifest.Artifacts {
-		file, err := os.OpenFile(filepath.Join(runDir, name), os.O_WRONLY, 0o600)
+		file, err := os.OpenFile(filepath.Clean(filepath.Join(runDir, name)), os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}

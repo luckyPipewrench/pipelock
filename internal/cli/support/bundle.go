@@ -385,7 +385,7 @@ func marshalIndent(v any) ([]byte, error) {
 
 // writeArchive creates a gzip-compressed tar archive at path containing a
 // manifest header and all bundle entries.
-func writeArchive(path string, m manifest, entries []bundleEntry) error {
+func writeArchive(path string, m manifest, entries []bundleEntry) (err error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(path), bundleDirMode); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
@@ -395,7 +395,14 @@ func writeArchive(path string, m manifest, entries []bundleEntry) error {
 	if err != nil {
 		return fmt.Errorf("creating archive file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	// This call created the file exclusively, so a failure after creation
+	// removes it; otherwise a partial archive would block a retry to the same path.
+	defer func() {
+		_ = f.Close()
+		if err != nil {
+			_ = os.Remove(filepath.Clean(path))
+		}
+	}()
 
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
@@ -449,7 +456,7 @@ func tarWrite(tw *tar.Writer, name string, data []byte, mtime time.Time) error {
 }
 
 // writeManifestJSON writes a standalone manifest.json next to the archive.
-func writeManifestJSON(path string, m manifest) error {
+func writeManifestJSON(path string, m manifest) (err error) {
 	data, err := marshalIndent(m)
 	if err != nil {
 		return err
@@ -459,7 +466,14 @@ func writeManifestJSON(path string, m manifest) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(filepath.Clean(path))
+		}
+	}()
 	_, err = f.Write(data)
 	return err
 }

@@ -15,8 +15,8 @@
 // verifier prints {"envelope_fatal":true} and exits non-zero; the gate compares
 // only the non-zero exit for fatal fixtures.
 
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { readVerifierBytes } from "../util.js";
 import { comparableAppraisal } from "./appraise.js";
 import { canonicalize } from "./canonical.js";
 import { comparableChain, loadTrustFile, unmarshal, verify, verifyChain } from "./index.js";
@@ -123,7 +123,7 @@ export function runAARPCommand(args: string[]): number {
 
   let data: string;
   try {
-    data = readFileSync(target, "utf8");
+    data = readVerifierBytes(target).toString("utf8");
   } catch (err) {
     const e = new Error(`read envelope: ${(err as Error).message}`) as Error & { code: number };
     e.code = 2;

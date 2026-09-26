@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::types::Receipt;
-use crate::util::{parse_json_line, reject_duplicate_keys, Result, VerifierError};
+use crate::util::{
+    parse_json_line, read_verifier_text, reject_duplicate_keys, Result, VerifierError,
+};
 use std::fs;
 use std::path::Path;
 
@@ -34,8 +36,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
 // is kept, never the whole untrusted line, so memory stays proportional to the
 // parsed entries.
 fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, Option<String>)>> {
-    let text = fs::read_to_string(path)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let text = read_verifier_text(path)?;
     let mut entries = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {
         let line = raw_line.trim();

@@ -4103,6 +4103,15 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 	// only the entropy heuristic; DB-URI SSRF guards still run because they
 	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
+	if _, err := url.QueryUnescape(parsed.RawQuery); err != nil {
+		return Result{
+			Allowed: false,
+			Reason:  "malformed query escape prevents entropy inspection",
+			Scanner: ScannerEntropy,
+			Class:   ClassHeuristicEntropy,
+			Score:   1,
+		}
+	}
 	if strings.Contains(parsed.RawQuery, ";") {
 		if result, blocked := s.scanAmbiguousRawQueryWithContext(ctx, parsed.RawQuery, !excludedQuery); blocked {
 			return result

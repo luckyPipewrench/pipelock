@@ -60,6 +60,19 @@ func TestProtocolValueEntropyFixtures(t *testing.T) {
 	}
 }
 
+func TestMalformedQueryEscapeCannotSkipEntropy(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	for _, raw := range []string{
+		"https://api.vendor.example/receive?token=" + entropyTestMixed + "%ZZ",
+		"https://api.vendor.example/receive?" + entropyTestMixed + "%ZZ=1",
+	} {
+		result := s.Scan(t.Context(), raw)
+		if result.Allowed {
+			t.Fatalf("malformed query escaped entropy check: %s", raw)
+		}
+	}
+}
+
 func TestProtocolValueEntropy(t *testing.T) {
 	s := newProtocolEntropyScanner(t)
 	esc := url.QueryEscape

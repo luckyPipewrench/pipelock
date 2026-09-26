@@ -212,6 +212,12 @@ func styleHides(tag string) bool {
 // later declaration overrides an earlier one unless the earlier one is
 // !important and the later is not.
 func styleValueHides(style string) bool {
+	// An inline style too large to parse is treated as hiding. Otherwise a
+	// page could bury display:none under padding and have the element's text
+	// read as visible. No ordinary page writes a style attribute this large.
+	if len(style) > maxCSSStyleBytes {
+		return true
+	}
 	type effective struct {
 		value     string
 		important bool

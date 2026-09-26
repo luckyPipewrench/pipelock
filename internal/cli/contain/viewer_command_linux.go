@@ -52,7 +52,10 @@ func viewerCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Create the socket private rather than tightening it after bind.
+			oldUmask := unix.Umask(0o177)
 			listener, err := (&net.ListenConfig{}).Listen(cmd.Context(), "unix", viewerControlSocket)
+			unix.Umask(oldUmask)
 			if err != nil {
 				return fmt.Errorf("viewer control socket: %w", err)
 			}

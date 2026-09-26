@@ -36,7 +36,7 @@ func TestViewerControlProtocolAndPeer(t *testing.T) {
 			defer cancel()
 			upstream, server := net.Pipe()
 			defer func() { _ = server.Close() }()
-			v, err := viewer.New(viewer.Config{Display: ":99", Dial: func() (net.Conn, error) { return upstream, nil }, PeerUID: func(net.Conn) (uint32, error) { return 0, nil }})
+			v, err := viewer.New(viewer.Config{Display: ":99", ExpectedUID: 4242, Dial: func() (net.Conn, error) { return upstream, nil }, PeerUID: func(net.Conn) (uint32, error) { return 4242, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -145,6 +145,37 @@ func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
 	return xvfbPresent
 }
 
+// Validate checks the display settings that contain renders into systemd
+// units. Contain reads config without the daemon's full validation, so it
+// calls this directly: a geometry or user value that reached a unit line
+// unvalidated could add X server flags or unit directives.
+func (d ContainmentDisplay) Validate() error {
+	if number := d.Number; number != nil && (*number < 0 || *number > 999) {
+		return fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
+	}
+	if d.Geometry != "" {
+		parts := strings.Split(d.Geometry, "x")
+		if len(parts) != 2 || !containmentGeometryPattern.MatchString(d.Geometry) {
+			return fmt.Errorf("containment.display.geometry must be WxH with decimal dimensions")
+		}
+		width, _ := strconv.Atoi(parts[0])
+		height, _ := strconv.Atoi(parts[1])
+		if width < 320 || width > 65535 || height < 200 || height > 65535 {
+			return fmt.Errorf("containment.display.geometry must be 320..65535 wide and 200..65535 high")
+		}
+	}
+	if d.Backend != "" && d.Backend != "xvfb" && d.Backend != "xvnc" {
+		return fmt.Errorf("containment.display.backend must be xvfb or xvnc")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.EffectiveBackend() != "xvnc" {
+		return fmt.Errorf("containment.display.viewer.enabled requires backend xvnc")
+	}
+	if user := d.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
+		return fmt.Errorf("containment.display.viewer.operator_user must name one local user")
+	}
+	return nil
+}
+
 // EffectiveNumber returns the configured display number, or the conventional
 // fallback used when display provisioning is enabled.
 func (d ContainmentDisplay) EffectiveNumber() int {

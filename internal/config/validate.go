@@ -663,29 +663,8 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateContainmentPublishedServices(); err != nil {
 		return warnings, err
 	}
-	if number := c.Containment.Display.Number; number != nil && (*number < 0 || *number > 999) {
-		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
-	}
-	display := c.Containment.Display
-	if display.Geometry != "" {
-		parts := strings.Split(display.Geometry, "x")
-		if len(parts) != 2 || !containmentGeometryPattern.MatchString(display.Geometry) {
-			return warnings, fmt.Errorf("containment.display.geometry must be WxH with decimal dimensions")
-		}
-		width, _ := strconv.Atoi(parts[0])
-		height, _ := strconv.Atoi(parts[1])
-		if width < 320 || width > 65535 || height < 200 || height > 65535 {
-			return warnings, fmt.Errorf("containment.display.geometry must be 320..65535 wide and 200..65535 high")
-		}
-	}
-	if display.Backend != "" && display.Backend != "xvfb" && display.Backend != "xvnc" {
-		return warnings, fmt.Errorf("containment.display.backend must be xvfb or xvnc")
-	}
-	if display.Viewer.Enabled != nil && *display.Viewer.Enabled && display.EffectiveBackend() != "xvnc" {
-		return warnings, fmt.Errorf("containment.display.viewer.enabled requires backend xvnc")
-	}
-	if user := display.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
-		return warnings, fmt.Errorf("containment.display.viewer.operator_user must name one local user")
+	if err := c.Containment.Display.Validate(); err != nil {
+		return warnings, err
 	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err

@@ -50,6 +50,11 @@ func New(cfg Config) (*Viewer, error) {
 	if cfg.Display == "" {
 		return nil, errors.New("viewer: missing display")
 	}
+	// The contained agent is never root; a zero here would make any root
+	// process on the host an acceptable RFB server.
+	if cfg.ExpectedUID == 0 {
+		return nil, errors.New("viewer: expected RFB owner must not be root")
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}

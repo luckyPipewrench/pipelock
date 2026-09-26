@@ -159,6 +159,9 @@ func loadContainmentDisplay(env *installEnv) (config.ContainmentDisplay, error) 
 		}
 		return config.ContainmentDisplay{}, fmt.Errorf("load containment display config: %w", err)
 	}
+	if err := cfg.Containment.Display.Validate(); err != nil {
+		return config.ContainmentDisplay{}, err
+	}
 	return cfg.Containment.Display, nil
 }
 

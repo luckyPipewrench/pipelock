@@ -82,6 +82,37 @@ manifest digest cannot.
 
 ## Helm chart
 
+The chart itself is published as an OCI artifact next to the images, at
+`ghcr.io/luckypipewrench/charts/pipelock`. From v3.6.0 on it carries the same
+kind of provenance attestation as the container images above; earlier charts
+have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step. Verify
+the chart, keep the digest the attestation names, and confirm the archive you
+pull has that same digest:
+
+```bash
+PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
+  "oci://ghcr.io/luckypipewrench/charts/pipelock:${PIPELOCK_RELEASE#v}" \
+  --repo luckyPipewrench/pipelock \
+  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
+  --source-digest "$PIPELOCK_COMMIT" \
+  --deny-self-hosted-runners \
+  --format json --jq '.[0].verificationResult.statement.subject[0].digest.sha256')"
+
+mkdir -p "pipelock-${PIPELOCK_RELEASE}"
+helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" \
+  --version "${PIPELOCK_RELEASE#v}" --destination "pipelock-${PIPELOCK_RELEASE}" \
+  2>&1 | tee "pipelock-${PIPELOCK_RELEASE}/helm-pull.log"
+grep -Fx "Digest: ${PIPELOCK_CHART_DIGEST}" "pipelock-${PIPELOCK_RELEASE}/helm-pull.log"
+```
+
+The last line fails unless the pulled chart is the one the attestation
+covers, which matters because a tag can be moved between the two commands and
+`helm pull` by itself does not check provenance. The signed `release.json`
+manifest covers the platform binary archives that Homebrew and
+`pipelock update` install, not the chart, so the attestation above is the
+chart's signature and the one to check.
+
 The Pipelock chart accepts a digest directly. Put the `pipelock` repository and
 digest from `release-images.json` in a values file. Leave `tag` empty. The same
 value applies to proxy and Conductor chart modes because both run the Pipelock

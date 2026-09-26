@@ -58,6 +58,7 @@ planned actions without touching state.`,
 		netnsForwardCmd(),
 		netnsAssertCmd(),
 		viewerCmd(),
+		viewCmd(),
 		upgradeCmd(),
 	)
 

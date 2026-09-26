@@ -19,6 +19,7 @@ type cssDeclaration struct {
 	name, value string
 	important   bool
 }
+
 // cssToken is one CSS Syntax Level 3 token: its kind, its decoded value, and
 // whether a numeric token was written as an integer.
 type cssToken struct {
@@ -83,6 +84,7 @@ func (l *cssLexer) at(n int) rune {
 func cssWhite(c rune) bool { return c == ' ' || c == '\n' || c == '\t' }
 func cssDigit(c rune) bool { return c >= '0' && c <= '9' }
 func cssHex(c rune) bool   { return cssDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
 // cssNameStart reports whether c can start a CSS identifier.
 func cssNameStart(c rune) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80 && c <= unicode.MaxRune

@@ -20,6 +20,7 @@ func TestReloadBaselineReconfigureFailureKeepsCurrentConfig(t *testing.T) {
 	cfg.SessionProfiling.Enabled = true
 	cfg.BehavioralBaseline.Enabled = true
 	cfg.BehavioralBaseline.ProfileDir = t.TempDir()
+	cfg.BehavioralBaseline.DeviationAction = config.ActionBlock
 	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -33,12 +34,16 @@ func TestReloadBaselineReconfigureFailureKeepsCurrentConfig(t *testing.T) {
 	}
 	next := *cfg
 	next.BehavioralBaseline.ProfileDir = blockedDir
+	next.BehavioralBaseline.DeviationAction = config.ActionWarn
 	next.Mode = config.ModeStrict
 	if p.Reload(&next, scanner.MustNew(&next)) {
 		t.Fatal("reload succeeded despite invalid baseline profile directory")
 	}
 	if p.CurrentConfig() != cfg {
 		t.Fatal("failed reload published the new config")
+	}
+	if got := p.CurrentConfig().BehavioralBaseline.DeviationAction; got != config.ActionBlock {
+		t.Fatalf("live baseline action = %q, want %q", got, config.ActionBlock)
 	}
 	if p.sessionMgrPtr.Load().BaselineManager() != before {
 		t.Fatal("failed reload replaced the baseline manager")

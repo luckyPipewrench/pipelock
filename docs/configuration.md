@@ -1744,7 +1744,7 @@ The proxy will not dial its own configured metrics address and port. That rule r
 
 ### Contained agent display (containment)
 
-`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–65535 and height 200–65535.
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–32768 and height 200–32768, with at most 16,777,216 pixels (64 MiB at four bytes per pixel).
 
 ```yaml
 containment:
@@ -1758,7 +1758,7 @@ containment:
       clipboard: false
 ```
 
-`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. The viewer service runs as the proxy user and creates a `0600` control socket under `/run/pipelock-contain-viewer/`. Only the configured operator can connect through its ACL and peer-UID check. `pipelock contain view` exposes a local Unix socket for a standard VNC client. Clipboard transfer defaults off.
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. Viewer startup refuses unrelated named ACL entries on those directories so the traverse mask cannot grant them new access; inspect and reconcile those ACLs before retrying. The viewer service runs as the proxy user and creates a `0660` control socket under `/run/pipelock-contain-viewer/` with an exact operator `rw-` ACL. Only the configured operator can connect through its ACL and peer-UID check. `pipelock contain view` exposes a local Unix socket for a standard VNC client. `clipboard: false` disables clipboard transfer in both directions at the Xvnc display server.
 
 ### Contained agent identity (containment)
 

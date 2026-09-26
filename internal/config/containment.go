@@ -91,6 +91,8 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 	return fmt.Errorf("containment.agent_listener %q is not declared under any agents.<name>.listeners; declare it on the contained agent's profile", listener)
 }
 
+const DefaultContainmentAgentUser = "pipelock-agent"
+
 // ContainmentDisplay configures the private Xvfb display installed for the
 // contained agent.
 //
@@ -160,8 +162,12 @@ func (d ContainmentDisplay) Validate() error {
 		}
 		width, _ := strconv.Atoi(parts[0])
 		height, _ := strconv.Atoi(parts[1])
-		if width < 320 || width > 65535 || height < 200 || height > 65535 {
-			return fmt.Errorf("containment.display.geometry must be 320..65535 wide and 200..65535 high")
+		// TigerVNC Xvnc sets RandR's maximum to 32768 per side:
+		// https://github.com/TigerVNC/tigervnc/blob/master/unix/xserver/hw/vnc/xvnc.c
+		// At depth 24, the framebuffer uses 32 bits per pixel. Limit its raw
+		// allocation to 64 MiB: 64*1024*1024/4 = 16,777,216 pixels.
+		if width < 320 || width > 32768 || height < 200 || height > 32768 || width*height > 16_777_216 {
+			return fmt.Errorf("containment.display.geometry must be 320..32768 wide, 200..32768 high, and at most 16777216 pixels")
 		}
 	}
 	if d.Backend != "" && d.Backend != "xvfb" && d.Backend != "xvnc" {
@@ -169,6 +175,12 @@ func (d ContainmentDisplay) Validate() error {
 	}
 	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.EffectiveBackend() != "xvnc" {
 		return fmt.Errorf("containment.display.viewer.enabled requires backend xvnc")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.Viewer.OperatorUser == "" {
+		return fmt.Errorf("containment.display.viewer.operator_user is required when viewer is enabled")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.Viewer.OperatorUser == DefaultContainmentAgentUser {
+		return fmt.Errorf("containment.display.viewer.operator_user must not be the contained agent account")
 	}
 	if user := d.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
 		return fmt.Errorf("containment.display.viewer.operator_user must name one local user")

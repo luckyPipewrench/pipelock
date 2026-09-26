@@ -221,7 +221,13 @@ func TestContainViewRejectsWrongLocalPeer(t *testing.T) {
 	go func() {
 		done <- runContainView(ctx, path, filepath.Join(root, "absent.sock"), "view", currentViewerUID()+1, out, errors)
 	}()
-	<-out.lines
+	select {
+	case <-out.lines:
+	case err := <-done:
+		t.Fatalf("listener exited before ready: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("listener did not start")
+	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -425,5 +431,68 @@ func TestContainViewRefusesUnsafePathsAndReportsOutputFailure(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("socket left after output failure: %v", err)
+	}
+}
+
+func TestContainViewCancellationClosesActiveBridge(t *testing.T) {
+	root := t.TempDir()
+	localPath := filepath.Join(root, "view.sock")
+	controlPath := filepath.Join(root, "control.sock")
+	control, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = control.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remoteReady := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := control.Accept()
+		if acceptErr != nil {
+			return
+		}
+		var request [5]byte
+		_, _ = io.ReadFull(conn, request[:])
+		_, _ = conn.Write([]byte("ok\n"))
+		remoteReady <- conn
+	}()
+	out := viewSignalWriter{lines: make(chan string, 4)}
+	done := make(chan error, 1)
+	go func() {
+		done <- runContainView(ctx, localPath, controlPath, "view", currentViewerUID(), out, io.Discard)
+	}()
+	select {
+	case <-out.lines:
+	case <-time.After(time.Second):
+		t.Fatal("view listener did not start")
+	}
+	client, err := (&net.Dialer{}).DialContext(ctx, "unix", localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	var remote net.Conn
+	select {
+	case remote = <-remoteReady:
+	case <-time.After(time.Second):
+		t.Fatal("bridge did not connect")
+	}
+	defer func() { _ = remote.Close() }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("view did not wait for active bridge shutdown")
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("client bridge remained open")
+	}
+	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := remote.Read(make([]byte, 1)); err == nil {
+		t.Fatal("control bridge remained open")
 	}
 }

@@ -177,3 +177,58 @@ func TestReadViewerModeDoesNotConsumeRFB(t *testing.T) {
 		t.Fatalf("RFB prefix = %q: %v", buf, err)
 	}
 }
+
+func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "control.sock")
+	opts := serveOptions{display: ":99", rfbSocket: filepath.Join(root, "rfb.sock"), operator: "operator", agentUser: "agent"}
+	deps := realServeDeps()
+	deps.path = path
+	deps.lookup = func(string) (*user.User, error) { return &user.User{Uid: "1000"}, nil }
+	deps.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runViewerServe(ctx, deps, opts) }()
+	testwait.For(t, time.Second, func() bool {
+		conn, dialErr := (&net.Dialer{}).DialContext(context.Background(), "unix", path)
+		if dialErr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, "stale viewer socket was not replaced")
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("viewer did not stop")
+	}
+	for _, kind := range []string{"regular", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			if kind == "regular" {
+				if err := os.WriteFile(path, []byte("occupied"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(filepath.Join(root, "target"), path); err != nil {
+				t.Fatal(err)
+			}
+			if err := runViewerServe(context.Background(), deps, opts); err == nil {
+				t.Fatal("unsafe socket path accepted")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

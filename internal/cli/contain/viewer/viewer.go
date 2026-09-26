@@ -23,15 +23,16 @@ const (
 
 // Config identifies the agent-owned RFB socket and its expected peer.
 type Config struct {
-	Display     string
-	SocketPath  string
-	Clipboard   bool
-	MaxViewers  int
-	Dial        func() (net.Conn, error)
-	ExpectedUID uint32
-	PeerUID     func(net.Conn) (uint32, error)
-	Now         func() time.Time
-	Logger      *slog.Logger
+	Display            string
+	SocketPath         string
+	Clipboard          bool
+	MaxViewers         int
+	Dial               func() (net.Conn, error)
+	ExpectedUID        uint32
+	PeerUID            func(net.Conn) (uint32, error)
+	Now                func() time.Time
+	LeaseRenewInterval time.Duration
+	Logger             *slog.Logger
 }
 
 type lease struct {
@@ -57,6 +58,9 @@ func New(cfg Config) (*Viewer, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.LeaseRenewInterval <= 0 {
+		cfg.LeaseRenewInterval = leaseLifetime / 3
 	}
 	if cfg.MaxViewers <= 0 {
 		cfg.MaxViewers = defaultViewers
@@ -201,7 +205,7 @@ func (v *Viewer) controls(client net.Conn) bool {
 }
 
 func (v *Viewer) renewLease(stop <-chan struct{}, client net.Conn) {
-	ticker := time.NewTicker(leaseLifetime / 3)
+	ticker := time.NewTicker(v.cfg.LeaseRenewInterval)
 	defer ticker.Stop()
 	for {
 		select {

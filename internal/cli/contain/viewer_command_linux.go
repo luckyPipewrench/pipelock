@@ -81,6 +81,9 @@ func runViewerServe(ctx context.Context, deps serveDeps, opts serveOptions) erro
 	if err != nil {
 		return err
 	}
+	if err := removeStaleViewSocket(deps.path, currentViewerUID()); err != nil {
+		return fmt.Errorf("viewer control socket: %w", err)
+	}
 	// Create the socket private rather than tightening it after bind.
 	oldUmask := unix.Umask(0o177)
 	listener, err := deps.listen(ctx, "unix", deps.path)
@@ -89,15 +92,15 @@ func runViewerServe(ctx context.Context, deps serveDeps, opts serveOptions) erro
 		return fmt.Errorf("viewer control socket: %w", err)
 	}
 	defer func() { _ = listener.Close() }()
+	defer func() { _ = os.Remove(deps.path) }()
 	if err := os.Chmod(deps.path, 0o600); err != nil {
 		return fmt.Errorf("restrict viewer control socket: %w", err)
 	}
-	if out, code, runErr := deps.run(ctx, "setfacl", "-m", "u:"+opts.operator+":rw", deps.path); runErr != nil {
+	if out, code, runErr := deps.run(ctx, "setfacl", "-n", "-m", "u:"+opts.operator+":rw,g::---,o::---,m::rw", deps.path); runErr != nil {
 		return fmt.Errorf("grant viewer control socket to operator: %w", runErr)
 	} else if code != 0 {
 		return fmt.Errorf("grant viewer control socket to operator: exit %d: %s", code, out)
 	}
-	defer func() { _ = os.Remove(deps.path) }()
 	serveViewerControl(ctx, listener, uint32(uid), v)
 	return nil
 }

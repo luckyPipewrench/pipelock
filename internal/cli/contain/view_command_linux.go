@@ -16,6 +16,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -147,6 +148,17 @@ func runContainViewWithDeps(ctx context.Context, socketPath, controlPath, mode s
 		return fmt.Errorf("print VNC connection example: %w", err)
 	}
 	go func() { <-ctx.Done(); _ = listener.Close() }()
+	var bridges sync.WaitGroup
+	var activeMu sync.Mutex
+	active := make(map[net.Conn]struct{})
+	defer func() {
+		activeMu.Lock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+		activeMu.Unlock()
+		bridges.Wait()
+	}()
 	for {
 		local, acceptErr := listener.Accept()
 		if acceptErr != nil {
@@ -155,7 +167,13 @@ func runContainViewWithDeps(ctx context.Context, socketPath, controlPath, mode s
 			}
 			return fmt.Errorf("accept VNC client: %w", acceptErr)
 		}
+		activeMu.Lock()
+		active[local] = struct{}{}
+		activeMu.Unlock()
+		bridges.Add(1)
 		go func() {
+			defer bridges.Done()
+			defer func() { activeMu.Lock(); delete(active, local); activeMu.Unlock() }()
 			if err := bridgeViewClientWithDial(ctx, local, controlPath, mode, uid, deps.dial); err != nil {
 				_, _ = fmt.Fprintf(deps.errOut, "VNC client: %v\n", err)
 			}
@@ -207,6 +225,16 @@ func bridgeViewClientWithDial(ctx context.Context, local net.Conn, controlPath, 
 		return fmt.Errorf("connect viewer control socket: %w", err)
 	}
 	defer func() { _ = remote.Close() }()
+	bridgeDone := make(chan struct{})
+	defer close(bridgeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = local.Close()
+			_ = remote.Close()
+		case <-bridgeDone:
+		}
+	}()
 	_ = remote.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.WriteString(remote, mode+"\n"); err != nil {
 		return fmt.Errorf("request viewer mode: %w", err)

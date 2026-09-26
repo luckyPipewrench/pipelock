@@ -29,7 +29,7 @@ func renderViewerServiceUnit(env *installEnv) string {
 	if v.Clipboard != nil && *v.Clipboard {
 		clipboard = "true"
 	}
-	return fmt.Sprintf("%s\n[Unit]\nDescription=Pipelock contained display viewer\n\n[Service]\nType=exec\nUser=%s\nGroup=%s\nRuntimeDirectory=pipelock-contain-viewer\nRuntimeDirectoryMode=0700\nExecStartPre=/usr/bin/setfacl -m u:%s:--x /run/pipelock-contain-viewer\nExecStart=%s contain viewer serve --display %s --rfb-socket %s --operator-user %s --agent-user %s --clipboard=%s\nPrivateTmp=true\nNoNewPrivileges=true\nProtectHome=read-only\nProtectSystem=strict\n\n[Install]\nWantedBy=multi-user.target\n", displayUnitMarker, env.proxyUserName, env.proxyUserName, v.OperatorUser, env.pipelockTarget, displayName(env.displayNumber), rfb, v.OperatorUser, env.agentUserName, clipboard)
+	return fmt.Sprintf("%s\n[Unit]\nDescription=Pipelock contained display viewer\n\n[Service]\nType=exec\nUser=%s\nGroup=%s\nRuntimeDirectory=pipelock-contain-viewer\nRuntimeDirectoryMode=0700\nExecStartPre=/usr/bin/setfacl -n -m u:%s:--x,g::---,o::---,m::--x /run/pipelock-contain-viewer\nExecStart=%s contain viewer serve --display %s --rfb-socket %s --operator-user %s --agent-user %s --clipboard=%s\nPrivateTmp=true\nNoNewPrivileges=true\nProtectHome=read-only\nProtectSystem=strict\n\n[Install]\nWantedBy=multi-user.target\n", displayUnitMarker, env.proxyUserName, env.proxyUserName, v.OperatorUser, env.pipelockTarget, displayName(env.displayNumber), rfb, v.OperatorUser, env.agentUserName, clipboard)
 }
 
 // stepProvisionViewer installs one long-running service and removes a legacy
@@ -148,7 +148,7 @@ func actionRemoveViewer() step {
 		if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(socket)); err != nil {
 			return err
 		}
-		if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(service)); err != nil {
+		if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(service)); err != nil {
 			return err
 		}
 		for _, path := range []string{service, socket} {

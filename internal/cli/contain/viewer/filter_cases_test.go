@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+func TestFilterForcesSharedClientInit(t *testing.T) {
+	f := newFilter(func() bool { return false }, false)
+	got, err := f.feed([]byte("RFB 003.008\n\x01\x00"))
+	if err != nil || !bytes.Equal(got, []byte("RFB 003.008\n\x01\x01")) {
+		t.Fatalf("ClientInit = %x: %v", got, err)
+	}
+}
+
 func TestFilterRejectsMalformedClientTraffic(t *testing.T) {
 	handshake := []byte("RFB 003.008\n\x01\x01")
 	for _, tc := range []struct {

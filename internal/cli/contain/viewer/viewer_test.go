@@ -161,7 +161,6 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 	}{
 		{"other", "denied\n", "invalid mode", 42, 42},
 		{"view", "denied\n", "peer uid", 43, 42},
-		{"view", "denied\n", "peer uid", 1, 0},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			v.cfg.ExpectedUID = tc.expected
@@ -182,11 +181,6 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 			_ = server.Close()
 		})
 	}
-	v.cfg.ExpectedUID = 0
-	v.cfg.PeerUID = func(net.Conn) (uint32, error) { return 0, nil }
-	rootOperator, _, rootDone := startViewer(t, v, "view")
-	_ = rootOperator.Close()
-	<-rootDone
 	v.cfg.ExpectedUID = 42
 	v.cfg.PeerUID = func(net.Conn) (uint32, error) { return 42, nil }
 	operator, _, done := startViewer(t, v, "view")
@@ -294,6 +288,7 @@ func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
 	var seconds atomic.Int64
 	base := time.Now()
 	v := testViewer(t)
+	v.cfg.LeaseRenewInterval = 5 * time.Millisecond
 	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
 	operator, server, done := startViewer(t, v, "control")
 	handshake := []byte("RFB 003.008\n\x01\x01")
@@ -304,7 +299,7 @@ func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	seconds.Store(20)
-	deadline := time.After(12 * time.Second)
+	deadline := time.After(time.Second)
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {

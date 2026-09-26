@@ -112,7 +112,7 @@ func TestViewerRemovalRejectsForeignBackupAndCommandFailure(t *testing.T) {
 	if _, err := os.Stat(service + ".bak"); err != nil {
 		t.Fatalf("foreign backup was removed: %v", err)
 	}
-	runner.on("systemctl stop "+filepath.Base(service), "", 1, errors.New("stop failed"))
+	runner.on("systemctl disable --now "+filepath.Base(service), "", 1, errors.New("stop failed"))
 	err = actionRemoveViewer().undo(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "stop failed") {
 		t.Fatalf("stop error = %v", err)

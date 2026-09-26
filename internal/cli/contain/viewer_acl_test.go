@@ -65,3 +65,26 @@ func TestViewerRFBACLRejectsReadFailureAndMalformedEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestViewerControlACLRequiresExactOperatorGrant(t *testing.T) {
+	const exact = "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n"
+	for _, tc := range []struct {
+		name, acl string
+		valid     bool
+	}{
+		{"exact", exact, true},
+		{"missing operator", "user::rw-\ngroup::---\nmask::rw-\nother::---\n", false},
+		{"wrong operator", strings.Replace(exact, "user:operator", "user:other", 1), false},
+		{"extra user", exact + "user:other:rw-\n", false},
+		{"group access", strings.Replace(exact, "group::---", "group::rw-", 1), false},
+		{"wide mask", strings.Replace(exact, "mask::rw-", "mask::rwx", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(context.Context, string, ...string) (string, int, error) { return tc.acl, 0, nil }
+			err := checkViewerControlACL(context.Background(), run, "/unused", "operator")
+			if (err == nil) != tc.valid {
+				t.Fatalf("ACL %q: err=%v, valid=%v", tc.name, err, tc.valid)
+			}
+		})
+	}
+}

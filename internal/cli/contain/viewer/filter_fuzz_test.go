@@ -5,7 +5,7 @@ package viewer
 
 import "testing"
 
-// The filter parses bytes from an untrusted browser; no input may panic it.
+// The filter parses bytes from a VNC client on the operator Unix socket; no input may panic it.
 // Output must never be longer than the input it was fed, since the filter
 // only drops or narrows messages.
 func FuzzFilter(f *testing.F) {

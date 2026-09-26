@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1054,4 +1055,27 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 			return "200", 0, nil // proxied curl/python/node
 		}
 	})
+}
+
+func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
+	env := allPassDoctorEnv(t)
+	env.configPath = filepath.Join(t.TempDir(), "config.yaml")
+	env.stat = os.Lstat
+	env.lstat = os.Lstat
+	if err := os.WriteFile(env.configPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	cmd.SetContext(context.Background())
+	_ = runDoctor(cmd, env, doctorOpts{jsonOutput: true})
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var agg aggregateRecord
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
+		t.Fatal(err)
+	}
+	if agg.Aggregate.Total != 11 || len(lines) != 12 {
+		t.Fatalf("aggregate total = %d, records = %d; want 11 checks", agg.Aggregate.Total, len(lines)-1)
+	}
 }

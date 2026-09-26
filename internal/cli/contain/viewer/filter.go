@@ -40,7 +40,10 @@ func (f *filter) feed(p []byte) ([]byte, error) {
 			break
 		}
 		if forward {
-			if messages && f.pending[0] == msgSetEncodings {
+			if f.stage == 3 && !messages {
+				// ClientInit is always shared, including for an exclusive client request.
+				out = append(out, 1)
+			} else if messages && f.pending[0] == msgSetEncodings {
 				out = append(out, rewriteSetEncodings(f.pending[:n])...)
 			} else {
 				out = append(out, f.pending[:n]...)

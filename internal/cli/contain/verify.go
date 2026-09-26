@@ -41,7 +41,7 @@ import (
 const (
 	defaultProxyPort    = 8888
 	defaultProxyUser    = "pipelock-proxy"
-	defaultAgentUser    = "pipelock-agent"
+	defaultAgentUser    = config.DefaultContainmentAgentUser
 	defaultWrapperDir   = "/usr/local/bin"
 	defaultLaunchScript = "/usr/local/bin/plk-launch"
 	defaultCABundlePath = "/etc/pipelock/combined-ca.pem"

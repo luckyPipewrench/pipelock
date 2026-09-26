@@ -33,7 +33,7 @@ func TestViewerServiceProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if err := os.Chmod(actualSocket, 0o600); err != nil {
+	if err := os.Chmod(actualSocket, 0o660); err != nil { // #nosec G302 -- fixture models a named-operator ACL mask.
 		t.Fatal(err)
 	}
 	yes := true
@@ -63,14 +63,44 @@ func TestViewerServiceProbe(t *testing.T) {
 		return os.Lstat(path)
 	}
 	env := &probeEnv{configPath: cfgPath, displayUnitPath: displayPath, agentHome: install.agentHome, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, pipelockTarget: install.pipelockTarget, readFile: os.ReadFile, stat: statSocket, lstat: statSocket, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active\n", 0, nil }}
+	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+		if name == "getfacl" {
+			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+		}
+		return "active\n", 0, nil
+	}
 	if status, detail := probeViewerService(context.Background(), env); status != statusPass {
 		t.Fatalf("valid service: %s %s", status, detail)
+	}
+	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+		if name == "getfacl" {
+			return "user::rw-\ngroup::---\nother::---\n", 0, nil
+		}
+		return "active\n", 0, nil
+	}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "ACL") {
+		t.Fatalf("missing operator ACL: %s %s", status, detail)
+	}
+	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+		if name == "getfacl" {
+			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+		}
+		return "active\n", 0, nil
 	}
 	wideSocket = true
 	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "socket mode") {
 		t.Fatalf("wide socket: %s %s", status, detail)
 	}
 	wideSocket = false
+	if err := os.Chmod(actualSocket, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "0660") {
+		t.Fatalf("0600 socket: %s %s", status, detail)
+	}
+	if err := os.Chmod(actualSocket, 0o660); err != nil { // #nosec G302 -- fixture models a named-operator ACL mask.
+		t.Fatal(err)
+	}
 	env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid() + 1)}, nil }
 	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "wrong user") {
 		t.Fatalf("wrong owner: %s %s", status, detail)
@@ -166,7 +196,7 @@ func TestViewerServiceProbeControlSocketFailureDirections(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if err := os.Chmod(actual, 0o600); err != nil {
+	if err := os.Chmod(actual, 0o660); err != nil { // #nosec G302 -- fixture models a named-operator ACL mask.
 		t.Fatal(err)
 	}
 	base := probeEnv{configPath: cfgPath, displayUnitPath: displayPath, readFile: os.ReadFile, stat: os.Lstat, lstat: func(path string) (os.FileInfo, error) {

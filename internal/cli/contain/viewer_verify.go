@@ -57,8 +57,8 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("viewer socket missing: %v", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
-		return statusFail, fmt.Sprintf("viewer socket mode is %s, want socket 0600", info.Mode())
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o660 {
+		return statusFail, fmt.Sprintf("viewer socket mode is %s, want socket 0660", info.Mode())
 	}
 	account, err := env.lookupUser(env.proxyUserName)
 	if err != nil {
@@ -72,7 +72,10 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if !ok || uint64(ownerUID) != uid {
 		return statusFail, "viewer socket admits wrong user"
 	}
-	return statusPass, "viewer service active with proxy-owned 0600 control socket"
+	if err := checkViewerControlACL(ctx, env.runCmd, path, cfg.Containment.Display.Viewer.OperatorUser); err != nil {
+		return statusFail, err.Error()
+	}
+	return statusPass, "viewer service active with proxy-owned 0660 control socket"
 }
 
 func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {

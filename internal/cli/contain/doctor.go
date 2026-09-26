@@ -744,7 +744,8 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	}
 
 	var passN, failN, skipN, unknownN int
-	for _, c := range doctorChecksForEnv(env) {
+	checks := doctorChecksForEnv(env)
+	for _, c := range checks {
 		res := c.fn(ctx, env)
 		switch res.status {
 		case statusPass:
@@ -794,7 +795,7 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			Fail:     failN,
 			Skip:     skipN,
 			Unknown:  unknownN,
-			Total:    len(allDoctorChecks()),
+			Total:    len(checks),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)

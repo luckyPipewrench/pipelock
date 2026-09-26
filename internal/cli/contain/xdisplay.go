@@ -182,11 +182,17 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		if env.displayConfig.Viewer.Clipboard != nil && *env.displayConfig.Viewer.Clipboard {
 			clipboard = ""
 		}
-		post := "chmod 0700 \"$1\""
+		post := "chmod 0700 \"$1\" || exit 1"
 		if viewerRFBEnabled(env.displayConfig) {
-			post += "; setfacl -m u:" + env.proxyUserName + ":rw,g::---,o::---,m::rw \"$2\""
+			post += "; setfacl -n -m u:" + env.proxyUserName + ":rw,g::---,o::---,m::rw \"$2\" || exit 1"
 			for _, dir := range viewerTraverseDirs(env.agentHome) {
-				post += "; setfacl -m u:" + env.proxyUserName + ":--x " + strconv.Quote(dir)
+				// A traverse-only mask must not activate an unrelated named ACL.
+				// Inspect every directory before changing any of their ACLs.
+				post += "; acl=$(getfacl -cp " + strconv.Quote(dir) + ") || exit 1"
+				post += "; if printf \"%s\\n\" \"$acl\" | grep -E \"^(user:[^:]+:|group:[^:]+:)\" | grep -v \"^user:" + env.proxyUserName + ":\" >/dev/null; then echo \"viewer traverse directory has unrelated ACL entries: " + dir + "\" >&2; exit 1; fi"
+			}
+			for _, dir := range viewerTraverseDirs(env.agentHome) {
+				post += "; setfacl -n -m u:" + env.proxyUserName + ":--x,g::---,m::--x " + strconv.Quote(dir) + " || exit 1"
 			}
 		}
 		// TigerVNC Xvnc.man documents the RFB socket, TCP disable, and clipboard parameters:
@@ -254,8 +260,10 @@ func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
 		return nil
 	}
 	for _, dir := range viewerTraverseDirs(env.agentHome) {
-		if _, err := env.stat(dir); err != nil {
+		if _, err := env.stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
+		} else if err != nil {
+			return fmt.Errorf("inspect viewer traverse directory %s: %w", dir, err)
 		}
 		if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
 			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
@@ -318,6 +326,9 @@ func stepProvisionAgentDisplay() step {
 			}
 			if !enabled {
 				if !env.prevDisplayUnitExisted {
+					if err := removeViewerTraverseACL(ctx, env); err != nil {
+						return false, err
+					}
 					previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
 					if err != nil {
 						return false, err

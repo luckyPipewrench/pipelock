@@ -80,6 +80,24 @@ func TestFulfillEvalMint_CommitsAtomically(t *testing.T) {
 	}
 }
 
+func TestFulfillEvalMint_RejectsSecondActiveEmailAtCommit(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	if err := db.FulfillEvalMint(ctx, mintParams("order_first", "buyer@example.com")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FulfillEvalMint(ctx, mintParams("order_second", "buyer@example.com")); !errors.Is(err, ErrActiveTrialExists) {
+		t.Fatalf("second mint = %v, want active eval refusal", err)
+	}
+	ent, err := db.GetBySubscriptionID(ctx, "order_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ent != nil {
+		t.Fatal("second eval entitlement committed")
+	}
+}
+
 func TestFulfillEvalMint_RejectsIncompleteParams(t *testing.T) {
 	db := openTestDB(t)
 	if err := db.FulfillEvalMint(t.Context(), EvalMintParams{}); err == nil {

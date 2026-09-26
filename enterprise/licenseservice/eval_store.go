@@ -456,6 +456,17 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 	if p.Entitlement == nil || p.EvalOrder == nil {
 		return errors.New("eval mint params incomplete")
 	}
+	// The active-eval query compares emails exactly, so the order email must
+	// already be in canonical form or an existing eval could be missed.
+	canonicalEmail, err := NormalizeEmail(p.EvalOrder.NormalizedEmail)
+	if err != nil || canonicalEmail != p.EvalOrder.NormalizedEmail {
+		return errors.New("eval mint order email is not canonical")
+	}
+	// The active-eval limit is checked against the order's normalized email,
+	// so the entitlement being written must carry that same email.
+	if p.Entitlement.CustomerEmail != p.EvalOrder.NormalizedEmail {
+		return errors.New("eval mint entitlement email does not match the order email")
+	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin eval mint transaction: %w", err)
@@ -477,6 +488,17 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 			existing.RevocationState != revocationNone {
 			return ErrEvalOrderNotMintable
 		}
+	}
+	const activeEvalQuery = `
+	SELECT COUNT(*) FROM entitlements
+	WHERE tier = ? AND status = ? AND customer_email = ? AND current_period_end > ?
+	`
+	var active int
+	if err := tx.QueryRowContext(ctx, activeEvalQuery, tierEnterpriseEval, statusActive, p.EvalOrder.NormalizedEmail, time.Now().UTC()).Scan(&active); err != nil {
+		return fmt.Errorf("check active eval at mint: %w", err)
+	}
+	if active > 0 {
+		return ErrActiveTrialExists
 	}
 
 	admitted, err := admitWebhook(ctx, tx, p.WebhookMsgID, p.EventType, p.EvalOrder.OrderID)

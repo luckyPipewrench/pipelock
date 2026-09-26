@@ -307,15 +307,15 @@ func TestRollbackActions_PurgeUsersOverridesKeepUsers(t *testing.T) {
 		}
 		_ = a.undo(context.Background(), env)
 	}
-	// userdel must run for BOTH users.
+	// userdel must run for all three managed users.
 	count := 0
 	for _, c := range runner.calls {
 		if c.name == testUserDel {
 			count++
 		}
 	}
-	if count != 2 {
-		t.Errorf("expected 2 userdel calls (proxy + agent), got %d in %v", count, runner.calls)
+	if count != 3 {
+		t.Errorf("expected 3 userdel calls (proxy + agent + viewer), got %d in %v", count, runner.calls)
 	}
 }
 

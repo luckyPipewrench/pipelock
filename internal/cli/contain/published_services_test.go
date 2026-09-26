@@ -564,39 +564,16 @@ func TestAgentNamespaceListensRealProcTable(t *testing.T) {
 }
 
 func TestAgentNamespaceListensRejectsIPv6OnlyWildcardForIPv4(t *testing.T) {
-	if _, err := os.Stat("/proc/self/net/tcp6"); err != nil {
-		t.Skip("no /proc IPv6 socket table on this platform")
-	}
-	// The kernel picks the IPv6 port without regard to IPv4, so a parallel
-	// test can already hold the same number on 127.0.0.1. Keep only a port
-	// with no IPv4 listener, or the assertions below measure that listener.
-	var ln net.Listener
-	var port int
-	for attempt := 0; attempt < 20 && ln == nil; attempt++ {
-		candidate, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::]:0")
-		if err != nil {
-			t.Skipf("IPv6 listener unavailable: %v", err)
+	// Use a fixed socket-table snapshot. A live IPv4 port can be claimed
+	// between probing it and reading /proc, even while the IPv6 listener lives.
+	const port = 9000
+	env := &probeEnv{readFile: func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "/tcp6") {
+			return []byte("header\n  0: 00000000000000000000000000000000:2328 00000000000000000000000000000000:0000 0A\n"), nil
 		}
-		candidatePort := candidate.Addr().(*net.TCPAddr).Port
-		probe, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidatePort)))
-		if err != nil {
-			_ = candidate.Close()
-			continue
-		}
-		_ = probe.Close()
-		ln, port = candidate, candidatePort
-	}
-	if ln == nil {
-		t.Skip("no IPv6 port was also free on IPv4 loopback")
-	}
-	defer func() { _ = ln.Close() }()
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp4", addr)
-	if dialErr == nil {
-		_ = conn.Close()
-		t.Fatalf("IPv6-only wildcard unexpectedly accepted IPv4 on %s", addr)
-	}
-	got, probeErr := agentNamespaceListens(&probeEnv{readFile: os.ReadFile}, "/proc", os.Getpid(), "127.0.0.1", port)
+		return []byte("header\n"), nil
+	}}
+	got, probeErr := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
 	if probeErr != nil || got {
 		t.Fatalf("IPv6-only wildcard reported as IPv4 listener: got=%t err=%v", got, probeErr)
 	}

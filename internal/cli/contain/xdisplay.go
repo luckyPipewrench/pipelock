@@ -22,6 +22,7 @@ const (
 	displayUnitMarker = "# Managed by `pipelock contain install`."
 	defaultXvfbPath   = "/usr/bin/Xvfb"
 	defaultXvncPath   = "/usr/bin/Xvnc"
+	viewerRFBSocket   = "/run/pipelock-agent-display/rfb.sock"
 	// displaySocketWaitAttempts and displaySocketWaitInterval bound how long
 	// ExecStartPost polls for the Xvfb Unix socket before chmod-ing it. Xvfb
 	// on a slow or loaded first-boot host (cold page cache, contended CPU
@@ -173,39 +174,28 @@ func renderAgentDisplayUnit(env *installEnv) string {
 	number := env.displayNumber
 	socket := displaySocketPath(number)
 	if env.displayConfig.EffectiveBackend() == "xvnc" {
-		rfbSocket := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
+		rfbSocket := displayRFBPath(env.rfbSocketPath)
 		xvnc := env.xvncPath
 		if xvnc == "" {
 			xvnc = defaultXvncPath
+		}
+		rfbGroup, rfbMode, runtimeMode := env.agentUserName, "0600", "0700"
+		if viewerRFBEnabled(env.displayConfig) {
+			rfbGroup, rfbMode, runtimeMode = viewerUserName, "0660", "0710"
 		}
 		clipboard := " -AcceptCutText=0 -SendCutText=0 -SendPrimary=0 -SetPrimary=0"
 		if env.displayConfig.Viewer.Clipboard != nil && *env.displayConfig.Viewer.Clipboard {
 			clipboard = ""
 		}
 		post := "chmod 0700 \"$1\" || exit 1"
-		if viewerRFBEnabled(env.displayConfig) {
-			post += "; setfacl -n -m u:" + env.proxyUserName + ":rw,g::---,o::---,m::rw \"$2\" || exit 1"
-			for _, dir := range viewerTraverseDirs(env.agentHome) {
-				// A traverse-only mask must not activate an unrelated named ACL.
-				// Inspect every directory before changing any of their ACLs.
-				post += "; acl=$(getfacl -cp " + strconv.Quote(dir) + ") || exit 1"
-				post += "; if printf \"%s\\n\" \"$acl\" | grep -E \"^(user:[^:]+:|group:[^:]+:)\" | grep -v \"^user:" + env.proxyUserName + ":\" >/dev/null; then echo \"viewer traverse directory has unrelated ACL entries: " + dir + "\" >&2; exit 1; fi"
-				post += "; if printf \"%s\\n\" \"$acl\" | grep -q \"^mask::\" && ! printf \"%s\\n\" \"$acl\" | grep -q \"^user:" + env.proxyUserName + ":\"; then echo \"viewer traverse directory has pre-existing ACL mask: " + dir + "\" >&2; exit 1; fi"
-			}
-			for _, dir := range viewerTraverseDirs(env.agentHome) {
-				// Let setfacl derive the mask from the existing group entry and
-				// the proxy grant. Revocation derives it again, preserving group access.
-				post += "; setfacl -m u:" + env.proxyUserName + ":--x " + strconv.Quote(dir) + " || exit 1"
-			}
-		}
 		// TigerVNC Xvnc.man documents the RFB socket, TCP disable, and clipboard parameters:
 		// https://github.com/TigerVNC/tigervnc/blob/master/unix/xserver/hw/vnc/Xvnc.man
 		return strings.Join([]string{
 			displayUnitMarker, "[Unit]", "Description=Pipelock contained agent X display",
 			"After=systemd-tmpfiles-setup.service", "", "[Service]", "Type=simple",
-			"User=" + env.agentUserName, "Group=" + env.agentUserName, "UMask=0077",
-			"ExecStartPre=/usr/bin/mkdir -p " + filepath.Dir(rfbSocket),
-			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode 0600 -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
+			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
+			"RuntimeDirectory=pipelock-agent-display", "RuntimeDirectoryMode=" + runtimeMode,
+			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode " + rfbMode + " -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
 			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
 			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
 		}, "\n")
@@ -232,17 +222,22 @@ func renderAgentDisplayUnit(env *installEnv) string {
 	}, "\n")
 }
 
-// viewerRFBSocketPath is the managed RFB socket under the agent home.
-func viewerRFBSocketPath(agentHome string) string {
-	return filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")
+func displayRFBPath(override string) string {
+	if override != "" {
+		return override
+	}
+	return viewerRFBSocket
 }
 
-// viewerTraverseDirs lists every directory from the agent home down to the
-// RFB socket's directory. The viewer grants the proxy user traverse-only
-// access on exactly these, and removes it from exactly these.
+func hasLegacyViewerSocket(unit []byte, agentHome string) bool {
+	legacy := filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")
+	return strings.HasPrefix(string(unit), displayUnitMarker+"\n") && strings.Contains(string(unit), " -rfbunixpath "+legacy+" ")
+}
+
+// viewerTraverseDirs lists the legacy home-directory ACL chain for upgrade cleanup.
 func viewerTraverseDirs(agentHome string) []string {
 	dirs := []string{agentHome}
-	rel, err := filepath.Rel(agentHome, filepath.Dir(viewerRFBSocketPath(agentHome)))
+	rel, err := filepath.Rel(agentHome, filepath.Dir(filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")))
 	if err != nil {
 		return dirs
 	}
@@ -276,36 +271,8 @@ func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
 }
 
 func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) error {
-	priorACL, code, err := env.runCmd(ctx, "getfacl", "-cp", dir)
-	if err != nil {
-		return fmt.Errorf("inspect viewer traverse ACL on %s: %w", dir, err)
-	}
-	if code != 0 {
-		return fmt.Errorf("inspect viewer traverse ACL on %s: exit %d", dir, code)
-	}
-	hadProxyEntry := strings.Contains("\n"+priorACL, "\nuser:"+env.proxyUserName+":")
 	if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
 		return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
-	}
-	acl, code, err := env.runCmd(ctx, "getfacl", "-cp", dir)
-	if err != nil {
-		return fmt.Errorf("inspect viewer traverse ACL on %s: %w", dir, err)
-	}
-	if code != 0 {
-		return fmt.Errorf("inspect viewer traverse ACL on %s: exit %d", dir, code)
-	}
-	// The grant is the only named entry on a managed directory. Once
-	// revoked, remove the mask it introduced without changing group::.
-	named := false
-	for _, line := range strings.Split(acl, "\n") {
-		if (strings.HasPrefix(line, "user:") && !strings.HasPrefix(line, "user::")) || (strings.HasPrefix(line, "group:") && !strings.HasPrefix(line, "group::")) {
-			named = true
-		}
-	}
-	if hadProxyEntry && !named && strings.Contains(acl, "mask::") {
-		if err := runOrErr(ctx, env, "setfacl", "-b", dir); err != nil {
-			return fmt.Errorf("restore viewer traverse ACL mask on %s: %w", dir, err)
-		}
 	}
 	return nil
 }
@@ -362,8 +329,18 @@ func stepProvisionAgentDisplay() step {
 			if err := captureDisplayPreState(ctx, env); err != nil {
 				return false, err
 			}
+			legacyViewerACL := false
+			if env.prevDisplayUnitExisted {
+				priorUnit, readErr := env.readFile(env.displayUnitPath)
+				if readErr != nil {
+					return false, fmt.Errorf("read display unit: %w", readErr)
+				}
+				legacyViewerACL = hasLegacyViewerSocket(priorUnit, env.agentHome)
+			}
 			if !enabled {
 				if !env.prevDisplayUnitExisted {
+					// A prior interrupted removal can leave the old traverse
+					// grant after its unit file is gone.
 					if err := removeViewerTraverseACL(ctx, env); err != nil {
 						return false, err
 					}
@@ -395,8 +372,10 @@ func stepProvisionAgentDisplay() step {
 				if err := removeDisplayAuthority(env); err != nil {
 					return true, err
 				}
-				if err := removeViewerTraverseACL(ctx, env); err != nil {
-					return true, err
+				if legacyViewerACL {
+					if err := removeViewerTraverseACL(ctx, env); err != nil {
+						return true, err
+					}
 				}
 				return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
 			}
@@ -428,9 +407,10 @@ func stepProvisionAgentDisplay() step {
 					return true, err
 				}
 			}
-			if !viewerRFBEnabled(display) {
-				// A viewer turned off on rerun leaves no traverse grant behind;
-				// the restarted Xvnc already recreated the socket without its ACL.
+			// A prior install may have granted the proxy traverse access to the
+			// agent home. The runtime socket never needs that grant, including
+			// when the viewer remains enabled across an upgrade.
+			if legacyViewerACL {
 				if err := removeViewerTraverseACL(ctx, env); err != nil {
 					return true, err
 				}
@@ -443,7 +423,7 @@ func stepProvisionAgentDisplay() step {
 				if err := checkDisplaySocket(stat, displaySocketPath(env.displayNumber), managedXSocketMode); err != nil {
 					return true, fmt.Errorf("x display socket: %w", err)
 				}
-				rfb := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
+				rfb := displayRFBPath(env.rfbSocketPath)
 				mode := os.FileMode(0o600)
 				if viewerRFBEnabled(display) {
 					mode = 0o660
@@ -451,8 +431,10 @@ func stepProvisionAgentDisplay() step {
 				if err := checkDisplaySocket(stat, rfb, mode); err != nil {
 					return true, fmt.Errorf("RFB socket: %w", err)
 				}
-				if err := checkViewerRFBACL(ctx, env.runCmd, rfb, env.proxyUserName, viewerRFBEnabled(display)); err != nil {
-					return true, err
+				if viewerRFBEnabled(display) {
+					if err := checkViewerRFBGroup(stat, env.lookupUser, rfb); err != nil {
+						return true, err
+					}
 				}
 				if env.lookupUser != nil {
 					user, err := env.lookupUser(env.agentUserName)
@@ -550,6 +532,12 @@ func actionRemoveAgentDisplay() step {
 			if env.displayUnitPath == "" {
 				return nil
 			}
+			legacyViewerACL := false
+			if body, err := env.readFile(env.displayUnitPath); err == nil {
+				legacyViewerACL = hasLegacyViewerSocket(body, env.agentHome)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 			env.prevDisplayStateKnown = false
 			if err := restoreAgentDisplay(ctx, env); err != nil {
 				return err
@@ -557,7 +545,10 @@ func actionRemoveAgentDisplay() step {
 			if err := removeDisplayAuthority(env); err != nil {
 				return err
 			}
-			return removeViewerTraverseACL(ctx, env)
+			if legacyViewerACL {
+				return removeViewerTraverseACL(ctx, env)
+			}
+			return nil
 		},
 	}
 }
@@ -784,14 +775,18 @@ func isManagedDisplayUnitFile(readFile func(string) ([]byte, error), path, agent
 	}
 	for key, value := range map[string]string{
 		"User":  agentUserName,
-		"Group": agentUserName,
 		"UMask": "0077",
 	} {
 		if !unitHasExactEntry(text, "Service", key, value) {
 			return false
 		}
 	}
-	return strings.Contains(text, "ExecStart=") && strings.Contains(text, " -nolisten tcp -nolisten local -listen unix")
+	agentGroup := unitHasExactEntry(text, "Service", "Group", agentUserName)
+	viewerGroup := unitHasExactEntry(text, "Service", "Group", viewerUserName) && strings.Contains(text, " -rfbunixpath "+viewerRFBSocket)
+	if agentGroup || viewerGroup {
+		return strings.Contains(text, "ExecStart=") && strings.Contains(text, " -nolisten tcp -nolisten local -listen unix")
+	}
+	return false
 }
 
 func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
@@ -832,9 +827,13 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	// Carry the probe's own X server path into the expectation, or the
 	// rendered comparison asks for an empty ExecStart and every real unit
 	// fails a check that looks like a tampering alarm.
-	checkEnv := &installEnv{agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, agentHome: env.agentHome, displayNumber: number, xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, displayConfig: display}
+	checkEnv := &installEnv{agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, displayNumber: number, xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, displayConfig: display}
 	renderedLines := strings.Split(renderAgentDisplayUnit(checkEnv), "\n")
 	wantExec, wantExecPost := "", ""
+	wantGroup := env.agentUserName
+	if display.EffectiveBackend() == "xvnc" && viewerRFBEnabled(display) {
+		wantGroup = viewerUserName
+	}
 	for _, line := range renderedLines {
 		if strings.HasPrefix(line, "ExecStart=") {
 			wantExec = strings.TrimPrefix(line, "ExecStart=")
@@ -845,7 +844,7 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	for key, value := range map[string]string{
 		"User":          env.agentUserName,
-		"Group":         env.agentUserName,
+		"Group":         wantGroup,
 		"UMask":         "0077",
 		"ExecStart":     wantExec,
 		"ExecStartPost": wantExecPost,
@@ -901,8 +900,12 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("read display unit: %v", err)
 	}
-	path := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
-	if !strings.Contains(string(body), " -rfbunixpath "+path+" -rfbunixmode 0600 -rfbport -1 ") {
+	path := displayRFBPath(env.rfbSocketPath)
+	modeText := "0600"
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		modeText = "0660"
+	}
+	if !strings.Contains(string(body), " -rfbunixpath "+path+" -rfbunixmode "+modeText+" -rfbport -1 ") {
 		return statusFail, "display unit must disable TCP RFB and use the managed Unix socket"
 	}
 	lstat := env.lstat
@@ -920,8 +923,10 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
 		return statusFail, fmt.Sprintf("RFB socket mode is %s, want socket %04o", info.Mode(), mode)
 	}
-	if err := checkViewerRFBACL(ctx, env.runCmd, path, env.proxyUserName, viewerRFBEnabled(cfg.Containment.Display)); err != nil {
-		return statusFail, err.Error()
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		if err := checkViewerRFBGroup(lstat, env.lookupUser, path); err != nil {
+			return statusFail, err.Error()
+		}
 	}
 	agent, err := env.lookupUser(env.agentUserName)
 	if err != nil {

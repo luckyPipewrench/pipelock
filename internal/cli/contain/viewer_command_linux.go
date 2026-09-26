@@ -77,6 +77,12 @@ func runViewerServe(ctx context.Context, deps serveDeps, opts serveOptions) erro
 	if err != nil {
 		return fmt.Errorf("viewer agent uid: %w", err)
 	}
+	if uid == agentUID {
+		return errors.New("viewer operator and agent must have distinct identities")
+	}
+	if uint64(currentViewerUID()) == agentUID {
+		return errors.New("viewer service and agent must have distinct identities")
+	}
 	v, err := viewer.New(viewer.Config{Display: opts.display, SocketPath: opts.rfbSocket, Clipboard: opts.clipboard, ExpectedUID: uint32(agentUID)})
 	if err != nil {
 		return err

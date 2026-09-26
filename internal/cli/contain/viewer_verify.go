@@ -30,7 +30,7 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 		}
 		return statusPass, "viewer disabled"
 	}
-	install := &installEnv{displayUnitPath: env.displayUnitPath, agentHome: env.agentHome, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, displayNumber: cfg.Containment.Display.EffectiveNumber(), displayConfig: cfg.Containment.Display}
+	install := &installEnv{displayUnitPath: env.displayUnitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, displayNumber: cfg.Containment.Display.EffectiveNumber(), displayConfig: cfg.Containment.Display}
 	if _, err := env.stat(socket); err == nil {
 		return statusFail, "legacy viewer HTTP socket unit remains"
 	} else if !os.IsNotExist(err) {
@@ -60,7 +60,7 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o660 {
 		return statusFail, fmt.Sprintf("viewer socket mode is %s, want socket 0660", info.Mode())
 	}
-	account, err := env.lookupUser(env.proxyUserName)
+	account, err := env.lookupUser(viewerUserName)
 	if err != nil {
 		return statusFail, fmt.Sprintf("viewer socket owner lookup: %v", err)
 	}
@@ -75,7 +75,13 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if err := checkViewerControlACL(ctx, env.runCmd, path, cfg.Containment.Display.Viewer.OperatorUser); err != nil {
 		return statusFail, err.Error()
 	}
-	return statusPass, "viewer service active with proxy-owned 0660 control socket"
+	if err := checkViewerGroup(ctx, env.runCmd, account.Gid); err != nil {
+		return statusFail, err.Error()
+	}
+	if err := checkViewerProxyIsolation(ctx, env.runCmd, env.proxyUserName); err != nil {
+		return statusFail, err.Error()
+	}
+	return statusPass, "viewer service active with dedicated-user 0660 control socket"
 }
 
 func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {
@@ -83,7 +89,7 @@ func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("viewer config: %v", err)
 	}
-	path := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
+	path := displayRFBPath(env.rfbSocketPath)
 	info, err := env.lstat(path)
 	if err != nil {
 		return statusFail, fmt.Sprintf("RFB socket: %v", err)
@@ -95,8 +101,42 @@ func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
 		return statusFail, fmt.Sprintf("RFB socket mode is %s, want %04o", info.Mode(), mode)
 	}
-	if err := checkViewerRFBACL(ctx, env.runCmd, path, env.proxyUserName, viewerRFBEnabled(cfg.Containment.Display)); err != nil {
+	dirInfo, err := env.lstat(filepath.Dir(path))
+	if err != nil {
+		return statusFail, fmt.Sprintf("RFB runtime directory: %v", err)
+	}
+	dirMode := os.FileMode(0o700)
+	groupUser := env.agentUserName
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		dirMode = 0o710
+		groupUser = viewerUserName
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode().Perm() != dirMode {
+		return statusFail, fmt.Sprintf("RFB runtime directory mode is %s, want %04o", dirInfo.Mode(), dirMode)
+	}
+	if env.lookupUser == nil {
+		return statusFail, "RFB runtime identity lookup unavailable"
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return statusFail, fmt.Sprintf("RFB runtime owner: %v", err)
+	}
+	group, err := env.lookupUser(groupUser)
+	if err != nil {
+		return statusFail, fmt.Sprintf("RFB runtime group: %v", err)
+	}
+	wantUID, uidErr := strconv.ParseUint(agent.Uid, 10, 32)
+	wantGID, gidErr := strconv.ParseUint(group.Gid, 10, 32)
+	if uidErr != nil || gidErr != nil {
+		return statusFail, "RFB runtime identity is invalid"
+	}
+	ownerUID, uidOK := fileOwnerUID(dirInfo)
+	ownerGID, gidOK := fileOwnerGID(dirInfo)
+	if !uidOK || !gidOK || uint64(ownerUID) != wantUID || uint64(ownerGID) != wantGID {
+		return statusFail, "RFB runtime directory has wrong owner or group"
+	}
+	if err := checkRFBGroup(env.lstat, env.lookupUser, path, groupUser); err != nil {
 		return statusFail, err.Error()
 	}
-	return statusPass, "RFB socket ACL matches viewer setting"
+	return statusPass, "RFB socket mode and group match viewer setting"
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,12 @@ func TestViewerServeDependencies(t *testing.T) {
 	opts := serveOptions{display: ":99", rfbSocket: filepath.Join(root, "rfb.sock"), operator: "operator", agentUser: "agent"}
 	base := realServeDeps()
 	base.path = path
-	base.lookup = func(string) (*user.User, error) { return &user.User{Uid: "1000"}, nil }
+	base.lookup = func(name string) (*user.User, error) {
+		if name == "agent" {
+			return &user.User{Uid: "1001"}, nil
+		}
+		return &user.User{Uid: "1000"}, nil
+	}
 	base.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	for _, tc := range []struct {
 		name, want string
@@ -123,6 +129,7 @@ func TestViewerServeRejectsInvalidAgentIdentity(t *testing.T) {
 		{"missing agent", "", "viewer agent user", errors.New("identity unavailable")},
 		{"invalid agent uid", "bad", "viewer agent uid", nil},
 		{"root agent", "0", "must not be root", nil},
+		{"operator is agent", "1000", "distinct identities", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := realServeDeps()
@@ -144,6 +151,21 @@ func TestViewerServeRejectsInvalidAgentIdentity(t *testing.T) {
 				t.Fatalf("control socket created: %v", err)
 			}
 		})
+	}
+}
+
+func TestViewerServeRejectsServiceAgentIdentity(t *testing.T) {
+	deps := realServeDeps()
+	deps.path = filepath.Join(t.TempDir(), "control.sock")
+	deps.lookup = func(name string) (*user.User, error) {
+		if name == "agent" {
+			return &user.User{Uid: strconv.FormatUint(uint64(currentViewerUID()), 10)}, nil
+		}
+		return &user.User{Uid: strconv.FormatUint(uint64(currentViewerUID())+1, 10)}, nil
+	}
+	err := runViewerServe(context.Background(), deps, serveOptions{display: ":99", rfbSocket: "/unused", operator: "operator", agentUser: "agent"})
+	if err == nil || !strings.Contains(err.Error(), "service and agent") {
+		t.Fatalf("shared service identity accepted: %v", err)
 	}
 }
 
@@ -184,7 +206,12 @@ func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
 	opts := serveOptions{display: ":99", rfbSocket: filepath.Join(root, "rfb.sock"), operator: "operator", agentUser: "agent"}
 	deps := realServeDeps()
 	deps.path = path
-	deps.lookup = func(string) (*user.User, error) { return &user.User{Uid: "1000"}, nil }
+	deps.lookup = func(name string) (*user.User, error) {
+		if name == "agent" {
+			return &user.User{Uid: "1001"}, nil
+		}
+		return &user.User{Uid: "1000"}, nil
+	}
 	deps.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
 	if err != nil {

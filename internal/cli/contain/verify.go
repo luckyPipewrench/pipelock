@@ -129,6 +129,7 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
+	rfbSocketPath                 string
 	port                          int
 	operatorUser                  string
 	proxyUserName                 string
@@ -428,7 +429,7 @@ func probesForEnv(env *probeEnv) []probe {
 		if displayConfigErr == nil && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
 			probes = append(probes, probe{23, "agent_display_rfb", "agent RFB Unix socket is private and TCP RFB is disabled", probeAgentDisplayRFB})
 			probes = append(probes, probe{24, "viewer_service", "contained display viewer socket is restricted to its operator", probeViewerService})
-			probes = append(probes, probe{25, "viewer_rfb_access", "RFB socket ACL matches viewer setting", probeViewerRFBAccess})
+			probes = append(probes, probe{25, "viewer_rfb_access", "RFB socket mode and group match viewer setting", probeViewerRFBAccess})
 		}
 	}
 	if !env.verifyRunningImage {

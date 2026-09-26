@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -15,7 +16,82 @@ import (
 const (
 	viewerUnitBase      = "pipelock-contain-viewer"
 	viewerControlSocket = "/run/pipelock-contain-viewer/control.sock"
+	viewerUserName      = "pipelock-viewer"
 )
+
+// The viewer has its own identity. Its primary group is used only for the
+// display runtime directory and RFB socket; the proxy is never a member.
+func stepCreateViewerUser() step {
+	return step{name: "create-viewer-user", desc: "create dedicated display viewer user", apply: func(ctx context.Context, env *installEnv) (bool, error) {
+		if err := checkViewerProxyIsolation(ctx, env.runCmd, env.proxyUserName); err != nil {
+			return false, err
+		}
+		account, err := env.lookupUser(viewerUserName)
+		if err == nil {
+			if account.Uid == "0" || account.Gid == "0" {
+				return false, errors.New("viewer account must not be root")
+			}
+			for _, other := range []string{env.agentUserName, env.proxyUserName, env.operatorUser} {
+				if other == "" {
+					continue
+				}
+				peer, lookupErr := env.lookupUser(other)
+				if lookupErr != nil {
+					return false, fmt.Errorf("inspect viewer identity boundary: %w", lookupErr)
+				}
+				if account.Uid == peer.Uid {
+					return false, errors.New("viewer account shares another containment identity")
+				}
+			}
+			if err := checkViewerGroup(ctx, env.runCmd, account.Gid); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		if !errors.As(err, new(user.UnknownUserError)) {
+			return false, fmt.Errorf("viewer account lookup: %w", err)
+		}
+		return true, runOrErr(ctx, env, "useradd", "--system", "--shell", env.nologinPath, "--home-dir", "/var/lib/"+viewerUserName, "--no-create-home", "--user-group", viewerUserName)
+	}, undo: func(ctx context.Context, env *installEnv) error {
+		if _, err := env.lookupUser(viewerUserName); errors.As(err, new(user.UnknownUserError)) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return runOrErr(ctx, env, "userdel", "-r", viewerUserName)
+	}}
+}
+
+func checkViewerGroup(ctx context.Context, run runCommand, gid string) error {
+	out, code, err := run(ctx, "getent", "group", viewerUserName)
+	if err != nil || code != 0 {
+		return fmt.Errorf("inspect viewer group: %w", errors.Join(err, fmt.Errorf("exit %d", code)))
+	}
+	parts := strings.Split(strings.TrimSpace(out), ":")
+	if len(parts) != 4 || parts[0] != viewerUserName || parts[2] != gid {
+		return errors.New("viewer account has unexpected primary group")
+	}
+	if parts[3] != "" {
+		return errors.New("viewer group has supplementary members")
+	}
+	return nil
+}
+
+func checkViewerProxyIsolation(ctx context.Context, run runCommand, proxy string) error {
+	if proxy == "" {
+		return nil
+	}
+	out, code, err := run(ctx, "id", "-nG", proxy)
+	if err != nil || code != 0 {
+		return fmt.Errorf("inspect proxy group membership: %w", errors.Join(err, fmt.Errorf("exit %d", code)))
+	}
+	for _, group := range strings.Fields(out) {
+		if group == viewerUserName {
+			return errors.New("proxy account must not be in the viewer group")
+		}
+	}
+	return nil
+}
 
 func viewerUnitPaths(env *installEnv) (string, string) {
 	dir := filepath.Dir(env.displayUnitPath)
@@ -24,12 +100,12 @@ func viewerUnitPaths(env *installEnv) (string, string) {
 
 func renderViewerServiceUnit(env *installEnv) string {
 	v := env.displayConfig.Viewer
-	rfb := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
+	rfb := displayRFBPath(env.rfbSocketPath)
 	clipboard := "false"
 	if v.Clipboard != nil && *v.Clipboard {
 		clipboard = "true"
 	}
-	return fmt.Sprintf("%s\n[Unit]\nDescription=Pipelock contained display viewer\n\n[Service]\nType=exec\nUser=%s\nGroup=%s\nRuntimeDirectory=pipelock-contain-viewer\nRuntimeDirectoryMode=0700\nExecStartPre=/usr/bin/setfacl -n -m u:%s:--x,g::---,o::---,m::--x /run/pipelock-contain-viewer\nExecStart=%s contain viewer serve --display %s --rfb-socket %s --operator-user %s --agent-user %s --clipboard=%s\nPrivateTmp=true\nNoNewPrivileges=true\nProtectHome=read-only\nProtectSystem=strict\n\n[Install]\nWantedBy=multi-user.target\n", displayUnitMarker, env.proxyUserName, env.proxyUserName, v.OperatorUser, env.pipelockTarget, displayName(env.displayNumber), rfb, v.OperatorUser, env.agentUserName, clipboard)
+	return fmt.Sprintf("%s\n[Unit]\nDescription=Pipelock contained display viewer\nAfter=%s\nRequires=%s\n\n[Service]\nType=exec\nUser=%s\nGroup=%s\nRuntimeDirectory=pipelock-contain-viewer\nRuntimeDirectoryMode=0700\nExecStartPre=/usr/bin/setfacl -n -m u:%s:--x,g::---,o::---,m::--x /run/pipelock-contain-viewer\nExecStart=%s contain viewer serve --display %s --rfb-socket %s --operator-user %s --agent-user %s --clipboard=%s\nPrivateTmp=true\nNoNewPrivileges=true\nProtectHome=true\nProtectSystem=strict\n\n[Install]\nWantedBy=multi-user.target\n", displayUnitMarker, filepath.Base(env.displayUnitPath), filepath.Base(env.displayUnitPath), viewerUserName, viewerUserName, v.OperatorUser, env.pipelockTarget, displayName(env.displayNumber), rfb, v.OperatorUser, env.agentUserName, clipboard)
 }
 
 // stepProvisionViewer installs one long-running service and removes a legacy
@@ -41,6 +117,14 @@ func stepProvisionViewer() step {
 	}
 	var prior [2]priorUnit
 	return step{name: "provision-display-viewer", desc: "provision contained display viewer", apply: func(ctx context.Context, env *installEnv) (bool, error) {
+		changedState := func() bool {
+			for _, unit := range prior {
+				if unit.exists || unit.active || unit.enabled {
+					return true
+				}
+			}
+			return false
+		}
 		service, socket := viewerUnitPaths(env)
 		paths := []string{service, socket}
 		if err := validateManagedViewerUnits(env, paths...); err != nil {
@@ -88,7 +172,7 @@ func stepProvisionViewer() step {
 					return true, err
 				}
 			}
-			if !prior[0].exists && !prior[1].exists {
+			if !changedState() {
 				return false, nil
 			}
 			return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
@@ -108,7 +192,7 @@ func stepProvisionViewer() step {
 		if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(service)); err != nil {
 			return true, err
 		}
-		return changed || prior[1].exists || !prior[0].active || !prior[0].enabled, nil
+		return changed || prior[1].exists || prior[1].active || prior[1].enabled || !prior[0].active || !prior[0].enabled, nil
 	}, undo: func(ctx context.Context, env *installEnv) error {
 		service, socket := viewerUnitPaths(env)
 		paths := []string{service, socket}

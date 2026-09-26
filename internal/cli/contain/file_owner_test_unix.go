@@ -8,5 +8,5 @@ package contain
 import "syscall"
 
 func fakeFileSysWithUID(uid uint32) any {
-	return &syscall.Stat_t{Uid: uid}
+	return &syscall.Stat_t{Uid: uid, Gid: uid}
 }

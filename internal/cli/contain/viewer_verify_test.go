@@ -62,10 +62,15 @@ func TestViewerServiceProbe(t *testing.T) {
 		}
 		return os.Lstat(path)
 	}
-	env := &probeEnv{configPath: cfgPath, displayUnitPath: displayPath, agentHome: install.agentHome, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, pipelockTarget: install.pipelockTarget, readFile: os.ReadFile, stat: statSocket, lstat: statSocket, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active\n", 0, nil }}
+	env := &probeEnv{configPath: cfgPath, displayUnitPath: displayPath, agentHome: install.agentHome, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, pipelockTarget: install.pipelockTarget, readFile: os.ReadFile, stat: statSocket, lstat: statSocket, lookupUser: func(string) (*user.User, error) {
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+	}, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active\n", 0, nil }}
 	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
 			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+		}
+		if name == "getent" {
+			return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
 		}
 		return "active\n", 0, nil
 	}
@@ -76,6 +81,9 @@ func TestViewerServiceProbe(t *testing.T) {
 		if name == "getfacl" {
 			return "user::rw-\ngroup::---\nother::---\n", 0, nil
 		}
+		if name == "getent" {
+			return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
+		}
 		return "active\n", 0, nil
 	}
 	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "ACL") {
@@ -84,6 +92,9 @@ func TestViewerServiceProbe(t *testing.T) {
 	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
 			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+		}
+		if name == "getent" {
+			return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
 		}
 		return "active\n", 0, nil
 	}
@@ -242,6 +253,9 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(rfbPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(filepath.Dir(rfbPath), 0o710); err != nil { // #nosec G302 -- isolated fixture models the exact runtime-directory mode.
+		t.Fatal(err)
+	}
 	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", rfbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -254,10 +268,12 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 		}
 		return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o660}, nil
 	}
-	base := probeEnv{configPath: cfgPath, agentHome: filepath.Join(root, "agent"), proxyUserName: "proxy", lstat: wideStat, runCmd: func(context.Context, string, ...string) (string, int, error) {
+	base := probeEnv{configPath: cfgPath, agentHome: filepath.Join(root, "agent"), rfbSocketPath: rfbPath, agentUserName: "agent", proxyUserName: "proxy", lstat: wideStat, lookupUser: func(string) (*user.User, error) {
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+	}, runCmd: func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\nuser:proxy:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
 	}}
-	if status, detail := probeViewerRFBAccess(context.Background(), &base); status != statusPass || !strings.Contains(detail, "matches") {
+	if status, detail := probeViewerRFBAccess(context.Background(), &base); status != statusPass || !strings.Contains(detail, "match") {
 		t.Fatalf("valid RFB access = %s %q", status, detail)
 	}
 	for _, tc := range []struct {
@@ -266,6 +282,15 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 	}{
 		{"config", "viewer config", func(e *probeEnv) { e.configPath = filepath.Join(root, "missing.yaml") }},
 		{"socket", "RFB socket", func(e *probeEnv) { e.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission } }},
+		{"runtime mode", "runtime directory mode", func(e *probeEnv) {
+			e.lstat = func(path string) (os.FileInfo, error) {
+				info, err := wideStat(path)
+				if err != nil || path != filepath.Dir(rfbPath) {
+					return info, err
+				}
+				return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o770}, nil
+			}
+		}},
 		{"mode", "want 0660", func(e *probeEnv) {
 			e.lstat = func(path string) (os.FileInfo, error) {
 				info, err := os.Lstat(path)
@@ -275,9 +300,9 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 				return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o666}, nil
 			}
 		}},
-		{"ACL", "RFB ACL", func(e *probeEnv) {
-			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-				return "", 1, errors.New("ACL unavailable")
+		{"wrong group", "wrong owner or group", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) {
+				return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid() + 1)}, nil
 			}
 		}},
 	} {
@@ -289,5 +314,31 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 				t.Fatalf("probe = %s %q, want %q", status, detail, tc.want)
 			}
 		})
+	}
+	if err := os.WriteFile(cfgPath, []byte(strings.Replace(configBody, "enabled: true\n      operator_user", "enabled: false\n      operator_user", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	disabled := base
+	disabled.lstat = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if path == rfbPath {
+			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o600}, nil
+		}
+		if path == filepath.Dir(rfbPath) {
+			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o700}, nil
+		}
+		return info, nil
+	}
+	if status, detail := probeViewerRFBAccess(context.Background(), &disabled); status != statusPass {
+		t.Fatalf("disabled RFB access = %s %q", status, detail)
+	}
+	disabled.lookupUser = func(string) (*user.User, error) {
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid() + 1)}, nil
+	}
+	if status, detail := probeViewerRFBAccess(context.Background(), &disabled); status != statusFail || !strings.Contains(detail, "wrong owner or group") {
+		t.Fatalf("disabled RFB wrong group = %s %q", status, detail)
 	}
 }

@@ -301,6 +301,7 @@ func installSteps(opts installOpts) []step {
 		stepPreflight(opts),
 		stepCreateUser(true),  // proxy
 		stepCreateUser(false), // agent
+		stepCreateViewerUser(),
 		// /etc/pipelock must be traversable by pipelock-agent so the wrappers
 		// can reach /etc/pipelock/{ca.pem,combined-ca.pem,contain/tools.list}.
 		// /var/lib/pipelock holds capture data and stays pipelock-proxy-private.

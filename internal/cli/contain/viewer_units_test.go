@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,15 +20,68 @@ func TestViewerServiceUnitUsesControlSocket(t *testing.T) {
 	yes := true
 	env := &installEnv{agentHome: "/srv/agents/current", agentUserName: "agent", proxyUserName: "proxy", pipelockTarget: "/usr/local/bin/pipelock", displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
 	unit := renderViewerServiceUnit(env)
-	for _, want := range []string{"User=proxy", "--agent-user agent", "--operator-user operator", "RuntimeDirectory=pipelock-contain-viewer", "ProtectSystem=strict"} {
+	for _, want := range []string{"User=pipelock-viewer", "Group=pipelock-viewer", "--agent-user agent", "--operator-user operator", "RuntimeDirectory=pipelock-contain-viewer", "ProtectSystem=strict"} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("service missing %q", want)
 		}
+	}
+	if strings.Contains(unit, "User=proxy") || strings.Contains(unit, "/srv/agents/current/") {
+		t.Fatal("viewer still uses proxy identity or an agent-home socket")
 	}
 	for _, absent := range []string{"--origin", "Requires=pipelock-contain-viewer.socket", "ListenStream="} {
 		if strings.Contains(unit, absent) {
 			t.Errorf("service retains %q", absent)
 		}
+	}
+}
+
+func TestViewerIdentityProvisioning(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+" "+viewerUserName+"\n", 0, nil)
+	if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "proxy account") {
+		t.Fatalf("proxy viewer-group membership accepted: %v", err)
+	}
+	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+"\n", 0, nil)
+	changed, err := stepCreateViewerUser().apply(context.Background(), env)
+	if err != nil || !changed || !runnerSaw(runner, "useradd --system --shell "+env.nologinPath+" --home-dir /var/lib/"+viewerUserName+" --no-create-home --user-group "+viewerUserName) {
+		t.Fatalf("viewer account provisioning changed=%v err=%v calls=%v", changed, err, runner.calls)
+	}
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == viewerUserName {
+			return &user.User{Uid: "900", Gid: "901"}, nil
+		}
+		return &user.User{Uid: "1000", Gid: "1000"}, nil
+	}
+	runner.on("getent group "+viewerUserName, viewerUserName+":x:901:\n", 0, nil)
+	changed, err = stepCreateViewerUser().apply(context.Background(), env)
+	if err != nil || changed {
+		t.Fatalf("existing dedicated account changed=%v err=%v", changed, err)
+	}
+	runner.on("getent group "+viewerUserName, viewerUserName+":x:902:\n", 0, nil)
+	if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "unexpected primary group") {
+		t.Fatalf("wrong group accepted: %v", err)
+	}
+	runner.on("getent group "+viewerUserName, viewerUserName+":x:901:other\n", 0, nil)
+	if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "supplementary members") {
+		t.Fatalf("viewer group with extra member accepted: %v", err)
+	}
+}
+
+func TestViewerLegacyUnitStateCountsWithoutUnitFile(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+			env.displayEnabled = true
+			env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &enabled, OperatorUser: "operator"}}
+			_, socket := viewerUnitPaths(env)
+			runner.on("systemctl is-active "+filepath.Base(socket), "active\n", 0, nil)
+			runner.on("systemctl is-enabled "+filepath.Base(socket), "enabled\n", 0, nil)
+			changed, err := stepProvisionViewer().apply(context.Background(), env)
+			if err != nil || !changed || !runnerSaw(runner, "systemctl disable --now "+filepath.Base(socket)) {
+				t.Fatalf("legacy runtime state changed=%v err=%v calls=%v", changed, err, runner.calls)
+			}
+		})
 	}
 }
 

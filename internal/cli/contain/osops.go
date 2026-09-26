@@ -28,6 +28,8 @@ import (
 // systemd. Real construction is via defaultInstallEnv(); tests build a
 // struct literal with their own hooks.
 type installEnv struct {
+	// rfbSocketPath is an isolated test path; production uses the fixed /run path.
+	rfbSocketPath string
 	// runCmd shells out. Returns merged stdout+stderr (bounded), the
 	// process exit code, and a startup error (nil if the binary ran even
 	// when it exited non-zero). Same contract as verify.go's runCommand.

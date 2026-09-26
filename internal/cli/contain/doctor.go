@@ -70,6 +70,7 @@ type doctorEnv struct {
 	stat           func(path string) (os.FileInfo, error)
 	configPath     string
 	agentHome      string
+	rfbSocketPath  string
 	lookPath       func(string) (string, error)
 	platformFamily string
 }
@@ -241,7 +242,7 @@ func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
 	if cfg.Containment.Display.IsEnabled(true) && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
 		checks = append(checks, doctorCheck{9, "agent_display_rfb", "TigerVNC display RFB socket is available", checkDoctorDisplayRFB})
 		checks = append(checks, doctorCheck{10, "viewer_service", "viewer socket is available to its operator", checkDoctorViewerService})
-		checks = append(checks, doctorCheck{11, "viewer_rfb_access", "viewer RFB socket ACL is exact", checkDoctorViewerRFBAccess})
+		checks = append(checks, doctorCheck{11, "viewer_rfb_access", "viewer RFB socket group is exact", checkDoctorViewerRFBAccess})
 	}
 	return checks
 }
@@ -251,7 +252,7 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if _, err := findXvnc(install); err != nil {
 		return fail(classInfra, err.Error(), err.Error())
 	}
-	path := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
+	path := displayRFBPath(env.rfbSocketPath)
 	mode := os.FileMode(0o600)
 	if cfg, err := config.LoadForInspection(env.configPath); err == nil && viewerRFBEnabled(cfg.Containment.Display) {
 		mode = 0o660
@@ -263,7 +264,7 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 }
 
 func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
-	return &probeEnv{configPath: env.configPath, displayUnitPath: defaultDisplayUnitPath, agentHome: env.agentHome, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+	return &probeEnv{configPath: env.configPath, displayUnitPath: defaultDisplayUnitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
 }
 
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {
@@ -293,7 +294,7 @@ func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult 
 func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResult {
 	status, detail := probeViewerRFBAccess(ctx, doctorViewerProbeEnv(env))
 	if status != statusPass {
-		return fail(classInfra, detail, "RFB ACL missing: rerun contain install")
+		return fail(classInfra, detail, "RFB access mismatch: rerun contain install")
 	}
 	return pass(detail)
 }

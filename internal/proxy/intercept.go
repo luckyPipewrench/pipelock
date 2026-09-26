@@ -746,6 +746,29 @@ func newInterceptHandler(
 		})
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
+			strings.HasPrefix(urlResult.Reason, "high entropy query param ") {
+			if store := ic.issuerQueryStore(); store != nil {
+				session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+				allowed := false
+				allowCtx := scanner.WithIssuerQueryAllowance(interceptScanCtx, func(key, value string) bool {
+					// r.URL is absolute here: the handler rebuilt it from
+					// origin form (scheme and host) before any scan ran.
+					if !store.allows(session, r.URL, key, value) {
+						return false
+					}
+					allowed = true
+					return true
+				})
+				rescanned := ic.Scanner.Scan(allowCtx, targetURL)
+				if allowed {
+					urlResult = rescanned
+					if rescanned.Allowed {
+						ic.Proxy.recordIssuerQueryAllow(actx, targetURL, ic.RequestID, ic.Agent, r.Method)
+					}
+				}
+			}
+		}
 		if ic.Proxy != nil {
 			ic.Proxy.recordCredentialAudienceAllows(actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
 		} else {
@@ -2609,7 +2632,9 @@ func newInterceptHandler(
 		removeHopByHopHeaders(w.Header())
 		w.WriteHeader(resp.StatusCode)
 		written, writeErr := w.Write(respBody)
-		recordDeliveredIssuerCookies(ic, r, resp, writeErr == nil && written == len(respBody))
+		delivered := writeErr == nil && written == len(respBody)
+		recordDeliveredIssuerCookies(ic, r, resp, delivered)
+		recordDeliveredIssuerQuery(ic, resp, respBody, delivered)
 		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), "complete")
 	})
 }

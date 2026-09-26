@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -29,7 +30,11 @@ func runInTinyFileSizeChild(t *testing.T) bool {
 	if os.Getenv(tinyFileSizeChildEnv) == "1" {
 		return true
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v") // #nosec G204 -- re-runs this test binary
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	cmd := exec.CommandContext(t.Context(), exe, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 -- fixed self-test binary and test name.
 	cmd.Env = append(os.Environ(), tinyFileSizeChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

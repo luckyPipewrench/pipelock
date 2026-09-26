@@ -671,6 +671,10 @@ class Recipe:
             return _matching_whitespace(normalized)
         if k.endswith("_liberal"):
             base = k.removesuffix("_decode_liberal")
+            if base in ("base32", "base64"):
+                # Go's RFC 4648 decoders, which the liberal operations
+                # reproduce, ignore carriage returns and line feeds.
+                v = v.replace("\r", "").replace("\n", "")
             return _decode(
                 v,
                 base,

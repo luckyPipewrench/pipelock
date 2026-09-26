@@ -36,6 +36,7 @@ CORPUS_V3 = CORPUS.with_name("evidence-provenance-v3.json")
 def test_evidence_provenance_transform_v3_corpus() -> None:
     corpus = json.loads(CORPUS_V3.read_text())
     assert corpus["profile_digest"] == PROFILE_DIGEST_V3
+    assert corpus["vectors"], "v3 corpus has no vectors"
     for vector in corpus["vectors"]:
         recipe = Recipe.from_json(
             vector.get("transform_profile_digest", corpus["profile_digest"]),

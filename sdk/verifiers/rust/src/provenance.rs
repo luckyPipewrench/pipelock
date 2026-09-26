@@ -447,8 +447,10 @@ impl Operation {
             "invisible_space" => Ok(map_invisible(value, Some(' '))),
             "matching_normalize" => Ok(matching_normalize(value, profile)),
             "hex_decode_liberal" => strict_hex(value, false, "liberal hex decode"),
+            // The liberal decoders reproduce Go's scanner, whose RFC 4648
+            // decoders ignore carriage returns and line feeds anywhere.
             "base32_decode_liberal" => base32_decode(
-                value,
+                &value.replace(['\r', '\n'], ""),
                 optional_bool(&self.fields, "decode_padding")?.unwrap_or(false),
                 false,
                 "liberal base32 decode",
@@ -458,7 +460,7 @@ impl Operation {
                     .unwrap_or("standard"),
             ),
             "base64_decode_liberal" => base64_decode(
-                value,
+                &value.replace(['\r', '\n'], ""),
                 required_str(&self.fields, "alphabet")? == "url",
                 optional_bool(&self.fields, "decode_padding")?.unwrap_or(false),
                 false,

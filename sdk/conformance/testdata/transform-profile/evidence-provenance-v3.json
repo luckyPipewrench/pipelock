@@ -261,6 +261,52 @@
         }
       ],
       "output_b64": "77+9QQ=="
+    },
+    {
+      "id": "liberal-base32-ignores-line-breaks",
+      "input_b64": "TVpYVw0KNj09PQ==",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal",
+          "decode_padding": true
+        }
+      ],
+      "output_b64": "Zm9v"
+    },
+    {
+      "id": "liberal-base32hex-ignores-line-breaks",
+      "input_b64": "Q1BOCk1VPT09",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal",
+          "decode_padding": true,
+          "alphabet": "base32hex"
+        }
+      ],
+      "output_b64": "Zm9v"
+    },
+    {
+      "id": "liberal-base64-ignores-line-breaks",
+      "input_b64": "Wm05dg0KWW1GeQ==",
+      "recipe": [
+        {
+          "kind": "base64_decode_liberal",
+          "alphabet": "standard",
+          "decode_padding": true
+        }
+      ],
+      "output_b64": "Zm9vYmFy"
+    },
+    {
+      "id": "strict-base32-rejects-line-breaks",
+      "input_b64": "TVpYVwo2PT09",
+      "recipe": [
+        {
+          "kind": "base32_decode",
+          "decode_padding": true
+        }
+      ],
+      "want_error": "base32"
     }
   ]
 }

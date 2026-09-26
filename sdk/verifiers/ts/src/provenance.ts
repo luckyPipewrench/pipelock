@@ -804,16 +804,18 @@ function apply(
       return matching(value, profile);
     case "hex_decode_liberal":
       return hexDecode(value, false);
+    // The liberal decoders reproduce Go's scanner, whose RFC 4648 decoders
+    // ignore carriage returns and line feeds anywhere in the input.
     case "base32_decode_liberal":
       return base32Decode(
-        value,
+        stripLineBreaks(value),
         opBool(op, "decode_padding"),
         false,
         (op.alphabet as string | undefined) ?? "standard",
       );
     case "base64_decode_liberal":
       return base64Decode(
-        value,
+        stripLineBreaks(value),
         op.alphabet as "standard" | "url",
         opBool(op, "decode_padding"),
         false,
@@ -869,4 +871,8 @@ function apply(
     default:
       return fail(`unknown operation ${JSON.stringify(kind)}`);
   }
+}
+
+function stripLineBreaks(value: string): string {
+  return value.replace(/[\r\n]/gu, "");
 }

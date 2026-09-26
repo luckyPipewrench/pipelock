@@ -83,3 +83,44 @@ func TestContainmentDisplayRejectsInvalidNumber(t *testing.T) {
 		t.Fatalf("boundary display number 999 rejected: %v", err)
 	}
 }
+
+func TestContainmentDisplayViewerConfig(t *testing.T) {
+	tests := []struct {
+		name, yaml, backend string
+		enabled             bool
+		bad                 bool
+	}{
+		{"omitted", "mode: balanced\n", "xvfb", false, false},
+		{"null", "containment:\n  display: null\n", "xvfb", false, false},
+		{"viewer false", "containment:\n  display:\n    viewer:\n      enabled: false\n", "xvfb", false, false},
+		{"viewer null", "containment:\n  display:\n    viewer:\n      enabled: null\n", "xvfb", false, false},
+		{"viewer true", "containment:\n  display:\n    viewer:\n      enabled: true\n      public_origin: https://viewer.example\n", "xvnc", true, false},
+		{"viewer missing origin", "containment:\n  display:\n    viewer:\n      enabled: true\n", "", false, true},
+		{"viewer HTTP origin", "containment:\n  display:\n    viewer:\n      enabled: true\n      public_origin: http://viewer.example\n", "", false, true},
+		{"viewer path origin", "containment:\n  display:\n    viewer:\n      enabled: true\n      public_origin: https://viewer.example/path\n", "", false, true},
+		{"viewer bad host", "containment:\n  display:\n    viewer:\n      enabled: true\n      public_origin: https://\n", "", false, true},
+		{"explicit xvnc", "containment:\n  display:\n    backend: xvnc\n", "xvnc", true, false},
+		{"conflict", "containment:\n  display:\n    backend: xvfb\n    viewer:\n      enabled: true\n", "", false, true},
+		{"bad backend", "containment:\n  display:\n    backend: other\n", "", false, true},
+		{"bad socket", "containment:\n  display:\n    viewer:\n      host_socket: ../viewer.sock\n", "", false, true},
+		{"bad user", "containment:\n  display:\n    viewer:\n      operator_user: 'a b'\n", "", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.yaml))
+			if tc.bad {
+				if err == nil {
+					t.Fatal("invalid display viewer config accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := cfg.Containment.Display
+			if d.EffectiveBackend() != tc.backend || d.IsEnabled(false) != tc.enabled {
+				t.Fatalf("backend=%s enabled=%t, want %s/%t", d.EffectiveBackend(), d.IsEnabled(false), tc.backend, tc.enabled)
+			}
+		})
+	}
+}

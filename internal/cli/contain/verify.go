@@ -164,6 +164,7 @@ type probeEnv struct {
 	namespaceForwarderServicePath string
 	displayUnitPath               string
 	xvfbPath                      string
+	xvncPath                      string
 	display                       string
 	agentHome                     string
 	platformFamily                string
@@ -194,6 +195,7 @@ type probeEnv struct {
 	lookupUser             lookupUserFunc
 	groupIDs               groupIDsFunc
 	stat                   func(path string) (os.FileInfo, error)
+	lstat                  func(path string) (os.FileInfo, error)
 	readFile               func(path string) ([]byte, error)
 	readDir                func(path string) ([]os.DirEntry, error)
 	readLink               func(path string) (string, error)
@@ -249,6 +251,7 @@ func defaultProbeEnv() *probeEnv {
 		lookupUser:                    user.Lookup,
 		groupIDs:                      realGroupIDs,
 		stat:                          os.Stat,
+		lstat:                         os.Lstat,
 		readFile:                      os.ReadFile,
 		readDir:                       os.ReadDir,
 		readLink:                      os.Readlink,
@@ -260,6 +263,8 @@ func defaultProbeEnv() *probeEnv {
 		namespaceForwarderServicePath: defaultNamespaceForwarderServicePath,
 		displayUnitPath:               defaultDisplayUnitPath,
 		xvfbPath:                      defaultXvfbPath,
+		xvncPath:                      xvncPathForVerify(os.Stat),
+		agentHome:                     "/home/" + defaultAgentUser,
 		display:                       os.Getenv("DISPLAY"),
 		platformFamily:                platform.family,
 		lookPath:                      exec.LookPath,
@@ -420,6 +425,11 @@ func probesForEnv(env *probeEnv) []probe {
 		(displayConfigErr != nil && !errors.Is(displayConfigErr, os.ErrNotExist)) ||
 		displayUnitErr == nil || !errors.Is(displayUnitErr, os.ErrNotExist) {
 		probes = append(probes, probe{22, "agent_display", "configured fallback display is agent-owned and locally isolated", probeAgentDisplay})
+		if displayConfigErr == nil && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
+			probes = append(probes, probe{23, "agent_display_rfb", "agent RFB Unix socket is private and TCP RFB is disabled", probeAgentDisplayRFB})
+			probes = append(probes, probe{24, "viewer_service", "contained display viewer socket is restricted to its operator", probeViewerService})
+			probes = append(probes, probe{25, "viewer_rfb_access", "RFB socket ACL matches viewer setting", probeViewerRFBAccess})
+		}
 	}
 	if !env.verifyRunningImage {
 		for i := range probes {
@@ -541,8 +551,8 @@ func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
 // command, so an empty return here still leaves the caller's fallback message
 // naming it.
 func diagnoseWorkspaceACLCause(ctx context.Context, env *probeEnv, path string) string {
-	out, code, err := env.runCmd(ctx, "getfacl", "-p", path)
-	if err != nil || code != 0 {
+	out, err := readAccessACL(ctx, env.runCmd, path)
+	if err != nil {
 		return ""
 	}
 	prefix := "user:" + env.agentUserName + ":"
@@ -563,6 +573,20 @@ func diagnoseWorkspaceACLCause(ctx context.Context, env *probeEnv, path string) 
 		return fmt.Sprintf("ACL grants %s %q but access still failed", env.agentUserName, perms)
 	}
 	return fmt.Sprintf("no ACL entry for %s on this path", env.agentUserName)
+}
+
+func readAccessACL(ctx context.Context, run runCommand, path string) (string, error) {
+	if run == nil {
+		return "", fmt.Errorf("ACL reader unavailable")
+	}
+	out, code, err := run(ctx, "getfacl", "-p", path)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("getfacl exit %d: %s", code, strings.TrimSpace(out))
+	}
+	return out, nil
 }
 
 // workspaceProbePaths returns the deduplicated union of ad-hoc --workspace
@@ -3780,4 +3804,14 @@ func credentialGuardConfigRoots(env *probeEnv) map[string]bool {
 		roots[root] = true
 	}
 	return roots
+}
+
+// xvncPathForVerify resolves Xvnc exactly as install did, so the expected
+// ExecStart matches the rendered unit. With no candidate installed it keeps
+// the default path; the unit comparison then names the missing binary.
+func xvncPathForVerify(stat func(string) (os.FileInfo, error)) string {
+	if path := resolveXvncPath(stat); path != "" {
+		return path
+	}
+	return defaultXvncPath
 }

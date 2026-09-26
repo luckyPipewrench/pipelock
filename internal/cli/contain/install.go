@@ -337,6 +337,7 @@ func installSteps(opts installOpts) []step {
 		// wrapper renders, so the wrappers bind the display socket that
 		// private /tmp would otherwise hide.
 		stepProvisionAgentDisplay(),
+		stepProvisionViewer(),
 		stepWriteToolsList(),
 		stepWriteCredentialGuard(),
 		// undici shim must exist before the launch wrapper / profile script
@@ -901,13 +902,16 @@ func toolsListEntriesEqual(a, b []toolsListEntry) bool {
 // Step 1: preflight
 // ---------------------------------------------------------------------------
 
-func stepPreflight(_ installOpts) step {
+func stepPreflight(opts installOpts) step {
 	return step{
 		name: "preflight",
 		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl)",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			for _, b := range []string{"useradd", "userdel", "systemctl", "visudo", "sudo", "setfacl", "find", "chmod"} {
 				if err := expectExec(b); err != nil {
+					if b == "setfacl" {
+						return false, fmt.Errorf("setfacl missing; install acl: %w", err)
+					}
 					return false, err
 				}
 			}
@@ -921,6 +925,18 @@ func stepPreflight(_ installOpts) step {
 			}
 			if err := expectPrivilegedExecutablePath(env.stat, "nft", env.nftPath); err != nil {
 				return false, err
+			}
+			configPath := managedPipelockConfigPath(env)
+			if opts.configSource != "" {
+				configPath = opts.configSource
+			}
+			if cfg, err := config.LoadForInspection(configPath); err == nil {
+				display := cfg.Containment.Display
+				if display.IsEnabled(xvfbInstalled(env)) && display.EffectiveBackend() == "xvnc" {
+					if _, err := findXvnc(env); err != nil {
+						return false, err
+					}
+				}
 			}
 			return true, nil
 		},

@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -102,8 +103,38 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 // box. An explicit false still turns it off, and a host without Xvfb
 // installed is left alone rather than failing its install.
 type ContainmentDisplay struct {
-	Enabled *bool `yaml:"enabled"`
-	Number  *int  `yaml:"number"`
+	Enabled *bool                    `yaml:"enabled"`
+	Number  *int                     `yaml:"number"`
+	Backend string                   `yaml:"backend"`
+	Viewer  ContainmentDisplayViewer `yaml:"viewer"`
+}
+
+type ContainmentDisplayViewer struct {
+	Enabled      *bool  `yaml:"enabled"`
+	OperatorUser string `yaml:"operator_user"`
+	HostSocket   string `yaml:"host_socket"`
+	Source       string `yaml:"source"`
+	Clipboard    *bool  `yaml:"clipboard"`
+	PublicOrigin string `yaml:"public_origin"`
+}
+
+// ValidateViewerOrigin requires one HTTPS authority without path or credentials.
+func ValidateViewerOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.HasSuffix(u.Host, ":") || strings.ContainsAny(u.Hostname(), " \t\n") {
+		return fmt.Errorf("containment.display.viewer.public_origin must be an HTTPS origin without path, query, fragment, or credentials")
+	}
+	return nil
+}
+
+func (d ContainmentDisplay) EffectiveBackend() string {
+	if d.Backend != "" {
+		return d.Backend
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		return "xvnc"
+	}
+	return "xvfb"
 }
 
 // IsEnabled resolves the three states: explicitly on, explicitly off, and
@@ -112,6 +143,9 @@ type ContainmentDisplay struct {
 func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
 	if d.Enabled != nil {
 		return *d.Enabled
+	}
+	if d.Backend == "xvnc" || (d.Viewer.Enabled != nil && *d.Viewer.Enabled) {
+		return true
 	}
 	return xvfbPresent
 }

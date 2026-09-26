@@ -1733,6 +1733,26 @@ containment:
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
 
+### Contained agent display (containment)
+
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`.
+
+```yaml
+containment:
+  display:
+    enabled: true
+    backend: xvnc
+    viewer:
+      enabled: true
+      operator_user: operator
+      host_socket: /run/pipelock-viewer.sock
+      public_origin: https://viewer.example
+      source: managed
+      clipboard: false
+```
+
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB. Its agent-owned Unix socket is `0600` when the viewer is disabled. When enabled, the socket is `0660` with a named proxy-user ACL, `group::---`, and an `rw-` ACL mask. The proxy receives traverse-only ACLs from the agent home to the socket directory. `public_origin` is required for an enabled viewer and must be an HTTPS origin without a path. `contain viewer open` prints a single-use URL with the ticket in its fragment. The viewer socket is owned by `operator_user` with mode `0600`; the viewer service runs as the proxy user. Clipboard transfer defaults off. `viewer.source` accepts `managed` or `external_rfb`; `host_socket`, when set, must be a clean `/run/*.sock` path. The browser client bundle is a separate slice.
+
 ### Contained agent identity (containment)
 
 A contained agent reaches the proxy through its namespace doorway, which by default delivers to the shared proxy listener. Traffic there is attributed by the usual rules, so a profile whose `source_cidrs` covers loopback claims the contained agent along with every other local client. Set `containment.agent_listener` to one of the agent's own `agents.<name>.listeners` to deliver the doorway to that listener instead:

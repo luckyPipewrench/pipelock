@@ -226,11 +226,13 @@ runs:
           echo "audit_failed=false" >> "$GITHUB_OUTPUT"
 
           # Emit GitHub annotations for findings with file locations
-          jq -r '.findings[] | select(.file != null and .file != "") |
+          jq -r 'def command_data: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def command_property: command_data | gsub(":"; "%3A") | gsub(","; "%2C");
+            .findings[] | select(.file != null and .file != "") |
             (if .severity == "critical" then "error"
              elif .severity == "warning" then "warning"
              else "notice" end) as $level |
-            "::\($level) file=\(.file),line=\(.line // 1)::\(.message)"' "$REPORT_DIR/audit.json"
+            "::\($level) file=\(.file | command_property),line=\(.line // 1)::\(.message | command_data)"' "$REPORT_DIR/audit.json"
 
           # Write job summary
           {
@@ -249,9 +251,12 @@ runs:
             if [ "$FINDINGS" -gt 0 ]; then
               echo "<details><summary>Findings</summary>"
               echo ""
-              jq -r '.findings[] |
-                "- **[\(.severity)]** \(.message)" +
-                (if .file then " (`\(.file)`" + (if .line then ":\(.line)" else "" end) + ")" else "" end)' \
+              jq -r 'def markdown_text:
+                  gsub("(?<mark>[[:punct:]])"; "&#\(.mark | explode[0]);") |
+                  gsub("\r"; "&#13;") | gsub("\n"; "&#10;");
+                .findings[] |
+                "- **[\(.severity | markdown_text)]** \(.message | markdown_text)" +
+                (if .file then " (\(.file | markdown_text)" + (if .line then ":\(.line)" else "" end) + ")" else "" end)' \
                 "$REPORT_DIR/audit.json"
               echo ""
               echo "</details>"

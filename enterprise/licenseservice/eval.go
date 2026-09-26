@@ -196,6 +196,9 @@ func (h *WebhookHandler) HandleOrderPaidEvent(ctx context.Context, event *PolarW
 			h.log.Warn().Str("order_id", order.ID).Msg("eval order no longer mintable at commit; skipping")
 			return nil
 		}
+		if errors.Is(err, ErrActiveTrialExists) {
+			return h.denyEvalOrder(ctx, order, msgID, denyReasonActiveEvalExists)
+		}
 		_ = h.ledger.LogError(order.ID, "fulfill eval mint", err)
 		return fmt.Errorf("fulfill eval mint: %w", err)
 	}

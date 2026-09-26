@@ -141,16 +141,18 @@ Examples:
 			mPath := resolveManifestPath(manifestPath, dir)
 			out := cmd.OutOrStdout()
 
-			// Verify the manifest signature before trusting its contents.
+			// Verify and parse one authenticated manifest snapshot.
+			var m *integrity.Manifest
 			if verifySignature {
-				if err := verifyManifestFile(mPath, agentName, keystoreDir, out); err != nil {
+				m, err = verifyManifestFile(mPath, agentName, keystoreDir, out)
+				if err != nil {
 					return err
 				}
-			}
-
-			m, err := integrity.Load(mPath)
-			if err != nil {
-				return fmt.Errorf("loading manifest: %w", err)
+			} else {
+				m, err = integrity.Load(mPath)
+				if err != nil {
+					return fmt.Errorf("loading manifest: %w", err)
+				}
 			}
 
 			// Ensure the manifest file itself is excluded from the check,
@@ -417,27 +419,28 @@ func signManifestFile(mPath, agentName, keystoreDir string, out io.Writer) error
 }
 
 // verifyManifestFile verifies a manifest's detached signature.
-func verifyManifestFile(mPath, agentName, keystoreDir string, out io.Writer) error {
+func verifyManifestFile(mPath, agentName, keystoreDir string, out io.Writer) (*integrity.Manifest, error) {
 	agent, err := cliutil.ResolveAgentName(agentName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ks := domsigning.NewKeystore(dir)
 
 	pubKey, err := ks.ResolvePublicKey(agent)
 	if err != nil {
-		return fmt.Errorf("loading key for agent %q: %w", agent, err)
+		return nil, fmt.Errorf("loading key for agent %q: %w", agent, err)
 	}
 
-	if err := domsigning.VerifyFile(mPath, "", pubKey); err != nil {
-		return fmt.Errorf("manifest signature verification failed: %w", err)
+	m, err := integrity.LoadVerified(mPath, pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("manifest signature verification failed: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(out, "Manifest signature verified (agent: %s)\n", agent)
-	return nil
+	return m, nil
 }

@@ -134,9 +134,6 @@ func (f *filter) next() (int, bool, error) {
 			return 0, false, nil
 		}
 		n := 4 + 4*int(binary.BigEndian.Uint16(p[2:4]))
-		if n > maxFrame {
-			return 0, false, errors.New("too many RFB encodings")
-		}
 		if len(p) < n {
 			return 0, false, nil
 		}

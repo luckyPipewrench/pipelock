@@ -58,3 +58,70 @@ func TestViewerInstallRemovesLegacySocketUnit(t *testing.T) {
 		t.Fatal("viewer service was not enabled")
 	}
 }
+
+func TestViewerInstallDisableAndRestore(t *testing.T) {
+	for _, tc := range []struct {
+		name, priorService, priorSocket string
+		wantChanged                     bool
+	}{
+		{name: "nothing installed"},
+		{name: "remove managed service", priorService: displayUnitMarker + "\n[Service]\n", wantChanged: true},
+		{name: "remove legacy socket", priorSocket: displayUnitMarker + "\n[Socket]\n", wantChanged: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
+			service, socket := viewerUnitPaths(env)
+			for path, body := range map[string]string{service: tc.priorService, socket: tc.priorSocket} {
+				if body != "" {
+					if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			step := stepProvisionViewer()
+			changed, err := step.apply(context.Background(), env)
+			if err != nil || changed != tc.wantChanged {
+				t.Fatalf("disable: changed=%v err=%v", changed, err)
+			}
+			for _, path := range []string{service, socket} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("%s remains: %v", path, err)
+				}
+			}
+			if tc.wantChanged && !runnerSaw(runner, "systemctl daemon-reload") {
+				t.Fatal("manager was not reloaded")
+			}
+			if err := step.undo(context.Background(), env); err != nil {
+				t.Fatal(err)
+			}
+			for path, body := range map[string]string{service: tc.priorService, socket: tc.priorSocket} {
+				got, err := os.ReadFile(path)
+				if body == "" {
+					if !os.IsNotExist(err) {
+						t.Fatalf("%s created after rollback: %v", path, err)
+					}
+				} else if err != nil || string(got) != body {
+					t.Fatalf("%s restored as %q: %v", path, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestViewerInstallRefusesForeignUnit(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "pipelock-agent-display.service")
+	service, _ := viewerUnitPaths(env)
+	if err := os.WriteFile(service, []byte("[Service]\nExecStart=/other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := stepProvisionViewer().apply(context.Background(), env)
+	if changed || err == nil || !strings.Contains(err.Error(), "not Pipelock-managed") {
+		t.Fatalf("foreign unit: changed=%v err=%v", changed, err)
+	}
+	got, err := os.ReadFile(service)
+	if err != nil || string(got) != "[Service]\nExecStart=/other\n" {
+		t.Fatalf("foreign unit altered: %q, %v", got, err)
+	}
+}

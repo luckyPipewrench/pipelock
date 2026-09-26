@@ -624,7 +624,7 @@ func TestBundle_RejectsExistingAndSymlinkOutputs(t *testing.T) {
 			if err := cmd.Execute(); err == nil {
 				t.Fatal("expected existing output to be rejected")
 			}
-			got, err := os.ReadFile(victim)
+			got, err := os.ReadFile(filepath.Clean(victim))
 			if err != nil || string(got) != "preserve" {
 				t.Fatalf("victim changed: %q, %v", got, err)
 			}

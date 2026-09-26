@@ -556,14 +556,18 @@ would have produced broken or forgeable per-writer chains at restart.
 **Signing-key rotation no longer bricks a writer chain.** Earlier builds
 resumed by hard-verifying the persisted tail against the *current* signing key,
 so any legitimate operator key rotation orphaned that writer chain and failed
-every subsequent emit. The emitter now recognizes a tail that is self-valid
-under a *different* embedded key as a rotation and opens a new chain segment for
-that writer: its first receipt links to the prior tail hash and carries a
-`KeyTransition` marker, so the boundary is provable and that writer chain stays
-offline-verifiable across the switch (see
+every subsequent emit. When a configuration reload replaces the signing key,
+the new emitter opens a new chain segment for that writer: its first receipt
+links to the prior tail hash and carries a `KeyTransition` marker, so the
+boundary is provable and that writer chain stays offline-verifiable across the
+switch (see
 [Chains that rotated the signing key](#chains-that-rotated-the-signing-key)).
-A tail whose own signature is invalid still fails closed, so a forged tail
-cannot force a silent chain reset that hides history.
+The rotation is accepted only from a key this process itself loaded to sign
+receipts earlier in the run. A tail signed by any other key, even one whose signature is valid
+under the key embedded in it, is refused rather than vouched for, and the
+emitter fails closed with an error naming that key; since every run begins a new
+recorder session, such a tail means the evidence directory was altered. A tail
+whose own signature is invalid still fails closed as before.
 
 ## Standalone `pipelock-verifier` CLI
 

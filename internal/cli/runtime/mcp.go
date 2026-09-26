@@ -1214,9 +1214,9 @@ Key-free evidence capture:
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 				printFlightRecorderEvidenceWarning(cmd.ErrOrStderr(), cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
 				// Loud, one-time startup signal when the chain could not be
-				// resumed (corrupt/tampered tail or an evidence read error).
-				// A legitimate key rotation no longer lands here - it opens a
-				// new chain segment instead of failing.
+				// resumed (a corrupt, tampered, or foreign-key tail, or an
+				// evidence read error). Each run mints a new session, so a key
+				// changed between runs starts a fresh chain and never lands here.
 				if initErr := receiptEmitter.InitError(); initErr != nil {
 					cmd.PrintErrf("  Receipts: ERROR - chain could not be resumed: %v\n"+
 						"            Receipt emission is DISABLED until resolved. Inspect the evidence\n"+

@@ -859,6 +859,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+    outputs:
+      chart_digest: ${{ steps.publish-helm-chart.outputs.chart_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1082,6 +1084,7 @@ jobs:
       # public once in the GitHub UI. There is no REST endpoint for that, and it
       # is irreversible, so it stays a deliberate human step.
       - name: Publish Helm chart
+        id: publish-helm-chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
@@ -1106,6 +1109,7 @@ jobs:
           existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
           candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
           mkdir -p "$existing_dir" "$candidate_dir"
+          chart_digest=""
           if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
             cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz" || {
               echo "::error::published chart archive ${chart_version} differs from the staged release archive"
@@ -1117,12 +1121,25 @@ jobs:
               echo "::error::published chart ${chart_version} differs from the signed release input"
               exit 1
             }
+            chart_digest="$(printf '%s\n' "$chart_lookup_output" | awk '$1 == "Digest:" { print $2 }')"
           elif printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
-            helm push "$chart_archive" oci://ghcr.io/luckypipewrench/charts
+            push_output="$(helm push "$chart_archive" oci://ghcr.io/luckypipewrench/charts 2>&1)"
+            printf '%s\n' "$push_output"
+            chart_digest="$(printf '%s\n' "$push_output" | awk '$1 == "Digest:" { print $2 }')"
           else
             echo "::error::could not determine whether chart ${chart_version} exists"
             exit 1
           fi
+
+          # The digest helm reported for the exact manifest it just pushed, or
+          # for the published one it just pulled and verified byte-identical
+          # above. Taking it from that operation, not re-reading the tag,
+          # binds the attestation to the bytes this job checked.
+          [[ "$chart_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::could not read the chart digest from helm output"
+            exit 1
+          }
+          echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"
 
           # A brand-new GHCR package is private, and the install command in the
           # READMEs fails with an authorization error until it is made public.
@@ -1263,3 +1280,40 @@ jobs:
           git tag -fa "v${major}" "${TAG_NAME}^{}" -m "Update v${major} to ${TAG_NAME}"
           git push origin "$floating_ref" --force-with-lease="${floating_ref}:${remote_oid}"
           echo "Moved floating tag v${major} to ${TAG_NAME}"
+
+  # Signs the published Helm chart with the same provenance mechanism the
+  # container images use (actions/attest-build-provenance, GitHub's
+  # OIDC-backed Sigstore identity), bound to the digest release-promote pushed
+  # or verified. It is its own job so the signing permissions (id-token,
+  # attestations) are held only while GitHub's first-party attestation action
+  # runs, never by the third-party actions in release-promote. The chart is
+  # not added to the offline Ed25519 release.json: that schema requires
+  # goos/goarch/binary for every asset (internal/release/verify.go
+  # ValidateManifest), which a chart does not have. Operators verify it with
+  # `gh attestation verify oci://...`; see
+  # docs/guides/kubernetes-image-upgrades.md.
+  release-attest-chart:
+    needs: [release-promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # No packages permission and no registry push: `gh attestation verify`
+    # reads attestations from the GitHub API by default, so storing the bundle
+    # in the registry as well buys an operator nothing.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Attest Helm chart
+        id: attest-helm-chart
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/luckypipewrench/charts/pipelock
+          subject-digest: ${{ needs.release-promote.outputs.chart_digest }}
+
+      - name: Verify Helm chart attestation
+        if: always() && steps.attest-helm-chart.outcome != 'success'
+        run: |
+          echo "::error::Helm chart attestation failed"
+          exit 1

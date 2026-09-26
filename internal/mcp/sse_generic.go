@@ -147,6 +147,8 @@ func ScanGenericSSEStreamWithOptions(
 	reader := transport.NewSSEReader(body)
 	var tail string
 	var injectionTail string
+	var payloadTail string
+	var payloadInjectionTail string
 	// Stream-scoped on purpose. injectionTail carries bytes from one event into
 	// the next event's scan, so a finding in event N is presented again by
 	// event N+1's rolling scan. A per-event recorder starts with an empty seen
@@ -216,6 +218,7 @@ func ScanGenericSSEStreamWithOptions(
 		text := canonicalSSEEventText(event, reader)
 		rollingText := sseRollingEventText(text, "")
 		rollingInjectionText := sseRollingEventText(text, " ")
+		payloadText := string(event)
 
 		clearDLPTailAfterCurrent := false
 		clearInjectionTailAfterCurrent := false
@@ -297,6 +300,24 @@ func ScanGenericSSEStreamWithOptions(
 				}
 			}
 		}
+		if !skipTailInjection && !resetInjectionTail && payloadInjectionTail != "" {
+			result := sc.ScanResponseWithSuppress(ctx, payloadInjectionTail+" "+payloadText, opts.Target, opts.Suppress)
+			observedCore.record(result)
+			if result.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+			}
+			if !result.Clean {
+				findingErr := fmt.Errorf("%w: cross-event injection: %s", ErrSSEStreamFinding, sseInjectionNames(result.Matches))
+				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+					if opts.OnFinding != nil {
+						opts.OnFinding(findingErr)
+					}
+					resetInjectionTail = true
+				} else {
+					return findingErr
+				}
+			}
+		}
 
 		resetDLPTail := false
 		if !skipTailDLP && tail != "" {
@@ -318,9 +339,25 @@ func ScanGenericSSEStreamWithOptions(
 				}
 			}
 		}
+		if !skipTailDLP && !resetDLPTail && payloadTail != "" {
+			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, payloadTail+payloadText), opts.Target, opts.Suppress)
+			droppedDLP.record(droppedMatches)
+			if !result.Clean {
+				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
+				if cfg.Action == config.ActionWarn {
+					if opts.OnFinding != nil {
+						opts.OnFinding(findingErr)
+					}
+					resetDLPTail = true
+				} else {
+					return findingErr
+				}
+			}
+		}
 
 		if clearDLPTailAfterCurrent {
 			tail = ""
+			payloadTail = ""
 		} else {
 			if resetDLPTail {
 				// Keep a distinct trailing fragment, but do not carry forward
@@ -331,13 +368,22 @@ func ScanGenericSSEStreamWithOptions(
 						rollingText = ""
 					}
 				}
+				if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
+					payloadText = payloadText[boundary+1:]
+					if strings.HasSuffix(payloadTail, payloadText) {
+						payloadText = ""
+					}
+				}
 			}
 			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
+			payloadTail = advanceSSERollingTail(payloadTail, []byte(payloadText), resetDLPTail, "")
 		}
 		if clearInjectionTailAfterCurrent {
 			injectionTail = ""
+			payloadInjectionTail = ""
 		} else {
 			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")
+			payloadInjectionTail = advanceSSERollingTail(payloadInjectionTail, event, resetInjectionTail, " ")
 		}
 		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the

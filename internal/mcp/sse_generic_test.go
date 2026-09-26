@@ -887,6 +887,53 @@ func TestScanGenericSSEStream_CrossEventMetadataSplitDLPBlocked(t *testing.T) {
 	}
 }
 
+func TestScanGenericSSEStream_PersistedIDDoesNotBreakSplitDLP(t *testing.T) {
+	key := fakeAWSKey()
+	body := "id: evt-1\ndata: harmless\n\ndata: " + key[:8] + "\n\ndata: " + key[8:] + "\n\n"
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := enabledSSECfg()
+			cfg.Action = action
+			var out bytes.Buffer
+			var findings []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+				testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+			if action == config.ActionBlock {
+				if !errors.Is(err, ErrSSEStreamFinding) || !strings.Contains(err.Error(), "cross-event dlp") || strings.Contains(out.String(), key[8:]) {
+					t.Fatalf("split credential escaped block: err=%v out=%q", err, out.String())
+				}
+			} else if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Error(), "cross-event dlp") || !strings.Contains(out.String(), key[8:]) {
+				t.Fatalf("warn finding missing: err=%v findings=%v out=%q", err, findings, out.String())
+			}
+		})
+	}
+}
+
+func TestScanGenericSSEStream_PersistedIDDoesNotBreakSplitInjection(t *testing.T) {
+	body := "id: evt-1\ndata: harmless\n\ndata: alpha\n\ndata: beta\n\n"
+	scanCfg := config.Defaults()
+	scanCfg.Internal = nil
+	scanCfg.ResponseScanning.IncludeDefaults = new(bool)
+	scanCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "split phrase", Regex: `alpha beta`}}
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := enabledSSECfg()
+			cfg.Action = action
+			var out bytes.Buffer
+			var findings []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+				scanner.MustNew(scanCfg), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+			if action == config.ActionBlock {
+				if !errors.Is(err, ErrSSEStreamFinding) || !strings.Contains(err.Error(), "cross-event injection") || strings.Contains(out.String(), "data: beta") {
+					t.Fatalf("split injection escaped block: err=%v out=%q", err, out.String())
+				}
+			} else if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Error(), "cross-event injection") || !strings.Contains(out.String(), "data: beta") {
+				t.Fatalf("warn finding missing: err=%v findings=%v out=%q", err, findings, out.String())
+			}
+		})
+	}
+}
+
 func TestScanGenericSSEStream_CrossEventSplitDLPBlockedAcrossThreeEvents(t *testing.T) {
 	// The tail accumulates across more than one previous event, so N-way
 	// contiguous splits are still reassembled while they fit inside the

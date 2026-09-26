@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -23,6 +24,13 @@ type viewerModeInfo struct {
 }
 
 func (v viewerModeInfo) Mode() os.FileMode { return v.mode }
+
+type viewerRuntimeInfo struct {
+	viewerModeInfo
+	owner syscall.Stat_t
+}
+
+func (v viewerRuntimeInfo) Sys() any { return &v.owner }
 
 func TestViewerServiceProbe(t *testing.T) {
 	root := t.TempDir()
@@ -263,8 +271,14 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 	defer func() { _ = listener.Close() }()
 	wideStat := func(path string) (os.FileInfo, error) {
 		info, err := os.Lstat(path)
-		if err != nil || path != rfbPath {
+		if err != nil {
 			return info, err
+		}
+		if path == filepath.Dir(rfbPath) {
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, syscall.Stat_t{Uid: 0, Gid: uint32(os.Getgid())}}, nil
+		}
+		if path != rfbPath {
+			return info, nil
 		}
 		return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o660}, nil
 	}
@@ -289,6 +303,15 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 					return info, err
 				}
 				return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o770}, nil
+			}
+		}},
+		{"agent owned runtime directory", "wrong owner or group", func(e *probeEnv) {
+			e.lstat = func(path string) (os.FileInfo, error) {
+				info, err := wideStat(path)
+				if err != nil || path != filepath.Dir(rfbPath) {
+					return info, err
+				}
+				return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()}, syscall.Stat_t{Uid: 4242, Gid: uint32(os.Getgid())}}, nil
 			}
 		}},
 		{"mode", "want 0660", func(e *probeEnv) {
@@ -328,7 +351,7 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o600}, nil
 		}
 		if path == filepath.Dir(rfbPath) {
-			return viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o700}, nil
+			return viewerRuntimeInfo{viewerModeInfo{info, info.Mode()&^os.ModePerm | 0o730}, syscall.Stat_t{Uid: 0, Gid: uint32(os.Getgid())}}, nil
 		}
 		return info, nil
 	}

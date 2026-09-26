@@ -73,7 +73,7 @@ func TestViewerServeDependencies(t *testing.T) {
 		if name == "agent" {
 			return &user.User{Uid: "1001"}, nil
 		}
-		return &user.User{Uid: "1000"}, nil
+		return &user.User{Uid: "1002"}, nil
 	}
 	base.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	for _, tc := range []struct {
@@ -136,7 +136,7 @@ func TestViewerServeRejectsInvalidAgentIdentity(t *testing.T) {
 			deps.path = filepath.Join(t.TempDir(), "control.sock")
 			deps.lookup = func(name string) (*user.User, error) {
 				if name == "operator" {
-					return &user.User{Uid: "1000"}, nil
+					return &user.User{Uid: "1002"}, nil
 				}
 				if tc.agentErr != nil {
 					return nil, tc.agentErr
@@ -210,7 +210,7 @@ func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
 		if name == "agent" {
 			return &user.User{Uid: "1001"}, nil
 		}
-		return &user.User{Uid: "1000"}, nil
+		return &user.User{Uid: "1002"}, nil
 	}
 	deps.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)

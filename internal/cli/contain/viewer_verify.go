@@ -101,41 +101,10 @@ func probeViewerRFBAccess(ctx context.Context, env *probeEnv) (string, string) {
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
 		return statusFail, fmt.Sprintf("RFB socket mode is %s, want %04o", info.Mode(), mode)
 	}
-	dirInfo, err := env.lstat(filepath.Dir(path))
-	if err != nil {
-		return statusFail, fmt.Sprintf("RFB runtime directory: %v", err)
+	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
+		return statusFail, err.Error()
 	}
-	dirMode := os.FileMode(0o700)
-	groupUser := env.agentUserName
-	if viewerRFBEnabled(cfg.Containment.Display) {
-		dirMode = 0o710
-		groupUser = viewerUserName
-	}
-	if !dirInfo.IsDir() || dirInfo.Mode().Perm() != dirMode {
-		return statusFail, fmt.Sprintf("RFB runtime directory mode is %s, want %04o", dirInfo.Mode(), dirMode)
-	}
-	if env.lookupUser == nil {
-		return statusFail, "RFB runtime identity lookup unavailable"
-	}
-	agent, err := env.lookupUser(env.agentUserName)
-	if err != nil {
-		return statusFail, fmt.Sprintf("RFB runtime owner: %v", err)
-	}
-	group, err := env.lookupUser(groupUser)
-	if err != nil {
-		return statusFail, fmt.Sprintf("RFB runtime group: %v", err)
-	}
-	wantUID, uidErr := strconv.ParseUint(agent.Uid, 10, 32)
-	wantGID, gidErr := strconv.ParseUint(group.Gid, 10, 32)
-	if uidErr != nil || gidErr != nil {
-		return statusFail, "RFB runtime identity is invalid"
-	}
-	ownerUID, uidOK := fileOwnerUID(dirInfo)
-	ownerGID, gidOK := fileOwnerGID(dirInfo)
-	if !uidOK || !gidOK || uint64(ownerUID) != wantUID || uint64(ownerGID) != wantGID {
-		return statusFail, "RFB runtime directory has wrong owner or group"
-	}
-	if err := checkRFBGroup(env.lstat, env.lookupUser, path, groupUser); err != nil {
+	if err := checkRFBGroup(env.lstat, env.lookupUser, path, viewerUserName); err != nil {
 		return statusFail, err.Error()
 	}
 	return statusPass, "RFB socket mode and group match viewer setting"

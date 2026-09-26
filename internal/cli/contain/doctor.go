@@ -260,6 +260,9 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if err := checkDisplaySocket(env.stat, path, mode); err != nil {
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
 	}
+	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
+		return fail(classInfra, err.Error(), "rerun contain install")
+	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }
 

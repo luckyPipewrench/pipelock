@@ -94,7 +94,7 @@ func TestViewerDisplayRenderedUnitPassesVerify(t *testing.T) {
 	unitPath := filepath.Join(root, "display.service")
 	install := &installEnv{agentUserName: testAgentUser, proxyUserName: "proxy", agentHome: filepath.Join(root, "agent"), displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: cfg.Containment.Display}
 	unit := renderAgentDisplayUnit(install)
-	if !strings.Contains(unit, "Group="+viewerUserName) || !strings.Contains(unit, "RuntimeDirectoryMode=0710") || strings.Contains(unit, "setfacl") {
+	if !strings.Contains(unit, "Group="+viewerUserName) || !strings.Contains(unit, "ExecStartPre=+/usr/bin/install -d -o root -g "+viewerUserName+" -m 0730 /run/pipelock-agent-display") || strings.Contains(unit, "setfacl") {
 		t.Fatal("viewer unit does not isolate RFB in the dedicated runtime group")
 	}
 	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
@@ -732,7 +732,7 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 	env.xvncPath = "/usr/bin/Xvnc"
 	env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, Clipboard: &yes, OperatorUser: "operator"}}
 	unit := renderAgentDisplayUnit(env)
-	for _, want := range []string{"Group=" + viewerUserName, "RuntimeDirectoryMode=0710", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
+	for _, want := range []string{"Group=" + viewerUserName, "ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("viewer unit missing %q: %s", want, unit)
 		}
@@ -919,7 +919,7 @@ func TestDisabledDisplayWithoutUnitRevokesViewerTraverseACL(t *testing.T) {
 func TestXvncRuntimeSocketDoesNotGrantProxyACL(t *testing.T) {
 	yes := true
 	unit := renderAgentDisplayUnit(&installEnv{agentHome: "/home/agent", agentUserName: "agent", proxyUserName: "proxy", displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes}}})
-	for _, want := range []string{"Group=" + viewerUserName, "RuntimeDirectory=pipelock-agent-display", "RuntimeDirectoryMode=0710", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
+	for _, want := range []string{"Group=" + viewerUserName, "ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("runtime socket unit missing %q", want)
 		}

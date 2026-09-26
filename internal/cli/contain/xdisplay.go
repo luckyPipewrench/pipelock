@@ -179,9 +179,9 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		if xvnc == "" {
 			xvnc = defaultXvncPath
 		}
-		rfbGroup, rfbMode, runtimeMode := env.agentUserName, "0600", "0700"
+		rfbGroup, rfbMode := viewerUserName, "0600"
 		if viewerRFBEnabled(env.displayConfig) {
-			rfbGroup, rfbMode, runtimeMode = viewerUserName, "0660", "0710"
+			rfbMode = "0660"
 		}
 		clipboard := " -AcceptCutText=0 -SendCutText=0 -SendPrimary=0 -SetPrimary=0"
 		if env.displayConfig.Viewer.Clipboard != nil && *env.displayConfig.Viewer.Clipboard {
@@ -194,7 +194,10 @@ func renderAgentDisplayUnit(env *installEnv) string {
 			displayUnitMarker, "[Unit]", "Description=Pipelock contained agent X display",
 			"After=systemd-tmpfiles-setup.service", "", "[Service]", "Type=simple",
 			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
-			"RuntimeDirectory=pipelock-agent-display", "RuntimeDirectoryMode=" + runtimeMode,
+			// RuntimeDirectory with User= would make the directory agent-owned.
+			// A privileged pre-start action owns it as root while Xvnc gets only
+			// group create/traverse access. Contained agent processes lack that gid.
+			"ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display",
 			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode " + rfbMode + " -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
 			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
 			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
@@ -427,6 +430,9 @@ func stepProvisionAgentDisplay() step {
 					return true, fmt.Errorf("x display socket: %w", err)
 				}
 				rfb := displayRFBPath(env.rfbSocketPath)
+				if err := checkRFBRuntimeDirectory(stat, env.lookupUser, rfb); err != nil {
+					return true, err
+				}
 				mode := os.FileMode(0o600)
 				if viewerRFBEnabled(display) {
 					mode = 0o660
@@ -501,6 +507,33 @@ func checkDisplaySocket(stat func(string) (os.FileInfo, error), path string, mod
 	}
 	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
 		return fmt.Errorf("%s is %s, want socket %04o", path, info.Mode(), mode)
+	}
+	return nil
+}
+
+func checkRFBRuntimeDirectory(stat func(string) (os.FileInfo, error), lookup lookupUserFunc, socket string) error {
+	info, err := stat(filepath.Dir(socket))
+	if err != nil {
+		return fmt.Errorf("RFB runtime directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o730 {
+		return fmt.Errorf("RFB runtime directory mode is %s, want 0730", info.Mode())
+	}
+	if lookup == nil {
+		return errors.New("RFB runtime identity lookup unavailable")
+	}
+	viewer, err := lookup(viewerUserName)
+	if err != nil {
+		return fmt.Errorf("RFB runtime group: %w", err)
+	}
+	group, err := strconv.ParseUint(viewer.Gid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("RFB runtime group: %w", err)
+	}
+	uid, uidOK := fileOwnerUID(info)
+	gid, gidOK := fileOwnerGID(info)
+	if !uidOK || !gidOK || uid != 0 || uint64(gid) != group {
+		return errors.New("RFB runtime directory has wrong owner or group")
 	}
 	return nil
 }

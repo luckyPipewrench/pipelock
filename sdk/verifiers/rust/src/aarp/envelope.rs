@@ -307,8 +307,8 @@ fn rfc3339nano_valid(s: &str) -> bool {
                 && bytes[idx + 3] == b':'
                 && digit(bytes[idx + 4])
                 && digit(bytes[idx + 5])
-                && s[idx + 1..idx + 3].parse::<u32>().is_ok_and(|h| h <= 24)
-                && s[idx + 4..idx + 6].parse::<u32>().is_ok_and(|m| m <= 60)
+                && s[idx + 1..idx + 3].parse::<u32>().is_ok_and(|h| h <= 23)
+                && s[idx + 4..idx + 6].parse::<u32>().is_ok_and(|m| m <= 59)
         }
         _ => false,
     }
@@ -320,18 +320,15 @@ mod timestamp_parity_tests {
 
     #[test]
     fn matches_go_timestamp_boundaries() {
-        for accepted in [
-            "2026-04-15T12:00:00Z",
-            "2026-04-15T12:00:00+24:00",
-            "2026-04-15T12:00:00+12:60",
-            "2024-02-29T00:00:00Z",
-        ] {
+        for accepted in ["2026-04-15T12:00:00Z", "2024-02-29T00:00:00Z"] {
             assert!(
                 validate_timestamp(accepted, "timestamp").is_ok(),
                 "{accepted}"
             );
         }
         for rejected in [
+            "2026-04-15T12:00:00+24:00",
+            "2026-04-15T12:00:00+12:60",
             "2026-04-15T12:00:00z",
             "2026-02-30T12:00:00Z",
             "2026-04-15T12:00:60Z",

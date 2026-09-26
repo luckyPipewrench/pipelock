@@ -214,15 +214,12 @@ test("numbers: validateTimestamp grammar", () => {
 });
 
 test("numbers: timestamp matches Go boundary grammar", () => {
-  for (const accepted of [
-    "2026-04-15T12:00:00Z",
-    "2026-04-15T12:00:00+24:00",
-    "2026-04-15T12:00:00+12:60",
-    "2024-02-29T00:00:00Z",
-  ]) {
+  for (const accepted of ["2026-04-15T12:00:00Z", "2024-02-29T00:00:00Z"]) {
     assert.doesNotThrow(() => validateTimestamp(accepted), accepted);
   }
   for (const rejected of [
+    "2026-04-15T12:00:00+24:00",
+    "2026-04-15T12:00:00+12:60",
     "2026-04-15T12:00:00z",
     "2026-04-15t12:00:00Z",
     "2026-02-30T12:00:00Z",

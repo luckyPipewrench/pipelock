@@ -149,7 +149,7 @@ export function validateTimestamp(s: string): void {
   if (zone !== "Z") {
     const zoneHour = Number(zone.slice(1, 3));
     const zoneMinute = Number(zone.slice(4, 6));
-    if (zoneHour > 24 || zoneMinute > 60) {
+    if (zoneHour > 23 || zoneMinute > 59) {
       throw new GrammarError(`timestamp ${JSON.stringify(s)} has invalid zone`);
     }
   }

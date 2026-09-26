@@ -417,6 +417,55 @@ func TestDoctorDisplayRFBRemedies(t *testing.T) {
 	}
 }
 
+func TestDoctorDisplayChecksFollowConfiguredViewer(t *testing.T) {
+	root := shortDisplayTestDir(t)
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	env := &doctorEnv{configPath: cfgPath, agentHome: root, stat: os.Stat, lstat: os.Lstat}
+	if got := doctorChecksForEnv(&doctorEnv{}); len(got) != 8 {
+		t.Fatalf("unconfigured checks = %d", len(got))
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"invalid", "containment: [", 8},
+		{"xvfb", "containment:\n  display:\n    enabled: true\n    backend: xvfb\n", 8},
+		{"xvnc", "containment:\n  display:\n    enabled: true\n    backend: xvnc\n", 11},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(cfgPath, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checks := doctorChecksForEnv(env)
+			if len(checks) != tc.want {
+				t.Fatalf("checks = %d, want %d", len(checks), tc.want)
+			}
+			if tc.want == 11 && (checks[8].name != "agent_display_rfb" || checks[10].name != "viewer_rfb_access") {
+				t.Fatalf("display checks = %+v", checks[8:])
+			}
+		})
+	}
+	if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := checkDoctorViewerService(context.Background(), env)
+	if result.status != statusPass || !strings.Contains(result.detail, "viewer disabled") {
+		t.Fatalf("disabled viewer: %+v", result)
+	}
+	if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n    viewer:\n      enabled: true\n      operator_user: operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	result = checkDoctorViewerService(context.Background(), env)
+	if result.status != statusFail || result.detail != "setfacl missing" || result.remediation != "install acl" {
+		t.Fatalf("missing ACL tool: %+v", result)
+	}
+	result = checkDoctorViewerRFBAccess(context.Background(), env)
+	if result.status != statusFail || !strings.Contains(result.remediation, "rerun contain install") {
+		t.Fatalf("missing RFB ACL: %+v", result)
+	}
+}
+
 func TestXvncPackageForOSRelease(t *testing.T) {
 	for _, tc := range []struct{ release, want string }{
 		{"ID=fedora\nVERSION_ID=43\n", "tigervnc-server-minimal"},

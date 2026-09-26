@@ -391,7 +391,7 @@ func writeArchive(path string, m manifest, entries []bundleEntry) error {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, bundleFileMode) // #nosec G304 -- operator-supplied output path
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, bundleFileMode) // #nosec G304 -- operator-supplied output path; exclusive creation rejects existing leaves and symlinks
 	if err != nil {
 		return fmt.Errorf("creating archive file: %w", err)
 	}
@@ -455,5 +455,11 @@ func writeManifestJSON(path string, m manifest) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(filepath.Clean(path), data, bundleFileMode)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, bundleFileMode) // #nosec G304 -- operator-supplied output path; exclusive creation rejects existing leaves and symlinks
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	_, err = f.Write(data)
+	return err
 }

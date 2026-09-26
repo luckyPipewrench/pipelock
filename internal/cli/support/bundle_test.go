@@ -10,6 +10,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -586,6 +587,48 @@ func TestBundle_JSONManifestFlag(t *testing.T) {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		t.Errorf("manifest.json is not valid JSON: %v", err)
+	}
+}
+
+func TestBundle_RejectsExistingAndSymlinkOutputs(t *testing.T) {
+	t.Parallel()
+	for _, manifest := range []bool{false, true} {
+		t.Run(fmt.Sprintf("manifest=%t", manifest), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			archive := filepath.Join(dir, "bundle.tar.gz")
+			victim := filepath.Join(dir, "victim")
+			if err := os.WriteFile(victim, []byte("preserve"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := archive
+			if manifest {
+				out = filepath.Join(dir, "bundle-manifest.json")
+			} else {
+				if err := os.Symlink(victim, archive); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			if manifest {
+				if err := os.Symlink(victim, out); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			cmd := support.BundleCmd()
+			cmd.SetOut(io.Discard)
+			args := []string{"--output", archive}
+			if manifest {
+				args = append(args, "--json")
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatal("expected existing output to be rejected")
+			}
+			got, err := os.ReadFile(victim)
+			if err != nil || string(got) != "preserve" {
+				t.Fatalf("victim changed: %q, %v", got, err)
+			}
+		})
 	}
 }
 

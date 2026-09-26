@@ -339,14 +339,16 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 		return A2AScanResult{Clean: true}
 	}
 
-	ext := headers.Get("A2A-Extensions")
-	if ext == "" {
+	// Scan every field line. A repeated field is one comma-joined list
+	// (RFC 9110 section 5.3), and Get would return only the first line.
+	lines := headers.Values("A2A-Extensions")
+	if len(lines) == 0 {
 		return A2AScanResult{Clean: true}
 	}
 
 	result := A2AScanResult{Clean: true}
 	forceBlock := false
-	for _, uri := range strings.Split(ext, ",") {
+	for _, uri := range strings.Split(strings.Join(lines, ","), ",") {
 		uri = strings.TrimSpace(uri)
 		if uri == "" {
 			continue

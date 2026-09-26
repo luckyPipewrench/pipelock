@@ -1906,3 +1906,41 @@ func TestA2AScanResult_IsConfigMismatch(t *testing.T) {
 		})
 	}
 }
+
+// A repeated A2A-Extensions field is one list per RFC 9110 section 5.3, so
+// every field line is scanned, not only the first one.
+func TestScanA2AHeaders_RepeatedFieldScansEveryLine(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []string
+	}{
+		{"blocked second line", []string{"https://ext1.example.com", "ftp://evil.example.com/exfil"}},
+		{"blocked third line", []string{"https://ext1.example.com", "https://ext2.example.com", "ftp://evil.example.com/x"}},
+		{"empty first line", []string{"", "ftp://evil.example.com/exfil"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{}
+			for _, v := range tc.values {
+				headers.Add("A2A-Extensions", v)
+			}
+			if got := len(headers.Values("A2A-Extensions")); got != len(tc.values) {
+				t.Fatalf("fixture has %d field lines, want %d", got, len(tc.values))
+			}
+			result := ScanA2AHeaders(context.Background(), headers, testA2AScanner(t), enabledA2ACfg())
+			if result.Clean {
+				t.Fatal("repeated A2A-Extensions line with a blocked URI was reported clean")
+			}
+			if len(result.URLFindings) != 1 {
+				t.Fatalf("got %d URL findings, want exactly the one blocked URI", len(result.URLFindings))
+			}
+		})
+	}
+
+	clean := http.Header{}
+	clean.Add("A2A-Extensions", "https://ext1.example.com")
+	clean.Add("A2A-Extensions", "https://ext2.example.com")
+	if r := ScanA2AHeaders(context.Background(), clean, testA2AScanner(t), enabledA2ACfg()); !r.Clean {
+		t.Fatalf("benign repeated lines flagged: %s", r.Reason)
+	}
+}

@@ -1589,11 +1589,42 @@ func TestScanGenericSSEStream_CrossEventDLPWarnForwardsAndResetsTail(t *testing.
 	if err != nil {
 		t.Fatalf("warn mode returned error: %v", err)
 	}
-	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "cross-event dlp") {
-		t.Fatalf("findings = %v, want one cross-event DLP finding", findings)
+	// The second event's trailing fragment starts a new copy of the same key,
+	// and the third event completes it. That second copy is a separate leak
+	// and must be reported, not treated as the prefix that already fired.
+	if len(findings) != 2 {
+		t.Fatalf("findings = %v, want two cross-event DLP findings", findings)
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Error(), "cross-event dlp") {
+			t.Fatalf("finding %v is not a cross-event DLP finding", finding)
+		}
 	}
 	if strings.Count(out.String(), "data: "+key[8:]) != 2 {
 		t.Fatalf("warn mode did not forward the later fragment: %q", out.String())
+	}
+}
+
+// A current-event warn finding on an event with no whitespace must not carry
+// the already-reported credential into the rolling tail, or the next benign
+// event re-reports the same value as a cross-event finding.
+func TestScanGenericSSEStream_CurrentEventDLPWarnNoSpaceDoesNotRepeat(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	key := fakeAWSKey()
+	body := "data: " + key + "\n\ndata: harmless\n\ndata: still harmless\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+	if err != nil {
+		t.Fatalf("warn mode returned error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly one DLP finding for one credential", findings)
+	}
+	if !strings.Contains(out.String(), "data: still harmless") {
+		t.Fatalf("warn mode did not forward later events: %q", out.String())
 	}
 }
 

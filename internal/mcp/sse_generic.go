@@ -384,23 +384,31 @@ func ScanGenericSSEStreamWithOptions(
 			payloadTail = advanceSSERollingTail("", []byte(payloadText), true, "")
 		} else {
 			if resetDLPTail {
-				// Keep a distinct trailing fragment, but do not carry forward
-				// the same prefix that just produced the cross-event finding.
+				// The prior tail held the prefix that just fired, and the reset
+				// drops it. The fragment after the last space comes from this
+				// event alone, so it may start a new credential and is kept.
 				if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
 					rollingText = rollingText[boundary+1:]
-					if strings.HasSuffix(tail, rollingText) {
-						rollingText = ""
-					}
 				}
 				if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
 					payloadText = payloadText[boundary+1:]
-					if strings.HasSuffix(payloadTail, payloadText) {
-						payloadText = ""
-					}
 				}
 			}
 			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
 			payloadTail = advanceSSERollingTail(payloadTail, []byte(payloadText), resetDLPTail, "")
+		}
+		if clearDLPTailAfterCurrent || resetDLPTail {
+			// A fragment with no whitespace boundary can still hold the whole
+			// credential that was just reported. Carrying it forward makes the
+			// next benign event report the same value again, so a tail that
+			// matches on its own is dropped.
+			var err error
+			if tail, err = dropSelfMatchingSSETail(ctx, sc, tail, opts); err != nil {
+				return err
+			}
+			if payloadTail, err = dropSelfMatchingSSETail(ctx, sc, payloadTail, opts); err != nil {
+				return err
+			}
 		}
 		if clearInjectionTailAfterCurrent {
 			injectionTail = ""
@@ -421,6 +429,23 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+// dropSelfMatchingSSETail returns "" when tail alone already carries an
+// unsuppressed DLP match, and tail unchanged otherwise. The quiet scan keeps
+// this bookkeeping check out of warn telemetry.
+func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
+	if tail == "" {
+		return "", nil
+	}
+	result, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail), opts.Target, opts.Suppress)
+	if err := checkSSEDLPContext(ctx); err != nil {
+		return "", err
+	}
+	if result.Clean {
+		return tail, nil
+	}
+	return "", nil
 }
 
 func checkSSEDLPContext(ctx context.Context) error {

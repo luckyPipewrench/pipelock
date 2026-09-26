@@ -195,7 +195,7 @@ impl PinnedTrust {
 /// domain, divergent fork in the pinned history) is a config error (Err here →
 /// CLI exit 2), never a fixture verdict.
 pub fn load_svid_file(path: &str) -> std::result::Result<(SvidEvidence, PinnedTrust), String> {
-    let data = std::fs::read_to_string(std::path::Path::new(path))
+    let data = crate::util::read_verifier_text(std::path::Path::new(path))
         .map_err(|err| format!("read svid file: {err}"))?;
     let sf: SvidFile =
         serde_json::from_str(&data).map_err(|err| format!("parse svid file: {err}"))?;

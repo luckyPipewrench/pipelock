@@ -584,6 +584,9 @@ func TestExtractEvidenceReceiptsFromSessionDirRejectsTiedShardStarts(t *testing.
 }
 
 func TestExtractEvidenceReceipts_Errors(t *testing.T) {
+	if _, err := receipt.ExtractEvidenceReceiptsBytes([]byte("not json\n")); err == nil {
+		t.Fatal("expected malformed in-memory evidence to fail")
+	}
 	dir := t.TempDir()
 
 	tests := []struct {

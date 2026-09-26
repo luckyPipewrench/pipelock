@@ -120,8 +120,7 @@ export function validateUint64String(s: string): void {
 // Go's time.Parse(RFC3339Nano) accepts: a date, "T", a time with optional
 // fractional seconds (any number of digits), and a zone that is "Z" or
 // (+|-)HH:MM. It validates calendar ranges (month 1-12, day in month, etc.).
-const RFC3339_RE =
-  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/u;
+const RFC3339_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/u;
 
 export function validateTimestamp(s: string): void {
   if (s === "") {
@@ -143,13 +142,11 @@ export function validateTimestamp(s: string): void {
   if (day < 1 || day > daysInMonth(year, month)) {
     throw new GrammarError(`timestamp ${JSON.stringify(s)} has invalid day`);
   }
-  // Go allows second up to 60 (leap second) only at 23:59:60; keep it simple and
-  // accept 0-59 plus the leap-second value, matching time.Parse leniency band.
-  if (hour > 23 || minute > 59 || second > 60) {
+  if (hour > 23 || minute > 59 || second > 59) {
     throw new GrammarError(`timestamp ${JSON.stringify(s)} has invalid time`);
   }
   const zone = m[8] as string;
-  if (zone !== "Z" && zone !== "z") {
+  if (zone !== "Z") {
     const zoneHour = Number(zone.slice(1, 3));
     const zoneMinute = Number(zone.slice(4, 6));
     if (zoneHour > 23 || zoneMinute > 59) {

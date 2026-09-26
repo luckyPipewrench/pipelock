@@ -1690,6 +1690,65 @@ func (e *EntitlementDB) UpsertWithWebhook(ctx context.Context, ent *Entitlement,
 	return nil
 }
 
+// endWithWebhook commits the terminal entitlement, all outstanding license
+// revocations, and the delivery marker together. A failed revocation leaves the
+// delivery retryable and the previous entitlement intact.
+func (e *EntitlementDB) endWithWebhook(ctx context.Context, ent *Entitlement, msgID, eventType, lastLicenseID string, now time.Time) ([]string, error) {
+	if ent == nil {
+		return nil, errors.New("entitlement is nil")
+	}
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin terminal webhook transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if msgID != "" {
+		admitted, err := admitWebhook(ctx, tx, msgID, eventType, ent.SubscriptionID)
+		if err != nil {
+			return nil, fmt.Errorf("admit terminal webhook: %w", err)
+		}
+		if !admitted {
+			return nil, ErrWebhookAlreadyCommitted
+		}
+	}
+	issuances, err := listUnexpiredLicenseIssuances(ctx, tx, ent.SubscriptionID, now)
+	if err != nil {
+		return nil, fmt.Errorf("list license issuances for revocation: %w", err)
+	}
+	ids := make([]string, 0, len(issuances)+1)
+	seen := make(map[string]struct{}, len(issuances))
+	for _, issuance := range issuances {
+		ids = append(ids, issuance.LicenseID)
+		seen[issuance.LicenseID] = struct{}{}
+	}
+	if lastLicenseID != "" {
+		if _, ok := seen[lastLicenseID]; !ok {
+			ids = append(ids, lastLicenseID)
+		}
+	}
+	for _, id := range ids {
+		if err := upsertLicenseRevocation(ctx, tx, RevokedLicenseRecord{
+			LicenseID: id, SubscriptionID: ent.SubscriptionID,
+			Reason: "subscription_" + ent.Status, RevokedAt: now,
+		}); err != nil {
+			return nil, fmt.Errorf("record license revocation: %w", err)
+		}
+	}
+	if err := upsertEntitlement(ctx, tx, ent); err != nil {
+		return nil, fmt.Errorf("persist ended entitlement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit terminal webhook transaction: %w", err)
+	}
+	committed = true
+	return ids, nil
+}
+
 func insertLicenseIssuance(ctx context.Context, exec entitlementExecer, issuance LicenseIssuance) error {
 	if issuance.LicenseID == "" {
 		return errors.New("license_id is required")

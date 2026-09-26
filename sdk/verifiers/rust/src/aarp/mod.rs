@@ -17,7 +17,6 @@ pub mod svid;
 pub mod verify;
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -26,7 +25,7 @@ use envelope::Envelope;
 use jcs::Json;
 use verify::{TrustEntry, VerifyOptions};
 
-use crate::util::{Result, VerifierError};
+use crate::util::{read_verifier_text, Result, VerifierError};
 
 /// Outcome holds the bytes to print on stdout and the process exit code.
 struct Outcome {
@@ -75,8 +74,7 @@ pub fn run_aarp(args: &[String]) -> Result<i32> {
         )
     };
 
-    let data = fs::read_to_string(Path::new(target))
-        .map_err(|err| VerifierError::Runtime(format!("read envelope: {err}")))?;
+    let data = read_verifier_text(Path::new(target))?;
 
     let outcome = if parsed.chain {
         run_chain(&data, parsed.json)
@@ -286,7 +284,7 @@ fn load_trust_file(path: &str) -> std::result::Result<VerifyOptions, String> {
         return Ok(opts);
     }
     let data =
-        fs::read_to_string(Path::new(path)).map_err(|err| format!("read trust file: {err}"))?;
+        read_verifier_text(Path::new(path)).map_err(|err| format!("read trust file: {err}"))?;
     let tf: TrustFile =
         serde_json::from_str(&data).map_err(|err| format!("parse trust file: {err}"))?;
     for (key_id, key_hex) in tf.trusted_keys {

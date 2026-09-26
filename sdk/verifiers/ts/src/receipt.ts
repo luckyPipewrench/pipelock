@@ -1,12 +1,17 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt } from "./types.js";
 import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { validateV1Receipt } from "./strict.js";
-import { decodeUTF8, parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
+import {
+  decodeUTF8,
+  parseJSON,
+  readVerifierBytes,
+  rejectDuplicateKeys,
+  resolveSignerKey,
+} from "./util.js";
 
 export interface ReceiptReport {
   path: string;
@@ -34,7 +39,7 @@ export async function runReceipt(
   };
   let text: string;
   try {
-    text = decodeUTF8(readFileSync(clean), "receipt json");
+    text = decodeUTF8(readVerifierBytes(clean), "receipt json");
   } catch (err) {
     report.error = (err as Error).message;
     return report;

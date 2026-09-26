@@ -5,6 +5,10 @@ use base64::Engine;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -30,13 +34,52 @@ impl VerifierError {
 
 pub type Result<T> = std::result::Result<T, VerifierError>;
 
+pub const MAX_VERIFIER_INPUT_BYTES: u64 = 8 << 20;
+
+pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let file = options
+        .open(path)
+        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let info = file
+        .metadata()
+        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
+    if !info.is_file() {
+        return Err(VerifierError::Runtime(
+            "input must be a regular file".to_string(),
+        ));
+    }
+    if info.len() > MAX_VERIFIER_INPUT_BYTES {
+        return Err(VerifierError::Runtime(format!(
+            "input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes"
+        )));
+    }
+    let mut data = Vec::new();
+    file.take(MAX_VERIFIER_INPUT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    if data.len() as u64 > MAX_VERIFIER_INPUT_BYTES {
+        return Err(VerifierError::Runtime(format!(
+            "input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes"
+        )));
+    }
+    Ok(data)
+}
+
+pub fn read_verifier_text(path: &Path) -> Result<String> {
+    String::from_utf8(read_verifier_bytes(path)?)
+        .map_err(|err| VerifierError::Runtime(format!("input is not UTF-8: {err}")))
+}
+
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
 pub fn parse_json_file(path: &Path) -> Result<Value> {
-    let text = fs::read_to_string(path)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let text = read_verifier_text(path)?;
     parse_json_text(&text, "malformed JSON")
 }
 
@@ -248,10 +291,7 @@ pub fn resolve_signer_key(input: &str) -> Result<String> {
 
     let path = Path::new(trimmed);
     let value = if path.exists() {
-        fs::read_to_string(path)
-            .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?
-            .trim()
-            .to_string()
+        read_verifier_text(path)?.trim().to_string()
     } else {
         trimmed.to_string()
     };

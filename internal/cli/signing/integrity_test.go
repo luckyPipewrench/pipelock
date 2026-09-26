@@ -18,6 +18,10 @@ import (
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+type integritySwapWriter func([]byte) (int, error)
+
+func (w integritySwapWriter) Write(p []byte) (int, error) { return w(p) }
+
 // testRoot builds a minimal root command that hosts all signing subcommands,
 // matching the registration in the real root command.
 func testRoot() *cobra.Command {
@@ -715,6 +719,44 @@ func TestIntegrityCheck_WithVerify(t *testing.T) {
 	}
 	if !strings.Contains(output, "All files match") {
 		t.Errorf("expected clean check, got: %q", output)
+	}
+}
+
+func TestIntegrityCheck_VerifyUsesAuthenticatedManifest(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := t.TempDir()
+	writeTestFile(t, dir, "file.txt", "original\n")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("test-agent"); err != nil {
+		t.Fatal(err)
+	}
+	initCmd := testRoot()
+	initCmd.SetArgs([]string{"integrity", "init", dir, "--sign", "--agent", "test-agent", "--keystore", ksDir})
+	initCmd.SetOut(&strings.Builder{})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, "file.txt", "modified\n")
+	mPath := filepath.Join(dir, integrity.DefaultManifestFile)
+	swapped := false
+	cmd := testRoot()
+	cmd.SetArgs([]string{"integrity", "check", dir, "--verify", "--agent", "test-agent", "--keystore", ksDir})
+	cmd.SetOut(integritySwapWriter(func(p []byte) (int, error) {
+		if !swapped && strings.Contains(string(p), "Manifest signature verified") {
+			swapped = true
+			forged := &integrity.Manifest{Version: integrity.ManifestVersion, Files: map[string]integrity.FileEntry{}, Excludes: []string{"file.txt"}}
+			if err := forged.Save(mPath); err != nil {
+				return 0, err
+			}
+		}
+		return len(p), nil
+	}))
+	err := cmd.Execute()
+	if !swapped {
+		t.Fatal("signature verification did not reach the swap point")
+	}
+	if !errors.Is(err, ErrIntegrityViolation) {
+		t.Fatalf("check after manifest swap = %v, want integrity violation", err)
 	}
 }
 

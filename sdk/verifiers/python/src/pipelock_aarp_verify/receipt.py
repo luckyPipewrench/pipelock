@@ -16,6 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonicalize
+from .input_file import read_verifier_file
 from .number import (
     StrictParseError,
     UnsafeNumberError,
@@ -339,7 +340,10 @@ _SKIPPABLE_ENTRY_TYPES = frozenset(
 
 
 def load_receipt(path: str | Path) -> dict[str, Any]:
-    data = Path(path).read_text(encoding="utf-8")
+    try:
+        data = read_verifier_file(path).decode("utf-8")
+    except OSError as exc:
+        raise ReceiptError(str(exc)) from exc
     # Python is arbitrary-precision, so it neither rounds nor overflows on a
     # number outside the I-JSON safe range: it silently ACCEPTS what the Go,
     # Rust, and TypeScript verifiers now reject, which is the same
@@ -448,7 +452,7 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
     # on U+0085, U+2028 and other separators that Go's encoder leaves raw
     # inside JSON strings, which would cut a valid entry in half.
     for index, line in enumerate(
-        Path(path).read_text(encoding="utf-8").split("\n"), start=1
+        read_verifier_file(path).decode("utf-8").split("\n"), start=1
     ):
         raw = line.strip()
         if raw == "":

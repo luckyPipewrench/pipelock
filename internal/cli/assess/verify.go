@@ -104,7 +104,7 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 	manifestPath := filepath.Join(cleanDir, "manifest.json")
 
 	// Step 1: read manifest.
-	manifestBytes, err := os.ReadFile(filepath.Clean(manifestPath))
+	manifestBytes, err := readAssessVerifyFile(manifestPath)
 	if err != nil {
 		return 1, fmt.Errorf("reading manifest: %w", err)
 	}
@@ -140,7 +140,7 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 			return verifyExitTamperedArtifact, fmt.Errorf("integrity check failed: %s: path escapes run directory", name)
 		}
 
-		actualHash, err := hashFile(resolvedPath)
+		actualHash, err := hashAssessVerifyFile(resolvedPath)
 		if err != nil {
 			return verifyExitTamperedArtifact, fmt.Errorf("integrity check failed: %s: %w", name, err)
 		}
@@ -192,7 +192,7 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 		}
 	}
 
-	sig, err := signing.LoadSignature(sigPath)
+	sig, err := loadAssessVerifySignature(sigPath)
 	if err != nil {
 		return verifyExitBadSignature, fmt.Errorf("loading signature: %w", err)
 	}
@@ -287,7 +287,7 @@ func loadAssessStatusManifest(runDir string) (manifest AssessManifest, signed bo
 	cleanDir := filepath.Clean(runDir)
 	manifestPath := filepath.Join(cleanDir, "manifest.json")
 
-	data, err := os.ReadFile(filepath.Clean(manifestPath))
+	data, err := readAssessVerifyFile(manifestPath)
 	if err != nil {
 		return manifest, false, fmt.Errorf("reading manifest: %w", err)
 	}

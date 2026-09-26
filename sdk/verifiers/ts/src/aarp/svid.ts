@@ -20,7 +20,7 @@
 //     propagates as a non-zero exit.
 
 import { createHash, verify as cryptoVerify, X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readVerifierBytes } from "../util.js";
 import {
   AXIS_FRESHNESS,
   AXIS_IDENTITY,
@@ -326,7 +326,7 @@ function decodeStdBase64(b64: string, field: string): Buffer {
 export function loadSVIDFile(path: string): { evidence: SVIDEvidence; opts: SVIDVerifyOptions } {
   let raw: string;
   try {
-    raw = readFileSync(path, "utf8");
+    raw = readVerifierBytes(path).toString("utf8");
   } catch (err) {
     throw new SVIDFileError(`read svid file: ${(err as Error).message}`);
   }

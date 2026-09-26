@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import * as path from "node:path";
 
 export class UsageError extends Error {
@@ -21,9 +30,36 @@ export function sha256Hex(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+export const maxVerifierInputBytes = 8 << 20;
+
+export function readVerifierBytes(file: string): Buffer {
+  const clean = path.normalize(file);
+  const fd = openSync(clean, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new RuntimeError("input must be a regular file");
+    if (info.size > maxVerifierInputBytes) {
+      throw new RuntimeError(`input exceeds ${maxVerifierInputBytes} bytes`);
+    }
+    const data = Buffer.allocUnsafe(maxVerifierInputBytes + 1);
+    let length = 0;
+    while (length <= maxVerifierInputBytes) {
+      const n = readSync(fd, data, length, data.length - length, null);
+      if (n === 0) break;
+      length += n;
+    }
+    if (length > maxVerifierInputBytes) {
+      throw new RuntimeError(`input exceeds ${maxVerifierInputBytes} bytes`);
+    }
+    return data.subarray(0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function parseJSONFile<T>(file: string): T {
   try {
-    return JSON.parse(readFileSync(path.normalize(file), "utf8")) as T;
+    return JSON.parse(readVerifierBytes(file).toString("utf8")) as T;
   } catch (err) {
     if (err instanceof SyntaxError) throw new RuntimeError(`malformed JSON: ${err.message}`);
     throw new RuntimeError(`read ${file}: ${(err as Error).message}`);
@@ -183,7 +219,7 @@ export function resolveSignerKey(input: string): string {
 
   let value = trimmed;
   if (existsSync(trimmed)) {
-    value = readFileSync(trimmed, "utf8").trim();
+    value = readVerifierBytes(trimmed).toString("utf8").trim();
   }
 
   return parseSignerKeyValue(value);

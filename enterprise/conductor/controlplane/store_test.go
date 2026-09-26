@@ -404,6 +404,14 @@ func TestRollbackHeadRejectsAuthorizationForAnotherTenant(t *testing.T) {
 	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
 		t.Fatalf("apply error = %v, want invalid rollback", err)
 	}
+	fleetAuth := signedRollbackAuthorizationForBundles(t, "tenant-bound-fleet-rollback", v2, v1, testNow)
+	fleetAuth.FleetID = "other-fleet"
+	if _, err := store.PreviewRollbackHead(t.Context(), fleetAuth); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("fleet preview error = %v, want invalid rollback", err)
+	}
+	if err := store.ApplyRollbackHead(t.Context(), fleetAuth, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("fleet apply error = %v, want invalid rollback", err)
+	}
 }
 
 func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {

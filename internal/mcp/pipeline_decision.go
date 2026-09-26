@@ -155,14 +155,14 @@ func EmitMCPDecision(
 	}
 	if d.Receipt.ActionID != "" && v2Emitter != nil {
 		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired); v2Err != nil {
-			if err == nil {
+			if err == nil || durableReceipt {
 				err = v2Err
 			}
 		} else {
 			v2Emitted = true
 		}
 	}
-	if receiptRequired && (v1Emitted || v2Emitted) {
+	if receiptRequired && (v1Emitted || v2Emitted) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
 		err = nil
 	}
 	if receiptRequired && !v1Emitted && !v2Emitted && err == nil {

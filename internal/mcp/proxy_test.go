@@ -990,7 +990,9 @@ func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *t
 	}
 }
 
-func TestForwardScanned_ResponseV2ReceiptFailureDoesNotReplaceWhenV1Emits(t *testing.T) {
+// The old v1-only success expectation allowed a warn response to leave without
+// its required v2 receipt. A v2 failure now produces a block response.
+func TestForwardScanned_ResponseV2ReceiptFailureBlocksWhenV1Emits(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var out, log bytes.Buffer
 	emitter, rec, dir, _ := newReceiptTestHarness(t)
@@ -1025,20 +1027,21 @@ func TestForwardScanned_ResponseV2ReceiptFailureDoesNotReplaceWhenV1Emits(t *tes
 	if !found {
 		t.Fatal("expected injection detected")
 	}
-	if !strings.Contains(out.String(), "Ignore all previous instructions") {
-		t.Fatalf("expected warn-mode response to pass after v1 receipt, got: %s", out.String())
+	if strings.Contains(out.String(), "Ignore all previous instructions") {
+		t.Fatalf("warn-mode response forwarded without v2 receipt: %s", out.String())
 	}
-	if strings.Contains(out.String(), "receipt emission failed") {
-		t.Fatalf("unexpected fail-closed receipt error response: %s", out.String())
+	if !strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("missing fail-closed receipt error response: %s", out.String())
 	}
-	if strings.Contains(log.String(), "audit_gap=true") {
-		t.Fatalf("unexpected v2 audit-gap log after v1 receipt succeeded: %s", log.String())
+	if !strings.Contains(log.String(), "receipt emission failed") {
+		t.Fatalf("missing receipt failure log: %s", log.String())
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	receipts := readActionReceipts(t, dir)
 	var originalActionID string
+	var replacement receipt.Receipt
 	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.Layer == "mcp_response_scan" {
 			originalActionID = rcpt.ActionRecord.ActionID
@@ -1046,11 +1049,14 @@ func TestForwardScanned_ResponseV2ReceiptFailureDoesNotReplaceWhenV1Emits(t *tes
 		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
 			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
 			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
-			t.Fatalf("unexpected replacement block receipt after v1 receipt succeeded: %+v", rcpt.ActionRecord)
+			replacement = rcpt
 		}
 	}
 	if originalActionID == "" {
 		t.Fatalf("missing original mcp_response_scan receipt in %d receipts", len(receipts))
+	}
+	if replacement.ActionRecord.ParentActionID != originalActionID {
+		t.Fatalf("replacement parent_action_id = %q, want %q", replacement.ActionRecord.ParentActionID, originalActionID)
 	}
 }
 

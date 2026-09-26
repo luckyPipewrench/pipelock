@@ -515,21 +515,21 @@ func TestEmitMCPDecision_V2EmitErrorSurfacesAfterV1(t *testing.T) {
 	}
 }
 
-func TestEmitMCPDecision_RequiredV1SuccessSatisfiesV2EmitError(t *testing.T) {
+// A v1 receipt cannot satisfy the required durable v2 receipt for an egressing
+// decision. Both writers share the real recorder; only the second sync fails.
+func TestEmitMCPDecision_RequiredV2SyncFailureBlocksAfterV1Success(t *testing.T) {
 	h := newMCPDecisionReceiptHarness(t)
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-		Recorder: failingMCPV2Recorder{},
-		Signer:   proxydecision.NewKeyedSigner(priv),
+	var syncCalls int
+	h.rec.SetSyncForTest(func(*os.File) error {
+		syncCalls++
+		if syncCalls == 2 {
+			return errors.New("v2 sync failure")
+		}
+		return nil
 	})
-	if v2 == nil {
-		t.Fatal("expected v2 emitter")
-	}
-
-	_, err = EmitMCPDecision(h.v1, v2, nil, MCPDecision{
+	inbound := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "policy-h"})
+	out, err := EmitMCPDecision(h.v1, h.v2, envEmitter, MCPDecision{
 		Receipt: receipt.EmitOpts{
 			ActionID:   "mcp-v2-required-error",
 			Verdict:    config.ActionAllow,
@@ -539,10 +539,18 @@ func TestEmitMCPDecision_RequiredV1SuccessSatisfiesV2EmitError(t *testing.T) {
 			ToolName:   "fetch",
 			PolicyHash: mcpTestPolicyHash,
 		},
+		Envelope:       &envelope.BuildOpts{ActionID: "mcp-v2-required-error", Action: "tool_call", Verdict: config.ActionAllow},
+		InboundMsg:     inbound,
 		RequireReceipt: true,
 	})
-	if err != nil {
-		t.Fatalf("EmitMCPDecision error = %v, want nil because v1 emitted", err)
+	if !errors.Is(err, ErrReceiptRequired) || !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitMCPDecision error = %v, want required v2 durability error", err)
+	}
+	if !bytes.Equal(out, inbound) {
+		t.Fatalf("outbound mutated despite failed v2 sync: %s", out)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("sync calls = %d, want v1 and v2", syncCalls)
 	}
 	receipts := decisionReceiptLogFor(t, h.dir)
 	if len(receipts) != 1 {

@@ -8,10 +8,14 @@ package contain
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
+	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain/viewer"
 )
@@ -54,6 +58,67 @@ func TestViewerControlProtocolAndPeer(t *testing.T) {
 				t.Fatalf("response = %q: %v", line, err)
 			}
 		})
+	}
+}
+
+func TestViewerServeDependencies(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "control.sock")
+	opts := serveOptions{display: ":99", rfbSocket: filepath.Join(root, "rfb.sock"), operator: "operator", agentUser: "agent"}
+	base := realServeDeps()
+	base.path = path
+	base.lookup = func(string) (*user.User, error) { return &user.User{Uid: "1000"}, nil }
+	base.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
+	for _, tc := range []struct {
+		name, want string
+		change     func(*serveDeps)
+		opts       serveOptions
+	}{
+		{"required", "requires operator", func(*serveDeps) {}, serveOptions{}},
+		{"lookup", "viewer operator", func(d *serveDeps) { d.lookup = func(string) (*user.User, error) { return nil, errors.New("missing") } }, opts},
+		{"invalid uid", "viewer operator uid", func(d *serveDeps) { d.lookup = func(string) (*user.User, error) { return &user.User{Uid: "bad"}, nil } }, opts},
+		{"listen", "viewer control socket", func(d *serveDeps) {
+			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, errors.New("unavailable") }
+		}, opts},
+		{"setfacl exit", "exit 1", func(d *serveDeps) {
+			d.run = func(context.Context, string, ...string) (string, int, error) { return "denied", 1, nil }
+		}, opts},
+		{"setfacl exec", "grant viewer control socket to operator", func(d *serveDeps) {
+			d.run = func(context.Context, string, ...string) (string, int, error) {
+				return "", 0, errors.New("missing setfacl")
+			}
+		}, opts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := base
+			tc.change(&deps)
+			if err := runViewerServe(context.Background(), deps, tc.opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			_ = os.Remove(path)
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runViewerServe(ctx, base, opts) }()
+	deadline := time.After(time.Second)
+	for {
+		if _, err := os.Lstat(path); err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("positive control did not listen")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket cleanup: %v", err)
 	}
 }
 

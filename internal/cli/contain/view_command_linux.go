@@ -30,33 +30,7 @@ func viewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "view", Short: "Connect a VNC client to the contained display", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := config.LoadForInspection(defaultConfigDir + "/pipelock.yaml")
-			if err != nil {
-				return fmt.Errorf("load viewer configuration: %w", err)
-			}
-			v := cfg.Containment.Display.Viewer
-			if v.Enabled == nil || !*v.Enabled {
-				return errors.New("contained display viewer is disabled")
-			}
-			account, err := user.Current()
-			if err != nil {
-				return fmt.Errorf("current viewer user: %w", err)
-			}
-			if v.OperatorUser == "" || account.Username != v.OperatorUser {
-				return errors.New("contain view requires the configured operator user")
-			}
-			if socket == "" {
-				runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-				if runtimeDir == "" {
-					return errors.New("XDG_RUNTIME_DIR is unset; provide --socket PATH")
-				}
-				socket = filepath.Join(runtimeDir, "pipelock-contain-view.sock")
-			}
-			mode := "view"
-			if control {
-				mode = "control"
-			}
-			return runContainView(cmd.Context(), socket, viewerControlSocket, mode, currentViewerUID(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runContainViewCommand(cmd.Context(), realViewDeps(cmd.OutOrStdout(), cmd.ErrOrStderr()), viewOptions{socket: socket, control: control})
 		},
 	}
 	cmd.Flags().BoolVar(&control, "control", false, "allow keyboard and pointer control")
@@ -64,10 +38,65 @@ func viewCmd() *cobra.Command {
 	return cmd
 }
 
+type viewOptions struct {
+	socket  string
+	control bool
+}
+
+type viewDeps struct {
+	load        func(string) (*config.Config, error)
+	current     func() (*user.User, error)
+	geteuid     func() int
+	getenv      func(string) string
+	listen      func(context.Context, string, string) (net.Listener, error)
+	dial        func(context.Context, string, string) (net.Conn, error)
+	out, errOut io.Writer
+}
+
+func realViewDeps(out, errOut io.Writer) viewDeps {
+	return viewDeps{
+		load: config.LoadForInspection, current: user.Current, geteuid: os.Geteuid, getenv: os.Getenv,
+		listen: (&net.ListenConfig{}).Listen, dial: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, out: out, errOut: errOut,
+	}
+}
+
+func runContainViewCommand(ctx context.Context, deps viewDeps, opts viewOptions) error {
+	cfg, err := deps.load(defaultConfigDir + "/pipelock.yaml")
+	if err != nil {
+		return fmt.Errorf("load viewer configuration: %w", err)
+	}
+	v := cfg.Containment.Display.Viewer
+	if v.Enabled == nil || !*v.Enabled {
+		return errors.New("contained display viewer is disabled")
+	}
+	account, err := deps.current()
+	if err != nil {
+		return fmt.Errorf("current viewer user: %w", err)
+	}
+	if v.OperatorUser == "" || account.Username != v.OperatorUser {
+		return fmt.Errorf("contain view requires the configured operator user %q", v.OperatorUser)
+	}
+	if opts.socket == "" {
+		runtimeDir := deps.getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			return errors.New("XDG_RUNTIME_DIR is unset; provide --socket PATH")
+		}
+		opts.socket = filepath.Join(runtimeDir, "pipelock-contain-view.sock")
+	}
+	mode := "view"
+	if opts.control {
+		mode = "control"
+	}
+	return runContainViewWithDeps(ctx, opts.socket, viewerControlSocket, mode, viewerUID(deps.geteuid()), deps)
+}
+
 func currentViewerUID() uint32 {
 	// Linux uid_t is uint32. An out-of-range value maps to (uid_t)-1, which
 	// the kernel never reports as a peer credential, so the peer check fails closed.
-	uid := os.Geteuid()
+	return viewerUID(os.Geteuid())
+}
+
+func viewerUID(uid int) uint32 {
 	if uid < 0 || uid > math.MaxUint32-1 {
 		return math.MaxUint32
 	}
@@ -75,6 +104,10 @@ func currentViewerUID() uint32 {
 }
 
 func runContainView(ctx context.Context, socketPath, controlPath, mode string, uid uint32, out, errOut io.Writer) error {
+	return runContainViewWithDeps(ctx, socketPath, controlPath, mode, uid, realViewDeps(out, errOut))
+}
+
+func runContainViewWithDeps(ctx context.Context, socketPath, controlPath, mode string, uid uint32, deps viewDeps) error {
 	if !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath {
 		return errors.New("viewer socket path must be clean and absolute")
 	}
@@ -85,7 +118,7 @@ func runContainView(ctx context.Context, socketPath, controlPath, mode string, u
 		return err
 	}
 	oldMask := unix.Umask(0o177)
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
+	listener, err := deps.listen(ctx, "unix", socketPath)
 	unix.Umask(oldMask)
 	if err != nil {
 		return fmt.Errorf("listen for VNC client: %w", err)
@@ -104,13 +137,13 @@ func runContainView(ctx context.Context, socketPath, controlPath, mode string, u
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		return fmt.Errorf("restrict VNC socket: %w", err)
 	}
-	if _, err := fmt.Fprintln(out, socketPath); err != nil {
+	if _, err := fmt.Fprintln(deps.out, socketPath); err != nil {
 		return fmt.Errorf("print VNC socket: %w", err)
 	}
-	if _, err := fmt.Fprintf(out, "ssh -L 5901:%s <host>\n", socketPath); err != nil {
+	if _, err := fmt.Fprintf(deps.out, "ssh -L 5901:%s <host>\n", socketPath); err != nil {
 		return fmt.Errorf("print SSH forwarding example: %w", err)
 	}
-	if _, err := fmt.Fprintln(out, "Connect a VNC client to localhost:5901"); err != nil {
+	if _, err := fmt.Fprintln(deps.out, "Connect a VNC client to localhost:5901"); err != nil {
 		return fmt.Errorf("print VNC connection example: %w", err)
 	}
 	go func() { <-ctx.Done(); _ = listener.Close() }()
@@ -123,8 +156,8 @@ func runContainView(ctx context.Context, socketPath, controlPath, mode string, u
 			return fmt.Errorf("accept VNC client: %w", acceptErr)
 		}
 		go func() {
-			if err := bridgeViewClient(ctx, local, controlPath, mode, uid); err != nil {
-				_, _ = fmt.Fprintf(errOut, "VNC client: %v\n", err)
+			if err := bridgeViewClientWithDial(ctx, local, controlPath, mode, uid, deps.dial); err != nil {
+				_, _ = fmt.Fprintf(deps.errOut, "VNC client: %v\n", err)
 			}
 		}()
 	}
@@ -164,12 +197,12 @@ func removeStaleViewSocket(path string, uid uint32) error {
 	return nil
 }
 
-func bridgeViewClient(ctx context.Context, local net.Conn, controlPath, mode string, uid uint32) error {
+func bridgeViewClientWithDial(ctx context.Context, local net.Conn, controlPath, mode string, uid uint32, dial func(context.Context, string, string) (net.Conn, error)) error {
 	defer func() { _ = local.Close() }()
 	if !viewerPeerAllowed(local, uid) {
 		return errors.New("local VNC peer uid does not match operator")
 	}
-	remote, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", controlPath)
+	remote, err := dial(ctx, "unix", controlPath)
 	if err != nil {
 		return fmt.Errorf("connect viewer control socket: %w", err)
 	}

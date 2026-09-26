@@ -29,48 +29,7 @@ func viewerCmd() *cobra.Command {
 	serve := &cobra.Command{
 		Use: "serve", Hidden: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if operator == "" || agentUser == "" || rfbSocket == "" || display == "" {
-				return errors.New("viewer service requires operator, agent user, display, and RFB socket")
-			}
-			account, err := user.Lookup(operator)
-			if err != nil {
-				return fmt.Errorf("viewer operator: %w", err)
-			}
-			uid, err := strconv.ParseUint(account.Uid, 10, 32)
-			if err != nil {
-				return fmt.Errorf("viewer operator uid: %w", err)
-			}
-			agent, err := user.Lookup(agentUser)
-			if err != nil {
-				return fmt.Errorf("viewer agent user: %w", err)
-			}
-			agentUID, err := strconv.ParseUint(agent.Uid, 10, 32)
-			if err != nil {
-				return fmt.Errorf("viewer agent uid: %w", err)
-			}
-			v, err := viewer.New(viewer.Config{Display: display, SocketPath: rfbSocket, Clipboard: clipboard, ExpectedUID: uint32(agentUID)})
-			if err != nil {
-				return err
-			}
-			// Create the socket private rather than tightening it after bind.
-			oldUmask := unix.Umask(0o177)
-			listener, err := (&net.ListenConfig{}).Listen(cmd.Context(), "unix", viewerControlSocket)
-			unix.Umask(oldUmask)
-			if err != nil {
-				return fmt.Errorf("viewer control socket: %w", err)
-			}
-			defer func() { _ = listener.Close() }()
-			if err := os.Chmod(viewerControlSocket, 0o600); err != nil {
-				return fmt.Errorf("restrict viewer control socket: %w", err)
-			}
-			if out, code, runErr := realRunCommand(cmd.Context(), "setfacl", "-m", "u:"+operator+":rw", viewerControlSocket); runErr != nil {
-				return fmt.Errorf("grant viewer control socket to operator: %w", runErr)
-			} else if code != 0 {
-				return fmt.Errorf("grant viewer control socket to operator: exit %d: %s", code, out)
-			}
-			defer func() { _ = os.Remove(viewerControlSocket) }()
-			serveViewerControl(cmd.Context(), listener, uint32(uid), v)
-			return nil
+			return runViewerServe(cmd.Context(), realServeDeps(), serveOptions{display, rfbSocket, operator, agentUser, clipboard})
 		},
 	}
 	serve.Flags().StringVar(&display, "display", "", "managed display")
@@ -80,6 +39,67 @@ func viewerCmd() *cobra.Command {
 	serve.Flags().BoolVar(&clipboard, "clipboard", false, "allow clipboard forwarding")
 	cmd.AddCommand(serve)
 	return cmd
+}
+
+type serveOptions struct {
+	display, rfbSocket, operator, agentUser string
+	clipboard                               bool
+}
+
+type serveDeps struct {
+	lookup func(string) (*user.User, error)
+	listen func(context.Context, string, string) (net.Listener, error)
+	run    func(context.Context, string, ...string) (string, int, error)
+	path   string
+}
+
+func realServeDeps() serveDeps {
+	return serveDeps{lookup: user.Lookup, listen: (&net.ListenConfig{}).Listen, run: realRunCommand, path: viewerControlSocket}
+}
+
+func runViewerServe(ctx context.Context, deps serveDeps, opts serveOptions) error {
+	if opts.operator == "" || opts.agentUser == "" || opts.rfbSocket == "" || opts.display == "" {
+		return errors.New("viewer service requires operator, agent user, display, and RFB socket")
+	}
+	account, err := deps.lookup(opts.operator)
+	if err != nil {
+		return fmt.Errorf("viewer operator: %w", err)
+	}
+	uid, err := strconv.ParseUint(account.Uid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("viewer operator uid: %w", err)
+	}
+	agent, err := deps.lookup(opts.agentUser)
+	if err != nil {
+		return fmt.Errorf("viewer agent user: %w", err)
+	}
+	agentUID, err := strconv.ParseUint(agent.Uid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("viewer agent uid: %w", err)
+	}
+	v, err := viewer.New(viewer.Config{Display: opts.display, SocketPath: opts.rfbSocket, Clipboard: opts.clipboard, ExpectedUID: uint32(agentUID)})
+	if err != nil {
+		return err
+	}
+	// Create the socket private rather than tightening it after bind.
+	oldUmask := unix.Umask(0o177)
+	listener, err := deps.listen(ctx, "unix", deps.path)
+	unix.Umask(oldUmask)
+	if err != nil {
+		return fmt.Errorf("viewer control socket: %w", err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := os.Chmod(deps.path, 0o600); err != nil {
+		return fmt.Errorf("restrict viewer control socket: %w", err)
+	}
+	if out, code, runErr := deps.run(ctx, "setfacl", "-m", "u:"+opts.operator+":rw", deps.path); runErr != nil {
+		return fmt.Errorf("grant viewer control socket to operator: %w", runErr)
+	} else if code != 0 {
+		return fmt.Errorf("grant viewer control socket to operator: exit %d: %s", code, out)
+	}
+	defer func() { _ = os.Remove(deps.path) }()
+	serveViewerControl(ctx, listener, uint32(uid), v)
+	return nil
 }
 
 func serveViewerControl(ctx context.Context, listener net.Listener, allowedUID uint32, v *viewer.Viewer) {

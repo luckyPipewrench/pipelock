@@ -32,7 +32,7 @@ func TestPeerUIDReadsUnixCredentialsAndRejectsOtherTransport(t *testing.T) {
 	}
 	defer func() { _ = server.Close() }()
 	uid, err := peerUID(server)
-	if err != nil || uid != uint32(os.Getuid()) {
+	if err != nil || int(uid) != os.Getuid() {
 		t.Fatalf("Unix peer uid=%d err=%v, want %d", uid, err, os.Getuid())
 	}
 	first, second := net.Pipe()

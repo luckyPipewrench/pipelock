@@ -96,7 +96,7 @@ func TestViewerInstallDisableAndRestore(t *testing.T) {
 				t.Fatal(err)
 			}
 			for path, body := range map[string]string{service: tc.priorService, socket: tc.priorSocket} {
-				got, err := os.ReadFile(path)
+				got, err := os.ReadFile(filepath.Clean(path))
 				if body == "" {
 					if !os.IsNotExist(err) {
 						t.Fatalf("%s created after rollback: %v", path, err)
@@ -120,7 +120,7 @@ func TestViewerInstallRefusesForeignUnit(t *testing.T) {
 	if changed || err == nil || !strings.Contains(err.Error(), "not Pipelock-managed") {
 		t.Fatalf("foreign unit: changed=%v err=%v", changed, err)
 	}
-	got, err := os.ReadFile(service)
+	got, err := os.ReadFile(filepath.Clean(service))
 	if err != nil || string(got) != "[Service]\nExecStart=/other\n" {
 		t.Fatalf("foreign unit altered: %q, %v", got, err)
 	}

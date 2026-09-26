@@ -13,10 +13,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 type viewSignalWriter struct{ lines chan string }
@@ -27,6 +30,101 @@ func (w viewSignalWriter) Write(p []byte) (int, error) {
 	default:
 	}
 	return len(p), nil
+}
+
+func TestViewCommandDependencies(t *testing.T) {
+	root := t.TempDir()
+	base := realViewDeps(io.Discard, io.Discard)
+	base.load = func(string) (*config.Config, error) {
+		cfg := config.Defaults()
+		cfg.Containment.Display.Viewer.Enabled = new(bool)
+		*cfg.Containment.Display.Viewer.Enabled = true
+		cfg.Containment.Display.Viewer.OperatorUser = "operator"
+		return cfg, nil
+	}
+	base.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	base.getenv = func(string) string { return root }
+	base.geteuid = func() int { return os.Geteuid() }
+	for _, tc := range []struct {
+		name, want string
+		change     func(*viewDeps)
+		opts       viewOptions
+	}{
+		{"config", "load viewer configuration", func(d *viewDeps) {
+			d.load = func(string) (*config.Config, error) { return nil, errors.New("unavailable") }
+		}, viewOptions{}},
+		{"disabled", "contained display viewer is disabled", func(d *viewDeps) {
+			d.load = func(string) (*config.Config, error) { c := config.Defaults(); return c, nil }
+		}, viewOptions{}},
+		{"identity", "current viewer user", func(d *viewDeps) { d.current = func() (*user.User, error) { return nil, errors.New("unavailable") } }, viewOptions{}},
+		{"operator", "operator", func(d *viewDeps) {
+			d.current = func() (*user.User, error) { return &user.User{Username: "other"}, nil }
+		}, viewOptions{}},
+		{"runtime", "XDG_RUNTIME_DIR is unset", func(d *viewDeps) { d.getenv = func(string) string { return "" } }, viewOptions{}},
+		{"listen", "listen for VNC client", func(d *viewDeps) {
+			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, errors.New("unavailable") }
+		}, viewOptions{socket: filepath.Join(root, "view.sock")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := base
+			tc.change(&deps)
+			if err := runContainViewCommand(context.Background(), deps, tc.opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := viewSignalWriter{lines: make(chan string, 4)}
+	base.out = ready
+	done := make(chan error, 1)
+	go func() { done <- runContainViewCommand(ctx, base, viewOptions{}) }()
+	select {
+	case <-ready.lines:
+	case <-time.After(time.Second):
+		t.Fatal("positive control did not listen")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContainViewControlDialFailure(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deps := realViewDeps(viewSignalWriter{lines: make(chan string, 4)}, viewSignalWriter{lines: make(chan string, 4)})
+	deps.dial = func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("control unavailable") }
+	stdout := deps.out.(viewSignalWriter)
+	stderr := deps.errOut.(viewSignalWriter)
+	path := filepath.Join(root, "view.sock")
+	done := make(chan error, 1)
+	go func() {
+		done <- runContainViewWithDeps(ctx, path, filepath.Join(root, "control.sock"), "view", currentViewerUID(), deps)
+	}()
+	select {
+	case <-stdout.lines:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not start")
+	}
+	client, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	select {
+	case detail := <-stderr.lines:
+		if !strings.Contains(detail, "connect viewer control socket: control unavailable") {
+			t.Fatalf("error = %q", detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dial error not reported")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestContainViewRelayAndBusy(t *testing.T) {

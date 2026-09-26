@@ -435,6 +435,8 @@ request_body_scanning:
     - X-Token
     - Proxy-Authorization
     - X-Goog-Api-Key
+    - Private-Token
+    - Job-Token
   content_entropy_enabled: true       # detect opaque high-entropy body content (exfil with no credential signature)
   content_entropy_action: block       # required for the exact route warning example below; general presets default warn
   content_entropy_threshold: 4.5      # Shannon bits/char above which a body/frame value is flagged

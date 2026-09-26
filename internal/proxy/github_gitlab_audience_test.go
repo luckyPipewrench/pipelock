@@ -31,6 +31,33 @@ func gitAudienceHeaderConfig() *config.Config {
 	return cfg
 }
 
+func TestDefaultSensitiveHeadersScanGitLabNativeTokens(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for _, tc := range []struct {
+		name, header, token string
+	}{
+		{"personal token", "Private-Token", fakeGitLabPAT()},
+		{"job token", "Job-Token", fakeGitLabJobToken()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set(tc.header, tc.token)
+			result := scanRequestHeadersForTarget(t.Context(), headers, cfg, sc, "https://api.vendor.example/receive")
+			if result == nil || result.Clean {
+				t.Fatalf("default sensitive mode allowed %s at unrelated destination: %+v", tc.header, result)
+			}
+			result = scanRequestHeadersForTarget(t.Context(), headers, cfg, sc, "https://gitlab.com/api/v4/user")
+			if result != nil && !result.Clean {
+				t.Fatalf("default sensitive mode blocked %s at its audience: %+v", tc.header, result)
+			}
+		})
+	}
+}
+
 // Every header carrier the GitHub and GitLab audiences accept, and every one
 // they refuse, through the real request-header scan including the joined
 // cross-header pass.

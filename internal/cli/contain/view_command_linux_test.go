@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -193,5 +194,34 @@ func TestViewCommandDefaultRequiresRuntimeDir(t *testing.T) {
 	cmd.SetOut(&out)
 	if cmd.Flag("control") == nil || cmd.Flag("socket") == nil {
 		t.Fatal("view flags missing")
+	}
+}
+
+type failingViewWriter struct{}
+
+func (failingViewWriter) Write([]byte) (int, error) { return 0, errors.New("terminal closed") }
+
+func TestContainViewRefusesUnsafePathsAndReportsOutputFailure(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct{ name, path, mode, want string }{
+		{"relative path", "view.sock", "view", "clean and absolute"},
+		{"unclean path", root + "/../view.sock", "view", "clean and absolute"},
+		{"bad mode", filepath.Join(root, "view.sock"), "edit", "invalid viewer mode"},
+		{"missing parent", filepath.Join(root, "absent", "view.sock"), "view", "listen for VNC client"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runContainView(context.Background(), tc.path, "unused", tc.mode, currentViewerUID(), io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+	path := filepath.Join(root, "view.sock")
+	err := runContainView(context.Background(), path, "unused", "view", currentViewerUID(), failingViewWriter{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "print VNC socket: terminal closed") {
+		t.Fatalf("terminal failure=%v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket left after output failure: %v", err)
 	}
 }

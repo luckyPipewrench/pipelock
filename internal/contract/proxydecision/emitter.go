@@ -171,6 +171,7 @@ type Emitter struct {
 	mu            sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
+	healthErr     error
 }
 
 // NewEmitter returns nil when recorder or signer is missing, matching the
@@ -230,6 +231,17 @@ func (e *Emitter) ChainState() (seq uint64, prevHash string) {
 	return e.chainSeq, e.chainPrevHash
 }
 
+// HealthError reports an uncertain durable write. A new emitter must not
+// resume from this chain head without reconciling the recorder's on-disk log.
+func (e *Emitter) HealthError() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.healthErr
+}
+
 // Emit builds, signs, and records one v2 proxy_decision receipt. It is a no-op
 // on a nil receiver. The mutex spans the whole build→sign→hash→persist→advance
 // sequence so concurrent calls produce a well-ordered chain; chain state is
@@ -251,6 +263,9 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.healthErr != nil {
+		return fmt.Errorf("proxy_decision emitter unhealthy: %w", e.healthErr)
+	}
 
 	// Sanitize secret-bearing fields BEFORE signing, byte-identically to the v1
 	// emitter (#676). The signed target must never carry raw secret bytes.
@@ -355,6 +370,9 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		recordErr = e.recorder.Record(entry)
 	}
 	if err := recordErr; err != nil {
+		if durable {
+			e.healthErr = err
+		}
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
 	}
 	e.chainPrevHash = rcptHash

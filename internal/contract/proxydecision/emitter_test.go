@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -606,6 +608,9 @@ func TestNewEmitter_DisabledWhenMissingDeps(t *testing.T) {
 
 func TestNilEmitter_IsNoOp(t *testing.T) {
 	var em *Emitter
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("nil HealthError = %v, want nil", err)
+	}
 	if err := em.Emit(Decision{Verdict: "block"}); err != nil {
 		t.Errorf("nil Emit returned %v, want nil", err)
 	}
@@ -633,6 +638,61 @@ func TestEmitDurableRequiresDurableRecorder(t *testing.T) {
 	}
 }
 
+func TestEmitDurableSyncFailureStopsRetryAtSameChainPosition(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("healthy emitter error = %v, want nil", err)
+	}
+	var calls int
+	rec.SetSyncForTest(func(*os.File) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected sync failure")
+		}
+		return nil
+	})
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("first emit = %v, want durability error", err)
+	}
+	if !errors.Is(em.HealthError(), recorder.ErrDurability) {
+		t.Fatalf("health error = %v, want durability error", em.HealthError())
+	}
+	if err := em.EmitDurable(validDecision()); err == nil {
+		t.Fatal("retry emitted at an uncertain chain position")
+	}
+	if calls != 1 {
+		t.Fatalf("sync calls = %d, want 1", calls)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts int
+	for _, file := range files {
+		data, readErr := os.ReadFile(filepath.Clean(file))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		receipts += strings.Count(string(data), `"type":"evidence_receipt"`)
+	}
+	if receipts != 1 {
+		t.Fatalf("recorded v2 receipts = %d, want 1", receipts)
+	}
+}
+
 type durableCaptureRecorder struct {
 	captureRecorder
 	durableCalls int
@@ -653,14 +713,11 @@ func TestEmitDurableRecordsAndAdvancesOnlyOnSuccess(t *testing.T) {
 		t.Fatalf("chain advanced on failed durable write: (%d, %q)", seq, head)
 	}
 	rec.err = nil
-	if err := em.EmitDurable(validDecision()); err != nil {
-		t.Fatalf("successful durable write: %v", err)
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("retry after uncertain write = %v, want original recorder error", err)
 	}
-	if rec.durableCalls != 2 || len(rec.entries) != 1 {
-		t.Fatalf("durable calls = %d, entries = %d, want 2 and 1", rec.durableCalls, len(rec.entries))
-	}
-	if seq, head := em.ChainState(); seq != 1 || head == recorder.GenesisHash {
-		t.Fatalf("chain after durable write = (%d, %q)", seq, head)
+	if rec.durableCalls != 1 || len(rec.entries) != 0 {
+		t.Fatalf("durable calls = %d, entries = %d, want 1 and 0", rec.durableCalls, len(rec.entries))
 	}
 }
 

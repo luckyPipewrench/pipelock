@@ -74,11 +74,19 @@ type FileEmergencyStore struct {
 	rollbacks         []StoredRollbackAuthorization
 	rollbackHashes    map[string]StoredRollbackAuthorization
 	rollbackAuthIDMap map[string]string
+	rollbackCounters  []rollbackCounterFloor
+}
+
+type rollbackCounterFloor struct {
+	OrgID   string `json:"org_id"`
+	FleetID string `json:"fleet_id"`
+	Counter uint64 `json:"counter"`
 }
 
 type emergencyStateRecord struct {
-	RemoteKills []StoredRemoteKill            `json:"remote_kills,omitempty"`
-	Rollbacks   []StoredRollbackAuthorization `json:"rollback_authorizations,omitempty"`
+	RemoteKills      []StoredRemoteKill            `json:"remote_kills,omitempty"`
+	Rollbacks        []StoredRollbackAuthorization `json:"rollback_authorizations,omitempty"`
+	RollbackCounters []rollbackCounterFloor        `json:"rollback_counter_floors,omitempty"`
 }
 
 func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
@@ -348,6 +356,17 @@ func (s *FileEmergencyStore) load() error {
 		s.rollbackHashes[rb.AuthorizationHash] = rb
 		s.rollbackAuthIDMap[rb.Authorization.AuthorizationID] = rb.AuthorizationHash
 	}
+	for _, floor := range record.RollbackCounters {
+		if err := validateRollbackCounterFloor(floor); err != nil {
+			return err
+		}
+		for _, prior := range s.rollbackCounters {
+			if prior.OrgID == floor.OrgID && prior.FleetID == floor.FleetID {
+				return fmt.Errorf("%w: duplicate rollback counter scope", ErrInvalidEmergencyRecord)
+			}
+		}
+		s.rollbackCounters = append(s.rollbackCounters, floor)
+	}
 	return nil
 }
 
@@ -409,8 +428,9 @@ func (s *FileEmergencyStore) rollbackAuthorizationByHash(_ context.Context, hash
 
 func (s *FileEmergencyStore) writeLocked() error {
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
-		RemoteKills: s.remoteKills,
-		Rollbacks:   s.rollbacks,
+		RemoteKills:      s.remoteKills,
+		Rollbacks:        s.rollbacks,
+		RollbackCounters: s.rollbackCounters,
 	})
 }
 
@@ -464,12 +484,30 @@ func writeEmergencyState(path string, record emergencyStateRecord) error {
 			return err
 		}
 	}
+	for _, floor := range record.RollbackCounters {
+		if err := validateRollbackCounterFloor(floor); err != nil {
+			return err
+		}
+	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("conductor emergency store marshal state: %w", err)
 	}
 	data = append(data, '\n')
 	return durableWrite(path, data)
+}
+
+func validateRollbackCounterFloor(floor rollbackCounterFloor) error {
+	if err := conductor.ValidateIdentifier("org_id", floor.OrgID); err != nil {
+		return err
+	}
+	if err := conductor.ValidateIdentifier("fleet_id", floor.FleetID); err != nil {
+		return err
+	}
+	if floor.Counter == 0 {
+		return fmt.Errorf("%w: rollback counter floor is zero", ErrInvalidEmergencyRecord)
+	}
+	return nil
 }
 
 func validateStoredRemoteKill(record StoredRemoteKill) error {
@@ -563,7 +601,25 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 	// write would let a cleared-in-memory-only authorization stop capping the
 	// stream head while disk still has it.
 	removed, hadRecord := s.rollbackHashes[hash]
+	if !hadRecord {
+		return false, fmt.Errorf("%w: rollback authorization missing", ErrInvalidEmergencyRecord)
+	}
 	originalRollbacks := s.rollbacks
+	originalCounters := slices.Clone(s.rollbackCounters)
+	foundFloor := false
+	for i := range s.rollbackCounters {
+		floor := &s.rollbackCounters[i]
+		if floor.OrgID == removed.Authorization.OrgID && floor.FleetID == removed.Authorization.FleetID {
+			if removed.Authorization.Counter > floor.Counter {
+				floor.Counter = removed.Authorization.Counter
+			}
+			foundFloor = true
+			break
+		}
+	}
+	if !foundFloor {
+		s.rollbackCounters = append(s.rollbackCounters, rollbackCounterFloor{OrgID: removed.Authorization.OrgID, FleetID: removed.Authorization.FleetID, Counter: removed.Authorization.Counter})
+	}
 	// Remove from the ID→hash map and the hash→record map.
 	delete(s.rollbackAuthIDMap, authorizationID)
 	delete(s.rollbackHashes, hash)
@@ -584,6 +640,7 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 			s.rollbackHashes[hash] = removed
 		}
 		s.rollbacks = originalRollbacks
+		s.rollbackCounters = originalCounters
 		return false, fmt.Errorf("conductor emergency store write after clear: %w", err)
 	}
 	return true, nil
@@ -663,6 +720,12 @@ func (s *FileEmergencyStore) maxRemoteKillCounterForOrgFleetLocked(orgID, fleetI
 func (s *FileEmergencyStore) maxRollbackCounterForOrgFleetLocked(orgID, fleetID string) (uint64, bool) {
 	var maxCounter uint64
 	found := false
+	for _, floor := range s.rollbackCounters {
+		if floor.OrgID == orgID && floor.FleetID == fleetID {
+			maxCounter, found = floor.Counter, true
+			break
+		}
+	}
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
 		if auth.OrgID != orgID || auth.FleetID != fleetID {

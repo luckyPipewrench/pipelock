@@ -141,6 +141,41 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	}
 }
 
+func TestClearedRollbackAuthorizationCannotReplay(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	auth := signedTestRollback(t, "cleared-replay", now, 100)
+	if _, created, err := store.PublishRollbackAuthorization(t.Context(), auth, now); err != nil || !created {
+		t.Fatalf("publish created=%v error=%v", created, err)
+	}
+	if cleared, err := store.ClearRollbackAuthorization(t.Context(), auth.AuthorizationID); err != nil || !cleared {
+		t.Fatalf("clear cleared=%v error=%v", cleared, err)
+	}
+	for _, current := range []*FileEmergencyStore{store, func() *FileEmergencyStore {
+		reopened, openErr := OpenFileEmergencyStore(dir)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		return reopened
+	}()} {
+		if _, _, err := current.PublishRollbackAuthorization(t.Context(), auth, now); !errors.Is(err, ErrEmergencyStaleCounter) {
+			t.Fatalf("replay error=%v, want stale counter", err)
+		}
+	}
+	reopened, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := signedTestRollback(t, "after-cleared-replay", now, 101)
+	if _, created, err := reopened.PublishRollbackAuthorization(t.Context(), fresh, now); err != nil || !created {
+		t.Fatalf("higher counter created=%v error=%v", created, err)
+	}
+}
+
 // TestClearRollbackAuthorization_RestoresStateOnWriteFailure proves the
 // in-memory state is left intact (matching disk) when the durable write fails
 // mid-clear, so a failed clear cannot silently stop an authorization from

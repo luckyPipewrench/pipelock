@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,25 @@ func TestViewerRFBACL(t *testing.T) {
 				}
 				return
 			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ACL error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestViewerRFBACLRejectsReadFailureAndMalformedEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name, acl, want string
+		runErr          error
+	}{
+		{"read failure", "", "read RFB ACL", errors.New("ACL unavailable")},
+		{"malformed", "user::rw-:extra\n", "unexpected entry", nil},
+		{"duplicate", "user::rw-\nuser::rw-\ngroup::---\nother::---\n", "duplicate entry", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(context.Context, string, ...string) (string, int, error) { return tc.acl, 0, tc.runErr }
+			err := checkViewerRFBACL(context.Background(), run, "/tmp/rfb.sock", "proxy", false)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ACL error = %v, want %q", err, tc.want)
 			}

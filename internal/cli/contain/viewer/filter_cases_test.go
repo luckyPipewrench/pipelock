@@ -71,3 +71,33 @@ func TestFilterSetEncodingsKeepsOnlyDisplayValues(t *testing.T) {
 		t.Fatalf("encoding offer=%x, err=%v", out, err)
 	}
 }
+
+func TestFilterWaitsForCompleteClientFrames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+	}{
+		{"pixel format", make([]byte, 20)},
+		{"encodings", []byte{2, 0, 0, 1, 0, 0, 0, 0}},
+		{"update request", []byte{3, 0, 0, 0, 0, 0, 0, 1, 0, 1}},
+		{"key", []byte{4, 1, 0, 0, 0, 0, 0, 65}},
+		{"pointer", []byte{5, 1, 0, 1, 0, 1}},
+		{"clipboard", []byte{6, 0, 0, 0, 0, 0, 0, 2, 'o', 'k'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFilter(func() bool { return true }, true)
+			if got, err := f.feed([]byte("RFB 003.008\n\x01\x01")); err != nil || len(got) != 14 {
+				t.Fatalf("handshake = %q, %v", got, err)
+			}
+			for i := 1; i < len(tc.frame); i++ {
+				if got, err := f.feed(tc.frame[i-1 : i]); err != nil || len(got) != 0 {
+					t.Fatalf("prefix %d = %x, %v", i, got, err)
+				}
+			}
+			got, err := f.feed(tc.frame[len(tc.frame)-1:])
+			if err != nil || !bytes.Equal(got, tc.frame) {
+				t.Fatalf("complete frame = %x, %v, want %x", got, err, tc.frame)
+			}
+		})
+	}
+}

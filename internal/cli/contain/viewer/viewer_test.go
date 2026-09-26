@@ -41,6 +41,58 @@ func testViewer(t *testing.T) *Viewer {
 	return v
 }
 
+func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		cfg        Config
+	}{
+		{"display", "missing display", Config{}},
+		{"root peer", "must not be root", Config{Display: ":99"}},
+		{"socket", "missing socket", Config{Display: ":99", ExpectedUID: 42}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("new = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	v, err := New(Config{Display: ":99", ExpectedUID: 42, SocketPath: "/does-not-exist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.cfg.MaxViewers != defaultViewers || v.cfg.Now == nil || v.cfg.Logger == nil || v.cfg.PeerUID == nil || v.cfg.Dial == nil {
+		t.Fatal("viewer defaults were not installed")
+	}
+	for _, tc := range []struct {
+		name, want string
+		dial       func() (net.Conn, error)
+		peer       func(net.Conn) (uint32, error)
+	}{
+		{"dial", "dial RFB", func() (net.Conn, error) { return nil, errors.New("offline") }, nil},
+		{"peer", "inspect RFB peer", func() (net.Conn, error) { a, b := net.Pipe(); t.Cleanup(func() { _ = b.Close() }); return a, nil }, func(net.Conn) (uint32, error) { return 0, errors.New("untrusted") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testViewer(t)
+			v.cfg.Dial = tc.dial
+			if tc.peer != nil {
+				v.cfg.PeerUID = tc.peer
+			}
+			client, operator := net.Pipe()
+			defer func() { _ = operator.Close() }()
+			done := make(chan error, 1)
+			go func() { done <- v.Serve(context.Background(), client, "view") }()
+			line, err := bufio.NewReader(operator).ReadString('\n')
+			if err != nil || line != "denied\n" {
+				t.Fatalf("response = %q, %v", line, err)
+			}
+			if err := <-done; err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("serve = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestViewerModesAndLease(t *testing.T) {
 	for _, mode := range []string{"view", "control"} {
 		t.Run(mode, func(t *testing.T) {

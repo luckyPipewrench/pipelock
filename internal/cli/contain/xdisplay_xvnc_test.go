@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/user"
@@ -379,6 +380,67 @@ func TestProbeAgentDisplayRFBRejectsUnsafeSocket(t *testing.T) {
 			}
 			if tc.want == statusFail && !strings.Contains(detail, "RFB socket") {
 				t.Fatalf("failure did not name RFB socket check: %s", detail)
+			}
+		})
+	}
+}
+
+func TestProbeAgentDisplayRFBReportsFailedControl(t *testing.T) {
+	root := shortDisplayTestDir(t)
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	configBody := "mode: balanced\ncontainment:\n  display:\n    enabled: true\n    backend: xvnc\n"
+	if err := os.WriteFile(cfgPath, []byte(configBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitPath := filepath.Join(root, "display.service")
+	agentHome := filepath.Join(root, "agent")
+	unit := renderAgentDisplayUnit(&installEnv{agentUserName: testAgentUser, agentHome: agentHome, displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: "xvnc"}})
+	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rfb := viewerRFBSocketPath(agentHome)
+	if err := os.MkdirAll(filepath.Dir(rfb), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", rfb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := os.Chmod(rfb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := probeEnv{configPath: cfgPath, displayUnitPath: unitPath, agentHome: agentHome, agentUserName: testAgentUser, readFile: os.ReadFile, lstat: os.Lstat, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }, runCmd: func(context.Context, string, ...string) (string, int, error) {
+		return "user::rw-\ngroup::---\nother::---\n", 0, nil
+	}}
+	for _, tc := range []struct {
+		name, want string
+		change     func(*probeEnv)
+	}{
+		{"config read", "read containment display config", func(e *probeEnv) { e.configPath = filepath.Join(root, "missing.yaml") }},
+		{"unit read", "read display unit", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission } }},
+		{"unit contract", "disable TCP RFB", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return []byte("[Service]\n"), nil } }},
+		{"ACL", "ACL", func(e *probeEnv) {
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
+				return "", 1, errors.New("ACL unavailable")
+			}
+		}},
+		{"owner lookup", "lookup RFB owner", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) { return nil, errors.New("identity unavailable") }
+		}},
+		{"owner parse", "parse RFB owner uid", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "bad"}, nil }
+		}},
+		{"wrong owner", "not owned", func(e *probeEnv) {
+			e.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid() + 1)}, nil }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := base
+			tc.change(&env)
+			status, detail := probeAgentDisplayRFB(context.Background(), &env)
+			if status != statusFail || !strings.Contains(detail, tc.want) {
+				t.Fatalf("probe = %s %q, want %q", status, detail, tc.want)
 			}
 		})
 	}

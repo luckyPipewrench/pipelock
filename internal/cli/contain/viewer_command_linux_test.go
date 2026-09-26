@@ -115,6 +115,55 @@ func TestViewerServeDependencies(t *testing.T) {
 	}
 }
 
+func TestViewerServeRejectsInvalidAgentIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentUID, want string
+		agentErr             error
+	}{
+		{"missing agent", "", "viewer agent user", errors.New("identity unavailable")},
+		{"invalid agent uid", "bad", "viewer agent uid", nil},
+		{"root agent", "0", "must not be root", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := realServeDeps()
+			deps.path = filepath.Join(t.TempDir(), "control.sock")
+			deps.lookup = func(name string) (*user.User, error) {
+				if name == "operator" {
+					return &user.User{Uid: "1000"}, nil
+				}
+				if tc.agentErr != nil {
+					return nil, tc.agentErr
+				}
+				return &user.User{Uid: tc.agentUID}, nil
+			}
+			err := runViewerServe(context.Background(), deps, serveOptions{display: ":99", rfbSocket: "/unused", operator: "operator", agentUser: "agent"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("serve = %v, want %q", err, tc.want)
+			}
+			if _, err := os.Lstat(deps.path); !os.IsNotExist(err) {
+				t.Fatalf("control socket created: %v", err)
+			}
+		})
+	}
+}
+
+func TestReadViewerModeRejectsIncompleteAndLongLines(t *testing.T) {
+	for _, tc := range []struct{ name, payload, want string }{
+		{"incomplete", "view", "read viewer mode"},
+		{"too long", "controlx", "too long"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, client := net.Pipe()
+			go func() { _, _ = client.Write([]byte(tc.payload)); _ = client.Close() }()
+			defer func() { _ = server.Close() }()
+			mode, err := readViewerMode(server)
+			if mode != "" || err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("mode=%q err=%v", mode, err)
+			}
+		})
+	}
+}
+
 func TestReadViewerModeDoesNotConsumeRFB(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close(); _ = client.Close() }()

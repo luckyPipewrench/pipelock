@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -62,6 +63,112 @@ func TestRecoverBundleTransactionsCandidateActiveMergesFreshnessIdempotently(t *
 		t.Fatalf("idempotent recovery: %v", err)
 	}
 	_ = priorData // documents that the first directory was a distinct prior artifact.
+}
+
+func TestRecoverBundleTransactionsLaterFailurePreservesEarlierRecoveryForRetry(t *testing.T) {
+	rulesDir := t.TempDir()
+	type pending struct {
+		name, record string
+		data         []byte
+	}
+	var candidates []pending
+	for _, name := range []string{"aaa-rules", "zzz-rules"} {
+		prior := transactionBundle("2026.01.0")
+		prior.Name = name
+		writeTransactionTestBundle(t, filepath.Join(rulesDir, name), prior)
+		candidate := transactionBundle("2026.02.0")
+		candidate.Name = name
+		data, lock := transactionBundleBytes(t, candidate)
+		redo, err := NewBundleTransactionRedo(name, data, nil, candidate, lock, &FreshnessState{
+			HighestSeen: map[string]uint64{"community:" + name: 5},
+			FormatFloor: map[string]int{name: 2},
+		})
+		if err != nil {
+			t.Fatalf("prepare %s redo: %v", name, err)
+		}
+		record, err := WriteBundleTransactionRedo(rulesDir, redo)
+		if err != nil {
+			t.Fatalf("write %s redo: %v", name, err)
+		}
+		if err := os.Rename(filepath.Join(rulesDir, name), filepath.Join(rulesDir, name+".bak")); err != nil {
+			t.Fatalf("move %s prior bundle: %v", name, err)
+		}
+		writeTransactionTestBundle(t, filepath.Join(rulesDir, name), candidate)
+		candidates = append(candidates, pending{name: name, record: record, data: data})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].record < candidates[j].record })
+	bad := candidates[1]
+	if err := os.WriteFile(filepath.Join(rulesDir, bad.name, bundleFilename), []byte("corrupt"), 0o600); err != nil {
+		t.Fatalf("corrupt later candidate: %v", err)
+	}
+
+	err := RecoverBundleTransactions(rulesDir)
+	if err == nil || !strings.Contains(err.Error(), "candidate digest mismatch") {
+		t.Fatalf("recovery error = %v, want later candidate rejection", err)
+	}
+	first := candidates[0]
+	assertTransactionBundleBytes(t, filepath.Join(rulesDir, first.name), first.data)
+	if _, err := os.Stat(first.record); !os.IsNotExist(err) {
+		t.Fatalf("earlier completed redo remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, first.name+".bak")); !os.IsNotExist(err) {
+		t.Fatalf("earlier backup remains: %v", err)
+	}
+	if _, err := os.Stat(bad.record); err != nil {
+		t.Fatalf("rejected redo was not preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, bad.name+".bak")); err != nil {
+		t.Fatalf("rejected prior backup was not preserved: %v", err)
+	}
+	assertTransactionBundleBytes(t, filepath.Join(rulesDir, bad.name), []byte("corrupt"))
+	state, err := LoadFreshnessStateLocked(rulesDir)
+	if err != nil {
+		t.Fatalf("load durable state after partial recovery: %v", err)
+	}
+	if got := state.HighestSeen["community:"+first.name]; got != 5 {
+		t.Fatalf("earlier rollback floor = %d, want 5", got)
+	}
+	if got, present := state.HighestSeen["community:"+bad.name]; present {
+		t.Fatalf("rejected rollback floor = %d, want absent", got)
+	}
+	if got := state.FormatFloor[first.name]; got != 2 {
+		t.Fatalf("earlier format floor = %d, want 2", got)
+	}
+	if got, present := state.FormatFloor[bad.name]; present {
+		t.Fatalf("rejected format floor = %d, want absent", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(rulesDir, bad.name, bundleFilename), bad.data, 0o600); err != nil {
+		t.Fatalf("restore later candidate: %v", err)
+	}
+	if err := RecoverBundleTransactions(rulesDir); err != nil {
+		t.Fatalf("retry recovery: %v", err)
+	}
+	state, err = LoadFreshnessState(rulesDir)
+	if err != nil {
+		t.Fatalf("load recovered state: %v", err)
+	}
+	for _, item := range candidates {
+		assertTransactionBundleBytes(t, filepath.Join(rulesDir, item.name), item.data)
+		if got := state.HighestSeen["community:"+item.name]; got != 5 {
+			t.Fatalf("%s rollback floor = %d, want 5", item.name, got)
+		}
+		if got := state.FormatFloor[item.name]; got != 2 {
+			t.Fatalf("%s format floor = %d, want 2", item.name, got)
+		}
+		if _, err := os.Stat(item.record); !os.IsNotExist(err) {
+			t.Fatalf("%s redo remains after retry: %v", item.name, err)
+		}
+		if _, err := os.Stat(filepath.Join(rulesDir, item.name+".bak")); !os.IsNotExist(err) {
+			t.Fatalf("%s backup remains after retry: %v", item.name, err)
+		}
+	}
+	if err := RecoverBundleTransactions(rulesDir); err != nil {
+		t.Fatalf("idempotent recovery after retry: %v", err)
+	}
+	for _, item := range candidates {
+		assertTransactionBundleBytes(t, filepath.Join(rulesDir, item.name), item.data)
+	}
 }
 
 func TestRecoverBundleTransactionsRestoresOrClearsPreCandidatePhases(t *testing.T) {

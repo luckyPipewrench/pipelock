@@ -180,8 +180,10 @@ func (lm *LeaseManager) destroyOrQuarantine(ctx context.Context, lease *Lease) {
 	lm.destroyQuarantined(ctx, lease)
 }
 
+// destroyQuarantined honors ctx cancellation. Callers whose cleanup must outlive
+// the request (Release and failed Lease) detach it with context.WithoutCancel.
 func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
-	destroyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lm.destroyTimeout)
+	destroyCtx, cancel := context.WithTimeout(ctx, lm.destroyTimeout)
 	err := lm.cfg.Provider.DestroyMachine(destroyCtx, lease.Machine.ID)
 	cancel()
 	lm.mu.Lock()
@@ -211,7 +213,17 @@ func (lm *LeaseManager) RetryFailedDestroys(ctx context.Context) {
 		pending = append(pending, lease)
 	}
 	lm.mu.Unlock()
-	for _, lease := range pending {
+	for i, lease := range pending {
+		if ctx.Err() != nil {
+			// Canceled: hand the unstarted reservations back so a later retry
+			// can claim them. The machines stay quarantined and counted.
+			lm.mu.Lock()
+			for _, rest := range pending[i:] {
+				delete(lm.destroying, rest.Machine.ID)
+			}
+			lm.mu.Unlock()
+			return
+		}
 		lm.destroyQuarantined(ctx, lease)
 	}
 }

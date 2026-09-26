@@ -44,6 +44,81 @@ func TestReleaseDestroyDeadlineRetainsCapacityAndRetries(t *testing.T) {
 	}
 }
 
+func TestRetryFailedDestroysHonorsCallerCancellation(t *testing.T) {
+	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 4), allow: make(chan struct{})}
+	lm := newManager(t, p, 2)
+	lm.destroyTimeout = 20 * time.Millisecond
+	var ids []string
+	for _, key := range []string{"first", "second"} {
+		lease, err := lm.Lease(context.Background(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, lease.Machine.ID)
+		lm.Release(context.Background(), key)
+	}
+	// With the caller's cancellation honored, a canceled reaper must not wait
+	// out a fresh per-machine deadline.
+	lm.destroyTimeout = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.mu.Lock()
+	callsBefore := p.calls
+	p.mu.Unlock()
+	done := make(chan struct{})
+	go func() { lm.RetryFailedDestroys(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		close(p.allow)
+		t.Fatal("canceled retry kept waiting on provider deletion")
+	}
+	p.mu.Lock()
+	callsAfter := p.calls
+	p.mu.Unlock()
+	if callsAfter != callsBefore {
+		t.Fatalf("canceled retry called the provider %d times", callsAfter-callsBefore)
+	}
+	for _, id := range ids {
+		if _, ok := lm.ActiveMachineIDs()[id]; !ok {
+			t.Fatalf("canceled retry dropped %s from quarantine", id)
+		}
+	}
+	close(p.allow)
+	lm.RetryFailedDestroys(context.Background())
+	if got := len(lm.ActiveMachineIDs()); got != 0 {
+		t.Fatalf("machines left after uncanceled retry = %d", got)
+	}
+}
+
+func TestRetryFailedDestroysCancellationStopsInFlightDelete(t *testing.T) {
+	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 4), allow: make(chan struct{})}
+	lm := newManager(t, p, 1)
+	lm.destroyTimeout = 20 * time.Millisecond
+	lease, err := lm.Lease(context.Background(), "first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm.Release(context.Background(), "first")
+	<-p.entered // the Release attempt
+	lm.destroyTimeout = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { lm.RetryFailedDestroys(ctx); close(done) }()
+	<-p.entered
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		close(p.allow)
+		t.Fatal("in-flight delete ignored caller cancellation")
+	}
+	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; !ok {
+		t.Fatal("canceled delete dropped the VM from quarantine")
+	}
+	close(p.allow)
+}
+
 func TestDestroyFailuresAreLoggedOnEveryPath(t *testing.T) {
 	p := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
 	var log bytes.Buffer

@@ -76,20 +76,11 @@ func TestFileEmergencyStoreRejectsConcurrentOwner(t *testing.T) {
 		t.Fatalf("publish created=%v err=%v", created, err)
 	}
 	second, err := OpenFileEmergencyStore(dir)
-	if second == nil && (err == nil || !strings.Contains(err.Error(), dir)) {
+	if second != nil || err == nil || !strings.Contains(err.Error(), dir) {
 		t.Fatalf("second owner error=%v, want directory conflict", err)
 	}
 	if cleared, err := first.ClearRollbackAuthorization(t.Context(), auth.AuthorizationID); err != nil || !cleared {
 		t.Fatalf("clear=%v err=%v", cleared, err)
-	}
-	if second != nil {
-		kill := signedRemoteKillMessage(t, "other-owner-kill", 1, conductor.KillSwitchActive, now)
-		if _, created, err := second.PublishRemoteKill(t.Context(), kill, now); err != nil || !created {
-			t.Fatalf("stale remote kill publication created=%v err=%v", created, err)
-		}
-		if err := second.Close(); err != nil {
-			t.Fatal(err)
-		}
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -104,6 +95,73 @@ func TestFileEmergencyStoreRejectsConcurrentOwner(t *testing.T) {
 	}
 	if _, _, err := reopened.PublishRollbackAuthorization(t.Context(), auth, now); !errors.Is(err, ErrEmergencyStaleCounter) {
 		t.Fatalf("lost floor: %v", err)
+	}
+}
+
+func TestFileEmergencyStoreOperationsAfterClose(t *testing.T) {
+	now := time.Now().UTC()
+	store, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := signedTestRollback(t, "closed-rollback", now, 1)
+	kill := signedRemoteKillMessage(t, "closed-kill", 1, conductor.KillSwitchActive, now)
+	if _, _, err := store.PublishRollbackAuthorization(t.Context(), auth, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.PublishRemoteKill(t.Context(), kill, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	follower := FollowerIdentity{OrgID: auth.OrgID, FleetID: auth.FleetID, InstanceID: "closed-instance", Environment: "prod"}
+	checks := map[string]func() error{
+		"publish rollback": func() error { _, _, err := store.PublishRollbackAuthorization(t.Context(), auth, now); return err },
+		"publish kill":     func() error { _, _, err := store.PublishRemoteKill(t.Context(), kill, now); return err },
+		"latest rollback": func() error {
+			_, err := store.LatestRollbackAuthorization(t.Context(), follower, RollbackLookup{CurrentBundleID: auth.CurrentBundleID, CurrentVersion: auth.CurrentVersion, TargetBundleID: auth.TargetBundleID, TargetVersion: auth.TargetVersion}, now)
+			return err
+		},
+		"latest kill":     func() error { _, err := store.LatestRemoteKill(t.Context(), follower, now); return err },
+		"active rollback": func() error { _, _, err := store.ActiveRollbackForFollower(t.Context(), follower, now); return err },
+		"rollback by ID": func() error {
+			_, _, err := store.RollbackAuthorizationByID(t.Context(), auth.AuthorizationID)
+			return err
+		},
+		"rollback by hash": func() error {
+			hash, _ := auth.CanonicalHash()
+			_, _, err := store.rollbackAuthorizationByHash(t.Context(), hash)
+			return err
+		},
+		"kill by hash": func() error {
+			hash, _ := kill.CanonicalHash()
+			_, _, err := store.remoteKillByHash(t.Context(), hash)
+			return err
+		},
+		"enumerate rollback": func() error { _, err := store.enumerateRollbacks(t.Context()); return err },
+		"enumerate kill":     func() error { _, err := store.enumerateRemoteKills(t.Context()); return err },
+		"clear": func() error {
+			_, err := store.ClearRollbackAuthorization(t.Context(), auth.AuthorizationID)
+			return err
+		},
+		"clear matching": func() error {
+			_, err := store.ClearRollbackAuthorizationMatching(t.Context(), auth.AuthorizationID, "")
+			return err
+		},
+	}
+	for name, check := range checks {
+		t.Run(name, func(t *testing.T) {
+			if err := check(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("error=%v, want closed store", err)
+			}
+		})
+	}
+	store.mu.Lock()
+	writeErr := store.writeLocked()
+	store.mu.Unlock()
+	if !errors.Is(writeErr, ErrEmergencyStoreClosed) {
+		t.Fatalf("writeLocked error=%v, want closed store", writeErr)
 	}
 }
 

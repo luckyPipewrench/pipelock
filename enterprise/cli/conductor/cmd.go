@@ -239,7 +239,9 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 			MaxHeaderBytes:    64 * 1024,
 		}
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-runCtx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), serveShutdownPeriod)
 		defer cancelShutdown()
@@ -276,7 +278,13 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 			cancel()
 		}
 	}
+	waitForServeShutdown(cancel, shutdownDone)
 	return firstErr
+}
+
+func waitForServeShutdown(cancel context.CancelFunc, done <-chan struct{}) {
+	cancel()
+	<-done
 }
 
 func buildServeHandler(ctx context.Context, opts serveOptions) (*serveHandler, http.Handler, *tls.Config, error) {

@@ -30,6 +30,7 @@ const (
 
 var (
 	ErrEmergencyStoreRequired    = errors.New("conductor emergency control store required")
+	ErrEmergencyStoreClosed      = errors.New("conductor emergency control store closed")
 	ErrEmergencyNotFound         = errors.New("conductor emergency control message not found")
 	ErrEmergencyConflict         = errors.New("conductor emergency control message conflicts with stored message")
 	ErrEmergencyStaleCounter     = errors.New("conductor emergency control counter is stale")
@@ -132,6 +133,14 @@ func (s *FileEmergencyStore) Close() error {
 	return file.Close()
 }
 
+// checkOpenLocked requires the caller to hold s.mu for reading or writing.
+func (s *FileEmergencyStore) checkOpenLocked() error {
+	if s.lockFile == nil {
+		return ErrEmergencyStoreClosed
+	}
+	return nil
+}
+
 func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.RemoteKillMessage, now time.Time) (StoredRemoteKill, bool, error) {
 	if s == nil {
 		return StoredRemoteKill{}, false, ErrEmergencyStoreRequired
@@ -156,6 +165,9 @@ func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, false, err
+	}
 	existing, idempotent, err := s.remoteKillDecisionLocked(msg, hash)
 	if err != nil {
 		return StoredRemoteKill{}, false, err
@@ -189,6 +201,9 @@ func (s *FileEmergencyStore) LatestRemoteKill(_ context.Context, follower Follow
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, err
+	}
 	var best StoredRemoteKill
 	for _, record := range s.remoteKills {
 		if err := record.Message.ValidateAtTime(now); err != nil {
@@ -231,6 +246,9 @@ func (s *FileEmergencyStore) PublishRollbackAuthorization(_ context.Context, aut
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	existing, idempotent, err := s.rollbackAuthDecisionLocked(auth, hash)
 	if err != nil {
 		return StoredRollbackAuthorization{}, false, err
@@ -267,6 +285,9 @@ func (s *FileEmergencyStore) LatestRollbackAuthorization(_ context.Context, foll
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, err
+	}
 	var best StoredRollbackAuthorization
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
@@ -306,6 +327,9 @@ func (s *FileEmergencyStore) ActiveRollbackForFollower(_ context.Context, follow
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	var best StoredRollbackAuthorization
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
@@ -404,6 +428,9 @@ func (s *FileEmergencyStore) enumerateRollbacks(_ context.Context) ([]StoredRoll
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return nil, err
+	}
 	return slices.Clone(s.rollbacks), nil
 }
 
@@ -418,6 +445,9 @@ func (s *FileEmergencyStore) enumerateRemoteKills(_ context.Context) ([]StoredRe
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return nil, err
+	}
 	return slices.Clone(s.remoteKills), nil
 }
 
@@ -430,6 +460,9 @@ func (s *FileEmergencyStore) remoteKillByHash(_ context.Context, hash string) (S
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, false, err
+	}
 	record, ok := s.remoteKillHashes[hash]
 	return record, ok, nil
 }
@@ -443,13 +476,16 @@ func (s *FileEmergencyStore) rollbackAuthorizationByHash(_ context.Context, hash
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	record, ok := s.rollbackHashes[hash]
 	return record, ok, nil
 }
 
 func (s *FileEmergencyStore) writeLocked() error {
-	if s.lockFile == nil {
-		return errors.New("conductor emergency control store closed")
+	if err := s.checkOpenLocked(); err != nil {
+		return err
 	}
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
 		RemoteKills:      s.remoteKills,
@@ -609,6 +645,9 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return false, err
+	}
 	hash, ok := s.rollbackAuthIDMap[authorizationID]
 	if !ok {
 		return false, nil
@@ -681,6 +720,9 @@ func (s *FileEmergencyStore) RollbackAuthorizationByID(_ context.Context, author
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	hash, ok := s.rollbackAuthIDMap[authorizationID]
 	if !ok {
 		return StoredRollbackAuthorization{}, false, nil

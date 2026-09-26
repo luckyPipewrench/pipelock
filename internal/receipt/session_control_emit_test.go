@@ -4,11 +4,13 @@
 package receipt
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -590,7 +592,7 @@ func TestEmitter_KeyRotationSessionCloseUsesSegmentLocalCount(t *testing.T) {
 	}
 
 	recB := newTestRecorder(t, dir, privB)
-	eB := NewEmitter(EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	eB := NewEmitter(EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor, PriorSignerKeys: []string{fmt.Sprintf("%x", privA.Public().(ed25519.PublicKey))}})
 	if err := eB.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen B: %v", err)
 	}

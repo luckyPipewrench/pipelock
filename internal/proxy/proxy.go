@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -633,6 +634,8 @@ type Proxy struct {
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptKeyPath       string                                // active signing key path, for reload comparison
+	receiptKeysMu        sync.Mutex                            // guards receiptKeysHeld
+	receiptKeysHeld      []string                              // hex public keys this process has loaded to sign receipts
 	envelopeEmitterPtr   atomic.Pointer[envelope.Emitter]      // mediation envelope emitter (nil = disabled)
 	envelopeVerifierPtr  atomic.Pointer[envelope.Verifier]     // inbound mediation envelope verifier (nil = disabled)
 	shieldEngine         *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
@@ -700,7 +703,33 @@ func WithSession(session string) Option {
 // emits signed action receipts for every enforcement decision to the flight
 // recorder. Pass nil to disable (default).
 func WithReceiptEmitter(e *receipt.Emitter) Option {
-	return func(p *Proxy) { p.receiptEmitterPtr.Store(e) }
+	return func(p *Proxy) {
+		p.receiptEmitterPtr.Store(e)
+		p.noteReceiptSignerKey(e.SignerKeyHex())
+	}
+}
+
+// noteReceiptSignerKey records a key this process loaded to sign receipts.
+// A reload may resume a session tail signed by any recorded key: each one is
+// a key this process held, whereas a key found only in the evidence
+// directory proves nothing about who wrote it.
+func (p *Proxy) noteReceiptSignerKey(key string) {
+	if key == "" {
+		return
+	}
+	p.receiptKeysMu.Lock()
+	defer p.receiptKeysMu.Unlock()
+	if !slices.Contains(p.receiptKeysHeld, key) {
+		p.receiptKeysHeld = append(p.receiptKeysHeld, key)
+	}
+}
+
+// receiptSignerKeysHeld returns a copy of the keys recorded by
+// noteReceiptSignerKey.
+func (p *Proxy) receiptSignerKeysHeld() []string {
+	p.receiptKeysMu.Lock()
+	defer p.receiptKeysMu.Unlock()
+	return slices.Clone(p.receiptKeysHeld)
 }
 
 // WithV2ReceiptEmitter sets the v2 proxy_decision emitter. When non-nil, the
@@ -1837,7 +1866,13 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 		Session:             p.session,
+		// A tail under a different key is resumed only when this process
+		// itself loaded that key. The published emitter's key is not enough
+		// on its own: a reload whose session_open was written but not
+		// confirmed leaves its key on the tail while the old emitter stays.
+		PriorSignerKeys: append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex()),
 	})
+	p.noteReceiptSignerKey(emitter.SignerKeyHex())
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", initErr)

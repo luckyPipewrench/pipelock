@@ -211,6 +211,15 @@ func receiverName(expr ast.Expr) string {
 	}
 }
 
+// receiverVarName returns the receiver variable name of a method, or "" for a
+// plain function or an unnamed receiver.
+func receiverVarName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 || len(fn.Recv.List[0].Names) == 0 {
+		return ""
+	}
+	return fn.Recv.List[0].Names[0].Name
+}
+
 func functionKey(packagePath, name string) string {
 	return packagePath + ":" + name
 }
@@ -277,6 +286,10 @@ func calledProductionFunctions(fn *productionFunction, functions map[string]*pro
 			ident, ok := callee.X.(*ast.Ident)
 			if ok && fn.imports[ident.Name] != "" {
 				key = functionKey(fn.imports[ident.Name], callee.Sel.Name)
+			} else if ok && ident.Name == receiverVarName(fn.decl) {
+				// A method called on the function's own receiver (`e.emit()`)
+				// is a static call to a method of the same type.
+				key = functionKey(fn.packagePath, receiverName(fn.decl.Recv.List[0].Type)+"."+callee.Sel.Name)
 			}
 		}
 		if candidate := functions[key]; candidate != nil {

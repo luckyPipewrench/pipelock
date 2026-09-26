@@ -2550,15 +2550,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
-			if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
-				targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
-				for _, d := range decodeEncodingsRecursive(htmlDecoded) {
-					targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-				}
-			}
+			targets = append(targets, queryValueDecodedTargets(decoded)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -4849,4 +4841,28 @@ func baseDomain(hostname string) string {
 // does not touch the scanner, proxy, CLI, session or content-entropy consumers.
 func MatchDomain(hostname, pattern string) bool {
 	return destination.MatchDomain(hostname, pattern)
+}
+
+// queryValueDecodedTargets returns the decoded DLP views of one query value:
+// every recursive base64, hex, and base32 decoding, and the HTML-entity
+// decoding in both orders. Entities are decoded on the raw value and on each
+// decoded result, so a value that is entity-escaped and then encoded is seen
+// as well as one encoded and then entity-escaped. Configured DLP and the core
+// floor both use it so they cannot drift apart.
+func queryValueDecodedTargets(decoded string) []dlpTarget {
+	var targets []dlpTarget
+	addDecoded := func(text string) {
+		for _, d := range decodeEncodingsRecursive(text) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			if h := decodeHTMLEntities(d.text); h != d.text {
+				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})
+			}
+		}
+	}
+	addDecoded(decoded)
+	if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
+		targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
+		addDecoded(htmlDecoded)
+	}
+	return targets
 }

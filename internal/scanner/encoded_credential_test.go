@@ -421,3 +421,33 @@ func reverseString(s string) string {
 	}
 	return string(b)
 }
+
+// A key that is entity-escaped and then base64-encoded is decoded in that
+// order and caught by configured DLP and by the core floor alone.
+func TestEntityEscapedThenEncodedKey(t *testing.T) {
+	key := awsExampleAccessKeyID()
+	escaped := "&#" + "65;" + key[1:]
+	value := base64.StdEncoding.EncodeToString([]byte(escaped))
+	if strings.Contains(value, key) {
+		t.Fatal("premise: the encoded value must not carry the key in the clear")
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{"configured DLP", func(*config.Config) {}},
+		{"core floor only", func(c *config.Config) { c.DLP.Patterns = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			tc.mutate(cfg)
+			s := MustNew(cfg)
+			defer s.Close()
+			r := s.Scan(context.Background(), "https://api.vendor.example/x?d="+url.QueryEscape(value))
+			if r.Allowed || (r.Scanner != ScannerDLP && r.Scanner != ScannerCoreDLP) {
+				t.Fatalf("allowed=%v scanner=%q, want a DLP block", r.Allowed, r.Scanner)
+			}
+		})
+	}
+}

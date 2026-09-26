@@ -746,17 +746,9 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			for _, d := range decodeEncodingsRecursive(decoded) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
-			// The floor sees the same HTML-entity view configured DLP does, so an
-			// empty configured pattern list cannot reopen that encoding.
-			if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
-				targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
-				for _, d := range decodeEncodingsRecursive(htmlDecoded) {
-					targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-				}
-			}
+			// The floor sees the same decoded views configured DLP does, so an
+			// empty configured pattern list cannot reopen an encoding.
+			targets = append(targets, queryValueDecodedTargets(decoded)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}

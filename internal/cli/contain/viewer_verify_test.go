@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/user"
@@ -80,5 +81,68 @@ func TestViewerServiceProbe(t *testing.T) {
 	}
 	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "unit drift") {
 		t.Fatalf("unit drift: %s %s", status, detail)
+	}
+}
+
+func TestViewerServiceProbeFailureDirections(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "pipelock.yaml")
+	servicePath := filepath.Join(root, "pipelock-agent-display.service")
+	service, socket := viewerUnitPaths(&installEnv{displayUnitPath: servicePath})
+	writeConfig := func(enabled bool) {
+		t.Helper()
+		body := "mode: balanced\ncontainment:\n  display:\n    enabled: true\n    viewer:\n      enabled: false\n"
+		if enabled {
+			body = strings.Replace(body, "enabled: false", "enabled: true\n      operator_user: operator", 1)
+		}
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig(false)
+	base := probeEnv{configPath: cfgPath, displayUnitPath: servicePath, stat: os.Lstat, lstat: os.Lstat, readFile: os.ReadFile}
+	if status, detail := probeViewerService(context.Background(), &base); status != statusPass || detail != "viewer disabled" {
+		t.Fatalf("disabled: %s %s", status, detail)
+	}
+	if err := os.WriteFile(socket, []byte(displayUnitMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "disabled but unit remains") {
+		t.Fatalf("disabled stale socket: %s %s", status, detail)
+	}
+	writeConfig(true)
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "legacy viewer HTTP socket") {
+		t.Fatalf("enabled stale socket: %s %s", status, detail)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "viewer unit") {
+		t.Fatalf("missing unit: %s %s", status, detail)
+	}
+	base.stat = func(path string) (os.FileInfo, error) {
+		if path == socket {
+			return nil, os.ErrPermission
+		}
+		return os.Lstat(path)
+	}
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "permission denied") {
+		t.Fatalf("inaccessible socket unit: %s %s", status, detail)
+	}
+	base.stat = os.Lstat
+	yes := true
+	unit := renderViewerServiceUnit(&installEnv{displayUnitPath: servicePath, displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}})
+	if err := os.WriteFile(service, []byte(unit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) { return "inactive", 3, nil }
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "inactive") {
+		t.Fatalf("inactive service: %s %s", status, detail)
+	}
+	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
+		return "", 0, errors.New("manager unavailable")
+	}
+	if status, detail := probeViewerService(context.Background(), &base); status != statusFail || !strings.Contains(detail, "inactive") {
+		t.Fatalf("manager error: %s %s", status, detail)
 	}
 }

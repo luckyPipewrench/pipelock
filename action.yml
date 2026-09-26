@@ -251,9 +251,12 @@ runs:
             if [ "$FINDINGS" -gt 0 ]; then
               echo "<details><summary>Findings</summary>"
               echo ""
-              jq -r '.findings[] |
-                "- **[\(.severity)]** \(.message)" +
-                (if .file then " (`\(.file)`" + (if .line then ":\(.line)" else "" end) + ")" else "" end)' \
+              jq -r 'def markdown_text:
+                  gsub("(?<mark>[[:punct:]])"; "&#\(.mark | explode[0]);") |
+                  gsub("\r"; "&#13;") | gsub("\n"; "&#10;");
+                .findings[] |
+                "- **[\(.severity | markdown_text)]** \(.message | markdown_text)" +
+                (if .file then " (\(.file | markdown_text)" + (if .line then ":\(.line)" else "" end) + ")" else "" end)' \
                 "$REPORT_DIR/audit.json"
               echo ""
               echo "</details>"

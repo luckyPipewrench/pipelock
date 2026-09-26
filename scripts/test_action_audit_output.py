@@ -58,6 +58,17 @@ class ActionAuditOutputTest(unittest.TestCase):
         self.assertIn("critical_count=1", output)
         self.assertIn("file=config%0A%3A%3Awarning", annotations[0])
 
+    def test_server_name_cannot_inject_summary_markdown(self):
+        server = "mcp\n[Review details](https://api.vendor.example) | extra\rrow"
+        _, summary, _ = self.run_audit_step({
+            "severity": "warning", "message": f"MCP server {server} has no policy",
+            "file": ".mcp.json", "line": 4,
+        })
+        self.assertNotIn("\n[Review details]", summary)
+        self.assertNotIn("[Review details](https://api.vendor.example)", summary)
+        self.assertIn("MCP server mcp", summary)
+        self.assertIn("&#46;mcp&#46;json", summary)
+
     def test_normal_annotation_keeps_location_and_message(self):
         stdout, _, _ = self.run_audit_step({
             "severity": "warning", "message": "Detected configuration issue",

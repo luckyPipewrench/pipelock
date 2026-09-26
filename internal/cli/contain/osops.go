@@ -147,6 +147,7 @@ type installEnv struct {
 	workspaceInvPath         string
 	loopbackForwarderInvPath string
 	evidenceACLInvPath       string // operator evidence-read ACL inventory
+	viewerAccountMarkerPath  string // records whether install created pipelock-viewer
 	// evidenceACLPreexisting records that the operator evidence ACL recorded
 	// in the inventory already covered this install's operator and dirs before
 	// the grant step ran, so rolling that step back must leave it in place.
@@ -273,6 +274,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		workspaceInvPath:         defaultWorkspaceInvPath,
 		loopbackForwarderInvPath: defaultLoopbackForwarderInvPath,
 		evidenceACLInvPath:       defaultEvidenceACLInvPath,
+		viewerAccountMarkerPath:  defaultViewerAccountMarkerPath,
 		guardScriptPath:          defaultGuardScriptPath,
 		guardServiceUnit:         defaultGuardServiceUnit,
 		guardPathUnit:            defaultGuardPathUnit,
@@ -328,6 +330,7 @@ const (
 	defaultWorkspaceInvPath         = "/etc/pipelock/contain/workspaces.json"
 	defaultLoopbackForwarderInvPath = "/etc/pipelock/contain/loopback-forwarders.json"
 	defaultEvidenceACLInvPath       = "/etc/pipelock/contain/evidence-acls.json"
+	defaultViewerAccountMarkerPath  = "/etc/pipelock/contain/viewer-account.marker"
 	defaultGuardScriptPath          = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
 	defaultGuardServiceUnit         = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
 	defaultGuardPathUnit            = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.

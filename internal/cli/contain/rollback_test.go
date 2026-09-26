@@ -43,6 +43,9 @@ func TestRollbackViewerUserRequiresCreationRecord(t *testing.T) {
 		t.Fatalf("pre-existing viewer deleted: %v", err)
 	}
 	marker := viewerCreationMarkerPath(env)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(marker, []byte("901\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +330,9 @@ func TestRollbackActions_PurgeUsersOverridesKeepUsers(t *testing.T) {
 	env.displayUnitPath = filepath.Join(t.TempDir(), "display.service")
 	env.lookupUser = func(name string) (*user.User, error) {
 		return &user.User{Uid: "988", Gid: "988", Username: name}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(viewerCreationMarkerPath(env)), 0o750); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(viewerCreationMarkerPath(env), []byte("988\n"), 0o600); err != nil {
 		t.Fatal(err)

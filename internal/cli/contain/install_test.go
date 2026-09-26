@@ -119,6 +119,12 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string
 	if r, ok := f.responses[key]; ok {
 		return r.out, r.code, r.err
 	}
+	if key == "id -u "+viewerUserName {
+		return "900\n", 0, nil
+	}
+	if name == "getfacl" {
+		return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
+	}
 	return "", 0, nil
 }
 
@@ -270,6 +276,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		workspaceInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
 		loopbackForwarderInvPath:      filepath.Join(root, "etc", "pipelock", "contain", "loopback-forwarders.json"),
 		evidenceACLInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		viewerAccountMarkerPath:       filepath.Join(root, "etc", "pipelock", "contain", "viewer-account.marker"),
 		guardScriptPath:               filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
 		guardServiceUnit:              filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
 		guardPathUnit:                 filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),

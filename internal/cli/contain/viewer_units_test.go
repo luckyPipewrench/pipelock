@@ -88,6 +88,46 @@ func TestViewerIdentityProvisioning(t *testing.T) {
 	}
 }
 
+// TestViewerCreationMarkerPathIsAbsoluteAndIndependentOfDisplayUnitPath guards
+// against deriving the marker location from displayUnitPath's directory: a
+// caller that leaves displayUnitPath unset (every full-install test that
+// doesn't need the display unit) previously turned the marker into a
+// relative path resolved against the process's current working directory,
+// which left a stray "pipelock-contain-viewer.user-created" file inside the
+// package source tree. The marker must come from its own dedicated,
+// injectable field.
+func TestViewerCreationMarkerPathIsAbsoluteAndIndependentOfDisplayUnitPath(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.displayUnitPath = ""
+	if got := viewerCreationMarkerPath(env); !filepath.IsAbs(got) {
+		t.Fatalf("viewer creation marker path is not absolute with an empty displayUnitPath: %q", got)
+	}
+	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+"\n", 0, nil)
+	runner.on("id -u "+viewerUserName, "900\n", 0, nil)
+	changed, err := stepCreateViewerUser().apply(context.Background(), env)
+	if err != nil || !changed {
+		t.Fatalf("viewer account provisioning with empty displayUnitPath: changed=%v err=%v", changed, err)
+	}
+	marker := viewerCreationMarkerPath(env)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("marker not written at its configured path: %v", err)
+	}
+	if _, err := os.Stat(viewerUnitBase + ".user-created"); err == nil {
+		t.Fatalf("marker leaked into the process working directory: %s", viewerUnitBase+".user-created")
+	}
+}
+
+func TestViewerCreationMarkerDirFailure(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on("id -nG "+env.proxyUserName, env.proxyUserName+"\n", 0, nil)
+	runner.on("id -u "+viewerUserName, "900\n", 0, nil)
+	env.mkdirAll = func(string, os.FileMode) error { return os.ErrPermission }
+	changed, err := stepCreateViewerUser().apply(context.Background(), env)
+	if !changed || !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("marker directory failure: changed=%v err=%v", changed, err)
+	}
+}
+
 func TestViewerLegacyUnitStateCountsWithoutUnitFile(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
@@ -503,4 +543,257 @@ func TestViewerInvalidBackendPreservesLegacySocket(t *testing.T) {
 	if len(runner.calls) != 0 {
 		t.Fatalf("systemctl called before backend validation: %+v", runner.calls)
 	}
+}
+
+func TestStepCreateViewerUserExistingAccountBoundaryErrors(t *testing.T) {
+	t.Run("root account rejected", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "0", Gid: "0"}, nil }
+		if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "must not be root") {
+			t.Fatalf("root viewer account accepted: %v", err)
+		}
+	})
+	t.Run("peer lookup failure", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == viewerUserName {
+				return &user.User{Uid: "900", Gid: "900"}, nil
+			}
+			return nil, errors.New("directory unavailable")
+		}
+		if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "inspect viewer identity boundary") {
+			t.Fatalf("peer lookup failure not reported: %v", err)
+		}
+	})
+	t.Run("shared uid with a peer identity", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == viewerUserName {
+				return &user.User{Uid: "987", Gid: "900"}, nil
+			}
+			return &user.User{Uid: "987"}, nil
+		}
+		if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "shares another containment identity") {
+			t.Fatalf("shared uid accepted: %v", err)
+		}
+	})
+	t.Run("empty boundary name is skipped", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.operatorUser = ""
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == viewerUserName {
+				return &user.User{Uid: "900", Gid: "901"}, nil
+			}
+			return &user.User{Uid: "1000", Gid: "1000"}, nil
+		}
+		runner.on("getent group "+viewerUserName, viewerUserName+":x:901:\n", 0, nil)
+		if _, err := stepCreateViewerUser().apply(context.Background(), env); err != nil {
+			t.Fatalf("empty operatorUser boundary: %v", err)
+		}
+	})
+	t.Run("lookup error other than unknown user", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return nil, errors.New("directory unavailable") }
+		if _, err := stepCreateViewerUser().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "viewer account lookup") {
+			t.Fatalf("non-unknown-user lookup error not reported: %v", err)
+		}
+	})
+}
+
+func TestStepCreateViewerUserUndoErrorPaths(t *testing.T) {
+	t.Run("marker removal failure on an absent account", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return nil, user.UnknownUserError(viewerUserName) }
+		env.removeFile = func(string) error { return os.ErrPermission }
+		if err := stepCreateViewerUser().undo(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("absent-account marker removal error = %v", err)
+		}
+	})
+	t.Run("lookup error other than unknown user", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return nil, errors.New("directory unavailable") }
+		if err := stepCreateViewerUser().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "directory unavailable") {
+			t.Fatalf("undo lookup error not reported: %v", err)
+		}
+	})
+	t.Run("userdel failure", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "900"}, nil }
+		runner.on("userdel -r "+viewerUserName, "denied", 1, nil)
+		if err := stepCreateViewerUser().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "userdel") {
+			t.Fatalf("userdel failure not reported: %v", err)
+		}
+	})
+	t.Run("marker removal failure after userdel", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "900"}, nil }
+		env.removeFile = func(string) error { return os.ErrPermission }
+		if err := stepCreateViewerUser().undo(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("post-userdel marker removal error = %v", err)
+		}
+	})
+}
+
+func TestCheckViewerOperatorIdentityLookupErrors(t *testing.T) {
+	yes := true
+	t.Run("operator lookup failure", func(t *testing.T) {
+		env := &installEnv{displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
+		env.lookupUser = func(string) (*user.User, error) { return nil, errors.New("directory unavailable") }
+		if err := checkViewerOperatorIdentity(env); err == nil || !strings.Contains(err.Error(), "lookup viewer operator") {
+			t.Fatalf("operator lookup failure not reported: %v", err)
+		}
+	})
+	t.Run("service account lookup failure", func(t *testing.T) {
+		env := &installEnv{agentUserName: "agent", displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == "operator" {
+				return &user.User{Uid: "1000"}, nil
+			}
+			return nil, errors.New("directory unavailable")
+		}
+		if err := checkViewerOperatorIdentity(env); err == nil || !strings.Contains(err.Error(), "lookup containment service account agent") {
+			t.Fatalf("service account lookup failure not reported: %v", err)
+		}
+	})
+}
+
+func TestCheckViewerGroupCommandFailure(t *testing.T) {
+	run := func(context.Context, string, ...string) (string, int, error) { return "denied", 1, nil }
+	if err := checkViewerGroup(context.Background(), run, "900"); err == nil || !strings.Contains(err.Error(), "inspect viewer group") {
+		t.Fatalf("getent failure not reported: %v", err)
+	}
+}
+
+func TestCheckViewerProxyIsolationEdgeCases(t *testing.T) {
+	t.Run("empty proxy name is a no-op", func(t *testing.T) {
+		called := false
+		run := func(context.Context, string, ...string) (string, int, error) { called = true; return "", 0, nil }
+		if err := checkViewerProxyIsolation(context.Background(), run, ""); err != nil || called {
+			t.Fatalf("empty proxy name: err=%v called=%v", err, called)
+		}
+	})
+	t.Run("command failure", func(t *testing.T) {
+		run := func(context.Context, string, ...string) (string, int, error) { return "denied", 1, nil }
+		if err := checkViewerProxyIsolation(context.Background(), run, "proxy"); err == nil || !strings.Contains(err.Error(), "inspect proxy group membership") {
+			t.Fatalf("command failure not reported: %v", err)
+		}
+	})
+}
+
+func TestRenderViewerServiceUnitClipboardEnabled(t *testing.T) {
+	yes := true
+	env := &installEnv{agentUserName: "agent", pipelockTarget: "/usr/local/bin/pipelock", displayNumber: 99, displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator", Clipboard: &yes}}}
+	unit := renderViewerServiceUnit(env)
+	if !strings.Contains(unit, "--clipboard=true") {
+		t.Fatalf("clipboard flag not rendered true: %s", unit)
+	}
+}
+
+func TestStepProvisionViewerRaceAndFailurePaths(t *testing.T) {
+	t.Run("read failure after ownership validation passes", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		env.displayEnabled = true
+		yes := true
+		env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+		var calls int
+		env.readFile = func(string) ([]byte, error) {
+			calls++
+			if calls <= 4 {
+				return nil, os.ErrNotExist
+			}
+			return nil, os.ErrPermission
+		}
+		if _, err := stepProvisionViewer().apply(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("post-validation read failure = %v", err)
+		}
+	})
+	t.Run("unit becomes foreign between validation and the state read", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		env.displayEnabled = true
+		yes := true
+		env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+		var calls int
+		env.readFile = func(string) ([]byte, error) {
+			calls++
+			if calls <= 4 {
+				return nil, os.ErrNotExist
+			}
+			return []byte("[Unit]\nDescription=foreign\n"), nil
+		}
+		if _, err := stepProvisionViewer().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "is not Pipelock-managed") {
+			t.Fatalf("race-detected foreign unit not reported: %v", err)
+		}
+	})
+	t.Run("ensureContainmentUnit failure", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		env.displayEnabled = true
+		yes := true
+		env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+		env.mkdirAll = func(string, os.FileMode) error { return os.ErrPermission }
+		if _, err := stepProvisionViewer().apply(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("ensureContainmentUnit failure not reported: %v", err)
+		}
+	})
+	t.Run("restart failure", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		env.displayEnabled = true
+		yes := true
+		env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}
+		service, socket := viewerUnitPaths(env)
+		old := displayUnitMarker + "\n[Service]\nDescription=old\n"
+		for _, path := range []string{service, socket} {
+			if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner.on("systemctl is-enabled "+filepath.Base(path), "enabled\n", 0, nil)
+			runner.on("systemctl is-active "+filepath.Base(path), "active\n", 0, nil)
+		}
+		runner.on("systemctl restart "+filepath.Base(service), "denied", 1, nil)
+		if _, err := stepProvisionViewer().apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "denied") {
+			t.Fatalf("restart failure not reported: %v", err)
+		}
+	})
+}
+
+func TestStepProvisionViewerUndoRemovesUnitThatDidNotPreExist(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+	service, socket := viewerUnitPaths(env)
+	for _, path := range []string{service, socket} {
+		if err := os.WriteFile(path, []byte(displayUnitMarker+"\n[Unit]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.removeFile = func(string) error { return os.ErrPermission }
+	if err := stepProvisionViewer().undo(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("undo removal of a non-preexisting unit = %v", err)
+	}
+}
+
+func TestActionRemoveViewerCommandFailures(t *testing.T) {
+	t.Run("socket disable failure", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		_, socket := viewerUnitPaths(env)
+		runner.on("systemctl disable --now "+filepath.Base(socket), "denied", 1, nil)
+		if err := actionRemoveViewer().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "systemctl disable --now "+filepath.Base(socket)) {
+			t.Fatalf("socket disable failure not reported: %v", err)
+		}
+	})
+	t.Run("removal failure", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+		service, _ := viewerUnitPaths(env)
+		if err := os.WriteFile(service, []byte(displayUnitMarker+"\n[Service]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env.removeFile = func(string) error { return os.ErrPermission }
+		if err := actionRemoveViewer().undo(context.Background(), env); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("removal failure not reported: %v", err)
+		}
+	})
 }

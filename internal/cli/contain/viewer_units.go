@@ -62,7 +62,11 @@ func stepCreateViewerUser() step {
 		if parsed, parseErr := strconv.ParseUint(strings.TrimSpace(uid), 10, 32); parseErr != nil || parsed == 0 {
 			return true, errors.New("created viewer UID is invalid")
 		}
-		if err := env.writeFile(viewerCreationMarkerPath(env), []byte(strings.TrimSpace(uid)+"\n"), 0o600); err != nil {
+		marker := viewerCreationMarkerPath(env)
+		if err := env.mkdirAll(filepath.Dir(marker), modeDirTraversable); err != nil {
+			return true, fmt.Errorf("mkdir %s: %w", filepath.Dir(marker), err)
+		}
+		if err := env.writeFile(marker, []byte(strings.TrimSpace(uid)+"\n"), 0o600); err != nil {
 			return true, fmt.Errorf("record created viewer account: %w", err)
 		}
 		return true, nil
@@ -86,7 +90,7 @@ func stepCreateViewerUser() step {
 }
 
 func viewerCreationMarkerPath(env *installEnv) string {
-	return filepath.Join(filepath.Dir(env.displayUnitPath), viewerUnitBase+".user-created")
+	return env.viewerAccountMarkerPath
 }
 
 func checkViewerOperatorIdentity(env *installEnv) error {

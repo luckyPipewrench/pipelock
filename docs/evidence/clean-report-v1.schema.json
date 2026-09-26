@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/schemas/clean-report-v1.schema.json",
+  "title": "Pipelock clean report v1",
+  "type": "object",
+  "required": ["schema_version", "verification_mode", "chain", "actions"],
+  "properties": {
+    "schema_version": {"const": "pipelock.clean_report.v1"},
+    "verification_mode": {"enum": ["pinned_provenance", "unpinned_structural"]},
+    "chain": {"type": "object"},
+    "actions": {"type": "array"}
+  }
+}

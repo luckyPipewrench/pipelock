@@ -1072,8 +1072,10 @@ func verifyChainResultDetailed(out io.Writer, label string, receipts []receipt.R
 }
 
 type cleanActionReport struct {
-	Chain   cleanChainSummary  `json:"chain"`
-	Actions []cleanActionEntry `json:"actions"`
+	SchemaVersion    string             `json:"schema_version"`
+	VerificationMode string             `json:"verification_mode"`
+	Chain            cleanChainSummary  `json:"chain"`
+	Actions          []cleanActionEntry `json:"actions"`
 }
 
 type cleanChainSummary struct {
@@ -1122,6 +1124,11 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 	if err != nil {
 		return err
 	}
+	report.SchemaVersion = "pipelock.clean_report.v1"
+	report.VerificationMode = "pinned_provenance"
+	if len(trustedKeys) == 0 {
+		report.VerificationMode = "unpinned_structural"
+	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal clean report: %w", err)
@@ -1129,7 +1136,11 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 	if err := atomicfile.Write(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write clean report: %w", err)
 	}
-	_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID: %s\n", label)
+	if report.VerificationMode == "unpinned_structural" {
+		_, _ = fmt.Fprintf(out, "CLEAN REPORT UNPINNED (structural verification only): %s\n", label)
+	} else {
+		_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID (pinned provenance): %s\n", label)
+	}
 	_, _ = fmt.Fprintf(out, "  Actions:   %d\n", len(report.Actions))
 	_, _ = fmt.Fprintf(out, "  Report:    %s\n", reportPath)
 	return nil

@@ -1582,6 +1582,45 @@ func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_CleanReportVerificationMode(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantMode string
+		wantText string
+	}{
+		{"pinned", []string{"--key", hex.EncodeToString(pubKey)}, "pinned_provenance", "CLEAN REPORT VALID"},
+		{"unpinned", []string{"--allow-unpinned"}, "unpinned_structural", "CLEAN REPORT UNPINNED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reportPath := filepath.Join(t.TempDir(), "report.json")
+			cmd := VerifyReceiptCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs(append([]string{path, "--clean-report", reportPath}, tc.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Clean(reportPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report map[string]any
+			if err := json.Unmarshal(raw, &report); err != nil {
+				t.Fatal(err)
+			}
+			if report["schema_version"] != "pipelock.clean_report.v1" || report["verification_mode"] != tc.wantMode {
+				t.Fatalf("report trust contract: %s", raw)
+			}
+			if !strings.Contains(out.String(), tc.wantText) {
+				t.Fatalf("output: %s", out.String())
+			}
+		})
+	}
+}
+
 func TestVerifyReceiptCmd_CleanReportRefusesKeyFileAlias(t *testing.T) {
 	t.Parallel()
 	path, pubKey := buildDeferredCleanChainJSONL(t)

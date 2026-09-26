@@ -54,6 +54,7 @@ func TestFileEmergencyStoreRemoteKillLatest(t *testing.T) {
 		t.Fatalf("LatestRemoteKill(other) err = %v, want ErrEmergencyNotFound", err)
 	}
 
+	_ = store.Close()
 	reopened, err := OpenFileEmergencyStore(store.dir)
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)

@@ -30,6 +30,7 @@ const (
 
 var (
 	ErrEmergencyStoreRequired    = errors.New("conductor emergency control store required")
+	ErrEmergencyStoreClosed      = errors.New("conductor emergency control store closed")
 	ErrEmergencyNotFound         = errors.New("conductor emergency control message not found")
 	ErrEmergencyConflict         = errors.New("conductor emergency control message conflicts with stored message")
 	ErrEmergencyStaleCounter     = errors.New("conductor emergency control counter is stale")
@@ -67,6 +68,7 @@ type EmergencyStore interface {
 type FileEmergencyStore struct {
 	dir               string
 	statePath         string
+	lockFile          *os.File
 	mu                sync.RWMutex
 	remoteKills       []StoredRemoteKill
 	remoteKillHashes  map[string]StoredRemoteKill
@@ -74,11 +76,19 @@ type FileEmergencyStore struct {
 	rollbacks         []StoredRollbackAuthorization
 	rollbackHashes    map[string]StoredRollbackAuthorization
 	rollbackAuthIDMap map[string]string
+	rollbackCounters  []rollbackCounterFloor
+}
+
+type rollbackCounterFloor struct {
+	OrgID   string `json:"org_id"`
+	FleetID string `json:"fleet_id"`
+	Counter uint64 `json:"counter"`
 }
 
 type emergencyStateRecord struct {
-	RemoteKills []StoredRemoteKill            `json:"remote_kills,omitempty"`
-	Rollbacks   []StoredRollbackAuthorization `json:"rollback_authorizations,omitempty"`
+	RemoteKills      []StoredRemoteKill            `json:"remote_kills,omitempty"`
+	Rollbacks        []StoredRollbackAuthorization `json:"rollback_authorizations,omitempty"`
+	RollbackCounters []rollbackCounterFloor        `json:"rollback_counter_floors,omitempty"`
 }
 
 func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
@@ -89,7 +99,12 @@ func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	lockFile, err := lockEmergencyDirectory(root)
+	if err != nil {
+		return nil, fmt.Errorf("conductor emergency control store directory %s is already in use: %w", root, err)
+	}
 	store := &FileEmergencyStore{
+		lockFile:          lockFile,
 		dir:               root,
 		statePath:         filepath.Join(root, emergencyStateFileName),
 		remoteKillHashes:  make(map[string]StoredRemoteKill),
@@ -98,9 +113,32 @@ func OpenFileEmergencyStore(dir string) (*FileEmergencyStore, error) {
 		rollbackAuthIDMap: make(map[string]string),
 	}
 	if err := store.load(); err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *FileEmergencyStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return nil
+	}
+	file := s.lockFile
+	s.lockFile = nil
+	return file.Close()
+}
+
+// checkOpenLocked requires the caller to hold s.mu for reading or writing.
+func (s *FileEmergencyStore) checkOpenLocked() error {
+	if s.lockFile == nil {
+		return ErrEmergencyStoreClosed
+	}
+	return nil
 }
 
 func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.RemoteKillMessage, now time.Time) (StoredRemoteKill, bool, error) {
@@ -127,6 +165,9 @@ func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, false, err
+	}
 	existing, idempotent, err := s.remoteKillDecisionLocked(msg, hash)
 	if err != nil {
 		return StoredRemoteKill{}, false, err
@@ -160,6 +201,9 @@ func (s *FileEmergencyStore) LatestRemoteKill(_ context.Context, follower Follow
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, err
+	}
 	var best StoredRemoteKill
 	for _, record := range s.remoteKills {
 		if err := record.Message.ValidateAtTime(now); err != nil {
@@ -202,6 +246,9 @@ func (s *FileEmergencyStore) PublishRollbackAuthorization(_ context.Context, aut
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	existing, idempotent, err := s.rollbackAuthDecisionLocked(auth, hash)
 	if err != nil {
 		return StoredRollbackAuthorization{}, false, err
@@ -238,6 +285,9 @@ func (s *FileEmergencyStore) LatestRollbackAuthorization(_ context.Context, foll
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, err
+	}
 	var best StoredRollbackAuthorization
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
@@ -277,6 +327,9 @@ func (s *FileEmergencyStore) ActiveRollbackForFollower(_ context.Context, follow
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	var best StoredRollbackAuthorization
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
@@ -348,6 +401,17 @@ func (s *FileEmergencyStore) load() error {
 		s.rollbackHashes[rb.AuthorizationHash] = rb
 		s.rollbackAuthIDMap[rb.Authorization.AuthorizationID] = rb.AuthorizationHash
 	}
+	for _, floor := range record.RollbackCounters {
+		if err := validateRollbackCounterFloor(floor); err != nil {
+			return err
+		}
+		for _, prior := range s.rollbackCounters {
+			if prior.OrgID == floor.OrgID && prior.FleetID == floor.FleetID {
+				return fmt.Errorf("%w: duplicate rollback counter scope", ErrInvalidEmergencyRecord)
+			}
+		}
+		s.rollbackCounters = append(s.rollbackCounters, floor)
+	}
 	return nil
 }
 
@@ -364,6 +428,9 @@ func (s *FileEmergencyStore) enumerateRollbacks(_ context.Context) ([]StoredRoll
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return nil, err
+	}
 	return slices.Clone(s.rollbacks), nil
 }
 
@@ -378,6 +445,9 @@ func (s *FileEmergencyStore) enumerateRemoteKills(_ context.Context) ([]StoredRe
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return nil, err
+	}
 	return slices.Clone(s.remoteKills), nil
 }
 
@@ -390,6 +460,9 @@ func (s *FileEmergencyStore) remoteKillByHash(_ context.Context, hash string) (S
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRemoteKill{}, false, err
+	}
 	record, ok := s.remoteKillHashes[hash]
 	return record, ok, nil
 }
@@ -403,14 +476,21 @@ func (s *FileEmergencyStore) rollbackAuthorizationByHash(_ context.Context, hash
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	record, ok := s.rollbackHashes[hash]
 	return record, ok, nil
 }
 
 func (s *FileEmergencyStore) writeLocked() error {
+	if err := s.checkOpenLocked(); err != nil {
+		return err
+	}
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
-		RemoteKills: s.remoteKills,
-		Rollbacks:   s.rollbacks,
+		RemoteKills:      s.remoteKills,
+		Rollbacks:        s.rollbacks,
+		RollbackCounters: s.rollbackCounters,
 	})
 }
 
@@ -464,12 +544,30 @@ func writeEmergencyState(path string, record emergencyStateRecord) error {
 			return err
 		}
 	}
+	for _, floor := range record.RollbackCounters {
+		if err := validateRollbackCounterFloor(floor); err != nil {
+			return err
+		}
+	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("conductor emergency store marshal state: %w", err)
 	}
 	data = append(data, '\n')
 	return durableWrite(path, data)
+}
+
+func validateRollbackCounterFloor(floor rollbackCounterFloor) error {
+	if err := conductor.ValidateIdentifier("org_id", floor.OrgID); err != nil {
+		return err
+	}
+	if err := conductor.ValidateIdentifier("fleet_id", floor.FleetID); err != nil {
+		return err
+	}
+	if floor.Counter == 0 {
+		return fmt.Errorf("%w: rollback counter floor is zero", ErrInvalidEmergencyRecord)
+	}
+	return nil
 }
 
 func validateStoredRemoteKill(record StoredRemoteKill) error {
@@ -547,6 +645,9 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return false, err
+	}
 	hash, ok := s.rollbackAuthIDMap[authorizationID]
 	if !ok {
 		return false, nil
@@ -563,7 +664,25 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 	// write would let a cleared-in-memory-only authorization stop capping the
 	// stream head while disk still has it.
 	removed, hadRecord := s.rollbackHashes[hash]
+	if !hadRecord {
+		return false, fmt.Errorf("%w: rollback authorization missing", ErrInvalidEmergencyRecord)
+	}
 	originalRollbacks := s.rollbacks
+	originalCounters := slices.Clone(s.rollbackCounters)
+	foundFloor := false
+	for i := range s.rollbackCounters {
+		floor := &s.rollbackCounters[i]
+		if floor.OrgID == removed.Authorization.OrgID && floor.FleetID == removed.Authorization.FleetID {
+			if removed.Authorization.Counter > floor.Counter {
+				floor.Counter = removed.Authorization.Counter
+			}
+			foundFloor = true
+			break
+		}
+	}
+	if !foundFloor {
+		s.rollbackCounters = append(s.rollbackCounters, rollbackCounterFloor{OrgID: removed.Authorization.OrgID, FleetID: removed.Authorization.FleetID, Counter: removed.Authorization.Counter})
+	}
 	// Remove from the ID→hash map and the hash→record map.
 	delete(s.rollbackAuthIDMap, authorizationID)
 	delete(s.rollbackHashes, hash)
@@ -584,6 +703,7 @@ func (s *FileEmergencyStore) ClearRollbackAuthorizationMatching(_ context.Contex
 			s.rollbackHashes[hash] = removed
 		}
 		s.rollbacks = originalRollbacks
+		s.rollbackCounters = originalCounters
 		return false, fmt.Errorf("conductor emergency store write after clear: %w", err)
 	}
 	return true, nil
@@ -600,6 +720,9 @@ func (s *FileEmergencyStore) RollbackAuthorizationByID(_ context.Context, author
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.checkOpenLocked(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
 	hash, ok := s.rollbackAuthIDMap[authorizationID]
 	if !ok {
 		return StoredRollbackAuthorization{}, false, nil
@@ -663,6 +786,12 @@ func (s *FileEmergencyStore) maxRemoteKillCounterForOrgFleetLocked(orgID, fleetI
 func (s *FileEmergencyStore) maxRollbackCounterForOrgFleetLocked(orgID, fleetID string) (uint64, bool) {
 	var maxCounter uint64
 	found := false
+	for _, floor := range s.rollbackCounters {
+		if floor.OrgID == orgID && floor.FleetID == fleetID {
+			maxCounter, found = floor.Counter, true
+			break
+		}
+	}
 	for _, record := range s.rollbacks {
 		auth := record.Authorization
 		if auth.OrgID != orgID || auth.FleetID != fleetID {

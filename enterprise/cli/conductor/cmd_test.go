@@ -33,6 +33,32 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+func TestWaitForServeShutdownDrainsBeforeStoreClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	drained := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		waitForServeShutdown(cancel, drained)
+		close(returned)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown was not requested")
+	}
+	select {
+	case <-returned:
+		t.Fatal("store close could run before HTTP drain completed")
+	default:
+	}
+	close(drained)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after HTTP drain completed")
+	}
+}
+
 func TestServeCmd_NoFleetLicenseFailsClosed(t *testing.T) {
 	t.Setenv(license.EnvLicenseKey, "")
 	t.Setenv(license.EnvLicensePublicKey, "")

@@ -101,6 +101,7 @@ func TestContainmentDisplayGeometry(t *testing.T) {
 		{"319x200", false},
 		{"320x199", false},
 		{"65536x200", false},
+		{"99999x99999", false},
 		{"320x65536", false},
 		{"0x200", false},
 		{"320x0", false},

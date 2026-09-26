@@ -190,9 +190,12 @@ func renderAgentDisplayUnit(env *installEnv) string {
 				// Inspect every directory before changing any of their ACLs.
 				post += "; acl=$(getfacl -cp " + strconv.Quote(dir) + ") || exit 1"
 				post += "; if printf \"%s\\n\" \"$acl\" | grep -E \"^(user:[^:]+:|group:[^:]+:)\" | grep -v \"^user:" + env.proxyUserName + ":\" >/dev/null; then echo \"viewer traverse directory has unrelated ACL entries: " + dir + "\" >&2; exit 1; fi"
+				post += "; if printf \"%s\\n\" \"$acl\" | grep -q \"^mask::\" && ! printf \"%s\\n\" \"$acl\" | grep -q \"^user:" + env.proxyUserName + ":\"; then echo \"viewer traverse directory has pre-existing ACL mask: " + dir + "\" >&2; exit 1; fi"
 			}
 			for _, dir := range viewerTraverseDirs(env.agentHome) {
-				post += "; setfacl -n -m u:" + env.proxyUserName + ":--x,g::---,m::--x " + strconv.Quote(dir) + " || exit 1"
+				// Let setfacl derive the mask from the existing group entry and
+				// the proxy grant. Revocation derives it again, preserving group access.
+				post += "; setfacl -m u:" + env.proxyUserName + ":--x " + strconv.Quote(dir) + " || exit 1"
 			}
 		}
 		// TigerVNC Xvnc.man documents the RFB socket, TCP disable, and clipboard parameters:
@@ -265,8 +268,43 @@ func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
 		} else if err != nil {
 			return fmt.Errorf("inspect viewer traverse directory %s: %w", dir, err)
 		}
-		if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
-			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+		if err := revokeViewerTraverseDir(ctx, env, dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) error {
+	priorACL, code, err := env.runCmd(ctx, "getfacl", "-cp", dir)
+	if err != nil {
+		return fmt.Errorf("inspect viewer traverse ACL on %s: %w", dir, err)
+	}
+	if code != 0 {
+		return fmt.Errorf("inspect viewer traverse ACL on %s: exit %d", dir, code)
+	}
+	hadProxyEntry := strings.Contains("\n"+priorACL, "\nuser:"+env.proxyUserName+":")
+	if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
+		return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+	}
+	acl, code, err := env.runCmd(ctx, "getfacl", "-cp", dir)
+	if err != nil {
+		return fmt.Errorf("inspect viewer traverse ACL on %s: %w", dir, err)
+	}
+	if code != 0 {
+		return fmt.Errorf("inspect viewer traverse ACL on %s: exit %d", dir, code)
+	}
+	// The grant is the only named entry on a managed directory. Once
+	// revoked, remove the mask it introduced without changing group::.
+	named := false
+	for _, line := range strings.Split(acl, "\n") {
+		if (strings.HasPrefix(line, "user:") && !strings.HasPrefix(line, "user::")) || (strings.HasPrefix(line, "group:") && !strings.HasPrefix(line, "group::")) {
+			named = true
+		}
+	}
+	if hadProxyEntry && !named && strings.Contains(acl, "mask::") {
+		if err := runOrErr(ctx, env, "setfacl", "-b", dir); err != nil {
+			return fmt.Errorf("restore viewer traverse ACL mask on %s: %w", dir, err)
 		}
 	}
 	return nil

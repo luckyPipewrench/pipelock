@@ -691,7 +691,7 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 	env.xvncPath = "/usr/bin/Xvnc"
 	env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, Clipboard: &yes, OperatorUser: "operator"}}
 	unit := renderAgentDisplayUnit(env)
-	for _, want := range []string{"setfacl -n -m u:" + env.proxyUserName + ":rw", "setfacl -n -m u:" + env.proxyUserName + ":--x,g::---,m::--x", "-rfbunixmode 0600"} {
+	for _, want := range []string{"setfacl -n -m u:" + env.proxyUserName + ":rw", "setfacl -m u:" + env.proxyUserName + ":--x", "-rfbunixmode 0600"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("viewer unit missing %q: %s", want, unit)
 		}
@@ -709,6 +709,62 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 	err := removeViewerTraverseACL(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "revoke viewer traverse ACL") || !strings.Contains(err.Error(), env.agentHome) {
 		t.Fatalf("ACL revocation error = %v", err)
+	}
+}
+
+func TestViewerTraverseACLRestoresGroupAccess(t *testing.T) {
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		t.Skip("setfacl unavailable")
+	}
+	if _, err := exec.LookPath("getfacl"); err != nil {
+		t.Skip("getfacl unavailable")
+	}
+	dir := t.TempDir()
+	// #nosec G302 -- the fixture needs a group entry to catch permission drift.
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the command targets this test's temporary directory.
+	if output, err := exec.CommandContext(context.Background(), "setfacl", "-m", "g::r-x", dir).CombinedOutput(); err != nil {
+		t.Fatalf("seed group ACL: %v: %s", err, output)
+	}
+	// #nosec G204 -- the command reads this test's temporary directory.
+	before, err := exec.CommandContext(context.Background(), "getfacl", "-cp", dir).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyUID := "65534"
+	if os.Getuid() == 65534 {
+		proxyUID = "65533"
+	}
+	// #nosec G204 -- the command targets this test's temporary directory.
+	if output, err := exec.CommandContext(context.Background(), "setfacl", "-m", "u:"+proxyUID+":--x", dir).CombinedOutput(); err != nil {
+		t.Fatalf("grant ACL: %v: %s", err, output)
+	}
+	env, _, _ := newFakeEnv(t)
+	proxyUser, err := user.LookupId(proxyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.proxyUserName = proxyUser.Username
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		// #nosec G204 -- production passes only getfacl/setfacl and the test directory.
+		output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+		if err != nil {
+			return string(output), 1, err
+		}
+		return string(output), 0, nil
+	}
+	if err := revokeViewerTraverseDir(context.Background(), env, dir); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the command reads this test's temporary directory.
+	after, err := exec.CommandContext(context.Background(), "getfacl", "-cp", dir).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("ACL changed after grant and revoke:\nbefore: %s\nafter: %s", before, after)
 	}
 }
 

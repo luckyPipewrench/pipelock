@@ -153,6 +153,62 @@ func TestViewerBusyAndRelease(t *testing.T) {
 	<-thirdDone
 }
 
+func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
+	var seconds atomic.Int64
+	base := time.Now()
+	v := testViewer(t)
+	v.cfg.LeaseRenewInterval = time.Hour
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	first, _, firstDone := startViewer(t, v, "control")
+	v.mu.Lock()
+	previous := v.lease.conn
+	v.mu.Unlock()
+	seconds.Store(31)
+	second, _, secondDone := startViewer(t, v, "control")
+	v.mu.Lock()
+	replacement := v.lease.conn
+	v.mu.Unlock()
+	if replacement == nil || replacement == previous || !v.controls(replacement) {
+		t.Fatal("replacement controller did not own expired lease")
+	}
+	if v.controls(previous) {
+		t.Fatal("expired controller retained input authority")
+	}
+	_ = first.Close()
+	<-firstDone
+	if !v.controls(replacement) {
+		t.Fatal("old controller exit revoked replacement")
+	}
+	_ = second.Close()
+	<-secondDone
+}
+
+func TestExpiredControlLeaseCannotRenew(t *testing.T) {
+	var seconds atomic.Int64
+	base := time.Now()
+	v := testViewer(t)
+	v.cfg.LeaseRenewInterval = time.Millisecond
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	first, _, firstDone := startViewer(t, v, "control")
+	seconds.Store(31)
+	deadline := time.After(time.Second)
+	for {
+		v.mu.Lock()
+		cleared := v.lease.conn == nil
+		v.mu.Unlock()
+		if cleared {
+			break
+		}
+		select {
+		case <-time.After(time.Millisecond):
+		case <-deadline:
+			t.Fatal("renewal revived expired lease")
+		}
+	}
+	_ = first.Close()
+	<-firstDone
+}
+
 func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 	v := testViewer(t)
 	for _, tc := range []struct {

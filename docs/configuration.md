@@ -1746,6 +1746,8 @@ The proxy will not dial its own configured metrics address and port. That rule r
 
 `containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–32768 and height 200–32768, with at most 16,777,216 pixels (64 MiB at four bytes per pixel).
 
+Changes to the display backend, geometry, or viewer settings require `pipelock contain install`. Configuration reload retains the installed display settings and does not apply those changes.
+
 ```yaml
 containment:
   display:

@@ -112,6 +112,9 @@ func TestViewerRemovalRejectsForeignBackupAndCommandFailure(t *testing.T) {
 	if _, err := os.Stat(service + ".bak"); err != nil {
 		t.Fatalf("foreign backup was removed: %v", err)
 	}
+	if err := os.Remove(service + ".bak"); err != nil {
+		t.Fatal(err)
+	}
 	runner.on("systemctl disable --now "+filepath.Base(service), "", 1, errors.New("stop failed"))
 	err = actionRemoveViewer().undo(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "stop failed") {
@@ -340,5 +343,53 @@ func TestViewerInstallRefusesForeignUnit(t *testing.T) {
 	got, err := os.ReadFile(filepath.Clean(service))
 	if err != nil || string(got) != "[Service]\nExecStart=/other\n" {
 		t.Fatalf("foreign unit altered: %q, %v", got, err)
+	}
+}
+
+func TestViewerUnitOwnershipCheckedBeforeSystemctl(t *testing.T) {
+	for _, target := range []string{"service", "service.bak", "socket", "socket.bak"} {
+		t.Run(target, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+			service, socket := viewerUnitPaths(env)
+			paths := map[string]string{"service": service, "service.bak": service + ".bak", "socket": socket, "socket.bak": socket + ".bak"}
+			if err := os.WriteFile(paths[target], []byte("[Unit]\nDescription=foreign\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, apply := range []func() error{
+				func() error { _, err := stepProvisionViewer().apply(context.Background(), env); return err },
+				func() error { return actionRemoveViewer().undo(context.Background(), env) },
+			} {
+				runner.calls = nil
+				if err := apply(); err == nil || !strings.Contains(err.Error(), "not Pipelock-managed") {
+					t.Fatalf("ownership rejection = %v", err)
+				}
+				if len(runner.calls) != 0 {
+					t.Fatalf("systemctl called before ownership validation: %+v", runner.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestViewerInvalidBackendPreservesLegacySocket(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(filepath.Dir(env.systemUnitPath), "display.service")
+	env.displayEnabled = true
+	yes := true
+	env.displayConfig = config.ContainmentDisplay{Backend: "xvfb", Viewer: config.ContainmentDisplayViewer{Enabled: &yes}}
+	_, socket := viewerUnitPaths(env)
+	if err := os.WriteFile(socket, []byte(displayUnitMarker+"\n[Socket]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := stepProvisionViewer().apply(context.Background(), env)
+	if changed || err == nil || !strings.Contains(err.Error(), "requires an enabled Xvnc") {
+		t.Fatalf("invalid backend: changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("legacy socket removed: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("systemctl called before backend validation: %+v", runner.calls)
 	}
 }

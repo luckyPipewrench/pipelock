@@ -43,6 +43,12 @@ func stepProvisionViewer() step {
 	return step{name: "provision-display-viewer", desc: "provision contained display viewer", apply: func(ctx context.Context, env *installEnv) (bool, error) {
 		service, socket := viewerUnitPaths(env)
 		paths := []string{service, socket}
+		if err := validateManagedViewerUnits(env, paths...); err != nil {
+			return false, err
+		}
+		if viewerRFBEnabled(env.displayConfig) && (env.displayConfig.EffectiveBackend() != "xvnc" || !env.displayEnabled) {
+			return false, errors.New("viewer requires an enabled Xvnc display")
+		}
 		for i, path := range paths {
 			body, err := env.readFile(path)
 			if err == nil {
@@ -86,9 +92,6 @@ func stepProvisionViewer() step {
 				return false, nil
 			}
 			return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
-		}
-		if env.displayConfig.EffectiveBackend() != "xvnc" || !env.displayEnabled {
-			return false, errors.New("viewer requires an enabled Xvnc display")
 		}
 		changed, err := ensureContainmentUnit(env, service, renderViewerServiceUnit(env))
 		if err != nil {
@@ -145,6 +148,9 @@ func stepProvisionViewer() step {
 func actionRemoveViewer() step {
 	return step{name: "remove-display-viewer", desc: "stop and remove contained display viewer", undo: func(ctx context.Context, env *installEnv) error {
 		service, socket := viewerUnitPaths(env)
+		if err := validateManagedViewerUnits(env, service, socket); err != nil {
+			return err
+		}
 		if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(socket)); err != nil {
 			return err
 		}
@@ -158,6 +164,24 @@ func actionRemoveViewer() step {
 		}
 		return runOrErr(ctx, env, "systemctl", "daemon-reload")
 	}}
+}
+
+func validateManagedViewerUnits(env *installEnv, paths ...string) error {
+	for _, path := range paths {
+		for _, candidate := range []string{path, path + ".bak"} {
+			body, err := env.readFile(candidate)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if !strings.HasPrefix(string(body), displayUnitMarker+"\n") {
+				return fmt.Errorf("%s is not Pipelock-managed", candidate)
+			}
+		}
+	}
+	return nil
 }
 
 func removeManagedViewerUnit(env *installEnv, path string) error {

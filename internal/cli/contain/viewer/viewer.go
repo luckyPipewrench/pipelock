@@ -95,6 +95,9 @@ func (v *Viewer) Serve(ctx context.Context, client net.Conn, mode string) error 
 		_, _ = io.WriteString(client, "denied\n")
 		return errors.New("viewer: viewer cap reached")
 	}
+	if mode == "control" && v.lease.conn != nil && !v.cfg.Now().Before(v.lease.expires) {
+		v.lease = lease{}
+	}
 	if mode == "control" && v.lease.conn != nil {
 		v.mu.Unlock()
 		_, _ = io.WriteString(client, "busy\n")
@@ -214,7 +217,12 @@ func (v *Viewer) renewLease(stop <-chan struct{}, client net.Conn) {
 		case <-ticker.C:
 			v.mu.Lock()
 			if v.lease.conn == client {
-				v.lease.expires = v.cfg.Now().Add(leaseLifetime)
+				now := v.cfg.Now()
+				if now.Before(v.lease.expires) {
+					v.lease.expires = now.Add(leaseLifetime)
+				} else {
+					v.lease = lease{}
+				}
 			}
 			v.mu.Unlock()
 		}

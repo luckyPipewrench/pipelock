@@ -4,7 +4,7 @@
 package scanner
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"net/url"
 	"testing"
@@ -21,10 +21,12 @@ func TestEntropyMeasuresDecodedPayload(t *testing.T) {
 	s := MustNew(cfg)
 	defer s.Close()
 
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		t.Fatal(err)
-	}
+	// Fixed bytes, not crypto/rand: roughly one random draw in five hundred
+	// encodes to a string just under the threshold, which made the
+	// double-encoded case fail at random. The premise checks below keep
+	// the fixture honest.
+	digest := sha256.Sum256([]byte("entropy-decoded-payload-fixture"))
+	random := digest[:]
 	uuid := "2bcabc26-51e8-4341-9daa-35c0f1e7a9d4"
 	wrapped := base64.RawURLEncoding.EncodeToString([]byte(uuid))
 	typed := base64.StdEncoding.EncodeToString([]byte("gid://app/Record/" + uuid))
@@ -33,6 +35,11 @@ func TestEntropyMeasuresDecodedPayload(t *testing.T) {
 
 	if ShannonEntropy(typed) <= 4.5 {
 		t.Fatalf("fixture must exceed the threshold raw: %.2f", ShannonEntropy(typed))
+	}
+	for name, v := range map[string]string{"random base64url": randomB64, "random base64": base64.StdEncoding.EncodeToString(random)} {
+		if ShannonEntropy(v) <= 4.5 {
+			t.Fatalf("%s fixture must exceed the threshold: %.2f", name, ShannonEntropy(v))
+		}
 	}
 	for _, tc := range []struct {
 		name  string

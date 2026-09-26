@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2900,4 +2901,49 @@ func TestCallerReceiptHeader_BlockPathsWithoutEmitterStaySilent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestForwardA2ARepeatedExtensionsHeader_Blocks proves the forward proxy scans
+// every A2A-Extensions field line, not only the first.
+func TestForwardA2ARepeatedExtensionsHeader_Blocks(t *testing.T) {
+	t.Parallel()
+
+	var reached atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = io.WriteString(w, "should not reach here")
+	}))
+	defer upstream.Close()
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, cleanup := setupForwardProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionBlock
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		upstream.URL+"/message:send", strings.NewReader(`{"method":"tasks/send"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+	req.Header.Add("A2A-Extensions", "https://ext.example.com/v1")
+	req.Header.Add("A2A-Extensions", "file:///etc/passwd")
+
+	resp, err := proxyClient(proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a blocked URI on a repeated A2A-Extensions line", resp.StatusCode)
+	}
+	if reached.Load() {
+		t.Fatal("request reached upstream despite a blocked repeated A2A-Extensions line")
+	}
+	rph.requireReceipt(t, "a2a_header")
 }

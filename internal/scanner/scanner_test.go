@@ -7290,3 +7290,26 @@ func TestScan_QueryEntropyParamExclusion_PercentEncodedKey(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryValueEntropyASCIISplitting(t *testing.T) {
+	s := MustNew(testConfig())
+	defer s.Close()
+	token := syntheticEntropyToken()
+	short := token[:17]
+	other := token[17:35]
+	for _, tc := range []struct {
+		name, value string
+		blocked     bool
+	}{
+		{"short chunks", short + " " + other, true},
+		{"compact token", token, true},
+		{"Unicode space", short + "\u2003" + other, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, blocked := s.queryValueEntropy(tc.value, 0)
+			if blocked != tc.blocked {
+				t.Fatalf("blocked=%v, want %v", blocked, tc.blocked)
+			}
+		})
+	}
+}

@@ -117,6 +117,7 @@ type issuerBoundCookieStore struct {
 type issuerCookieRuntime struct {
 	cfg   *config.Config
 	store *issuerBoundCookieStore
+	query *issuerQueryStore
 }
 
 // issuerCookieEnabled reports whether a policy can produce issuance evidence.

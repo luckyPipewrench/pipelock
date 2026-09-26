@@ -40,6 +40,9 @@ func runInTinyFileSizeChild(t *testing.T) bool {
 	if err != nil {
 		t.Fatalf("limited child test failed: %v\n%s", err, out)
 	}
+	if strings.Contains(string(out), "--- SKIP: "+t.Name()) {
+		t.Skipf("limited child skipped: %s", strings.TrimSpace(string(out)))
+	}
 	if !strings.Contains(string(out), "--- PASS: "+t.Name()) {
 		t.Fatalf("limited child test did not run:\n%s", out)
 	}
@@ -70,6 +73,13 @@ func withTinyFileSizeLimit(t *testing.T, limit uint64) {
 		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &saved)
 		signal.Reset(syscall.SIGXFSZ)
 	})
+}
+
+func TestTinyFileSizeChildPropagatesSkip(t *testing.T) {
+	if !runInTinyFileSizeChild(t) {
+		return
+	}
+	t.Skip("child cannot use this fixture")
 }
 
 // The regression: writeNewArchiveFile reported creation only when the write

@@ -34,10 +34,138 @@ type fakeProvider struct {
 
 type failingDestroyProvider struct {
 	*fakeProvider
-	fail bool
+	fail         bool
+	destroyCalls int
+}
+
+type blockingDestroyProvider struct {
+	*fakeProvider
+	entered chan struct{}
+	allow   chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (p *blockingDestroyProvider) DestroyMachine(ctx context.Context, id string) error {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	select {
+	case p.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-p.allow:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return p.fakeProvider.DestroyMachine(ctx, id)
+}
+
+func TestReleaseSlowDestroyDoesNotBlockReadsOrDoubleClaim(t *testing.T) {
+	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 2), allow: make(chan struct{})}
+	lm := newManager(t, p, 1)
+	lease, err := lm.Lease(context.Background(), "first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { lm.Release(context.Background(), "first"); close(done) }()
+	select {
+	case <-p.entered:
+	case <-time.After(time.Second):
+		t.Fatal("destroy did not start")
+	}
+	readDone := make(chan struct{})
+	go func() { _, _ = lm.LeaseFor("first"); _ = lm.ActiveMachineIDs(); close(readDone) }()
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("reads blocked by slow destroy")
+	}
+	leaseDone := make(chan error, 1)
+	go func() { _, err := lm.Lease(context.Background(), "second", nil); leaseDone <- err }()
+	select {
+	case err := <-leaseDone:
+		if !errors.Is(err, ErrAtCapacity) {
+			t.Fatalf("lease during destroy = %v, want capacity refusal", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lease blocked by slow destroy")
+	}
+	retryDone := make(chan struct{})
+	go func() { lm.RetryFailedDestroys(context.Background()); close(retryDone) }()
+	select {
+	case <-retryDone:
+	case <-time.After(time.Second):
+		t.Fatal("retry blocked by slow destroy")
+	}
+	p.mu.Lock()
+	calls := p.calls
+	p.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("concurrent destroy calls = %d, want 1", calls)
+	}
+	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; !ok {
+		t.Fatal("in-flight destroy disappeared from active IDs")
+	}
+	close(p.allow)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("release did not finish")
+	}
+}
+
+func TestLeaseRetryFailedDestroyIsRateBounded(t *testing.T) {
+	p := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
+	lm := newManager(t, p, 1)
+	if _, err := lm.Lease(context.Background(), "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	lm.Release(context.Background(), "first")
+	for i := range 3 {
+		_, err := lm.Lease(context.Background(), fmt.Sprintf("next-%d", i), nil)
+		if !errors.Is(err, ErrAtCapacity) {
+			t.Fatalf("lease %d = %v", i, err)
+		}
+	}
+	if p.destroyCalls != 2 {
+		t.Fatalf("destroy attempts = %d, want initial attempt and one prompt retry", p.destroyCalls)
+	}
+	lm.mu.Lock()
+	next := lm.nextRetry
+	lm.mu.Unlock()
+	if next.IsZero() {
+		t.Fatal("retry window not recorded")
+	}
+}
+
+func TestLeasePromptRecoveryRetriesOneMachine(t *testing.T) {
+	p := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
+	lm := newManager(t, p, 3)
+	for i := range 3 {
+		key := fmt.Sprintf("session-%d", i)
+		if _, err := lm.Lease(context.Background(), key, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 3 {
+		lm.Release(context.Background(), fmt.Sprintf("session-%d", i))
+	}
+	if p.destroyCalls != 3 {
+		t.Fatalf("initial destroy attempts = %d, want 3", p.destroyCalls)
+	}
+	if _, err := lm.Lease(context.Background(), "next", nil); !errors.Is(err, ErrAtCapacity) {
+		t.Fatalf("lease after failed destroys = %v, want capacity refusal", err)
+	}
+	if p.destroyCalls != 4 {
+		t.Fatalf("prompt destroy attempts = %d, want one additional attempt", p.destroyCalls)
+	}
 }
 
 func (p *failingDestroyProvider) DestroyMachine(ctx context.Context, id string) error {
+	p.destroyCalls++
 	if p.fail {
 		return errors.New("provider teardown unavailable")
 	}
@@ -263,6 +391,10 @@ func TestReleaseDestroyFailureRetainsCapacityUntilRetry(t *testing.T) {
 		t.Fatalf("lease after failed teardown = %v, want capacity refusal", err)
 	}
 	provider.fail = false
+	// Advance the prompt-recovery window without sleeping.
+	lm.mu.Lock()
+	lm.nextRetry = time.Time{}
+	lm.mu.Unlock()
 	if _, err := lm.Lease(context.Background(), "sess-2", nil); err != nil {
 		t.Fatalf("lease after teardown recovery: %v", err)
 	}

@@ -168,6 +168,33 @@ func TestVerifyRunRejectsAggregateArtifactSize(t *testing.T) {
 	}
 }
 
+func TestReadRunArtifactRejectsGrowthAfterLstat(t *testing.T) {
+	dir := t.TempDir()
+	name := "growing.json"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	remaining := int64(1)
+	_, err = readRunArtifactWithSeams(root, &remaining, name, openRunArtifact, func(file *os.File, limit int64) ([]byte, error) {
+		if err := os.WriteFile(path, []byte("grown"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return readOpenedArtifact(file, limit)
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds size limit") {
+		t.Fatalf("grown artifact error = %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining = %d, want 1", remaining)
+	}
+}
+
 func TestHardeningVerifierReasonsRemainFailClosedAndSpecific(t *testing.T) {
 	t.Parallel()
 

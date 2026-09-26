@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"sync"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
@@ -60,6 +61,8 @@ type LeaseManager struct {
 	mu         sync.Mutex
 	leases     map[string]*Lease
 	quarantine map[string]*Lease
+	destroying map[string]struct{}
+	nextRetry  time.Time
 }
 
 // NewLeaseManager validates cfg and returns a LeaseManager. It rejects a missing
@@ -77,7 +80,7 @@ func NewLeaseManager(cfg LeaseConfig) (*LeaseManager, error) {
 	// BaseEnv reaches every visitor VM. Retain a broker-owned copy so a caller
 	// cannot change the configuration after validation and construction.
 	cfg.BaseEnv = maps.Clone(cfg.BaseEnv)
-	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease), quarantine: make(map[string]*Lease)}, nil
+	return &LeaseManager{cfg: cfg, leases: make(map[string]*Lease), quarantine: make(map[string]*Lease), destroying: make(map[string]struct{})}, nil
 }
 
 // Lease provisions one VM for sessionKey. It acquires a concurrency slot, creates
@@ -90,7 +93,7 @@ func (lm *LeaseManager) Lease(ctx context.Context, sessionKey string, sessionEnv
 	if sessionKey == "" {
 		return nil, errors.New("broker: empty session key")
 	}
-	lm.RetryFailedDestroys(context.WithoutCancel(ctx))
+	lm.retryFailedDestroysIfDue(context.WithoutCancel(ctx))
 
 	lm.mu.Lock()
 	if _, exists := lm.leases[sessionKey]; exists {
@@ -146,33 +149,76 @@ func (lm *LeaseManager) Release(ctx context.Context, sessionKey string) {
 	if ok {
 		delete(lm.leases, sessionKey)
 		lm.quarantine[lease.Machine.ID] = lease
-		lm.destroyQuarantinedLocked(context.WithoutCancel(ctx), lease)
+		lm.destroying[lease.Machine.ID] = struct{}{}
 	}
 	lm.mu.Unlock()
+	if ok {
+		lm.destroyQuarantined(context.WithoutCancel(ctx), lease)
+	}
 }
 
 func (lm *LeaseManager) destroyOrQuarantine(ctx context.Context, lease *Lease) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
 	lm.quarantine[lease.Machine.ID] = lease
-	lm.destroyQuarantinedLocked(ctx, lease)
+	lm.destroying[lease.Machine.ID] = struct{}{}
+	lm.mu.Unlock()
+	lm.destroyQuarantined(ctx, lease)
 }
 
-func (lm *LeaseManager) destroyQuarantinedLocked(ctx context.Context, lease *Lease) {
-	if err := lm.cfg.Provider.DestroyMachine(ctx, lease.Machine.ID); err == nil {
+func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
+	err := lm.cfg.Provider.DestroyMachine(ctx, lease.Machine.ID)
+	lm.mu.Lock()
+	delete(lm.destroying, lease.Machine.ID)
+	if err == nil {
 		delete(lm.quarantine, lease.Machine.ID)
 		lease.release()
 	}
+	lm.mu.Unlock()
 }
 
 // RetryFailedDestroys retries quarantined VMs and returns capacity only after
-// confirmed deletion. The reaper and new lease attempts both call it.
+// confirmed deletion. The reaper calls this periodically.
 func (lm *LeaseManager) RetryFailedDestroys(ctx context.Context) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	var pending []*Lease
 	for _, lease := range lm.quarantine {
-		lm.destroyQuarantinedLocked(ctx, lease)
+		if _, busy := lm.destroying[lease.Machine.ID]; busy {
+			continue
+		}
+		lm.destroying[lease.Machine.ID] = struct{}{}
+		pending = append(pending, lease)
 	}
+	lm.mu.Unlock()
+	for _, lease := range pending {
+		lm.destroyQuarantined(ctx, lease)
+	}
+}
+
+const leaseDestroyRetryInterval = 30 * time.Second
+
+// One lease request per interval may prompt recovery. The reaper remains the
+// regular retry path; requests during an outage do not each call the provider.
+func (lm *LeaseManager) retryFailedDestroysIfDue(ctx context.Context) {
+	lm.mu.Lock()
+	if len(lm.quarantine) == 0 || time.Now().Before(lm.nextRetry) {
+		lm.mu.Unlock()
+		return
+	}
+	var retry *Lease
+	for _, lease := range lm.quarantine {
+		if _, busy := lm.destroying[lease.Machine.ID]; !busy {
+			retry = lease
+			lm.destroying[lease.Machine.ID] = struct{}{}
+			break
+		}
+	}
+	if retry == nil {
+		lm.mu.Unlock()
+		return
+	}
+	lm.nextRetry = time.Now().Add(leaseDestroyRetryInterval)
+	lm.mu.Unlock()
+	lm.destroyQuarantined(ctx, retry)
 }
 
 // LeaseFor returns the active lease for sessionKey, if any. The broker uses it to

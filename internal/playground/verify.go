@@ -361,6 +361,18 @@ func verifyRun(dir, orchestratorPubHex string, archive bool) (VerifyReport, erro
 }
 
 func readRunArtifact(root *os.Root, remaining *int64, name string) ([]byte, error) {
+	return readRunArtifactWithSeams(root, remaining, name, openRunArtifact, readOpenedArtifact)
+}
+
+func readRunArtifactWithOpen(root *os.Root, remaining *int64, name string, open func(*os.Root, string) (*os.File, error)) ([]byte, error) {
+	return readRunArtifactWithSeams(root, remaining, name, open, readOpenedArtifact)
+}
+
+func readOpenedArtifact(file *os.File, limit int64) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(file, limit+1))
+}
+
+func readRunArtifactWithSeams(root *os.Root, remaining *int64, name string, open func(*os.Root, string) (*os.File, error), read func(*os.File, int64) ([]byte, error)) ([]byte, error) {
 	info, err := root.Lstat(name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -374,13 +386,23 @@ func readRunArtifact(root *os.Root, remaining *int64, name string) ([]byte, erro
 	if info.Size() > maxBundleMemberBytes || info.Size() > *remaining {
 		return nil, fmt.Errorf("cannot read %s: artifact exceeds size limit", name)
 	}
-	file, err := root.Open(name)
+	file, err := open(root, name)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", name, err)
 	}
 	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: stat opened artifact: %w", name, err)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("cannot read %s: artifact must be a regular file", name)
+	}
+	if openedInfo.Size() > maxBundleMemberBytes || openedInfo.Size() > *remaining {
+		return nil, fmt.Errorf("cannot read %s: artifact exceeds size limit", name)
+	}
 	limit := min(int64(maxBundleMemberBytes), *remaining)
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	data, err := read(file, limit)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", name, err)
 	}

@@ -2140,6 +2140,15 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	if err := verifier.verify(context.Background(), jwt); err == nil {
 		t.Fatal("accepted stale Access key after original cache lifetime")
 	}
+	failedFetches := fetchCount
+	for range 3 {
+		if err := verifier.verify(context.Background(), jwt); err == nil {
+			t.Fatal("accepted expired Access key during outage")
+		}
+	}
+	if fetchCount != failedFetches {
+		t.Fatalf("expired-key outage made %d extra JWKS fetches, want 0", fetchCount-failedFetches)
+	}
 }
 
 func TestCFAccessJWKS_NoCacheFailsClosed(t *testing.T) {

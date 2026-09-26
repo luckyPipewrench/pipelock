@@ -284,6 +284,12 @@ func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (string, bool
 		return "", false
 	}
 	if cr.except != nil {
+		// An envelope is not an individual request. Its extra JSON fields
+		// cannot exempt a block on the batch endpoint itself; exceptions
+		// are evaluated on the extracted sub-requests instead.
+		if m.MatchesBatch(meta) {
+			return cr.action, true
+		}
 		// Transports run a route-only pass before reading the body. Defer the
 		// decision until the JSON can prove the exception; unreadable or
 		// invalid bodies are blocked by EvaluateUninspectable.

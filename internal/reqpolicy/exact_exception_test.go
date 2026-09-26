@@ -188,3 +188,32 @@ func TestEvaluateBatch_ExactExceptionRejectsAmbiguousEnvelope(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluate_ExactExceptionCannotExemptBatchEnvelope(t *testing.T) {
+	rule := exactExceptionRule()
+	rule.Route.PathPatterns = []string{`/\$batch$`}
+	m, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true,
+		Rules:   []config.RequestPolicyRule{rule},
+		Batch: []config.RequestPolicyBatch{{
+			Route:         config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+			RequestsField: "requests", MethodField: "method", URLField: "url", BodyField: "body", MaxSubRequests: 4,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := RequestMeta{
+		Host: "api.service.example.com", Method: http.MethodPost, Path: "/$batch",
+		JSONBodyParsed: true,
+		JSONBody:       jsonBody(t, `{"destinationId":"archive","requests":[{"method":"POST","url":"/messages/1/delete","body":{"destinationId":"deleteditems"}}]}`),
+	}
+	if got := m.Evaluate(meta).Action; got != config.ActionBlock {
+		t.Fatalf("batch envelope self-exemption = %q, want block", got)
+	}
+	meta.JSONBodyParsed = false
+	meta.JSONBody = nil
+	if got := m.Evaluate(meta).Action; got != config.ActionBlock {
+		t.Fatalf("route-only batch envelope = %q, want block", got)
+	}
+}

@@ -737,6 +737,29 @@ func TestUnmarshalRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestUnmarshalRejectsConflictingFieldAlias(t *testing.T) {
+	pub, priv := generateTestKey(t)
+	signed := signValidReceipt(t, priv)
+	raw, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, modified := range map[string][]byte{
+		"receipt version": append([]byte(`{"VERSION":999,`), raw[1:]...),
+		"action verdict":  []byte(strings.Replace(string(raw), `"verdict":`, `"VERDICT":"block","verdict":`, 1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := Unmarshal(modified)
+			if err == nil {
+				if verifyErr := VerifyWithKey(parsed, hex.EncodeToString(pub)); verifyErr == nil {
+					t.Fatal("modified receipt with conflicting field alias verified")
+				}
+				t.Fatalf("field alias accepted: %+v", parsed)
+			}
+		})
+	}
+}
+
 // flipHexByte flips the first hex character in a hex string to produce
 // a different but still valid hex string.
 func flipHexByte(h string) string {

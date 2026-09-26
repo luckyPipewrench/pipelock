@@ -220,6 +220,9 @@ func Unmarshal(data []byte) (Receipt, error) {
 		}
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", ErrTrailingTokens)
 	}
+	if err := rejectReceiptAliases(data); err != nil {
+		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
+	}
 	return r, nil
 }
 

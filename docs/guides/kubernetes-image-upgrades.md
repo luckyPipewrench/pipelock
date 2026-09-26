@@ -102,12 +102,14 @@ PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
 mkdir -p "pipelock-${PIPELOCK_RELEASE}"
 helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" \
   --version "${PIPELOCK_RELEASE#v}" --destination "pipelock-${PIPELOCK_RELEASE}" \
-  2>&1 | tee "pipelock-${PIPELOCK_RELEASE}/helm-pull.log"
-grep -Fx "Digest: ${PIPELOCK_CHART_DIGEST}" "pipelock-${PIPELOCK_RELEASE}/helm-pull.log"
+  >"pipelock-${PIPELOCK_RELEASE}/helm-pull.log" 2>&1 &&
+  grep -Fx "Digest: ${PIPELOCK_CHART_DIGEST}" "pipelock-${PIPELOCK_RELEASE}/helm-pull.log" &&
+  test -s "pipelock-${PIPELOCK_RELEASE}/pipelock-${PIPELOCK_RELEASE#v}.tgz" &&
+  echo "chart verified"
 ```
 
-The last line fails unless the pulled chart is the one the attestation
-covers, which matters because a tag can be moved between the two commands and
+The command prints `chart verified` only when `helm pull` succeeded, the
+pulled chart is the one the attestation covers, and the archive was written, which matters because a tag can be moved between the two commands and
 `helm pull` by itself does not check provenance. The signed `release.json`
 manifest covers the platform binary archives that Homebrew and
 `pipelock update` install, not the chart, so the attestation above is the

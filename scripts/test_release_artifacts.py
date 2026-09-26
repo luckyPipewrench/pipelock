@@ -732,6 +732,12 @@ class TestReleaseArtifacts(unittest.TestCase):
         )
         publish = next(step for step in promote["steps"] if step.get("id") == "publish-helm-chart")
         self.assertIn("could not read the chart digest from helm output", publish["run"])
+        # Both branches take the digest from helm's own output, and the step
+        # exports it for the attestation job.
+        extract = """awk '$1 == "Digest:" { print $2 }'"""
+        self.assertIn(f'printf \'%s\\n\' "$chart_lookup_output" | {extract}', publish["run"])
+        self.assertIn(f'printf \'%s\\n\' "$push_output" | {extract}', publish["run"])
+        self.assertIn('echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"', publish["run"])
 
         attest_job = parsed["jobs"]["release-attest-chart"]
         self.assertEqual(attest_job["needs"], ["release-promote"])

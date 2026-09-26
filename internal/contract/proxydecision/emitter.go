@@ -236,6 +236,15 @@ func (e *Emitter) ChainState() (seq uint64, prevHash string) {
 // advanced only after a successful record, so a failed write leaves the chain
 // at its previous position (mirroring the v1 emitter and the shadow emitter).
 func (e *Emitter) Emit(d Decision) error {
+	return e.emit(d, false)
+}
+
+// EmitDurable records a decision only when the recorder confirms durable storage.
+func (e *Emitter) EmitDurable(d Decision) error {
+	return e.emit(d, true)
+}
+
+func (e *Emitter) emit(d Decision, durable bool) error {
 	if e == nil {
 		return nil
 	}
@@ -327,14 +336,25 @@ func (e *Emitter) Emit(d Decision) error {
 		return fmt.Errorf("marshal proxy_decision receipt: %w", err)
 	}
 
-	if err := e.recorder.Record(recorder.Entry{
+	entry := recorder.Entry{
 		SessionID: e.session,
 		Type:      evidenceReceiptEntryType,
 		EventKind: string(rcpt.PayloadKind),
 		Transport: d.Transport,
 		Summary:   fmt.Sprintf("%s: %s %s via %s", rcpt.PayloadKind, d.ActionType, d.Verdict, d.WinningSource),
 		Detail:    json.RawMessage(rcptJSON),
-	}); err != nil {
+	}
+	var recordErr error
+	if durable {
+		rec, ok := e.recorder.(interface{ RecordDurable(recorder.Entry) error })
+		if !ok {
+			return errors.New("proxy_decision recorder does not support durable writes")
+		}
+		recordErr = rec.RecordDurable(entry)
+	} else {
+		recordErr = e.recorder.Record(entry)
+	}
+	if err := recordErr; err != nil {
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
 	}
 	e.chainPrevHash = rcptHash

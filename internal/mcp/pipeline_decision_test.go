@@ -577,6 +577,22 @@ func TestEmitMCPDecision_RequiredV2SuccessSatisfiesV1EmitError(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_RequiredV2MustSyncBeforeEgress(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	h.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	_, err := EmitMCPDecision(h.v1, h.v2, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "mcp-v2-sync-failure", Verdict: config.ActionAllow,
+			Transport: transportMCPStdio, Target: "fetch", MCPMethod: methodToolsCall,
+			ToolName: "fetch", PolicyHash: mcpTestPolicyHash,
+		},
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+}
+
 func TestEmitMCPDecision_RequiredV2OnlyAllowSucceeds(t *testing.T) {
 	// Exercise the v2-only path with a nil v1 emitter (the receiptEmitter == nil
 	// branch): a required allow with only the v2 emitter present must succeed and

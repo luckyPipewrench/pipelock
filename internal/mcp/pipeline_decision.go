@@ -195,7 +195,14 @@ func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, 
 		}
 		return nil
 	}
-	if err := v2Emitter.Emit(v2Decision); err != nil {
+	var emitErr error
+	verdict := receipt.NormalizeVerdict(opts.Verdict)
+	if required && (verdict == config.ActionAllow || verdict == config.ActionWarn || verdict == config.ActionForward || verdict == config.ActionStrip) {
+		emitErr = v2Emitter.EmitDurable(v2Decision)
+	} else {
+		emitErr = v2Emitter.Emit(v2Decision)
+	}
+	if err := emitErr; err != nil {
 		return fmt.Errorf("%w: %w", errMCPV2ReceiptEmit, err)
 	}
 	return nil

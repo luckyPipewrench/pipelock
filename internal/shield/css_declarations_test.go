@@ -78,7 +78,7 @@ func FuzzStyleValueHidesCSS(f *testing.F) {
 func TestStyleValueHidesCSSDeclarationEdges(t *testing.T) {
 	tests := []struct {
 		name, style string
-		hide bool
+		hide        bool
 	}{
 		{"form feed whitespace", "\fdisplay\t:\nnone", true},
 		{"null replacement", "display:none; dis\x00play:block", true},
@@ -130,7 +130,7 @@ func TestStyleValueHidesCSSDeclarationEdges(t *testing.T) {
 func TestCSSDeclarationTokenOutput(t *testing.T) {
 	tests := []struct {
 		style string
-		want []cssDeclaration
+		want  []cssDeclaration
 	}{
 		{`x:+.5e-2%;display:none`, []cssDeclaration{{name: "x", value: "+.5e-2%"}, {name: "display", value: "none"}}},
 		{`x:2px #abc @foo;display:none`, []cssDeclaration{{name: "x", value: "2px abc foo"}, {name: "display", value: "none"}}},

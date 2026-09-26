@@ -398,12 +398,18 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // finding unless its destination is in request_body_scanning.trusted_hosts.
 // Trusted destinations retain request scanning and the configured action.
 // Response-scanning exemptions do not affect this request-side decision.
+// Like the critical-DLP floor, it applies only in enforcement mode: with
+// enforce: false the finding follows the configured action, so an audit-only
+// deployment observes injection instead of dropping the request.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if len(result.InjectionMatches) == 0 {
 		return false
 	}
 	if cfg == nil {
 		return true
+	}
+	if !cfg.EnforceEnabled() {
+		return false
 	}
 	// Request-side trust is its own list. The response_scanning exemptions
 	// describe inbound trust and are documented as never loosening outbound
@@ -893,12 +899,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// first because phrase order matters; DLP still uses a sorted join below
 	// for deterministic split-secret detection.
 	joinedInOrder := strings.Join(texts, "\n")
+	var inOrderInjection, sortedInjection []scanner.ResponseMatch
 	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
 	if injectionResult.Failed() {
 		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
-		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
+		inOrderInjection = injectionResult.Matches
 	}
 
 	// Sort to ensure deterministic ordering for DLP (Go map iteration in
@@ -910,8 +917,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
-		result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
+		sortedInjection = injectionResult.Matches
 	}
+	// The joined views re-read every field, so they repeat what the per-field
+	// scan already found. Keep every per-field match and add only the
+	// occurrences a joined view alone detected, such as a phrase split across
+	// fields.
+	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection)
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp
@@ -1515,6 +1527,38 @@ func uniqueBodyDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch
 		unique = append(unique, match)
 	}
 	return unique
+}
+
+// mergeJoinedInjectionMatches folds overlapping scan views into one list. Each
+// view is a complete reading of the body, so the number of occurrences of a
+// pattern and text is the largest count any single view reports. Every
+// per-field match is kept, and a joined view contributes only occurrences
+// beyond that count, so repeats across views collapse while separate
+// occurrences inside one view survive. Position is not part of the key because
+// it is relative to whichever view produced the match.
+func mergeJoinedInjectionMatches(perField []scanner.ResponseMatch, joinedViews ...[]scanner.ResponseMatch) []scanner.ResponseMatch {
+	kept := make(map[string]int, len(perField))
+	for _, match := range perField {
+		kept[bodyInjectionMatchKey(match)]++
+	}
+	merged := perField
+	for _, view := range joinedViews {
+		inView := make(map[string]int, len(view))
+		for _, match := range view {
+			key := bodyInjectionMatchKey(match)
+			inView[key]++
+			if inView[key] <= kept[key] {
+				continue
+			}
+			kept[key] = inView[key]
+			merged = append(merged, match)
+		}
+	}
+	return merged
+}
+
+func bodyInjectionMatchKey(match scanner.ResponseMatch) string {
+	return match.PatternName + "\x00" + match.MatchText
 }
 
 func bodyDLPMatchKey(match scanner.TextDLPMatch) string {

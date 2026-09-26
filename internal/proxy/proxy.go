@@ -847,7 +847,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), fmt.Errorf("issuer cookie state reset failed: %w", removeErr))
 		}
 	}
-	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore})
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: newIssuerQueryStore()})
 	p.scannerPtr.Store(sc)
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
@@ -2439,7 +2439,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			issuerStore.flush(time.Now(), true)
 		}
 	}
-	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore})
+	queryStore := newIssuerQueryStore()
+	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
+		queryStore = oldIssuer.query
+	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: queryStore})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
 	if p.wd != nil {

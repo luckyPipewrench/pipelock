@@ -1220,7 +1220,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		result.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)
 	}()
-	if result := s.checkEntropy(scanURL); !result.Allowed {
+	if result := s.checkEntropyWithContext(ctx, scanURL); !result.Allowed {
 		return result
 	}
 
@@ -3920,6 +3920,26 @@ const (
 // listed only in subdomain_entropy_exclusions still has its query parameters
 // scanned, and vice versa.
 func (s *Scanner) checkEntropy(parsed *url.URL) Result {
+	return s.checkEntropyWithContext(context.Background(), parsed)
+}
+
+type issuerQueryAllowanceContextKey struct{}
+
+// issuerQueryAllowed reports whether the request context carries an issuer
+// allowance for this exact decoded key and value. Only query-value entropy
+// consults it; every other scanner still runs on the value.
+func issuerQueryAllowed(ctx context.Context, key, value string) bool {
+	allows, ok := ctx.Value(issuerQueryAllowanceContextKey{}).(func(string, string) bool)
+	return ok && allows(key, value)
+}
+
+// WithIssuerQueryAllowance scopes an observed issuer value to this scan only.
+// The caller must verify the issuing origin and identity before supplying it.
+func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string) bool) context.Context {
+	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
+}
+
+func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
@@ -3957,7 +3977,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
 	if strings.Contains(parsed.RawQuery, ";") {
-		if result, blocked := s.scanAmbiguousRawQuery(parsed.RawQuery, !excludedQuery); blocked {
+		if result, blocked := s.scanAmbiguousRawQueryWithContext(ctx, parsed.RawQuery, !excludedQuery); blocked {
 			return result
 		}
 	}
@@ -3994,7 +4014,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				continue
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
-				if s.isQueryEntropyParamExcluded(parsed, key) {
+				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) {
 					continue
 				}
 				return s.queryEntropyParamResult(key, finding)
@@ -4005,7 +4025,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
+func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery string, scanEntropy bool) (Result, bool) {
 	pairs := splitQueryEntropyPairs(rawQuery)
 	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
 	for _, p := range pairs {
@@ -4029,6 +4049,9 @@ func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Resu
 			continue
 		}
 		if finding, blocked := s.queryValueEntropy(value, 0); blocked {
+			if issuerQueryAllowed(ctx, key, value) {
+				continue
+			}
 			return s.queryEntropyParamResult(key, finding), true
 		}
 	}

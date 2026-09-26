@@ -1415,6 +1415,9 @@ func ForwardScannedInput(
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
+					if opts.beforeDeferredSendClaim != nil {
+						opts.beforeDeferredSendClaim()
+					}
 					if opts.KillSwitch == nil {
 						return func() {}, true
 					}

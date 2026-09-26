@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,6 +58,19 @@ func TestDeferredStdioConcurrentActivation(t *testing.T) {
 	testDeferredStdioKillSwitchRelease(t, true)
 }
 
+type claimGateWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	dst     *syncBuffer
+}
+
+func (w *claimGateWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return w.dst.Write(p)
+}
+
 func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
 	sc := testInputScanner(t)
 	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
@@ -66,15 +80,19 @@ func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
 	ks := killswitch.New(config.Defaults())
 	inputR, inputW := io.Pipe()
 	var upstream, logBuf syncBuffer
+	upstreamGate := &claimGateWriter{started: make(chan struct{}), release: make(chan struct{}), dst: &upstream}
 	blocked := make(chan BlockedRequest, 4)
+	claimReached := make(chan struct{})
+	continueClaim := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
+		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(upstreamGate), &logBuf,
 			config.ActionWarn, config.ActionBlock, blocked, nil, nil,
 			MCPProxyOpts{
 				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter,
 				Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+				beforeDeferredSendClaim: func() { close(claimReached); <-continueClaim },
 			})
 	}()
 	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
@@ -82,37 +100,50 @@ func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
 	}
 	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
 	held := manager.Snapshot()[0]
-	activatedBeforeResolve := !concurrent
+	resolved := make(chan error, 1)
+	go func() { resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext) }()
+	<-claimReached
 	if concurrent {
-		start := make(chan struct{})
-		activated := make(chan struct{})
-		resolved := make(chan error, 1)
-		order := make(chan bool, 1)
-		go func() { <-start; ks.SetAPI(true); close(activated) }()
-		go func() {
-			<-start
-			select {
-			case <-activated:
-				order <- true
-			default:
-				order <- false
-			}
-			resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext)
-		}()
-		close(start)
-		<-activated
+		close(continueClaim)
+		<-upstreamGate.started
+		ks.SetAPI(true)
+		if got := ks.DeferredInFlight(); got != 1 {
+			t.Fatalf("claimed stdio send in flight = %d, want 1", got)
+		}
+		close(upstreamGate.release)
 		if err := <-resolved; err != nil {
 			t.Fatalf("resolve hold: %v", err)
 		}
-		activatedBeforeResolve = <-order
+		if got := upstream.String(); got == "" {
+			t.Fatal("claimed send did not reach stdio upstream")
+		}
+		if got := len(blocked); got != 0 {
+			t.Fatalf("claimed send was blocked: %d records", got)
+		}
 	} else {
 		ks.SetAPI(true)
-		if err := manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
-			t.Fatalf("resolve hold: %v", err)
+		close(continueClaim)
+		select {
+		case <-upstreamGate.started:
+			close(upstreamGate.release)
+			t.Fatal("send reached stdio upstream after activation")
+		case err := <-resolved:
+			if err != nil {
+				t.Fatalf("resolve hold: %v", err)
+			}
 		}
-	}
-	if got := upstream.String(); got != "" && activatedBeforeResolve {
-		t.Errorf("deferred call reached stdio upstream after activation: %s", got)
+		if got := upstream.String(); got != "" {
+			t.Fatalf("send reached stdio upstream after activation: %s", got)
+		}
+		select {
+		case record := <-blocked:
+			if record.ErrorCode != -32002 {
+				t.Fatalf("blocked record code = %d", record.ErrorCode)
+			}
+		default:
+			t.Fatal("activation before claim produced no blocked record")
+		}
+		close(upstreamGate.release)
 	}
 	if err := inputW.Close(); err != nil {
 		t.Fatalf("close input: %v", err)
@@ -136,8 +167,12 @@ func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
 	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
 	ks := killswitch.New(config.Defaults())
 	var calls atomic.Int32
+	upstreamStarted := make(chan struct{})
+	upstreamRelease := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
+		close(upstreamStarted)
+		<-upstreamRelease
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
 	defer upstream.Close()
@@ -145,47 +180,57 @@ func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
 	defer cancel()
 	inputR, inputW := io.Pipe()
 	var stdout, stderr syncBuffer
+	claimReached := make(chan struct{})
+	continueClaim := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil,
-			MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter, KillSwitch: ks})
+			MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter, KillSwitch: ks,
+				beforeDeferredSendClaim: func() { close(claimReached); <-continueClaim },
+			})
 	}()
 	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
 		t.Fatalf("write input: %v", err)
 	}
 	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
 	held := manager.Snapshot()[0]
-	activatedBeforeResolve := !concurrent
+	resolved := make(chan error, 1)
+	go func() { resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext) }()
+	<-claimReached
 	if concurrent {
-		start := make(chan struct{})
-		activated := make(chan struct{})
-		resolved := make(chan error, 1)
-		order := make(chan bool, 1)
-		go func() { <-start; ks.SetAPI(true); close(activated) }()
-		go func() {
-			<-start
-			select {
-			case <-activated:
-				order <- true
-			default:
-				order <- false
-			}
-			resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext)
-		}()
-		close(start)
-		<-activated
+		close(continueClaim)
+		<-upstreamStarted
+		ks.SetAPI(true)
+		if got := ks.DeferredInFlight(); got != 1 {
+			t.Fatalf("claimed HTTP send in flight = %d, want 1", got)
+		}
+		close(upstreamRelease)
 		if err := <-resolved; err != nil {
 			t.Fatalf("resolve hold: %v", err)
 		}
-		activatedBeforeResolve = <-order
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("claimed HTTP sends = %d, want 1", got)
+		}
 	} else {
 		ks.SetAPI(true)
-		if err := manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
-			t.Fatalf("resolve hold: %v", err)
+		close(continueClaim)
+		select {
+		case <-upstreamStarted:
+			close(upstreamRelease)
+			t.Fatal("send reached HTTP upstream after activation")
+		case err := <-resolved:
+			if err != nil {
+				t.Fatalf("resolve hold: %v", err)
+			}
 		}
-	}
-	if got := calls.Load(); got != 0 && activatedBeforeResolve {
-		t.Errorf("deferred call reached HTTP upstream after activation: %d", got)
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("HTTP sends after activation = %d", got)
+		}
+		close(upstreamRelease)
+		if got := stdout.String(); !strings.Contains(got, "deferred action denied") {
+			t.Fatalf("missing blocked response: %s", got)
+		}
 	}
 	if err := inputW.Close(); err != nil {
 		t.Fatalf("close input: %v", err)

@@ -299,6 +299,9 @@ func RunHTTPProxy(
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
+					if fwdOpts.beforeDeferredSendClaim != nil {
+						fwdOpts.beforeDeferredSendClaim()
+					}
 					if fwdOpts.KillSwitch == nil {
 						return func() {}, true
 					}

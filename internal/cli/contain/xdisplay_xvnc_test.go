@@ -143,7 +143,7 @@ func TestDisplayBackendMigrationRestoresActiveXvfbOnFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = xListener.Close() })
-			if err := os.Chmod(xSocket, 0o700); err != nil { //nolint:gosec // the managed X socket is intentionally mode 0700
+			if err := os.Chmod(xSocket, managedXSocketMode); err != nil {
 				t.Fatal(err)
 			}
 			rfbSocket := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")

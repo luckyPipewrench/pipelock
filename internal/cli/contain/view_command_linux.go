@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/user"
@@ -64,8 +65,13 @@ func viewCmd() *cobra.Command {
 }
 
 func currentViewerUID() uint32 {
-	// Linux uid_t is uint32; Geteuid returns that nonnegative value as an int.
-	return uint32(os.Geteuid()) //nolint:gosec // Linux uid_t fits uint32.
+	// Linux uid_t is uint32. An out-of-range value maps to (uid_t)-1, which
+	// the kernel never reports as a peer credential, so the peer check fails closed.
+	uid := os.Geteuid()
+	if uid < 0 || uid > math.MaxUint32-1 {
+		return math.MaxUint32
+	}
+	return uint32(uid)
 }
 
 func runContainView(ctx context.Context, socketPath, controlPath, mode string, uid uint32, out, errOut io.Writer) error {

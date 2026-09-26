@@ -162,6 +162,10 @@ func loadContainmentDisplay(env *installEnv) (config.ContainmentDisplay, error) 
 	return cfg.Containment.Display, nil
 }
 
+// managedXSocketMode is the X socket mode the display unit sets after start:
+// only the agent may connect, so no other local user can reach its display.
+const managedXSocketMode os.FileMode = 0o700
+
 func renderAgentDisplayUnit(env *installEnv) string {
 	number := env.displayNumber
 	socket := displaySocketPath(number)
@@ -384,7 +388,7 @@ func stepProvisionAgentDisplay() step {
 				if stat == nil {
 					stat = env.stat
 				}
-				if err := checkDisplaySocket(stat, displaySocketPath(env.displayNumber), 0o700); err != nil {
+				if err := checkDisplaySocket(stat, displaySocketPath(env.displayNumber), managedXSocketMode); err != nil {
 					return true, fmt.Errorf("x display socket: %w", err)
 				}
 				rfb := filepath.Join(env.agentHome, ".local/state/pipelock/display/rfb.sock")
@@ -815,7 +819,7 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("stat display socket: %v", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o700 {
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != managedXSocketMode {
 		return statusFail, fmt.Sprintf("display socket mode is %s, want socket 0700", info.Mode())
 	}
 	agent, err := env.lookupUser(env.agentUserName)

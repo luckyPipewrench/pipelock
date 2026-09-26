@@ -181,6 +181,8 @@ func TestValidateTimestamp(t *testing.T) {
 		{"date_only", "2026-06-01"},
 		{"epoch_number_as_string", "1748736000"},
 		{"garbage", "not-a-time"},
+		{"offset_hour", "2026-06-01T00:00:00+24:00"},
+		{"offset_minute", "2026-06-01T00:00:00+12:60"},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {

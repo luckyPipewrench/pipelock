@@ -245,7 +245,7 @@ function validateSubject(s: Subject): void {
   } catch (err) {
     wrapSchema(err);
   }
-  if (!knownReceiptTypes[s.receipt_type]) {
+  if (!Object.hasOwn(knownReceiptTypes, s.receipt_type)) {
     throw new SchemaError(`unknown subject.receipt_type ${JSON.stringify(s.receipt_type)}`);
   }
 }

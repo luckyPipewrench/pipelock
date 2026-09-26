@@ -34,6 +34,7 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
+from .input_file import read_verifier_file
 from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
     UNPINNED_RECEIPT_BANNER,
@@ -68,8 +69,7 @@ def _load_trust_file(path: str) -> VerifyOptions:
     if path == "":
         return opts
     try:
-        with open(path, "rb") as fh:
-            data = fh.read()
+        data = read_verifier_file(path)
     except OSError as exc:
         raise ConfigError(f"read trust file: {exc}") from exc
     try:
@@ -196,8 +196,7 @@ def _run_aarp(
             return EXIT_CONFIG
 
     try:
-        with open(target, "rb") as fh:
-            data = fh.read()
+        data = read_verifier_file(target)
     except OSError as exc:
         stderr.write(f"read envelope: {exc}\n")
         return EXIT_CONFIG

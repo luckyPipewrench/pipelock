@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -192,6 +193,9 @@ func chainLinkDigest(l ChainLink) ([]byte, error) {
 // claim covered by the successor key's signature.
 func UnmarshalChainLink(data []byte) (ChainLink, error) {
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return ChainLink{}, fmt.Errorf("unmarshal chain link: %w", err)
+	}
+	if err := rejectStructAliases(data, reflect.TypeFor[ChainLink]()); err != nil {
 		return ChainLink{}, fmt.Errorf("unmarshal chain link: %w", err)
 	}
 	var link ChainLink

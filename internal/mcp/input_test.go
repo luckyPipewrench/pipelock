@@ -1698,6 +1698,16 @@ func TestScanRequest_ParamsWithOnlyNumbers(t *testing.T) {
 	}
 }
 
+func TestScanRequest_UnknownEnvelopeFieldDLP(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := testSecretPrefix + strings.Repeat("a", 25)
+	line := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"ok":true},"extension":"` + secret + `"}`
+	verdict := ScanRequest(t.Context(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean || verdict.Action != config.ActionBlock || len(verdict.Matches) == 0 {
+		t.Fatalf("unknown envelope credential passed input DLP: %+v", verdict)
+	}
+}
+
 func TestScanRequest_ActionSetOnDLPMatch(t *testing.T) {
 	sc := testInputScanner(t)
 

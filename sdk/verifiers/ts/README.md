@@ -80,3 +80,11 @@ npm test
 ```
 
 The canonical encoder intentionally mirrors Go `encoding/json` for the receipt structs: declaration-order fields, Go `omitempty`, sorted map keys, compact output, and Go's default HTML escaping. This byte-level behavior is part of the verifier contract.
+
+### Schema-only Audit Packet checks
+
+`audit-packet --offline` checks the packet schema without authenticating its
+signer or verdict. The report uses `verdict: schema_checked_trust_unverified`,
+`trusted: false`, and `valid: false`; the CLI exits nonzero. JSON and CI
+consumers must require full chain verification before accepting a trusted
+verdict.

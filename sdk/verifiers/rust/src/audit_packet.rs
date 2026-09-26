@@ -67,6 +67,10 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
         }
     };
     report = report_from_packet(&packet_path_string, Some(&packet));
+    if opts.offline {
+        report.verdict.clear();
+        report.trusted = false;
+    }
 
     let schema_errors = validate_audit_packet(&packet);
     if !schema_errors.is_empty() {
@@ -81,7 +85,13 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     if opts.offline {
         report.lifecycle_assessment_reason =
             Some("offline mode skips chain re-verification".to_string());
-        report.valid = trust_verdict(&packet, opts);
+        report.verdict = "schema_checked_trust_unverified".to_string();
+        report.trusted = false;
+        report.valid = false;
+        push_error(
+            &mut report,
+            "schema checked, trust unverified: chain and signer were not verified".to_string(),
+        );
         return Ok(report);
     }
 

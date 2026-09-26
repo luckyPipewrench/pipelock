@@ -265,6 +265,23 @@ fn rfc3339nano_valid(s: &str) -> bool {
     {
         return false;
     }
+    let year = s[0..4].parse::<u32>().unwrap_or(0);
+    let month = s[5..7].parse::<u32>().unwrap_or(0);
+    let day = s[8..10].parse::<u32>().unwrap_or(0);
+    let hour = s[11..13].parse::<u32>().unwrap_or(99);
+    let minute = s[14..16].parse::<u32>().unwrap_or(99);
+    let second = s[17..19].parse::<u32>().unwrap_or(99);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
     let mut idx = 19;
     // Optional fraction.
     if idx < bytes.len() && bytes[idx] == b'.' {
@@ -290,8 +307,41 @@ fn rfc3339nano_valid(s: &str) -> bool {
                 && bytes[idx + 3] == b':'
                 && digit(bytes[idx + 4])
                 && digit(bytes[idx + 5])
+                && s[idx + 1..idx + 3].parse::<u32>().is_ok_and(|h| h <= 24)
+                && s[idx + 4..idx + 6].parse::<u32>().is_ok_and(|m| m <= 60)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod timestamp_parity_tests {
+    use super::validate_timestamp;
+
+    #[test]
+    fn matches_go_timestamp_boundaries() {
+        for accepted in [
+            "2026-04-15T12:00:00Z",
+            "2026-04-15T12:00:00+24:00",
+            "2026-04-15T12:00:00+12:60",
+            "2024-02-29T00:00:00Z",
+        ] {
+            assert!(
+                validate_timestamp(accepted, "timestamp").is_ok(),
+                "{accepted}"
+            );
+        }
+        for rejected in [
+            "2026-04-15T12:00:00z",
+            "2026-02-30T12:00:00Z",
+            "2026-04-15T12:00:60Z",
+            "2026-04-15T12:00:00+99:00",
+        ] {
+            assert!(
+                validate_timestamp(rejected, "timestamp").is_err(),
+                "{rejected}"
+            );
+        }
     }
 }
 

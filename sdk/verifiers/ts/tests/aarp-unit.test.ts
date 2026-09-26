@@ -213,6 +213,26 @@ test("numbers: validateTimestamp grammar", () => {
   assert.throws(() => validateTimestamp("2026-04-15T12:00:00+30:00"), GrammarError);
 });
 
+test("numbers: timestamp matches Go boundary grammar", () => {
+  for (const accepted of [
+    "2026-04-15T12:00:00Z",
+    "2026-04-15T12:00:00+24:00",
+    "2026-04-15T12:00:00+12:60",
+    "2024-02-29T00:00:00Z",
+  ]) {
+    assert.doesNotThrow(() => validateTimestamp(accepted), accepted);
+  }
+  for (const rejected of [
+    "2026-04-15T12:00:00z",
+    "2026-04-15t12:00:00Z",
+    "2026-02-30T12:00:00Z",
+    "2026-04-15T12:00:60Z",
+    "2026-04-15T12:00:00+99:00",
+  ]) {
+    assert.throws(() => validateTimestamp(rejected), GrammarError, rejected);
+  }
+});
+
 // ---- suite ----
 
 test("suite: checkCriticalExtensions rejects empty/dup/unknown, accepts undefined", () => {

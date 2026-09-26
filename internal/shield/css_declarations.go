@@ -13,10 +13,14 @@ import (
 // before preprocessing, token allocation, or escape decoding.
 const maxCSSStyleBytes = 64 << 10
 
+// cssDeclaration is one parsed style declaration: its lowercased name, its
+// value rebuilt from tokens, and whether it ended in !important.
 type cssDeclaration struct {
 	name, value string
 	important   bool
 }
+// cssToken is one CSS Syntax Level 3 token: its kind, its decoded value, and
+// whether a numeric token was written as an integer.
 type cssToken struct {
 	kind      byte
 	value     string
@@ -39,12 +43,15 @@ const (
 	cssCDC        byte = 'c'
 )
 
+// cssLexer tokenizes one preprocessed style attribute (CSS Syntax 3, section 4).
 type cssLexer struct {
 	r   []rune
 	i   int
 	bad bool
 }
 
+// cssLexerFor preprocesses input per CSS Syntax 3 section 3.3: CR, FF and CRLF
+// become LF, and NUL becomes U+FFFD.
 func cssLexerFor(s string) cssLexer {
 	r := make([]rune, 0, len(s))
 	for i := 0; i < len(s); {
@@ -66,6 +73,7 @@ func cssLexerFor(s string) cssLexer {
 	return cssLexer{r: r}
 }
 
+// at returns the code point n positions ahead, or -1 at end of input.
 func (l *cssLexer) at(n int) rune {
 	if l.i+n >= len(l.r) {
 		return -1
@@ -75,12 +83,14 @@ func (l *cssLexer) at(n int) rune {
 func cssWhite(c rune) bool { return c == ' ' || c == '\n' || c == '\t' }
 func cssDigit(c rune) bool { return c >= '0' && c <= '9' }
 func cssHex(c rune) bool   { return cssDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+// cssNameStart reports whether c can start a CSS identifier.
 func cssNameStart(c rune) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80 && c <= unicode.MaxRune
 }
 func cssName(c rune) bool        { return cssNameStart(c) || cssDigit(c) || c == '-' }
 func (l *cssLexer) escape() bool { return l.at(0) == '\\' && l.at(1) != -1 && l.at(1) != '\n' }
 
+// ident reports whether an identifier starts n positions ahead.
 func (l *cssLexer) ident(n int) bool {
 	a, b, c := l.at(n), l.at(n+1), l.at(n+2)
 	if a == '-' {
@@ -89,6 +99,7 @@ func (l *cssLexer) ident(n int) bool {
 	return cssNameStart(a) || a == '\\' && b != -1 && b != '\n'
 }
 
+// number reports whether a number starts n positions ahead.
 func (l *cssLexer) number(n int) bool {
 	a, b, c := l.at(n), l.at(n+1), l.at(n+2)
 	if a == '+' || a == '-' {
@@ -97,6 +108,9 @@ func (l *cssLexer) number(n int) bool {
 	return cssDigit(a) || a == '.' && cssDigit(b)
 }
 
+// escaped consumes one escape after the backslash: up to six hex digits and
+// one optional whitespace, with zero, surrogate and out-of-range values
+// replaced by U+FFFD.
 func (l *cssLexer) escaped() rune {
 	l.i++ // backslash, only after valid-escape check
 	if l.i >= len(l.r) {
@@ -129,6 +143,7 @@ func (l *cssLexer) escaped() rune {
 	return c
 }
 
+// name consumes an identifier sequence, decoding escapes.
 func (l *cssLexer) name() string {
 	var b strings.Builder
 	for cssName(l.at(0)) || l.escape() {
@@ -142,6 +157,8 @@ func (l *cssLexer) name() string {
 	return b.String()
 }
 
+// stringToken consumes a string closed by q; an unescaped newline makes it a
+// bad string.
 func (l *cssLexer) stringToken(q rune) cssToken {
 	l.i++
 	var b strings.Builder
@@ -174,6 +191,7 @@ func (l *cssLexer) stringToken(q rune) cssToken {
 	}
 }
 
+// url consumes the body of an unquoted url( ) token.
 func (l *cssLexer) url() cssToken {
 	for cssWhite(l.at(0)) {
 		l.i++
@@ -226,6 +244,7 @@ func (l *cssLexer) url() cssToken {
 	}
 }
 
+// token consumes and returns the next token.
 func (l *cssLexer) token() cssToken {
 	for l.at(0) == '/' && l.at(1) == '*' {
 		l.i += 2
@@ -336,6 +355,10 @@ func (l *cssLexer) token() cssToken {
 	return cssToken{string(c)[0], string(c), c == '\\'}
 }
 
+// cssDeclarations parses a style attribute as a list of declarations
+// (CSS Syntax 3, section 5.4.5). Malformed declarations are skipped to the
+// next semicolon, and input over the size cap yields no declarations, so an
+// unreadable style never counts as hiding.
 func cssDeclarations(style string) []cssDeclaration {
 	if len(style) > maxCSSStyleBytes {
 		return nil
@@ -431,6 +454,7 @@ func cssDeclarations(style string) []cssDeclaration {
 	return out
 }
 
+// cssSkip discards tokens through the next top-level semicolon.
 func cssSkip(l *cssLexer) {
 	depth := []byte{}
 	for {

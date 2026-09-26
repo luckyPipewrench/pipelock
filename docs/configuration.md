@@ -708,6 +708,25 @@ Semantics, all fail-closed:
 
 A rule may set both `graphql` and `discriminator`; when it does, both predicates must match (in addition to the route). The discriminator predicate is evaluated on every HTTP transport and per WebSocket text frame, the same surfaces as the GraphQL predicate, and it folds into the canonical policy hash.
 
+### Exact JSON exception on a block rule
+
+Use `except` when a narrowly scoped block rule must permit one exact top-level JSON string value. The exception applies only after the body is fully read and parsed. A missing or duplicate key, different value or case, non-string value, malformed JSON, or unreadable body keeps the block active, even if `on_parse_error` or `on_opaque_operation` is `warn` or `allow`.
+
+```yaml
+  rules:
+    - name: "block-move-except-archive"
+      action: block
+      route:
+        hosts: ["api.service.example.com"]
+        methods: ["POST"]
+        path_patterns: ["/items/.+/move$"]
+      except:
+        field: "destinationId"
+        values: ["archive"]
+```
+
+`except` requires an enforced `block` rule scoped by host, a body-carrying method (`POST`, `PUT`, `PATCH`, or `DELETE`), and path. It cannot be combined with `graphql` or `discriminator`. Values are exact and case-sensitive. A batch sub-request is inspected with the same rule. This exception is a narrow allowance within the named rule; other matching rules still apply.
+
 ### Batch endpoints
 
 A JSON batch endpoint wraps multiple sub-requests in one outer request, each carrying its own method, URL, and body. When an outer request route-matches a `batch` entry, request policy parses the envelope and evaluates **every** sub-request against the full rule set: host inherited from the outer request, plus the sub-request's effective method, normalized path, and any GraphQL operation in its body or URL query. The strictest decision across all sub-requests wins, so a dangerous operation cannot evade a rule by being wrapped in a batch.

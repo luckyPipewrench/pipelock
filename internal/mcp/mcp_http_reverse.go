@@ -968,7 +968,7 @@ func RunHTTPListenerProxy(
 				rejectPrincipalStateCapacity(nil)
 				return
 			}
-			if principalControls && !stateBound && listenerPrincipal.key == "" {
+			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
 				rejectMissingListenerState(nil)
 				return
 			}
@@ -1114,7 +1114,7 @@ func RunHTTPListenerProxy(
 				rejectPrincipalStateCapacity(nil)
 				return
 			}
-			if principalControls && !stateBound && listenerPrincipal.key == "" {
+			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
 				rejectMissingListenerState(nil)
 				return
 			}
@@ -1543,7 +1543,7 @@ func RunHTTPListenerProxy(
 		// A request that cannot access configured principal-scoped controls is
 		// still body/header scanned below, but it must not spend a legitimate
 		// caller's DoW budget before the listener refuses it for missing identity.
-		if principalControls && !stateBound && listenerPrincipal.key == "" && listenerMethodRequiresPrincipal(frame.Method) {
+		if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) && listenerMethodRequiresPrincipal(frame.Method) {
 			scanOpts.DoWCheck = nil
 			scanOpts.DoWEnabledFn = nil
 		}
@@ -1566,7 +1566,7 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
-		if principalControls && !stateBound && listenerPrincipal.key == "" && listenerMethodRequiresPrincipal(frame.Method) {
+		if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) && listenerMethodRequiresPrincipal(frame.Method) {
 			rejectMissingListenerState(frame.ID)
 			return
 		}

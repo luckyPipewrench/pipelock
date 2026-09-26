@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -73,6 +74,51 @@ func TestDeferredSendClaimOrdersActivation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecisionChecksShareReadLock(t *testing.T) {
+	c := New(testConfig())
+	c.deferredMu.RLock()
+	done := make(chan struct{})
+	go func() {
+		c.IsActiveMCP([]byte(`{"id":1}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		c.deferredMu.RUnlock()
+		<-done
+		t.Fatal("decision check waited for another reader")
+	}
+	c.deferredMu.RUnlock()
+}
+
+func TestSentinelDeferredClaimBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kill")
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = path
+	c := New(cfg)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.ClaimDeferredSend(); ok {
+		t.Fatal("sentinel active before claim allowed send")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	release, ok := c.ClaimDeferredSend()
+	if !ok {
+		t.Fatal("inactive sentinel denied send")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsActive() || c.DeferredInFlight() != 1 {
+		t.Fatal("activation after claim did not retain in-flight accounting")
+	}
+	release()
 }
 
 func TestController_ConfigEnabled(t *testing.T) {

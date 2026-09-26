@@ -37,7 +37,7 @@ type Decision struct {
 
 // Controller manages the kill switch state across seven activation sources.
 type Controller struct {
-	deferredMu       sync.Mutex // serializes activation with deferred upstream send claims
+	deferredMu       sync.RWMutex // serializes activation with deferred upstream send claims
 	deferredInFlight atomic.Int64
 	cfg              atomic.Pointer[runtime]
 	api              atomic.Bool
@@ -120,8 +120,8 @@ func buildRuntime(cfg *config.Config) *runtime {
 // exemptions. Use this for non-HTTP callers (e.g. the Scan API handler) that
 // perform their own exemption logic.
 func (c *Controller) IsActive() bool {
-	c.deferredMu.Lock()
-	defer c.deferredMu.Unlock()
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	return c.computeDecision(c.cfg.Load()).Active
 }
 
@@ -130,8 +130,8 @@ func (c *Controller) IsActive() bool {
 // exemptions. Use this inside intercepted CONNECT tunnels where request paths
 // belong to the upstream origin, not to pipelock's own endpoints.
 func (c *Controller) IsActiveForIP(clientIP string) Decision {
-	c.deferredMu.Lock()
-	defer c.deferredMu.Unlock()
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	// Operator emergency exemptions require a known effective policy.
 	if !c.conductorApplyFailure.Load() && len(rt.allowlistNets) > 0 {
@@ -170,8 +170,8 @@ func isProxiedRequest(r *http.Request) bool {
 }
 
 func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
-	c.deferredMu.Lock()
-	defer c.deferredMu.Unlock()
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 
 	// Proxied traffic gets no endpoint exemption: the request path belongs to
@@ -251,8 +251,8 @@ func (c *Controller) allowlistExempt(rt *runtime, r *http.Request) *Decision {
 // message is a notification (no "id" field) for the caller to decide
 // whether to drop silently or send a JSON-RPC error.
 func (c *Controller) IsActiveMCP(msg []byte) Decision {
-	c.deferredMu.Lock()
-	defer c.deferredMu.Unlock()
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	d := c.computeDecision(rt)
 	if d.Active {
@@ -380,8 +380,8 @@ func (c *Controller) SetSeparateAPIPort(sep bool) {
 
 // Sources returns the current state of each activation source.
 func (c *Controller) Sources() map[string]bool {
-	c.deferredMu.Lock()
-	defer c.deferredMu.Unlock()
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	sources := map[string]bool{
 		"config":                  rt.cfgEnabled,

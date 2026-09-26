@@ -478,6 +478,17 @@ func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) e
 			return ErrEvalOrderNotMintable
 		}
 	}
+	const activeEvalQuery = `
+	SELECT COUNT(*) FROM entitlements
+	WHERE tier = ? AND status = ? AND customer_email = ? AND current_period_end > ?
+	`
+	var active int
+	if err := tx.QueryRowContext(ctx, activeEvalQuery, tierEnterpriseEval, statusActive, p.EvalOrder.NormalizedEmail, time.Now().UTC()).Scan(&active); err != nil {
+		return fmt.Errorf("check active eval at mint: %w", err)
+	}
+	if active > 0 {
+		return ErrActiveTrialExists
+	}
 
 	admitted, err := admitWebhook(ctx, tx, p.WebhookMsgID, p.EventType, p.EvalOrder.OrderID)
 	if err != nil {

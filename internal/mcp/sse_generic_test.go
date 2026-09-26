@@ -874,6 +874,19 @@ func TestScanGenericSSEStream_CrossEventSplitDLPBlocked(t *testing.T) {
 	}
 }
 
+func TestScanGenericSSEStream_CrossEventMetadataSplitDLPBlocked(t *testing.T) {
+	key := fakeAWSKey()
+	body := "event: " + key[:8] + "\ndata:\n\ndata: " + key[8:] + "\n\n"
+	var out bytes.Buffer
+	err := ScanGenericSSEStream(t.Context(), strings.NewReader(body), &out, nil, testA2AScanner(t), enabledSSECfg())
+	if !errors.Is(err, ErrSSEStreamFinding) || !strings.Contains(err.Error(), "cross-event dlp") {
+		t.Fatalf("metadata split secret escaped: error=%v output=%q", err, out.String())
+	}
+	if strings.Contains(out.String(), key[8:]) {
+		t.Fatalf("second fragment was forwarded: %q", out.String())
+	}
+}
+
 func TestScanGenericSSEStream_CrossEventSplitDLPBlockedAcrossThreeEvents(t *testing.T) {
 	// The tail accumulates across more than one previous event, so N-way
 	// contiguous splits are still reassembled while they fit inside the
@@ -1505,7 +1518,7 @@ func TestScanGenericSSEStream_CrossEventDLPWarnForwardsAndResetsTail(t *testing.
 	cfg := enabledSSECfg()
 	cfg.Action = config.ActionWarn
 	key := fakeAWSKey()
-	body := "data: " + key[:8] + "\n\ndata: " + key[8:] + "\n\ndata: ordinary followup\n\n"
+	body := "data: " + key[:8] + "\n\ndata: " + key[8:] + " " + key[:8] + "\n\ndata: " + key[8:] + "\n\n"
 	var out bytes.Buffer
 	var findings []error
 	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil,
@@ -1518,8 +1531,8 @@ func TestScanGenericSSEStream_CrossEventDLPWarnForwardsAndResetsTail(t *testing.
 	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "cross-event dlp") {
 		t.Fatalf("findings = %v, want one cross-event DLP finding", findings)
 	}
-	if !strings.Contains(out.String(), key[8:]) || !strings.Contains(out.String(), "ordinary followup") {
-		t.Fatalf("warn mode did not forward both events: %q", out.String())
+	if strings.Count(out.String(), "data: "+key[8:]) != 2 {
+		t.Fatalf("warn mode did not forward the later fragment: %q", out.String())
 	}
 }
 
@@ -1527,7 +1540,7 @@ func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
 	cfg := enabledSSECfg()
 	cfg.Action = config.ActionWarn
 	key := fakeAWSKey()
-	body := "data: harmless prefix\n\ndata: " + key + "\n\ndata: harmless suffix\n\n"
+	body := "data: harmless prefix\n\ndata: " + key + " " + key[:8] + "\n\ndata: " + key[8:] + "\n\n"
 	var out bytes.Buffer
 	var findings []error
 	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil,
@@ -1540,7 +1553,7 @@ func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {
 	if len(findings) != 1 || !strings.Contains(findings[0].Error(), "dlp") {
 		t.Fatalf("findings = %v, want one current-event DLP finding", findings)
 	}
-	if !strings.Contains(out.String(), key) || !strings.Contains(out.String(), "harmless suffix") {
+	if !strings.Contains(out.String(), key) || !strings.Contains(out.String(), "data: "+key[8:]) {
 		t.Fatalf("warn mode did not forward subsequent events: %q", out.String())
 	}
 }

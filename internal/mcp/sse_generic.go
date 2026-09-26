@@ -263,9 +263,11 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
+		rollingText := sseRollingEventText(text, "")
+		rollingInjectionText := sseRollingEventText(text, " ")
 		resetInjectionTail := false
 		if !skipTailInjection && injectionTail != "" {
-			combined := injectionTail + " " + string(event)
+			combined := injectionTail + " " + rollingInjectionText
 			tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
 			observedCore.record(tailInjectResult)
 			if tailInjectResult.Failed() {
@@ -287,7 +289,7 @@ func ScanGenericSSEStreamWithOptions(
 
 		resetDLPTail := false
 		if !skipTailDLP && tail != "" {
-			combined := tail + string(event)
+			combined := tail + rollingText
 			_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
 			droppedDLP.markSeen(priorTailDrops)
 			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
@@ -306,15 +308,15 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		if clearDLPTailAfterCurrent {
+		if clearDLPTailAfterCurrent || resetDLPTail {
 			tail = ""
 		} else {
-			tail = advanceSSERollingTail(tail, event, resetDLPTail, "")
+			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
 		}
-		if clearInjectionTailAfterCurrent {
+		if clearInjectionTailAfterCurrent || resetInjectionTail {
 			injectionTail = ""
 		} else {
-			injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail, " ")
+			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")
 		}
 		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the
@@ -328,6 +330,28 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+// sseRollingEventText keeps the values from the canonical, wire-shaped event
+// while removing SSE field labels that can interrupt a split value at a
+// boundary. Current-event checks still scan the complete canonical text.
+func sseRollingEventText(canonical, separator string) string {
+	var b strings.Builder
+	for line := range strings.SplitSeq(canonical, "\n") {
+		for _, field := range []string{"event:", "id:", "retry:", "data:"} {
+			if value, ok := strings.CutPrefix(line, field); ok {
+				value = strings.TrimPrefix(value, " ")
+				if value != "" {
+					if b.Len() > 0 {
+						b.WriteString(separator)
+					}
+					b.WriteString(value)
+				}
+				break
+			}
+		}
+	}
+	return b.String()
 }
 
 func advanceSSERollingTail(tail string, event []byte, reset bool, separator string) string {

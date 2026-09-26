@@ -561,9 +561,9 @@ func RunHTTPListenerProxy(
 			}
 		}
 		var upstreamDriftEpoch uint64
-		statefulControls := listenerHasStatefulControls(opts)
-		principalControls := listenerHasPrincipalScopedControls(opts)
 		requireStateToken := listenerRequiresStateToken(opts)
+		statefulControls := listenerHasStatefulControls(opts) || requireStateToken
+		principalControls := listenerHasPrincipalScopedControls(opts)
 		listenerSessionToken := r.Header.Get(listenerSessionTokenHeader)
 		clientState := newMCPListenerTransientState()
 		clientStateKey := clientState.key

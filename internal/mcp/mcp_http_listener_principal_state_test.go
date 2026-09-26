@@ -825,6 +825,19 @@ func TestHTTPListener_PrincipalState_UnidentifiedStatefulCurrentSpecFailsClosed(
 	}
 }
 
+func TestHTTPListener_PrincipalState_TokenRequirementAloneAdmitsPrincipal(t *testing.T) {
+	upstream, calls := principalStateUpstream(t)
+	opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), ListenerBearerToken: principalStateTestBearer, listenerStateTokenRequired: boolPtr(true)}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	status, body := principalStateToolCall(t, baseURL, principalStateTestBearer, 1, "read_file", nil)
+	if status != http.StatusOK || !strings.Contains(body, `"result"`) {
+		t.Fatalf("authenticated call = status %d body %s, want upstream result", status, body)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
 func TestHTTPListener_PrincipalState_UnidentifiedDenialDoesNotSpendDoWBudget(t *testing.T) {
 	upstream, calls := principalStateUpstream(t)
 	opts := principalStateOpts(t, "")

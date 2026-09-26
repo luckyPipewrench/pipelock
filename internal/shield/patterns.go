@@ -212,9 +212,11 @@ func styleHides(tag string) bool {
 // later declaration overrides an earlier one unless the earlier one is
 // !important and the later is not.
 func styleValueHides(style string) bool {
-	// An inline style too large to parse is treated as hiding. Otherwise a
-	// page could bury display:none under padding and have the element's text
-	// read as visible. No ordinary page writes a style attribute this large.
+	// The lexer is a single linear pass, so the whole style is read up to
+	// maxCSSStyleBytes wherever a hiding declaration sits. Beyond that the
+	// style is treated as hiding: no ordinary page writes an inline style
+	// that large, and reading only part of it would let padding in front of
+	// display:none hide the element's text from this check.
 	if len(style) > maxCSSStyleBytes {
 		return true
 	}

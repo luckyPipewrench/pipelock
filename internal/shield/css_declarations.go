@@ -11,7 +11,10 @@ import (
 
 // A style attribute over this many bytes is left intact. The bound applies
 // before preprocessing, token allocation, or escape decoding.
-const maxCSSStyleBytes = 64 << 10
+// maxCSSStyleBytes bounds the style attribute read. The lexer is linear, so the
+// cap only guards against pathological input; styleValueHides treats a larger
+// style as hiding.
+const maxCSSStyleBytes = 1 << 20
 
 // cssDeclaration is one parsed style declaration: its lowercased name, its
 // value rebuilt from tokens, and whether it ended in !important.
@@ -21,7 +24,7 @@ type cssDeclaration struct {
 }
 
 // cssToken is one CSS Syntax Level 3 token: its kind, its decoded value, and
-// whether a numeric token was written as an integer.
+// whether it is a bad string or bad url token.
 type cssToken struct {
 	kind      byte
 	value     string
@@ -376,7 +379,7 @@ func cssDeclarations(style string) []cssDeclaration {
 			continue
 		}
 		if t.kind == cssAt {
-			cssSkip(&l)
+			cssSkipAtRule(&l)
 			continue
 		}
 		if t.kind != cssIdent {
@@ -444,8 +447,14 @@ func cssDeclarations(style string) []cssDeclaration {
 				}
 			}
 		}
+		// Two word-like tokens can only be adjacent when a comment separated
+		// them, and a browser reads them as two values: display:n/**/one is
+		// not display:none. Keep that boundary as a space.
 		var b strings.Builder
-		for _, v := range vals {
+		for i, v := range vals {
+			if i > 0 && cssWordLike(vals[i-1].kind) && cssWordLike(v.kind) {
+				b.WriteByte(' ')
+			}
 			b.WriteString(v.value)
 		}
 		out = append(out, cssDeclaration{name: name, value: b.String(), important: important})
@@ -454,6 +463,50 @@ func cssDeclarations(style string) []cssDeclaration {
 		}
 	}
 	return out
+}
+
+// cssWordLike reports whether a token kind is a word or number rather than a
+// delimiter, so two of them in a row need a separator to keep their meaning.
+func cssWordLike(k byte) bool {
+	switch k {
+	case cssIdent, cssNumber, cssDimension, cssPercentage, cssHash, cssAt, cssString, cssURL:
+		return true
+	}
+	return false
+}
+
+// cssSkipAtRule discards the rest of an at-rule: through a top-level
+// semicolon, or through the end of its first {} block (CSS Syntax 3,
+// "consume an at-rule"), so a declaration after the block is still read.
+func cssSkipAtRule(l *cssLexer) {
+	depth := []byte{}
+	for {
+		t := l.token()
+		if t.kind == 0 {
+			return
+		}
+		if t.kind == ';' && len(depth) == 0 {
+			return
+		}
+		switch t.kind {
+		case cssFunction, '(', '[', '{':
+			end := byte(')')
+			switch t.kind {
+			case '[':
+				end = ']'
+			case '{':
+				end = '}'
+			}
+			depth = append(depth, end)
+		case ')', ']', '}':
+			if len(depth) > 0 && depth[len(depth)-1] == t.kind {
+				depth = depth[:len(depth)-1]
+				if t.kind == '}' && len(depth) == 0 {
+					return
+				}
+			}
+		}
+	}
 }
 
 // cssSkip discards tokens through the next top-level semicolon.

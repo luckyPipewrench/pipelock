@@ -208,12 +208,34 @@ func (s *Scanner) queryValueEntropy(value string, depth int) (entropyFinding, bo
 			return s.nestedURLEntropy(nested, depth+1)
 		}
 	}
-	entropy := payloadEntropy(value)
-	if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
-		return entropyFinding{}, false
+	// Free text such as a search query is scored one ASCII-whitespace token
+	// at a time: search syntax is punctuation-dense but no single word is
+	// random. Splitting alone would let random chunks shorter than the
+	// minimum pass, so the value is also scored with ASCII punctuation and
+	// whitespace removed: search words stay low (about 4.2 bits) while split
+	// random text stays high. Unicode whitespace does not split.
+	parts := []string{value}
+	if strings.ContainsAny(value, " \t\n\r\v\f") {
+		parts = strings.FieldsFunc(value, func(r rune) bool {
+			return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
+		})
+		if joined := asciiAlnumOnly(value); len(joined) >= s.entropyMinLen {
+			if entropy := payloadEntropy(joined); entropy > s.entropyThreshold {
+				return entropyFinding{entropy: entropy}, true
+			}
+		}
 	}
-	if entropy > s.entropyThreshold {
-		return entropyFinding{entropy: entropy}, true
+	for _, part := range parts {
+		if len(part) < s.entropyMinLen {
+			continue
+		}
+		entropy := payloadEntropy(part)
+		if shouldSkipQueryValueEntropy(part, entropy, s.entropyThreshold) {
+			continue
+		}
+		if entropy > s.entropyThreshold {
+			return entropyFinding{entropy: entropy}, true
+		}
 	}
 	return entropyFinding{}, false
 }
@@ -306,4 +328,17 @@ func (s *Scanner) queryEntropyParamResult(key string, f entropyFinding) Result {
 		Class:   ClassHeuristicEntropy,
 		Score:   math.Min(f.entropy/8.0, 1.0),
 	}
+}
+
+// asciiAlnumOnly keeps ASCII letters and digits and drops everything else, so
+// punctuation and spacing cannot raise or lower a free-text value's score.
+func asciiAlnumOnly(value string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }

@@ -14,7 +14,7 @@ import (
 )
 
 func lockEmergencyDirectory(dir string) (*os.File, error) {
-	f, err := os.OpenFile(filepath.Join(dir, ".emergency-controls.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Clean(filepath.Join(dir, ".emergency-controls.lock")), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

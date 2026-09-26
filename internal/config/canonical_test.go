@@ -461,6 +461,21 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 				}}
 			},
 		},
+		{
+			name: "request_policy exact exception added",
+			mut: func(c *Config) {
+				c.RequestPolicy.Enabled = true
+				c.RequestPolicy.Rules = []RequestPolicyRule{{
+					Name: "block-move", Action: ActionBlock,
+					Route: RequestPolicyRoute{
+						Hosts:        []string{"api.service.example.com"},
+						Methods:      []string{"POST"},
+						PathPatterns: []string{`/items/.+/move$`},
+					},
+					Except: &RequestPolicyException{Field: "destinationId", Values: []string{"archive"}},
+				}}
+			},
+		},
 	}
 
 	for _, tc := range cases {

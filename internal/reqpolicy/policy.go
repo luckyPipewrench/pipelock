@@ -99,6 +99,7 @@ type compiledRule struct {
 	compiledRoute
 	graphql *gqlPredicate
 	disc    *discPredicate
+	except  *exactException
 }
 
 // Matcher holds the precompiled request_policy ruleset. Build one with
@@ -132,6 +133,21 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 	}
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
+		if r.Except != nil && (r.Action != config.ActionBlock || r.Shadow || r.GraphQL != nil || r.Discriminator != nil ||
+			len(r.Route.Hosts) == 0 || len(r.Route.Methods) == 0 ||
+			(len(r.Route.PathPrefixes) == 0 && len(r.Route.PathPatterns) == 0) ||
+			r.Except.Field == "" || len(r.Except.Values) == 0) {
+			return nil, fmt.Errorf("request_policy rule %q: invalid exact exception", r.Name)
+		}
+		if r.Except != nil {
+			for _, method := range r.Route.Methods {
+				switch strings.ToUpper(method) {
+				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+				default:
+					return nil, fmt.Errorf("request_policy rule %q: exact exception requires a body-carrying method", r.Name)
+				}
+			}
+		}
 		route, err := compileRoute(r.Route)
 		if err != nil {
 			return nil, fmt.Errorf("request_policy rule %q: %w", r.Name, err)
@@ -152,6 +168,7 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 			compiledRoute: route,
 			graphql:       pred,
 			disc:          disc,
+			except:        compileExactException(r.Except),
 		})
 	}
 	for i := range cfg.Batch {
@@ -266,6 +283,18 @@ func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (string, bool
 	if !cr.routeMatches(meta) {
 		return "", false
 	}
+	if cr.except != nil {
+		// Transports run a route-only pass before reading the body. Defer the
+		// decision until the JSON can prove the exception; unreadable or
+		// invalid bodies are blocked by EvaluateUninspectable.
+		if !meta.JSONBodyParsed {
+			return "", false
+		}
+		if cr.except.matches(meta) {
+			return "", false
+		}
+		return cr.action, true
+	}
 	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
 		return "", false
 	}
@@ -304,9 +333,9 @@ func (cr *compiledRule) hasBodyPredicate(kind BodyPredicateKind) bool {
 	case PredGraphQL:
 		return cr.graphql != nil
 	case PredDiscriminator:
-		return cr.disc != nil
+		return cr.disc != nil || cr.except != nil
 	default:
-		return cr.graphql != nil || cr.disc != nil
+		return cr.graphql != nil || cr.disc != nil || cr.except != nil
 	}
 }
 
@@ -331,7 +360,7 @@ func (m *Matcher) NeedsBodyPredicate(meta RequestMeta) bool {
 // cases, restricted to rules carrying a predicate of kind. A configured
 // action=allow yields no decision.
 func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind BodyPredicateKind) Decision {
-	if m == nil || !m.enabled || action == "" || action == config.ActionAllow {
+	if m == nil || !m.enabled {
 		return Decision{}
 	}
 	var best Decision
@@ -340,7 +369,14 @@ func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind Bo
 		if !cr.hasBodyPredicate(kind) || !cr.routeMatches(meta) {
 			continue
 		}
-		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
+		effective := action
+		if cr.except != nil {
+			effective = config.ActionBlock
+		}
+		if effective == "" || effective == config.ActionAllow {
+			continue
+		}
+		cand := Decision{Action: effective, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
 		if betterDecision(cand, best) {
 			best = cand
 		}

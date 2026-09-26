@@ -4,7 +4,9 @@
 package reqpolicy
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -140,7 +142,18 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 	}
 	ops, parseOK, opaque := extractSubRequestGraphQL(sub)
 	subMeta.Operations = ops
+	if len(sub.body) > 0 {
+		var doc any
+		if err := json.Unmarshal(sub.body, &doc); err == nil {
+			subMeta.JSONBody = doc
+			subMeta.JSONBodyParsed = true
+			subMeta.JSONDupKeys = topLevelBatchDuplicateKeys(sub.body)
+		}
+	}
 	d := m.Evaluate(subMeta)
+	if !subMeta.JSONBodyParsed {
+		d = Stricter(d, m.EvaluateUninspectable(subMeta, m.onParseError, PredDiscriminator))
+	}
 	switch {
 	case !parseOK:
 		d = Stricter(d, m.uninspectableSub(subMeta, m.onParseError))
@@ -148,6 +161,38 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 		d = Stricter(d, m.uninspectableSub(subMeta, m.onOpaqueOperation))
 	}
 	return d
+}
+
+func topLevelBatchDuplicateKeys(body []byte) map[string]struct{} {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	dups := make(map[string]struct{})
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil
+		}
+		if _, exists := seen[key]; exists {
+			dups[key] = struct{}{}
+		}
+		seen[key] = struct{}{}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil
+		}
+	}
+	if _, err := dec.Token(); err != nil && err != io.EOF {
+		return nil
+	}
+	return dups
 }
 
 // uninspectableSub applies a fail-closed action to a sub-request whose body

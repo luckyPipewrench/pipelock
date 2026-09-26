@@ -84,15 +84,25 @@ func (l *cssLexer) at(n int) rune {
 	}
 	return l.r[l.i+n]
 }
+
+// cssWhite reports CSS whitespace after preprocessing (space, LF, tab).
 func cssWhite(c rune) bool { return c == ' ' || c == '\n' || c == '\t' }
+
+// cssDigit reports an ASCII decimal digit.
 func cssDigit(c rune) bool { return c >= '0' && c <= '9' }
-func cssHex(c rune) bool   { return cssDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
+// cssHex reports an ASCII hexadecimal digit.
+func cssHex(c rune) bool { return cssDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
 
 // cssNameStart reports whether c can start a CSS identifier.
 func cssNameStart(c rune) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80 && c <= unicode.MaxRune
 }
-func cssName(c rune) bool        { return cssNameStart(c) || cssDigit(c) || c == '-' }
+
+// cssName reports whether c can continue a CSS identifier.
+func cssName(c rune) bool { return cssNameStart(c) || cssDigit(c) || c == '-' }
+
+// escape reports whether a valid escape starts at the current position.
 func (l *cssLexer) escape() bool { return l.at(0) == '\\' && l.at(1) != -1 && l.at(1) != '\n' }
 
 // ident reports whether an identifier starts n positions ahead.

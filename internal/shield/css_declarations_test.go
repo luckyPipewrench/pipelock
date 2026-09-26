@@ -54,6 +54,7 @@ func TestStyleValueHidesCSSSyntax(t *testing.T) {
 		{"comment between separate words keeps the boundary", "font-size:0/**/px", false},
 		{"declaration after an at-rule block", "@unknown{}display:none", true},
 		{"declaration after an at-rule with a nested block", "@unknown x{a{b}}display:none", true},
+		{"unclosed at-rule block at end of input", "@unknown{display:none", false},
 		{"at-rule statement ends at semicolon", "@unknown x;display:none", true},
 		{"at the size limit is parsed", `color:red;` + strings.Repeat("x", maxCSSStyleBytes-len(`color:red;`)), false},
 		{"length control", `display:none;` + strings.Repeat("x", 64), true},

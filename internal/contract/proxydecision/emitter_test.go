@@ -609,9 +609,58 @@ func TestNilEmitter_IsNoOp(t *testing.T) {
 	if err := em.Emit(Decision{Verdict: "block"}); err != nil {
 		t.Errorf("nil Emit returned %v, want nil", err)
 	}
+	if err := em.EmitDurable(validDecision()); err != nil {
+		t.Errorf("nil EmitDurable returned %v, want nil", err)
+	}
 	seq, head := em.ChainState()
 	if seq != 0 || head != recorder.GenesisHash {
 		t.Errorf("nil ChainState = (%d,%q), want (0,genesis)", seq, head)
+	}
+}
+
+func TestEmitDurableRequiresDurableRecorder(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	err := em.EmitDurable(validDecision())
+	if err == nil || !strings.Contains(err.Error(), "does not support durable writes") {
+		t.Fatalf("EmitDurable error = %v, want unsupported recorder", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries despite unsupported durable write", len(rec.entries))
+	}
+	if seq, head := em.ChainState(); seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("chain advanced on failed durable write: (%d, %q)", seq, head)
+	}
+}
+
+type durableCaptureRecorder struct {
+	captureRecorder
+	durableCalls int
+}
+
+func (r *durableCaptureRecorder) RecordDurable(entry recorder.Entry) error {
+	r.durableCalls++
+	return r.Record(entry)
+}
+
+func TestEmitDurableRecordsAndAdvancesOnlyOnSuccess(t *testing.T) {
+	rec := &durableCaptureRecorder{captureRecorder: captureRecorder{err: errTestRecorder}}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("failed durable write error = %v, want recorder error", err)
+	}
+	if seq, head := em.ChainState(); seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("chain advanced on failed durable write: (%d, %q)", seq, head)
+	}
+	rec.err = nil
+	if err := em.EmitDurable(validDecision()); err != nil {
+		t.Fatalf("successful durable write: %v", err)
+	}
+	if rec.durableCalls != 2 || len(rec.entries) != 1 {
+		t.Fatalf("durable calls = %d, entries = %d, want 2 and 1", rec.durableCalls, len(rec.entries))
+	}
+	if seq, head := em.ChainState(); seq != 1 || head == recorder.GenesisHash {
+		t.Fatalf("chain after durable write = (%d, %q)", seq, head)
 	}
 }
 

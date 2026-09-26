@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -355,12 +356,31 @@ func dnsEntropySubject(b []byte, foldCase bool) string {
 // gate: labels, record payloads, EDNS option payloads and the fixed-width
 // fields, each as returned by entropyParts.
 func (s *Scanner) dnsMessageEntropy(msg dnsMessage) (entropyFinding, bool) {
-	for _, p := range msg.entropyParts() {
+	parts := msg.entropyParts()
+	for _, p := range parts {
 		if len(p.text) < s.entropyMinLen {
 			continue
 		}
 		if entropy := payloadEntropy(p.text); entropy > s.entropyThreshold {
 			return entropyFinding{part: p.part, entropy: entropy}, true
+		}
+	}
+	// Data split across many short pieces, each under the length floor or
+	// individually low, is measured once more as one stable, separator-free
+	// view of every piece, the same shape the request-body scanner joins.
+	// Sorting makes the view independent of piece order. Measured on an
+	// ordinary query the view stays low: the benign RFC 8484 Bench pair
+	// scores 3.73, under even the stricter 4.00 Bench threshold, while four
+	// random 19-character labels score 4.56.
+	texts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		texts = append(texts, p.text)
+	}
+	sort.Strings(texts)
+	joined := strings.Join(texts, "")
+	if len(joined) >= s.entropyMinLen {
+		if entropy := payloadEntropy(joined); entropy > s.entropyThreshold {
+			return entropyFinding{part: "DNS message", entropy: entropy}, true
 		}
 	}
 	return entropyFinding{}, false

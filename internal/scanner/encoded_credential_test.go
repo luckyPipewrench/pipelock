@@ -112,46 +112,41 @@ func TestDoHQueryCorePatternsWithEmptyConfiguredList(t *testing.T) {
 
 func TestDoHQueryFailClosedKeepsWholeValue(t *testing.T) {
 	sc := newEncodedCredentialScanner(t, false)
-	benign := dnsQueryWire(t, []string{"cache", "example", "test"})
-	encoded := base64.RawURLEncoding.EncodeToString(benign)
-	// The benign message is short. Pad the wire with a trailing byte so the
-	// strict parse fails and the whole base64url value is scored. Build a
-	// value long enough to clear the length floor by repeating a valid-looking
-	// prefix that does not parse.
-	long := strings.Repeat(encoded, 3)
-	cases := []struct {
-		name string
-		raw  string
-	}{
-		{"trailing byte", "dns=" + encoded + "A"},
-		{"duplicate key", "dns=" + encoded + "&dns=" + encoded},
-		{"uppercase key", "DNS=" + encoded},
-		{"encoded key", "d%6es=" + encoded},
-		{"semicolon separator", "dns=" + encoded + ";other=1"},
-		{"padded base64", "dns=" + encoded + "=="},
-		{"second question carries the key", "dns=" + base64.RawURLEncoding.EncodeToString(dnsTwoQuestionWire(t, awsExampleAccessKeyID()))},
+	// A message whose label is 32 random base64url characters. Parsed, it is
+	// blocked with a DNS part named in the reason; any malformed variant must
+	// instead be blocked as one whole query value, with no DNS part named.
+	random := base64.RawURLEncoding.EncodeToString(dnsTestBytes("fail-closed", 48))[:63]
+	wire := dnsQueryWire(t, []string{random, "example", "test"})
+	encoded := base64.RawURLEncoding.EncodeToString(wire)
+	const host = "https://allowed-code-api.test/dns-query?"
+
+	control := sc.Scan(context.Background(), host+"dns="+encoded)
+	if control.Allowed || !strings.Contains(control.Reason, "DNS ") {
+		t.Fatalf("premise: the well-formed message must block by a DNS part, got allowed=%v %q", control.Allowed, control.Reason)
 	}
-	// The second-question message is a valid DNS message, so it must block
-	// by DLP rather than fall closed to whole-value entropy.
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.name == "second question carries the key" {
-				result := sc.Scan(context.Background(), "https://allowed-code-api.test/dns-query?"+tc.raw)
-				if result.Allowed || !strings.Contains(result.Reason, "DLP") {
-					t.Fatalf("second question allowed or not DLP: %q", result.Reason)
-				}
-				return
+	for name, raw := range map[string]string{
+		"trailing byte":       "dns=" + encoded + "A",
+		"duplicate key":       "dns=" + encoded + "&dns=" + encoded,
+		"uppercase key":       "DNS=" + encoded,
+		"encoded key":         "d%6es=" + encoded,
+		"semicolon separator": "dns=" + encoded + ";other=1",
+		"padded base64":       "dns=" + encoded + "==",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := sc.Scan(context.Background(), host+raw)
+			if r.Allowed || r.Scanner != ScannerEntropy {
+				t.Fatalf("allowed=%v scanner=%q reason=%q, want a whole-value entropy block", r.Allowed, r.Scanner, r.Reason)
 			}
-			result := sc.Scan(context.Background(), "https://allowed-code-api.test/dns-query?"+tc.raw)
-			if tc.name == "trailing byte" && result.Allowed && len(long) > 0 {
-				// A short trailing-byte value can sit under the length floor.
-				// The long form must still be measured as one value.
-				result = sc.Scan(context.Background(), "https://allowed-code-api.test/dns-query?dns="+long+"A")
-			}
-			if strings.Contains(result.Reason, "DNS label") || strings.Contains(result.Reason, "DNS rdata") {
-				t.Fatalf("malformed query was parsed as DNS: %q", result.Reason)
+			if !strings.HasPrefix(r.Reason, queryEntropyParamReasonPrefix) || strings.Contains(r.Reason, "DNS ") {
+				t.Fatalf("reason %q: want the plain query-param reason with no DNS part", r.Reason)
 			}
 		})
+	}
+	// A valid two-question message carrying the key is parsed, so it blocks
+	// by DLP rather than falling back.
+	r := sc.Scan(context.Background(), host+"dns="+base64.RawURLEncoding.EncodeToString(dnsTwoQuestionWire(t, awsExampleAccessKeyID())))
+	if r.Allowed || !strings.Contains(r.Reason, "DLP") {
+		t.Fatalf("second question allowed or not DLP: %q", r.Reason)
 	}
 }
 
@@ -231,6 +226,12 @@ func TestKoreanInjectionRecomposes(t *testing.T) {
 	}
 	if historic == current {
 		t.Fatal("v2 and v3 matching_normalize agreed on decomposed Hangul")
+	}
+	if historic != norm.NFD.String(composed) {
+		t.Fatalf("v2 matching_normalize = %q, want NFD %q", historic, norm.NFD.String(composed))
+	}
+	if current != norm.NFC.String(composed) {
+		t.Fatalf("v3 matching_normalize = %q, want NFC %q", current, norm.NFC.String(composed))
 	}
 	if current != normalize.ForMatching(decomposed) {
 		t.Fatalf("v3 matching_normalize = %q, ForMatching = %q", current, normalize.ForMatching(decomposed))

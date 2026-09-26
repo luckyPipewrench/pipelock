@@ -1741,8 +1741,9 @@ func ForwardScannedInput(
 
 // unescapeJSONUnicode resolves JSON \uXXXX escape sequences to their UTF-8
 // representation on arbitrary text, including malformed JSON. It is the same
-// decoder the URL and text DLP views use, so a surrogate pair becomes one
-// scalar and a malformed or unpaired escape stays as written.
+// decoder the URL and text DLP views use: a surrogate pair becomes one scalar,
+// an unpaired surrogate escape becomes U+FFFD, and a truncated escape or
+// non-hex digits stay as written.
 func unescapeJSONUnicode(s string) string {
 	return normalize.DecodeJSONUnicodeEscapes(s)
 }

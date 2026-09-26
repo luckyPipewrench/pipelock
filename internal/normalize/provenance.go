@@ -722,7 +722,7 @@ func (op Operation) validate() error {
 	case OperationHexDecode:
 		return noParameters()
 	case OperationBase32Decode:
-		if op.Alphabet != "" && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
+		if (op.Alphabet != "" || op.explicit&paramAlphabet != 0) && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
 			return fmt.Errorf("unknown base32 alphabet %q", op.Alphabet)
 		}
 		return op.without(paramDecodePadding | paramAlphabet).noParametersForValidation(reject)
@@ -734,7 +734,7 @@ func (op Operation) validate() error {
 		}
 		return op.without(paramProfile).noParametersForValidation(reject)
 	case OperationBase32DecodeLiberal:
-		if op.Alphabet != "" && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
+		if (op.Alphabet != "" || op.explicit&paramAlphabet != 0) && op.Alphabet != "standard" && op.Alphabet != "base32hex" {
 			return fmt.Errorf("unknown base32 alphabet %q", op.Alphabet)
 		}
 		return op.without(paramDecodePadding | paramAlphabet).noParametersForValidation(reject)

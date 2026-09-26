@@ -294,3 +294,30 @@ func TestDoHQueryKeySplitAcrossNamesWithPrintableGap(t *testing.T) {
 		t.Fatal("key split across two names was allowed")
 	}
 }
+
+// Data split across short labels, each under the length floor, is caught by
+// the joined view of the message; the benign RFC 8484 Bench lookup stays
+// allowed even at the stricter 4.00 threshold the Bench configuration uses.
+func TestDoHQueryJoinedEntropy(t *testing.T) {
+	var labels []string
+	seed := dnsTestBytes("split-get", 32*4)
+	for i := range 4 {
+		labels = append(labels, base64.RawURLEncoding.EncodeToString(seed[i*32 : (i+1)*32])[:19])
+	}
+	split := "?dns=" + base64.RawURLEncoding.EncodeToString(dnsQueryWire(t, append(labels, "example", "test")))
+	benign := "?dns=AAABAAABAAAAAAAAIGp5M3ZjbmNzaGJrZGV2cnprNHp2cW5remd6bmRjcWpxAXgFY2FjaGUEdGVzdAAAAQAB"
+	for _, threshold := range []float64{4.5, 4.0} {
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.FetchProxy.Monitoring.EntropyThreshold = threshold
+		s := MustNew(cfg)
+		r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query"+split)
+		if r.Allowed || !strings.Contains(r.Reason, "DNS message") {
+			t.Fatalf("threshold %.1f: split labels allowed=%v %q", threshold, r.Allowed, r.Reason)
+		}
+		if r := s.Scan(context.Background(), "https://resolver.vendor.example/dns-query"+benign); !r.Allowed {
+			t.Fatalf("threshold %.1f: benign lookup blocked: %s", threshold, r.Reason)
+		}
+		s.Close()
+	}
+}

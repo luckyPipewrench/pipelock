@@ -127,3 +127,27 @@ func TestOperationUnmarshalRejectsMalformed(t *testing.T) {
 		}
 	}
 }
+
+// A present base32 alphabet key is checked by presence, not only by value:
+// v1 and v2 reject it outright, and v3 rejects it unless it names an
+// alphabet in the profile's enum.
+func TestBase32AlphabetPresenceIsV3Only(t *testing.T) {
+	for _, digest := range []string{EvidenceProvenanceProfileV1Digest, EvidenceProvenanceProfileV2Digest} {
+		var r Recipe
+		if err := json.Unmarshal([]byte(`{"transform_profile_digest":"`+digest+`","operations":[{"kind":"base32_decode_liberal","alphabet":""}]}`), &r); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Apply("MFRGG"); err == nil {
+			t.Fatalf("%s accepted an explicitly empty alphabet", digest[:15])
+		}
+	}
+	var r Recipe
+	if err := json.Unmarshal([]byte(`{"transform_profile_digest":"`+EvidenceProvenanceProfileV3Digest+`","operations":[{"kind":"base32_decode_liberal","alphabet":""}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	// The profile's alphabet enum is standard or base32hex; an explicit empty
+	// string is neither, and the TypeScript, Python and Rust verifiers reject it.
+	if _, err := r.Apply("MFRGG"); err == nil || !strings.Contains(err.Error(), "unknown base32 alphabet") {
+		t.Fatalf("v3 explicit empty alphabet: err %v, want an unknown-alphabet rejection", err)
+	}
+}

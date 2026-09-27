@@ -163,30 +163,36 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 	return updated, true, "", exposures
 }
 
-// setMCPMediaMimeType records the proven media type next to the payload it
-// describes: the block's mimeType, or the embedded resource's for a blob.
+// mcpMediaTypeKeys are the fields servers use to label a payload's type. The
+// spec field is mimeType; mediaType and contentType also appear in practice.
+var mcpMediaTypeKeys = []string{"mimeType", "mediaType", "contentType"}
+
+// setMCPMediaMimeType records the proven media type wherever the block labels
+// its payload: mimeType always, and any other label key already present on
+// the block or its embedded resource, so no stale copy names the declared
+// format.
 func setMCPMediaMimeType(block map[string]json.RawMessage, field, mimeType string) error {
 	value, err := json.Marshal(mimeType)
 	if err != nil {
 		return fmt.Errorf("marshal mimeType: %w", err)
 	}
-	if field != "resource.blob" {
-		block["mimeType"] = value
-		// Some servers also send mediaType; a stale copy would still name
-		// the declared format, so rewrite it when present.
-		if _, ok := block["mediaType"]; ok {
-			block["mediaType"] = value
+	relabel := func(m map[string]json.RawMessage, ensureMime bool) {
+		for _, k := range mcpMediaTypeKeys {
+			if _, ok := m[k]; ok || (ensureMime && k == "mimeType") {
+				m[k] = value
+			}
 		}
+	}
+	if field != "resource.blob" {
+		relabel(block, true)
 		return nil
 	}
+	relabel(block, false)
 	var resource map[string]json.RawMessage
 	if err := json.Unmarshal(block["resource"], &resource); err != nil || resource == nil {
 		return fmt.Errorf("parse resource for mimeType")
 	}
-	resource["mimeType"] = value
-	if _, ok := resource["mediaType"]; ok {
-		resource["mediaType"] = value
-	}
+	relabel(resource, true)
 	updated, err := json.Marshal(resource)
 	if err != nil {
 		return fmt.Errorf("re-marshal resource: %w", err)

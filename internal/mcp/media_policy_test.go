@@ -1179,6 +1179,8 @@ func TestApplyMCPResponseMediaPolicy_RelabelsProvenImageType(t *testing.T) {
 		{"image block", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png"}]}}`, `"mimeType":"image/webp"`},
 		{"image block with mediaType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png","mediaType":"image/png"}]}}`, `"mediaType":"image/webp"`},
 		{"resource blob", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"resource","resource":{"uri":"file:///x.png","mimeType":"image/png","blob":"` + b64 + `"}}]}}`, `"mimeType":"image/webp"`},
+		{"resource blob with parent mediaType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"resource","mediaType":"image/png","resource":{"uri":"file:///x.png","mimeType":"image/png","mediaType":"image/png","blob":"` + b64 + `"}}]}}`, `"mediaType":"image/webp"`},
+		{"image block with contentType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png","contentType":"image/png"}]}}`, `"contentType":"image/webp"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := applyMCPResponseMediaPolicy([]byte(tc.line), &cfg.MediaPolicy, testMCPMediaTransport)

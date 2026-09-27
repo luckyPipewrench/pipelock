@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } from "./types.js";
-import { computeTotals, verifyChain } from "./chain.js";
+import { computeTotals, evidenceChainKey, verifyChain } from "./chain.js";
 import { analyzeLifecycle } from "./lifecycle.js";
-import { extractReceipts } from "./recorder.js";
+import { extractTypedReceipts, selectReceiptChain } from "./recorder.js";
 import { validateAuditPacket } from "./schema.js";
 import {
   decodeUTF8,
@@ -18,6 +18,9 @@ import {
 
 export interface AuditPacketOptions {
   signerKey: string;
+  // signerKeys is the trusted key set (each a hex key or key file), used
+  // instead of signerKey when non-empty, as repeated --key flags give it.
+  signerKeys?: string[];
   offline: boolean;
   allowSelfConsistentOnly: boolean;
   noTrustRequired: boolean;
@@ -193,11 +196,14 @@ async function verifyAuditPacketReport(
 
   let receipts: Receipt[];
   let chain: ChainResult;
+  let otherChainError: string | undefined;
   try {
     const evidencePath = resolveArtifactPath(baseDir, packet.artifacts?.evidence ?? "");
-    receipts = extractReceipts(evidencePath);
-    let keyInput = opts.signerKey;
-    if (keyInput.trim() === "") {
+    const typed = extractTypedReceipts(evidencePath);
+    receipts = selectReceiptChain(typed);
+    const listed = (opts.signerKeys ?? []).filter((key) => key.trim() !== "");
+    let keyInput = listed.length > 0 ? "" : opts.signerKey;
+    if (listed.length === 0 && keyInput.trim() === "") {
       const packetKey = packet.verifier?.signer_key ?? "";
       if (opts.expectSha256.trim() !== "" || opts.noTrustRequired) {
         keyInput = packetKey;
@@ -210,13 +216,33 @@ async function verifyAuditPacketReport(
         throw new Error("trusted Audit Packet verification requires --key or --expect-sha256");
       }
     }
-    chain = await verifyChain(receipts, resolveSignerKey(keyInput), {
+    const keyHex =
+      listed.length > 0
+        ? listed.map((key) => resolveSignerKey(key)).join(",")
+        : resolveSignerKey(keyInput);
+    const primaryKey = typed.action.length === 0 ? evidenceChainKey(keyHex, receipts) : keyHex;
+    chain = await verifyChain(receipts, primaryKey, {
       allowUnpinned: opts.allowSelfConsistentOnly,
     });
+    // The evidence file of a current run holds an ActionReceipt v1 chain and
+    // an EvidenceReceipt v2 chain, each signed on its own. The packet's counts
+    // and root describe the first; the second must verify too, or a forged
+    // decision record in it would sit behind a trusted verdict.
+    if (typed.action.length > 0 && typed.evidence.length > 0) {
+      const other = await verifyChain(typed.evidence, evidenceChainKey(keyHex, typed.evidence), {
+        allowUnpinned: opts.allowSelfConsistentOnly,
+      });
+      if (!other.valid) {
+        otherChainError = `evidence receipt chain: ${other.error ?? "verification failed"}`;
+      }
+    }
   } catch (err) {
     report.chain_check = "fail";
     pushError(report, `chain: ${(err as Error).message}`);
     return report;
+  }
+  if (otherChainError !== undefined) {
+    chain = { ...chain, valid: false, error: otherChainError };
   }
   report.chain_check = chain.valid ? "pass" : "fail";
   if (!chain.valid) pushError(report, `chain: ${chain.error ?? "verification failed"}`);

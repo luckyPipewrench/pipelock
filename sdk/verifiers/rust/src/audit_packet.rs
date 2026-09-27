@@ -1,9 +1,9 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::chain::{compute_totals, verify_chain_with_options};
+use crate::chain::{compute_totals, evidence_chain_key, verify_chain_with_options};
 use crate::lifecycle::analyze_lifecycle;
-use crate::recorder::extract_receipts;
+use crate::recorder::extract_typed_receipts;
 use crate::schema::validate_audit_packet;
 use crate::types::{
     AuditPacket, AuditPacketReport, ChainResult, Receipt, ReportPosture, ReportRun, ReportSummary,
@@ -14,9 +14,12 @@ use crate::util::{
     resolve_signer_key, sha256_hex, string_at, string_vec_at, u64_at, Result,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AuditPacketOptions {
     pub signer_key: String,
+    /// The trusted key set (each a hex key or key file), used instead of
+    /// `signer_key` when non-empty, as repeated `--key` flags give it.
+    pub signer_keys: Vec<String>,
     pub offline: bool,
     pub allow_self_consistent_only: bool,
     pub no_trust_required: bool,
@@ -127,8 +130,8 @@ fn verify_audit_packet_report(
             return Ok(report);
         }
     };
-    let receipts = match extract_receipts(&evidence_path) {
-        Ok(receipts) => receipts,
+    let typed = match extract_typed_receipts(&evidence_path) {
+        Ok(typed) => typed,
         Err(err) => {
             report.chain_check = "fail".to_string();
             push_error(&mut report, format!("chain: {err}"));
@@ -140,7 +143,14 @@ fn verify_audit_packet_report(
         || opts.no_trust_required
         || (string_at(&packet, &["verifier", "verdict"]) == Some("self_consistent_only")
             && opts.allow_self_consistent_only);
-    let key_input = if !opts.signer_key.trim().is_empty() {
+    let listed: Vec<&String> = opts
+        .signer_keys
+        .iter()
+        .filter(|key| !key.trim().is_empty())
+        .collect();
+    let key_input = if !listed.is_empty() {
+        ""
+    } else if !opts.signer_key.trim().is_empty() {
         opts.signer_key.as_str()
     } else if packet_key_allowed {
         packet_key
@@ -153,7 +163,16 @@ fn verify_audit_packet_report(
         );
         return Ok(report);
     };
-    let key_hex = match resolve_signer_key(key_input) {
+    let resolved = if listed.is_empty() {
+        resolve_signer_key(key_input)
+    } else {
+        listed
+            .iter()
+            .map(|key| resolve_signer_key(key))
+            .collect::<Result<Vec<_>>>()
+            .map(|keys| keys.join(","))
+    };
+    let key_hex = match resolved {
         Ok(key) => key,
         Err(err) => {
             report.chain_check = "fail".to_string();
@@ -161,7 +180,35 @@ fn verify_audit_packet_report(
             return Ok(report);
         }
     };
-    let chain = verify_chain_with_options(&receipts, &key_hex, opts.allow_self_consistent_only);
+    let has_both = !typed.action.is_empty() && !typed.evidence.is_empty();
+    let evidence_only = typed.action.is_empty();
+    let evidence_receipts = typed.evidence.clone();
+    let receipts = typed.select_chain();
+    let primary_key = if evidence_only {
+        evidence_chain_key(&key_hex, &receipts)
+    } else {
+        key_hex.clone()
+    };
+    let mut chain =
+        verify_chain_with_options(&receipts, &primary_key, opts.allow_self_consistent_only);
+    // The evidence file of a current run holds an ActionReceipt v1 chain and
+    // an EvidenceReceipt v2 chain, each signed on its own. The packet's counts
+    // and root describe the first; the second must verify too, or a forged
+    // decision record in it would sit behind a trusted verdict.
+    if has_both {
+        let other = verify_chain_with_options(
+            &evidence_receipts,
+            &evidence_chain_key(&key_hex, &evidence_receipts),
+            opts.allow_self_consistent_only,
+        );
+        if !other.valid {
+            chain.valid = false;
+            chain.error = Some(format!(
+                "evidence receipt chain: {}",
+                other.error.as_deref().unwrap_or("verification failed")
+            ));
+        }
+    }
     report.chain_check = if chain.valid { "pass" } else { "fail" }.to_string();
     let lifecycle = analyze_lifecycle(&receipts, &chain);
     let lifecycle_broken = lifecycle.status == "BROKEN";

@@ -2,18 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
-use crate::chain::verify_chain_with_options;
+use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
-    chain_scoped_trust, read_session_receipts, resolve_base_sessions, run_session_base,
-    verify_base, BaseVerifyOptions,
+    chain_scoped_trust, read_session_evidence, read_session_receipts, resolve_base_sessions,
+    run_session_base, verify_base, BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
-use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt};
+use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
 use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
-use crate::recorder::{
-    extract_typed_receipts, extract_typed_receipts_from_session_dir, ExtractedReceipts,
-};
+use crate::recorder::{extract_typed_from_lines, read_entry_lines, ExtractedReceipts};
+use crate::recorder_chain::verify_recorder_chain;
 use crate::rotation::{
     load_rotation_endorsement_file, verify_chain_with_endorsements, RotationEndorsement,
 };
@@ -29,6 +28,7 @@ struct ParsedArgs {
     positionals: Vec<String>,
     json: bool,
     key: String,
+    keys: Vec<String>,
     offline: bool,
     allow_self_consistent_only: bool,
     allow_unpinned: bool,
@@ -86,7 +86,8 @@ fn run_audit_packet_command(args: &[String]) -> Result<i32> {
     let report = verify_audit_packet(
         target,
         &AuditPacketOptions {
-            signer_key: parsed.key,
+            signer_key: String::new(),
+            signer_keys: parsed.keys,
             offline: parsed.offline,
             allow_self_consistent_only: parsed.allow_self_consistent_only,
             no_trust_required: parsed.no_trust_required,
@@ -94,6 +95,17 @@ fn run_audit_packet_command(args: &[String]) -> Result<i32> {
         },
     )?;
     emit_audit_packet(&report, parsed.json)?;
+    if !report.valid {
+        report_failure(&format!(
+            "audit packet {}: {}",
+            report.path,
+            report
+                .errors
+                .as_ref()
+                .and_then(|errors| errors.first())
+                .map_or("not valid", String::as_str)
+        ));
+    }
     Ok(if report.valid { 0 } else { 1 })
 }
 
@@ -114,7 +126,7 @@ fn chain_report_for(
             final_seq: 0,
             root_hash: None,
             error: Some("no receipts in chain".to_string()),
-            broken_at_seq: None,
+            ..ChainCommandReport::default()
         };
     }
     let result = if endorsements.is_empty() {
@@ -143,36 +155,8 @@ fn chain_report_for(
             result.error
         },
         broken_at_seq: result.broken_at_seq,
+        ..ChainCommandReport::default()
     }
-}
-
-/// Picks the key an EvidenceReceipt v2 chain is verified against. A v2 chain
-/// has one signer and is verified against one key. Given a trusted set
-/// (directory mode passes each run its scoped trust, which includes an
-/// endorsed successor key), it is the trusted key equal to the chain's
-/// declared `signer_key_id`. The declared id only selects: every receipt is
-/// still verified against that key, and a signer outside the set gets the
-/// first trusted key, which then fails. A single key is returned unchanged.
-fn evidence_chain_key(key_hex: &str, receipts: &[Receipt]) -> String {
-    let keys: Vec<String> = key_hex
-        .split(',')
-        .map(|key| key.trim().to_ascii_lowercase())
-        .filter(|key| !key.is_empty())
-        .collect();
-    if keys.len() <= 1 {
-        return key_hex.to_string();
-    }
-    let declared = receipts
-        .first()
-        .and_then(|r| r.get("signature"))
-        .and_then(|sig| sig.get("signer_key_id"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    keys.iter()
-        .find(|key| **key == declared)
-        .unwrap_or(&keys[0])
-        .clone()
 }
 
 /// Verifies every receipt chain one session or file holds. A current run
@@ -184,6 +168,29 @@ fn evidence_chain_key(key_hex: &str, receipts: &[Receipt]) -> String {
 /// prints exactly what it did before, and a failure names the chain it came
 /// from.
 fn typed_chain_report(
+    label: String,
+    typed: ExtractedReceipts,
+    key_hex: &str,
+    allow_unpinned: bool,
+    endorsements: &[RotationEndorsement],
+    session_id: &str,
+) -> ChainCommandReport {
+    let (action, evidence) = (typed.action.len(), typed.evidence.len());
+    ChainCommandReport {
+        action_receipts: Some(action),
+        evidence_receipts: Some(evidence),
+        ..both_chains_report(
+            label,
+            typed,
+            key_hex,
+            allow_unpinned,
+            endorsements,
+            session_id,
+        )
+    }
+}
+
+fn both_chains_report(
     label: String,
     typed: ExtractedReceipts,
     key_hex: &str,
@@ -267,13 +274,19 @@ fn load_endorsements(paths: &[String], allow_unpinned: bool) -> Result<Vec<Rotat
         .collect()
 }
 
-/// Verifies every chain of `base` in `dir` and the base's restart
-/// continuity, matching the Go reference `verify-receipt --chain`.
+/// Verifies chains of `base` in `dir` and the base's restart continuity,
+/// matching the Go reference `verify-receipt --chain`. Without `targets` every
+/// chain of the base is verified. With `targets` (a named run) only those
+/// chains are verified, and the whole base is still checked: a named run fails
+/// on any finding in its base, and the finding names the run it concerns,
+/// because a run's standing depends on facts only the base shows (its
+/// predecessor's tail, a second successor, a replayed copy of it).
 fn run_chain_set_command(
     dir: &Path,
     base: &str,
     key_hex: &str,
     parsed: &ParsedArgs,
+    targets: Option<Vec<String>>,
 ) -> Result<i32> {
     let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
     let trusted_keys: Vec<String> = key_hex
@@ -294,7 +307,7 @@ fn run_chain_set_command(
             VerifierError::Runtime(format!("restart continuity check incomplete: {err}"))
         })?;
     let mut chains = Vec::new();
-    for session in &sessions {
+    for session in targets.as_ref().unwrap_or(&sessions) {
         let label = format!("{} (session {session})", dir.display());
         let (keys, own) = chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
         let chain = match read_session_receipts(dir, session) {
@@ -308,13 +321,8 @@ fn run_chain_set_command(
             ),
             Err(err) => ChainCommandReport {
                 path: label,
-                valid: false,
-                unpinned: None,
-                receipt_count: 0,
-                final_seq: 0,
-                root_hash: None,
                 error: Some(format!("extract receipts: {err}")),
-                broken_at_seq: None,
+                ..ChainCommandReport::default()
             },
         };
         chains.push(ChainSetEntry {
@@ -330,6 +338,7 @@ fn run_chain_set_command(
         chains,
         continuity: ChainSetContinuity {
             healthy,
+            chain_count: base_report.chains.len(),
             linked: base_report
                 .chains
                 .iter()
@@ -351,32 +360,116 @@ fn run_chain_set_command(
         },
     };
     emit_chain_set(&report, parsed.json)?;
+    if !report.valid {
+        let mut reasons = Vec::new();
+        let failed: Vec<&str> = report
+            .chains
+            .iter()
+            .filter(|c| !c.report.valid)
+            .map(|c| c.session.as_str())
+            .collect();
+        if !failed.is_empty() {
+            reasons.push(format!(
+                "chain verification failed for {} of {} chain(s): {}",
+                failed.len(),
+                report.chains.len(),
+                failed.join(", ")
+            ));
+        }
+        if !healthy {
+            reasons.push(format!(
+                "restart continuity: {} finding(s): {}",
+                base_report.findings.len(),
+                base_report
+                    .findings
+                    .iter()
+                    .map(|f| format!("{} ({})", f.kind, f.session))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        report_failure(&format!("{}: {}", dir.display(), reasons.join("; ")));
+    }
     Ok(if report.valid { 0 } else { 1 })
+}
+
+/// Folds the recorder entry hash chain into a chain report: a report whose
+/// receipts verify is still broken when the entries around them were edited
+/// without recomputing the recorder hashes.
+fn with_recorder_chain(report: ChainCommandReport, outer: Option<String>) -> ChainCommandReport {
+    let Some(outer) = outer else {
+        return report;
+    };
+    let reason = format!("{FINDING_OUTER_CHAIN_BROKEN}: recorder entry hash chain: {outer}");
+    let error = match (&report.error, report.valid) {
+        (Some(err), false) => format!("{reason}; {err}"),
+        _ => reason,
+    };
+    ChainCommandReport {
+        valid: false,
+        unpinned: None,
+        error: Some(error),
+        ..report
+    }
+}
+
+fn emit_chain_result(report: &ChainCommandReport, json: bool) -> Result<i32> {
+    emit_chain(report, json)?;
+    if report.valid {
+        return Ok(0);
+    }
+    report_failure(&format!(
+        "{}: {}: {}",
+        report.path,
+        if report.unpinned == Some(true) {
+            "chain unpinned"
+        } else {
+            "chain broken"
+        },
+        report.error.as_deref().unwrap_or("no receipts in chain")
+    ));
+    Ok(1)
+}
+
+/// Resolves every `--key` value and joins the trusted set.
+fn resolve_signer_keys(values: &[String]) -> Result<String> {
+    Ok(values
+        .iter()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| resolve_signer_key(value))
+        .collect::<Result<Vec<_>>>()?
+        .join(","))
 }
 
 fn run_chain_command(args: &[String]) -> Result<i32> {
     let parsed = parse_args(args, "chain")?;
     let target = require_one_arg(&parsed.positionals, "chain")?;
-    let key_hex = resolve_signer_key(&parsed.key)?;
+    let key_hex = resolve_signer_keys(&parsed.keys)?;
     let clean = PathBuf::from(target);
-    // Without an explicit --session-id, a directory whose base has per-run
-    // chains is verified as a whole: every run and the links between them.
-    // An explicit --session-id keeps single-session verification.
-    if parsed.dir && !parsed.session_explicit {
-        let has_runs = resolve_base_sessions(&clean, &parsed.session_id)
+    // A directory whose base has per-run chains is verified as a base, as the
+    // Go reference does: the base of a run session is its prefix, and any
+    // other session is its own base. Without --session-id every chain of the
+    // base is verified; with it only that chain, plus the whole-base checks.
+    if parsed.dir {
+        let base = run_session_base(&parsed.session_id).unwrap_or(&parsed.session_id);
+        let has_runs = resolve_base_sessions(&clean, base)
             .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?
             .iter()
             .any(|s| run_session_base(s).is_some());
         if has_runs {
-            return run_chain_set_command(&clean, &parsed.session_id, &key_hex, &parsed);
+            let targets = parsed
+                .session_explicit
+                .then(|| vec![parsed.session_id.clone()]);
+            return run_chain_set_command(&clean, base, &key_hex, &parsed, targets);
         }
     }
-    let (typed, label) = if parsed.dir {
-        (
-            extract_typed_receipts_from_session_dir(&clean, &parsed.session_id)
-                .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?,
-            format!("{} (session {})", clean.display(), parsed.session_id),
-        )
+    let label = if parsed.dir {
+        format!("{} (session {})", clean.display(), parsed.session_id)
+    } else {
+        clean.display().to_string()
+    };
+    let read = if parsed.dir {
+        read_session_evidence(&clean, &parsed.session_id)
     } else {
         if fs::metadata(&clean)
             .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", clean.display())))?
@@ -386,17 +479,31 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
                 "{target} is a directory; pass --dir to verify a session directory"
             )));
         }
-        (
-            extract_typed_receipts(&clean)
-                .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?,
-            clean.display().to_string(),
-        )
+        // A file named on the command line is read as given, even through a
+        // symlink: the operator chose it.
+        read_file_evidence(&clean)
+    };
+    let (outer, typed) = match read {
+        Ok(read) => read,
+        Err(err) if err.refused => {
+            let report = ChainCommandReport {
+                path: label,
+                error: Some(err.message),
+                ..ChainCommandReport::default()
+            };
+            return emit_chain_result(&report, parsed.json);
+        }
+        Err(err) => {
+            return Err(VerifierError::Runtime(format!(
+                "extract receipts: {}",
+                err.message
+            )))
+        }
     };
 
     if typed.action.is_empty() && typed.evidence.is_empty() {
         let report = chain_report_for(label, &[], &key_hex, false, &[], &parsed.session_id);
-        emit_chain(&report, parsed.json)?;
-        return Ok(1);
+        return emit_chain_result(&with_recorder_chain(report, outer), parsed.json);
     }
 
     let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
@@ -408,8 +515,23 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         &endorsements,
         &parsed.session_id,
     );
-    emit_chain(&report, parsed.json)?;
-    Ok(if report.valid { 0 } else { 1 })
+    emit_chain_result(&with_recorder_chain(report, outer), parsed.json)
+}
+
+/// Reads one recorder file: its hash chain verdict and its two receipt chains.
+fn read_file_evidence(
+    path: &Path,
+) -> std::result::Result<(Option<String>, ExtractedReceipts), SessionReadError> {
+    let lines = read_entry_lines(path).map_err(|err| SessionReadError {
+        refused: false,
+        message: err.to_string(),
+    })?;
+    let outer = verify_recorder_chain(&lines.iter().map(|l| l.line.as_str()).collect::<Vec<_>>());
+    let typed = extract_typed_from_lines(lines).map_err(|err| SessionReadError {
+        refused: false,
+        message: err.to_string(),
+    })?;
+    Ok((outer, typed))
 }
 
 fn run_receipt_command(args: &[String]) -> Result<i32> {
@@ -457,6 +579,7 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                         ))
                     })?
                     .clone();
+                parsed.keys.push(parsed.key.clone());
             }
             "--expect-sha256" if command == "audit-packet" => {
                 index += 1;
@@ -499,6 +622,7 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
             _ => {
                 if flag == "--key" {
                     parsed.key = inline_value.expect("split flag produced value").to_string();
+                    parsed.keys.push(parsed.key.clone());
                 } else if flag == "--expect-sha256" && command == "audit-packet" {
                     parsed.expect_sha256 =
                         inline_value.expect("split flag produced value").to_string();
@@ -544,8 +668,8 @@ fn require_one_arg<'a>(positionals: &'a [String], command: &str) -> Result<&'a s
 
 fn usage(command: Option<&str>) -> String {
     match command {
-        Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
-        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
+        Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
+        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
         Some("provenance") => {
             "Usage: pipelock-verifier-rs provenance PATH [--allow-incomplete]".to_string()

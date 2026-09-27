@@ -59,7 +59,16 @@ test("a session holding both receipt chains is valid only when both verify", () 
         ["file", ["chain", runFile(dir)]],
       ] as [string, string[]][]) {
         const r = runCLI([...args, "--key", KEY, "--json"]);
-        const report = JSON.parse(r.stdout) as { valid: boolean; error?: string };
+        // A named run reports its own chain inside the base report.
+        const parsed = JSON.parse(r.stdout) as {
+          valid: boolean;
+          error?: string;
+          chains?: { session: string; valid: boolean; error?: string }[];
+        };
+        const report =
+          parsed.chains === undefined
+            ? parsed
+            : (parsed.chains.find((c) => c.session === SESSION) ?? { valid: true });
         if (wantErr === "") {
           assert.equal(r.status, 0, `${name}/${mode}: ${r.stdout}`);
           assert.equal(report.valid, true);
@@ -68,7 +77,7 @@ test("a session holding both receipt chains is valid only when both verify", () 
           assert.equal(r.status, 1, `${name}/${mode}: ${r.stdout}`);
           assert.equal(report.valid, false);
           assert.ok(
-            report.error?.startsWith(wantErr),
+            report.error?.includes(wantErr),
             `${name}/${mode}: error ${String(report.error)} should name ${wantErr}`,
           );
         }
@@ -100,7 +109,9 @@ test("an unpinned mixed session reports the unpinned banner once", () => {
 
 // For session S the name evidence-S-evil-0.jsonl belongs to session S-evil
 // under Go's parsed-equality rule, so it must not be read into S's chain even
-// though it starts with "evidence-S-".
+// though it starts with "evidence-S-". The -evil file holds S's entries, so
+// the base pass refuses it by entry session_id, and a named run fails on any
+// finding in its base while its own chain stays valid.
 test("an explicit session does not read a prefix-sibling session's files", () => {
   const dir = mkdtempSync(join(tmpdir(), "session-prefix-"));
   try {
@@ -114,8 +125,21 @@ test("an explicit session does not read a prefix-sibling session's files", () =>
       runFile(join(FIXTURES, "tampered-predecessor")),
       join(dir, `evidence-${SESSION}-evil-0.jsonl`),
     );
-    const r = runCLI(["chain", dir, "--dir", "--session-id", SESSION, "--key", KEY]);
-    assert.equal(r.status, 0, r.stdout);
+    const r = runCLI(["chain", dir, "--dir", "--session-id", SESSION, "--key", KEY, "--json"]);
+    assert.equal(r.status, 1, r.stdout);
+    const report = JSON.parse(r.stdout) as {
+      chains: { session: string; valid: boolean; action_receipts: number }[];
+      continuity: { findings: { kind: string; session: string; detail: string }[] };
+    };
+    assert.deepEqual(
+      report.chains.map((c) => [c.session, c.valid, c.action_receipts]),
+      [[SESSION, true, alone]],
+    );
+    assert.deepEqual(
+      report.continuity.findings.map((f) => [f.kind, f.session]),
+      [["corrupt_chain", `${SESSION}-evil`]],
+    );
+    assert.match(report.continuity.findings[0]?.detail ?? "", /does not match requested session/u);
     assert.equal(extractReceiptsFromSessionDir(dir, SESSION).length, alone);
   } finally {
     rmSync(dir, { recursive: true, force: true });

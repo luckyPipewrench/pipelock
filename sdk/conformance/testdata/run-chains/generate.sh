@@ -14,20 +14,32 @@
 #          variant, where two runs both claim to continue A.
 #
 # The script then derives the byte-edited variants from those runs. The two
-# variants that need a freshly signed link are written by the Go generator:
+# variants that need a freshly signed link are written by the Go generator,
+# which this script runs itself with the generation's throwaway signing key
+# in PIPELOCK_RUN_CHAIN_SIGNING_KEY, before deleting that key with the rest of
+# its temporary directory. No private key is written to OUTPUT_DIR:
 #   PIPELOCK_RUN_CHAIN_FIXTURES=1 go test ./sdk/conformance/ -run TestGenerateRunChainFixtures
 # That test also rewrites every variant's expect.json from the Go reference
-# (internal/receipt VerifyBase), so expectations are never hand-written.
+# (internal/receipt VerifyBase), so expectations are never hand-written. It
+# writes the canonical fixture directory, so it runs only when OUTPUT_DIR is
+# that directory.
 set -euo pipefail
 
 bin=${1:?usage: generate.sh /path/to/pipelock [OUTPUT_DIR]}
-out=${2:-$(cd "$(dirname "$0")" && pwd)}
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../../../.." && pwd)
+out=${2:-$here}
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
 bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/pipelock-run-chains.XXXXXX")
 proxy_pid=""
+# cleanup stops a running proxy and deletes this generation's temporary
+# directory, which holds its signing keys.
 cleanup() {
 	if [ -n "$proxy_pid" ]; then kill "$proxy_pid" 2>/dev/null || true; fi
+	rm -rf -- "$work"
 }
 trap cleanup EXIT
 
@@ -166,7 +178,13 @@ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_signer_key"
 	"$work/rotation-endorsement.json" >"$out/rotated-signer-key.hex"
 
 cp "$key.pub" "$out/signer-key.hex"
-# Throwaway key from this generation only, kept so the Go generator can sign
-# the re-signed link variants. It signs nothing outside these fixtures.
-cp "$key" "$out/signing-key.test-only"
+if [ "$out" = "$here" ]; then
+	# The Go generator signs the two re-signed link variants with this
+	# generation's key and rewrites every expect.json. The key is deleted with
+	# the temporary directory when this script exits.
+	(cd "$repo" && PIPELOCK_RUN_CHAIN_FIXTURES=1 PIPELOCK_RUN_CHAIN_SIGNING_KEY="$key" \
+		go test ./sdk/conformance/ -run '^TestGenerateRunChainFixtures$' -count=1)
+else
+	echo "OUTPUT_DIR is not $here: skipped the Go generator (re-signed links and expect.json)" >&2
+fi
 echo "generated run-chain fixtures in $out (A=$sess_a B=$sess_b C=$sess_c)"

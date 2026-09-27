@@ -62,8 +62,6 @@ async function caseEndorsements(c: Case): Promise<RotationEndorsement[]> {
   return c.endorse ? [await loadRotationEndorsementFile(endorsementPath(c))] : [];
 }
 // Found from the recorder entry hash chain, which only the Go verifiers check.
-const GO_ONLY_FINDING = "outer_chain_broken";
-
 interface Expect {
   valid: boolean;
   healthy: boolean;
@@ -82,8 +80,8 @@ function expectFor(variant: string, expectFile = "expect.json"): Expect {
   return JSON.parse(readFileSync(join(FIXTURES, variant, expectFile), "utf8")) as Expect;
 }
 
-function sdkFindings(expect: Expect): { kind: string; session: string }[] {
-  return expect.findings.filter((f) => f.kind !== GO_ONLY_FINDING);
+function goFindings(expect: Expect): { kind: string; session: string }[] {
+  return expect.findings;
 }
 
 function sortFindings(
@@ -126,16 +124,18 @@ for (const c of CASES) {
     assert.deepEqual(baseUnlinked(report), exp.unlinked);
     assert.deepEqual(
       sortFindings(report.findings.map((f) => ({ kind: f.kind, session: f.session }))),
-      sdkFindings(exp),
+      goFindings(exp),
     );
-    assert.equal(baseHealthy(report), sdkFindings(exp).length === 0);
+    assert.equal(baseHealthy(report), goFindings(exp).length === 0);
   });
 
-  // The CLI takes one --key, so the two-key trust input exists only in the API.
-  if (c.bothKeys) continue;
   test(`run-chain fixture ${name}: CLI directory mode reaches the Go verdict`, () => {
     const exp = expectFor(variant, c.expectFile);
     const args = ["chain", join(FIXTURES, variant), "--dir", "--key", KEY, "--json"];
+    // --key repeats, as the Go reference's does, to pin a trusted key set.
+    if (c.bothKeys) {
+      args.push("--key", readFileSync(join(FIXTURES, "rotated-signer-key.hex"), "utf8").trim());
+    }
     if (c.endorse) args.push("--rotation-endorsement", endorsementPath(c));
     const r = runCLI(args);
     assert.equal(r.status, exp.valid ? 0 : 1, r.stderr);
@@ -143,8 +143,17 @@ for (const c of CASES) {
       valid: boolean;
       base: string;
       chains: { session: string; valid: boolean }[];
-      continuity: { healthy: boolean; unlinked: string[]; linked: { trust: string }[] };
+      continuity: {
+        healthy: boolean;
+        unlinked: string[];
+        linked: { trust: string }[];
+        findings: { kind: string; session: string }[];
+      };
     };
+    assert.deepEqual(
+      sortFindings(report.continuity.findings.map((f) => ({ kind: f.kind, session: f.session }))),
+      sortFindings(goFindings(exp)),
+    );
     assert.equal(report.valid, exp.valid);
     assert.equal(report.base, "proxy");
     assert.deepEqual(
@@ -185,7 +194,9 @@ test("run-chain CLI with a wrong key fails every run", () => {
   );
 });
 
-test("an explicit --session-id keeps single-session verification", () => {
+// A named run verifies that run's chain and still runs the whole-base pass,
+// as the Go reference does, so its report carries the base's continuity.
+test("an explicit --session-id verifies that run and checks its base", () => {
   const exp = expectFor("valid");
   const session = exp.chains[0]?.session as string;
   const r = runCLI([
@@ -200,12 +211,18 @@ test("an explicit --session-id keeps single-session verification", () => {
   ]);
   assert.equal(r.status, 0, r.stderr);
   const report = JSON.parse(r.stdout) as Record<string, unknown>;
-  assert.equal(report["path"], `${join(FIXTURES, "valid")} (session ${session})`);
+  const chains = report["chains"] as { session: string; path: string; valid: boolean }[];
+  assert.deepEqual(
+    chains.map((c) => [c.session, c.path, c.valid]),
+    [[session, `${join(FIXTURES, "valid")} (session ${session})`, true]],
+  );
   assert.equal(report["valid"], true);
-  assert.equal(report["continuity"], undefined);
+  const continuity = report["continuity"] as { chain_count: number; healthy: boolean };
+  assert.equal(continuity.chain_count, exp.chains.length);
+  assert.equal(continuity.healthy, true);
 
-  // The legacy base session named explicitly has no shards here, exactly as
-  // before per-run chains existed.
+  // The legacy base session named explicitly has no shards here, so its
+  // chain has no receipts.
   const legacy = runCLI([
     "chain",
     join(FIXTURES, "valid"),
@@ -217,7 +234,9 @@ test("an explicit --session-id keeps single-session verification", () => {
     "--json",
   ]);
   assert.equal(legacy.status, 1);
-  assert.equal((JSON.parse(legacy.stdout) as { error: string }).error, "no receipts in chain");
+  const legacyReport = JSON.parse(legacy.stdout) as { chains: { error: string }[] };
+  assert.equal(legacyReport.chains[0]?.error, "no receipts in chain");
+  assert.match(legacy.stderr, /^verification failed: .*proxy/mu);
 });
 
 test("a directory with no run chains keeps single-session verification", () => {

@@ -8,6 +8,7 @@ import { validateTimestamp } from "./aarp/numbers.js";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { bindRecorderLineExtSource } from "./rawjson.js";
 import { readSessionReceipts } from "./chain-set.js";
+import type { RecorderLine } from "./recorder-chain.js";
 import {
   InvalidError,
   RuntimeError,
@@ -34,8 +35,18 @@ const skippableEntryTypes = new Set([
 ]);
 
 export function readEntries(file: string): RecorderEntry[] {
+  return readEntryLines(file).map((l) => l.entry);
+}
+
+// ParsedRecorderLine is one validated entry with its trimmed source line,
+// which the recorder hash chain check needs byte for byte.
+export interface ParsedRecorderLine extends RecorderLine {
+  entry: RecorderEntry;
+}
+
+export function readEntryLines(file: string): ParsedRecorderLine[] {
   const text = decodeUTF8(readVerifierBytes(path.normalize(file)), "evidence jsonl");
-  const entries: RecorderEntry[] = [];
+  const entries: ParsedRecorderLine[] = [];
   const lines = text.split(/\r?\n/u);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.trim() ?? "";
@@ -62,7 +73,7 @@ export function readEntries(file: string): RecorderEntry[] {
         `line ${i + 1}: legacy entry cannot carry v3 recorder namespace fields`,
       );
     }
-    entries.push(entry);
+    entries.push({ entry, line });
   }
   return entries;
 }
@@ -137,8 +148,14 @@ export interface ExtractedReceipts {
 }
 
 export function extractTypedReceipts(file: string): ExtractedReceipts {
+  return extractTypedFromEntries(readEntries(file));
+}
+
+// extractTypedFromEntries splits already-read recorder entries into the two
+// receipt chains, refusing any entry type it does not know.
+export function extractTypedFromEntries(entries: readonly RecorderEntry[]): ExtractedReceipts {
   const extracted: ExtractedReceipts = { action: [], evidence: [] };
-  for (const entry of readEntries(file)) {
+  for (const entry of entries) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
     if (!isReceipt) {
       if (entry.type !== undefined && skippableEntryTypes.has(entry.type)) continue;

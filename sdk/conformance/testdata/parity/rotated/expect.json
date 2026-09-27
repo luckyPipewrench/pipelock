@@ -1,0 +1,105 @@
+{
+  "description": "Honest evidence across a signing key rotation: run D restarts after run A under a new key, with a signed link and the rotation endorsement the documented ceremony produces. It verifies with the first key and the endorsement, or with both keys pinned; with the first key alone run D is untrusted.",
+  "recorder_chain": "intact",
+  "symlinks": [],
+  "cells": [
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [
+        "rotation-endorsement.json"
+      ],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [
+        "rotation-endorsement.json"
+      ],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.da660e29de374fd065cf1a12b3abde7b",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [
+        "rotation-endorsement.json"
+      ],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex",
+        "rotated-signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.da660e29de374fd065cf1a12b3abde7b"
+        },
+        {
+          "kind": "untrusted_successor_key",
+          "session": "proxy.run.da660e29de374fd065cf1a12b3abde7b"
+        }
+      ],
+      "errors": [
+        {
+          "session": "proxy.run.da660e29de374fd065cf1a12b3abde7b",
+          "kind": "action_receipt_chain"
+        }
+      ]
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.da660e29de374fd065cf1a12b3abde7b-0.jsonl",
+      "keys": [
+        "rotated-signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    }
+  ]
+}

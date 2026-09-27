@@ -162,7 +162,7 @@ pub struct ReceiptReport {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ChainCommandReport {
     pub path: String,
     pub valid: bool,
@@ -176,6 +176,12 @@ pub struct ChainCommandReport {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broken_at_seq: Option<u64>,
+    /// Receipts of each kind the session or file holds. Both chains present
+    /// must verify for the report to be valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_receipts: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_receipts: Option<usize>,
 }
 
 /// Directory-mode report when the evidence directory holds per-run receipt
@@ -201,6 +207,9 @@ pub struct ChainSetEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChainSetContinuity {
     pub healthy: bool,
+    /// Every chain of the base, which a named run's report lists alongside
+    /// the one chain it verifies.
+    pub chain_count: usize,
     pub linked: Vec<ChainSetLink>,
     pub unlinked: Vec<String>,
     pub findings: Vec<crate::chain_set::BaseFinding>,

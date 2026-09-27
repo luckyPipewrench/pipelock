@@ -1,0 +1,92 @@
+{
+  "description": "Run B's evidence file is a symlink to an identical copy in a subdirectory. A verifier creates the link at test time from \"symlinks\". Inside a directory root a symlinked evidence file is refused; a file path named on the command line is read as given.",
+  "recorder_chain": "intact",
+  "symlinks": [
+    {
+      "name": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "target": "target/evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl"
+    }
+  ],
+  "cells": [
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": [
+        {
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+          "kind": "symlink_refused"
+        }
+      ]
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": [
+        {
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+          "kind": "symlink_refused"
+        }
+      ]
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    }
+  ]
+}

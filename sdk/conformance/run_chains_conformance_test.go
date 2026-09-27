@@ -121,7 +121,7 @@ func runChainExpectFor(t *testing.T, c runChainCase) runChainExpect {
 		t.Fatalf("VerifyBase %s: %v", dir, err)
 	}
 	exp := runChainExpect{
-		Note:     "Generated from the Go reference (receipt.VerifyBase). " + receipt.FindingOuterChainBroken + " comes from the recorder entry hash chain, which only the Go verifiers check.",
+		Note:     "Generated from the Go reference (receipt.VerifyBase). " + receipt.FindingOuterChainBroken + " comes from the recorder entry hash chain.",
 		Healthy:  report.Healthy(),
 		Valid:    report.Healthy(),
 		Linked:   []runChainExpectLink{},
@@ -212,16 +212,41 @@ func TestRunChainFixturesCoverEveryVerdict(t *testing.T) {
 	}
 }
 
-// TestGenerateRunChainFixtures writes the re-signed link variants and every
-// expect.json. It runs only when PIPELOCK_RUN_CHAIN_FIXTURES=1, after
-// generate.sh has produced the directories from a real pipelock binary.
+// runChainSigningKeyEnv names the throwaway signing key of one generate.sh
+// run. generate.sh sets it and runs this generator before deleting the key,
+// so no private key is ever committed.
+const runChainSigningKeyEnv = "PIPELOCK_RUN_CHAIN_SIGNING_KEY"
+
+// TestGenerateRunChainFixtures writes every expect.json and, when
+// generate.sh has handed it the generation's signing key, the re-signed link
+// variants. It runs only when PIPELOCK_RUN_CHAIN_FIXTURES=1.
 func TestGenerateRunChainFixtures(t *testing.T) {
 	if os.Getenv("PIPELOCK_RUN_CHAIN_FIXTURES") != "1" {
 		t.Skip("set PIPELOCK_RUN_CHAIN_FIXTURES=1 to regenerate run-chain fixtures")
 	}
-	priv, err := signing.LoadPrivateKeyFile(filepath.Join(runChainsDir, "signing-key.test-only"))
+	t.Run("resigned-links", writeResignedLinkVariants)
+	for _, c := range runChainCases() {
+		body, err := json.MarshalIndent(runChainExpectFor(t, c), "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runChainsDir, c.variant, c.expectFile), append(body, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeResignedLinkVariants signs the two link variants that need a fresh
+// link signature. The key exists only while generate.sh runs; without it the
+// committed variants are kept as they are.
+func writeResignedLinkVariants(t *testing.T) {
+	keyPath := os.Getenv(runChainSigningKeyEnv)
+	if keyPath == "" {
+		t.Skip(runChainSigningKeyEnv + " is unset; keeping the committed re-signed link variants (generate.sh sets it)")
+	}
+	priv, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
 	if err != nil {
-		t.Fatalf("load test signing key: %v", err)
+		t.Fatalf("load generation signing key: %v", err)
 	}
 	validDir := filepath.Join(runChainsDir, "valid")
 	matches, err := filepath.Glob(filepath.Join(validDir, receipt.ChainLinkFilePrefix+"*"+receipt.ChainLinkFileSuffix))
@@ -253,16 +278,6 @@ func TestGenerateRunChainFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeResignedLinkVariant(t, "link-appended", validDir, link, earlier.ActionRecord.ChainSeq, earlierHash, priv)
-
-	for _, c := range runChainCases() {
-		body, err := json.MarshalIndent(runChainExpectFor(t, c), "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(runChainsDir, c.variant, c.expectFile), append(body, '\n'), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 func writeResignedLinkVariant(t *testing.T, name, validDir string, link receipt.ChainLink, seq uint64, hash string, priv []byte) {

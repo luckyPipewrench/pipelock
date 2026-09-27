@@ -16,8 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // Found from the recorder entry hash chain, which only the Go verifiers check.
-const GO_ONLY_FINDING: &str = "outer_chain_broken";
-
 const VARIANTS: [&str; 9] = [
     "valid",
     "tampered-predecessor",
@@ -164,7 +162,6 @@ fn run_chain_fixtures_match_go_reference() {
             .as_array()
             .expect("findings")
             .iter()
-            .filter(|f| f["kind"] != GO_ONLY_FINDING)
             .map(|f| {
                 (
                     f["kind"].as_str().unwrap_or_default().to_string(),
@@ -180,15 +177,14 @@ fn run_chain_fixtures_match_go_reference() {
 #[test]
 fn run_chain_cli_reaches_go_verdict() {
     for case in cases() {
-        // The CLI takes one --key, so the two-key trust input exists only in
-        // the library API.
-        if case.both_keys {
-            continue;
-        }
         let name = format!("{}/{}", case.variant, case.expect_file);
         let exp = expect(&case);
         let dir = fixtures().join(case.variant);
         let key = key();
+        let rotated = fs::read_to_string(fixtures().join("rotated-signer-key.hex"))
+            .expect("rotated key")
+            .trim()
+            .to_string();
         let endorsement = endorsement_path(&case);
         let mut args = vec![
             "chain",
@@ -198,6 +194,10 @@ fn run_chain_cli_reaches_go_verdict() {
             key.as_str(),
             "--json",
         ];
+        // --key repeats, as the Go reference's does, to pin a trusted key set.
+        if case.both_keys {
+            args.extend(["--key", rotated.as_str()]);
+        }
         if case.endorse {
             args.push("--rotation-endorsement");
             args.push(endorsement.to_str().expect("utf8 path"));
@@ -225,6 +225,26 @@ fn run_chain_cli_reaches_go_verdict() {
             .map(|c| c["session"].clone())
             .collect();
         assert_eq!(sessions, want_sessions, "{name}: sessions");
+        let finding_pairs = |v: &Value| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = v
+                .as_array()
+                .expect("findings")
+                .iter()
+                .map(|f| {
+                    (
+                        f["kind"].as_str().unwrap_or_default().to_string(),
+                        f["session"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            finding_pairs(&report["continuity"]["findings"]),
+            finding_pairs(&exp["findings"]),
+            "{name}: findings"
+        );
     }
 }
 
@@ -267,8 +287,10 @@ fn run_chain_cli_with_wrong_key_fails_every_run() {
     }
 }
 
+/// A named run verifies that run's chain and still runs the whole-base pass,
+/// as the Go reference does, so its report carries the base's continuity.
 #[test]
-fn explicit_session_id_keeps_single_session_verification() {
+fn explicit_session_id_verifies_that_run_and_checks_its_base() {
     let dir = fixtures().join("valid");
     let key = key();
     let exp = expect(&cases()[0]);
@@ -285,16 +307,24 @@ fn explicit_session_id_keeps_single_session_verification() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).expect("json");
+    let chains = report["chains"].as_array().expect("chains");
+    assert_eq!(chains.len(), 1);
+    assert_eq!(chains[0]["session"], session);
     assert_eq!(
-        report["path"],
+        chains[0]["path"],
         format!("{} (session {session})", dir.display())
     );
+    assert_eq!(chains[0]["valid"], true);
     assert_eq!(report["valid"], true);
-    assert!(report.get("continuity").is_none());
+    assert_eq!(
+        report["continuity"]["chain_count"].as_u64(),
+        Some(exp["chains"].as_array().expect("chains").len() as u64)
+    );
+    assert_eq!(report["continuity"]["healthy"], true);
 
-    // The legacy base session named explicitly has no shards here, exactly
-    // as before per-run chains existed.
-    let (code, stdout, _) = run_cli(&[
+    // The legacy base session named explicitly has no shards here, so its
+    // chain has no receipts.
+    let (code, stdout, stderr) = run_cli(&[
         "chain",
         dir.to_str().expect("utf8 path"),
         "--dir",
@@ -305,7 +335,11 @@ fn explicit_session_id_keeps_single_session_verification() {
     ]);
     assert_eq!(code, 1);
     let report: Value = serde_json::from_str(&stdout).expect("json");
-    assert_eq!(report["error"], "no receipts in chain");
+    assert_eq!(report["chains"][0]["error"], "no receipts in chain");
+    assert!(
+        stderr.starts_with("verification failed: ") && stderr.contains("proxy"),
+        "{stderr}"
+    );
 }
 
 // Each malformed link below must be rejected as an invalid link, never

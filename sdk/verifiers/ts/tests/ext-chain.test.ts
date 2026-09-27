@@ -91,14 +91,25 @@ test("interleaved evidence_receipt entries are skipped like the Go receipt-chain
       hash: "0",
     });
     const mixed = [lines[0], evidenceLine, ...lines.slice(1, 3), evidenceLine, ...lines.slice(3)];
-    const file = join(dir, "evidence-mixed-0.jsonl");
+    const file = join(dir, "evidence-conformance-session-0.jsonl");
     writeFileSync(file, `${mixed.join("\n")}\n`);
-    for (const receipts of [extractReceipts(file), extractReceiptsFromSessionDir(dir, "mixed")]) {
+    for (const receipts of [
+      extractReceipts(file),
+      extractReceiptsFromSessionDir(dir, "conformance-session"),
+    ]) {
       assert.equal(receipts.length, 5);
       const result = await verifyChain(receipts, keyHex());
       assert.equal(result.valid, true, result.error);
       assert.equal(result.root_hash, extChainRootHash);
     }
+
+    // The same entries under another session's file name are not that
+    // session's evidence: the Go session reader refuses them.
+    writeFileSync(join(dir, "evidence-mixed-0.jsonl"), `${mixed.join("\n")}\n`);
+    assert.throws(
+      () => extractReceiptsFromSessionDir(dir, "mixed"),
+      /entry seq 0 session_id "conformance-session" does not match requested session "mixed"/u,
+    );
 
     const evidenceOnly = join(dir, "evidence-only-0.jsonl");
     writeFileSync(evidenceOnly, `${evidenceLine}\n`);

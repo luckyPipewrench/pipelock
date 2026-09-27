@@ -519,3 +519,87 @@ test("offline audit packet verdict is unchanged", async () => {
   assert.equal(report.trusted, false);
   assert.equal(report.valid, false);
 });
+
+// The evidence file of a current run holds an ActionReceipt v1 chain and an
+// EvidenceReceipt v2 chain. The packet's counts and root describe the first,
+// so a forged v2 receipt left the packet trusted until both were verified.
+const RUN_CHAINS = "../../conformance/testdata/run-chains";
+const PARITY = "../../conformance/testdata/parity";
+const cliPath = path.resolve("dist/src/cli.js");
+
+async function packetOverRun(evidenceFile: string, key: string): Promise<string> {
+  const dir = mkdtempSync(path.join(tmpdir(), "pipelock-ts-verifier-run-packet-"));
+  writeFileSync(path.join(dir, "evidence.jsonl"), readFileSync(evidenceFile), { mode: 0o600 });
+  const receipts = extractReceipts(path.join(dir, "evidence.jsonl"));
+  const chain = await verifyChain(receipts, key);
+  assert.equal(chain.valid, true, chain.error);
+  const packet = basePacket();
+  packet.summary!.receipt_count = chain.receipt_count;
+  packet.summary!.totals = computeTotals(receipts);
+  packet.verifier!.receipt_count = chain.receipt_count;
+  packet.verifier!.root_hash = chain.root_hash;
+  packet.verifier!.final_seq = chain.final_seq;
+  packet.verifier!.signer_key = key;
+  writeFileSync(path.join(dir, "packet.json"), `${JSON.stringify(packet, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  writeFileSync(path.join(dir, "verifier.txt"), "ok\n", { mode: 0o600 });
+  return dir;
+}
+
+function forgedRunFile(): { clean: string; forged: string } {
+  const exp = JSON.parse(
+    readFileSync(path.join(PARITY, "v2-forge-rehash/expect.json"), "utf8"),
+  ) as {
+    cells: { mode: string; target: string; valid: boolean }[];
+  };
+  const target = exp.cells.find((c) => c.mode === "file" && !c.valid)?.target;
+  assert.ok(target !== undefined);
+  return {
+    clean: path.join(RUN_CHAINS, "valid", target),
+    forged: path.join(PARITY, "v2-forge-rehash", target),
+  };
+}
+
+test("an audit packet over a forged EvidenceReceipt v2 is never trusted", async () => {
+  const key = readFileSync(path.join(RUN_CHAINS, "signer-key.hex"), "utf8").trim();
+  const files = forgedRunFile();
+  const options = { ...defaultOptions, signerKey: key };
+
+  const control = await verifyAuditPacket(await packetOverRun(files.clean, key), options);
+  assert.equal(control.valid, true, JSON.stringify(control.errors));
+  assert.equal(control.trusted, true);
+  assert.equal(control.verdict, "valid");
+
+  const forgedDir = await packetOverRun(files.forged, key);
+  const report = await verifyAuditPacket(forgedDir, options);
+  assert.equal(report.chain_check, "fail");
+  assert.equal(report.valid, false);
+  assert.equal(report.trusted, false);
+  assert.equal(report.verdict, "invalid");
+  assert.ok(
+    report.errors?.some((e) => e.includes("evidence receipt chain")),
+    JSON.stringify(report.errors),
+  );
+
+  const r = spawnSync("node", [cliPath, "audit-packet", forgedDir, "--key", key, "--json"], {
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 1, r.stdout);
+  assert.equal((JSON.parse(r.stdout) as { trusted: boolean }).trusted, false);
+  assert.match(r.stderr, /^verification failed: audit packet .*evidence receipt chain/mu);
+});
+
+test("audit-packet --key repeats to pin a trusted key set", async () => {
+  const key = readFileSync(path.join(RUN_CHAINS, "signer-key.hex"), "utf8").trim();
+  const dir = await packetOverRun(forgedRunFile().clean, key);
+  const other = "11".repeat(32);
+  const run = (...keys: string[]) =>
+    spawnSync("node", [cliPath, "audit-packet", dir, ...keys.flatMap((k) => ["--key", k])], {
+      encoding: "utf8",
+    });
+  assert.equal(run(other).status, 1);
+  const both = run(other, key);
+  assert.equal(both.status, 0, both.stdout + both.stderr);
+  assert.equal(run(key, other).status, 0);
+});

@@ -136,6 +136,13 @@ type MediaPolicyVerdict struct {
 	// Empty when Content-Type was missing or unparseable.
 	MediaType string
 
+	// Relabeled is the image type the body's own header proves when the
+	// upstream declared a different JPEG/PNG type (for example a WebP served
+	// as image/png). Callers must forward it as the Content-Type so the
+	// client and any later consumer are told what the bytes are. Empty
+	// when the declared type was kept.
+	Relabeled string
+
 	// StripResult is non-nil when image metadata surgery ran, regardless of
 	// whether any metadata was actually removed. Lets callers log or
 	// include strip counts in observability.
@@ -340,8 +347,14 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	// Metadata surgery on allowed images.
 	outBody := body
 	var stripResult *media.StripResult
+	relabeled := ""
+	if proven := media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed); proven != mt {
+		relabeled = proven
+		mt = proven
+		exposure.ContentType = proven
+	}
 	if cfg.MediaPolicy.ShouldStripImageMetadata() {
-		sr, err := media.StripMetadata(media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed), body)
+		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
 			// Malformed image bytes. Fail closed: block rather than forward
 			// potentially booby-trapped content. The error surfaces in the
@@ -370,8 +383,18 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	return MediaPolicyVerdict{
 		Body:        outBody,
 		MediaType:   mt,
+		Relabeled:   relabeled,
 		StripResult: stripResult,
 		Exposure:    exposureOrNil(cfg, exposure),
+	}
+}
+
+// applyRelabeledContentType forwards the proven image type when media policy
+// reclassified a mislabeled body, so no downstream reader is told the bytes
+// are the stripped format the upstream declared.
+func applyRelabeledContentType(h http.Header, v MediaPolicyVerdict) {
+	if v.Relabeled != "" && !v.Blocked && h != nil {
+		h.Set("Content-Type", v.Relabeled)
 	}
 }
 

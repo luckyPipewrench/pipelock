@@ -6239,6 +6239,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "media_policy"
 		return
 	}
+	applyRelabeledContentType(resp.Header, mediaVerdict)
 	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 		body = mediaVerdict.Body
 	}

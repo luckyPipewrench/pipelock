@@ -1119,3 +1119,29 @@ func TestApplyMediaPolicy_RelabeledRasterStillRefusedWhenNotAllowedOrNotRaster(t
 		}
 	}
 }
+
+func TestApplyMediaPolicy_RelabeledTypeIsForwarded(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/x-icon"}
+	v := applyMediaPolicy(cfg, "image/png", relabeledWebP())
+	if v.Blocked || v.Relabeled != "image/webp" || v.MediaType != "image/webp" {
+		t.Fatalf("verdict = blocked:%v relabeled:%q mt:%q", v.Blocked, v.Relabeled, v.MediaType)
+	}
+	h := http.Header{"Content-Type": {"image/png"}}
+	applyRelabeledContentType(h, v)
+	if got := h.Get("Content-Type"); got != "image/webp" {
+		t.Fatalf("forwarded Content-Type = %q, want image/webp", got)
+	}
+	// Short WHATWG prefixes that any payload can start with stay refused.
+	for name, body := range map[string][]byte{
+		"webp prefix + svg": append([]byte("RIFF\x00\x00\x00\x00WEBPVP"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`)...),
+		"gif prefix + html": []byte("GIF89a<html><body>x</body></html>"),
+		"bmp prefix + html": []byte("BM<html><body>x</body></html>"),
+		"ico sig + script":  append([]byte{0, 0, 1, 0}, []byte("<script>x()</script>")...),
+	} {
+		if v := applyMediaPolicy(cfg, "image/png", body); !v.Blocked || v.Relabeled != "" {
+			t.Fatalf("%s served as image/png: blocked=%v relabeled=%q", name, v.Blocked, v.Relabeled)
+		}
+	}
+}

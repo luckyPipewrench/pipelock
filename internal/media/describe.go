@@ -29,9 +29,10 @@ func DescribeBytes(body []byte) string {
 // fails that parse.
 var strippedRasterTypes = map[string]bool{"image/jpeg": true, "image/jpg": true, "image/pjpeg": true, "image/png": true}
 
-// sniffableRasterTypes are the formats DescribeBytes identifies from their
-// magic bytes. A mislabeled body is reclassified only into one of these.
-var sniffableRasterTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true, "image/bmp": true, "image/x-icon": true}
+// sniffableRasterTypes are the formats DetectType validates by their full
+// container header, not a short prefix. ICO is excluded because its
+// signature is four bytes that arbitrary data can start with.
+var sniffableRasterTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true, "image/bmp": true}
 
 // StripType returns the media type to strip a body as. Some CDNs serve a
 // WebP or GIF body under a JPEG or PNG Content-Type; browsers render it from
@@ -46,7 +47,11 @@ func StripType(declared string, body []byte, allowed func(string) bool) string {
 	if !strippedRasterTypes[mt] {
 		return declared
 	}
-	sniffed := DescribeBytes(body)
+	// DetectType checks each format's whole header, where the WHATWG sniffer
+	// behind DescribeBytes accepts short prefixes such as "BM" or "GIF89a"
+	// that any payload can begin with. A relabeled body is therefore treated
+	// exactly like an honestly labeled one of the proven type, never looser.
+	sniffed := DetectType(body)
 	if sniffed == mt || !sniffableRasterTypes[sniffed] || allowed == nil || !allowed(sniffed) {
 		return declared
 	}

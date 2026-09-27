@@ -11,7 +11,8 @@ func webpBody() []byte {
 }
 
 func TestStripTypeReclassifiesOnlyAllowedRasterBytes(t *testing.T) {
-	gif := append([]byte("GIF89a"), make([]byte, 16)...)
+	// GIF89a, 1x1 logical screen, no color table, then an image descriptor (0x2c).
+	gif := append([]byte("GIF89a\x01\x00\x01\x00\x00\x00\x00\x2c"), make([]byte, 16)...)
 	allowAll := func(string) bool { return true }
 	noWebP := func(mt string) bool { return mt != "image/webp" }
 	for _, tc := range []struct {
@@ -30,6 +31,11 @@ func TestStripTypeReclassifiesOnlyAllowedRasterBytes(t *testing.T) {
 		{"jpg alias of real jpeg keeps declared", "image/jpg", append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, make([]byte, 16)...), allowAll, "image/jpg"},
 		{"undeclared stripped type untouched", "image/webp", gif, allowAll, "image/webp"},
 		{"nil allow func keeps declared", "image/png", webpBody(), nil, "image/png"},
+		// Short WHATWG prefixes followed by markup must not be reclassified.
+		{"loose webp prefix with svg keeps declared", "image/png", append([]byte("RIFF\x00\x00\x00\x00WEBPVP"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`)...), allowAll, "image/png"},
+		{"loose gif prefix with html keeps declared", "image/png", []byte("GIF89a<html><body>x</body></html>"), allowAll, "image/png"},
+		{"loose bmp prefix with html keeps declared", "image/png", []byte("BM<html><body>x</body></html>"), allowAll, "image/png"},
+		{"ico signature with script keeps declared", "image/png", append([]byte{0, 0, 1, 0}, []byte("<script>x()</script>")...), allowAll, "image/png"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := StripType(tc.declared, tc.body, tc.allowed); got != tc.want {

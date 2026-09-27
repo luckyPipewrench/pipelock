@@ -2349,6 +2349,7 @@ func newInterceptHandler(
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "media_policy")
 			return
 		}
+		applyRelabeledContentType(resp.Header, mediaVerdict)
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 			respBody = mediaVerdict.Body
 			resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))

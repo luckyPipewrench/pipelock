@@ -612,11 +612,16 @@ func checkSSEDLPContext(ctx context.Context) error {
 
 // sseRollingEventText keeps the values from the canonical, wire-shaped event
 // while removing SSE field labels that can interrupt a split value at a
-// boundary. Current-event checks still scan the complete canonical text.
+// boundary. The id is left out: it persists from earlier events and sits
+// between the event and data values, so it would split a value across them.
+// Current-event checks still scan the complete canonical text, id included.
 func sseRollingEventText(canonical, separator string) string {
 	var b strings.Builder
 	for line := range strings.SplitSeq(canonical, "\n") {
-		for _, field := range []string{"event:", "id:", "retry:", "data:"} {
+		if strings.HasPrefix(line, "id:") {
+			continue
+		}
+		for _, field := range []string{"event:", "retry:", "data:"} {
 			if value, ok := strings.CutPrefix(line, field); ok {
 				value = strings.TrimPrefix(value, " ")
 				if value != "" {

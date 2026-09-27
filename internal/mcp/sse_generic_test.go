@@ -1911,6 +1911,26 @@ func TestScanGenericSSEStream_TwoWarnInjectionsInOneEventAreNotRepeated(t *testi
 	}
 }
 
+func TestScanGenericSSEStream_MetadataBetweenEventAndDataDoesNotSplitCredential(t *testing.T) {
+	key := fakeAWSKey()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		// The id persists from the first event and sits between the fields.
+		{name: "persisted-id", body: "id: evt-1\ndata: hello\n\nevent: " + key[:10] + "\ndata: " + key[10:] + "\n\n"},
+		{name: "retry", body: "event: " + key[:10] + "\nretry: 1000\ndata: " + key[10:] + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := ScanGenericSSEStream(t.Context(), strings.NewReader(tc.body), &out, nil, testA2AScanner(t), enabledSSECfg())
+			if !errors.Is(err, ErrSSEStreamFinding) || strings.Contains(out.String(), key[10:]) {
+				t.Fatalf("err=%v out=%q; want the credential split across event and data blocked", err, out.String())
+			}
+		})
+	}
+}
+
 func TestSSETailRuneBoundary_ExcludesLength(t *testing.T) {
 	tail := "éx"
 	for _, end := range []int{-1, 0, 1, len(tail), len(tail) + 1} {

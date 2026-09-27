@@ -81,6 +81,7 @@ type BridgeProxy struct {
 	wg              sync.WaitGroup
 	mu              sync.Mutex
 	closed          bool
+	stopping        bool // context cancelled: accept and track no new conns
 	failure         error
 	failureOnce     sync.Once
 	done            chan struct{}
@@ -148,6 +149,10 @@ func (bp *BridgeProxy) Serve(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			bp.mu.Lock()
+			// Set under the same lock the accept loop and handlers take to
+			// register a connection, so one accepted just before this point
+			// is refused rather than tracked after the close sweep below.
+			bp.stopping = true
 			_ = bp.listener.Close()
 			for conn := range bp.conns {
 				_ = conn.Close()
@@ -168,15 +173,10 @@ func (bp *BridgeProxy) Serve(ctx context.Context) error {
 			}
 			return fmt.Errorf("bridge listener accept: %w", err)
 		}
-		bp.mu.Lock()
-		if bp.closed {
-			bp.mu.Unlock()
+		if !bp.admitConn(conn) {
 			_ = conn.Close()
 			return nil
 		}
-		bp.trackConnLocked(conn)
-		bp.wg.Add(1)
-		bp.mu.Unlock()
 		go func(conn net.Conn) {
 			defer bp.wg.Done()
 			defer bp.untrackConn(conn)
@@ -244,10 +244,23 @@ func (bp *BridgeProxy) Close() {
 	})
 }
 
+// admitConn registers a just-accepted connection and reserves its handler
+// slot, or reports false once Close or context cancellation has begun.
+func (bp *BridgeProxy) admitConn(conn net.Conn) bool {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	if bp.closed || bp.stopping {
+		return false
+	}
+	bp.trackConnLocked(conn)
+	bp.wg.Add(1)
+	return true
+}
+
 func (bp *BridgeProxy) trackConn(conn net.Conn) bool {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
-	if bp.closed {
+	if bp.closed || bp.stopping {
 		return false
 	}
 	bp.trackConnLocked(conn)

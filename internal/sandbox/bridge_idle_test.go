@@ -296,3 +296,30 @@ func TestBridgeIdleTimeoutEnvEntryRoundTrip(t *testing.T) {
 		t.Fatalf("round trip = %v", got)
 	}
 }
+
+// A connection Accept returned just before cancellation must not be registered
+// after the cancellation sweep has closed everything it could see.
+func TestBridgeIdle_CancellationRefusesLateConnections(t *testing.T) {
+	bp, _, cancel := idleBridge(t, time.Hour)
+	cancel()
+	testwait.For(t, 3*time.Second, func() bool {
+		bp.mu.Lock()
+		defer bp.mu.Unlock()
+		return bp.stopping
+	}, "cancellation watcher never ran")
+
+	late, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	if bp.admitConn(late) {
+		bp.wg.Done()
+		t.Fatal("accept loop admitted a connection after cancellation")
+	}
+	parent, parentPeer := net.Pipe()
+	defer func() { _ = parentPeer.Close() }()
+	if bp.trackConn(parent) {
+		t.Fatal("handler tracked a parent connection after cancellation")
+	}
+	if n := trackedConns(bp); n != 0 {
+		t.Fatalf("tracked connections after cancellation = %d", n)
+	}
+}

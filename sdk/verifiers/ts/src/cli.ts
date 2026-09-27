@@ -20,7 +20,7 @@ import {
   type ChainLink,
 } from "./chain-set.js";
 import { emitAuditPacket, emitChain, emitChainSet, emitReceipt } from "./output.js";
-import { extractReceipts, extractReceiptsFromSessionDir, selectReceiptChain } from "./recorder.js";
+import { extractTypedReceipts, selectReceiptChain, type ExtractedReceipts } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
 import {
   loadRotationEndorsementFile,
@@ -160,6 +160,79 @@ async function chainReportFor(
   };
 }
 
+// evidenceChainKey picks the key an EvidenceReceipt v2 chain is verified
+// against. A v2 chain has one signer and is verified against one key. Given a
+// trusted set (directory mode passes each run its scoped trust, which includes
+// an endorsed successor key), it is the trusted key equal to the chain's
+// declared signer_key_id. The declared id only selects: every receipt is still
+// verified against that key, and a signer outside the set gets the first
+// trusted key, which then fails. A single key is returned unchanged.
+function evidenceChainKey(keyHex: string, receipts: Receipt[]): string {
+  const keys = keyHex
+    .split(",")
+    .map((key) => key.trim().toLowerCase())
+    .filter((key) => key !== "");
+  if (keys.length <= 1) return keyHex;
+  const signature = receipts[0]?.signature;
+  const declared =
+    typeof signature === "object" &&
+    signature !== null &&
+    typeof (signature as Record<string, unknown>)["signer_key_id"] === "string"
+      ? ((signature as Record<string, unknown>)["signer_key_id"] as string).toLowerCase()
+      : "";
+  return keys.find((key) => key === declared) ?? (keys[0] as string);
+}
+
+// typedChainReport verifies every receipt chain one session or file holds. A
+// current run writes an ActionReceipt v1 chain and an EvidenceReceipt v2 chain
+// into the same files, each signed on its own, so a forged receipt in one
+// leaves the other intact: verifying only the chain selectReceiptChain picks
+// reported a session valid while its v2 chain was forged. Both chains must
+// verify. The action report stays the primary one, so a session whose chains
+// both pass prints exactly what it did before, and a failure names the chain
+// it came from.
+async function typedChainReport(
+  label: string,
+  typed: ExtractedReceipts,
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsements: RotationEndorsement[],
+  sessionID: string,
+): Promise<ChainCommandReport> {
+  const primaryReceipts = selectReceiptChain(typed);
+  const primary = await chainReportFor(
+    label,
+    primaryReceipts,
+    typed.action.length === 0 ? evidenceChainKey(keyHex, primaryReceipts) : keyHex,
+    allowUnpinned,
+    endorsements,
+    sessionID,
+  );
+  if (typed.action.length === 0 || typed.evidence.length === 0) return primary;
+  const evidence = await chainReportFor(
+    label,
+    typed.evidence,
+    evidenceChainKey(keyHex, typed.evidence),
+    allowUnpinned,
+    endorsements,
+    sessionID,
+  );
+  if (primary.valid && evidence.valid) return primary;
+  // Without a key and without --allow-unpinned both chains fail only for being
+  // unpinned; the action report already says so.
+  if (primary.unpinned === true && evidence.unpinned === true) return primary;
+  const reasons: string[] = [];
+  if (!primary.valid) reasons.push(`action receipt chain: ${primary.error ?? ""}`);
+  if (!evidence.valid) reasons.push(`evidence receipt chain: ${evidence.error ?? ""}`);
+  return {
+    ...primary,
+    valid: false,
+    unpinned: undefined,
+    error: reasons.join("; "),
+    broken_at_seq: primary.valid ? evidence.broken_at_seq : primary.broken_at_seq,
+  };
+}
+
 async function loadEndorsements(
   endorsementPaths: string[],
   allowUnpinned: boolean,
@@ -201,10 +274,9 @@ async function runChainSetCommand(
     const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
     let chainReport: ChainCommandReport;
     try {
-      const receipts = selectReceiptChain(readSessionReceipts(dir, session));
-      chainReport = await chainReportFor(
+      chainReport = await typedChainReport(
         label,
-        receipts,
+        readSessionReceipts(dir, session),
         scoped.keys.join(","),
         allowUnpinned,
         scoped.endorsements,
@@ -287,12 +359,12 @@ async function runChainCommand(args: string[]): Promise<number> {
       );
     }
   }
-  let receipts;
+  let typed: ExtractedReceipts;
   let label: string;
   try {
     if (asDir) {
       const clean = path.normalize(target);
-      receipts = extractReceiptsFromSessionDir(clean, sessionID);
+      typed = readSessionReceipts(clean, sessionID);
       label = `${clean} (session ${sessionID})`;
     } else {
       const clean = path.normalize(target);
@@ -301,21 +373,21 @@ async function runChainCommand(args: string[]): Promise<number> {
           `${target} is a directory; pass --dir to verify a session directory`,
         );
       }
-      receipts = extractReceipts(clean);
+      typed = extractTypedReceipts(clean);
       label = clean;
     }
   } catch (err) {
     throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
   }
-  if (receipts.length === 0) {
-    const report = await chainReportFor(label, receipts, keyHex, allowUnpinned, [], sessionID);
+  if (typed.action.length === 0 && typed.evidence.length === 0) {
+    const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
     emitChain(report, parsed.values.json === true);
     return 1;
   }
   const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
-  const report = await chainReportFor(
+  const report = await typedChainReport(
     label,
-    receipts,
+    typed,
     keyHex,
     allowUnpinned,
     endorsements,

@@ -1,13 +1,13 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
 import { validateTimestamp } from "./aarp/numbers.js";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { bindRecorderLineExtSource } from "./rawjson.js";
+import { readSessionReceipts } from "./chain-set.js";
 import {
   InvalidError,
   RuntimeError,
@@ -178,32 +178,10 @@ export function extractReceipts(file: string): Receipt[] {
   return selectReceiptChain(extractTypedReceipts(file));
 }
 
-function seqStart(file: string): number {
-  const base = path.basename(file, ".jsonl");
-  const dash = base.lastIndexOf("-");
-  const suffix = dash < 0 ? "" : base.slice(dash + 1);
-  const parsed = Number.parseInt(suffix, 10);
-  if (!/^\d+$/u.test(suffix) || !Number.isFinite(parsed)) {
-    throw new RuntimeError(`evidence file has non-numeric sequence suffix: ${file}`);
-  }
-  return parsed;
-}
-
+// extractReceiptsFromSessionDir returns one session's selected receipt chain.
+// Membership is Go's parsed-equality rule (evidencename.Parse), shared with the
+// chain-set reader: for session "s", "evidence-s-evil-0.jsonl" belongs to
+// session "s-evil" and is not read, although it starts with "evidence-s-".
 export function extractReceiptsFromSessionDir(dir: string, sessionId: string): Receipt[] {
-  const clean = path.normalize(dir);
-  const prefix = `evidence-${sessionId}-`;
-  const files = readdirSync(clean)
-    .filter((name) => {
-      const full = path.join(clean, name);
-      return !statSync(full).isDirectory() && name.startsWith(prefix) && name.endsWith(".jsonl");
-    })
-    .map((name) => path.join(clean, name))
-    .sort((a, b) => seqStart(a) - seqStart(b));
-  const combined: ExtractedReceipts = { action: [], evidence: [] };
-  for (const file of files) {
-    const extracted = extractTypedReceipts(file);
-    combined.action.push(...extracted.action);
-    combined.evidence.push(...extracted.evidence);
-  }
-  return selectReceiptChain(combined);
+  return selectReceiptChain(readSessionReceipts(path.normalize(dir), sessionId));
 }

@@ -15,13 +15,14 @@ permissions:
   contents: read
 
 env:
-  # Agent Egress Bench release v1.0.0, the first release carrying promoted-record
-  # schema v4 and the source-baseline-origin argument the site promotion supplies.
+  # Agent Egress Bench release v1.1.0, which carries corpus v2.14.0 along with
+  # promoted-record schema v4 and the source-baseline-origin argument the site
+  # promotion supplies.
   # The checkout pins the commit so the run is reproducible even if a tag moves,
   # and the verification step below resolves the tag and fails when the two
   # disagree, so the release label is checked rather than merely asserted here.
-  AEB_REF: 06399746918ae0005f59a914fc9ec100a2f27fb8
-  AEB_RELEASE_TAG: v1.0.0
+  AEB_REF: 79a51f084fc4f4cd5254e4ec15a273c556c280d5
+  AEB_RELEASE_TAG: v1.1.0
 
 jobs:
   candidate:

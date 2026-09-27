@@ -16,8 +16,8 @@ WORKFLOW = ROOT / ".github" / "workflows" / "continuous-gauntlet.yaml"
 RELEASE_PIN = ROOT / "benchmark" / "gauntlet-release.env"
 BASELINE = ROOT / "benchmark" / "gauntlet-baseline.json"
 ACCEPTANCE = ROOT / "benchmark" / "gauntlet-acceptance.json"
-EXPECTED_AEB_REF = "06399746918ae0005f59a914fc9ec100a2f27fb8"
-EXPECTED_AEB_RELEASE_TAG = "v1.0.0"
+EXPECTED_AEB_REF = "79a51f084fc4f4cd5254e4ec15a273c556c280d5"
+EXPECTED_AEB_RELEASE_TAG = "v1.1.0"
 GAUNTLET_WORKFLOW_URL = (
     "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )

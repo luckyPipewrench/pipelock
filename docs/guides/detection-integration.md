@@ -74,9 +74,9 @@ about the decision:
 | `action_id` | UUIDv7, unique per decision. Stable identifier for the record. |
 | `timestamp` | RFC 3339 wall-clock time the decision was made. |
 | `verdict` | `block`, `warn`, `exemption`, `allow`, `strip`, `redirect`, or `ask`. Deterministic. |
-| `layer` | Which scanner triggered (`mcp_response_scan`, `dlp_header`, `response_scan`, `airlock`, etc.). |
+| `layer` | Which scanner triggered (`mcp_response_scan`, `dlp_header`, `response_scan`, `airlock`, `dlp_credential_audience_allow`, etc.). |
 | `pattern` | Named rule inside the layer (e.g., `Prompt Injection`, `aws_access_key`). |
-| `transport` | `fetch`, `forward`, `websocket`, `mcp_stdio`, `mcp_http_upstream`, `mcp_http_listener`, `connect`, `intercept`. |
+| `transport` | `fetch`, `forward`, `reverse`, `websocket`, `mcp_stdio`, `mcp_http_upstream`, `mcp_http_listener`, `connect`, `intercept`. |
 | `session_id` | Groups receipts from the same agent session. |
 | `principal` / `actor` | Who initiated the action and who enforced it. |
 | `policy_hash` | SHA-256 of the canonical policy config at decision time. Changes whenever the policy changes. |

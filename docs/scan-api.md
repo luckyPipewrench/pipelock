@@ -91,7 +91,7 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `include_evidence` | `false` | When `true`, DLP findings include an `evidence` object with an `encoding` field. Known encoding values: `plaintext`, `base64`, `hex`, `base32`, `url`, `env`, `subdomain`. The handler normalizes empty scanner encodings to `"plaintext"` — the wire never contains an empty string for this field. This is an open string — new encoding types may be added in future versions. Injection findings never include evidence because match positions are post-normalization and don't map reliably to original input bytes. |
+| `include_evidence` | `false` | When `true`, DLP findings include an `evidence` object with an `encoding` field. Known encoding values: `plaintext`, `base64`, `hex`, `base32`, `url`, `html_entity`, `json_unicode`, `decimal_character_codes`, `whitespace`, `env`, `subdomain`. The handler normalizes empty scanner encodings to `"plaintext"` — the wire never contains an empty string for this field. This is an open string — new encoding types may be added in future versions. Injection findings never include evidence because match positions are post-normalization and don't map reliably to original input bytes. |
 
 ## Response
 

@@ -18,7 +18,7 @@ The remediation guidance is the point of the command: a hint must name a knob th
 
 | Scanner / layer | Why it blocked | Correct (narrowest) knob | Broader option + tradeoff |
 |---|---|---|---|
-| `dlp` (URL DLP) | A configurable DLP pattern matched the URL | `dlp.patterns[].exempt_domains` for that pattern. **The top-level `suppress:` list does NOT apply to URL DLP** — it is body-DLP and response-scanning only. If a long token in the query also trips entropy, you may *additionally* need `fetch_proxy.monitoring.query_entropy_param_exclusions` for an exact endpoint+parameter, or `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback (a separate gate). | `tls_interception.passthrough_domains` exempts the host in one line but blinds Pipelock to all inner TLS (method, path, body, response). Only for can't-scan-by-construction hosts. |
+| `dlp` (URL DLP) | A configurable DLP pattern matched the URL | `dlp.patterns[].exempt_domains` for that pattern. Not for built-in provider-key, messaging, or GitHub/GitLab patterns: these carry a compiled audience, and `exempt_domains` on them is rejected at load or ignored with a warning. Send the credential only to its issuer on the documented header instead — see [Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md). **The top-level `suppress:` list does NOT apply to URL DLP** — it is body-DLP and response-scanning only. If a long token in the query also trips entropy, you may *additionally* need `fetch_proxy.monitoring.query_entropy_param_exclusions` for an exact endpoint+parameter, or `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback (a separate gate). | `tls_interception.passthrough_domains` exempts the host in one line but blinds Pipelock to all inner TLS (method, path, body, response). Only for can't-scan-by-construction hosts. |
 | `core_dlp` | An immutable critical-credential pattern matched | None — core DLP is a safety floor and cannot be exempted by config. A genuine false positive must be fixed by tightening the pattern in a release. | — |
 | `entropy` (query entropy) | A high-entropy query key/value crossed the threshold | `fetch_proxy.monitoring.query_entropy_param_exclusions` for an exact HTTPS endpoint+parameter when host, path, and param are known; otherwise `fetch_proxy.monitoring.query_entropy_exclusions` is the broader host-wide fallback. **Separate gate from DLP** — exempting a DLP pattern does not lift an entropy block. | Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity for every destination. |
 | `entropy` (path entropy) | A high-entropy path segment crossed the threshold | `fetch_proxy.monitoring.subdomain_entropy_exclusions` for host-wide path entropy false positives, or an enforced `request_policy` route for an exact host+path exemption. `query_entropy_exclusions` does **not** lift path entropy blocks. | Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity for every destination. |
@@ -32,6 +32,14 @@ The remediation guidance is the point of the command: a hint must name a knob th
 | `databudget` | Per-base-domain data ceiling reached (all subdomains share it) | `fetch_proxy.monitoring.max_data_per_minute` (0 disables it), or (Pro) `agents.<name>.rate_limit.max_data_per_minute`; an agent `rate_limit` block replaces both per-minute ceilings. | — |
 | `crlf_injection` / `path_traversal` | A header-injection or directory-escape sequence | None — never legitimate in a normal URL. Correct the URL at its source. | — |
 | `scheme` | A non-http/https scheme | None — use an `http`/`https` URL. | — |
+
+For a non-core compiled-audience pattern, `explain` also names the audience
+outcome: a block prints `blocked: credential audience mismatch (pattern
+<name>, canonical destination <host>, immutable audience hosts <hosts>)`, and
+an allowed URL that matched such a pattern at its audience prints `allowed:
+credential audience match (pattern <name>, canonical destination <host>)`.
+Core-floor patterns never report a mismatch note here, because the core URL
+floor blocks them before the audience check runs.
 
 ## Flags
 

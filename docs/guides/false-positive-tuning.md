@@ -70,7 +70,9 @@ logger provides the canonical event format.
 
 When the hook is not configured, warn matches still allow traffic through
 and are reported in the scan result's `InformationalMatches` / `WarnMatches`
-fields, but no audit event is emitted.
+fields, but no audit event is emitted from the hook.
+
+`dlp_warn` is also emitted independently of this hook, with `mode: informational`, when a DLP finding is deliberately not enforced (`reason` is `suppressed`, `disabled`, or `low_confidence`). Every `dlp_warn` event carries `mode`, `pattern`, `severity`, `transport` (the scanning surface), and `reason`.
 
 ### Restrictions
 
@@ -88,19 +90,27 @@ fields, but no audit event is emitted.
 
 ### Exempt domains
 
-Use `exempt_domains` on a DLP pattern to skip enforcement for specific
-trusted destinations:
+Use `exempt_domains` on a custom, non-core DLP pattern to skip enforcement for
+specific trusted destinations:
 
 ```yaml
 dlp:
   patterns:
-    - name: github-token
-      regex: 'ghp_[A-Za-z0-9]{36}'
+    - name: internal-provider-token
+      regex: 'intprov_[A-Za-z0-9]{36}'
       severity: critical
       exempt_domains:
-        - "api.github.com"
-        - "*.github.com"
+        - "api.provider.example"
+        - "*.provider.example"
 ```
+
+Built-in GitHub, GitLab, Slack, and other provider-key patterns cannot use
+`exempt_domains`: they carry a compiled audience instead (see
+[Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md)) and are
+already allowed at their issuer on the documented header. A custom pattern
+whose regex also matches a core credential, such as `ghp_[A-Za-z0-9]{36}` for
+`GitHub Token`, is still blocked by the immutable core floor, which never
+reads exemptions.
 
 ### Suppression rules
 

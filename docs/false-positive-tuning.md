@@ -33,7 +33,7 @@ pipelock logs --file pipelock-audit.log --last 50
 pipelock logs --file pipelock-audit.log --filter blocked
 ```
 
-Each finding includes an `event` field and the `scanner` that triggered. For DLP findings, the `reason` field names the matched pattern (e.g., "AWS Access ID", "GitHub Token"). For response scanning, the `patterns` field lists which patterns matched. Non-core names can be used in suppressions; core floor names require a pattern precision fix.
+Each finding includes an `event` field and the `scanner` that triggered. For DLP findings, the `reason` field names the matched pattern (e.g., "AWS Access ID", "GitHub Token"). For response scanning, the `patterns` field lists which patterns matched. Non-core names can be used in suppressions; core floor names require a pattern precision fix, or, for a core response finding on one host, a `response_scanning.core_observe_exceptions` entry.
 
 ## Seeing What Matched
 
@@ -166,7 +166,7 @@ Response injection patterns can flag legitimate content: documentation about AI 
 
 There are two knobs here and they are not interchangeable. Start with the narrow one.
 
-**One non-core pattern firing on one destination: use `suppress`.** This drops only the named non-core pattern for URLs matching the path glob, and leaves every other response control on that host intact. Core response floor patterns cannot be suppressed and require a pattern precision fix.
+**One non-core pattern firing on one destination: use `suppress`.** This drops only the named non-core pattern for URLs matching the path glob, and leaves every other response control on that host intact. Core response floor patterns cannot be suppressed. Declare one host + one core pattern in `response_scanning.core_observe_exceptions` (reason, owner, expiry ≤30 days) instead: the finding is kept and logged as `core_observed`, only the block is withheld. Fixing the pattern's precision is the alternative when the pattern itself is wrong rather than the destination.
 
 ```yaml
 suppress:
@@ -188,7 +188,7 @@ response_scanning:
     - "*.docs.vendor.example"
 ```
 
-`exempt_domains` only takes effect while `response_scanning.enabled` is true. With response scanning off the list goes dormant and responses take the buffered path, which still applies media policy and Browser Shield. If a host cannot be intercepted at all, for example because of certificate pinning, prefer `tls_interception.passthrough_domains` instead. See [configuration.md](configuration.md) for the full response-scanning reference.
+With `response_scanning.enabled: false`, only the immutable core response floor scans responses; the configurable layer is off. `exempt_domains` still applies to that core floor: a core finding on a listed host is downgraded to `warn` and forwarded rather than blocked, so the list is not dormant. Remove the host if the core floor should still block there. If a host cannot be intercepted at all, for example because of certificate pinning, prefer `tls_interception.passthrough_domains` instead. See [configuration.md](configuration.md) for the full response-scanning reference.
 
 Switching from `block` to `warn` for response scanning gives visibility without interrupting the agent. This is useful during initial deployment when you're learning what your agent fetches.
 
@@ -240,7 +240,7 @@ cross_request_detection:
 
 | Scenario | Scanner | Pattern | Fix |
 |----------|---------|---------|-----|
-| API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. Core response floor matches require a pattern precision fix. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
+| API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. For a core response floor match, declare a `response_scanning.core_observe_exceptions` entry for that host and pattern instead. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | If the JWT is intentionally sent to a controlled endpoint, add a narrowly path-scoped `suppress` entry for `JWT Token`. Header and body DLP read `suppress`; per-pattern `exempt_domains` only affects URL scans |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
@@ -250,7 +250,7 @@ cross_request_detection:
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all five parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block. |
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add `exempt_domains` to the `Environment Variable Secret` pattern for the WebSocket upstream host, or a `suppress` entry scoped to that upstream URL |
 | Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |
-| Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Fix the pattern precision, or make the broader whole-host trust decision with `response_scanning.exempt_domains` |
+| Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Declare a `response_scanning.core_observe_exceptions` entry for that host and pattern, or fix pattern precision; `exempt_domains` is the whole-host fallback |
 | Hash-based object storage paths | entropy | (path entropy) | Add storage domain to `subdomain_entropy_exclusions` |
 
 ## Transitioning from Audit to Enforcement

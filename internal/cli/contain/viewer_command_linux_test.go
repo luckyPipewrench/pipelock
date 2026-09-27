@@ -71,9 +71,9 @@ func TestViewerServeDependencies(t *testing.T) {
 	base.path = path
 	base.lookup = func(name string) (*user.User, error) {
 		if name == "agent" {
-			return &user.User{Uid: "1001"}, nil
+			return &user.User{Uid: fakeAgentUID()}, nil
 		}
-		return &user.User{Uid: "1002"}, nil
+		return &user.User{Uid: fakeOperatorUID()}, nil
 	}
 	base.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	for _, tc := range []struct {
@@ -129,14 +129,14 @@ func TestViewerServeRejectsInvalidAgentIdentity(t *testing.T) {
 		{"missing agent", "", "viewer agent user", errors.New("identity unavailable")},
 		{"invalid agent uid", "bad", "viewer agent uid", nil},
 		{"root agent", "0", "must not be root", nil},
-		{"operator is agent", "1000", "distinct identities", nil},
+		{"operator is agent", fakeOperatorUID(), "distinct identities", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := realServeDeps()
 			deps.path = filepath.Join(t.TempDir(), "control.sock")
 			deps.lookup = func(name string) (*user.User, error) {
 				if name == "operator" {
-					return &user.User{Uid: "1002"}, nil
+					return &user.User{Uid: fakeOperatorUID()}, nil
 				}
 				if tc.agentErr != nil {
 					return nil, tc.agentErr
@@ -208,9 +208,9 @@ func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
 	deps.path = path
 	deps.lookup = func(name string) (*user.User, error) {
 		if name == "agent" {
-			return &user.User{Uid: "1001"}, nil
+			return &user.User{Uid: fakeAgentUID()}, nil
 		}
-		return &user.User{Uid: "1002"}, nil
+		return &user.User{Uid: fakeOperatorUID()}, nil
 	}
 	deps.run = func(context.Context, string, ...string) (string, int, error) { return "", 0, nil }
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
@@ -259,3 +259,10 @@ func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
 		})
 	}
 }
+
+// Fake agent and operator uids are offset from the test process's own uid, so
+// they never collide with it on a host (such as a CI runner at uid 1001) whose
+// uid happens to equal a hard-coded value.
+func fakeAgentUID() string { return strconv.FormatUint(uint64(currentViewerUID())+1, 10) }
+
+func fakeOperatorUID() string { return strconv.FormatUint(uint64(currentViewerUID())+2, 10) }

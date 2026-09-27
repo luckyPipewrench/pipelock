@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -7429,6 +7430,45 @@ func TestKnownValueWindowBudget_ManyShortURLSegmentsShareTheBound(t *testing.T) 
 	}
 	if highest < len(value)-4*(minKnownSecretSubstringLen+1) {
 		t.Fatalf("anchors end at offset %d of %d, want coverage through the last segments", highest, len(value))
+	}
+}
+
+// Query values come from a map, so the sample must follow their order in the
+// value: otherwise which values keep anchors changes from one scanner build to
+// the next.
+func TestKnownValueWindowBudget_LongURLSampleIsDeterministic(t *testing.T) {
+	const params = 300
+	var b strings.Builder
+	b.WriteString("https://api.vendor.example/v1?")
+	for i := range params {
+		sum := sha256.Sum256([]byte("q" + strconv.Itoa(i)))
+		if i > 0 {
+			b.WriteString("&")
+		}
+		b.WriteString("k" + strconv.Itoa(i) + "=")
+		b.WriteString(hex.EncodeToString(sum[:])[:40])
+	}
+	value := b.String()
+	first, err := knownValueWindowsBounded(value, maxKnownValueWindowEntries)
+	if err != nil {
+		t.Fatalf("long query URL refused: %v", err)
+	}
+	// Positive control: the value is long enough to be sampled, not indexed whole.
+	anchors := 0
+	for _, offsets := range first {
+		anchors += len(offsets)
+	}
+	if full := params * (40 - minKnownSecretSubstringLen + 1); anchors >= full {
+		t.Fatalf("got %d anchors of %d windows, want a sampled value", anchors, full)
+	}
+	for run := range 30 {
+		again, againErr := knownValueWindowsBounded(value, maxKnownValueWindowEntries)
+		if againErr != nil {
+			t.Fatal(againErr)
+		}
+		if !reflect.DeepEqual(first, again) {
+			t.Fatalf("build %d retained different anchors from the first build", run+2)
+		}
 	}
 }
 

@@ -3109,6 +3109,20 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 			totalSpan += len(raw) - minKnownSecretSubstringLen + 1
 		}
 	}
+	// u.Query() is a map, so eligible holds query values in a random order.
+	// Sampling follows the order the parts appear in the value, which keeps
+	// the retained anchors the same on every build of the scanner. Two parts
+	// can be located at one offset when one is a prefix of the other, so the
+	// part text breaks the tie.
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].idx != eligible[j].idx {
+			return eligible[i].idx < eligible[j].idx
+		}
+		if eligible[i].part != eligible[j].part {
+			return eligible[i].part < eligible[j].part
+		}
+		return eligible[i].raw < eligible[j].raw
+	})
 	stride := knownValueStride(totalSpan)
 	out := make(map[string][]int)
 	entryCount := 0

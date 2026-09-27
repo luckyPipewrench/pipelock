@@ -1183,3 +1183,24 @@ func TestFetchEndpoint_PublishesRelabeledType(t *testing.T) {
 		t.Fatalf("fetch published blocked=%v reason=%q content_type=%q, want image/webp", resp.Blocked, resp.BlockReason, resp.ContentType)
 	}
 }
+
+// With metadata stripping off, nothing parses the bytes, so a disallowed
+// format served under an allowed raster label must still be refused by its
+// proven header rather than admitted under the declared type.
+func TestApplyMediaPolicy_RelabeledDisallowedBlockedWithoutStripping(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	off := false
+	cfg.MediaPolicy.StripImageMetadata = &off
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg"}
+	if cfg.MediaPolicy.ImageTypeAllowed("image/webp") || cfg.MediaPolicy.ShouldStripImageMetadata() {
+		t.Fatal("precondition: WebP disallowed and stripping off")
+	}
+	v := applyMediaPolicy(cfg, "image/png", relabeledWebP())
+	if !v.Blocked || !strings.Contains(v.BlockReason, "image/webp") {
+		t.Fatalf("disallowed WebP labeled PNG with stripping off: blocked=%v %q", v.Blocked, v.BlockReason)
+	}
+	if v := applyMediaPolicy(cfg, "image/png", buildValidPNG(nil)); v.Blocked {
+		t.Fatalf("positive control: honest PNG blocked with stripping off: %s", v.BlockReason)
+	}
+}

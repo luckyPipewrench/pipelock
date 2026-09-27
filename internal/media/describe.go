@@ -60,3 +60,24 @@ func StripType(declared string, body []byte, allowed func(string) bool) string {
 	}
 	return sniffed
 }
+
+// MislabeledDisallowed reports the proven type when a body declared as a
+// JPEG or PNG is recognizably a different raster format the operator does
+// not allow. StripMetadata's signature check refuses such a body only when
+// stripping runs, so callers must block on this regardless of that setting;
+// otherwise turning stripping off would admit the disallowed format under
+// the allowed label.
+func MislabeledDisallowed(declared string, body []byte, allowed func(string) bool) (string, bool) {
+	mt := canonicalMediaType(declared)
+	if !strippedRasterTypes[mt] || allowed == nil {
+		return "", false
+	}
+	sniffed := DetectType(body)
+	if !sniffableRasterTypes[sniffed] || sniffed == mt || sniffed == "image/jpeg" && (mt == "image/jpg" || mt == "image/pjpeg") {
+		return "", false
+	}
+	if allowed(sniffed) {
+		return "", false
+	}
+	return sniffed, true
+}

@@ -418,6 +418,16 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	outBody := body
 	var stripResult *media.StripResult
 	relabeled := ""
+	if sniffed, bad := media.MislabeledDisallowed(mt, body, policy.ImageTypeAllowed); bad {
+		exposure.Blocked = true
+		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mt, sniffed)
+		return mcpMediaVerdict{
+			Blocked:     true,
+			BlockReason: exposure.BlockReason,
+			MediaType:   mt,
+			Exposure:    mcpExposureOrNil(policy, exposure),
+		}
+	}
 	if proven := media.StripType(mt, body, policy.ImageTypeAllowed); proven != mt {
 		relabeled = proven
 		mt = proven

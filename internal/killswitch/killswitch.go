@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -36,11 +37,15 @@ type Decision struct {
 
 // Controller manages the kill switch state across seven activation sources.
 type Controller struct {
-	cfg          atomic.Pointer[runtime]
-	api          atomic.Bool
-	sigusr1      atomic.Bool
-	conductor    atomic.Bool
-	conductorMsg atomic.Value
+	deferredMu         sync.RWMutex // serializes activation with deferred upstream send claims
+	deferredInFlight   atomic.Int64
+	deferredGeneration atomic.Uint64
+	sentinelObserved   atomic.Bool // tracks observed active intervals
+	cfg                atomic.Pointer[runtime]
+	api                atomic.Bool
+	sigusr1            atomic.Bool
+	conductor          atomic.Bool
+	conductorMsg       atomic.Value
 	// conductorStale is the autonomous fail-closed source: the follower's active
 	// policy bundle aged past its grace window with no fresh bundle from the
 	// leader. It is independent of conductorRemote (operator-driven remote kill)
@@ -117,6 +122,8 @@ func buildRuntime(cfg *config.Config) *runtime {
 // exemptions. Use this for non-HTTP callers (e.g. the Scan API handler) that
 // perform their own exemption logic.
 func (c *Controller) IsActive() bool {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	return c.computeDecision(c.cfg.Load()).Active
 }
 
@@ -125,6 +132,8 @@ func (c *Controller) IsActive() bool {
 // exemptions. Use this inside intercepted CONNECT tunnels where request paths
 // belong to the upstream origin, not to pipelock's own endpoints.
 func (c *Controller) IsActiveForIP(clientIP string) Decision {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	// Operator emergency exemptions require a known effective policy.
 	if !c.conductorApplyFailure.Load() && len(rt.allowlistNets) > 0 {
@@ -163,6 +172,8 @@ func isProxiedRequest(r *http.Request) bool {
 }
 
 func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 
 	// Proxied traffic gets no endpoint exemption: the request path belongs to
@@ -242,6 +253,8 @@ func (c *Controller) allowlistExempt(rt *runtime, r *http.Request) *Decision {
 // message is a notification (no "id" field) for the caller to decide
 // whether to drop silently or send a JSON-RPC error.
 func (c *Controller) IsActiveMCP(msg []byte) Decision {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	d := c.computeDecision(rt)
 	if d.Active {
@@ -250,12 +263,48 @@ func (c *Controller) IsActiveMCP(msg []byte) Decision {
 	return d
 }
 
+// ClaimDeferredSend orders a held MCP send against every controller-driven
+// activation. A successful claim is in flight and cannot be recalled. The
+// caller must invoke release when its upstream send has completed or aborted.
+func (c *Controller) ClaimDeferredSend() (release func(), ok bool) {
+	return c.ClaimDeferredSendAt(c.DeferredGeneration())
+}
+
+// DeferredGeneration records the activation epoch when a call is held.
+func (c *Controller) DeferredGeneration() uint64 {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
+	c.observeSentinel(c.cfg.Load().sentinelFile)
+	return c.deferredGeneration.Load()
+}
+
+// ClaimDeferredSendAt rejects holds created before any subsequent activation.
+func (c *Controller) ClaimDeferredSendAt(generation uint64) (release func(), ok bool) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
+	if generation != c.deferredGeneration.Load() || c.computeDecision(c.cfg.Load()).Active {
+		return nil, false
+	}
+	c.deferredInFlight.Add(1)
+	return func() { c.deferredInFlight.Add(-1) }, true
+}
+
+// DeferredInFlight reports sends claimed before activation but still running.
+func (c *Controller) DeferredInFlight() int64 {
+	return c.deferredInFlight.Load()
+}
+
 // ToggleSignal flips the SIGUSR1 activation source and returns the new state.
 func (c *Controller) ToggleSignal() bool {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
 	// atomic.Bool doesn't have a toggle method, so use CompareAndSwap in a loop.
 	for {
 		current := c.sigusr1.Load()
 		if c.sigusr1.CompareAndSwap(current, !current) {
+			if !current {
+				c.deferredGeneration.Add(1)
+			}
 			return !current
 		}
 	}
@@ -291,18 +340,34 @@ func IsSessionKeyPath(path string) bool {
 // Reload updates the config-derived state atomically.
 // The SIGUSR1 and API toggle states are preserved across reloads.
 func (c *Controller) Reload(cfg *config.Config) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
+	c.observeSentinel(c.cfg.Load().sentinelFile)
 	c.cfg.Store(buildRuntime(cfg))
+	if c.computeDecision(c.cfg.Load()).Active {
+		c.deferredGeneration.Add(1)
+	}
 }
 
 // SetAPI sets the API activation source.
 func (c *Controller) SetAPI(active bool) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
 	c.api.Store(active)
+	if active {
+		c.deferredGeneration.Add(1)
+	}
 }
 
 // SetConductorRemote sets the Conductor remote-kill activation source.
 func (c *Controller) SetConductorRemote(active bool, message string) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
 	c.conductorMsg.Store(message)
 	c.conductor.Store(active)
+	if active {
+		c.deferredGeneration.Add(1)
+	}
 }
 
 // SetConductorStale sets the Conductor stale-bundle activation source. The
@@ -312,16 +377,26 @@ func (c *Controller) SetConductorRemote(active bool, message string) {
 // remote-kill source: clearing stale never lifts an operator remote kill, and
 // vice versa.
 func (c *Controller) SetConductorStale(active bool, message string) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
 	c.conductorStaleMsg.Store(message)
 	c.conductorStale.Store(active)
+	if active {
+		c.deferredGeneration.Add(1)
+	}
 }
 
 // SetConductorApplyFailure controls the independent fail-closed source used
 // while a Conductor policy application cannot establish whether live policy and
 // durable active state agree.
 func (c *Controller) SetConductorApplyFailure(active bool, message string) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
 	c.conductorApplyFailureMsg.Store(message)
 	c.conductorApplyFailure.Store(active)
+	if active {
+		c.deferredGeneration.Add(1)
+	}
 }
 
 // ConductorApplyFailure reports the same uncertainty state used by admission.
@@ -339,6 +414,8 @@ func (c *Controller) SetSeparateAPIPort(sep bool) {
 
 // Sources returns the current state of each activation source.
 func (c *Controller) Sources() map[string]bool {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
 	rt := c.cfg.Load()
 	sources := map[string]bool{
 		"config":                  rt.cfgEnabled,
@@ -390,20 +467,28 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 	if c.sigusr1.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}
 	}
-	if rt.sentinelFile != "" {
-		_, err := os.Stat(rt.sentinelFile)
-		if err == nil {
-			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
-		}
-		// Fail closed: if stat fails for any reason other than file-not-found
-		// (e.g. permission denied, broken symlink), treat as active. An
-		// attacker should not be able to bypass the kill switch by making the
-		// sentinel file unreadable.
-		if !errors.Is(err, os.ErrNotExist) {
-			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
-		}
+	if c.observeSentinel(rt.sentinelFile) {
+		return Decision{Active: true, Message: rt.message, Source: "sentinel"}
 	}
 	return Decision{}
+}
+
+// observeSentinel records active intervals even during concurrent decision checks.
+func (c *Controller) observeSentinel(path string) bool {
+	if path == "" {
+		c.sentinelObserved.Store(false)
+		return false
+	}
+	_, err := os.Stat(path)
+	// Fail closed for stat errors other than file-not-found.
+	active := err == nil || !errors.Is(err, os.ErrNotExist)
+	if active && c.sentinelObserved.CompareAndSwap(false, true) {
+		c.deferredGeneration.Add(1)
+	}
+	if !active {
+		c.sentinelObserved.Store(false)
+	}
+	return active
 }
 
 // hasID checks if a JSON message contains an "id" field (i.e., is a request,

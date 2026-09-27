@@ -145,6 +145,8 @@ type MCPProxyOpts struct {
 	ChainMatcher   *chains.Matcher
 	ChainMatcherFn func() *chains.Matcher
 
+	beforeDeferredSendClaim func()
+
 	// stdioInputScanDisabled is set only by stdio proxy entry points after
 	// they resolve the live input configuration. Low-level callers retain the
 	// historical explicit action-driven scan behavior.

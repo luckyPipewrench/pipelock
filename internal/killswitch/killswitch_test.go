@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -37,6 +38,159 @@ func testConfig() *config.Config {
 	cfg.Internal = nil // disable SSRF for tests
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
+}
+
+func TestDeferredSendClaimOrdersActivation(t *testing.T) {
+	for name, activate := range map[string]func(*Controller){
+		"api":           func(c *Controller) { c.SetAPI(true) },
+		"signal":        func(c *Controller) { c.ToggleSignal() },
+		"remote":        func(c *Controller) { c.SetConductorRemote(true, "") },
+		"stale":         func(c *Controller) { c.SetConductorStale(true, "") },
+		"apply failure": func(c *Controller) { c.SetConductorApplyFailure(true, "") },
+		"reload": func(c *Controller) {
+			cfg := testConfig()
+			cfg.KillSwitch.Enabled = true
+			c.Reload(cfg)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := New(testConfig())
+			release, ok := c.ClaimDeferredSend()
+			if !ok || c.DeferredInFlight() != 1 {
+				t.Fatal("send claim was not recorded in flight")
+			}
+			done := make(chan struct{})
+			go func() { activate(c); close(done) }()
+			<-done
+			if _, ok := c.ClaimDeferredSend(); ok {
+				t.Fatal("send claimed after activation")
+			}
+			if c.DeferredInFlight() != 1 {
+				t.Fatal("activation lost an existing in-flight claim")
+			}
+			release()
+			if c.DeferredInFlight() != 0 {
+				t.Fatal("in-flight claim was not released")
+			}
+		})
+	}
+}
+
+func TestDeferredSendClaimRejectsActivationAfterClear(t *testing.T) {
+	c := New(testConfig())
+	generation := c.DeferredGeneration()
+	c.SetAPI(true)
+	c.SetAPI(false)
+	if _, ok := c.ClaimDeferredSendAt(generation); ok {
+		t.Fatal("held send claimed after activation was cleared")
+	}
+	if release, ok := c.ClaimDeferredSendAt(c.DeferredGeneration()); !ok {
+		t.Fatal("new hold could not claim after clear")
+	} else {
+		release()
+	}
+}
+
+func TestDecisionChecksShareReadLock(t *testing.T) {
+	c := New(testConfig())
+	c.deferredMu.RLock()
+	done := make(chan struct{})
+	go func() {
+		c.IsActiveMCP([]byte(`{"id":1}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		c.deferredMu.RUnlock()
+		<-done
+		t.Fatal("decision check waited for another reader")
+	}
+	c.deferredMu.RUnlock()
+}
+
+func TestSentinelDeferredClaimBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kill")
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = path
+	c := New(cfg)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.ClaimDeferredSend(); ok {
+		t.Fatal("sentinel active before claim allowed send")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	release, ok := c.ClaimDeferredSend()
+	if !ok {
+		t.Fatal("inactive sentinel denied send")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsActive() || c.DeferredInFlight() != 1 {
+		t.Fatal("activation after claim did not retain in-flight accounting")
+	}
+	release()
+}
+
+func TestSentinelObservationInvalidatesHeldSendAfterRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kill")
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = path
+	c := New(cfg)
+	generation := c.DeferredGeneration()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.IsActiveMCP([]byte(`{"id":1}`)); !d.Active || d.Source != srcSentinel {
+		t.Fatalf("decision did not observe sentinel: %+v", d)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := c.ClaimDeferredSendAt(generation); ok {
+		release()
+		t.Fatal("held send claimed after observed sentinel activation was removed")
+	}
+	newGeneration := c.DeferredGeneration()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.IsActiveMCP([]byte(`{"id":2}`)); !d.Active || d.Source != srcSentinel {
+		t.Fatalf("decision did not observe reactivated sentinel: %+v", d)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := c.ClaimDeferredSendAt(newGeneration); ok {
+		release()
+		t.Fatal("new held send claimed after a second sentinel activation")
+	}
+}
+
+func TestReloadObservesPreviousSentinelBeforePathChange(t *testing.T) {
+	for _, newPath := range []string{"", filepath.Join(t.TempDir(), "new-kill")} {
+		t.Run(newPath, func(t *testing.T) {
+			oldPath := filepath.Join(t.TempDir(), "old-kill")
+			cfg := testConfig()
+			cfg.KillSwitch.SentinelFile = oldPath
+			c := New(cfg)
+			generation := c.DeferredGeneration()
+			if err := os.WriteFile(oldPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			next := testConfig()
+			next.KillSwitch.SentinelFile = newPath
+			c.Reload(next)
+			if release, ok := c.ClaimDeferredSendAt(generation); ok {
+				release()
+				t.Fatal("held send claimed after old sentinel activated before reload")
+			}
+		})
+	}
 }
 
 func TestController_ConfigEnabled(t *testing.T) {

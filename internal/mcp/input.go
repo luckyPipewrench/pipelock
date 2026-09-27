@@ -338,6 +338,10 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+		var deferredGeneration uint64
+		if ks != nil {
+			deferredGeneration = ks.DeferredGeneration()
+		}
 
 		// Consume both Pipelock-owned _meta members before scanning:
 		// com.pipelock/mediation cannot be spoofed through to the server,
@@ -1413,6 +1417,15 @@ func ForwardScannedInput(
 				Authority: deferred.AuthoritySnapshot{
 					SessionID:         receiptSessionID,
 					SessionIDOriginal: receiptSessionIDOriginal,
+				},
+				BeforeAllow: func() (func(), bool) {
+					if opts.beforeDeferredSendClaim != nil {
+						opts.beforeDeferredSendClaim()
+					}
+					if opts.KillSwitch == nil {
+						return func() {}, true
+					}
+					return opts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false

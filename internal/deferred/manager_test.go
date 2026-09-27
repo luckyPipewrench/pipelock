@@ -57,6 +57,42 @@ func TestManagerTimeoutResolvesBlockOnce(t *testing.T) {
 	}
 }
 
+func TestManagerBeforeAllowClaimsOrBlocksBeforeResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		claim        bool
+		wantDecision string
+		wantSource   string
+	}{
+		{"claim", true, config.ActionAllow, SourceContext},
+		{"activation", false, config.ActionBlock, SourceKillSwitch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Second})
+			released := false
+			var got Resolution
+			err := m.Hold(HeldAction{
+				DeferID: "held", ActionID: "held", Target: "tool", SizeBytes: 1,
+				Authority:   AuthoritySnapshot{SessionID: "session"},
+				BeforeAllow: func() (func(), bool) { return func() { released = true }, tc.claim },
+				Resolve:     func(res Resolution) { got = res },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Resolve("held", config.ActionAllow, SourceContext); err != nil {
+				t.Fatal(err)
+			}
+			if got.FinalDecision != tc.wantDecision || got.ResolutionSource != tc.wantSource {
+				t.Fatalf("resolution = (%s, %s), want (%s, %s)", got.FinalDecision, got.ResolutionSource, tc.wantDecision, tc.wantSource)
+			}
+			if released != tc.claim {
+				t.Fatalf("release = %v, want %v", released, tc.claim)
+			}
+		})
+	}
+}
+
 func TestManagerCapacityRejectsNewHold(t *testing.T) {
 	m := NewManager(Config{
 		Enabled:              true,

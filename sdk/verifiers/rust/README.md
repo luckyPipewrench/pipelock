@@ -44,6 +44,8 @@ Exit codes match the Go and TypeScript verifiers:
 
 The verifier embeds the Audit Packet v0 schema at compile time, validates structural invariants, verifies Ed25519 receipt signatures, replays receipt chains with the `genesis` root, and cross-checks packet totals, receipt count, root hash, final sequence, and verdict consistency. The `receipt` command also verifies EvidenceReceipt v2 `proxy_decision_with_spans` receipts with a pinned `--key`, including the JCS preimage and strict source-span payload shape.
 
+Every Pipelock process run writes its own receipt chain, named `<base>.run.<id>`, and a restart can leave a signed `chain-link-<predecessor>.json` file naming the exact tail it continues. With `--dir` and no `--session-id`, `pipelock-verifier-rs chain DIR --dir --key KEY` verifies every run chain of the `proxy` base, then checks each link file: its signature, that it names the predecessor's exact last receipt, that no predecessor has two successors, and that a signing-key change across a restart is covered by `--key` or a `--rotation-endorsement` signed by the retiring key. The report lists each run, then a `RESTART CONTINUITY` summary with linked and unlinked runs. An unlinked run is not a failure, because a first run, concurrent runs, and runs by older binaries are all unlinked, but it's also what a deleted link file looks like, so a passing result doesn't prove no run's evidence is missing. A directory with no run chains, or an explicit `--session-id`, keeps single-session verification. These checks match the Go reference `pipelock verify-receipt --chain DIR`, except that this verifier doesn't recheck the recorder file's own entry hash chain; it verifies the receipt chain inside it.
+
 For an ActionReceipt v1 chain that rotated signing keys, pin the original root
 and pass one `--rotation-endorsement` for each rotation boundary:
 
@@ -66,6 +68,8 @@ cannot establish its own provenance. The explicitly weaker
 `--allow-self-consistent-only` and `--no-trust-required` modes retain their
 documented opt-in behavior. `--offline` skips receipt-chain verification while
 still validating the schema and packet-level trust fields.
+
+When full verification fails, the report never repeats the packet's own trust claim: a packet that claimed `verdict: valid` or `self_consistent_only` is reported as `verdict: invalid` with `trusted: false` and `valid: false`. A successful report is unchanged.
 
 ### Schema-only Audit Packet checks
 

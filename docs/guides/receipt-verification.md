@@ -621,6 +621,8 @@ the packet schema was checked; the packet-authored verdict was not verified.
 Upgrade JSON consumers and CI jobs to treat this status as untrusted and
 require full chain verification for an authenticated verdict.
 
+When full verification fails, the Go, Rust, and TypeScript reports never repeat the packet's own trust claim. A packet that claimed `verdict: valid` or `self_consistent_only` is reported as `verdict: invalid` with `trusted: false` and `valid: false`, whether the failure came from the chain, the signer key, or the cross-check against the packet summary. A successful report is unchanged.
+
 For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
 key. Without `--key`, the verifier can check structure, hash linkage, sequence
 monotonicity, and signer-id consistency, but it reports signatures as not
@@ -664,7 +666,7 @@ exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
 
-For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a full run chain, using the full ID from its evidence filename. A direct JSONL file argument checks only that shard.
+The standalone `pipelock-verifier chain DIR --dir` and the TypeScript and Rust `chain DIR --dir` commands verify a directory the way `pipelock verify-receipt --chain DIR` does. Without a session flag, they verify every run chain of the `proxy` base and every restart link file, and report linked and unlinked runs; a link whose signature fails, that names anything but the predecessor's exact last receipt, that gives a predecessor a second successor, or that changes signing keys without `--key` or a rotation endorsement fails the directory. An explicit `--session` (Go) or `--session-id` (TypeScript and Rust) such as `proxy.run.<id>` checks that one run chain as before, and a directory with no run chains keeps single-session verification. A direct JSONL file argument checks only that shard. The TypeScript and Rust verifiers check the receipt chain inside each recorder file but not the recorder file's own entry hash chain, which the Go verifiers also check. The TypeScript and Rust CLIs take one `--key`; `pipelock-verifier chain` doesn't accept `--rotation-endorsement`, so a restart that changed signing keys needs `pipelock verify-receipt` or the TypeScript or Rust verifier with the endorsement.
 
 ## Audit Packet v0 schema
 

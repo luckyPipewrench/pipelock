@@ -51,10 +51,20 @@ func idleBridge(t *testing.T, timeout time.Duration) (*BridgeProxy, <-chan net.C
 		_ = bp.Serve(ctx)
 		close(serveDone)
 	}()
+	// Bounded so a shutdown regression fails the test instead of wedging it.
 	t.Cleanup(func() {
 		cancel()
-		<-serveDone
-		bp.Close()
+		stopped := make(chan struct{})
+		go func() {
+			bp.Close()
+			<-serveDone
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+			t.Error("bridge did not shut down after cancel and Close")
+		}
 	})
 	return bp, accepted, cancel
 }

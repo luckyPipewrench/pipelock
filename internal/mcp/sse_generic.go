@@ -308,6 +308,13 @@ func ScanGenericSSEStreamWithOptions(
 			if tailInjectResult.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
 			}
+			if tailInjectResult.Clean && idDataInjectionText != "" {
+				tailInjectResult = sc.ScanResponseWithSuppress(ctx, injectionTail+" "+idDataInjectionText, opts.Target, opts.Suppress)
+				observedCore.record(tailInjectResult)
+				if tailInjectResult.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
+				}
+			}
 			if !tailInjectResult.Clean {
 				findingErr := fmt.Errorf("%w: cross-event injection: %s",
 					ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
@@ -358,6 +365,13 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
+			if tailDLPResult.Clean && idDataText != "" {
+				tailDLPResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail+idDataText), opts.Target, opts.Suppress)
+				if err := checkSSEDLPContext(ctx); err != nil {
+					return err
+				}
+				droppedDLP.record(droppedMatches)
+			}
 			if !tailDLPResult.Clean {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
 					ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))

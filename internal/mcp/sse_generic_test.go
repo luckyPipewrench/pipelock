@@ -949,6 +949,53 @@ func TestScanGenericSSEStream_PersistedIDDoesNotBreakSplitInjection(t *testing.T
 	}
 }
 
+func TestScanGenericSSEStream_PreviousDataAndCurrentID(t *testing.T) {
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(action, func(t *testing.T) {
+			key := fakeAWSKey()
+			body := "data: " + key[:8] + "\n\nid: " + key[8:] + "\ndata: harmless\n\n"
+			cfg := enabledSSECfg()
+			cfg.Action = action
+			var out bytes.Buffer
+			var findings []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+				testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+			if action == config.ActionBlock {
+				if !errors.Is(err, ErrSSEStreamFinding) || strings.Contains(out.String(), key[8:]) {
+					t.Fatalf("block: err=%v out=%q", err, out.String())
+				}
+			} else if err != nil || len(findings) != 1 || !strings.Contains(out.String(), key[8:]) {
+				t.Fatalf("warn: err=%v findings=%v out=%q", err, findings, out.String())
+			}
+		})
+	}
+}
+
+func TestScanGenericSSEStream_PreviousDataAndCurrentIDInjection(t *testing.T) {
+	scanCfg := config.Defaults()
+	scanCfg.Internal = nil
+	scanCfg.ResponseScanning.IncludeDefaults = new(bool)
+	scanCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "split phrase", Regex: `alpha beta`}}
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(action, func(t *testing.T) {
+			cfg := enabledSSECfg()
+			cfg.Action = action
+			var out bytes.Buffer
+			var findings []error
+			body := "data: alpha\n\nid: beta\ndata: harmless\n\n"
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+				scanner.MustNew(scanCfg), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+			if action == config.ActionBlock {
+				if !errors.Is(err, ErrSSEStreamFinding) || strings.Contains(out.String(), "id: beta") {
+					t.Fatalf("block: err=%v out=%q", err, out.String())
+				}
+			} else if err != nil || len(findings) != 1 || !strings.Contains(out.String(), "id: beta") {
+				t.Fatalf("warn: err=%v findings=%v out=%q", err, findings, out.String())
+			}
+		})
+	}
+}
+
 func TestScanGenericSSEStream_CrossEventSplitDLPBlockedAcrossThreeEvents(t *testing.T) {
 	// The tail accumulates across more than one previous event, so N-way
 	// contiguous splits are still reassembled while they fit inside the

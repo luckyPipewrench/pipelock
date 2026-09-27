@@ -470,9 +470,21 @@ func dropSelfMatchingSSEInjectionTail(ctx context.Context, sc *scanner.Scanner, 
 		}
 	}
 	if end == 0 {
-		// Unknown coordinates: keep the bounded tail rather than silently
-		// discard a possible second phrase.
-		return advanceSSERollingTail("", []byte(tail), true, " "), nil
+		// A decoded or normalized view has no raw offset. Bisect for the end of
+		// the reported phrase so the next event cannot report it again; text
+		// after it may still begin a second phrase and is kept.
+		probes := 1
+		cut, err := sseBisectMatchEnd(tail, &probes, func(prefix string) (bool, error) {
+			result := sc.ScanResponseWithSuppress(ctx, prefix, opts.Target, opts.Suppress)
+			if result.Failed() {
+				return false, fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+			}
+			return !result.Clean, nil
+		})
+		if err != nil {
+			return "", err
+		}
+		return advanceSSERollingTail("", []byte(tail[cut:]), true, " "), nil
 	}
 	// A separate phrase may already have started before the reported match.
 	// Keep both unreported sides while removing the reported span.
@@ -499,16 +511,17 @@ func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail stri
 	return dropSelfMatchingSSETailWithScan(ctx, tail, opts, sc.ScanTextForDLPQuiet)
 }
 
-// A dirty normalized or decoded view has no safe raw match offset. Limit the
-// fallback work per event; retaining the tail preserves unexamined suffixes.
+// A dirty normalized or decoded view has no safe raw match offset, so the end
+// of the reported value is found by bisecting prefixes: about 13 scans for a
+// full rolling tail. The limit bounds work per event when a tail holds several
+// such values; an exhausted budget keeps the unexamined remainder.
 const sseTailProbeLimit = 32
 
 func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts GenericSSEScanOptions, scan func(context.Context, string) scanner.TextDLPResult) (string, error) {
-	originalTail := tail
 	probes := 0
 	for tail != "" {
 		if probes >= sseTailProbeLimit {
-			return originalTail, nil
+			return tail, nil
 		}
 		result, _ := keepUnsuppressedDLP(scan(ctx, tail), opts.Target, opts.Suppress)
 		probes++
@@ -527,26 +540,49 @@ func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts Gene
 				matchEnd = span.ByteEnd
 			}
 		}
-		for end := 1; matchEnd == 0 && end < len(tail) && probes < sseTailProbeLimit; end++ {
-			if !sseTailRuneBoundary(tail, end) {
-				continue
-			}
-			prefix, _ := keepUnsuppressedDLP(scan(ctx, tail[:end]), opts.Target, opts.Suppress)
-			probes++
-			if err := checkSSEDLPContext(ctx); err != nil {
+		if matchEnd == 0 {
+			end, err := sseBisectMatchEnd(tail, &probes, func(prefix string) (bool, error) {
+				result, _ := keepUnsuppressedDLP(scan(ctx, prefix), opts.Target, opts.Suppress)
+				if err := checkSSEDLPContext(ctx); err != nil {
+					return false, err
+				}
+				return !result.Clean, nil
+			})
+			if err != nil {
 				return "", err
 			}
-			if !prefix.Clean {
-				matchEnd = end
-				break
-			}
-		}
-		if matchEnd == 0 {
-			return originalTail, nil
+			matchEnd = end
 		}
 		tail = tail[matchEnd:]
 	}
 	return "", nil
+}
+
+// sseBisectMatchEnd returns a prefix end where tail[:end] still matches, given
+// that the whole tail matches. It narrows toward the shortest such prefix, and
+// an exhausted budget returns the shortest one proven so far.
+func sseBisectMatchEnd(tail string, probes *int, matches func(string) (bool, error)) (int, error) {
+	lo, hi := 0, len(tail)
+	for *probes < sseTailProbeLimit {
+		mid := lo + (hi-lo)/2
+		for mid < hi && !sseTailRuneBoundary(tail, mid) {
+			mid++
+		}
+		if mid <= lo || mid >= hi {
+			break
+		}
+		dirty, err := matches(tail[:mid])
+		*probes++
+		if err != nil {
+			return 0, err
+		}
+		if dirty {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi, nil
 }
 
 func sseTailRuneBoundary(tail string, end int) bool {

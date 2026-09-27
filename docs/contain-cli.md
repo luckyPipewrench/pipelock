@@ -18,6 +18,8 @@ The subcommands are:
 | `revoke-workspace` | Revoke a previously granted workspace ACL and clean unused parent traversal ACLs | yes (root only) |
 | `list-workspaces` | List recorded workspace grants (path, mode, owner, expiry, status) | no |
 | `ca-refresh` | Rebuild the combined CA bundle at `/etc/pipelock/combined-ca.pem` after a CA rotation | yes (root only) |
+| `view` | Open a local VNC socket onto the contained display for the configured viewer operator | starts a relay (no persistent state) |
+| `reload-nft-rules` | Reconcile loopback/published-service nftables units and namespace forwarders from the current config without a full reinstall | yes (root only) |
 
 Each mutating subcommand accepts `--dry-run` to print the planned actions without touching state.
 
@@ -159,6 +161,8 @@ On success, `install` prints a **Next steps** block with:
 
 The nftables step checks the installed `nft` version before generating rules. The containment ruleset requires nftables >= 0.8 (for `meta skuid`, inline `counter log prefix ... drop` syntax, and the `-c`/`--check` validation mode used by the install and rollback paths). On hosts with an older `nft` (seen on some older enterprise Linux images), install fails with a clear error naming the minimum version and the distro-appropriate upgrade command, rather than a cryptic parse error at load time.
 
+A host installed before the private network namespace (pre-v3.6.0) carries owned-loopback cgroup-mark rules from the earlier scheme; `contain install` or `contain upgrade` migrates them automatically. Until that install or upgrade runs, `contain verify` probe 3 (`nftables_containment_ruleset`) reports the stale rules and names the fix — this is expected once on upgrade, not a regression.
+
 ## `pipelock contain upgrade`
 
 Upgrade performs a containment-aware binary update in one fail-closed command. It bridges the gap between `pipelock update` (which replaces the binary but leaves the containment integrity pin stale) and `contain install --pipelock-binary` (which re-pins but requires the operator to have already obtained and verified the candidate).
@@ -199,7 +203,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 18 fixed probes (numbered 1-14, 16, 19, 20, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. It prints pass, fail, skip, or unknown for each probe.
+Verify normally makes no host changes. It walks 18 fixed probes (numbered 1-14, 16, 19, 20, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. When `containment.display` is enabled, or a prior display install is detected, verify adds `22 agent_display`. The Xvnc backend adds `23 agent_display_rfb`, `24 viewer_service`, and `25 viewer_rfb_access`; an agent home directory always adds `26 legacy_viewer_acl` to catch stale pre-namespace ACLs, whatever the current backend. It prints pass, fail, skip, or unknown for each probe.
 
 ```bash
 pipelock contain verify
@@ -226,6 +230,11 @@ pipelock contain verify
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`. It reports trust, not provenance: a matching certificate an operator added themselves passes, because the agent can browse either way. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Install and rollback consult the ownership marker so rollback removes only what install added. Probes 17 and 18 are published by `contain run`, not `verify`. |
 | 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, the namespace proxy socket reaches Pipelock, and every live process under the managed agent UID occupies that same namespace. |
+| 22 | `agent_display` (conditional) | Present when `containment.display` is enabled, or a prior display install is detected. The configured fallback display is agent-owned and locally isolated. |
+| 23 | `agent_display_rfb` (conditional) | Present with the Xvnc display backend. The agent RFB Unix socket is private and TCP RFB is disabled. |
+| 24 | `viewer_service` (conditional) | Present with the Xvnc display backend. The contained display viewer socket is restricted to its operator. |
+| 25 | `viewer_rfb_access` (conditional) | Present with the Xvnc display backend. RFB socket mode and group match the viewer setting. |
+| 26 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete pre-namespace agent-home viewer access is absent. |
 
 ### Managed metrics invariant
 
@@ -454,6 +463,10 @@ Checks:
 | 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the positively attributed managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 | 7 | `managed_chain_structure` | The live managed nftables chain can be read and has the installed structure. This is a qualified structural result only; check 6 observes packet enforcement. |
 | 8 | `managed_doorway_sockets` | Every managed doorway socket, the proxy doorway plus one per declared `containment.loopback_services` entry, is persistently enabled and active. A socket that is not enabled or not active reports FAIL naming the socket and the `systemctl` command that restores it; a declared service set that cannot be honored reports FAIL. |
+| 9 | `agent_display_rfb` (conditional) | Present when `containment.display.backend: xvnc`. The TigerVNC display RFB socket is available. |
+| 10 | `viewer_service` (conditional) | Present when `containment.display.backend: xvnc`. The viewer socket is available to its operator. |
+| 11 | `viewer_rfb_access` (conditional) | Present when `containment.display.backend: xvnc`. The viewer RFB socket group is exact. |
+| 12 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete agent-home viewer access is absent. |
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 
@@ -630,6 +643,30 @@ Flags:
 | `--ca-output` | `/etc/pipelock/ca.pem` | Destination for the Pipelock-only CA export. |
 | `--bundle-output` | `/etc/pipelock/combined-ca.pem` | Destination for the combined bundle. |
 | `--system-bundle` | system default | Source system CA bundle to combine with the Pipelock CA. |
+
+## `pipelock contain view`
+
+Opens a local Unix socket that relays a VNC connection onto the contained agent's display, for the operator user configured in `containment.display.viewer`. Requires `containment.display.viewer.enabled: true` and must be run as that configured operator user.
+
+```bash
+pipelock contain view
+pipelock contain view --control
+```
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--socket` | `$XDG_RUNTIME_DIR/pipelock-contain-view.sock` | Local Unix socket for the VNC client to connect to. Required if `XDG_RUNTIME_DIR` is unset. |
+| `--control` | false | Allow keyboard and pointer control through the relay; without it, the connection is view-only. |
+
+## `pipelock contain reload-nft-rules`
+
+A hidden, root-only command (omitted from `--help`) that reconciles the managed loopback and published-service nftables units and namespace socket forwarders from the current config, without re-running the full `install`. It exists for automation that needs to pick up a `containment.loopback_services` or `containment.published_services` change deliberately, rather than through a general reinstall.
+
+```bash
+sudo pipelock contain reload-nft-rules
+```
 
 ## Containment conformance artifact
 

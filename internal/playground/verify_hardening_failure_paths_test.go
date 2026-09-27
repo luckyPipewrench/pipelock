@@ -64,6 +64,7 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 	names := []string{
 		launchManifestFile,
 		orchestratorDelegationFile,
+		replayArchiveAuthorizationFile,
 		witnessFile,
 		redWitnessFile,
 		hostContainmentWitnessFile,
@@ -97,6 +98,100 @@ func TestHardeningVerifyRunPreservesEveryArtifactReadFailure(t *testing.T) {
 				t.Fatal("VerifyRun passed after an artifact read failure")
 			}
 		})
+	}
+}
+
+func TestVerifyRunRejectsMissingRunDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	rep, err := VerifyRun(dir, "test-root")
+	if err == nil || !strings.Contains(err.Error(), "open run directory") {
+		t.Fatalf("VerifyRun report=%+v error=%v, want directory error", rep, err)
+	}
+	if rep.OK || rep.OrchestratorKey != "test-root" {
+		t.Fatalf("failure report = %+v", rep)
+	}
+}
+
+func TestVerifyRunRejectsOversizedArtifact(t *testing.T) {
+	dir := t.TempDir()
+	file, err := os.Create(filepath.Clean(filepath.Join(dir, launchManifestFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxBundleMemberBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized artifact error = %v, want size rejection", err)
+	}
+}
+
+func TestVerifyRunRejectsSymlinkArtifact(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, launchManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink artifact error = %v, want type rejection", err)
+	}
+}
+
+func TestVerifyRunRejectsAggregateArtifactSize(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{launchManifestFile, orchestratorDelegationFile} {
+		file, err := os.Create(filepath.Clean(filepath.Join(dir, name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(maxBundleMemberBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, replayArchiveAuthorizationFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := VerifyRun(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("aggregate artifact error = %v, want size rejection", err)
+	}
+}
+
+func TestReadRunArtifactRejectsGrowthAfterLstat(t *testing.T) {
+	dir := t.TempDir()
+	name := "growing.json"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	remaining := int64(1)
+	_, err = readRunArtifactWithSeams(root, &remaining, name, openRunArtifact, func(file *os.File, limit int64) ([]byte, error) {
+		if err := os.WriteFile(path, []byte("grown"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return readOpenedArtifact(file, limit)
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds size limit") {
+		t.Fatalf("grown artifact error = %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining = %d, want 1", remaining)
 	}
 }
 

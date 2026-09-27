@@ -2014,6 +2014,9 @@ func TestServer_BundleRedownloadAfterVMTeardown(t *testing.T) {
 	if resp1.StatusCode != http.StatusOK {
 		t.Fatalf("first bundle status = %d, want 200", resp1.StatusCode)
 	}
+	if got := resp1.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("first bundle Cache-Control = %q, want no-store", got)
+	}
 	if string(body1) != "bundle-"+vm.token {
 		t.Fatalf("first bundle body = %q, want %q", body1, "bundle-"+vm.token)
 	}
@@ -2033,6 +2036,9 @@ func TestServer_BundleRedownloadAfterVMTeardown(t *testing.T) {
 	}
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("second bundle status = %d, want 200 (cache hit after VM teardown)", resp2.StatusCode)
+	}
+	if got := resp2.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cached bundle Cache-Control = %q, want no-store", got)
 	}
 	if string(body2) != string(body1) {
 		t.Fatalf("second bundle body differs from first: %q vs %q", body2, body1)
@@ -2068,6 +2074,9 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	}
 	if kitResp.StatusCode != http.StatusOK {
 		t.Fatalf("kit status = %d, want 200", kitResp.StatusCode)
+	}
+	if got := kitResp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("kit Cache-Control = %q, want no-store", got)
 	}
 	if !strings.HasPrefix(string(kitBody), "kit-linux-") {
 		t.Fatalf("kit body = %q, want kit-linux-* prefix", kitBody)

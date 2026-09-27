@@ -21,7 +21,7 @@ import (
 // Resource limit defaults for sandboxed child processes.
 // These prevent fork bombs, disk fill, FD exhaustion, and core dumps.
 const (
-	rlimitNProc           uint64 = 4096    // absolute shared-UID task ceiling
+	rlimitNProc           uint64 = 65536   // shared-UID ceiling above normal desktop use, bounded even with unlimited inheritance
 	rlimitNProcHeadroom   uint64 = 1024    // maximum additional task capacity per launch
 	rlimitNoFile          uint64 = 4096    // max open file descriptors
 	rlimitFSize           uint64 = 1 << 30 // 1 GB max file size (prevents disk fill)

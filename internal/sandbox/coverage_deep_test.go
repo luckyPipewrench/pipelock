@@ -1472,7 +1472,7 @@ func TestRlimitConstants(t *testing.T) {
 		got  uint64
 		want uint64
 	}{
-		{name: "nproc", got: rlimitNProc, want: 4096},
+		{name: "nproc", got: rlimitNProc, want: 65536},
 		{name: "nproc headroom", got: rlimitNProcHeadroom, want: 1024},
 		{name: "nofile", got: rlimitNoFile, want: 4096},
 		{name: "fsize", got: rlimitFSize, want: 1 << 30},

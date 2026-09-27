@@ -22,6 +22,7 @@ func TestBoundedNProcLimit(t *testing.T) {
 		{name: "stricter inherited soft cap is preserved", inherited: unix.Rlimit{Cur: rlimitNProc - 2, Max: rlimitNProc + 1}, want: rlimitNProc - 2},
 		{name: "stricter inherited hard cap is preserved", inherited: unix.Rlimit{Cur: rlimitNProc - 1, Max: rlimitNProc - 1}, want: rlimitNProc - 1},
 		{name: "hard cap binds below unlimited soft cap", inherited: unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: rlimitNProc - 3}, want: rlimitNProc - 3},
+		{name: "desktop limit above ceiling", inherited: unix.Rlimit{Cur: 200000, Max: 200000}, want: rlimitNProc},
 	}
 
 	for _, tt := range tests {
@@ -42,6 +43,9 @@ func TestRequestedNProcLimit(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "reserves headroom", tasks: 100, ceiling: 2048, want: 1124},
+		{name: "busy UID above old ceiling", tasks: 5000, ceiling: rlimitNProc, want: 5000 + rlimitNProcHeadroom},
+		{name: "stricter inherited limit allows remaining headroom", tasks: 5000, ceiling: 5500, want: 5500},
+		{name: "stricter inherited limit still binds", tasks: 5000, ceiling: 5000, wantErr: true},
 		{name: "caps partial headroom at ceiling", tasks: 1025, ceiling: 2048, want: 2048},
 		{name: "allows final task below ceiling", tasks: 2047, ceiling: 2048, want: 2048},
 		{name: "rejects at ceiling", tasks: 2048, ceiling: 2048, wantErr: true},
@@ -59,6 +63,38 @@ func TestRequestedNProcLimit(t *testing.T) {
 				t.Fatalf("requestedNProcLimit(%d, %d) = %d, want %d", tt.tasks, tt.ceiling, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRequestedNProcLimitAntiRatchet(t *testing.T) {
+	// Concurrent launches can observe the same initial count. Each child
+	// receives its own rlimit, so none can grant a limit past the shared cap.
+	const simultaneousLaunches = 16
+	for i := 0; i < simultaneousLaunches; i++ {
+		limit, err := requestedNProcLimit(rlimitNProc-100, rlimitNProc)
+		if err != nil || limit != rlimitNProc {
+			t.Fatalf("launch %d from shared count: limit=%d, err=%v", i, limit, err)
+		}
+	}
+
+	// Each launch sees the tasks created by earlier launches. Its own hard
+	// limit can rise, but no launch may grant capacity above the shared cap.
+	tasks := uint64(5000)
+	for tasks < rlimitNProc {
+		limit, err := requestedNProcLimit(tasks, rlimitNProc)
+		if err != nil {
+			t.Fatalf("request at %d tasks: %v", tasks, err)
+		}
+		if limit <= tasks || limit > rlimitNProc || limit-tasks > rlimitNProcHeadroom {
+			t.Fatalf("request at %d tasks granted %d", tasks, limit)
+		}
+		tasks = limit
+	}
+	if tasks != rlimitNProc {
+		t.Fatalf("successive launch capacity = %d, want ceiling %d", tasks, rlimitNProc)
+	}
+	if _, err := requestedNProcLimit(tasks, rlimitNProc); err == nil {
+		t.Fatal("launch at shared UID ceiling was accepted")
 	}
 }
 

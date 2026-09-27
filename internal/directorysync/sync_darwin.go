@@ -3,8 +3,8 @@
 
 //go:build darwin
 
-package ael
+package directorysync
 
 // macOS does not support fsync on directory descriptors. Artifact files still
 // receive their own fsync before this best-effort directory durability step.
-func syncDirectory(string) error { return nil }
+func Sync(string) error { return nil }

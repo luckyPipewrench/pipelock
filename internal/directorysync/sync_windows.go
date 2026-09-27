@@ -3,8 +3,8 @@
 
 //go:build windows
 
-package ael
+package directorysync
 
 // Windows does not expose a portable directory-fsync operation. The artifact
 // files themselves are still flushed before lifecycle emission returns.
-func syncDirectory(string) error { return nil }
+func Sync(string) error { return nil }

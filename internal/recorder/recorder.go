@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
+	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -181,6 +182,7 @@ type Recorder struct {
 	nop                 bool
 
 	fileSync       func(*os.File) error
+	dirSync        func(string) error
 	durableCond    *sync.Cond
 	durableBatch   *durableBatch
 	durableSyncing bool
@@ -269,6 +271,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		prevHash:            GenesisHash,
 		checkpointThreshold: safeUint64(cfg.CheckpointInterval, 1),
 		fileSync:            func(f *os.File) error { return f.Sync() },
+		dirSync:             directorysync.Sync,
 		durablePending:      make(map[uint64]int),
 	}
 	r.durableCond = sync.NewCond(&r.mu)
@@ -1192,6 +1195,12 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	if err := f.Chmod(r.cfg.FileMode); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("setting evidence file permissions: %w", err)
+	}
+	// Sync on every open: a failed first sync may leave the filename behind,
+	// and rotation opens the next file through this path too.
+	if err := r.dirSync(dir); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("syncing evidence directory: %w", err)
 	}
 
 	r.file = f

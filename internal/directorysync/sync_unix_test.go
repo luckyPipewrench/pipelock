@@ -3,7 +3,7 @@
 
 //go:build !windows && !darwin
 
-package ael
+package directorysync
 
 import (
 	"errors"
@@ -26,8 +26,8 @@ func (f *fakeDirectorySyncer) Close() error {
 
 func TestSyncDirectoryRejectsMissingPath(t *testing.T) {
 	t.Parallel()
-	if err := syncDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("syncDirectory accepted a missing path")
+	if err := Sync(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("Sync accepted a missing path")
 	}
 }
 
@@ -35,14 +35,14 @@ func TestSyncDirectoryReturnsSyncErrorAndCloses(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("sync failed")
 	dir := &fakeDirectorySyncer{syncErr: wantErr}
-	err := syncDirectoryWithOpen("directory", func(string) (directorySyncer, error) {
+	err := syncWithOpen("directory", func(string) (directorySyncer, error) {
 		return dir, nil
 	})
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("syncDirectoryWithOpen error = %v, want %v", err, wantErr)
+		t.Fatalf("syncWithOpen error = %v, want %v", err, wantErr)
 	}
 	if !dir.closed {
-		t.Fatal("syncDirectoryWithOpen did not close directory after sync failure")
+		t.Fatal("syncWithOpen did not close directory after sync failure")
 	}
 }
 
@@ -50,10 +50,10 @@ func TestSyncDirectoryReturnsCloseError(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("close failed")
 	dir := &fakeDirectorySyncer{closeErr: wantErr}
-	err := syncDirectoryWithOpen("directory", func(string) (directorySyncer, error) {
+	err := syncWithOpen("directory", func(string) (directorySyncer, error) {
 		return dir, nil
 	})
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("syncDirectoryWithOpen error = %v, want %v", err, wantErr)
+		t.Fatalf("syncWithOpen error = %v, want %v", err, wantErr)
 	}
 }

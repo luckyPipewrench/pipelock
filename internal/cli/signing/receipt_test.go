@@ -1614,6 +1614,9 @@ func TestVerifyReceiptCmd_CleanReportVerificationMode(t *testing.T) {
 			if report["schema_version"] != "pipelock.clean_report.v1" || report["verification_mode"] != tc.wantMode {
 				t.Fatalf("report trust contract: %s", raw)
 			}
+			if err := validateCleanReportSchema(t, raw); err != nil {
+				t.Fatalf("generated report violates published schema: %v\n%s", err, raw)
+			}
 			if !strings.Contains(out.String(), tc.wantText) {
 				t.Fatalf("output: %s", out.String())
 			}

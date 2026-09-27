@@ -4,10 +4,51 @@
   "title": "Pipelock clean report v1",
   "type": "object",
   "required": ["schema_version", "verification_mode", "chain", "actions"],
+  "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "pipelock.clean_report.v1"},
     "verification_mode": {"enum": ["pinned_provenance", "unpinned_structural"]},
-    "chain": {"type": "object"},
-    "actions": {"type": "array"}
+    "chain": {
+      "type": "object",
+      "required": ["label", "receipt_count", "final_seq", "root_hash", "signer_keys"],
+      "additionalProperties": false,
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "receipt_count": {"type": "integer", "minimum": 1},
+        "final_seq": {"type": "integer", "minimum": 0},
+        "root_hash": {"type": "string", "minLength": 1},
+        "signer_keys": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_id", "final_decision", "action_type", "target", "transport", "timestamp"],
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {"type": "string", "minLength": 1},
+          "parent_action_id": {"type": "string"},
+          "defer_id": {"type": "string"},
+          "decision_phase": {"type": "string"},
+          "final_decision": {"type": "string", "minLength": 1},
+          "action_type": {"type": "string", "minLength": 1},
+          "target": {"type": "string"},
+          "transport": {"type": "string", "minLength": 1},
+          "method": {"type": "string"},
+          "request_id": {"type": "string"},
+          "principal": {"type": "string"},
+          "actor": {"type": "string"},
+          "session_id": {"type": "string"},
+          "policy_hash": {"type": "string"},
+          "layer": {"type": "string"},
+          "pattern": {"type": "string"},
+          "severity": {"type": "string"},
+          "timestamp": {"type": "string", "minLength": 1},
+          "resolution_policy": {"type": "string"},
+          "resolution_source": {"type": "string"}
+        }
+      }
+    }
   }
 }

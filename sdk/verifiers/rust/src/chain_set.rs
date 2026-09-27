@@ -259,8 +259,9 @@ fn is_go_space(ch: char) -> bool {
 }
 
 /// Encodes a string exactly as Go's `encoding/json` does: HTML-sensitive
-/// characters and U+2028/U+2029 are escaped, and control characters other
-/// than `\n`, `\r`, `\t` use `\u00XX`.
+/// characters and U+2028/U+2029 are escaped, `\b \f \n \r \t` use their
+/// short escapes (Go 1.22 and later), and other control characters use
+/// `\u00XX`.
 fn go_json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -271,6 +272,8 @@ fn go_json_string(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
             c if (c as u32) < 0x20 || matches!(c, '<' | '>' | '&' | '\u{2028}' | '\u{2029}') => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
@@ -949,4 +952,42 @@ pub fn chain_scoped_trust(
         }
     }
     (keys, own)
+}
+
+#[cfg(test)]
+mod go_json_escape_tests {
+    use super::{decode_chain_link, go_json_string, verify_chain_link};
+    use std::path::PathBuf;
+
+    // Written by the Go conformance test from encoding/json itself, so this
+    // holds the link encoder to Go's bytes rather than to a recollection.
+    fn fixture(name: &str) -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/go-json-escapes")
+            .join(name);
+        std::fs::read_to_string(path).expect("read fixture")
+    }
+
+    #[test]
+    fn link_encoder_writes_every_ascii_character_and_line_separators_as_go_does() {
+        let table: serde_json::Value = serde_json::from_str(&fixture("table.json")).expect("parse");
+        let entries = table["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 130);
+        for entry in entries {
+            let cp = entry["codepoint"].as_str().expect("codepoint");
+            let ch = char::from_u32(u32::from_str_radix(cp, 16).expect("hex")).expect("char");
+            let got = hex::encode(go_json_string(&ch.to_string()));
+            assert_eq!(got, entry["go_json_hex"].as_str().expect("hex"), "U+{cp}");
+        }
+    }
+
+    #[test]
+    fn a_go_signed_chain_link_whose_sessions_need_every_escape_verifies() {
+        let raw = fixture("chain-link.json");
+        verify_chain_link(&decode_chain_link(&raw).expect("decode")).expect("verify");
+        let changed = raw.replacen(r"proxy.run.b\b\f", r"proxy.run.b\b", 1);
+        assert_ne!(changed, raw, "fixture shape changed");
+        let edited = decode_chain_link(&changed).expect("decode edited");
+        assert!(verify_chain_link(&edited).is_err());
+    }
 }

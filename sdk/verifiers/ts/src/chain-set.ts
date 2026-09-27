@@ -252,9 +252,10 @@ function blankAfterGoTrim(value: string): boolean {
 
 // goJSONString encodes value exactly as Go's encoding/json does, followed by
 // jsonscan.NormalizeReplacementEscapes: HTML-sensitive characters and U+2028
-// and U+2029 are escaped, control characters other than \n \r \t use \u00XX,
+// and U+2029 are escaped, \b \f \n \r \t use their short escapes (Go 1.22
+// and later), other control characters use \u00XX,
 // and an unpaired surrogate (which Go decodes to U+FFFD) is written as U+FFFD.
-function goJSONString(value: string): string {
+export function goJSONString(value: string): string {
   let out = '"';
   for (let i = 0; i < value.length; i++) {
     const unit = value.charCodeAt(i);
@@ -287,6 +288,12 @@ function goJSONString(value: string): string {
         continue;
       case 0x09:
         out += "\\t";
+        continue;
+      case 0x08:
+        out += "\\b";
+        continue;
+      case 0x0c:
+        out += "\\f";
         continue;
     }
     if (
@@ -344,7 +351,7 @@ function goFoldKey(key: string): string {
 // decodeChainLink applies the decoding rules of Go's UnmarshalChainLink:
 // duplicate keys, case-folded aliases, unknown fields, and trailing tokens are
 // rejected; a JSON null leaves the zero value; numbers must fit their Go type.
-function decodeChainLink(text: string): ChainLink {
+export function decodeChainLink(text: string): ChainLink {
   let raw: unknown;
   try {
     raw = parseJSONStrict(text);

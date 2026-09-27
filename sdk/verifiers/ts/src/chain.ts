@@ -6,7 +6,7 @@ import type { ChainResult, Receipt } from "./types.js";
 import { canonicalizeReceipt } from "./canonical.js";
 import { canonicalizeBytes } from "./aarp/canonical.js";
 import { sha256Hex } from "./util.js";
-import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
+import { unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 
 export const genesisHash = "genesis";
 export const genesisSessionOpenPrefix = "g1:";
@@ -495,12 +495,12 @@ async function verifyEvidenceChain(
     if (receipt.record_type !== evidenceRecordType) {
       return broken(seq, `seq ${seq}: mixed receipt record_type`);
     }
+    // Without a pinned key every signature is still checked, against the
+    // chain's own declared signer, as the Go reference does: an edit after
+    // signing fails either way. That proves nothing about who signed, so the
+    // caller still reports the chain as unpinned.
     try {
-      if (keyHex === "") {
-        normalizeEvidenceReceipt(receipt);
-      } else {
-        await verifyReceipt(receipt, keyHex);
-      }
+      await verifyReceipt(receipt, keyHex === "" ? signerID.toLowerCase() : keyHex);
     } catch (err) {
       return broken(seq, `seq ${seq}: signature: ${(err as Error).message}`);
     }

@@ -1,7 +1,15 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,6 +39,7 @@ interface Cell {
   target: string;
   keys: string[];
   endorsements: string[];
+  allow_unpinned?: boolean;
   valid: boolean;
   findings: { kind: string; session: string }[];
   errors: { session?: string; kind: string }[];
@@ -83,6 +92,7 @@ for (const name of classes) {
         if (cell.mode === "session") args.push("--session-id", cell.target);
         for (const k of cell.keys) args.push("--key", join(dir, k));
         for (const e of cell.endorsements) args.push("--rotation-endorsement", join(dir, e));
+        if (cell.allow_unpinned === true) args.push("--allow-unpinned");
         args.push("--json");
         const r = spawnSync("node", [CLI, ...args], { encoding: "utf8" });
         assert.equal(r.status, cell.valid ? 0 : 1, `${label}: ${r.stdout}${r.stderr}`);
@@ -129,3 +139,41 @@ for (const name of classes) {
     }
   });
 }
+
+// A single v2 receipt with no pinned key still has its signature checked
+// against its declared signer, so an edited receipt fails under
+// --allow-unpinned rather than being reported self-consistent.
+function runBEvidenceReceipt(className: string, index: number): string {
+  const file = join(
+    PARITY,
+    className,
+    "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+  );
+  const receipts = readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l) as { type: string; detail: unknown })
+    .filter((e) => e.type === "evidence_receipt")
+    .map((e) => e.detail);
+  const receipt = receipts[index < 0 ? receipts.length + index : index];
+  assert.ok(receipt !== undefined, `${className}: no evidence receipt ${index}`);
+  const dir = mkdtempSync(join(tmpdir(), "parity-receipt-"));
+  const out = join(dir, "receipt.json");
+  writeFileSync(out, JSON.stringify(receipt));
+  return out;
+}
+
+test("an unpinned v2 receipt edited after signing fails", () => {
+  const honest = spawnSync(
+    "node",
+    [CLI, "receipt", runBEvidenceReceipt("v2-drop-rehash", 0), "--allow-unpinned"],
+    { encoding: "utf8" },
+  );
+  assert.equal(honest.status, 0, `positive control: ${honest.stdout}${honest.stderr}`);
+  const forged = spawnSync(
+    "node",
+    [CLI, "receipt", runBEvidenceReceipt("v2-forge-rehash", -1), "--allow-unpinned"],
+    { encoding: "utf8" },
+  );
+  assert.equal(forged.status, 1, `forged receipt: ${forged.stdout}${forged.stderr}`);
+});

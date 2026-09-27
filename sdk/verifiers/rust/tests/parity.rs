@@ -166,6 +166,13 @@ fn every_parity_cell_reaches_the_contract_verdict() {
                     dir.0.join(e).display().to_string(),
                 ]);
             }
+            if cell
+                .get("allow_unpinned")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                args.push("--allow-unpinned".to_string());
+            }
             args.push("--json".to_string());
             let (code, stdout, stderr) = run_cli(&args);
             assert_eq!(code, if valid { 0 } else { 1 }, "{label}: {stdout}{stderr}");
@@ -229,4 +236,52 @@ fn every_parity_cell_reaches_the_contract_verdict() {
             }
         }
     }
+}
+
+/// Writes the `index`-th EvidenceReceipt v2 of run B in a parity class to its
+/// own file, as a single receipt an operator might hold. A negative index
+/// counts from the end.
+fn run_b_evidence_receipt(class: &str, index: isize, dir: &Path) -> PathBuf {
+    let file = parity_root()
+        .join(class)
+        .join("evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl");
+    let text = fs::read_to_string(file).expect("read fixture");
+    let receipts: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).expect("entry"))
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("evidence_receipt"))
+        .filter_map(|e| e.get("detail").cloned())
+        .collect();
+    let at = if index < 0 {
+        receipts.len() as isize + index
+    } else {
+        index
+    };
+    let receipt = &receipts[usize::try_from(at).expect("index in range")];
+    let out = dir.join(format!("{class}-receipt.json"));
+    fs::write(&out, receipt.to_string()).expect("write receipt");
+    out
+}
+
+/// A single v2 receipt with no pinned key still has its signature checked
+/// against its declared signer, so an edited receipt fails under
+/// --allow-unpinned rather than being reported self-consistent.
+#[test]
+fn unpinned_edited_evidence_receipt_fails() {
+    let dir = std::env::temp_dir().join(format!("parity-receipt-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("mkdir");
+    let honest = run_b_evidence_receipt("v2-drop-rehash", 0, &dir);
+    let (code, out, err) = run_cli(&[
+        "receipt".to_string(),
+        honest.display().to_string(),
+        "--allow-unpinned".to_string(),
+    ]);
+    assert_eq!(code, 0, "positive control: {out}{err}");
+    let forged = run_b_evidence_receipt("v2-forge-rehash", -1, &dir);
+    let (code, out, err) = run_cli(&[
+        "receipt".to_string(),
+        forged.display().to_string(),
+        "--allow-unpinned".to_string(),
+    ]);
+    assert_eq!(code, 1, "forged receipt: {out}{err}");
 }

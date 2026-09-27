@@ -57,6 +57,56 @@
       "valid": true,
       "findings": [],
       "errors": []
+    },
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [],
+      "endorsements": [],
+      "allow_unpinned": true,
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "keys": [],
+      "endorsements": [],
+      "allow_unpinned": true,
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "keys": [],
+      "endorsements": [],
+      "allow_unpinned": true,
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl",
+      "keys": [],
+      "endorsements": [],
+      "allow_unpinned": true,
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "keys": [],
+      "endorsements": [],
+      "allow_unpinned": true,
+      "valid": true,
+      "findings": [],
+      "errors": []
     }
   ]
 }

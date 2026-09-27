@@ -23,8 +23,10 @@ type parityFixtureCell struct {
 	Target       string   `json:"target"`
 	Keys         []string `json:"keys"`
 	Endorsements []string `json:"endorsements"`
-	Valid        bool     `json:"valid"`
-	Findings     []struct {
+	// AllowUnpinned runs the cell with no key and --allow-unpinned.
+	AllowUnpinned bool `json:"allow_unpinned"`
+	Valid         bool `json:"valid"`
+	Findings      []struct {
 		Kind    string `json:"kind"`
 		Session string `json:"session"`
 	} `json:"findings"`
@@ -117,6 +119,9 @@ func parityFixtureArgs(t *testing.T, dir string, c parityFixtureCell) []string {
 	for _, e := range c.Endorsements {
 		args = append(args, "--rotation-endorsement", filepath.Join(dir, e))
 	}
+	if c.AllowUnpinned {
+		args = append(args, "--allow-unpinned")
+	}
 	return args
 }
 
@@ -167,5 +172,55 @@ func TestChain_ParityFixtures(t *testing.T) {
 	// Guard against a fixture path that silently matches nothing.
 	if classes < 15 || cells < 60 {
 		t.Fatalf("ran %d classes and %d cells, want the full parity fixture set", classes, cells)
+	}
+}
+
+// parityEvidenceReceipt writes the index-th EvidenceReceipt v2 of run B in a
+// parity class to its own file, as a single receipt an operator might hold.
+func parityEvidenceReceipt(t *testing.T, class string, index int) string {
+	t.Helper()
+	path := filepath.Join(parityClassesDir, class, "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl")
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts []json.RawMessage
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var entry struct {
+			Type   string          `json:"type"`
+			Detail json.RawMessage `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Type == "evidence_receipt" {
+			receipts = append(receipts, entry.Detail)
+		}
+	}
+	if index < 0 {
+		index += len(receipts)
+	}
+	if index < 0 || index >= len(receipts) {
+		t.Fatalf("%s holds %d evidence receipts, want index %d", class, len(receipts), index)
+	}
+	out := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(out, receipts[index], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// With no pinned key a v2 receipt's signature is still checked against its
+// declared signer, so a receipt edited after signing fails under
+// --allow-unpinned instead of being reported self-consistent.
+func TestReceipt_UnpinnedEvidenceReceiptSignatureIsChecked(t *testing.T) {
+	honest := parityEvidenceReceipt(t, "v2-drop-rehash", 0)
+	if stdout, stderr, code := runRoot(t, "receipt", honest, "--allow-unpinned"); code != 0 || !strings.Contains(stdout+stderr, "UNPINNED") {
+		t.Fatalf("positive control: exit %d, want 0 and an unpinned report\n%s%s", code, stdout, stderr)
+	}
+	forged := parityEvidenceReceipt(t, "v2-forge-rehash", -1)
+	stdout, stderr, code := runRoot(t, "receipt", forged, "--allow-unpinned")
+	if code != 1 || !strings.Contains(stdout+stderr, "signature against declared signer") {
+		t.Fatalf("forged receipt: exit %d, want 1 naming the signature\n%s%s", code, stdout, stderr)
 	}
 }

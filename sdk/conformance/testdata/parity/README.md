@@ -26,6 +26,7 @@ Each cell names its `mode`, its `target`, the trust inputs (`keys` and `endorsem
 - `dir`: `chain DIR --dir` with every `--key` and `--rotation-endorsement` given. `target` is `.`.
 - `session`: the same with `--session-id TARGET`. A named run is verified with its whole base, so it fails on any base finding.
 - `file`: `chain DIR/TARGET` for the one file. A file named on the command line is read as given.
+- `allow_unpinned`: when true, the cell runs with no `--key` and `--allow-unpinned`. Signatures are still checked against the declared signer, so only the signer's identity goes unchecked.
 
 `findings` is the exact set of restart-continuity findings (kind and session) a `dir` or `session` run reports. `errors` lists chain reports that must fail and an error kind each must name; every chain report not listed must be valid. For `file`, `errors` names kinds the file's error must carry, and `valid` is true exactly when `findings` and `errors` are both empty. Exit status is 0 when valid and 1 otherwise, and every failing run prints a `verification failed:` line on stderr.
 
@@ -42,11 +43,11 @@ Each cell names its `mode`, its `target`, the trust inputs (`keys` and `endorsem
 | Class | Tamper | Verdict |
 |---|---|---|
 | `v2-forge-norehash` | Run B's last EvidenceReceipt v2 verdict edited, no rehash | broken: `outer_chain_broken` for B; B's v2 chain fails |
-| `v2-forge-rehash` | Same, rehashed | broken where B is verified; a named run A passes |
+| `v2-forge-rehash` | Same, rehashed | broken in every mode that reads B, including a named run A, and with no key under `--allow-unpinned`, because every signature is checked against the chain's declared signer |
 | `v2-strip-norehash` | Run B's v2 entries deleted, no rehash | broken: `outer_chain_broken` |
 | `v2-strip-rehash` | Same, rehashed | valid everywhere; only a signed checkpoint detects it |
 | `v2-drop-norehash` | Run B's last v2 entry deleted, no rehash | broken: `outer_chain_broken` |
-| `v2-drop-rehash` | Same, rehashed | valid everywhere; only a signed checkpoint detects it |
+| `v2-drop-rehash` | Same, rehashed | valid everywhere, keyed or unpinned; only a signed checkpoint detects it |
 | `envelope-edit-norehash` | An unsigned recorder summary edited, no rehash | broken: `outer_chain_broken` |
 | `envelope-edit-rehash` | Same, rehashed | valid everywhere; only a signed checkpoint detects it |
 | `dup-run` | Run A's file copied under a new run name | broken: the copy's entries name run A |

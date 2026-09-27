@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::canonical::{canonicalize_jcs_value, canonicalize_receipt};
-use crate::signing::{
-    normalize_evidence_receipt, verify_receipt, verify_receipt_with_options,
-    UNPINNED_RECEIPT_BANNER,
-};
+use crate::signing::{verify_receipt, verify_receipt_with_options, UNPINNED_RECEIPT_BANNER};
 use crate::types::{ChainResult, Receipt, Totals};
 use crate::util::sha256_hex;
 use sha2::{Digest, Sha256};
@@ -765,8 +762,12 @@ fn verify_evidence_chain(
         {
             return broken(seq, format!("seq {seq}: mixed receipt record_type"));
         }
+        // Without a pinned key every signature is still checked, against the
+        // chain's own declared signer, as the Go reference does: an edit after
+        // signing fails either way. That proves nothing about who signed, so
+        // the caller still reports the chain as unpinned.
         let verify_result = if key_hex.is_empty() {
-            normalize_evidence_receipt(receipt)
+            verify_receipt(receipt, &signer_id.to_ascii_lowercase())
         } else {
             verify_receipt(receipt, &key_hex)
         };

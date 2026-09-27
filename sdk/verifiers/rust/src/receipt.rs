@@ -1,9 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::signing::{
-    normalize_evidence_receipt, verify_receipt_with_options, UNPINNED_RECEIPT_BANNER,
-};
+use crate::signing::{verify_receipt_with_options, UNPINNED_RECEIPT_BANNER};
 use crate::types::ReceiptReport;
 use crate::util::{
     parse_json_text, read_verifier_text, reject_duplicate_keys, resolve_signer_key, string_at,
@@ -69,7 +67,13 @@ pub fn run_receipt(
     }
     let is_v2 = string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2");
     if key_hex.is_empty() && is_v2 {
-        match normalize_evidence_receipt(&receipt) {
+        // With no pinned key the signature is still checked, against the
+        // receipt's own declared signer: an edit after signing fails. That
+        // proves nothing about who signed, so the receipt stays unpinned.
+        let declared = string_at(&receipt, &["signature", "signer_key_id"])
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match verify_receipt_with_options(&receipt, &declared, false) {
             Ok(()) => {
                 report.valid = allow_unpinned;
                 report.unpinned = Some(true);

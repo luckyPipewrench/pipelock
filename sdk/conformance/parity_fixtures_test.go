@@ -80,13 +80,17 @@ type paritySymlink struct {
 }
 
 type parityCell struct {
-	Mode         string          `json:"mode"`
-	Target       string          `json:"target"`
-	Keys         []string        `json:"keys"`
-	Endorsements []string        `json:"endorsements"`
-	Valid        bool            `json:"valid"`
-	Findings     []parityFinding `json:"findings"`
-	Errors       []parityError   `json:"errors"`
+	Mode         string   `json:"mode"`
+	Target       string   `json:"target"`
+	Keys         []string `json:"keys"`
+	Endorsements []string `json:"endorsements"`
+	// AllowUnpinned runs the cell with no key and --allow-unpinned. Every
+	// signature is still checked against the chain's declared signer, so a
+	// forged receipt fails; only the signer's identity goes unchecked.
+	AllowUnpinned bool            `json:"allow_unpinned,omitempty"`
+	Valid         bool            `json:"valid"`
+	Findings      []parityFinding `json:"findings"`
+	Errors        []parityError   `json:"errors"`
 }
 
 type parityExpect struct {
@@ -237,6 +241,20 @@ func linesOf(files parityFiles, name string) []string {
 
 var keyOnly = []string{keyFile}
 
+// withUnpinned repeats cells with no key and --allow-unpinned. The verdict is
+// unchanged: a missing pin changes whose key is trusted, never whether a
+// signature must verify.
+func withUnpinned(cells []parityCell) []parityCell {
+	out := append([]parityCell{}, cells...)
+	for _, c := range cells {
+		c.Keys = []string{}
+		c.Endorsements = []string{}
+		c.AllowUnpinned = true
+		out = append(out, c)
+	}
+	return out
+}
+
 func cellsFor(dir parityCell, sessions []parityCell, files []parityCell) []parityCell {
 	cells := append([]parityCell{dir}, sessions...)
 	return append(cells, files...)
@@ -355,8 +373,8 @@ func parityClasses() []parityClass {
 				return parityExpect{
 					Description:   "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. The base check verifies every run's v2 chain, so a named run A fails too: a named run fails on any finding in its base.",
 					RecorderChain: chainRehashed,
-					Cells: twoRunCells(src, corruptB(src), src.b, []string{errEvidenceChain},
-						map[string][]string{src.b: {errEvidenceChain}}),
+					Cells: withUnpinned(twoRunCells(src, corruptB(src), src.b, []string{errEvidenceChain},
+						map[string][]string{src.b: {errEvidenceChain}})),
 				}
 			},
 			check: checkEditedLine(`"verdict":"allow"`, "evidence_receipt"),
@@ -404,7 +422,7 @@ func parityClasses() []parityClass {
 				return parityExpect{
 					Description:   "Run B's last EvidenceReceipt v2 entry deleted and the recorder hash chain recomputed. Truncating a v2 chain's tail leaves a valid chain; only a signed checkpoint detects it. Valid is the contract verdict.",
 					RecorderChain: chainRehashed,
-					Cells:         allValid(src),
+					Cells:         withUnpinned(allValid(src)),
 				}
 			},
 			check: checkEvidenceCount(1),

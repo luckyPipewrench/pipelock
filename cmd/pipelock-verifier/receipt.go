@@ -190,6 +190,16 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("validate evidence receipt: %w", err))
 		}
+		// With no pinned key the signature is still checked, against the
+		// receipt's own declared signer, as an unpinned chain is: a receipt
+		// edited after signing fails. That proves nothing about who signed,
+		// so the receipt is still reported unpinned.
+		if err := verifyDeclaredSigner(r); err != nil {
+			report.Valid = false
+			report.Error = err.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: %w", err))
+		}
 		// The Expect* bindings apply here too. This branch returns before
 		// verifyEvidenceReceipt runs, so without this an expectation passed
 		// alongside --allow-unpinned was accepted and never compared.

@@ -25,8 +25,10 @@ type parityFixtureCell struct {
 	Target       string   `json:"target"`
 	Keys         []string `json:"keys"`
 	Endorsements []string `json:"endorsements"`
-	Valid        bool     `json:"valid"`
-	Findings     []struct {
+	// AllowUnpinned runs the cell with no key and --allow-unpinned.
+	AllowUnpinned bool `json:"allow_unpinned"`
+	Valid         bool `json:"valid"`
+	Findings      []struct {
 		Kind    string `json:"kind"`
 		Session string `json:"session"`
 	} `json:"findings"`
@@ -118,6 +120,9 @@ func parityFixtureArgs(t *testing.T, dir string, c parityFixtureCell) []string {
 	}
 	for _, e := range c.Endorsements {
 		args = append(args, "--rotation-endorsement", filepath.Join(dir, e))
+	}
+	if c.AllowUnpinned {
+		args = append(args, "--allow-unpinned")
 	}
 	return args
 }

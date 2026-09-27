@@ -3,7 +3,7 @@
 
 import * as path from "node:path";
 import type { Receipt } from "./types.js";
-import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
+import { unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { validateV1Receipt } from "./strict.js";
 import {
   decodeUTF8,
@@ -83,7 +83,10 @@ export async function runReceipt(
   }
   try {
     if (keyHex === "" && receipt.record_type === "evidence_receipt_v2") {
-      normalizeEvidenceReceipt(receipt);
+      // With no pinned key the signature is still checked, against the
+      // receipt's own declared signer: an edit after signing fails. That
+      // proves nothing about who signed, so the receipt stays unpinned.
+      await verifyReceipt(receipt, declaredSignerKey(receipt));
       report.unpinned = true;
       report.error = unpinnedReceiptBanner;
       report.valid = allowUnpinned;
@@ -102,4 +105,13 @@ export async function runReceipt(
     }
   }
   return report;
+}
+
+function declaredSignerKey(receipt: Receipt): string {
+  const signature = receipt.signature;
+  if (typeof signature === "object" && signature !== null) {
+    const signer = (signature as Record<string, unknown>)["signer_key_id"];
+    if (typeof signer === "string") return signer.toLowerCase();
+  }
+  return "";
 }

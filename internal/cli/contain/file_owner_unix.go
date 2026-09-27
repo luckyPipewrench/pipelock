@@ -17,3 +17,11 @@ func fileOwnerUID(info os.FileInfo) (uint32, bool) {
 	}
 	return st.Uid, true
 }
+
+func fileOwnerGID(info os.FileInfo) (uint32, bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return st.Gid, true
+}

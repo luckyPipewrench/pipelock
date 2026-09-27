@@ -6,12 +6,14 @@ package contain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // `pipelock contain doctor` is a live self-test for the contained agent's
@@ -47,6 +50,10 @@ const (
 type doctorEnv struct {
 	port           int
 	agentUserName  string
+	proxyUserName  string
+	pipelockTarget string
+	lookupUser     lookupUserFunc
+	lstat          func(string) (os.FileInfo, error)
 	wrapperDir     string
 	caBundlePath   string
 	undiciShimPath string
@@ -62,6 +69,11 @@ type doctorEnv struct {
 	dialCtx        dialFunc
 	readFile       func(path string) ([]byte, error)
 	stat           func(path string) (os.FileInfo, error)
+	configPath     string
+	agentHome      string
+	rfbSocketPath  string
+	lookPath       func(string) (string, error)
+	platformFamily string
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -76,6 +88,10 @@ func defaultDoctorEnv() *doctorEnv {
 	counterEnv := defaultProbeEnv()
 	env := &doctorEnv{
 		port:           defaultProxyPort,
+		proxyUserName:  defaultProxyUser,
+		pipelockTarget: defaultPipelockTarget,
+		lookupUser:     user.Lookup,
+		lstat:          os.Lstat,
 		agentUserName:  defaultAgentUser,
 		wrapperDir:     defaultWrapperDir,
 		caBundlePath:   defaultCABundlePath,
@@ -86,6 +102,10 @@ func defaultDoctorEnv() *doctorEnv {
 		dialCtx:        realDial,
 		readFile:       os.ReadFile,
 		stat:           os.Stat,
+		configPath:     defaultConfigDir + "/pipelock.yaml",
+		agentHome:      "/home/" + defaultAgentUser,
+		lookPath:       exec.LookPath,
+		platformFamily: platform.family,
 	}
 	env.dropCounter = doctorDropCounterReader(counterEnv, env)
 	env.chainStructure = doctorChainStructureReader(counterEnv, env)
@@ -209,6 +229,121 @@ func allDoctorChecks() []doctorCheck {
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
 		{8, "managed_doorway_sockets", "managed containment doorway sockets are active", checkManagedDoorwaySockets},
 	}
+}
+
+func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
+	checks := allDoctorChecks()
+	if env.configPath == "" {
+		return checks
+	}
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err != nil {
+		return checks
+	}
+	if cfg.Containment.Display.IsEnabled(true) && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
+		checks = append(checks, doctorCheck{9, "agent_display_rfb", "TigerVNC display RFB socket is available", checkDoctorDisplayRFB})
+		checks = append(checks, doctorCheck{10, "viewer_service", "viewer socket is available to its operator", checkDoctorViewerService})
+		checks = append(checks, doctorCheck{11, "viewer_rfb_access", "viewer RFB socket group is exact", checkDoctorViewerRFBAccess})
+	}
+	// Runs whenever the config loaded, independent of the configured
+	// backend: a leftover legacy grant from a PRIOR install must still be
+	// caught even if the operator has since switched away from xvnc.
+	if env.agentHome != "" {
+		checks = append(checks, doctorCheck{12, "legacy_viewer_acl", "obsolete agent-home viewer access is absent", checkDoctorLegacyViewerACL})
+	}
+	return checks
+}
+
+func checkDoctorLegacyViewerACL(ctx context.Context, env *doctorEnv) doctorResult {
+	_, err := config.LoadForInspection(env.configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fail(classInfra, "viewer config: "+err.Error(), "check display viewer configuration")
+	}
+	lstat := env.lstat
+	if lstat == nil {
+		lstat = env.stat
+	}
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, env.proxyUserName); err != nil {
+		return fail(classInfra, err.Error(), "rerun contain install")
+	}
+	return pass("obsolete agent-home viewer access is absent")
+}
+
+func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
+	install := &installEnv{stat: env.stat, lookPath: env.lookPath, platformFamily: env.platformFamily}
+	if _, err := findXvnc(install); err != nil {
+		return fail(classInfra, err.Error(), err.Error())
+	}
+	path := displayRFBPath(env.rfbSocketPath)
+	mode := os.FileMode(0o600)
+	if cfg, err := config.LoadForInspection(env.configPath); err == nil && viewerRFBEnabled(cfg.Containment.Display) {
+		mode = 0o660
+	}
+	if env.lstat == nil {
+		return fail(classInfra, "RFB socket lstat unavailable", "rerun contain install")
+	}
+	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
+		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
+	}
+	info, err := env.lstat(path)
+	if err != nil {
+		return fail(classInfra, "RFB socket: "+err.Error(), "rerun contain install")
+	}
+	if env.lookupUser == nil {
+		return fail(classInfra, "RFB owner lookup unavailable", "rerun contain install")
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return fail(classInfra, "lookup RFB owner: "+err.Error(), "rerun contain install")
+	}
+	uid, err := strconv.ParseUint(agent.Uid, 10, 32)
+	if err != nil {
+		return fail(classInfra, "parse RFB owner uid: "+err.Error(), "rerun contain install")
+	}
+	ownerUID, ok := fileOwnerUID(info)
+	if !ok || uint64(ownerUID) != uid {
+		return fail(classInfra, "RFB socket is not owned by the contained agent uid", "rerun contain install")
+	}
+	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
+		return fail(classInfra, err.Error(), "rerun contain install")
+	}
+	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
+}
+
+func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
+	return &probeEnv{configPath: env.configPath, displayUnitPath: defaultDisplayUnitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+}
+
+func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err != nil {
+		return fail(classInfra, "viewer config missing: "+err.Error(), "check display viewer configuration")
+	}
+	if !viewerRFBEnabled(cfg.Containment.Display) {
+		status, detail := probeViewerService(ctx, doctorViewerProbeEnv(env))
+		if status != statusPass {
+			return fail(classInfra, detail, "rerun contain install")
+		}
+		return pass(detail)
+	}
+	if env.lookPath != nil {
+		if _, err := env.lookPath("setfacl"); err != nil {
+			return fail(classInfra, "setfacl missing", "install acl")
+		}
+	}
+	status, detail := probeViewerService(ctx, doctorViewerProbeEnv(env))
+	if status != statusPass {
+		return fail(classInfra, detail, "rerun contain install")
+	}
+	return pass(detail)
+}
+
+func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResult {
+	status, detail := probeViewerRFBAccess(ctx, doctorViewerProbeEnv(env))
+	if status != statusPass {
+		return fail(classInfra, detail, "RFB access mismatch: rerun contain install")
+	}
+	return pass(detail)
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +792,8 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 	}
 
 	var passN, failN, skipN, unknownN int
-	for _, c := range allDoctorChecks() {
+	checks := doctorChecksForEnv(env)
+	for _, c := range checks {
 		res := c.fn(ctx, env)
 		switch res.status {
 		case statusPass:
@@ -707,7 +843,7 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			Fail:     failN,
 			Skip:     skipN,
 			Unknown:  unknownN,
-			Total:    len(allDoctorChecks()),
+			Total:    len(checks),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)

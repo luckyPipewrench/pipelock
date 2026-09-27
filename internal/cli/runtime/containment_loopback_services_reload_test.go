@@ -91,6 +91,30 @@ func TestServer_ReloadCarriesContainmentLoopbackServices(t *testing.T) {
 	}
 }
 
+func TestServer_ReloadKeepsInstalledDisplayBackend(t *testing.T) {
+	initial := "mode: balanced\ncontainment:\n  display:\n    enabled: true\n    backend: xvfb\n"
+	candidate := "mode: balanced\ncontainment:\n  display:\n    enabled: true\n    backend: xvnc\n"
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{ConfigFile: writeServerTestConfig(t, initial), Listen: serverTestEphemeralListen, ListenChanged: true, Stdout: &syncBuffer{}, Stderr: stderr, allowEphemeralListenersForTesting: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.cleanup)
+	newCfg, err := config.LoadBytes([]byte(candidate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.proxy.CurrentConfig().Containment.Display.EffectiveBackend(); got != "xvfb" {
+		t.Fatalf("reload changed installed display backend to %s", got)
+	}
+	if !strings.Contains(stderr.String(), "run `pipelock contain install`") {
+		t.Fatalf("reload omitted install remedy: %s", stderr.String())
+	}
+}
+
 func loadServerTestConfig(t *testing.T, body string) (*config.Config, error) {
 	t.Helper()
 	return config.Load(writeServerTestConfig(t, body))

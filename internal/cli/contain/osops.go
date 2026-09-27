@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // installEnv is the OS-facing dependency surface used by every mutating
@@ -26,6 +28,8 @@ import (
 // systemd. Real construction is via defaultInstallEnv(); tests build a
 // struct literal with their own hooks.
 type installEnv struct {
+	// rfbSocketPath is an isolated test path; production uses the fixed /run path.
+	rfbSocketPath string
 	// runCmd shells out. Returns merged stdout+stderr (bounded), the
 	// process exit code, and a startup error (nil if the binary ran even
 	// when it exited non-zero). Same contract as verify.go's runCommand.
@@ -46,9 +50,14 @@ type installEnv struct {
 	readDir    func(path string) ([]os.DirEntry, error)
 	writeFile  func(path string, contents []byte, mode os.FileMode) error
 	removeFile func(path string) error
-	mkdirAll   func(path string, mode os.FileMode) error
-	chown      func(path string, uid, gid int) error
-	lchown     func(path string, uid, gid int) error
+	// runViewerACL passes a held directory/socket descriptor to ACL tools.
+	// Production uses ExtraFiles so /proc/self/fd/3 names the pinned inode.
+	runViewerACL func(context.Context, *os.File, string, ...string) (string, int, error)
+	// viewerACLUID is an unprivileged fixture override for the expected owner.
+	viewerACLUID *uint32
+	mkdirAll     func(path string, mode os.FileMode) error
+	chown        func(path string, uid, gid int) error
+	lchown       func(path string, uid, gid int) error
 	// ownLeafNoFollow applies mode and ownership through a single O_NOFOLLOW
 	// descriptor. It is a seam so tests can run unprivileged; production must
 	// keep the descriptor-based implementation, because a path-based chmod in
@@ -123,6 +132,8 @@ type installEnv struct {
 	// that happens to have Xvfb installed does not change what the tests
 	// exercise.
 	xvfbPath          string
+	xvncPath          string
+	displayConfig     config.ContainmentDisplay
 	reconcileLockPath string
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
 	// critical section of the nft rules step in an exclusive lock, shared
@@ -141,6 +152,7 @@ type installEnv struct {
 	workspaceInvPath         string
 	loopbackForwarderInvPath string
 	evidenceACLInvPath       string // operator evidence-read ACL inventory
+	viewerAccountMarkerPath  string // records whether install created pipelock-viewer
 	// evidenceACLPreexisting records that the operator evidence ACL recorded
 	// in the inventory already covered this install's operator and dirs before
 	// the grant step ran, so rolling that step back must leave it in place.
@@ -203,6 +215,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
 		runCmd:                        realRunCommand,
+		runViewerACL:                  runViewerACLCommand,
 		dialCtx:                       realDial,
 		wait:                          waitForReadiness,
 		stat:                          os.Stat,
@@ -267,6 +280,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		workspaceInvPath:         defaultWorkspaceInvPath,
 		loopbackForwarderInvPath: defaultLoopbackForwarderInvPath,
 		evidenceACLInvPath:       defaultEvidenceACLInvPath,
+		viewerAccountMarkerPath:  defaultViewerAccountMarkerPath,
 		guardScriptPath:          defaultGuardScriptPath,
 		guardServiceUnit:         defaultGuardServiceUnit,
 		guardPathUnit:            defaultGuardPathUnit,
@@ -322,6 +336,7 @@ const (
 	defaultWorkspaceInvPath         = "/etc/pipelock/contain/workspaces.json"
 	defaultLoopbackForwarderInvPath = "/etc/pipelock/contain/loopback-forwarders.json"
 	defaultEvidenceACLInvPath       = "/etc/pipelock/contain/evidence-acls.json"
+	defaultViewerAccountMarkerPath  = "/etc/pipelock/contain/viewer-account.marker"
 	defaultGuardScriptPath          = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
 	defaultGuardServiceUnit         = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
 	defaultGuardPathUnit            = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.

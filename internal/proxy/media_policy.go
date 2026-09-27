@@ -341,7 +341,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	outBody := body
 	var stripResult *media.StripResult
 	if cfg.MediaPolicy.ShouldStripImageMetadata() {
-		sr, err := media.StripMetadata(mt, body)
+		sr, err := media.StripMetadata(media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed), body)
 		if err != nil {
 			// Malformed image bytes. Fail closed: block rather than forward
 			// potentially booby-trapped content. The error surfaces in the

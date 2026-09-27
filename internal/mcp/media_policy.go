@@ -370,7 +370,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	outBody := body
 	var stripResult *media.StripResult
 	if policy.ShouldStripImageMetadata() {
-		sr, err := media.StripMetadata(mt, body)
+		sr, err := media.StripMetadata(media.StripType(mt, body, policy.ImageTypeAllowed), body)
 		if err != nil {
 			exposure.Blocked = true
 			exposure.BlockReason = mcpMediaParseBlockReason(mt, body, err)

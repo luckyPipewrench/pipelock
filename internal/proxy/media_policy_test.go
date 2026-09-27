@@ -1079,3 +1079,43 @@ func TestApplyMediaPolicy_NilBodyStillRefusesAudioVideo(t *testing.T) {
 		})
 	}
 }
+
+// relabeledWebP is a WebP body a CDN served under an image/png Content-Type.
+func relabeledWebP() []byte {
+	return append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00"), make([]byte, 24)...)
+}
+
+func TestApplyMediaPolicy_RelabeledAllowedRasterPasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	if !cfg.MediaPolicy.ImageTypeAllowed("image/webp") {
+		t.Fatal("precondition: policy allows image/webp")
+	}
+	body := relabeledWebP()
+	v := applyMediaPolicy(cfg, "image/png", body)
+	if v.Blocked {
+		t.Fatalf("WebP served as image/png blocked: %s", v.BlockReason)
+	}
+	if string(v.Body) != string(body) {
+		t.Fatal("relabeled WebP body changed")
+	}
+}
+
+func TestApplyMediaPolicy_RelabeledRasterStillRefusedWhenNotAllowedOrNotRaster(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg"}
+	if v := applyMediaPolicy(cfg, "image/png", relabeledWebP()); !v.Blocked || !strings.Contains(v.BlockReason, "bytes look like image/webp") {
+		t.Fatalf("WebP served as PNG with WebP disallowed: blocked=%v %q", v.Blocked, v.BlockReason)
+	}
+	cfg = config.Defaults()
+	for name, body := range map[string][]byte{
+		"html": []byte("<!DOCTYPE html><html><body>x</body></html>"),
+		"svg":  []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`),
+	} {
+		if v := applyMediaPolicy(cfg, "image/png", body); !v.Blocked {
+			t.Fatalf("%s served as image/png was forwarded", name)
+		}
+	}
+}

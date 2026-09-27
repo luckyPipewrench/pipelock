@@ -1153,3 +1153,18 @@ func TestForwardScanned_MediaPolicyBlockReceiptFailureLogsAuditGap(t *testing.T)
 		t.Fatalf("missing audit_gap marker in log: %s", log.String())
 	}
 }
+
+func TestApplyMCPMediaPolicy_RelabeledAllowedRasterPasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	body := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00"), make([]byte, 24)...)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", body, testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Fatalf("MCP WebP payload declared as image/png blocked: %s", verdict.BlockReason)
+	}
+	html := []byte("<!DOCTYPE html><html><body>x</body></html>")
+	if v := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", html, testMCPMediaTransport); !v.Blocked {
+		t.Fatal("MCP HTML payload declared as image/png was forwarded")
+	}
+}

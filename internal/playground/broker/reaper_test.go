@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+type retryOrderProvider struct {
+	*fakeProvider
+	retried *bool
+	t       *testing.T
+}
+
+func (p *retryOrderProvider) ListManagedMachines(ctx context.Context) ([]Machine, error) {
+	if !*p.retried {
+		p.t.Fatal("listed machines before failed destroys were retried")
+	}
+	return p.fakeProvider.ListManagedMachines(ctx)
+}
+
 func TestReaperReconcileOnce(t *testing.T) {
 	const graceWindow = 5 * time.Minute
 
@@ -108,6 +121,31 @@ func TestReaperReconcileOnce(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReaperRetriesFailedDestroysBeforeListing(t *testing.T) {
+	fp := &fakeProvider{}
+	retried := false
+	provider := &retryOrderProvider{fakeProvider: fp, retried: &retried, t: t}
+	reaper, err := NewReaper(ReaperConfig{
+		Provider: provider,
+		ActiveIDs: func() map[string]struct{} {
+			if !retried {
+				t.Fatal("active IDs read before failed destroys were retried")
+			}
+			return nil
+		},
+		RetryFailedDestroys: func(context.Context) { retried = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !retried {
+		t.Fatal("failed destroys were not retried")
 	}
 }
 

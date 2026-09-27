@@ -98,9 +98,15 @@ func dialBridge(t *testing.T, bp *BridgeProxy, accepted <-chan net.Conn) (net.Co
 	}
 	select {
 	case parent := <-accepted:
+		if err := parent.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatalf("set parent read deadline: %v", err)
+		}
 		buf := make([]byte, 1)
 		if _, err := io.ReadFull(parent, buf); err != nil {
 			t.Fatalf("parent read: %v", err)
+		}
+		if err := parent.SetReadDeadline(time.Time{}); err != nil {
+			t.Fatalf("clear parent read deadline: %v", err)
 		}
 		return agent, parent
 	case <-time.After(5 * time.Second):
@@ -201,6 +207,7 @@ func TestBridgeIdle_ParentToAgentTrafficKeepsRelayOpen(t *testing.T) {
 	agent, parent := dialBridge(t, bp, accepted)
 	keepAlive(t, parent, agent, 5*testIdleTimeout)
 	expectOpen(t, agent, parent)
+	expectIdleCloseAfterTraffic(t, bp, agent, parent)
 }
 
 func TestBridgeIdle_AgentToParentTrafficKeepsRelayOpen(t *testing.T) {
@@ -208,6 +215,16 @@ func TestBridgeIdle_AgentToParentTrafficKeepsRelayOpen(t *testing.T) {
 	agent, parent := dialBridge(t, bp, accepted)
 	keepAlive(t, agent, parent, 5*testIdleTimeout)
 	expectOpen(t, agent, parent)
+	expectIdleCloseAfterTraffic(t, bp, agent, parent)
+}
+
+// expectIdleCloseAfterTraffic proves the idle clock restarts from the last
+// byte: once traffic stops, both peers close and the bridge lets go of them.
+func expectIdleCloseAfterTraffic(t *testing.T, bp *BridgeProxy, agent, parent net.Conn) {
+	t.Helper()
+	expectClosed(t, agent)
+	expectClosed(t, parent)
+	waitNoTrackedConns(t, bp, 3*time.Second)
 }
 
 func TestBridgeIdle_HalfCloseStillDeliversResponse(t *testing.T) {

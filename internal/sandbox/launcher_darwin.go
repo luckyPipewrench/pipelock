@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // LaunchConfig configures how the sandbox launcher wraps the child process.
@@ -38,10 +39,12 @@ type LaunchConfig struct {
 
 	ExtraEnv         []string
 	BridgeSocketPath string // Linux-only; ignored by sandbox-exec.
-	GateTargetStart  bool   // Linux-only; no UID/GID mappings on macOS.
-	Stdin            io.Reader
-	Stdout           io.Writer
-	Stderr           io.Writer
+	// BridgeIdleTimeout is Linux-only; ignored by sandbox-exec.
+	BridgeIdleTimeout time.Duration
+	GateTargetStart   bool // Linux-only; no UID/GID mappings on macOS.
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
 }
 
 // PreparedSandboxCmd records the parent hardening ordering for a sandbox

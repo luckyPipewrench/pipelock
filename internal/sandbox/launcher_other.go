@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"time"
 )
 
 // LaunchConfig configures how the sandbox launcher forks the child process.
@@ -26,6 +27,8 @@ type LaunchConfig struct {
 	ExtraEnv         []string
 	// BridgeSocketPath is Linux-only.
 	BridgeSocketPath string
+	// BridgeIdleTimeout is Linux-only.
+	BridgeIdleTimeout time.Duration
 	// GateTargetStart is Linux-only.
 	GateTargetStart bool
 	Stdin           io.Reader

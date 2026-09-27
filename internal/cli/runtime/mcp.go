@@ -1696,6 +1696,8 @@ Key-free evidence capture:
 					BestEffortExpiry: mcpBestEffortExpiry,
 					ExtraEnv:         extraEnv,
 					GateTargetStart:  true,
+
+					BridgeIdleTimeout: sandboxBridgeIdleTimeout(cfg),
 				}
 				if cfg.Sandbox.FS != nil {
 					p := sandbox.DefaultPolicy(workspace)

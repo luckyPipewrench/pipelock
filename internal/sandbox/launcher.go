@@ -59,6 +59,10 @@ type LaunchConfig struct {
 	// to this parent Unix socket path.
 	BridgeSocketPath string
 
+	// BridgeIdleTimeout bounds how long a bridged connection may carry no bytes
+	// in either direction. Zero uses DefaultBridgeIdleTimeout.
+	BridgeIdleTimeout time.Duration
+
 	// GateTargetStart blocks sandbox-init before it starts or execs Command
 	// when this launch uses UID/GID mappings. The parent must start the
 	// returned PreparedSandboxCmd through StartWithParentHardening so the
@@ -277,6 +281,7 @@ func PrepareSandboxLaunch(cfg LaunchConfig) (*PreparedSandboxCmd, error) {
 	cmd.Env = append(cmd.Env, coverageEnv...)
 	if cfg.BridgeSocketPath != "" {
 		cmd.Env = append(cmd.Env, sandboxSocketEnv+"="+cfg.BridgeSocketPath)
+		cmd.Env = append(cmd.Env, bridgeIdleTimeoutEnvEntry(cfg.BridgeIdleTimeout)...)
 	}
 	if cfg.Strict {
 		cmd.Env = append(cmd.Env, strictEnvKey+"=1")

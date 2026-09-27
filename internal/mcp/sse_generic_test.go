@@ -1533,6 +1533,37 @@ func TestScanGenericSSEStream_NonUTF8WarnDropsEventAndContinues(t *testing.T) {
 	}
 }
 
+func TestScanGenericSSEStream_NonUTF8MetadataFailsClosed(t *testing.T) {
+	for _, field := range []string{"event", "id", "retry"} {
+		for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+			t.Run(field+"/"+action, func(t *testing.T) {
+				cfg := enabledSSECfg()
+				cfg.Action = action
+				body := []byte(field + ": ")
+				body = append(body, 0xff)
+				body = append(body, []byte("\ndata: unsafe\n\n")...)
+				if field == "id" {
+					body = append(body, []byte("id: valid\ndata: safe\n\n")...)
+				} else {
+					body = append(body, []byte("data: safe\n\n")...)
+				}
+				var out bytes.Buffer
+				var findings []error
+				err := ScanGenericSSEStreamWithOptions(t.Context(), bytes.NewReader(body), &out, nil,
+					testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(e error) { findings = append(findings, e) }})
+				if action == config.ActionBlock {
+					if !errors.Is(err, ErrSSEInvalidUTF8) || out.Len() != 0 {
+						t.Fatalf("block err=%v out=%x", err, out.Bytes())
+					}
+				} else if err != nil || len(findings) != 1 || !errors.Is(findings[0], ErrSSEInvalidUTF8) ||
+					bytes.Contains(out.Bytes(), []byte{0xff}) || !strings.Contains(out.String(), "data: safe") || strings.Contains(out.String(), "data: unsafe") {
+					t.Fatalf("warn err=%v findings=%v out=%x", err, findings, out.Bytes())
+				}
+			})
+		}
+	}
+}
+
 func TestScanGenericSSEStream_NonUTF8PreservedInPassthrough(t *testing.T) {
 	// Passthrough mode (cfg disabled) does not scan, so the parser-
 	// differential vector does not apply. Raw bytes - including invalid

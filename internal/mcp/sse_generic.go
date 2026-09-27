@@ -41,7 +41,7 @@ var ErrSSEStreamScanError = errors.New("sse stream scan error")
 var ErrSSEEventTooLarge = errors.New("sse event exceeds max_event_bytes")
 
 // ErrSSEInvalidUTF8 is wrapped inside ErrSSEStreamFinding when an event's
-// data: payload contains bytes that are not valid UTF-8. The SSE wire
+// data: payload or metadata contains bytes that are not valid UTF-8. The SSE wire
 // format is defined as UTF-8 by WHATWG, and Go's `string(b)` conversion
 // silently replaces invalid sequences with U+FFFD, which would create a
 // parser-differential between what the scanner regexes inspect and what
@@ -189,8 +189,9 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		droppedDLP := newSSEDLPDropRecorder(opts)
-		// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
-		// would be silently mapped to U+FFFD by Go's string(...) view
+		// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the event, including
+		// metadata, must not reach the client through the re-emitted fields.
+		// It would be silently mapped to U+FFFD by Go's string(...) view
 		// while the original bytes still get re-emitted to the client,
 		// creating a parser-differential where the scanner regexes
 		// inspect different bytes than the client receives. Fail
@@ -199,9 +200,8 @@ func ScanGenericSSEStreamWithOptions(
 		// mode terminates the stream). Passthrough mode (cfg disabled
 		// or nil) does not enter this branch and forwards bytes
 		// verbatim, which is the correct behavior for opt-out.
-		if !utf8.Valid(event) {
-			findingErr := fmt.Errorf("%w: %w (size=%d)",
-				ErrSSEStreamFinding, ErrSSEInvalidUTF8, len(event))
+		if !utf8.Valid(event) || !utf8.ValidString(canonicalSSEEventText(event, reader)) {
+			findingErr := fmt.Errorf("%w: %w", ErrSSEStreamFinding, ErrSSEInvalidUTF8)
 			if cfg.Action == config.ActionWarn {
 				if opts.OnFinding != nil {
 					opts.OnFinding(findingErr)

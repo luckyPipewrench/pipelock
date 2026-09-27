@@ -3,16 +3,24 @@
 
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::verify_chain_with_options;
+use crate::chain_set::{
+    chain_scoped_trust, read_session_receipts, resolve_base_sessions, run_session_base,
+    verify_base, BaseVerifyOptions,
+};
 use crate::lifecycle::analyze_lifecycle;
-use crate::output::{emit_audit_packet, emit_chain, emit_receipt};
+use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt};
 use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
 use crate::recorder::{extract_receipts, extract_receipts_from_session_dir};
-use crate::rotation::{load_rotation_endorsement_file, verify_chain_with_endorsements};
-use crate::types::ChainCommandReport;
+use crate::rotation::{
+    load_rotation_endorsement_file, verify_chain_with_endorsements, RotationEndorsement,
+};
+use crate::types::{
+    ChainCommandReport, ChainSetContinuity, ChainSetEntry, ChainSetLink, ChainSetReport, Receipt,
+};
 use crate::util::{resolve_signer_key, Result, VerifierError};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 struct ParsedArgs {
@@ -27,6 +35,7 @@ struct ParsedArgs {
     expect_sha256: String,
     dir: bool,
     session_id: String,
+    session_explicit: bool,
     rotation_endorsements: Vec<String>,
 }
 
@@ -86,11 +95,174 @@ fn run_audit_packet_command(args: &[String]) -> Result<i32> {
     Ok(if report.valid { 0 } else { 1 })
 }
 
+fn chain_report_for(
+    label: String,
+    receipts: &[Receipt],
+    key_hex: &str,
+    allow_unpinned: bool,
+    endorsements: &[RotationEndorsement],
+    session_id: &str,
+) -> ChainCommandReport {
+    if receipts.is_empty() {
+        return ChainCommandReport {
+            path: label,
+            valid: false,
+            unpinned: None,
+            receipt_count: 0,
+            final_seq: 0,
+            root_hash: None,
+            error: Some("no receipts in chain".to_string()),
+            broken_at_seq: None,
+        };
+    }
+    let result = if endorsements.is_empty() {
+        verify_chain_with_options(receipts, key_hex, allow_unpinned)
+    } else {
+        verify_chain_with_endorsements(receipts, session_id, endorsements, key_hex)
+    };
+    let lifecycle = analyze_lifecycle(receipts, &result);
+    let lifecycle_broken = lifecycle.status == "BROKEN";
+    ChainCommandReport {
+        path: label,
+        valid: result.valid && !lifecycle_broken,
+        unpinned: (key_hex.is_empty()
+            && (result.error.as_deref().unwrap_or("").contains("UNPINNED")
+                || (result.valid && !lifecycle_broken)))
+            .then_some(true),
+        receipt_count: result.receipt_count,
+        final_seq: result.final_seq,
+        root_hash: (!result.root_hash.is_empty()).then_some(result.root_hash),
+        // Preserve the verifier's concrete cryptographic, hash, trust, or
+        // sequence failure. Lifecycle is a supplemental gate only when the
+        // chain itself verified successfully.
+        error: if lifecycle_broken && result.valid {
+            Some(format!("lifecycle: {}", lifecycle.reason))
+        } else {
+            result.error
+        },
+        broken_at_seq: result.broken_at_seq,
+    }
+}
+
+fn load_endorsements(paths: &[String], allow_unpinned: bool) -> Result<Vec<RotationEndorsement>> {
+    if !paths.is_empty() && allow_unpinned {
+        return Err(VerifierError::Usage(
+            "--rotation-endorsement cannot be combined with --allow-unpinned".to_string(),
+        ));
+    }
+    paths
+        .iter()
+        .map(|path| load_rotation_endorsement_file(&PathBuf::from(path)))
+        .collect()
+}
+
+/// Verifies every chain of `base` in `dir` and the base's restart
+/// continuity, matching the Go reference `verify-receipt --chain`.
+fn run_chain_set_command(
+    dir: &Path,
+    base: &str,
+    key_hex: &str,
+    parsed: &ParsedArgs,
+) -> Result<i32> {
+    let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
+    let trusted_keys: Vec<String> = key_hex
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .collect();
+    let (sessions, base_report) = resolve_base_sessions(dir, base)
+        .and_then(|sessions| {
+            let opts = BaseVerifyOptions {
+                trusted_keys: trusted_keys.clone(),
+                endorsements: endorsements.clone(),
+            };
+            verify_base(dir, base, &opts).map(|report| (sessions, report))
+        })
+        .map_err(|err| {
+            VerifierError::Runtime(format!("restart continuity check incomplete: {err}"))
+        })?;
+    let mut chains = Vec::new();
+    for session in &sessions {
+        let label = format!("{} (session {session})", dir.display());
+        let (keys, own) = chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
+        let chain = match read_session_receipts(dir, session) {
+            Ok((action, evidence)) => {
+                let receipts = if action.is_empty() { evidence } else { action };
+                chain_report_for(
+                    label,
+                    &receipts,
+                    &keys.join(","),
+                    parsed.allow_unpinned,
+                    &own,
+                    session,
+                )
+            }
+            Err(err) => ChainCommandReport {
+                path: label,
+                valid: false,
+                unpinned: None,
+                receipt_count: 0,
+                final_seq: 0,
+                root_hash: None,
+                error: Some(format!("extract receipts: {err}")),
+                broken_at_seq: None,
+            },
+        };
+        chains.push(ChainSetEntry {
+            session: session.clone(),
+            report: chain,
+        });
+    }
+    let healthy = base_report.healthy();
+    let report = ChainSetReport {
+        path: dir.display().to_string(),
+        base: base.to_string(),
+        valid: healthy && chains.iter().all(|c| c.report.valid),
+        chains,
+        continuity: ChainSetContinuity {
+            healthy,
+            linked: base_report
+                .chains
+                .iter()
+                .filter_map(|c| {
+                    c.link.as_ref().map(|link| ChainSetLink {
+                        session: c.session.clone(),
+                        predecessor_session: link.predecessor_session.clone(),
+                        predecessor_tail_seq: link.predecessor_tail_seq,
+                        trust: if c.link_trust.is_empty() {
+                            "untrusted".to_string()
+                        } else {
+                            c.link_trust.clone()
+                        },
+                    })
+                })
+                .collect(),
+            unlinked: base_report.unlinked(),
+            findings: base_report.findings.clone(),
+        },
+    };
+    emit_chain_set(&report, parsed.json)?;
+    Ok(if report.valid { 0 } else { 1 })
+}
+
 fn run_chain_command(args: &[String]) -> Result<i32> {
     let parsed = parse_args(args, "chain")?;
     let target = require_one_arg(&parsed.positionals, "chain")?;
     let key_hex = resolve_signer_key(&parsed.key)?;
     let clean = PathBuf::from(target);
+    // Without an explicit --session-id, a directory whose base has per-run
+    // chains is verified as a whole: every run and the links between them.
+    // An explicit --session-id keeps single-session verification.
+    if parsed.dir && !parsed.session_explicit {
+        let has_runs = resolve_base_sessions(&clean, &parsed.session_id)
+            .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?
+            .iter()
+            .any(|s| run_session_base(s).is_some());
+        if has_runs {
+            return run_chain_set_command(&clean, &parsed.session_id, &key_hex, &parsed);
+        }
+    }
     let (receipts, label) = if parsed.dir {
         (
             extract_receipts_from_session_dir(&clean, &parsed.session_id)
@@ -114,57 +286,20 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
     };
 
     if receipts.is_empty() {
-        let report = ChainCommandReport {
-            path: label,
-            valid: false,
-            unpinned: None,
-            receipt_count: 0,
-            final_seq: 0,
-            root_hash: None,
-            error: Some("no receipts in chain".to_string()),
-            broken_at_seq: None,
-        };
+        let report = chain_report_for(label, &receipts, &key_hex, false, &[], &parsed.session_id);
         emit_chain(&report, parsed.json)?;
         return Ok(1);
     }
 
-    if !parsed.rotation_endorsements.is_empty() && parsed.allow_unpinned {
-        return Err(VerifierError::Usage(
-            "--rotation-endorsement cannot be combined with --allow-unpinned".to_string(),
-        ));
-    }
-    let endorsements = parsed
-        .rotation_endorsements
-        .iter()
-        .map(|path| load_rotation_endorsement_file(&PathBuf::from(path)))
-        .collect::<Result<Vec<_>>>()?;
-    let result = if endorsements.is_empty() {
-        verify_chain_with_options(&receipts, &key_hex, parsed.allow_unpinned)
-    } else {
-        verify_chain_with_endorsements(&receipts, &parsed.session_id, &endorsements, &key_hex)
-    };
-    let lifecycle = analyze_lifecycle(&receipts, &result);
-    let lifecycle_broken = lifecycle.status == "BROKEN";
-    let report = ChainCommandReport {
-        path: label,
-        valid: result.valid && !lifecycle_broken,
-        unpinned: (key_hex.is_empty()
-            && (result.error.as_deref().unwrap_or("").contains("UNPINNED")
-                || (result.valid && !lifecycle_broken)))
-            .then_some(true),
-        receipt_count: result.receipt_count,
-        final_seq: result.final_seq,
-        root_hash: (!result.root_hash.is_empty()).then_some(result.root_hash),
-        // Preserve the verifier's concrete cryptographic, hash, trust, or
-        // sequence failure. Lifecycle is a supplemental gate only when the
-        // chain itself verified successfully.
-        error: if lifecycle_broken && result.valid {
-            Some(format!("lifecycle: {}", lifecycle.reason))
-        } else {
-            result.error
-        },
-        broken_at_seq: result.broken_at_seq,
-    };
+    let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
+    let report = chain_report_for(
+        label,
+        &receipts,
+        &key_hex,
+        parsed.allow_unpinned,
+        &endorsements,
+        &parsed.session_id,
+    );
     emit_chain(&report, parsed.json)?;
     Ok(if report.valid { 0 } else { 1 })
 }
@@ -229,6 +364,7 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
             }
             "--session-id" if command == "chain" => {
                 index += 1;
+                parsed.session_explicit = true;
                 parsed.session_id = args
                     .get(index)
                     .ok_or_else(|| {
@@ -259,6 +395,7 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     parsed.expect_sha256 =
                         inline_value.expect("split flag produced value").to_string();
                 } else if flag == "--session-id" && command == "chain" {
+                    parsed.session_explicit = true;
                     parsed.session_id =
                         inline_value.expect("split flag produced value").to_string();
                 } else if flag == "--rotation-endorsement" && command == "chain" {

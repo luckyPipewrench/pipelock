@@ -91,9 +91,9 @@ fn legacy_namespace_field_is_set(entry: &serde_json::Value, field: &str) -> bool
 }
 
 #[derive(Default)]
-struct ExtractedReceipts {
-    action: Vec<Receipt>,
-    evidence: Vec<Receipt>,
+pub(crate) struct ExtractedReceipts {
+    pub(crate) action: Vec<Receipt>,
+    pub(crate) evidence: Vec<Receipt>,
 }
 
 impl ExtractedReceipts {
@@ -102,7 +102,7 @@ impl ExtractedReceipts {
     // default Pipelock run interleaves both types in one file, each on its own
     // chain. A file that carries only evidence_receipt entries is verified as
     // an evidence_receipt_v2 chain.
-    fn select_chain(self) -> Vec<Receipt> {
+    pub(crate) fn select_chain(self) -> Vec<Receipt> {
         if self.action.is_empty() {
             self.evidence
         } else {
@@ -115,7 +115,7 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
     Ok(extract_typed_receipts(path)?.select_chain())
 }
 
-fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
+pub(crate) fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
     let mut extracted = ExtractedReceipts::default();
     for (entry, ext_bytes) in read_entry_lines(path)? {
         let entry_type = entry.get("type").and_then(serde_json::Value::as_str);

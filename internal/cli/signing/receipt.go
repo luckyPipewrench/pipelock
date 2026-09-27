@@ -66,6 +66,11 @@ receipt hash chain (prev_hash linkage, seq continuity, signatures). Pass
 and the transcript_root seal. For a multi-file chain spanning restarts or
 rotations, pass --chain DIR.
 
+A current run writes an ActionReceipt v1 chain and an EvidenceReceipt v2
+chain into the same files; every mode verifies both, and the result is valid
+only when every chain present verifies. A single file must hold the session
+its name claims, and its recorder entry hash chain must hold from genesis.
+
 Each process run records its own chain ("<base>.run.<id>"). With --chain and
 no --session, every chain of the base is verified, then restart continuity:
 each optional signed link file beside the chains must name the exact tail of
@@ -73,7 +78,9 @@ the run it continues, under a trusted or endorsed key. Runs no link file
 continues are listed as unlinked. That is normal for a first run or for
 concurrent runs, and it is also what a deleted link file looks like, so a
 passing result does not prove no run's evidence is missing. Pass --session
-to verify one chain; continuity for its base is still reported.
+to verify one chain; continuity for its base is still verified, and any
+finding in the base, including two runs that share a signed run nonce, fails
+the result.
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -86,7 +93,7 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
-Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, or report delivery failed.
+Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, refused (a symlink inside an evidence directory, an entry filed under the wrong session), or report delivery failed; exit 2 = usage or configuration error, such as a malformed --key or a missing directory.
 
 Examples:
   pipelock verify-receipt receipt.json

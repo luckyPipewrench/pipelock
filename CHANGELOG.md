@@ -100,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pipelock init` waits briefly for user systemd** before skipping the evidence auditor. (#1626)
 - **A rules bundle fetch blocked by Pipelock says so** and names the reason. A bundle whose `min_pipelock` can't be checked on a development build warns and loads. (#1447, #1540)
 - **The sandbox bridge closes relays idle in both directions** after the largest configured proxy idle bound. (#1701)
+- **The sandbox launches on busy desktops:** the shared-UID task ceiling rose from 4,096 to 8,192, a launch adds at most 1,024 tasks above the current count, a stricter inherited limit still wins, and a launch at the ceiling is refused. (#1707)
 
 ### Fixed
 

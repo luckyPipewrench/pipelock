@@ -72,7 +72,10 @@ func runContainViewCommand(ctx context.Context, deps viewDeps, opts viewOptions)
 		case errors.Is(err, os.ErrNotExist):
 			return errors.New("contained display viewer is not running; enable containment.display.viewer and rerun pipelock contain install")
 		case errors.Is(err, os.ErrPermission):
-			return errors.New("contain view requires the configured containment.display.viewer.operator_user")
+			// EACCES also comes from a parent directory the caller cannot
+			// search, which is what the operator sees on a host whose viewer
+			// unit predates the operator traverse grant. Name both causes.
+			return errors.New("permission denied on the viewer control socket: run as the configured containment.display.viewer.operator_user; if you are that user, rerun pipelock contain install and check pipelock contain verify")
 		default:
 			return fmt.Errorf("check viewer control socket: %w", err)
 		}

@@ -44,7 +44,7 @@ func TestViewCommandDependencies(t *testing.T) {
 		{"viewer not running", "viewer is not running", func(d *viewDeps) {
 			d.access = func(string) error { return &os.PathError{Op: "access", Path: d.controlPath, Err: syscall.ENOENT} }
 		}, viewOptions{}},
-		{"not operator", "operator_user", func(d *viewDeps) {
+		{"permission denied", "rerun pipelock contain install", func(d *viewDeps) {
 			d.access = func(string) error { return &os.PathError{Op: "access", Path: d.controlPath, Err: syscall.EACCES} }
 		}, viewOptions{}},
 		{"socket check error", "check viewer control socket", func(d *viewDeps) {

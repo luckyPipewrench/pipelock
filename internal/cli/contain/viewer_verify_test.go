@@ -106,6 +106,18 @@ func TestViewerServiceProbe(t *testing.T) {
 	if status, detail := probeViewerService(context.Background(), env); status != statusPass {
 		t.Fatalf("valid service: %s %s", status, detail)
 	}
+	goodRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "getfacl" && len(args) > 0 && args[len(args)-1] == filepath.Dir(viewerControlSocket) {
+			// The live defect: a directory chmod left mask --- and cancelled the operator traverse.
+			return "user::rwx\nuser:operator:--x\ngroup::---\nmask::---\nother::---\n", 0, nil
+		}
+		return goodRun(ctx, name, args...)
+	}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "viewer runtime directory ACL") {
+		t.Fatalf("cancelled operator traverse: %s %s, want runtime directory ACL failure", status, detail)
+	}
+	env.runCmd = goodRun
 	originalLookup := env.lookupUser
 	env.lookupUser = func(name string) (*user.User, error) {
 		if name == "operator" {

@@ -112,3 +112,11 @@ This threat model does not cover:
 - [current-unsupported-paths.md](current-unsupported-paths.md): network paths the current Pipelock binary does not intercept.
 - [action-receipt-spec on pipelab.org](https://pipelab.org/learn/action-receipt-spec/): on-wire format for individual receipts.
 - [SECURITY.md](../../SECURITY.md): reporting channel for receipt-format vulnerabilities.
+
+## Schema-only migration
+
+`--offline` checks only the packet shape and returns a non-success trust result.
+Go, Rust, and TypeScript reports use `schema_checked_trust_unverified` as the
+verdict, set `trusted` and `valid` to false, and return a nonzero CLI exit.
+JSON and CI consumers must require a full chain check before accepting a
+packet verdict. The packet-authored verdict is not a verifier trust result.

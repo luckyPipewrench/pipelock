@@ -143,6 +143,7 @@ type HeldAction struct {
 	Payload       []byte
 	ArgDigest     string
 	Resolve       func(Resolution)
+	BeforeAllow   func() (release func(), ok bool)
 	timer         *time.Timer
 	state         string
 	createdAt     time.Time
@@ -388,6 +389,15 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		held.timer.Stop()
 	}
 	m.mu.Unlock()
+	if finalDecision == config.ActionAllow && held.BeforeAllow != nil {
+		release, ok := held.BeforeAllow()
+		if !ok || release == nil {
+			finalDecision = config.ActionBlock
+			source = SourceKillSwitch
+		} else {
+			defer release()
+		}
+	}
 
 	state := resolvedState(finalDecision)
 	if err := m.appendJournal(journalEntryFromHeld(*held, state, source)); err != nil {

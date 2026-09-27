@@ -147,6 +147,10 @@ export async function verifyAuditPacket(
     return report;
   }
   Object.assign(report, reportFromPacket(packetPath, packet));
+  if (opts.offline) {
+    report.verdict = "";
+    report.trusted = false;
+  }
 
   const schemaErrors = validateAuditPacket(packet);
   if (schemaErrors.length > 0) {
@@ -158,7 +162,10 @@ export async function verifyAuditPacket(
 
   if (opts.offline) {
     report.lifecycle_assessment_reason = "offline mode skips chain re-verification";
-    report.valid = trustVerdict(packet, opts);
+    report.verdict = "schema_checked_trust_unverified";
+    report.trusted = false;
+    report.valid = false;
+    pushError(report, "schema checked, trust unverified: chain and signer were not verified");
     return report;
   }
 

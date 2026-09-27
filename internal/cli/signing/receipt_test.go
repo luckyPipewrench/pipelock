@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1579,6 +1580,65 @@ func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
 	}
 	if report.Actions[1].DecisionPhase != receipt.DecisionPhaseDefer || report.Actions[2].DecisionPhase != receipt.DecisionPhaseResolution {
 		t.Fatalf("defer pair phases = (%q,%q)", report.Actions[1].DecisionPhase, report.Actions[2].DecisionPhase)
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportVerificationMode(t *testing.T) {
+	t.Parallel()
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantMode string
+		wantText string
+	}{
+		{"pinned", []string{"--key", hex.EncodeToString(pubKey)}, "pinned_provenance", "CLEAN REPORT VALID"},
+		{"unpinned", []string{"--allow-unpinned"}, "unpinned_structural", "CLEAN REPORT UNPINNED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reportPath := filepath.Join(t.TempDir(), "report.json")
+			cmd := VerifyReceiptCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs(append([]string{path, "--clean-report", reportPath}, tc.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Clean(reportPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report map[string]any
+			if err := json.Unmarshal(raw, &report); err != nil {
+				t.Fatal(err)
+			}
+			if report["schema_version"] != "pipelock.clean_report.v1" || report["verification_mode"] != tc.wantMode {
+				t.Fatalf("report trust contract: %s", raw)
+			}
+			if err := validateCleanReportSchema(t, raw); err != nil {
+				t.Fatalf("generated report violates published schema: %v\n%s", err, raw)
+			}
+			if !strings.Contains(out.String(), tc.wantText) {
+				t.Fatalf("output: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportRejectsUnpinned(t *testing.T) {
+	t.Parallel()
+	path, _ := buildDeferredCleanChainJSONL(t)
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{path, "--clean-report", reportPath})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "verification unpinned") {
+		t.Fatalf("Execute error = %v, want verification unpinned", err)
+	}
+	if _, err := os.Stat(reportPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("report path exists or stat failed: %v", err)
 	}
 }
 

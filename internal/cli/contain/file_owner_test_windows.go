@@ -8,3 +8,7 @@ package contain
 func fakeFileSysWithUID(_ uint32) any {
 	return nil
 }
+
+func fakeFileSysWithOwner(_, _ uint32) any {
+	return nil
+}

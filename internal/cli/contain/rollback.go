@@ -118,6 +118,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionPreserve("preflight (no-op for rollback)"),
 		actionMaybeDeleteUser(opts, true),  // proxy
 		actionMaybeDeleteUser(opts, false), // agent
+		actionMaybeDeleteViewerUser(opts),
 		actionMaybeRemoveDir(opts, "config", func(e *installEnv) string { return e.configDir }),
 		actionMaybeRemoveDir(opts, "data", func(e *installEnv) string { return e.dataDir }),
 		// Revoke MUST execute (in reverse walk: first) before the agent
@@ -149,6 +150,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveNetworkNamespace(),
 		actionRemoveNFTRules(),
 		actionRemoveAgentDisplay(),
+		actionRemoveViewer(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
@@ -162,6 +164,35 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
 	}
+}
+
+func actionMaybeDeleteViewerUser(opts rollbackOpts) step {
+	return step{name: "delete-viewer-user", desc: "delete dedicated display viewer user", undo: func(ctx context.Context, env *installEnv) error {
+		if opts.keepUsers && !opts.purgeUsers {
+			return nil
+		}
+		createdUID, err := env.readFile(viewerCreationMarkerPath(env))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("viewer creation record: %w", err)
+		}
+		account, err := env.lookupUser(viewerUserName)
+		if err != nil {
+			if errors.As(err, new(user.UnknownUserError)) {
+				return env.removeFile(viewerCreationMarkerPath(env))
+			}
+			return fmt.Errorf("viewer user lookup: %w", err)
+		}
+		if strings.TrimSpace(string(createdUID)) != account.Uid {
+			return fmt.Errorf("viewer account UID differs from its creation record; preserving account")
+		}
+		if err := runOrErr(ctx, env, "userdel", "-r", viewerUserName); err != nil {
+			return err
+		}
+		return env.removeFile(viewerCreationMarkerPath(env))
+	}}
 }
 
 func actionRemoveNetworkNamespace() step {

@@ -119,6 +119,12 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string
 	if r, ok := f.responses[key]; ok {
 		return r.out, r.code, r.err
 	}
+	if key == "id -u "+viewerUserName {
+		return "900\n", 0, nil
+	}
+	if name == "getfacl" {
+		return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
+	}
 	return "", 0, nil
 }
 
@@ -270,6 +276,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		workspaceInvPath:              filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
 		loopbackForwarderInvPath:      filepath.Join(root, "etc", "pipelock", "contain", "loopback-forwarders.json"),
 		evidenceACLInvPath:            filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		viewerAccountMarkerPath:       filepath.Join(root, "etc", "pipelock", "contain", "viewer-account.marker"),
 		guardScriptPath:               filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
 		guardServiceUnit:              filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
 		guardPathUnit:                 filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
@@ -337,6 +344,13 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		return runner.run(ctx, name, args...)
 	}
 
+	uid := uint32(os.Getuid()) // #nosec G115 -- Linux uid_t is uint32.
+	env.viewerACLUID = &uid
+	env.runViewerACL = func(ctx context.Context, file *os.File, name string, args ...string) (string, int, error) {
+		args = append([]string(nil), args...)
+		args[len(args)-1] = file.Name()
+		return runner.run(ctx, name, args...)
+	}
 	return env, runner, out
 }
 
@@ -2280,14 +2294,14 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 38 steps total after combining the runtime
+	// Sanity: the install flow has 40 steps total after combining the runtime
 	// contract steps, credential guard, operator evidence ACL, browser CA
 	// trust, agent-browser defaults, config-mode repair, published services,
 	// and final readiness gate. Changing this count changes documented dry-run
 	// output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 38 {
-		t.Errorf("installSteps count: got %d, want 38", len(steps))
+	if len(steps) != 40 {
+		t.Errorf("installSteps count: got %d, want 40", len(steps))
 	}
 }
 

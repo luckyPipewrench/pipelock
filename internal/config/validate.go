@@ -41,6 +41,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+var containmentGeometryPattern = regexp.MustCompile(`^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$`)
+
 // ValidateTrustedDomains validates and normalizes a slice of trusted domain
 // entries. Each entry is lowercased, trimmed, and checked for: empty values,
 // URL/host:port formats, bare wildcards, over-broad wildcards (e.g. *.com),
@@ -661,8 +663,8 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateContainmentPublishedServices(); err != nil {
 		return warnings, err
 	}
-	if number := c.Containment.Display.Number; number != nil && (*number < 0 || *number > 999) {
-		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
+	if err := c.Containment.Display.Validate(); err != nil {
+		return warnings, err
 	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err

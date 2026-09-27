@@ -1742,6 +1742,28 @@ containment:
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
 
+### Contained agent display (containment)
+
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–32768 and height 200–32768, with at most 16,777,216 pixels (64 MiB at four bytes per pixel).
+
+Changes to the display backend, geometry, or viewer settings require `pipelock contain install`. Configuration reload retains the installed display settings and does not apply those changes.
+
+```yaml
+containment:
+  display:
+    enabled: true
+    backend: xvnc
+    geometry: 1280x1024
+    viewer:
+      enabled: true
+      operator_user: operator
+      clipboard: false
+```
+
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB and creates `/run/pipelock-agent-display/rfb.sock`. A privileged systemd pre-start step creates that directory as root:`pipelock-viewer` with mode `0730`. Xvnc runs with the viewer group and can create the socket; contained agent processes cannot enter or change the directory. The socket is `0600` without a viewer and `0660` with one. The viewer service runs as the dedicated `pipelock-viewer` user, never as the proxy user. Its own directory under `/run/pipelock-contain-viewer/` remains private to that user; the control socket has an exact operator `rw-` ACL and a peer-UID check. The operator must have a different identity from the agent, proxy, and viewer accounts. The viewer enforces view-only mode and the control lease. `pipelock contain view` exposes a local Unix socket for a standard VNC client. `clipboard: false` disables clipboard transfer in both directions at the Xvnc display server.
+
+Rerun `pipelock contain install` after upgrading a host that uses the old home-directory RFB socket. Install moves Xvnc to the root-owned runtime directory, removes obsolete named ACL grants and the old socket from the agent home, and restarts the viewer under its dedicated identity. This cleanup runs again on every install, disable, and rollback, even after the unit has been migrated; verify and doctor fail if old access remains. An install failure restores the previous managed units and their active state. `pipelock contain rollback` stops both services and removes the viewer account only when install created that same account, unless `--keep-users` is set. A pre-existing viewer account is preserved. Configuration reload does not change this access model; use `contain install` for display or viewer changes.
+
 ### Contained agent identity (containment)
 
 A contained agent reaches the proxy through its namespace doorway, which by default delivers to the shared proxy listener. Traffic there is attributed by the usual rules, so a profile whose `source_cidrs` covers loopback claims the contained agent along with every other local client. Set `containment.agent_listener` to one of the agent's own `agents.<name>.listeners` to deliver the doorway to that listener instead:

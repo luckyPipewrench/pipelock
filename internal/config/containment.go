@@ -91,6 +91,8 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 	return fmt.Errorf("containment.agent_listener %q is not declared under any agents.<name>.listeners; declare it on the contained agent's profile", listener)
 }
 
+const DefaultContainmentAgentUser = "pipelock-agent"
+
 // ContainmentDisplay configures the private Xvfb display installed for the
 // contained agent.
 //
@@ -102,8 +104,34 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 // box. An explicit false still turns it off, and a host without Xvfb
 // installed is left alone rather than failing its install.
 type ContainmentDisplay struct {
-	Enabled *bool `yaml:"enabled"`
-	Number  *int  `yaml:"number"`
+	Enabled  *bool                    `yaml:"enabled"`
+	Number   *int                     `yaml:"number"`
+	Backend  string                   `yaml:"backend"`
+	Geometry string                   `yaml:"geometry"`
+	Viewer   ContainmentDisplayViewer `yaml:"viewer"`
+}
+
+type ContainmentDisplayViewer struct {
+	Enabled      *bool  `yaml:"enabled"`
+	OperatorUser string `yaml:"operator_user"`
+	Clipboard    *bool  `yaml:"clipboard"`
+}
+
+func (d ContainmentDisplay) EffectiveGeometry() string {
+	if d.Geometry == "" {
+		return "1280x1024"
+	}
+	return d.Geometry
+}
+
+func (d ContainmentDisplay) EffectiveBackend() string {
+	if d.Backend != "" {
+		return d.Backend
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		return "xvnc"
+	}
+	return "xvfb"
 }
 
 // IsEnabled resolves the three states: explicitly on, explicitly off, and
@@ -113,7 +141,58 @@ func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
 	if d.Enabled != nil {
 		return *d.Enabled
 	}
+	if d.Backend == "xvnc" || (d.Viewer.Enabled != nil && *d.Viewer.Enabled) {
+		return true
+	}
 	return xvfbPresent
+}
+
+// Validate checks the display settings that contain renders into systemd
+// units. Contain reads config without the daemon's full validation, so it
+// calls this directly: a geometry or user value that reached a unit line
+// unvalidated could add X server flags or unit directives.
+func (d ContainmentDisplay) Validate() error {
+	if d.Enabled != nil && !*d.Enabled && d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		return fmt.Errorf("containment.display.viewer.enabled requires an enabled display")
+	}
+	if number := d.Number; number != nil && (*number < 0 || *number > 999) {
+		return fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
+	}
+	if d.Geometry != "" {
+		parts := strings.Split(d.Geometry, "x")
+		if len(parts) != 2 || !containmentGeometryPattern.MatchString(d.Geometry) {
+			return fmt.Errorf("containment.display.geometry must be WxH with decimal dimensions")
+		}
+		width, _ := strconv.Atoi(parts[0])
+		height, _ := strconv.Atoi(parts[1])
+		// TigerVNC Xvnc sets RandR's maximum to 32768 per side:
+		// https://github.com/TigerVNC/tigervnc/blob/master/unix/xserver/hw/vnc/xvnc.c
+		// At depth 24, the framebuffer uses 32 bits per pixel. Limit its raw
+		// allocation to 64 MiB: 64*1024*1024/4 = 16,777,216 pixels.
+		if width < 320 || width > 32768 || height < 200 || height > 32768 || width*height > 16_777_216 {
+			return fmt.Errorf("containment.display.geometry must be 320..32768 wide, 200..32768 high, and at most 16777216 pixels")
+		}
+	}
+	if d.Backend != "" && d.Backend != "xvfb" && d.Backend != "xvnc" {
+		return fmt.Errorf("containment.display.backend must be xvfb or xvnc")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.EffectiveBackend() != "xvnc" {
+		return fmt.Errorf("containment.display.viewer.enabled requires backend xvnc")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled && d.Viewer.OperatorUser == "" {
+		return fmt.Errorf("containment.display.viewer.operator_user is required when viewer is enabled")
+	}
+	if d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		for _, reserved := range []string{DefaultContainmentAgentUser, "pipelock-proxy", "pipelock-viewer"} {
+			if d.Viewer.OperatorUser == reserved {
+				return fmt.Errorf("containment.display.viewer.operator_user must not be a containment service account")
+			}
+		}
+	}
+	if user := d.Viewer.OperatorUser; user != "" && !publishedOperatorUserPattern.MatchString(user) {
+		return fmt.Errorf("containment.display.viewer.operator_user must name one local user")
+	}
+	return nil
 }
 
 // EffectiveNumber returns the configured display number, or the conventional

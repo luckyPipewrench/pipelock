@@ -25,7 +25,7 @@ Bearer token in the `Authorization` header. Tokens are configured in YAML and co
 Authorization: Bearer <token>
 ```
 
-Returns `401` if missing or invalid.
+Returns `401` if missing or invalid. A client address that presents 10 wrong bearer tokens within 60 seconds gets `429` `rate_limited` with `Retry-After` until the window passes, even for a subsequently correct token. Requests with no token are not counted; a correct token while under the limit clears the count. The key is the transport peer address, never a forwarded-for header.
 
 ## Request
 
@@ -114,8 +114,8 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | `completed` or `error`. |
-| `decision` | string | `allow`, `warn`, or `deny`. Present when `status` is `completed`. Absent on errors. `warn` is additive: a matching `mcp_tool_policy` rule with `action: warn` would be forwarded by the live MCP proxy with an audit event, so this API reports `warn` rather than `deny` unless an earlier DLP or injection finding already decided `deny`. Consumers that need to fail on warnings must opt into that policy themselves. |
-| `kind` | string | Echoes the request kind. Populated at two handler phases: (1) post-parse validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) include `kind` because the body has been decoded. (2) Post-scan responses (allow, warn, deny, timeout, cancel) include `kind`. Empty on pre-parse errors: 401, 405, 429, 503 (kill switch), `read_error`, `body_too_large`, and `invalid_json` — including trailing-data cases where the body contained a valid kind. |
+| `decision` | string | `allow`, `warn`, or `deny`. Present when `status` is `completed`. Absent on errors. `warn` is additive: a matching `mcp_tool_policy` rule with `action: warn` would be forwarded by the live MCP proxy with an audit event, so this API reports `warn` rather than `deny` unless an earlier DLP or injection finding already decided `deny`. A completed cross-request fragment match (with `session_id`) also escalates a clean result to `warn` when `cross_request_detection.action: warn`, and to `deny` when it is `block`; capacity, ownership, and cancellation failures always deny. Consumers that need to fail on warnings must opt into that policy themselves. |
+| `kind` | string | Echoes the request kind. Populated at two handler phases: (1) post-parse validation errors (`invalid_session_id`, `invalid_kind`, `kind_disabled`, `invalid_input`) include `kind` because the body has been decoded. (2) Post-scan responses (allow, warn, deny, timeout, cancel) include `kind`. Empty on pre-parse errors: 401, 405, 429, 503 (kill switch), `read_error`, `body_too_large`, and `invalid_json` — including trailing-data cases where the body contained a valid kind. |
 | `scan_id` | string | Unique per-scan ID. Format: `scan-` + 16 lowercase hex characters (64 bits from crypto/rand). Example: `scan-a1b2c3d4e5f67890`. |
 | `request_id` | string | Echoed from `context.request_id` only in the post-`executeScan` path (allow, warn, deny, timeout, cancel). Absent on all pre-scan errors including validation errors (`invalid_kind`, `kind_disabled`, `invalid_input`) — those errors have `kind` but not `request_id` because `request_id` is copied after the scan, not after parsing. |
 | `session_id` | string | Echoed from `context.session_id` on the same post-scan timing as `request_id`. Absent when the request omitted `session_id`, or on any pre-scan error. |
@@ -154,9 +154,9 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | `url` | `SSRF-Private-IP`, `DLP-URL-Exfil`, `BLOCK-Domain`, `URL-<scanner>` | `SSRF-Private-IP` |
 | `dlp` | `DLP-<pattern_name>` | `DLP-Anthropic API Key` |
 | `prompt_injection` | `INJ-<pattern_name>` | `INJ-Prompt Injection` |
-| `tool_policy` | `POLICY-<rule_name>` or `POLICY-DENY` | `POLICY-shell-exec` |
+| `tool_policy` | `POLICY-<rule_name>`, `POLICY-DENY`, or `POLICY-WARN` (unnamed match with `action: warn`) | `POLICY-shell-exec` |
 | `cross_request_fragment` (match) | `CEE-fragment-<pattern_name>` | `CEE-fragment-Anthropic API Key` |
-| `dlp` / `prompt_injection` / `tool_call` (cross-request capacity/ownership failure) | `CEE-capacity-exceeded` or `CEE-owner-mismatch` | `CEE-capacity-exceeded` |
+| `dlp` / `prompt_injection` / `tool_call` (cross-request capacity/ownership/cancel failure) | `CEE-capacity-exceeded`, `CEE-owner-mismatch`, or `CEE-scan-cancelled` (the reassembled scan did not finish) | `CEE-capacity-exceeded` |
 
 ### Severity assignment
 
@@ -168,6 +168,8 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | `dlp` (text kind) | Per-pattern (configured in DLP pattern definitions) |
 | `prompt_injection` | `high` |
 | `tool_policy` | `medium` for `action: warn`; `high` for every other action, including unknown or empty actions that fail closed |
+| `cross_request_fragment` (match) | `critical`; `medium` when `cross_request_detection.action: warn` |
+| cross-request capacity/ownership/cancel findings | `critical` |
 
 ### Error object
 
@@ -191,11 +193,12 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 |------|-------------|-----------|-------|
 | `unauthorized` | 401 | no | Missing or invalid bearer token. |
 | `method_not_allowed` | 405 | no | Not a POST request. |
-| `rate_limited` | 429 | yes | Per-token rate limit exceeded. Retry after `Retry-After` header. |
+| `rate_limited` | 429 | yes | Per-token rate limit exceeded, or too many failed bearer tokens from this client address. Retry after `Retry-After` header. |
 | `kill_switch_active` | 503 | no | Kill switch is engaged. All scanning suspended. |
 | `read_error` | 400 | no | Failed to read request body. |
 | `body_too_large` | 400 | no | Request body exceeds `max_body_bytes` (default 1MB). |
 | `invalid_json` | 400 | no | Malformed JSON, unknown fields, or trailing data. |
+| `invalid_session_id` | 400 | no | `context.session_id` is over 128 bytes or contains a byte outside visible non-whitespace ASCII. |
 | `invalid_kind` | 400 | no | Unknown scan kind. |
 | `kind_disabled` | 400 | no | Requested kind is disabled on this server. |
 | `invalid_input` | 400 | no | Missing required field, field too large, or invalid URL. |

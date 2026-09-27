@@ -107,6 +107,10 @@ func ScopedChainTrust(report BaseReport, session string, trustedKeys []string, e
 				crossChain = true
 				break
 			}
+			if c.Session == session && bindsFinalReceipt(e, c) {
+				crossChain = true
+				break
+			}
 		}
 		if !crossChain {
 			own = append(own, e)

@@ -432,8 +432,7 @@ func TestAuditPacketPreservesChainFailureInsteadOfRelabelingItAsLifecycle(t *tes
 		t.Fatalf("read evidence: %v", err)
 	}
 	// Flip one signature nibble after the packet is written. The recorder
-	// envelope and signature encoding remain valid, so this reaches
-	// cryptographic signature verification rather than the parser.
+	// hash chain must reject the edited entry before lifecycle assessment.
 	const signaturePrefix = `"signature":"ed25519:`
 	signatureOffset := bytes.Index(raw, []byte(signaturePrefix))
 	if signatureOffset < 0 {
@@ -467,15 +466,14 @@ func TestAuditPacketPreservesChainFailureInsteadOfRelabelingItAsLifecycle(t *tes
 		t.Fatalf("tampered chain report = %+v, want failed chain and invalid packet", report)
 	}
 	errorsText := strings.Join(report.Errors, "\n")
-	if !strings.Contains(errorsText, "signature verification failed") ||
+	if !strings.Contains(errorsText, "recorder entry hash chain") ||
 		strings.Contains(errorsText, "lifecycle:") {
-		t.Fatalf("chain failure must preserve signature detail without lifecycle label: %q", errorsText)
+		t.Fatalf("chain failure must preserve recorder detail without lifecycle label: %q", errorsText)
 	}
 	if report.LifecycleAssessment != lifecycleNotAssessed || report.LifecycleStatus != "" || report.LifecycleReason != "" {
 		t.Fatalf("invalid chain must not receive lifecycle assessment: %+v", report)
 	}
-	if err == nil || !strings.Contains(err.Error(), "packet chain rejected") ||
-		!strings.Contains(err.Error(), "signature verification failed") ||
+	if err == nil || !strings.Contains(err.Error(), "recorder entry hash chain") ||
 		strings.Contains(err.Error(), "packet lifecycle broken") {
 		t.Fatalf("terminal error must preserve chain failure without lifecycle label: %v", err)
 	}

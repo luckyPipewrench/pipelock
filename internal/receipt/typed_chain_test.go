@@ -27,6 +27,21 @@ const (
 	fixtureReplayRun    = "proxy.run.00000000000000000000000000000000"
 )
 
+func TestScopedChainTrustExcludesTailEndorsementWithoutLink(t *testing.T) {
+	const session = "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
+	report := BaseReport{Chains: []BaseChain{{Session: session, FinalSeq: 4, TailHash: "tail"}}}
+	endorsement := RotationEndorsement{SessionID: session, PriorFinalSeq: 4, PriorTailHash: "tail"}
+	_, own := ScopedChainTrust(report, session, nil, []RotationEndorsement{endorsement})
+	if len(own) != 0 {
+		t.Fatalf("tail endorsement without its link passed to in-chain verifier: %+v", own)
+	}
+	endorsement.PriorTailHash = "different"
+	_, own = ScopedChainTrust(report, session, nil, []RotationEndorsement{endorsement})
+	if len(own) != 1 {
+		t.Fatalf("unrelated endorsement was dropped: %+v", own)
+	}
+}
+
 func fixtureSignerKey(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(fixtureRunChainsDir, "signer-key.hex"))

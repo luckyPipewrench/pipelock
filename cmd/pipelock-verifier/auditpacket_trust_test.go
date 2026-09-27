@@ -64,6 +64,25 @@ func TestAuditPacket_FailedVerificationDoesNotClaimTrust(t *testing.T) {
 			},
 			check: statusFail,
 		},
+		{
+			name: "malformed recorder tail",
+			key:  fix.keyHex,
+			setup: func(t *testing.T, dir string) {
+				evidence := filepath.Join(dir, "evidence.jsonl")
+				f, err := os.OpenFile(filepath.Clean(evidence), os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.WriteString("not-json\n"); err != nil {
+					_ = f.Close()
+					t.Fatal(err)
+				}
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: statusFail,
+		},
 		{name: "wrong key", key: wrongKey, check: statusFail},
 		{
 			name: "cross-check mismatch",
@@ -106,5 +125,28 @@ func TestAuditPacket_OfflineVerdictUnchanged(t *testing.T) {
 	report, _ := auditPacketJSON(t, "--offline", dir)
 	if report.Verdict != statusSchemaCheckedTrustUnverified || report.Trusted || report.Valid {
 		t.Fatalf("offline: verdict=%q trusted=%v valid=%v", report.Verdict, report.Trusted, report.Valid)
+	}
+}
+
+func TestAuditPacket_RawActionJSONLCompatibility(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	var raw bytes.Buffer
+	for _, r := range fix.receipts {
+		line, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.Write(line)
+		raw.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence.jsonl"), raw.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, code := auditPacketJSON(t, "--key", fix.keyHex, dir)
+	if code != cliutil.ExitOK || !report.Valid || !report.Trusted {
+		t.Fatalf("raw action JSONL compatibility: code=%d report=%+v", code, report)
 	}
 }

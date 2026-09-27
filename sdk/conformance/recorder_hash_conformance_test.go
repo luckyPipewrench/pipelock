@@ -80,12 +80,12 @@ var recorderHashTemplates = []struct{ name, line string }{
 	{"v2 seq beyond 2^53", `{"v":2,"seq":18446744073709551615,"ts":"2026-09-27T18:36:18Z","session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"p","hash":"__HASH__"}`},
 	{"v2 unicode and escaped strings", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18Z","session_id":"sé","type":"decision","transport":"t","summary":"a<b>& \"\\ 😀 é","detail":1,"prev_hash":"p","hash":"__HASH__"}`},
 	{"v2 unknown top-level field ignored", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18Z","session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"extra":{"q":1},"prev_hash":"p","hash":"__HASH__"}`},
-	{"v2 ts escape decoded before parsing", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18Z","session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"p","hash":"__HASH__"}`},
 	{"v3 namespace fields", `{"v":3,"seq":2,"ts":"2026-09-27T18:36:18.011Z","session_id":"s","chain_kind":"recorder","writer_instance_id":"w1","type":"decision","event_kind":"k","transport":"t","summary":"x","detail":{"a":1},"prev_hash":"p","hash":"__HASH__"}`},
 }
 
 // recorderRejectTemplates are entries Go refuses to read or hash.
 var recorderRejectTemplates = []struct{ name, line string }{
+	{"ts escaped zone refused", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18\u005a","session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"p","hash":"h"}`},
 	{"NUL in summary", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18Z","session_id":"s","type":"decision","transport":"t","summary":"a\u0000b","detail":1,"prev_hash":"p","hash":"h"}`},
 	{"legacy entry with namespace", `{"v":2,"seq":1,"ts":"2026-09-27T18:36:18Z","session_id":"s","chain_kind":"recorder","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"p","hash":"h"}`},
 	{"ts hour out of range", `{"v":2,"seq":1,"ts":"2026-09-27T24:00:00Z","session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"p","hash":"h"}`},

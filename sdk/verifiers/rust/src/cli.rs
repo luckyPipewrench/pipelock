@@ -206,7 +206,7 @@ fn both_chains_report(
             &typed.evidence,
             &key,
             allow_unpinned,
-            endorsements,
+            &[],
             session_id,
         );
     }
@@ -226,7 +226,7 @@ fn both_chains_report(
         &typed.evidence,
         &evidence_chain_key(key_hex, &typed.evidence),
         allow_unpinned,
-        endorsements,
+        &[],
         session_id,
     );
     if primary.valid && evidence.valid {

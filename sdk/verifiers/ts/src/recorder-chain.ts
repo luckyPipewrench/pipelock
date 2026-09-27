@@ -114,6 +114,12 @@ function projectEntry(line: string): ProjectedEntry {
   let ts = "0001-01-01T00:00:00Z";
   if (tsValue !== undefined && tsValue !== null) {
     if (typeof tsValue !== "string") throw new Error("ts is not a JSON string");
+    const rawTS = objectMemberSpan(line, line.indexOf("{"), "ts");
+    // Go's time.Time JSON parser validates the raw quoted timestamp; it
+    // refuses JSON escapes even when their decoded value is RFC 3339.
+    if (rawTS && line.slice(rawTS.start, rawTS.end).includes("\\")) {
+      throw new Error("ts contains a JSON escape");
+    }
     ts = goUTCRFC3339Nano(tsValue);
   }
   const span = objectMemberSpan(line, line.indexOf("{"), "detail");

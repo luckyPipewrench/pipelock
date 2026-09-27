@@ -87,17 +87,17 @@
       "hash": "be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e"
     },
     {
-      "name": "v2 ts escape decoded before parsing",
-      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e\"}",
-      "hash": "be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e"
-    },
-    {
       "name": "v3 namespace fields",
       "line": "{\"v\":3,\"seq\":2,\"ts\":\"2026-09-27T18:36:18.011Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w1\",\"type\":\"decision\",\"event_kind\":\"k\",\"transport\":\"t\",\"summary\":\"x\",\"detail\":{\"a\":1},\"prev_hash\":\"p\",\"hash\":\"76556194b0424b70ca0f0eb61fc2f3af926f191c0fc2d5c418844c9cef2ddc23\"}",
       "hash": "76556194b0424b70ca0f0eb61fc2f3af926f191c0fc2d5c418844c9cef2ddc23"
     }
   ],
   "rejects": [
+    {
+      "name": "ts escaped zone refused",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18\\u005a\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "parsing time \"2026-09-27T18:36:18\\\\u005a\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \"\\\\u005a\" as \"Z07:00\""
+    },
     {
       "name": "NUL in summary",
       "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\\u0000b\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",

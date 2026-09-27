@@ -105,7 +105,15 @@ fn project(line: &str) -> Result<Projected, String> {
     };
     let ts = match obj.get("ts") {
         None | Some(Value::Null) => "0001-01-01T00:00:00Z".to_string(),
-        Some(Value::String(s)) => go_utc_rfc3339_nano(s)?,
+        Some(Value::String(s)) => {
+            if let Some((start, end)) = object_member_span(line, line.find('{').unwrap_or(0), "ts")
+            {
+                if line[start..end].contains('\\') {
+                    return Err("ts contains a JSON escape".to_string());
+                }
+            }
+            go_utc_rfc3339_nano(s)?
+        }
         Some(_) => return Err("ts is not a JSON string".to_string()),
     };
     let start = line.find('{').unwrap_or(0);

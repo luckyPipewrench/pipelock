@@ -225,7 +225,7 @@ async function bothChainsReport(
     primaryReceipts,
     typed.action.length === 0 ? evidenceChainKey(keyHex, primaryReceipts) : keyHex,
     allowUnpinned,
-    endorsements,
+    typed.action.length === 0 ? [] : endorsements,
     sessionID,
   );
   if (typed.action.length === 0 || typed.evidence.length === 0) return primary;
@@ -234,7 +234,7 @@ async function bothChainsReport(
     typed.evidence,
     evidenceChainKey(keyHex, typed.evidence),
     allowUnpinned,
-    endorsements,
+    [],
     sessionID,
   );
   if (primary.valid && evidence.valid) return primary;

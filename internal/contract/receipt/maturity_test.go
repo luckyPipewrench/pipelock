@@ -314,6 +314,37 @@ func (e *emitter) outer() { e.emit() }`
 	}
 }
 
+func TestCalledProductionFunctionsReceiverShadowsImport(t *testing.T) {
+	const source = `package sample
+import emitter "example.com/emitter"
+type producer struct{}
+func (emitter *producer) emit() {}
+func (emitter *producer) outer() { emitter.emit() }`
+	file, err := parser.ParseFile(token.NewFileSet(), "sample.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := map[string]*productionFunction{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		name := productionFunctionName(fn)
+		functions[functionKey("sample", name)] = &productionFunction{
+			packagePath: "sample", name: name, decl: fn, imports: importPaths(file),
+		}
+	}
+	outer := functions[functionKey("sample", "(*producer).outer")]
+	want := functions[functionKey("sample", "(*producer).emit")]
+	if outer == nil || want == nil {
+		t.Fatal("fixture methods missing")
+	}
+	if got := calledProductionFunctions(outer, functions); len(got) != 1 || got[0] != want {
+		t.Fatalf("receiver shadowing import resolved to %v, want emit", got)
+	}
+}
+
 func TestCalledProductionFunctionsResolvesMixedReceiverForms(t *testing.T) {
 	const source = `package sample
 type emitter struct{}
@@ -375,9 +406,7 @@ func calledProductionFunctions(fn *productionFunction, functions map[string]*pro
 			key = functionKey(fn.packagePath, callee.Name)
 		case *ast.SelectorExpr:
 			ident, ok := callee.X.(*ast.Ident)
-			if ok && fn.imports[ident.Name] != "" {
-				key = functionKey(fn.imports[ident.Name], callee.Sel.Name)
-			} else if ok && fn.decl.Recv != nil && len(fn.decl.Recv.List) > 0 &&
+			if ok && fn.decl.Recv != nil && len(fn.decl.Recv.List) > 0 &&
 				len(fn.decl.Recv.List[0].Names) > 0 &&
 				ident.Obj != nil && ident.Obj == fn.decl.Recv.List[0].Names[0].Obj {
 				// ParseFile resolves lexical objects by default. Object identity
@@ -393,6 +422,8 @@ func calledProductionFunctions(fn *productionFunction, functions map[string]*pro
 					}
 					key = functionKey(fn.packagePath, other+"."+callee.Sel.Name)
 				}
+			} else if ok && fn.imports[ident.Name] != "" {
+				key = functionKey(fn.imports[ident.Name], callee.Sel.Name)
 			}
 		}
 		if candidate := functions[key]; candidate != nil {

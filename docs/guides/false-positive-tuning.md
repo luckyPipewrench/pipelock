@@ -115,6 +115,10 @@ Sites often put values in their own cookies that look like credentials to DLP: a
 
 A cookie the destination issued, and that goes back to that exact destination, discloses nothing the destination does not already hold. Pipelock therefore leaves such a cookie out of header DLP. The rule is `request_body_scanning.issuer_bound_session_cookies`, and it is on by default. It takes effect only when `tls_interception.enabled` is true and request body and header scanning are enabled, because intercepted HTTPS responses are the only place Pipelock can see a site issue a cookie. Set it to `false` to scan every cookie as before.
 
+This allowance applies only to an operator-established agent identity: a per-agent listener binding, a `source_cidrs` match, or `default_agent_identity`. A request whose identity is self-declared through the agent header or `?agent=`, or that carries no identity at all, never gets the allowance and is scanned in full even with the setting on. A default install with no listener binding, no `source_cidrs`, and no `default_agent_identity` resolves every caller to a self-declared identity, so the default-on setting does nothing there. Set `default_agent_identity` (or bind listeners) for the allowance to take effect.
+
+A plain, unencoded JWT in a `Cookie` header is separately treated as `warn` rather than `block` regardless of this setting, because JWT session cookies are ordinary browser authentication state; an encoded JWT, a JWT in any other header, or any other credential pattern in the cookie keeps normal enforcement.
+
 How it decides:
 
 - Pipelock records a keyed digest of each cookie name and value from a `Set-Cookie` header on an intercepted HTTPS response that was allowed and delivered to the client. A blocked or undelivered response records nothing. The cookie value itself is never stored.

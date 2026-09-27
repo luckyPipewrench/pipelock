@@ -181,7 +181,7 @@ Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` ma
 ### Fail-Closed Behavior
 
 TLS interception is fail-closed:
-- Compressed responses (Content-Encoding other than identity): blocked (scanning would be bypassed)
+- Compressed responses Pipelock cannot decode (anything other than single-layer gzip or deflate): blocked (scanning would be bypassed)
 - Responses larger than `max_response_bytes`: blocked
 - TLS handshake failures: connection closed
 - Certificate generation errors: connection closed
@@ -218,7 +218,7 @@ The hostname in the request doesn't match what pipelock generated. This usually 
 
 ### Compressed response blocked
 
-Pipelock blocks compressed responses during interception because it can't scan content it can't read. The upstream server sent `Content-Encoding: gzip` (or similar). Pipelock's transport sets `Accept-Encoding: identity` to request uncompressed responses, but some servers ignore this.
+Pipelock decodes a single-layer gzip or deflate response and scans it normally. It blocks a response during interception when it can't decode it: the upstream sent an encoding Pipelock cannot decode, such as `br` or `zstd`, or a stacked or malformed body. Pipelock's transport sets `Accept-Encoding: identity` to request uncompressed responses, but some servers ignore this.
 
 If you trust the domain, add it to `passthrough_domains`.
 

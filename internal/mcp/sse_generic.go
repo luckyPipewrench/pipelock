@@ -333,11 +333,16 @@ func ScanGenericSSEStreamWithOptions(
 		resetDLPTail := false
 		if !skipTailDLP && tail != "" {
 			combined := tail + rollingText
-			_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail), opts.Target, opts.Suppress)
-			if err := checkSSEDLPContext(ctx); err != nil {
-				return err
+			// Only suppression bookkeeping reads this scan, so skip it when
+			// nothing can be dropped or recorded, and keep it out of warn
+			// telemetry for content an earlier event already reported.
+			if opts.OnDroppedDLP != nil && len(opts.Suppress) > 0 {
+				_, priorTailDrops := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail), opts.Target, opts.Suppress)
+				if err := checkSSEDLPContext(ctx); err != nil {
+					return err
+				}
+				droppedDLP.markSeen(priorTailDrops)
 			}
-			droppedDLP.markSeen(priorTailDrops)
 			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
@@ -442,57 +447,66 @@ func ScanGenericSSEStreamWithOptions(
 	}
 }
 
-// dropSelfMatchingSSEInjectionTail keeps text after a finding already reported
+// dropSelfMatchingSSEInjectionTail keeps text after findings already reported
 // for this event so a later event can complete another phrase without a repeat.
+// Each reported phrase is cut and the remainder rescanned, so a second phrase
+// in the same event is not carried into the next event's scan.
 func dropSelfMatchingSSEInjectionTail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
-	result := sc.ScanResponseWithSuppress(ctx, tail, opts.Target, opts.Suppress)
-	if result.Failed() {
-		return "", fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+	scan := func(text string) (bool, error) {
+		result := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+		if result.Failed() {
+			return false, fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+		}
+		return !result.Clean, nil
 	}
-	if result.Clean {
-		return advanceSSERollingTail("", []byte(tail), true, " "), nil
-	}
-	end := 0
-	start := len(tail)
-	// ForMatching preserves byte offsets only for ASCII input with no
-	// length-changing normalization. Other views cannot index the raw event.
-	if len(normalize.ForMatching(tail)) == len(tail) && isASCII(tail) {
-		for _, match := range result.Matches {
-			span := match.Span()
-			if span.ViewLabel == scanner.ViewForMatching && span.ByteStart >= 0 && span.ByteEnd > span.ByteStart && span.ByteEnd <= len(tail) {
-				if span.ByteStart < start {
-					start = span.ByteStart
+	probes := 0
+	for tail != "" && probes < sseTailProbeLimit {
+		result := sc.ScanResponseWithSuppress(ctx, tail, opts.Target, opts.Suppress)
+		probes++
+		if result.Failed() {
+			return "", fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+		}
+		if result.Clean {
+			break
+		}
+		end := 0
+		start := len(tail)
+		// ForMatching preserves byte offsets only for ASCII input with no
+		// length-changing normalization. Other views cannot index the raw event.
+		if len(normalize.ForMatching(tail)) == len(tail) && isASCII(tail) {
+			for _, match := range result.Matches {
+				span := match.Span()
+				if span.ViewLabel == scanner.ViewForMatching && span.ByteStart >= 0 && span.ByteEnd > span.ByteStart && span.ByteEnd <= len(tail) {
+					if span.ByteStart < start {
+						start = span.ByteStart
+					}
+				}
+				if span.ViewLabel == scanner.ViewForMatching && span.ByteEnd > end && span.ByteEnd <= len(tail) {
+					end = span.ByteEnd
 				}
 			}
-			if span.ViewLabel == scanner.ViewForMatching && span.ByteEnd > end && span.ByteEnd <= len(tail) {
-				end = span.ByteEnd
-			}
 		}
-	}
-	if end == 0 {
-		// A decoded or normalized view has no raw offset. Bisect for the end of
-		// the reported phrase so the next event cannot report it again; text
-		// after it may still begin a second phrase and is kept.
-		probes := 1
-		cut, err := sseBisectMatchEnd(tail, &probes, func(prefix string) (bool, error) {
-			result := sc.ScanResponseWithSuppress(ctx, prefix, opts.Target, opts.Suppress)
-			if result.Failed() {
-				return false, fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+		if end == 0 {
+			// A decoded or normalized view has no raw offset. Bisect for the
+			// end of the reported phrase; text after it may still begin a
+			// second phrase and is kept.
+			cut, err := sseBisectMatchEnd(tail, &probes, scan)
+			if err != nil {
+				return "", err
 			}
-			return !result.Clean, nil
-		})
-		if err != nil {
-			return "", err
+			tail = tail[cut:]
+			continue
 		}
-		return advanceSSERollingTail("", []byte(tail[cut:]), true, " "), nil
+		// A separate phrase may already have started before the reported match.
+		// Keep both unreported sides while removing the reported span.
+		remaining := tail[end:]
+		if start > 0 && start < end {
+			remaining = tail[:start] + " " + remaining
+		}
+		tail = remaining
 	}
-	// A separate phrase may already have started before the reported match.
-	// Keep both unreported sides while removing the reported span.
-	remaining := tail[end:]
-	if start > 0 && start < end {
-		remaining = tail[:start] + " " + remaining
-	}
-	return advanceSSERollingTail("", []byte(remaining), true, " "), nil
+	// An exhausted budget keeps the unexamined remainder.
+	return advanceSSERollingTail("", []byte(tail), true, " "), nil
 }
 
 func isASCII(s string) bool {

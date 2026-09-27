@@ -220,6 +220,10 @@ func RunHTTPProxy(
 			}
 			return fmt.Errorf("reading stdin: %w", err)
 		}
+		var deferredGeneration uint64
+		if fwdOpts.KillSwitch != nil {
+			deferredGeneration = fwdOpts.KillSwitch.DeferredGeneration()
+		}
 
 		// Parse the inbound frame once per message. Kill switch, request
 		// tracking, and upstream-error responses all read frame.ID
@@ -297,6 +301,15 @@ func RunHTTPProxy(
 				Authority: deferred.AuthoritySnapshot{
 					SessionID:         deferredReq.SessionID,
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
+				},
+				BeforeAllow: func() (func(), bool) {
+					if fwdOpts.beforeDeferredSendClaim != nil {
+						fwdOpts.beforeDeferredSendClaim()
+					}
+					if fwdOpts.KillSwitch == nil {
+						return func() {}, true
+					}
+					return fwdOpts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false

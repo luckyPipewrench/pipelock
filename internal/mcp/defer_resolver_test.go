@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -45,6 +47,295 @@ func deferApprovalPolicy(profile config.DeferResolverProfile) *policy.Config {
 				},
 			},
 		},
+	}
+}
+
+func TestDeferredStdioReleaseChecksLiveKillSwitch(t *testing.T) {
+	testDeferredStdioKillSwitchRelease(t, false)
+}
+
+func TestDeferredStdioConcurrentActivation(t *testing.T) {
+	testDeferredStdioKillSwitchRelease(t, true)
+}
+
+func TestDeferredStdioActivationDuringScanInvalidatesHold(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	ks := killswitch.New(config.Defaults())
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	inputR, inputW := io.Pipe()
+	var upstream, logBuf syncBuffer
+	blocked := make(chan BlockedRequest, 4)
+	done := make(chan struct{})
+	var scanned atomic.Bool
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
+			config.ActionWarn, config.ActionBlock, blocked, nil, nil, MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager,
+				ReceiptEmitter: emitter, Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+				DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+					ks.SetAPI(true)
+					ks.SetAPI(false)
+					scanned.Store(true)
+					return true, "", "", ""
+				},
+			})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
+	if !scanned.Load() {
+		t.Fatal("scan callback did not run")
+	}
+	if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if strings.Contains(upstream.String(), "send_tool") {
+		t.Fatal("activation during scanning allowed held stdio send")
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
+}
+
+type claimGateWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	dst     *syncBuffer
+}
+
+func (w *claimGateWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return w.dst.Write(p)
+}
+
+func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	ks := killswitch.New(config.Defaults())
+	inputR, inputW := io.Pipe()
+	var upstream, logBuf syncBuffer
+	upstreamGate := &claimGateWriter{started: make(chan struct{}), release: make(chan struct{}), dst: &upstream}
+	blocked := make(chan BlockedRequest, 4)
+	claimReached := make(chan struct{})
+	continueClaim := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(upstreamGate), &logBuf,
+			config.ActionWarn, config.ActionBlock, blocked, nil, nil,
+			MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter,
+				Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+				beforeDeferredSendClaim: func() { close(claimReached); <-continueClaim },
+			})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
+	held := manager.Snapshot()[0]
+	resolved := make(chan error, 1)
+	go func() { resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext) }()
+	<-claimReached
+	if concurrent {
+		close(continueClaim)
+		<-upstreamGate.started
+		ks.SetAPI(true)
+		if got := ks.DeferredInFlight(); got != 1 {
+			t.Fatalf("claimed stdio send in flight = %d, want 1", got)
+		}
+		close(upstreamGate.release)
+		if err := <-resolved; err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+		if got := upstream.String(); got == "" {
+			t.Fatal("claimed send did not reach stdio upstream")
+		}
+		if got := len(blocked); got != 0 {
+			t.Fatalf("claimed send was blocked: %d records", got)
+		}
+	} else {
+		ks.SetAPI(true)
+		close(continueClaim)
+		select {
+		case <-upstreamGate.started:
+			close(upstreamGate.release)
+			t.Fatal("send reached stdio upstream after activation")
+		case err := <-resolved:
+			if err != nil {
+				t.Fatalf("resolve hold: %v", err)
+			}
+		}
+		if got := upstream.String(); got != "" {
+			t.Fatalf("send reached stdio upstream after activation: %s", got)
+		}
+		select {
+		case record := <-blocked:
+			if record.ErrorCode != -32002 {
+				t.Fatalf("blocked record code = %d", record.ErrorCode)
+			}
+		default:
+			t.Fatal("activation before claim produced no blocked record")
+		}
+		close(upstreamGate.release)
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
+}
+
+func TestDeferredHTTPReleaseChecksLiveKillSwitch(t *testing.T) {
+	testDeferredHTTPKillSwitchRelease(t, false)
+}
+
+func TestDeferredHTTPConcurrentActivation(t *testing.T) {
+	testDeferredHTTPKillSwitchRelease(t, true)
+}
+
+func TestDeferredHTTPActivationDuringScanInvalidatesHold(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	ks := killswitch.New(config.Defaults())
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	done := make(chan error, 1)
+	var scanned atomic.Bool
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+			Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager,
+			ReceiptEmitter: emitter, KillSwitch: ks,
+			DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+				ks.SetAPI(true)
+				ks.SetAPI(false)
+				scanned.Store(true)
+				return true, "", "", ""
+			},
+		})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
+	if !scanned.Load() {
+		t.Fatal("scan callback did not run")
+	}
+	if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("activation during scanning allowed held HTTP send")
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+}
+
+func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	ks := killswitch.New(config.Defaults())
+	var calls atomic.Int32
+	upstreamStarted := make(chan struct{})
+	upstreamRelease := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		close(upstreamStarted)
+		<-upstreamRelease
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	claimReached := make(chan struct{})
+	continueClaim := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil,
+			MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager, ReceiptEmitter: emitter, KillSwitch: ks,
+				beforeDeferredSendClaim: func() { close(claimReached); <-continueClaim },
+			})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
+	held := manager.Snapshot()[0]
+	resolved := make(chan error, 1)
+	go func() { resolved <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceContext) }()
+	<-claimReached
+	if concurrent {
+		close(continueClaim)
+		<-upstreamStarted
+		ks.SetAPI(true)
+		if got := ks.DeferredInFlight(); got != 1 {
+			t.Fatalf("claimed HTTP send in flight = %d, want 1", got)
+		}
+		close(upstreamRelease)
+		if err := <-resolved; err != nil {
+			t.Fatalf("resolve hold: %v", err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("claimed HTTP sends = %d, want 1", got)
+		}
+	} else {
+		ks.SetAPI(true)
+		close(continueClaim)
+		select {
+		case <-upstreamStarted:
+			close(upstreamRelease)
+			t.Fatal("send reached HTTP upstream after activation")
+		case err := <-resolved:
+			if err != nil {
+				t.Fatalf("resolve hold: %v", err)
+			}
+		}
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("HTTP sends after activation = %d", got)
+		}
+		close(upstreamRelease)
+		if got := stdout.String(); !strings.Contains(got, "deferred action denied") {
+			t.Fatalf("missing blocked response: %s", got)
+		}
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy returned error: %v", err)
 	}
 }
 

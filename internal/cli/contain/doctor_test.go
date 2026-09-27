@@ -68,6 +68,9 @@ func TestDoctorViewerMissingConfigurationAndRFB(t *testing.T) {
 	if service.status != statusFail || !strings.Contains(service.detail, "viewer config missing:") || !strings.Contains(service.remediation, "check display viewer configuration") {
 		t.Fatalf("missing viewer config = %+v", service)
 	}
+	// Xvnc discovery stats fixed install paths; report them all absent so a
+	// workstation with TigerVNC installed cannot decide this case.
+	env.stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	rfb := checkDoctorDisplayRFB(context.Background(), env)
 	if rfb.status != statusFail || !strings.Contains(rfb.detail, "TigerVNC Xvnc missing") {
 		t.Fatalf("missing RFB server = %+v", rfb)

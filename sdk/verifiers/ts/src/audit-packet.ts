@@ -116,7 +116,29 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
   return errors;
 }
 
+// withoutClaimedTrust keeps a failed verification from repeating the
+// packet's own trust claim. The report starts with the packet's verdict and
+// trusted fields, so any failure after that point would otherwise report
+// "verdict: valid, trusted: true" beside an INVALID result. A report that is
+// not valid never claims trust, and a success verdict becomes invalid. A
+// successful report and the offline report are unchanged.
+function withoutClaimedTrust(report: AuditPacketReport): AuditPacketReport {
+  if (report.valid) return report;
+  report.trusted = false;
+  if (report.verdict === "valid" || report.verdict === "self_consistent_only") {
+    report.verdict = "invalid";
+  }
+  return report;
+}
+
 export async function verifyAuditPacket(
+  target: string,
+  opts: AuditPacketOptions,
+): Promise<AuditPacketReport> {
+  return withoutClaimedTrust(await verifyAuditPacketReport(target, opts));
+}
+
+async function verifyAuditPacketReport(
   target: string,
   opts: AuditPacketOptions,
 ): Promise<AuditPacketReport> {

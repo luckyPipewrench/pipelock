@@ -482,3 +482,64 @@ fn has_error(errors: &Option<Vec<String>>, needle: &str) -> bool {
         .as_ref()
         .is_some_and(|errors| errors.iter().any(|err| err.contains(needle)))
 }
+
+// A packet claims verdict=valid and trusted=true. When full verification
+// fails, the report must not repeat that claim.
+#[test]
+fn failed_audit_packet_verification_never_reports_trust() {
+    // Positive control: the unmodified packet verifies and keeps its claim.
+    let control =
+        verify_audit_packet(write_packet(None).to_str().unwrap(), &default_options()).unwrap();
+    assert!(control.valid, "{:?}", control.errors);
+    assert_eq!(control.verdict, "valid");
+    assert!(control.trusted);
+
+    let tampered = write_packet(None);
+    fs::copy(
+        common::repo_root().join("sdk/conformance/testdata/broken-chain.jsonl"),
+        tampered.join("evidence.jsonl"),
+    )
+    .unwrap();
+    let mismatch = write_packet(Some(|packet: &mut Value| {
+        packet["summary"]["receipt_count"] = Value::from(6);
+        packet["summary"]["totals"]["allow"] = Value::from(6);
+    }));
+    let cases = [
+        ("tampered chain", tampered, default_options(), "fail"),
+        (
+            "wrong key",
+            write_packet(None),
+            AuditPacketOptions {
+                signer_key: "11".repeat(32),
+                ..default_options()
+            },
+            "fail",
+        ),
+        ("cross-check mismatch", mismatch, default_options(), "pass"),
+    ];
+    for (name, dir, options, chain_check) in cases {
+        let report = verify_audit_packet(dir.to_str().unwrap(), &options).unwrap();
+        assert_eq!(
+            report.chain_check, chain_check,
+            "{name}: failure must come from the intended stage"
+        );
+        assert!(!report.valid, "{name}");
+        assert!(!report.trusted, "{name}");
+        assert_eq!(report.verdict, "invalid", "{name}");
+    }
+}
+
+#[test]
+fn offline_audit_packet_verdict_is_unchanged() {
+    let report = verify_audit_packet(
+        write_packet(None).to_str().unwrap(),
+        &AuditPacketOptions {
+            offline: true,
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.verdict, "schema_checked_trust_unverified");
+    assert!(!report.trusted);
+    assert!(!report.valid);
+}

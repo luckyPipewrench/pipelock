@@ -269,6 +269,23 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	return nil
 }
 
+// withoutClaimedTrust keeps a failed verification from repeating the
+// packet's own trust claim. The report starts with the packet's verdict and
+// trusted fields, so any failure after that point would otherwise print
+// "verdict: valid, trusted: true" beside an INVALID result. A report that is
+// not valid never claims trust, and a success verdict becomes invalid. A
+// successful report and the offline report are unchanged.
+func withoutClaimedTrust(r auditPacketReport) auditPacketReport {
+	if r.Valid {
+		return r
+	}
+	r.Trusted = false
+	if r.Verdict == auditpacket.VerdictValid || r.Verdict == auditpacket.VerdictSelfConsistentOnly {
+		r.Verdict = auditpacket.VerdictInvalid
+	}
+	return r
+}
+
 func populateReportFromPacket(r *auditPacketReport, p *auditpacket.Packet) {
 	totals := map[string]int{
 		"allow":    p.Summary.Totals.Allow,

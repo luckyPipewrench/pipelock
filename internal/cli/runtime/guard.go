@@ -189,6 +189,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		Workspace:               workspace,
 		Policy:                  &policy,
 		RequireNetNS:            true,
+		BridgeIdleTimeout:       sandboxBridgeIdleTimeout(runtimeCfg),
 		DeveloperEnvironment:    os.Environ(),
 		UseDeveloperEnvironment: true,
 		ProxyHandler:            proxyHandler,

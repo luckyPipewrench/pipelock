@@ -115,6 +115,51 @@ func TestRetryFailedDestroysHonorsCallerCancellation(t *testing.T) {
 	}
 }
 
+func TestReconcileBoundsFailedDestroyRetriesBeforeListing(t *testing.T) {
+	const retryBatchSize = 2
+	p := &failingDestroyProvider{fakeProvider: &fakeProvider{}, fail: true}
+	lm := newManager(t, p, retryBatchSize+2)
+	for i := range retryBatchSize + 2 {
+		id := fmt.Sprintf("quarantined-%d", i)
+		lm.quarantine[id] = &Lease{Machine: &Machine{ID: id}, release: func() {}}
+	}
+	reaper, err := NewReaper(ReaperConfig{Provider: p, ActiveIDs: lm.ActiveMachineIDs, RetryFailedDestroys: lm.RetryFailedDestroys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p.destroyCalls != retryBatchSize {
+		t.Fatalf("first reconciliation retried %d machines before listing, want %d", p.destroyCalls, retryBatchSize)
+	}
+	if got := len(lm.ActiveMachineIDs()); got != retryBatchSize+2 {
+		t.Fatalf("quarantine after failed batch = %d, want %d", got, retryBatchSize+2)
+	}
+	if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.attempted); got != retryBatchSize+2 {
+		t.Fatalf("retry attempts after two cycles = %d, want %d", got, retryBatchSize+2)
+	}
+	seen := make(map[string]struct{}, len(p.attempted))
+	for _, id := range p.attempted {
+		seen[id] = struct{}{}
+	}
+	if len(seen) != retryBatchSize+2 {
+		t.Fatalf("retry cycles skipped quarantined machines: attempts = %v", p.attempted)
+	}
+	p.fail = false
+	for cycle, wantRemaining := range []int{2, 0} {
+		if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(lm.ActiveMachineIDs()); got != wantRemaining {
+			t.Fatalf("quarantine after recovery cycle %d = %d, want %d", cycle+1, got, wantRemaining)
+		}
+	}
+}
+
 func TestRetryFailedDestroysCancellationStopsInFlightDelete(t *testing.T) {
 	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 4), allow: make(chan struct{})}
 	lm := newManager(t, p, 1)
@@ -186,6 +231,7 @@ type failingDestroyProvider struct {
 	*fakeProvider
 	fail         bool
 	destroyCalls int
+	attempted    []string
 }
 
 type blockingDestroyProvider struct {
@@ -316,6 +362,7 @@ func TestLeasePromptRecoveryRetriesOneMachine(t *testing.T) {
 
 func (p *failingDestroyProvider) DestroyMachine(ctx context.Context, id string) error {
 	p.destroyCalls++
+	p.attempted = append(p.attempted, id)
 	if p.fail {
 		return errors.New("provider teardown unavailable")
 	}

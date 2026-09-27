@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -61,15 +62,16 @@ type Lease struct {
 // LeaseManager owns the lifecycle of per-visitor VMs and the concurrency cap. It
 // is safe for concurrent use.
 type LeaseManager struct {
-	cfg            LeaseConfig
-	mu             sync.Mutex
-	leases         map[string]*Lease
-	quarantine     map[string]*Lease
-	destroying     map[string]struct{}
-	nextRetry      time.Time
-	log            io.Writer
-	logMu          sync.Mutex
-	destroyTimeout time.Duration
+	cfg             LeaseConfig
+	mu              sync.Mutex
+	leases          map[string]*Lease
+	quarantine      map[string]*Lease
+	destroying      map[string]struct{}
+	nextRetry       time.Time
+	lastReaperRetry string
+	log             io.Writer
+	logMu           sync.Mutex
+	destroyTimeout  time.Duration
 }
 
 // leaseDestroyTimeout matches the warm-pool teardown deadline. A timed-out
@@ -202,17 +204,33 @@ func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
 	}
 }
 
+const reaperDestroyRetryBatchSize = 2
+
 // RetryFailedDestroys retries quarantined VMs and returns capacity only after
 // confirmed deletion. The reaper calls this periodically.
 func (lm *LeaseManager) RetryFailedDestroys(ctx context.Context) {
 	lm.mu.Lock()
 	var pending []*Lease
-	for _, lease := range lm.quarantine {
-		if _, busy := lm.destroying[lease.Machine.ID]; busy {
+	ids := make([]string, 0, len(lm.quarantine))
+	for id := range lm.quarantine {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	start, _ := slices.BinarySearch(ids, lm.lastReaperRetry)
+	if start < len(ids) && ids[start] == lm.lastReaperRetry {
+		start++
+	}
+	for offset := range ids {
+		if len(pending) == reaperDestroyRetryBatchSize {
+			break
+		}
+		id := ids[(start+offset)%len(ids)]
+		if _, busy := lm.destroying[id]; busy {
 			continue
 		}
-		lm.destroying[lease.Machine.ID] = struct{}{}
-		pending = append(pending, lease)
+		lm.destroying[id] = struct{}{}
+		pending = append(pending, lm.quarantine[id])
+		lm.lastReaperRetry = id
 	}
 	lm.mu.Unlock()
 	for i, lease := range pending {

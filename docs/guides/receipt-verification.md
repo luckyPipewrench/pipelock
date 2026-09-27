@@ -205,36 +205,20 @@ Chain verification checks:
   object may carry advisory forward-compatible metadata. The signature never
   covers it and its value never contributes to a verified claim; only its
   bytes join the chain link hash.
-- A current run writes two receipt chains into the same recorder files: the
-  `action_receipt` (ActionReceipt v1) chain and the `evidence_receipt`
-  (EvidenceReceipt v2) chain, each signed on its own. `pipelock verify-receipt`,
-  the standalone `pipelock-verifier chain`, and the TypeScript and Rust `chain`
-  commands verify every chain present, in every mode: a directory, a named run,
-  a single file, and `--whole-recorder`. The result is valid only when every
-  chain verifies, and a failure names the chain it came from. A file or run
-  holding only one of them is verified as that chain, so a file of v2 receipts
-  alone is checked as a v2 chain, not reported as holding no receipts. The
-  output counts both kinds.
-- A single file is checked on its own terms. Every entry must belong to the
-  session its file name claims (for `evidence-S-0.jsonl`, session `S`), and a
-  file whose name claims no session must still hold one session. Its recorder
-  entry hash chain, the unkeyed `prev_hash`/`hash` link between entries, must
-  hold from genesis. So a later shard of a sharded run doesn't verify alone;
-  check the whole run with `--chain DIR --session`. A file you name on the
-  command line is read as given, even through a symlink.
+- In a flight-recorder file, the chain is the `action_receipt` subsequence.
+  `evidence_receipt` entries interleaved in the same file are skipped, as in
+  the Go verifier; a file with only `evidence_receipt` entries is verified as
+  an EvidenceReceipt v2 chain by the SDK verifiers.
 
-By default, this verifies both receipt chains and the recorder entry hash chain. A
-keyless attacker can recompute that hash chain after an edit, so it catches accidental
-damage and naive edits, while the receipt signatures are what catch a forged receipt.
-To also check every entry's type and the seal, use `--whole-recorder`; that mode rejects
-an unknown entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
+By default, this verifies the receipt subsequence only. To verify every present
+flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
+entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
 `transcript_root`, and returns non-zero for an unsealed recorder. After a signing-key
 rotation, the root covers the final signing segment while verification checks every
 trusted segment and its rotation continuity. The seal does not cover the trailing
 checkpoint the recorder writes after it; any other entry after the seal is reported as
-INCOMPLETE, because the seal never committed to it. Both receipt chains are
-authenticated by their own signatures. Entries that aren't receipts (decisions,
-captures) are authenticated only through signed checkpoints: each one signs
+INCOMPLETE, because the seal never committed to it. Entries that are not receipts
+(decisions, captures) are authenticated only through signed checkpoints: each one signs
 the chain hash of everything before it, and `--whole-recorder` verifies those signatures
 against the pinned keys and reports the anchor state. The seal itself must be covered
 by a signed checkpoint, which is the trailing checkpoint the recorder writes after the
@@ -243,9 +227,7 @@ unsigned, or the trailing one missing) is refused, because a rewrite could have
 stripped or removed it while an older checkpoint still verifies. If the recorder really
 runs with `flight_recorder.sign_checkpoints: false`, or its last entry filled a shard so
 no trailing checkpoint was written, pass `--allow-unanchored-seal` to accept it, and the
-output then states which non-receipt entries are hash-linked but not authenticated.
-Every action and evidence receipt is still signature-verified in that mode, so a forged
-receipt fails even with the anchor waived.
+output then states which entries are hash-linked but not authenticated.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
@@ -534,11 +516,7 @@ Each receipt contains:
   `run_nonce` — generated once per process run and folded into the signed
   preimage — binds the receipt to a single run so it cannot be replayed as
   evidence of a different one. Receipts emitted before the nonce was added omit
-  the field and still verify. Directory verification uses it. Two chains of one
-  base whose action records carry the same `run_nonce` are the same run
-  presented twice, such as a run copied under a new run ID with its unsigned
-  `session_id` rewritten, and fail with a `duplicate_run_nonce` finding. A run
-  with no action records has no nonce and isn't checked this way.
+  the field and still verify.
 - **signature**: `ed25519:` prefix + hex-encoded Ed25519 signature over
   `SHA-256(canonical JSON of action_record)`.
 - **signer_key**: Hex-encoded Ed25519 public key of the signer.
@@ -615,12 +593,6 @@ pipelock-verifier receipt receipt.json
 # Verify a full chain
 pipelock-verifier chain evidence-proxy-0.jsonl
 
-# Verify an evidence directory across a signing-key rotation, trusting both
-# keys or pinning the root key plus the old-key-signed endorsement
-pipelock-verifier chain /var/lib/pipelock/evidence --dir --key old.pub --key new.pub
-pipelock-verifier chain /var/lib/pipelock/evidence --dir --key old.pub \
-  --rotation-endorsement rotation.json
-
 # Verify an EvidenceReceipt v2 shadow chain with provenance
 pipelock-verifier chain evidence-proxy-0.jsonl \
   --key receipt-signing.pub \
@@ -649,14 +621,10 @@ the packet schema was checked; the packet-authored verdict was not verified.
 Upgrade JSON consumers and CI jobs to treat this status as untrusted and
 require full chain verification for an authenticated verdict.
 
-Full verification covers both receipt chains of the packet's evidence file, so a forged EvidenceReceipt v2 beside an intact action chain fails the packet. When full verification fails, the Go, Rust, and TypeScript reports never repeat the packet's own trust claim. A packet that claimed `verdict: valid` or `self_consistent_only` is reported as `verdict: invalid` with `trusted: false` and `valid: false`, whether the failure came from the chain, the signer key, or the cross-check against the packet summary. A successful report is unchanged.
-
 For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
-key; with several `--key` values, the chain's declared `signer_key_id` must be
-one of them. Without `--key`, the verifier checks structure, hash linkage,
-sequence, signer-id consistency, and each signature against the chain's own
-declared signer. That's self-consistency, the same check an unpinned action chain
-gets, and proves nothing about who signed, so the chain reports as unpinned.
+key. Without `--key`, the verifier can check structure, hash linkage, sequence
+monotonicity, and signer-id consistency, but it reports signatures as not
+checked because v2 receipts do not embed public keys.
 
 **A valid chain is not a complete chain.** Structure, linkage, sequence, and
 signatures are all satisfied by any prefix of a chain, so a file with its
@@ -672,14 +640,9 @@ entries can rewrite an unsigned value stored beside them.
 The standalone binary reads the same Audit Packet v0 schema and receipt signing
 conventions as the in-tree `pipelock verify-receipt` subcommand, plus the
 EvidenceReceipt v2 schema used by learn-and-lock. It returns exit 0 for valid
-evidence, exit 1 for invalid evidence, exit 2 for runtime and configuration
-errors such as a missing path or a malformed key, and exit 64 for CLI usage
-errors. Evidence the verifier refuses to read, such as a symlink inside an
-evidence directory or an entry filed under the wrong session, is invalid
-evidence (exit 1). Every failure prints a one-line reason on stderr.
-`pipelock verify-receipt` uses exit 0, exit 1 for invalid evidence, and exit 2
-for usage and configuration errors. Use this binary in post-incident review and
-nightly audit jobs.
+evidence, exit 1 for invalid evidence, exit 2 for runtime errors, and exit 64
+for CLI usage errors. Use this binary in post-incident review and nightly audit
+jobs.
 
 ## Language-portable verifier packages
 
@@ -701,7 +664,7 @@ exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
 
-The standalone `pipelock-verifier chain DIR --dir` and the TypeScript and Rust `chain DIR --dir` commands verify a directory the way `pipelock verify-receipt --chain DIR` does, and reach the same verdict on the same evidence and keys. Without a session flag, they verify every run chain of the `proxy` base, both receipt chains and the recorder entry hash chain of each, and every restart link file, then report linked and unlinked runs. A link whose signature fails, that names anything but the predecessor's exact last receipt, that gives a predecessor a second successor, or that changes signing keys without `--key` or a rotation endorsement fails the directory. So do an entry whose `session_id` isn't the run its file name claims, and two runs carrying the same signed run nonce (`duplicate_run_nonce`). An explicit `--session` (Go) or `--session-id` (TypeScript and Rust) such as `proxy.run.<id>` reports that one run, but the whole base is still verified and any finding in it fails the result, naming the run it came from. A run's standing depends on base facts such as whether its predecessor's tail matches its link. A directory with no run chains keeps single-session verification. A file belongs to a session when its parsed name matches exactly: for session `s`, `evidence-s-evil-0.jsonl` belongs to session `s-evil` and isn't read into `s`, though as a chain of the same base it's still verified in its own right. A symlinked evidence or link file inside the directory is refused as invalid evidence and named in the error; the verifier reads a directory's files where they are and doesn't follow redirections out of it. A direct JSONL file argument checks only that file. All four take `--key` more than once and `--rotation-endorsement` with the same meaning as `pipelock verify-receipt`. Every key given is trusted, and an endorsement authorizes a successor key only under a pinned root key. A restart that changed signing keys verifies with either both keys or the root key plus its endorsement.
+For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a full run chain, using the full ID from its evidence filename. A direct JSONL file argument checks only that shard.
 
 ## Audit Packet v0 schema
 

@@ -9,10 +9,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -286,5 +288,22 @@ func TestLaunchStandaloneDeveloperEnvironmentFailsClosedBeforeChildStart(t *test
 				t.Fatalf("error = %v, want it to contain %q", err, testCase.wantErr)
 			}
 		})
+	}
+}
+
+func TestStandaloneInitControlEnvCarriesBridgeIdleTimeout(t *testing.T) {
+	env := standaloneInitControlEnv(standaloneInitControlOptions{
+		Config: StandaloneLaunchConfig{Command: []string{"true"}, BridgeIdleTimeout: 45 * time.Second},
+	})
+	if !slices.Contains(env, bridgeIdleTimeoutEnv+"=45") {
+		t.Fatalf("control env lacks bridge idle timeout: %v", env)
+	}
+	env = standaloneInitControlEnv(standaloneInitControlOptions{
+		Config: StandaloneLaunchConfig{Command: []string{"true"}},
+	})
+	for _, e := range env {
+		if strings.HasPrefix(e, bridgeIdleTimeoutEnv+"=") {
+			t.Fatalf("unset timeout still emitted %q", e)
+		}
 	}
 }

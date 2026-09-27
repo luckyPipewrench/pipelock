@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
@@ -144,6 +145,8 @@ Examples:
 				BestEffortReason: useBestEffortReason,
 				BestEffortExpiry: useBestEffortExpiry,
 				ExtraEnv:         extraEnv,
+
+				BridgeIdleTimeout: sandboxBridgeIdleTimeout(cfg),
 			}
 
 			// Merge custom filesystem policy from config into defaults.
@@ -303,4 +306,16 @@ func printJSON(w io.Writer, v interface{}) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// sandboxBridgeIdleTimeout is the idle bound for the sandbox-side bridge
+// relay. The bridge carries both forward-proxy and WebSocket traffic, so it
+// takes the larger of their idle timeouts: the parent proxy remains the
+// policy authority, and the bridge only reaps relays the parent already let go.
+func sandboxBridgeIdleTimeout(cfg *config.Config) time.Duration {
+	secs := max(cfg.ForwardProxy.IdleTimeoutSeconds, cfg.WebSocketProxy.IdleTimeoutSeconds)
+	if secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }

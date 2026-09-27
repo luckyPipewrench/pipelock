@@ -8,13 +8,50 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // bridgeListenAddr is the address the child-side bridge proxy listens on
 // inside the sandbox network namespace. Agent processes use this as
 // HTTP_PROXY/HTTPS_PROXY to route traffic through pipelock's scanner.
 const bridgeListenAddr = "127.0.0.1:8888"
+
+// DefaultBridgeIdleTimeout bounds a relay whose two sides have both gone
+// quiet when the launcher did not supply a timeout. It matches the larger of
+// the forward proxy and WebSocket idle defaults, so the bridge never cuts a
+// connection the parent proxy would still keep open.
+const DefaultBridgeIdleTimeout = 300 * time.Second
+
+// bridgeIdleTimeoutEnv carries the relay idle timeout, in whole seconds,
+// from the launcher to sandbox-init.
+const bridgeIdleTimeoutEnv = "__PIPELOCK_SANDBOX_BRIDGE_IDLE_SECONDS"
+
+// bridgeIdleTimeoutEnvEntry returns the control environment entry that hands d to
+// sandbox-init. A non-positive d yields no entry, so the child uses the default.
+func bridgeIdleTimeoutEnvEntry(d time.Duration) []string {
+	secs := int64(d / time.Second)
+	if secs <= 0 {
+		return nil
+	}
+	return []string{bridgeIdleTimeoutEnv + "=" + strconv.FormatInt(secs, 10)}
+}
+
+// parseBridgeIdleTimeout reads the value sandbox-init received. A missing,
+// malformed, or non-positive value falls back to the default rather than to
+// an unbounded relay.
+func parseBridgeIdleTimeout(raw string) time.Duration {
+	secs, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || secs <= 0 || secs > int64(maxBridgeIdleTimeout/time.Second) {
+		return DefaultBridgeIdleTimeout
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// maxBridgeIdleTimeout keeps a parsed value far from time.Duration overflow.
+const maxBridgeIdleTimeout = 7 * 24 * time.Hour
 
 // BridgeProxy runs inside the sandboxed child process. It listens on
 // loopback and bridges each TCP connection to the parent's Unix domain
@@ -42,6 +79,7 @@ type BridgeProxy struct {
 	watcherStarted  bool
 	conns           map[net.Conn]struct{}
 	closeOnce       sync.Once
+	idleTimeout     time.Duration
 }
 
 // NewBridgeProxy creates a bridge proxy inside the sandbox namespace.
@@ -62,7 +100,20 @@ func NewBridgeProxy(socketPath string, listenAddr ...string) (*BridgeProxy, erro
 		done:        make(chan struct{}),
 		watcherDone: make(chan struct{}),
 		conns:       make(map[net.Conn]struct{}),
+		idleTimeout: DefaultBridgeIdleTimeout,
 	}, nil
+}
+
+// SetIdleTimeout sets how long a relay may carry no bytes in either direction
+// before both of its connections are closed. A non-positive d restores the
+// default. It applies to connections accepted after the call.
+func (bp *BridgeProxy) SetIdleTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultBridgeIdleTimeout
+	}
+	bp.mu.Lock()
+	bp.idleTimeout = d
+	bp.mu.Unlock()
 }
 
 // Addr returns the proxy's listen address.
@@ -85,7 +136,12 @@ func (bp *BridgeProxy) Serve(ctx context.Context) error {
 		defer bp.watcherDoneOnce.Do(func() { close(bp.watcherDone) })
 		select {
 		case <-ctx.Done():
+			bp.mu.Lock()
 			_ = bp.listener.Close()
+			for conn := range bp.conns {
+				_ = conn.Close()
+			}
+			bp.mu.Unlock()
 		case <-bp.done:
 		}
 	}()
@@ -213,16 +269,26 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 		_ = parentConn.Close()
 		return
 	}
+	bp.mu.Lock()
+	idleTimeout := bp.idleTimeout
+	bp.mu.Unlock()
 	defer bp.untrackConn(parentConn)
 	defer func() { _ = parentConn.Close() }()
 
-	// Bridge data bidirectionally.
+	// Bridge data bidirectionally. Both directions share one activity clock:
+	// a long download while the agent sends nothing is still an active relay.
+	activity := &relayActivity{}
+	activity.touch()
+	relayDone := make(chan struct{})
+	defer close(relayDone)
+	go watchRelayIdle(idleTimeout, activity, relayDone, conn, parentConn)
+
 	var wg sync.WaitGroup
 	wg.Add(2) //nolint:mnd // two copy directions
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(parentConn, conn) // agent → parent
+		_, _ = io.Copy(parentConn, activityReader{r: conn, a: activity}) // agent → parent
 		// Signal parent that agent is done sending.
 		if uc, ok := parentConn.(*net.UnixConn); ok {
 			_ = uc.CloseWrite()
@@ -230,7 +296,7 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(conn, parentConn) // parent → agent
+		_, _ = io.Copy(conn, activityReader{r: parentConn, a: activity}) // parent → agent
 		// Signal agent that parent is done sending.
 		if tc, ok := conn.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
@@ -238,4 +304,52 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 	}()
 
 	wg.Wait()
+}
+
+// relayActivity records when a relay last moved bytes in either direction.
+type relayActivity struct{ last atomic.Int64 }
+
+func (a *relayActivity) touch() { a.last.Store(time.Now().UnixNano()) }
+
+func (a *relayActivity) idleFor() time.Duration {
+	return time.Since(time.Unix(0, a.last.Load()))
+}
+
+// activityReader marks the relay active whenever a read returns bytes. Being a
+// plain struct, it also keeps io.Copy off the splice fast path, which would
+// move bytes without passing through this reader.
+type activityReader struct {
+	r io.Reader
+	a *relayActivity
+}
+
+func (ar activityReader) Read(p []byte) (int, error) {
+	n, err := ar.r.Read(p)
+	if n > 0 {
+		ar.a.touch()
+	}
+	return n, err
+}
+
+// watchRelayIdle closes both relay connections once neither direction has
+// moved bytes for timeout. It returns when done closes. Closing both sides
+// also ends a half-closed relay whose remaining direction has gone silent.
+func watchRelayIdle(timeout time.Duration, a *relayActivity, done <-chan struct{}, conns ...net.Conn) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			idle := a.idleFor()
+			if idle >= timeout {
+				for _, c := range conns {
+					_ = c.Close()
+				}
+				return
+			}
+			timer.Reset(timeout - idle)
+		}
+	}
 }

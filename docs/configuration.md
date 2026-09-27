@@ -1188,7 +1188,7 @@ mcp_input_scanning:
 
 Auto-enabled when running `pipelock mcp proxy`. `response_timeout_seconds` applies independently of `enabled`; it governs the response read path whenever the stdio-fronted proxy is running.
 
-The stdio proxy always runs the full input content scan. When this section is disabled, the HTTP and WebSocket listeners skip configurable input findings but still scan for the immutable core credential floor; a core credential in `tools/call` arguments or another JSON-RPC field therefore hard-blocks on every MCP transport.
+The stdio proxy runs the full input content scan while this section is enabled (the default when `action` is unset). When this section is explicitly disabled (`enabled: false` with an `action` set), every MCP transport — stdio, HTTP, and WebSocket — skips configurable input findings but still scans for the immutable core credential floor and hostname exfiltration; a core credential in `tools/call` arguments or another JSON-RPC field therefore hard-blocks on every MCP transport.
 
 If top-level `redaction.enabled` is also set, `tools/call` `params.arguments` are rewritten through the same matcher and the immutable core floor is evaluated on the redacted bytes rather than the original request. A core credential that redaction fully rewrites — so the forwarded request carries a placeholder and no credential — follows `mcp_input_scanning.action` instead of hard-blocking, matching the request-body floor's treatment of a fully redacted critical credential on a trusted destination; an MCP upstream is operator-configured, so no host list is consulted. Following the action is not the same as allowing: under the default warn action the scrubbed request forwards, but the pre-redaction finding is still recorded as a warn — logged with its pattern name and a redacted marker, captured on the input DLP verdict, and stamped on the action receipt as a warn — so a scrubbed core credential is never counted as a clean request or credited toward adaptive de-escalation. This matches the request-body floor, which keeps the pre-redaction DLP finding as a warn on a fully redacted body. The floor still hard-blocks, fail-closed, when redaction is disabled, when it leaves any part of the credential in place, or when the post-redaction rescan still finds a core match. A non-core credential in warn mode continues to forward its redacted payload instead of the original secret, and it is recorded as a warn the same way. The behavior is identical across stdio, HTTP/SSE upstream mode, HTTP listener mode, and MCP-over-WebSocket.
 
@@ -1292,9 +1292,11 @@ mcp_tool_scanning:
 With `new_tool_admission: withhold`, a tool name absent from the established
 baseline is reported as drift (cue `new-tool`) and withheld — not promoted
 — exactly the way a changed definition is withheld under `action: block`.
-It is reported again on every later `tools/list` until an authorized
-operator re-baseline admits it, using the same signed listener drift reset
-mechanism described below (`listener_drift_reset_file`). This never affects
+It is reported again on every later `tools/list` until it is re-baselined.
+On the HTTP reverse listener, use the signed listener drift reset described
+below (`listener_drift_reset_file`). On stdio, sandboxed, WebSocket, and
+stdio-to-HTTP proxies the baseline is per process; restart the proxy to
+re-baseline. This never affects
 the first valid `tools/list` inventory a baseline ever receives: that
 response establishes the baseline for every name in it, matching the
 pre-existing `action` semantics for a first sighting. An empty inventory
@@ -1306,7 +1308,7 @@ it arrives. On the MCP HTTP listener the drift baseline is shared by every
 client, so two clients whose first `tools/list` responses overlap in time are
 both first inventories: each contributes its names, neither reads the other's
 names as new, and the baseline is established when the last of them finishes.
-A name that first appears after that point is withheld under `block`.
+A name that first appears after that point is withheld under `new_tool_admission: withhold`.
 
 `new_tool_admission` governs baseline admission, not the response verdict.
 The vocabulary is deliberately different from `action`'s `warn`/`block` so the
@@ -1425,7 +1427,7 @@ pipelock signing reset revoke --file /run/pipelock/mcp-tool-drift.reset
 
 ## MCP Tool Policy
 
-Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 17 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, and encoded command execution.
+Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 30 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, protected-path and audit-log tampering, and encoded command execution.
 
 ```yaml
 mcp_tool_policy:
@@ -1456,7 +1458,7 @@ mcp_tool_policy:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable tool policy |
 | `action` | `"warn"` | Default action for rules without override |
-| `rules` | 17 built-in | Policy rule list |
+| `rules` | 30 built-in | Policy rule list |
 
 **Rule fields:**
 - `name:` rule identifier
@@ -1485,7 +1487,7 @@ Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$
 
 ### Defer Action
 
-`action: defer` withholds a matched tool call instead of forwarding or blocking it, and resolves the held action to a terminal decision later. Defer is **fail-closed and affirmative-clearing**: the held action resolves to **allow only on an explicit positive signal**; timeout, cancellation, parse error, kill switch, capacity overflow, resolver error, process restart, and any non-affirmative result all resolve to **block**. The absence of an adverse signal is never treated as permission.
+`action: defer` withholds a matched tool call instead of forwarding or blocking it, and resolves the held action to a terminal decision later. Defer is **fail-closed and affirmative-clearing**: the held action resolves to **allow only on an explicit positive signal**; timeout, cancellation, parse error, kill switch, capacity overflow, resolver error, process restart, and any non-affirmative result all resolve to **block**. The absence of an adverse signal is never treated as permission. Kill-switch activation blocks every held call that has not yet claimed its upstream send (`resolution_source: kill_switch`); a send already claimed before activation is in flight and cannot be recalled.
 
 Defer is supported on **MCP stdio and the stdio-to-HTTP bridge**. On any other MCP transport, a `defer`-matched tool call is blocked (fail-closed) rather than held, because those transports cannot enforce a held-action resume.
 
@@ -1863,7 +1865,10 @@ stale-bundle detection. Any one active denies normal traffic (OR-composed)
 except for configured exemptions (`health_exempt`, `metrics_exempt`,
 `api_exempt`, `allowlist_ips`). The two Conductor-driven sources are activated
 by the enterprise follower runtime. See [Kill Switch](../README.md#operability)
-for operational details.
+for operational details. Activation blocks every deferred (`action: defer`)
+tool call held on MCP stdio or the stdio-to-HTTP bridge that has not yet
+claimed its upstream send (`resolution_source: kill_switch`); a send already
+claimed before activation is in flight and cannot be recalled.
 
 > **Heads-up on `enabled`:** the `enabled` field is a source, not a subsystem switch. Setting `enabled: true` immediately activates the kill switch and denies all traffic from startup (all requests return HTTP 503). To configure the API/signal/sentinel sources for future activation without engaging the kill switch at startup, leave `enabled: false`.
 
@@ -3326,7 +3331,7 @@ An Agent Card carries endpoints and auth by construction (`url`, `provider`, `se
 
 A change is **adopted silently as the new baseline** (no block, and the change is recorded for audit) only when it is confined to descriptive free text — the card name, the card description, and skill names and descriptions — and introduces no cue class. A refined description or a reworded skill description adopts. A bare `version` bump is not compared at all: neither view covers `version`, so a version-only change is ignored rather than adopted, and it records no drift and no adoption.
 
-A change **blocks** and preserves the prior baseline (so repeated fetches keep blocking until an operator accepts the new card) when it is an endpoint or structural change — `url`, `securitySchemes`, capabilities, default input/output modes, or the set of skill ids and their schemas — or when a descriptive change introduces a cue class such as an instruction-injection or tool-poison pattern, an embedded egress instruction, a concealment instruction, or a reference to another tool. Adding a new skill is a structural change (a new capability surface) and blocks. The block reason names the axis for a structural change and the introduced cue classes for a descriptive one. A card that cannot be re-parsed fails closed.
+A change is **rejected as drift** and preserves the prior baseline (so every later fetch reports drift again until the proxy restarts) when it is an endpoint or structural change — `url`, `supportedInterfaces`, `securitySchemes`, `securityRequirements`, capabilities and capability extensions (including their descriptions), default input/output modes, or the set of skill ids and their schemas — or when a descriptive change introduces a cue class such as an instruction-injection or tool-poison pattern, an embedded egress instruction, a concealment instruction, or a reference to another tool. Adding a new skill is a structural change (a new capability surface) and blocks. The verdict follows `a2a_scanning.action`: under `block` the card is refused; under the default `warn` it is forwarded and logged. The block reason names the axis for a structural change and the introduced cue classes for a descriptive one. A card that cannot be re-parsed fails closed. The card baseline is held in memory for the life of the process; there is no operator command to accept a changed card while it runs, so the drift keeps reporting (and, under `block`, keeps blocking) until the proxy restarts.
 
 Fields the semantic hash does not currently cover (`provider`, `documentationUrl`, `iconUrl`) are outside drift comparison, unchanged from prior releases; widening drift to them is a separate change.
 

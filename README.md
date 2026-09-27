@@ -320,7 +320,7 @@ pipelock run --config pipelock.yaml --mcp-listen 127.0.0.1:8889 --mcp-upstream h
 - **Input scanning:** MCP client requests are checked for DLP leaks and injection in tool arguments.
 - **Response scanning:** server responses are scanned before the agent sees them.
 - **Tool poisoning:** `tools/list` descriptions are checked for hidden instructions and mid-session rug-pull changes.
-- **Tool policy:** 17 built-in rules block destructive file deletes, credential access, reverse shells, persistence mechanisms, encoded command execution, and related high-risk tool calls before execution.
+- **Tool policy:** 30 built-in rules block destructive file deletes, credential access, reverse shells, persistence mechanisms, encoded command execution, and related high-risk tool calls before execution.
 - **Tool call chains:** 10 built-in category-axis patterns detect reconnaissance, credential theft, data staging, persistence, exfiltration, and callback chains with configurable gap tolerance.
 - **A2A inspection:** Google Agent-to-Agent protocol traffic is inspected on the forward and MCP paths; Pipelock is not a standalone A2A proxy.
 - **Authenticated MCP HTTP listeners (v3.2.0):** non-loopback MCP listeners fail closed by default and require `--mcp-auth-token-file`, or an explicit `--mcp-allow-unauthenticated` for network-policy-isolated deployments. Tokenless loopback listeners reject DNS-rebound and wrong-port Host authorities and scrub listener credentials from headers.

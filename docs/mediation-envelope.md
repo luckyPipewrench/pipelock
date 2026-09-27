@@ -27,7 +27,7 @@ The dictionary members are:
 | `vd` | string | Verdict (`allow`, `warn`, `block`, …) | yes |
 | `se` | string | Side-effect class (`external_read`, `external_write`, …) | yes |
 | `actor` | string | Actor identity string | yes |
-| `aa` | string | Actor auth level (`bound`, `matched`, `self-declared`) | yes |
+| `aa` | string | Actor auth level (`bound`, `matched`, `config-default`, `self-declared`) | yes |
 | `ph` | byte-sequence | First 16 bytes of SHA-256 of the canonical policy projection (see below) | yes |
 | `rid` | string | UUIDv7 receipt ID for correlation with the receipt chain | yes |
 | `ts` | integer | Unix timestamp of envelope creation | yes |

@@ -25,9 +25,10 @@ import (
 // Stable status labels emitted in the textual report and the JSON
 // schema_check / chain_check / cross_check fields.
 const (
-	statusPass    = "pass"
-	statusFail    = "fail"
-	statusSkipped = "skipped"
+	statusPass                         = "pass"
+	statusFail                         = "fail"
+	statusSkipped                      = "skipped"
+	statusSchemaCheckedTrustUnverified = "schema_checked_trust_unverified"
 )
 
 // Stable values for the lifecycle_assessment field.
@@ -67,7 +68,7 @@ PATH may be either:
 
 Without --offline, the verifier reads artifacts.evidence (as recorded in
 the packet) and re-verifies the chain. With --offline, only the packet
-itself is validated.
+itself is validated; trust remains unverified and the command exits nonzero.
 
 Without --key the verifier confirms internal chain self-consistency
 (prev-hash linkage, signer agreement) but cannot prove provenance. A
@@ -181,8 +182,10 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unmarshal packet: %w", err))
 	}
 
-	report.Verdict = packet.Verifier.Verdict
-	report.Trusted = packet.Verifier.Trusted
+	if !opts.offline {
+		report.Verdict = packet.Verifier.Verdict
+		report.Trusted = packet.Verifier.Trusted
+	}
 	populateReportFromPacket(&report, &packet)
 
 	if err := packet.Validate(); err != nil {
@@ -195,12 +198,12 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 
 	if opts.offline {
 		report.LifecycleAssessmentReason = lifecycleReasonOffline
-		report.Valid = trustVerdict(&packet, opts)
+		report.Verdict = statusSchemaCheckedTrustUnverified
+		report.Trusted = false
+		report.Valid = false
+		report.Errors = append(report.Errors, "schema checked, trust unverified: chain and signer were not verified")
 		emitReport(stdout, stderr, report, opts.jsonOutput)
-		if !report.Valid {
-			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("packet not trusted"))
-		}
-		return nil
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("schema checked, trust unverified"))
 	}
 
 	signerKey, keyErr := auditPacketSignerKey(&packet, opts)

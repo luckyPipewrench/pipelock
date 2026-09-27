@@ -149,7 +149,7 @@ func TestTranscriptRootRunDirectoryResolution(t *testing.T) {
 func TestCleanReportRejectsNoReceipts(t *testing.T) {
 	t.Parallel()
 	pub, _ := continuityKey(t)
-	err := verifyCleanReport(io.Discard, "empty run", nil, []string{pub}, false, filepath.Join(t.TempDir(), "clean.json"))
+	err := verifyCleanReport(io.Discard, "empty run", nil, nil, []string{pub}, false, filepath.Join(t.TempDir(), "clean.json"))
 	if err == nil || !strings.Contains(err.Error(), "no receipts") {
 		t.Fatalf("empty clean report must fail closed: %v", err)
 	}

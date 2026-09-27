@@ -925,7 +925,7 @@ func buildSealedRecorderJSONLWith(t *testing.T, signCheckpoints bool, checkpoint
 	return "", nil
 }
 
-func TestVerifyReceiptCmd_WholeRecorderRejectsOperationalTampering(t *testing.T) {
+func TestVerifyReceiptCmd_FileModesRejectOperationalTampering(t *testing.T) {
 	t.Parallel()
 
 	path, pub := buildSealedRecorderJSONL(t)
@@ -967,11 +967,10 @@ func TestVerifyReceiptCmd_WholeRecorderRejectsOperationalTampering(t *testing.T)
 			var defaultOut bytes.Buffer
 			defaultCmd.SetOut(&defaultOut)
 			defaultCmd.SetArgs([]string{mutatedPath, "--key", key})
-			if err := defaultCmd.Execute(); err != nil {
-				t.Fatalf("default receipt-chain verification: %v\n%s", err, defaultOut.String())
-			}
-			if !strings.Contains(defaultOut.String(), "CHAIN VALID") {
-				t.Fatalf("default output missing CHAIN VALID:\n%s", defaultOut.String())
+			// File mode checks the recorder entry hash chain too, so an edit
+			// that leaves every receipt intact still fails there.
+			if err := defaultCmd.Execute(); err == nil || !strings.Contains(err.Error(), "recorder entry hash chain") {
+				t.Fatalf("default file verification accepted operational tampering: err=%v\n%s", err, defaultOut.String())
 			}
 			wholeCmd := VerifyReceiptCmd()
 			var wholeOut bytes.Buffer

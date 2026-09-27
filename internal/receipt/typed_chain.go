@@ -122,13 +122,20 @@ func ScopedChainTrust(report BaseReport, session string, trustedKeys []string, e
 }
 
 // CheckRecorderFile applies the per-file rules a single evidence file must
-// meet on its own: every entry's session_id is the session its file name
-// claims, when the name claims one, and the recorder entry hash chain holds
-// from genesis. It returns nil for input that is not recorder output.
+// meet on its own: it holds one recorder session, which is the session its
+// file name claims when the name claims one, and the recorder entry hash
+// chain holds from genesis. The hash chain pins the session only for v3
+// entries, so the session rule is checked here for every entry version.
 func CheckRecorderFile(name string, entries []recorder.Entry) error {
 	if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
 		if err := recorder.CheckEntrySessions(entries, session); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
+		}
+	} else if len(entries) > 0 {
+		for _, e := range entries[1:] {
+			if e.SessionID != entries[0].SessionID {
+				return fmt.Errorf("%w: evidence file mixes recorder sessions %q and %q", recorder.ErrEvidenceRefused, entries[0].SessionID, e.SessionID)
+			}
 		}
 	}
 	if err := recorder.VerifyChain(entries); err != nil {
@@ -151,4 +158,27 @@ func runNonces(receipts []Receipt) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RecorderFileChains returns the two receipt chains one recorder file holds,
+// after the per-file checks CheckRecorderFile applies. name is the file's base
+// name. ok is false when the entries hold no receipt of either kind, so a
+// caller can keep its compatibility path for input that is not recorder
+// output.
+func RecorderFileChains(name string, entries []recorder.Entry) ([]Receipt, []contractreceipt.EvidenceReceipt, bool, error) {
+	actions, err := extractReceiptsFromEntries(entries)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
+	if err != nil {
+		return nil, nil, true, fmt.Errorf("extracting evidence receipts: %w", err)
+	}
+	if len(actions) == 0 && len(evidence) == 0 {
+		return nil, nil, false, nil
+	}
+	if err := CheckRecorderFile(name, entries); err != nil {
+		return nil, nil, true, err
+	}
+	return actions, evidence, true, nil
 }

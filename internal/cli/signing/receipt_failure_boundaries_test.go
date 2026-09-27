@@ -297,7 +297,7 @@ func TestVerifyCleanReportRejectsUnsafeOutputAndTrust(t *testing.T) {
 	}
 
 	t.Run("unpinned report is rejected", func(t *testing.T) {
-		err := verifyCleanReport(io.Discard, "session", receipts, nil, false, filepath.Join(t.TempDir(), "report.json"))
+		err := verifyCleanReport(io.Discard, "session", receipts, nil, nil, false, filepath.Join(t.TempDir(), "report.json"))
 		if err == nil || !strings.Contains(err.Error(), "verification unpinned") {
 			t.Fatalf("verifyCleanReport error = %v, want unpinned rejection", err)
 		}
@@ -306,14 +306,14 @@ func TestVerifyCleanReportRejectsUnsafeOutputAndTrust(t *testing.T) {
 	t.Run("broken chain is rejected", func(t *testing.T) {
 		broken := append([]receipt.Receipt(nil), receipts...)
 		broken[len(broken)-1].Signature = "00"
-		err := verifyCleanReport(io.Discard, "session", broken, []string{keyHex}, false, filepath.Join(t.TempDir(), "report.json"))
+		err := verifyCleanReport(io.Discard, "session", broken, nil, []string{keyHex}, false, filepath.Join(t.TempDir(), "report.json"))
 		if err == nil || !strings.Contains(err.Error(), "chain verification failed") {
 			t.Fatalf("verifyCleanReport error = %v, want chain rejection", err)
 		}
 	})
 
 	t.Run("output directory is rejected", func(t *testing.T) {
-		err := verifyCleanReport(io.Discard, "session", receipts, []string{keyHex}, false, t.TempDir())
+		err := verifyCleanReport(io.Discard, "session", receipts, nil, []string{keyHex}, false, t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), "write clean report") {
 			t.Fatalf("verifyCleanReport error = %v, want write failure", err)
 		}

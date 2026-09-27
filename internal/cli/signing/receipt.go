@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
@@ -101,20 +102,20 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
 			if requireSeal && !wholeRecorder {
-				return errors.New("--require-seal requires --whole-recorder")
+				return configError(errors.New("--require-seal requires --whole-recorder"))
 			}
 			trustedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
-				return fmt.Errorf("loading public key: %w", err)
+				return configError(fmt.Errorf("loading public key: %w", err))
 			}
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
-				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
+				return configError(fmt.Errorf("--key was provided but no valid signer keys were resolved"))
 			}
 			var resolvedLocation *recorder.EvidenceLocation
 			if chainDir != "" && !fleetReport {
 				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
 				if locationErr != nil {
-					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
+					return evidenceReadError(fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr))
 				}
 				resolvedLocation = &location
 				chainDir = location.Dir
@@ -135,15 +136,15 @@ Examples:
 			if len(endorsementPaths) > 0 {
 				switch {
 				case fleetReport:
-					return fmt.Errorf("--rotation-endorsement cannot be combined with --fleet-report")
+					return configError(fmt.Errorf("--rotation-endorsement cannot be combined with --fleet-report"))
 				case cleanReport != "":
-					return fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report")
+					return configError(fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report"))
 				case chainDir == "" && !strings.HasSuffix(args[0], ".jsonl"):
-					return fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file")
+					return configError(fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file"))
 				}
 			}
 			if wholeRecorder && cleanReport != "" {
-				return fmt.Errorf("--whole-recorder cannot be combined with --clean-report")
+				return configError(fmt.Errorf("--whole-recorder cannot be combined with --clean-report"))
 			}
 			verifyOpts := verifyReceiptOptions{
 				AllowUnpinned:       allowUnpinned,
@@ -161,22 +162,22 @@ Examples:
 			for _, endorsementPath := range endorsementPaths {
 				endorsement, loadErr := receipt.LoadRotationEndorsementFile(endorsementPath)
 				if loadErr != nil {
-					return fmt.Errorf("loading --rotation-endorsement %q: %w", endorsementPath, loadErr)
+					return configError(fmt.Errorf("loading --rotation-endorsement %q: %w", endorsementPath, loadErr))
 				}
 				verifyOpts.RotationEndorsements = append(verifyOpts.RotationEndorsements, endorsement)
 			}
 			if fleetReport {
 				if wholeRecorder {
-					return fmt.Errorf("--whole-recorder cannot be combined with --fleet-report")
+					return configError(fmt.Errorf("--whole-recorder cannot be combined with --fleet-report"))
 				}
 				if locationID != "" {
-					return fmt.Errorf("--location requires --chain")
+					return configError(fmt.Errorf("--location requires --chain"))
 				}
 				if chainDir != "" {
-					return fmt.Errorf("--fleet-report cannot be combined with --chain")
+					return configError(fmt.Errorf("--fleet-report cannot be combined with --chain"))
 				}
 				if cmd.Flags().Changed("session") {
-					return fmt.Errorf("--fleet-report cannot be combined with --session")
+					return configError(fmt.Errorf("--fleet-report cannot be combined with --session"))
 				}
 				return outputResult(out, verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned))
 			}
@@ -196,13 +197,17 @@ Examples:
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 				if extractErr != nil {
-					return fmt.Errorf("extracting session receipts: %w", extractErr)
+					return evidenceReadError(fmt.Errorf("extracting session receipts: %w", extractErr))
+				}
+				evidenceReceipts, evidenceErr := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+				if evidenceErr != nil {
+					return evidenceReadError(fmt.Errorf("extracting session evidence receipts: %w", evidenceErr))
 				}
 				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
-				return outputResult(out, verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport))
+				return outputResult(out, verifyCleanReport(out, label, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
 			}
 			if locationID != "" {
-				return fmt.Errorf("--location requires --chain")
+				return configError(fmt.Errorf("--location requires --chain"))
 			}
 
 			path := args[0]
@@ -210,11 +215,11 @@ Examples:
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(path, ".jsonl") {
 				if cleanReport != "" {
-					receipts, extractErr := receipt.ExtractReceipts(path)
+					receipts, evidenceReceipts, extractErr := extractFileChains(path)
 					if extractErr != nil {
 						return fmt.Errorf("extracting receipts: %w", extractErr)
 					}
-					return outputResult(out, verifyCleanReport(out, path, receipts, trustedKeys, allowUnpinned, cleanReport))
+					return outputResult(out, verifyCleanReport(out, path, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
 				}
 				if wholeRecorder {
 					return outputResult(out, verifyWholeRecorderFromFile(out, path, trustedKeys, verifyOpts))
@@ -223,10 +228,10 @@ Examples:
 			}
 
 			if cleanReport != "" {
-				return fmt.Errorf("--clean-report requires --chain or a JSONL receipt file")
+				return configError(fmt.Errorf("--clean-report requires --chain or a JSONL receipt file"))
 			}
 			if wholeRecorder {
-				return fmt.Errorf("--whole-recorder requires a recorder JSONL file or --chain directory")
+				return configError(fmt.Errorf("--whole-recorder requires a recorder JSONL file or --chain directory"))
 			}
 			// Single receipt JSON file: a lone receipt has no chain to walk,
 			// so it verifies against the first supplied key (or its own).
@@ -241,7 +246,7 @@ Examples:
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
 	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
-	cmd.Flags().BoolVar(&allowUnanchoredSeal, "allow-unanchored-seal", false, "with --whole-recorder, accept a recorder whose transcript_root seal is not covered by a signed checkpoint (entries after the last signed checkpoint are then hash-linked but not authenticated)")
+	cmd.Flags().BoolVar(&allowUnanchoredSeal, "allow-unanchored-seal", false, "with --whole-recorder, accept a recorder whose transcript_root seal is not covered by a signed checkpoint (recorder entries after the last signed checkpoint that are not receipts are then hash-linked but not authenticated; every action and evidence receipt is still signature-verified)")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
 	cmd.Flags().StringVar(&cleanReport, "clean-report", "", "write minimal offline-verifiable action report after chain and defer-pair validation")
 	cmd.Flags().BoolVar(&showRaw, "show-raw", false, "append raw display fields in human output")
@@ -281,6 +286,23 @@ func outputResult(out *firstOutputErrWriter, semanticErr error) error {
 		return semanticErr
 	}
 	return out.err
+}
+
+// configError marks a usage or configuration error: exit 2, distinct from a
+// verification failure (exit 1).
+func configError(err error) error {
+	return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+}
+
+// evidenceReadError classifies a failure to read evidence. A refusal of the
+// evidence itself (a symlink in the evidence root, an entry filed under the
+// wrong session) is a verification failure; any other read failure, such as
+// a missing directory, is a configuration error.
+func evidenceReadError(err error) error {
+	if errors.Is(err, recorder.ErrEvidenceRefused) {
+		return err
+	}
+	return configError(err)
 }
 
 func firstOrEmpty(keys []string) string {
@@ -428,9 +450,34 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	_, _ = fmt.Fprintf(out, "WHOLE-RECORDER: %s\n", label)
 	_, _ = fmt.Fprintf(out, "  Mode:      whole-recorder\n")
 	_, _ = fmt.Fprintf(out, "  Entries:   %d recorder entries hash-chain-verified and in-taxonomy\n", whole.EntryCount)
+	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "  EVIDENCE CHAIN BROKEN: %v\n", err)
+		return fmt.Errorf("evidence receipt chain: %w", err)
+	}
+	if len(whole.Receipts) == 0 && len(evidenceReceipts) > 0 {
+		// Evidence receipts alone: verify them, but the transcript_root seal
+		// covers an action receipt chain, so there is nothing it can seal.
+		if err := verifyEvidenceChainDetailed(out, label, evidenceReceipts, trustedKeys, opts); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no action receipt chain, so no transcript_root seal covers this recorder")
+		return errUnsealedRecorder
+	}
 	chain := verifiedChainResult(whole.Receipts, trustedKeys, opts)
 	if !chain.Valid || (len(trustedKeys) == 0 && !opts.AllowUnpinned) {
 		return verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts)
+	}
+	// Both receipt chains are authenticated by their own signatures. A
+	// checkpoint anchors only the entries that are not receipts, so a forged
+	// EvidenceReceipt v2 must fail here even when the anchor is waived.
+	var evidenceChain contractreceipt.ChainResult
+	if len(evidenceReceipts) > 0 {
+		evidenceChain = receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{})
+		if !evidenceChain.Valid {
+			_, _ = fmt.Fprintf(out, "  EVIDENCE CHAIN BROKEN: %s\n", evidenceChain.Error)
+			return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", evidenceChain.BrokenAtSeq, evidenceChain.Error)
+		}
 	}
 	root, rootIndex, rootSessionID, found, err := transcriptRootFromEntries(entries)
 	if err != nil {
@@ -478,13 +525,16 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	// configured not to sign never has one; both states go through the same
 	// explicit flag and are named in the output.
 	if anchor.lastSignedIndex <= rootIndex && !opts.AllowUnanchoredSeal {
-		_, _ = fmt.Fprintln(out, "  UNANCHORED: no signed checkpoint covers the transcript_root seal; entries after the last signed checkpoint are hash-linked but not authenticated")
-		return fmt.Errorf("whole-recorder verification unanchored: no signed checkpoint covers the transcript_root seal (checkpoints absent, unsigned, or none after the seal); pass --allow-unanchored-seal to accept hash linkage only for the entries after the last anchor")
+		_, _ = fmt.Fprintln(out, "  UNANCHORED: no signed checkpoint covers the transcript_root seal; recorder entries after the last signed checkpoint that are not receipts are hash-linked but not authenticated")
+		return fmt.Errorf("whole-recorder verification unanchored: no signed checkpoint covers the transcript_root seal (checkpoints absent, unsigned, or none after the seal); pass --allow-unanchored-seal to accept hash linkage only for the non-receipt entries after the last anchor")
 	}
 	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
+	if len(evidenceReceipts) > 0 {
+		_, _ = fmt.Fprintf(out, "  Evidence:  %d evidence receipts verified\n", evidenceChain.ReceiptCount)
+	}
 	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
 	switch {
 	case anchor.lastSignedIndex > rootIndex && len(trustedKeys) == 0:
@@ -494,9 +544,9 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	case anchor.lastSignedIndex > rootIndex:
 		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified; every entry through the seal is committed by a trusted key\n", anchor.signed)
 	case anchor.signed > 0:
-		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified, none after the seal (accepted by --allow-unanchored-seal); entries after seq %d are hash-linked but not authenticated\n", anchor.signed, entries[anchor.lastSignedIndex].Sequence)
+		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified, none after the seal (accepted by --allow-unanchored-seal); recorder entries after seq %d that are not action or evidence receipts are hash-linked but not authenticated\n", anchor.signed, entries[anchor.lastSignedIndex].Sequence)
 	default:
-		_, _ = fmt.Fprintln(out, "  Anchor:    no signed checkpoint (accepted by --allow-unanchored-seal); recorder entries other than receipts are hash-linked but not authenticated")
+		_, _ = fmt.Fprintln(out, "  Anchor:    no signed checkpoint (accepted by --allow-unanchored-seal); recorder entries other than action and evidence receipts are hash-linked but not authenticated; both receipt chains were signature-verified")
 	}
 	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; only the recorder's trailing checkpoint may follow it, hash-chain-verified but not sealed")
 	return nil
@@ -861,6 +911,24 @@ func verifyChainFromFileWithOptions(out io.Writer, path string, trustedKeys []st
 }
 
 func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
+	// Recorder output: both receipt chains the file holds, after the checks a
+	// single file must pass on its own (entries belong to the session its
+	// name claims, and the recorder entry hash chain holds). The path the
+	// operator named is read as given.
+	if entries, readErr := recorder.ReadEntries(filepath.Clean(path)); readErr == nil {
+		if len(opts.RotationEndorsements) > 0 && len(entries) > 0 && entries[0].SessionID != opts.SessionID {
+			return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", opts.SessionID, entries[0].SessionID)
+		}
+		actions, evidenceReceipts, isRecorder, chainsErr := receipt.RecorderFileChains(filepath.Base(path), entries)
+		if chainsErr != nil {
+			_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", path)
+			_, _ = fmt.Fprintf(out, "  Error:    %v\n", chainsErr)
+			return fmt.Errorf("chain verification failed: %w", chainsErr)
+		}
+		if isRecorder {
+			return verifyTypedChainDetailed(out, path, actions, evidenceReceipts, trustedKeys, opts)
+		}
+	}
 	var (
 		receipts []receipt.Receipt
 		err      error
@@ -942,30 +1010,10 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 // chain gets only endorsements for its own in-chain rotations, plus the
 // successor key when the base check verified an endorsed link into it.
 func chainScopedTrust(report receipt.BaseReport, session string, trustedKeys []string, opts verifyReceiptOptions) (verifyReceiptOptions, []string) {
+	keys, own := receipt.ScopedChainTrust(report, session, trustedKeys, opts.RotationEndorsements)
 	chainOpts := opts
 	chainOpts.SessionID = session
-	chainOpts.RotationEndorsements = nil
-	for _, e := range opts.RotationEndorsements {
-		if e.SessionID != session {
-			continue
-		}
-		crossChain := false
-		for _, c := range report.Chains {
-			if c.Link != nil && receipt.VerifyCrossChainEndorsement(e, *c.Link) == nil {
-				crossChain = true
-				break
-			}
-		}
-		if !crossChain {
-			chainOpts.RotationEndorsements = append(chainOpts.RotationEndorsements, e)
-		}
-	}
-	keys := trustedKeys
-	for _, c := range report.Chains {
-		if c.Session == session && c.Link != nil && c.LinkTrust == receipt.LinkTrustEndorsed {
-			keys = append(append([]string(nil), trustedKeys...), c.Link.SuccessorSignerKey)
-		}
-	}
+	chainOpts.RotationEndorsements = own
 	return chainOpts, keys
 }
 
@@ -999,12 +1047,81 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 }
 
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
+	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
 	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 	if err != nil {
+		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
 		return fmt.Errorf("extracting session receipts: %w", err)
 	}
-	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
-	return verifyChainDetailed(out, label, receipts, trustedKeys, opts)
+	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
+		return fmt.Errorf("extracting session evidence receipts: %w", err)
+	}
+	return verifyTypedChainDetailed(out, label, receipts, evidenceReceipts, trustedKeys, opts)
+}
+
+// extractFileChains reads both receipt chains of a JSONL file: recorder output
+// through the per-file checks, else the raw receipt JSONL compatibility path,
+// which has no EvidenceReceipt v2 chain.
+func extractFileChains(path string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	if entries, readErr := recorder.ReadEntries(filepath.Clean(path)); readErr == nil {
+		actions, evidenceReceipts, isRecorder, err := receipt.RecorderFileChains(filepath.Base(path), entries)
+		if err != nil || isRecorder {
+			return actions, evidenceReceipts, err
+		}
+	}
+	actions, err := receipt.ExtractReceipts(path)
+	return actions, nil, err
+}
+
+// verifyTypedChainDetailed verifies every receipt chain one session or file
+// holds. A current run writes an ActionReceipt v1 chain and an EvidenceReceipt
+// v2 chain into the same files, each signed on its own, so a forged receipt in
+// one leaves the other intact: both must verify. Evidence holding only v2
+// receipts is verified as a v2 chain. Evidence with no v2 receipts prints
+// exactly what the action chain verification always printed.
+func verifyTypedChainDetailed(out io.Writer, label string, receipts []receipt.Receipt, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, opts verifyReceiptOptions) error {
+	if len(evidenceReceipts) == 0 {
+		return verifyChainDetailed(out, label, receipts, trustedKeys, opts)
+	}
+	var actionErr error
+	if len(receipts) > 0 {
+		actionErr = verifyChainDetailed(out, label, receipts, trustedKeys, opts)
+	}
+	evidenceErr := verifyEvidenceChainDetailed(out, label, evidenceReceipts, trustedKeys, opts)
+	if actionErr != nil {
+		return actionErr
+	}
+	return evidenceErr
+}
+
+// verifyEvidenceChainDetailed verifies and prints an EvidenceReceipt v2 chain.
+func verifyEvidenceChainDetailed(out io.Writer, label string, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, opts verifyReceiptOptions) error {
+	res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{})
+	if !res.Valid {
+		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN BROKEN: %s\n", label)
+		_, _ = fmt.Fprintf(out, "  Error:    %s\n", res.Error)
+		_, _ = fmt.Fprintf(out, "  Broke at: seq %d\n", res.BrokenAtSeq)
+		return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", res.BrokenAtSeq, res.Error)
+	}
+	unpinned := len(trustedKeys) == 0
+	if unpinned {
+		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN UNPINNED: %s\n", label)
+	} else {
+		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN VALID: %s\n", label)
+	}
+	_, _ = fmt.Fprintf(out, "  Evidence receipts: %d\n", res.ReceiptCount)
+	_, _ = fmt.Fprintf(out, "  Final seq: %d\n", res.FinalSeq)
+	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", res.RootHash)
+	_, _ = fmt.Fprintf(out, "  Signer:    %s\n", res.SignerKeyID)
+	if unpinned {
+		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
+		if !opts.AllowUnpinned {
+			return fmt.Errorf("evidence receipt chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
+		}
+	}
+	return nil
 }
 
 func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string) error {
@@ -1109,13 +1226,20 @@ type cleanActionEntry struct {
 	ResolutionSource string `json:"resolution_source,omitempty"`
 }
 
-func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
+func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
 	if len(receipts) == 0 {
 		return fmt.Errorf("no receipts found in %s", label)
 	}
 	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
 	if !result.Valid {
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
+	}
+	// The report lists actions only, but the evidence it is drawn from must
+	// verify whole: a forged EvidenceReceipt v2 beside intact actions fails.
+	if len(evidenceReceipts) > 0 {
+		if res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{}); !res.Valid {
+			return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", res.BrokenAtSeq, res.Error)
+		}
 	}
 	if len(trustedKeys) == 0 && !allowUnpinned {
 		return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")

@@ -1678,7 +1678,7 @@ adaptive_enforcement:
 | `deescalation_check_seconds` | `30` | Background sweep interval for idle-session time-based recovery. |
 | `clean_requests_to_deescalate` | `0` | Consecutive clean requests required to drop one adaptive level. `0` disables this opt-in recovery path. Any block or near-miss resets the clean streak, so an attacker cannot interleave clean traffic to stay under enforcement. A session that runs fully clean for this many requests does earn back one level, so set it conservatively: lower values recover faster but give a patient, fully-clean attacker an easier path back down. |
 | `severity_weighted_signals` | `false` | Opt-in lower score contribution for selected low-severity block labels when they represent concrete evidence. Entropy-only findings contribute no score regardless of this setting. DLP, SSRF, prompt-injection, and other concrete blocks retain their signals. |
-| `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. |
+| `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. A bound or config-default identity is always downweighted, whatever this is set to. |
 | `levels` | *(see below)* | Per-level enforcement upgrades |
 
 Concrete hard blocks retain their score contribution; entropy-only blocks do not. Adaptive levels recover only by time, and the 5-minute level
@@ -1735,7 +1735,7 @@ When a session is at a `block_all` level, blocked retries do not refresh the ses
 
 ### Domain Burst Scoring
 
-Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
+Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP; bound and config-default identities are not request-controlled, so they are never written to the IP-level counter. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
 
 ## Metrics listener
 

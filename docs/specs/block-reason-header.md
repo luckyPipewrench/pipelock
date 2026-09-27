@@ -37,6 +37,9 @@ The optional `X-Pipelock-Block-Reason-Layer` header reuses `internal/scanner/` `
 | `length` | `scanner.ScannerLength` | `url_length` |
 | `databudget` | `scanner.ScannerDataBudget` | `data_budget` |
 | `parser` | `scanner.ScannerParser` | `parse_error` |
+| `response_scan` | proxy response-scan layer | `prompt_injection` |
+| `response_scan_error` | proxy response-scan layer | `parse_error` (response could not be fully scanned; fail-closed) |
+| `body_prompt_injection` | proxy request-body scan layer | `prompt_injection` (outbound request body) |
 
 Layers without a `Scanner*` constant (MCP layer, posture layer) leave the layer header unset; the reason code already conveys the layer at the granularity agents need.
 
@@ -67,7 +70,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 |---|---|---|---|
 | `dlp_match` | Outbound payload matched a DLP pattern (secret, credential, PII). | `critical` | `none` |
 | `body_entropy` | Body, WebSocket frame, or A2A payload matched the opaque-content detector: entropy exceeded the configured ceiling or a long all-hex value was observed. | `warn` | `policy` |
-| `prompt_injection` | Inbound response matched an injection pattern. | `critical` | `none` |
+| `prompt_injection` | Inbound response, or an outbound request body (layer `body_prompt_injection`), matched an injection pattern. | `critical` | `none` |
 | `redaction_failure` | Outbound redaction stage encountered an unrecoverable parse error and fail-closed. | `critical` | `transient` |
 | `media_policy` | Image / audio / video policy block (size, type, count). | `warn` | `policy` |
 
@@ -99,14 +102,14 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 
 | Code | When | Severity | Retry |
 |---|---|---|---|
-| `parse_error` | Unparseable input on a fail-closed surface. | `warn` | `none` |
+| `parse_error` | Unparseable input on a fail-closed surface, or a response that could not be fully scanned (layer `response_scan_error`; HTTP 503 on fetch and forward proxy). | `warn` | `none` |
 | `timeout` | Scanner or HITL timed out (fail-closed default). | `warn` | `transient` |
 | `pattern_unavailable` | Scanner pattern set unavailable at startup; fail-closed until ready. | `warn` | `transient` |
 | `not_enabled` | Endpoint exists but the feature is disabled in config. | `info` | `policy` |
 | `bad_request` | Malformed client request (missing parameter, invalid URL, etc.). | `info` | `none` |
 | `compressed_response` | Response used an encoding Pipelock cannot decode (e.g. br, zstd, stacked, or malformed; gzip and deflate are decoded and scanned). Change the upstream's encoding, or add the host to `tls_interception.passthrough_domains` if it is trusted. | `warn` | `policy` |
 | `browser_shield_oversize` | Response body exceeded the configured Browser Shield size limit. Operator must raise the limit or exempt the host to clear the block. | `warn` | `policy` |
-| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, or scan-head mode refused a valid UTF-16 response because a partial character stream is not safely inspectable. Correct the upstream encoding, raise the Browser Shield size limit so the full response can be inspected, or use the existing whole-host `browser_shield.exempt_domains` control when the host must intentionally bypass Browser Shield. | `warn` | `policy` |
+| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, scan-head mode refused a valid UTF-16 response because a partial character stream is not safely inspectable, or the response was a partial (`206`) response that Shield would have to rewrite. Correct the upstream encoding, request the complete resource, raise the Browser Shield size limit so the full response can be inspected, or use the existing whole-host `browser_shield.exempt_domains` control when the host must intentionally bypass Browser Shield. | `warn` | `policy` |
 | `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
 ### Contract / learn-and-lock layer

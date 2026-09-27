@@ -43,10 +43,10 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 |---|---|
 | `dlp_match` | DLP pattern matched in body, header, or URL. |
 | `body_entropy` | Body, WebSocket frame, or A2A payload content triggers the opaque high-entropy detector. |
-| `prompt_injection` | Response body matched an injection pattern. |
+| `prompt_injection` | Response body, or an outbound request body, matched an injection pattern. |
 | `request_policy_deny` | A `request_policy` rule denied a named-dangerous outbound API operation. |
 | `redaction_failure` | Body could not be redacted safely; fail-closed. |
-| `media_policy` | Media policy rejected the response (binary type, EXIF, SVG active content, etc.). |
+| `media_policy` | Media policy rejected the response (binary type, EXIF, SVG refused for active content or failed validation, etc.). |
 
 ### MCP / tool
 
@@ -76,13 +76,14 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 
 | Reason | When |
 |---|---|
-| `parse_error` | Pipelock could not parse the request safely; fail-closed. |
+| `parse_error` | Pipelock could not parse the request safely; fail-closed. Also emitted when a response could not be fully scanned (layer `response_scan_error`); fetch and forward proxy return `503` in that case rather than `403`. |
 | `timeout` | A scanner or upstream operation timed out; fail-closed. |
 | `pattern_unavailable` | A configured pattern set is not loaded; fail-closed. |
 | `not_enabled` | The requested feature is disabled by config. |
 | `bad_request` | The request itself is malformed (e.g. missing required headers, bad CONNECT target). |
-| `compressed_response` | A compressed response could not be scanned safely. |
+| `compressed_response` | A response used an encoding Pipelock cannot decode (gzip and deflate are decoded and scanned; other encodings, stacked or malformed bodies are not). |
 | `browser_shield_oversize` | Response exceeded Browser Shield's size limit. |
+| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, scan-head mode refused a partial character stream, or the response was a partial (`206`) response that Shield would have to rewrite. |
 | `block_reason_overflow` | Internal sentinel used when WebSocket close-frame metadata would exceed RFC 6455's 123-byte payload limit. Distinct from `parse_error` so the operator sees that the block metadata itself was malformed, not the underlying request. |
 
 ## Severity
@@ -136,7 +137,7 @@ The header is set on every HTTP-capable block path. MCP-internal blocks that hap
 
 | Where | What it means |
 |---|---|
-| The HTTP status Pipelock returns | **Pipelock's own verdict.** `200` means Pipelock allowed the request and completed the fetch. `403` means Pipelock refused it, and the `X-Pipelock-Block-Reason` header says which layer and why. |
+| The HTTP status Pipelock returns | **Pipelock's own verdict.** `200` means Pipelock allowed the request and completed the fetch. `403` means Pipelock refused it, and the `X-Pipelock-Block-Reason` header says which layer and why. `503` with `X-Pipelock-Block-Reason: parse_error` means the response scan could not complete (layer `response_scan_error`), or the instance is temporarily at capacity. |
 | `status_code` in the JSON body | **What the upstream said.** Present only on an allowed request, because a blocked request never reached the upstream. |
 
 So `HTTP 200` with `"status_code": 404` is a normal, correct response: Pipelock permitted the request, fetched the URL, and the site returned 404. Nothing was blocked.

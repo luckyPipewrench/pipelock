@@ -50,7 +50,7 @@ This creates two files in your pipelock home directory: `~/.pipelock/` by defaul
 - `ca.pem`: the CA certificate (share this, it's public)
 - `ca-key.pem`: the CA private key (protect this, `0600` permissions)
 
-`pipelock run` resolves the default CA path the same way, so the proxy loads the CA that `tls init` wrote as long as both commands use the same `--home` or `PIPELOCK_HOME`. The examples below assume the plain `~/.pipelock` default.
+`pipelock run` and `pipelock check` resolve the default CA path the same way, so the proxy loads the CA that `tls init` wrote as long as both commands use the same `--home` or `PIPELOCK_HOME`. If the resolved home has no CA but `~/.pipelock` does (for example you set `--home`/`PIPELOCK_HOME` after already running `tls init` once), startup refuses rather than silently loading the older CA; the error names both directories and suggests setting `tls_interception.ca_cert`/`ca_key` to keep using the older CA, or running `pipelock tls init` with the new home. The examples below assume the plain `~/.pipelock` default.
 
 Options:
 

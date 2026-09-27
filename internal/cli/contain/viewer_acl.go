@@ -41,11 +41,23 @@ func checkRFBGroup(stat func(string) (os.FileInfo, error), lookup func(string) (
 
 // checkViewerControlACL requires the operator grant and rejects unrelated entries.
 func checkViewerControlACL(ctx context.Context, run runCommand, path, operator string) error {
+	return checkExactACL(ctx, run, path, "viewer control ACL", map[string]string{"user:": "rw-", "user:" + operator: "rw-", "group:": "---", "mask:": "rw-", "other:": "---"})
+}
+
+// checkViewerControlDirACL requires that the operator can traverse the
+// viewer's private runtime directory. The mask is part of the check: a
+// directory chmod rewrites the mask from the mode's group bits, and a
+// mask of --- silently cancels the operator's named --x entry.
+func checkViewerControlDirACL(ctx context.Context, run runCommand, path, operator string) error {
+	return checkExactACL(ctx, run, path, "viewer runtime directory ACL", map[string]string{"user:": "rwx", "user:" + operator: "--x", "group:": "---", "mask:": "--x", "other:": "---"})
+}
+
+// checkExactACL requires exactly the wanted access ACL entries on path.
+func checkExactACL(ctx context.Context, run runCommand, path, label string, want map[string]string) error {
 	out, err := readAccessACL(ctx, run, path)
 	if err != nil {
-		return fmt.Errorf("read viewer control ACL: %w", err)
+		return fmt.Errorf("read %s: %w", label, err)
 	}
-	want := map[string]string{"user:": "rw-", "user:" + operator: "rw-", "group:": "---", "mask:": "rw-", "other:": "---"}
 	seen := make(map[string]bool, len(want))
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
@@ -60,16 +72,16 @@ func checkViewerControlACL(ctx context.Context, run runCommand, path, operator s
 		case 3:
 			key, perms = parts[0]+":"+parts[1], parts[2]
 		default:
-			return fmt.Errorf("viewer control ACL unexpected entry %q", line)
+			return fmt.Errorf("%s unexpected entry %q", label, line)
 		}
 		if expected, ok := want[key]; !ok || seen[key] || perms != expected {
-			return fmt.Errorf("viewer control ACL unexpected entry %q", line)
+			return fmt.Errorf("%s unexpected entry %q", label, line)
 		}
 		seen[key] = true
 	}
 	for key := range want {
 		if !seen[key] {
-			return fmt.Errorf("viewer control ACL missing entry %q", key)
+			return fmt.Errorf("%s missing entry %q", label, key)
 		}
 	}
 	return nil

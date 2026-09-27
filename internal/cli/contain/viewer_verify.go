@@ -98,6 +98,9 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if err := checkViewerControlACL(ctx, env.runCmd, path, cfg.Containment.Display.Viewer.OperatorUser); err != nil {
 		return statusFail, err.Error()
 	}
+	if err := checkViewerControlDirACL(ctx, env.runCmd, filepath.Dir(path), cfg.Containment.Display.Viewer.OperatorUser); err != nil {
+		return statusFail, err.Error()
+	}
 	if err := checkViewerGroup(ctx, env.runCmd, account.Gid); err != nil {
 		return statusFail, err.Error()
 	}

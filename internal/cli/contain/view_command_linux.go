@@ -13,7 +13,6 @@ import (
 	"math"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,8 +20,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func viewCmd() *cobra.Command {
@@ -45,8 +42,12 @@ type viewOptions struct {
 }
 
 type viewDeps struct {
-	load        func(string) (*config.Config, error)
-	current     func() (*user.User, error)
+	// access reports whether the caller may write the viewer control socket.
+	// The viewer service, not this client, is the authority: its socket ACL
+	// and peer-UID check admit only the configured operator. This pre-check
+	// only turns a refusal into an operator-facing message.
+	access      func(string) error
+	controlPath string
 	geteuid     func() int
 	getenv      func(string) string
 	listen      func(context.Context, string, string) (net.Listener, error)
@@ -56,26 +57,28 @@ type viewDeps struct {
 
 func realViewDeps(out, errOut io.Writer) viewDeps {
 	return viewDeps{
-		load: config.LoadForInspection, current: user.Current, geteuid: os.Geteuid, getenv: os.Getenv,
+		access: func(path string) error { return unix.Access(path, unix.W_OK) }, controlPath: viewerControlSocket,
+		geteuid: os.Geteuid, getenv: os.Getenv,
 		listen: (&net.ListenConfig{}).Listen, dial: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, out: out, errOut: errOut,
 	}
 }
 
 func runContainViewCommand(ctx context.Context, deps viewDeps, opts viewOptions) error {
-	cfg, err := deps.load(defaultConfigDir + "/pipelock.yaml")
-	if err != nil {
-		return fmt.Errorf("load viewer configuration: %w", err)
-	}
-	v := cfg.Containment.Display.Viewer
-	if v.Enabled == nil || !*v.Enabled {
-		return errors.New("contained display viewer is disabled")
-	}
-	account, err := deps.current()
-	if err != nil {
-		return fmt.Errorf("current viewer user: %w", err)
-	}
-	if v.OperatorUser == "" || account.Username != v.OperatorUser {
-		return fmt.Errorf("contain view requires the configured operator user %q", v.OperatorUser)
+	// The managed config is readable only by the proxy account, so the
+	// operator cannot load it. Check reachability of the viewer's control
+	// socket instead; the service enforces who may use it.
+	if err := deps.access(deps.controlPath); err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return errors.New("contained display viewer is not running; enable containment.display.viewer and rerun pipelock contain install")
+		case errors.Is(err, os.ErrPermission):
+			// EACCES also comes from a parent directory the caller cannot
+			// search, which is what the operator sees on a host whose viewer
+			// unit predates the operator traverse grant. Name both causes.
+			return errors.New("permission denied on the viewer control socket: run as the configured containment.display.viewer.operator_user; if you are that user, rerun pipelock contain install and check pipelock contain verify")
+		default:
+			return fmt.Errorf("check viewer control socket: %w", err)
+		}
 	}
 	if opts.socket == "" {
 		runtimeDir := deps.getenv("XDG_RUNTIME_DIR")
@@ -88,7 +91,7 @@ func runContainViewCommand(ctx context.Context, deps viewDeps, opts viewOptions)
 	if opts.control {
 		mode = "control"
 	}
-	return runContainViewWithDeps(ctx, opts.socket, viewerControlSocket, mode, viewerUID(deps.geteuid()), deps)
+	return runContainViewWithDeps(ctx, opts.socket, deps.controlPath, mode, viewerUID(deps.geteuid()), deps)
 }
 
 func currentViewerUID() uint32 {

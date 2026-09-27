@@ -94,9 +94,9 @@ func TestViewerServiceProbe(t *testing.T) {
 		}
 		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(gid)}, nil
 	}, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active\n", 0, nil }}
-	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == "getfacl" {
-			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+			return fakeViewerACL(args), 0, nil
 		}
 		if name == "getent" {
 			return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
@@ -106,6 +106,18 @@ func TestViewerServiceProbe(t *testing.T) {
 	if status, detail := probeViewerService(context.Background(), env); status != statusPass {
 		t.Fatalf("valid service: %s %s", status, detail)
 	}
+	goodRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "getfacl" && len(args) > 0 && args[len(args)-1] == filepath.Dir(viewerControlSocket) {
+			// The live defect: a directory chmod left mask --- and cancelled the operator traverse.
+			return "user::rwx\nuser:operator:--x\ngroup::---\nmask::---\nother::---\n", 0, nil
+		}
+		return goodRun(ctx, name, args...)
+	}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "viewer runtime directory ACL") {
+		t.Fatalf("cancelled operator traverse: %s %s, want runtime directory ACL failure", status, detail)
+	}
+	env.runCmd = goodRun
 	originalLookup := env.lookupUser
 	env.lookupUser = func(name string) (*user.User, error) {
 		if name == "operator" {
@@ -129,9 +141,9 @@ func TestViewerServiceProbe(t *testing.T) {
 	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "ACL") {
 		t.Fatalf("missing operator ACL: %s %s", status, detail)
 	}
-	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == "getfacl" {
-			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+			return fakeViewerACL(args), 0, nil
 		}
 		if name == "getent" {
 			return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
@@ -286,17 +298,17 @@ func TestProbeViewerServiceGroupAndProxyIsolationFailures(t *testing.T) {
 			gid++
 		}
 		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(gid)}, nil
-	}, runCmd: func(_ context.Context, name string, _ ...string) (string, int, error) {
+	}, runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == "getfacl" {
-			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+			return fakeViewerACL(args), 0, nil
 		}
 		return "active", 0, nil
 	}}
 	t.Run("viewer group mismatch", func(t *testing.T) {
 		env := base
-		env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 			if name == "getfacl" {
-				return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+				return fakeViewerACL(args), 0, nil
 			}
 			if name == "getent" {
 				return "", 1, nil
@@ -309,9 +321,9 @@ func TestProbeViewerServiceGroupAndProxyIsolationFailures(t *testing.T) {
 	})
 	t.Run("proxy isolation failure", func(t *testing.T) {
 		env := base
-		env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 			if name == "getfacl" {
-				return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil
+				return fakeViewerACL(args), 0, nil
 			}
 			if name == "getent" {
 				return viewerUserName + ":x:" + strconv.Itoa(os.Getgid()) + ":\n", 0, nil
@@ -503,5 +515,58 @@ func TestViewerRFBAccessProbeReportsExactFailure(t *testing.T) {
 	}
 	if status, detail := probeViewerRFBAccess(context.Background(), &disabled); status != statusFail || !strings.Contains(detail, "wrong owner or group") {
 		t.Fatalf("disabled RFB wrong group = %s %q", status, detail)
+	}
+}
+
+// fakeViewerACL returns a correct operator ACL for the viewer control socket
+// and for its runtime directory, keyed by the path getfacl was asked about.
+func fakeViewerACL(args []string) string {
+	if len(args) > 0 && args[len(args)-1] == filepath.Dir(viewerControlSocket) {
+		return "user::rwx\nuser:operator:--x\ngroup::---\nmask::--x\nother::---\n"
+	}
+	return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n"
+}
+
+func TestViewerControlDirACLRequiresEffectiveOperatorTraverse(t *testing.T) {
+	dir := filepath.Dir(viewerControlSocket)
+	for _, tc := range []struct {
+		name, acl string
+		wantErr   bool
+	}{
+		{"operator can traverse", "user::rwx\nuser:operator:--x\ngroup::---\nmask::--x\nother::---\n", false},
+		// A directory chmod rewrites the mask from the mode's group bits; a
+		// 0700 runtime directory mode leaves mask --- and cancels the grant.
+		{"mask cancels operator grant", "user::rwx\nuser:operator:--x\ngroup::---\nmask::---\nother::---\n", true},
+		{"operator grant missing", "user::rwx\ngroup::---\nmask::--x\nother::---\n", true},
+		{"group can traverse", "user::rwx\nuser:operator:--x\ngroup::--x\nmask::--x\nother::---\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked string
+			run := func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name != "getfacl" {
+					t.Fatalf("unexpected command %s", name)
+				}
+				asked = args[len(args)-1]
+				return tc.acl, 0, nil
+			}
+			err := checkViewerControlDirACL(context.Background(), run, dir, "operator")
+			if asked != dir {
+				t.Fatalf("getfacl path = %q, want %q", asked, dir)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestViewerServiceUnitRuntimeDirectoryKeepsOperatorTraverse(t *testing.T) {
+	yes := true
+	unit := renderViewerServiceUnit(&installEnv{displayUnitPath: "/etc/systemd/system/pipelock-agent-display.service", agentUserName: "agent", pipelockTarget: "/usr/local/bin/pipelock", displayNumber: 99, displayConfig: config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}})
+	if !strings.Contains(unit, "RuntimeDirectoryMode=0710\n") {
+		t.Fatalf("viewer runtime directory must be 0710 so its ACL mask keeps the operator's traverse grant:\n%s", unit)
+	}
+	if !strings.Contains(unit, "m::--x /run/pipelock-contain-viewer") {
+		t.Fatalf("viewer unit must grant the operator traverse with mask --x:\n%s", unit)
 	}
 }

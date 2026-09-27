@@ -35,6 +35,11 @@ pipelock opencode install --config "$PWD/pipelock.yaml"
 server to launch through `pipelock mcp proxy`, and is idempotent. Pass
 `--path` to target another config. After adding or removing an MCP server in
 OpenCode's configuration, re-run the installer to wrap new entries.
+Re-running after upgrading Pipelock also recovers and re-wraps an older
+Pipelock-authored entry using the current binary's invocation shape; an entry
+it cannot safely normalize (for example one still carrying a `headers` field
+outside the wrapped command) is refused with a message identifying the file
+and entry, and nothing is changed.
 
 After restarting OpenCode, use `opencode mcp list` and a harmless tool action
 to confirm the server connects. A rewritten config does not by itself prove an

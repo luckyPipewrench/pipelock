@@ -92,6 +92,12 @@ If attribution succeeds, the finding includes `is_agent: true` and the `agent` P
 
 Attribution is probabilistic: if the writing process has already closed the file descriptor by the time pipelock checks, attribution will not succeed. This is a detection heuristic, not forensic proof.
 
+## Diagnosing coverage
+
+`pipelock doctor` runs the same traversal file sentry uses to arm watches, without installing any watcher. It reports `FAIL` when a required watch subtree is unreachable, and `WARN` instead when `file_sentry.best_effort: true` can cover that failure. A watch path list that reduces to nothing after `ignore_patterns` fails closed regardless of `best_effort`, because arming would have nothing to watch. A truncated walk (the traversal hit its entry budget) reports a warning rather than a pass, since the unvisited remainder is unchecked, not proven reachable. A coverage `OK` proves the configured tree was traversable as the doctor's user; it does not prove the watcher is armed and running, which still depends on the agent launching through the Pipelock MCP wrapper.
+
+On a real arming failure at startup, Pipelock prints a summary line naming how many watch subtrees were skipped or unarmed, followed by remedies scoped to what would actually fix it. `best_effort` is offered as a remedy only when it can resolve the failure; a required watch path or a zero-watchable-path config are never rescued by it, and the message says so.
+
 ## Relationship to `pipelock integrity`
 
 `pipelock integrity` is a point-in-time snapshot scan. It checks files once and reports. File sentry is real-time continuous monitoring. They are complementary:

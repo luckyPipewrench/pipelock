@@ -29,7 +29,12 @@ Pass `--no-auditor` to `pipelock init` to skip installing it, or `--dry-run` to
 see what would be installed without installing anything. If the host has no
 usable `systemd --user` session (no `systemctl` binary, no `XDG_RUNTIME_DIR`,
 or the session bus is unreachable), init skips the auditor with a printed
-notice instead of failing. Stop and disable an installed timer with
+notice instead of failing. `running` and `degraded` both count as usable.
+While the session reports `starting` or `initializing`, a login-time `init`
+retries briefly (a bound of well under a second) before treating the session
+as unavailable, so a normal login race no longer causes a permanent skip; any
+other reported state (for example `offline`) skips immediately with that
+state named in the notice. Stop and disable an installed timer with
 `systemctl --user disable --now pipelock-evidence-corpus-auditor.timer`; that
 leaves the generated unit, alert and metric files in place but inert, so delete
 them under `$XDG_CONFIG_HOME/systemd/user/` and
@@ -42,6 +47,14 @@ run fails rather than reporting a skip, and a disclosure that cannot be written
 fails before anything is installed. Under `--json` the outcome is also reported in the
 `evidence_corpus_auditor` object, and the disclosure is written to stderr so
 stdout stays a single JSON document.
+
+Rerunning `init` never silently retargets an already-installed auditor: if the
+existing managed service's executable or `flight_recorder.dir` differs from
+what this run would install, or an unmanaged file exists with the same name,
+init fails with an error rather than replacing it. To migrate deliberately,
+stop the timer with `systemctl --user`, update the service's `ExecStart` to
+the intended binary and recorder directory, run
+`systemctl --user daemon-reload`, then rerun `init`.
 
 Point the Prometheus node-exporter textfile collector at
 `$XDG_CONFIG_HOME/pipelock/prometheus/textfile/`, and add a rule-file GLOB such

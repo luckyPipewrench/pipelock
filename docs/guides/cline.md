@@ -29,7 +29,7 @@ pipelock cline install
 # 3. Reload VS Code so Cline picks up the wrapped configuration
 ```
 
-`pipelock cline install` discovers Cline's MCP server configuration, rewrites each entry to launch through `pipelock mcp proxy`, and is idempotent — re-running it on an already-installed setup is a no-op. Add or remove an MCP server in Cline's settings as usual, then re-run `pipelock cline install` to wrap any new entries.
+`pipelock cline install` discovers Cline's MCP server configuration, rewrites each entry to launch through `pipelock mcp proxy`, and is idempotent — re-running it on an already-installed setup is a no-op. Add or remove an MCP server in Cline's settings as usual, then re-run `pipelock cline install` to wrap any new entries. Re-running after upgrading Pipelock also recovers and re-wraps an older Pipelock-authored entry using the current binary's invocation shape; an entry it cannot safely normalize (for example one still carrying a `headers` field outside the wrapped command) is refused with a message identifying the file and entry, and nothing is changed.
 
 ## What Gets Scanned
 

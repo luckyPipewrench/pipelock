@@ -5,6 +5,6 @@
 
 package directorysync
 
-// Windows does not expose a portable directory-fsync operation. The artifact
-// files themselves are still flushed before lifecycle emission returns.
+// Go cannot fsync a directory handle on Windows. NTFS journals directory
+// metadata, so a newly created file's directory entry is recoverable after a crash.
 func Sync(string) error { return nil }

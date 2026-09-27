@@ -66,3 +66,20 @@ func TestCleanReportSchemaRejectsIncompleteEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanReportSchemaRejectsInvalidTrustFields(t *testing.T) {
+	t.Parallel()
+	const body = `"chain":{"label":"l","receipt_count":1,"final_seq":0,"root_hash":"h","signer_keys":["k"]},"actions":[]}`
+	for name, doc := range map[string]string{
+		"missing schema version":    `{"verification_mode":"pinned_provenance",` + body,
+		"unknown schema version":    `{"schema_version":"pipelock.clean_report.v2","verification_mode":"pinned_provenance",` + body,
+		"missing verification mode": `{"schema_version":"pipelock.clean_report.v1",` + body,
+		"unsupported mode":          `{"schema_version":"pipelock.clean_report.v1","verification_mode":"unknown",` + body,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateCleanReportSchema(t, []byte(doc)); err == nil {
+				t.Fatal("schema accepted invalid trust fields")
+			}
+		})
+	}
+}

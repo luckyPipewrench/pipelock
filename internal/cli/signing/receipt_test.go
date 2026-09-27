@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1621,6 +1622,23 @@ func TestVerifyReceiptCmd_CleanReportVerificationMode(t *testing.T) {
 				t.Fatalf("output: %s", out.String())
 			}
 		})
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportRejectsUnpinned(t *testing.T) {
+	t.Parallel()
+	path, _ := buildDeferredCleanChainJSONL(t)
+	reportPath := filepath.Join(t.TempDir(), "report.json")
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{path, "--clean-report", reportPath})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "verification unpinned") {
+		t.Fatalf("Execute error = %v, want verification unpinned", err)
+	}
+	if _, err := os.Stat(reportPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("report path exists or stat failed: %v", err)
 	}
 }
 

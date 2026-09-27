@@ -231,7 +231,7 @@ func (e *Emitter) ChainState() (seq uint64, prevHash string) {
 	return e.chainSeq, e.chainPrevHash
 }
 
-// HealthError reports an uncertain durable write. A new emitter must not
+// HealthError reports an uncertain write. A new emitter must not
 // resume from this chain head without reconciling the recorder's on-disk log.
 func (e *Emitter) HealthError() error {
 	if e == nil {
@@ -402,9 +402,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		recordErr = e.recorder.Record(entry)
 	}
 	if err := recordErr; err != nil {
-		if durable {
-			e.healthErr = err
-		}
+		e.healthErr = err
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
 	}
 	e.chainPrevHash = rcptHash

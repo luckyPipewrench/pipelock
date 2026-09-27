@@ -36,6 +36,37 @@ type captureRecorder struct {
 	err     error
 }
 
+type partialErrorRecorder struct {
+	entries []recorder.Entry
+	calls   int
+}
+
+func (r *partialErrorRecorder) Record(entry recorder.Entry) error {
+	r.calls++
+	r.entries = append(r.entries, entry)
+	return errTestRecorder
+}
+
+func TestEmitPartialRecordErrorBlocksChainHandoff(t *testing.T) {
+	rec := &partialErrorRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.Emit(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("Emit error = %v, want partial record error", err)
+	}
+	if len(rec.entries) != 1 {
+		t.Fatalf("written entries = %d, want 1", len(rec.entries))
+	}
+	if _, _, err := em.Retire(); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("Retire error = %v, want uncertain record error", err)
+	}
+	if err := em.Emit(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("retry error = %v, want poisoned emitter", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("recorder calls = %d, want 1", rec.calls)
+	}
+}
+
 func (c *captureRecorder) Record(e recorder.Entry) error {
 	if c.err != nil {
 		return c.err

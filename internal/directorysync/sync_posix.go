@@ -5,7 +5,12 @@
 
 package directorysync
 
-import "path/filepath"
+import (
+	"errors"
+	"path/filepath"
+
+	"golang.org/x/sys/unix"
+)
 
 type directorySyncer interface {
 	Sync() error
@@ -23,4 +28,15 @@ func syncWithOpen(path string, open func(string) (directorySyncer, error)) error
 		return err
 	}
 	return closeErr
+}
+
+func syncDarwinDirectory(fd int, fullSync, fsync func(int) error) error {
+	err := fullSync(fd)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTTY) {
+		return fsync(fd)
+	}
+	return err
 }

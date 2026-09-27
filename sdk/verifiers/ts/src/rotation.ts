@@ -97,6 +97,19 @@ function requireHex(value: unknown, bytes: number, field: string): string {
   return text;
 }
 
+// isCanonicalUTCTimestamp reports whether text is what Go's
+// time.Time.UTC().Format(time.RFC3339Nano) prints: UTC, "Z", and a fraction
+// with no trailing zeros.
+export function isCanonicalUTCTimestamp(text: string): boolean {
+  const match =
+    /^(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<time>[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.(?<fraction>[0-9]{0,8}[1-9]))?Z$/u.exec(
+      text,
+    );
+  return (
+    match !== null && validDateTime(match.groups?.["date"] ?? "", match.groups?.["time"] ?? "")
+  );
+}
+
 function requireCanonicalTimestamp(value: unknown): string {
   const text = requireCanonicalString(value, "rotated_at");
   const match =
@@ -170,6 +183,15 @@ function normalizeEndorsement(value: unknown): RotationEndorsement {
   };
 }
 
+// goJSONMarshal reproduces Go's encoding/json.Marshal output for the values
+// the verifier re-signs. JSON.stringify already writes the short escapes (\b
+// \f \n \r \t) and lowercase \u00XX for other controls exactly as Go 1.22+
+// does; goHTMLEscape adds the HTML and line-separator escapes Go also applies.
+// sdk/conformance/testdata/go-json-escapes holds Go's own output to check it.
+export function goJSONMarshal(value: unknown): string {
+  return goHTMLEscape(JSON.stringify(value));
+}
+
 function goHTMLEscape(serialized: string): string {
   return serialized
     .replace(/</g, "\\u003c")
@@ -191,7 +213,7 @@ function endorsementDigest(endorsement: RotationEndorsement): Buffer {
   };
   return createHash("sha256")
     .update(Buffer.from(endorsementDomain, "utf8"))
-    .update(Buffer.from(goHTMLEscape(JSON.stringify(canonical)), "utf8"))
+    .update(Buffer.from(goJSONMarshal(canonical), "utf8"))
     .digest();
 }
 

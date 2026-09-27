@@ -22,6 +22,7 @@ const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the
 // human-readable form. The human form is loosely structured so script
 // consumers should prefer --json.
 func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
+	r = withoutClaimedTrust(r)
 	if jsonMode {
 		writeJSON(stdout, r)
 		return

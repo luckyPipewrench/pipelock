@@ -764,7 +764,7 @@ func TestChainRefusesOversizedEvidenceFile(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := runChain(&stdout, &stderr, path, chainOptions{signerKey: fixture.keyHex})
+	err := runChain(&stdout, &stderr, path, chainOptions{signerKeys: []string{fixture.keyHex}})
 	if err == nil {
 		t.Fatalf("oversized evidence line accepted: stdout=%q", stdout.String())
 	}

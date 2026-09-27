@@ -55,7 +55,7 @@ fn valid_lower_hex(value: &str, bytes: usize) -> bool {
         && value == value.to_ascii_lowercase()
 }
 
-fn canonical_utc_timestamp(value: &str) -> bool {
+pub(crate) fn canonical_utc_timestamp(value: &str) -> bool {
     if !value.ends_with('Z') || validate_timestamp(value, "rotated_at").is_err() {
         return false;
     }

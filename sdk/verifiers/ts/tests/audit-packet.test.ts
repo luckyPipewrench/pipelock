@@ -472,3 +472,50 @@ test("audit packet rejects invalid UTF-8 instead of replacing bytes", async () =
     `want UTF-8 rejection, got ${JSON.stringify(report.errors)}`,
   );
 });
+
+// A packet claims verdict=valid and trusted=true. When full verification
+// fails, the report must not repeat that claim.
+test("failed audit packet verification never reports trust", async () => {
+  // Positive control: the unmodified packet verifies and keeps its claim.
+  const control = await verifyAuditPacket(writePacket(), defaultOptions);
+  assert.equal(control.valid, true, JSON.stringify(control.errors));
+  assert.equal(control.verdict, "valid");
+  assert.equal(control.trusted, true);
+
+  const tamperedDir = writePacket();
+  writeFileSync(
+    path.join(tamperedDir, "evidence.jsonl"),
+    readFileSync("../../conformance/testdata/broken-chain.jsonl"),
+  );
+  const cases: [string, string, Partial<typeof defaultOptions>, string][] = [
+    ["tampered chain", tamperedDir, {}, "fail"],
+    ["wrong key", writePacket(), { signerKey: "11".repeat(32) }, "fail"],
+    [
+      "cross-check mismatch",
+      writePacket((packet) => {
+        packet.summary!.receipt_count = 6;
+        packet.summary!.totals!.allow = 6;
+      }),
+      {},
+      "pass",
+    ],
+  ];
+  for (const [name, dir, overrides, chainCheck] of cases) {
+    const report = await verifyAuditPacket(dir, { ...defaultOptions, ...overrides });
+    assert.equal(
+      report.chain_check,
+      chainCheck,
+      `${name}: failure must come from the intended stage`,
+    );
+    assert.equal(report.valid, false, name);
+    assert.equal(report.trusted, false, name);
+    assert.equal(report.verdict, "invalid", name);
+  }
+});
+
+test("offline audit packet verdict is unchanged", async () => {
+  const report = await verifyAuditPacket(writePacket(), { ...defaultOptions, offline: true });
+  assert.equal(report.verdict, "schema_checked_trust_unverified");
+  assert.equal(report.trusted, false);
+  assert.equal(report.valid, false);
+});

@@ -8,10 +8,26 @@ import { parseArgs } from "node:util";
 import { verifyAuditPacket } from "./audit-packet.js";
 import { verifyChain } from "./chain.js";
 import { analyzeLifecycle } from "./lifecycle.js";
-import { emitAuditPacket, emitChain, emitReceipt } from "./output.js";
-import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
+import {
+  baseHealthy,
+  baseUnlinked,
+  chainScopedTrust,
+  readSessionReceipts,
+  resolveBaseSessions,
+  runSessionBase,
+  verifyBase,
+  type BaseFinding,
+  type ChainLink,
+} from "./chain-set.js";
+import { emitAuditPacket, emitChain, emitChainSet, emitReceipt } from "./output.js";
+import { extractTypedReceipts, selectReceiptChain, type ExtractedReceipts } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
-import { loadRotationEndorsementFile, verifyChainWithEndorsements } from "./rotation.js";
+import {
+  loadRotationEndorsementFile,
+  verifyChainWithEndorsements,
+  type RotationEndorsement,
+} from "./rotation.js";
+import type { Receipt } from "./types.js";
 import { runAARPCommand } from "./aarp/cli.js";
 import { comparableProvenance, runProvenanceFixture } from "./provenance-proof.js";
 import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
@@ -77,62 +93,45 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
   return report.valid ? 0 : 1;
 }
 
-async function runChainCommand(args: string[]): Promise<number> {
-  const parsed = parseArgs({
-    args,
-    allowPositionals: true,
-    options: {
-      json: { type: "boolean", default: false },
-      key: { type: "string", default: "" },
-      "allow-unpinned": { type: "boolean", default: false },
-      dir: { type: "boolean", default: false },
-      "session-id": { type: "string", default: "proxy" },
-      "rotation-endorsement": { type: "string", multiple: true, default: [] },
-    },
-  });
-  const target = requireOneArg(parsed.positionals, "chain");
-  const keyHex = resolveSignerKey(parsed.values.key ?? "");
-  const asDir = parsed.values.dir === true;
-  const sessionID = parsed.values["session-id"] ?? "proxy";
-  let receipts;
-  let label: string;
-  try {
-    if (asDir) {
-      const clean = path.normalize(target);
-      receipts = extractReceiptsFromSessionDir(clean, sessionID);
-      label = `${clean} (session ${sessionID})`;
-    } else {
-      const clean = path.normalize(target);
-      if (statSync(clean).isDirectory()) {
-        throw new RuntimeError(
-          `${target} is a directory; pass --dir to verify a session directory`,
-        );
-      }
-      receipts = extractReceipts(clean);
-      label = clean;
-    }
-  } catch (err) {
-    throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
-  }
+// ChainSetReport is the directory-mode report when the evidence directory
+// holds per-run receipt chains: one chain report per run, then the restart
+// continuity of the base. Unlinked runs are always listed, because a passing
+// result is not proof that no run's evidence is missing.
+export interface ChainSetReport {
+  path: string;
+  base: string;
+  valid: boolean;
+  chains: (ChainCommandReport & { session: string })[];
+  continuity: {
+    healthy: boolean;
+    linked: {
+      session: string;
+      predecessor_session: string;
+      predecessor_tail_seq: number;
+      trust: string;
+    }[];
+    unlinked: string[];
+    findings: BaseFinding[];
+  };
+}
+
+async function chainReportFor(
+  label: string,
+  receipts: Receipt[],
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsements: RotationEndorsement[],
+  sessionID: string,
+): Promise<ChainCommandReport> {
   if (receipts.length === 0) {
-    const report: ChainCommandReport = {
+    return {
       path: label,
       valid: false,
       receipt_count: 0,
       final_seq: 0,
       error: "no receipts in chain",
     };
-    emitChain(report, parsed.values.json === true);
-    return 1;
   }
-  const allowUnpinned = parsed.values["allow-unpinned"] === true;
-  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
-  if (endorsementPaths.length > 0 && allowUnpinned) {
-    throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
-  }
-  const endorsements = await Promise.all(
-    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
-  );
   const result =
     endorsements.length > 0
       ? await verifyChainWithEndorsements(receipts, keyHex, {
@@ -142,7 +141,7 @@ async function runChainCommand(args: string[]): Promise<number> {
       : await verifyChain(receipts, keyHex, { allowUnpinned });
   const lifecycle = analyzeLifecycle(receipts, result);
   const lifecycleBroken = lifecycle.status === "BROKEN";
-  const report: ChainCommandReport = {
+  return {
     path: label,
     valid: result.valid && !lifecycleBroken,
     unpinned:
@@ -159,6 +158,241 @@ async function runChainCommand(args: string[]): Promise<number> {
     error: lifecycleBroken && result.valid ? `lifecycle: ${lifecycle.reason}` : result.error,
     broken_at_seq: result.broken_at_seq,
   };
+}
+
+// evidenceChainKey picks the key an EvidenceReceipt v2 chain is verified
+// against. A v2 chain has one signer and is verified against one key. Given a
+// trusted set (directory mode passes each run its scoped trust, which includes
+// an endorsed successor key), it is the trusted key equal to the chain's
+// declared signer_key_id. The declared id only selects: every receipt is still
+// verified against that key, and a signer outside the set gets the first
+// trusted key, which then fails. A single key is returned unchanged.
+function evidenceChainKey(keyHex: string, receipts: Receipt[]): string {
+  const keys = keyHex
+    .split(",")
+    .map((key) => key.trim().toLowerCase())
+    .filter((key) => key !== "");
+  if (keys.length <= 1) return keyHex;
+  const signature = receipts[0]?.signature;
+  const declared =
+    typeof signature === "object" &&
+    signature !== null &&
+    typeof (signature as Record<string, unknown>)["signer_key_id"] === "string"
+      ? ((signature as Record<string, unknown>)["signer_key_id"] as string).toLowerCase()
+      : "";
+  return keys.find((key) => key === declared) ?? (keys[0] as string);
+}
+
+// typedChainReport verifies every receipt chain one session or file holds. A
+// current run writes an ActionReceipt v1 chain and an EvidenceReceipt v2 chain
+// into the same files, each signed on its own, so a forged receipt in one
+// leaves the other intact: verifying only the chain selectReceiptChain picks
+// reported a session valid while its v2 chain was forged. Both chains must
+// verify. The action report stays the primary one, so a session whose chains
+// both pass prints exactly what it did before, and a failure names the chain
+// it came from.
+async function typedChainReport(
+  label: string,
+  typed: ExtractedReceipts,
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsements: RotationEndorsement[],
+  sessionID: string,
+): Promise<ChainCommandReport> {
+  const primaryReceipts = selectReceiptChain(typed);
+  const primary = await chainReportFor(
+    label,
+    primaryReceipts,
+    typed.action.length === 0 ? evidenceChainKey(keyHex, primaryReceipts) : keyHex,
+    allowUnpinned,
+    endorsements,
+    sessionID,
+  );
+  if (typed.action.length === 0 || typed.evidence.length === 0) return primary;
+  const evidence = await chainReportFor(
+    label,
+    typed.evidence,
+    evidenceChainKey(keyHex, typed.evidence),
+    allowUnpinned,
+    endorsements,
+    sessionID,
+  );
+  if (primary.valid && evidence.valid) return primary;
+  // Without a key and without --allow-unpinned both chains fail only for being
+  // unpinned; the action report already says so.
+  if (primary.unpinned === true && evidence.unpinned === true) return primary;
+  const reasons: string[] = [];
+  if (!primary.valid) reasons.push(`action receipt chain: ${primary.error ?? ""}`);
+  if (!evidence.valid) reasons.push(`evidence receipt chain: ${evidence.error ?? ""}`);
+  return {
+    ...primary,
+    valid: false,
+    unpinned: undefined,
+    error: reasons.join("; "),
+    broken_at_seq: primary.valid ? evidence.broken_at_seq : primary.broken_at_seq,
+  };
+}
+
+async function loadEndorsements(
+  endorsementPaths: string[],
+  allowUnpinned: boolean,
+): Promise<RotationEndorsement[]> {
+  if (endorsementPaths.length > 0 && allowUnpinned) {
+    throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
+  }
+  return Promise.all(
+    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
+  );
+}
+
+// runChainSetCommand verifies every chain of base in dir and the base's
+// restart continuity, matching the Go reference verify-receipt --chain.
+async function runChainSetCommand(
+  dir: string,
+  base: string,
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsementPaths: string[],
+  json: boolean,
+): Promise<number> {
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const trustedKeys = keyHex
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key !== "");
+  let baseReport;
+  let sessions: string[];
+  try {
+    sessions = resolveBaseSessions(dir, base);
+    baseReport = await verifyBase(dir, base, { trustedKeys, endorsements });
+  } catch (err) {
+    throw new RuntimeError(`restart continuity check incomplete: ${errorMessage(err)}`);
+  }
+  const chains: ChainSetReport["chains"] = [];
+  for (const session of sessions) {
+    const label = `${dir} (session ${session})`;
+    const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
+    let chainReport: ChainCommandReport;
+    try {
+      chainReport = await typedChainReport(
+        label,
+        readSessionReceipts(dir, session),
+        scoped.keys.join(","),
+        allowUnpinned,
+        scoped.endorsements,
+        session,
+      );
+    } catch (err) {
+      chainReport = {
+        path: label,
+        valid: false,
+        receipt_count: 0,
+        final_seq: 0,
+        error: `extract receipts: ${errorMessage(err)}`,
+      };
+    }
+    chains.push({ session, ...chainReport });
+  }
+  const healthy = baseHealthy(baseReport);
+  const report: ChainSetReport = {
+    path: dir,
+    base,
+    valid: healthy && chains.every((c) => c.valid),
+    chains,
+    continuity: {
+      healthy,
+      linked: baseReport.chains
+        .filter((c) => c.link !== undefined)
+        .map((c) => ({
+          session: c.session,
+          predecessor_session: (c.link as ChainLink).predecessor_session,
+          predecessor_tail_seq: Number((c.link as ChainLink).predecessor_tail_seq),
+          trust: c.link_trust === "" ? "untrusted" : c.link_trust,
+        })),
+      unlinked: baseUnlinked(baseReport),
+      findings: baseReport.findings,
+    },
+  };
+  emitChainSet(report, json);
+  return report.valid ? 0 : 1;
+}
+
+async function runChainCommand(args: string[]): Promise<number> {
+  const parsed = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      json: { type: "boolean", default: false },
+      key: { type: "string", default: "" },
+      "allow-unpinned": { type: "boolean", default: false },
+      dir: { type: "boolean", default: false },
+      "session-id": { type: "string" },
+      "rotation-endorsement": { type: "string", multiple: true, default: [] },
+    },
+  });
+  const target = requireOneArg(parsed.positionals, "chain");
+  const keyHex = resolveSignerKey(parsed.values.key ?? "");
+  const asDir = parsed.values.dir === true;
+  const explicitSession = parsed.values["session-id"] !== undefined;
+  const sessionID = parsed.values["session-id"] ?? "proxy";
+  const allowUnpinned = parsed.values["allow-unpinned"] === true;
+  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
+  // Without an explicit --session-id, a directory whose base has per-run
+  // chains is verified as a whole: every run and the links between them.
+  // An explicit --session-id keeps single-session verification.
+  if (asDir && !explicitSession) {
+    const clean = path.normalize(target);
+    let runs: string[];
+    try {
+      runs = resolveBaseSessions(clean, sessionID).filter((s) => runSessionBase(s) !== undefined);
+    } catch (err) {
+      throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
+    }
+    if (runs.length > 0) {
+      return runChainSetCommand(
+        clean,
+        sessionID,
+        keyHex,
+        allowUnpinned,
+        endorsementPaths,
+        parsed.values.json === true,
+      );
+    }
+  }
+  let typed: ExtractedReceipts;
+  let label: string;
+  try {
+    if (asDir) {
+      const clean = path.normalize(target);
+      typed = readSessionReceipts(clean, sessionID);
+      label = `${clean} (session ${sessionID})`;
+    } else {
+      const clean = path.normalize(target);
+      if (statSync(clean).isDirectory()) {
+        throw new RuntimeError(
+          `${target} is a directory; pass --dir to verify a session directory`,
+        );
+      }
+      typed = extractTypedReceipts(clean);
+      label = clean;
+    }
+  } catch (err) {
+    throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
+  }
+  if (typed.action.length === 0 && typed.evidence.length === 0) {
+    const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
+    emitChain(report, parsed.values.json === true);
+    return 1;
+  }
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const report = await typedChainReport(
+    label,
+    typed,
+    keyHex,
+    allowUnpinned,
+    endorsements,
+    sessionID,
+  );
   emitChain(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
 }

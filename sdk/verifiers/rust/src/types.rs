@@ -177,3 +177,39 @@ pub struct ChainCommandReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broken_at_seq: Option<u64>,
 }
+
+/// Directory-mode report when the evidence directory holds per-run receipt
+/// chains: one chain report per run, then the base's restart continuity.
+/// Unlinked runs are always listed, because a passing result is not proof
+/// that no run's evidence is missing.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChainSetReport {
+    pub path: String,
+    pub base: String,
+    pub valid: bool,
+    pub chains: Vec<ChainSetEntry>,
+    pub continuity: ChainSetContinuity,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChainSetEntry {
+    pub session: String,
+    #[serde(flatten)]
+    pub report: ChainCommandReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChainSetContinuity {
+    pub healthy: bool,
+    pub linked: Vec<ChainSetLink>,
+    pub unlinked: Vec<String>,
+    pub findings: Vec<crate::chain_set::BaseFinding>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChainSetLink {
+    pub session: String,
+    pub predecessor_session: String,
+    pub predecessor_tail_seq: u64,
+    pub trust: String,
+}

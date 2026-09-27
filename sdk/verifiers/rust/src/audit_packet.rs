@@ -23,7 +23,31 @@ pub struct AuditPacketOptions {
     pub expect_sha256: String,
 }
 
+/// Keeps a failed verification from repeating the packet's own trust claim.
+/// The report starts with the packet's verdict and trusted fields, so any
+/// failure after that point would otherwise report "verdict: valid, trusted:
+/// true" beside an INVALID result. A report that is not valid never claims
+/// trust, and a success verdict becomes invalid. A successful report and the
+/// offline report are unchanged.
+fn without_claimed_trust(mut report: AuditPacketReport) -> AuditPacketReport {
+    if report.valid {
+        return report;
+    }
+    report.trusted = false;
+    if report.verdict == "valid" || report.verdict == "self_consistent_only" {
+        report.verdict = "invalid".to_string();
+    }
+    report
+}
+
 pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<AuditPacketReport> {
+    verify_audit_packet_report(target, opts).map(without_claimed_trust)
+}
+
+fn verify_audit_packet_report(
+    target: &str,
+    opts: &AuditPacketOptions,
+) -> Result<AuditPacketReport> {
     let (packet_path, base_dir) = resolve_packet_path(target)?;
     let raw_packet = crate::util::read_verifier_bytes(&packet_path)?;
     let packet_path_string = packet_path.display().to_string();

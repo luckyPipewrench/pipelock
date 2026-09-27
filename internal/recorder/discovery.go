@@ -85,7 +85,7 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 			return fmt.Errorf("stat evidence path %q: %w", relPath, infoErr)
 		}
 		if entryInfo.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("refuse symlink in evidence root: %q", relPath)
+			return fmt.Errorf("%w: refuse symlink in evidence root: %q", ErrEvidenceRefused, relPath)
 		}
 		if !entryInfo.IsDir() {
 			return nil
@@ -140,7 +140,7 @@ func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
 			return nil, fmt.Errorf("stat evidence root component %q: %w", component, err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refuse symlink in evidence root path: %q", component)
+			return nil, fmt.Errorf("%w: refuse symlink in evidence root path: %q", ErrEvidenceRefused, component)
 		}
 		if component == cleanRoot {
 			rootInfo = info
@@ -160,7 +160,7 @@ func directoryHasEvidenceFiles(rootFS fs.FS, dir string) (bool, error) {
 			return false, infoErr
 		}
 		if entryInfo.Mode()&fs.ModeSymlink != 0 {
-			return false, fmt.Errorf("refuse symlink in evidence directory: %q", path.Join(dir, entry.Name()))
+			return false, fmt.Errorf("%w: refuse symlink in evidence directory: %q", ErrEvidenceRefused, path.Join(dir, entry.Name()))
 		}
 		if entryInfo.IsDir() {
 			continue

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -58,17 +59,20 @@ type BaseVerifyOptions struct {
 // BaseChain is one chain of a base: a run session or the legacy base session.
 // Valid describes that chain; LinkTrust separately describes its predecessor.
 type BaseChain struct {
-	Session   string
-	Legacy    bool
-	Receipts  int
-	FinalSeq  uint64
-	TailHash  string
-	SignerKey string
-	Link      *ChainLink
-	LinkFile  string
-	LinkTrust string
-	Valid     bool
-	Error     string
+	Session  string
+	Legacy   bool
+	Receipts int
+	// EvidenceReceipts counts the chain's EvidenceReceipt v2 receipts. A run
+	// that holds both chains is valid only when both verify.
+	EvidenceReceipts int
+	FinalSeq         uint64
+	TailHash         string
+	SignerKey        string
+	Link             *ChainLink
+	LinkFile         string
+	LinkTrust        string
+	Valid            bool
+	Error            string
 }
 
 // BaseFinding is one problem found while verifying a base.
@@ -202,6 +206,7 @@ func VerifyCrossChainEndorsement(e RotationEndorsement, link ChainLink) error {
 type baseChainData struct {
 	chain    BaseChain
 	receipts []Receipt
+	evidence []contractreceipt.EvidenceReceipt
 }
 
 // chainLinkRecord is one link file as read from disk.
@@ -438,10 +443,29 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		}
 	}
 
+	if !opts.LinksOnly {
+		checkRunNonces(data, sessions, add)
+	}
+
 	for _, s := range sessions {
 		report.Chains = append(report.Chains, data[s].chain)
 	}
 	return report, nil
+}
+
+// checkRunNonces reports two chains whose signed action records carry the
+// same run nonce. A run with no action records has no nonce and is skipped.
+func checkRunNonces(data map[string]*baseChainData, sessions []string, add func(kind, session, detail string)) {
+	owner := make(map[string]string)
+	for _, s := range sessions {
+		for _, n := range runNonces(data[s].receipts) {
+			if first, dup := owner[n]; dup {
+				add(FindingDuplicateRunNonce, s, fmt.Sprintf("run nonce %s is also signed in chain %s: the same run is present twice", n, first))
+				continue
+			}
+			owner[n] = s
+		}
+	}
 }
 
 // loadBaseChain reads one chain's receipts and records its tail. In
@@ -450,6 +474,9 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(kind, session, detail string)) {
 	s := d.chain.Session
 	entries, readErr := readIndexedEntries(ix, s)
+	if readErr == nil {
+		readErr = recorder.CheckEntrySessions(entries, s)
+	}
 	if readErr != nil {
 		d.chain.Error = readErr.Error()
 		add(FindingCorruptChain, s, readErr.Error())
@@ -459,6 +486,14 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(
 		if chainErr := recorder.VerifyChain(entries); chainErr != nil {
 			add(FindingOuterChainBroken, s, chainErr.Error())
 		}
+		evidence, evErr := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
+		if evErr != nil {
+			d.chain.Error = "evidence receipt chain: " + evErr.Error()
+			add(FindingCorruptChain, s, d.chain.Error)
+			return
+		}
+		d.evidence = evidence
+		d.chain.EvidenceReceipts = len(evidence)
 	}
 	for _, entry := range entries {
 		if entry.Type != recorderEntryType {
@@ -473,7 +508,10 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(
 		d.receipts = append(d.receipts, *rcpt)
 	}
 	if len(d.receipts) == 0 {
-		d.chain.Valid = true
+		// A chain with only EvidenceReceipt v2 entries is decided by full
+		// verification; one with no receipts of either kind has nothing to
+		// fail.
+		d.chain.Valid = len(d.evidence) == 0
 		return
 	}
 	d.chain.Receipts = len(d.receipts)
@@ -492,25 +530,38 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(
 	}
 }
 
-// verifyBaseChain runs full signature and key-trust verification on one chain.
+// verifyBaseChain runs full signature and key-trust verification on one
+// chain: its ActionReceipt v1 chain and its EvidenceReceipt v2 chain, each
+// when present. The chain is valid only when every chain present verifies.
 func verifyBaseChain(d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
-	if d.chain.Error != "" || len(d.receipts) == 0 {
+	if d.chain.Error != "" || (len(d.receipts) == 0 && len(d.evidence) == 0) {
 		return
 	}
-	if endorsed && len(trusted) > 0 {
+	if endorsed && len(trusted) > 0 && d.chain.Link != nil {
 		trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
 	}
-	var res ChainResult
-	if len(own) > 0 {
-		res = VerifyChainWithEndorsements(d.chain.Session, d.receipts, own, trusted)
-	} else {
-		res = VerifyChainTrusted(d.receipts, trusted)
+	if len(d.receipts) > 0 {
+		var res ChainResult
+		if len(own) > 0 {
+			res = VerifyChainWithEndorsements(d.chain.Session, d.receipts, own, trusted)
+		} else {
+			res = VerifyChainTrusted(d.receipts, trusted)
+		}
+		if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
+			d.chain.Valid = false
+			d.chain.Error = res.Error
+			add(FindingCorruptChain, d.chain.Session, res.Error)
+			return
+		}
 	}
-	if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
-		d.chain.Valid = false
-		d.chain.Error = res.Error
-		add(FindingCorruptChain, d.chain.Session, res.Error)
-		return
+	if len(d.evidence) > 0 {
+		res := VerifyEvidenceChainTrusted(d.evidence, trusted, contractreceipt.ChainVerifyOptions{})
+		if !res.Valid {
+			d.chain.Valid = false
+			d.chain.Error = "evidence receipt chain: " + res.Error
+			add(FindingCorruptChain, d.chain.Session, d.chain.Error)
+			return
+		}
 	}
 	d.chain.Valid = true
 }

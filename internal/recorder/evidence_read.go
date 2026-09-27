@@ -55,6 +55,13 @@ const (
 // ErrEvidenceReadLimitExceeded marks a fail-closed evidence read cap hit.
 var ErrEvidenceReadLimitExceeded = errors.New("evidence read limit exceeded")
 
+// ErrEvidenceRefused marks evidence a reader refused to read as the chain it
+// was asked for: a symlink inside an evidence root, or an entry whose
+// session_id is not the session its file name claims. A verifier reports it
+// as a verification failure, not as a configuration error, because the
+// evidence itself is what is wrong.
+var ErrEvidenceRefused = errors.New("evidence refused")
+
 // openRegularEvidenceFile opens an unchanged regular evidence file after the
 // platform access policy has accepted the operation.
 func openRegularEvidenceFile(path string, accessErr error) (*os.File, os.FileInfo, error) {
@@ -67,7 +74,7 @@ func openRegularEvidenceFile(path string, accessErr error) (*os.File, os.FileInf
 		return nil, nil, err
 	}
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return nil, nil, errors.New("evidence file is symlinked or non-regular")
+		return nil, nil, fmt.Errorf("%w: evidence file is symlinked or non-regular", ErrEvidenceRefused)
 	}
 	file, err := os.OpenFile(cleanPath, os.O_RDONLY|evidenceReadNoFollowFlag|evidenceReadNonblockFlag, 0)
 	if err != nil {

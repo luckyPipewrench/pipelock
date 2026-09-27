@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::types::{AuditPacketReport, ChainCommandReport, ReceiptReport};
+use crate::types::{AuditPacketReport, ChainCommandReport, ChainSetReport, ReceiptReport};
 use crate::util::{Result, VerifierError};
 
 pub fn write_json<T: serde::Serialize>(value: &T) -> Result<()> {
@@ -167,5 +167,49 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
     } else if report.error.is_some() {
         eprintln!("  broken at:  seq unknown");
     }
+    Ok(())
+}
+
+/// Prints each run's chain report, then the base's restart continuity in the
+/// same shape as the Go reference.
+pub fn emit_chain_set(report: &ChainSetReport, json: bool) -> Result<()> {
+    if json {
+        return write_json(report);
+    }
+    for chain in &report.chains {
+        emit_chain(&chain.report, false)?;
+    }
+    let c = &report.continuity;
+    let label = if c.healthy {
+        "RESTART CONTINUITY OK"
+    } else {
+        "RESTART CONTINUITY FAILED"
+    };
+    println!(
+        "{label}: base \"{}\": {} chain(s), {} linked, {} unlinked, {} link finding(s)",
+        report.base,
+        report.chains.len(),
+        c.linked.len(),
+        c.unlinked.len(),
+        c.findings.len()
+    );
+    for l in &c.linked {
+        println!(
+            "  linked:   {} continues {} at seq {} ({})",
+            l.session, l.predecessor_session, l.predecessor_tail_seq, l.trust
+        );
+    }
+    for s in &c.unlinked {
+        println!("  unlinked: {s}");
+    }
+    for f in &c.findings {
+        println!("  - {}: {}: {}", f.kind, f.session, f.detail);
+    }
+    println!("  Note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,");
+    println!("  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.");
+    println!(
+        "  result:     {}",
+        if report.valid { "VALID" } else { "INVALID" }
+    );
     Ok(())
 }

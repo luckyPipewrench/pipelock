@@ -124,10 +124,10 @@ func QuerySessionResolved(location EvidenceLocation, sessionID string, filter *Q
 			result.Truncated = true
 		}
 
+		if err := CheckEntrySessions(entries, sessionID); err != nil {
+			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
+		}
 		for _, e := range entries {
-			if e.SessionID != sessionID {
-				return nil, fmt.Errorf("reading %s: entry seq %d session_id %q does not match requested session %q", filepath.Base(f), e.Sequence, e.SessionID, sessionID)
-			}
 			if matchesFilter(e, filter) {
 				result.Entries = append(result.Entries, e)
 			}
@@ -335,4 +335,16 @@ func matchesFilter(e Entry, f *QueryFilter) bool {
 		return false
 	}
 	return true
+}
+
+// CheckEntrySessions refuses entries that are not all of session. A file
+// named for one session that holds another session's entries is not that
+// session's evidence, whatever its hash chain says.
+func CheckEntrySessions(entries []Entry, session string) error {
+	for _, e := range entries {
+		if e.SessionID != session {
+			return fmt.Errorf("%w: entry seq %d session_id %q does not match requested session %q", ErrEvidenceRefused, e.Sequence, e.SessionID, session)
+		}
+	}
+	return nil
 }

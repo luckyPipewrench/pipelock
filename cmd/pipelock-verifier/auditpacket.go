@@ -16,9 +16,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
@@ -239,6 +241,15 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		emitReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet chain rejected at seq %d: %s", chainResult.BrokenAtSeq, chainResult.Error))
 	}
+	// The packet's evidence holds an EvidenceReceipt v2 chain beside the
+	// action chain in every current run, each signed on its own. A forged v2
+	// receipt leaves the action chain intact, so trust requires both.
+	if evidenceErr := reverifyEvidenceChain(baseDir, &packet, signerKey); evidenceErr != nil {
+		report.ChainCheck = statusFail
+		report.Errors = append(report.Errors, fmt.Sprintf("chain: %v", evidenceErr))
+		emitReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, evidenceErr)
+	}
 	lifecycle := completeness.Analyze(chainReceipts, chainResult)
 	report.LifecycleStatus = lifecycle.Status
 	report.LifecycleReason = lifecycle.Reason
@@ -267,6 +278,23 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("packet not trusted"))
 	}
 	return nil
+}
+
+// withoutClaimedTrust keeps a failed verification from repeating the
+// packet's own trust claim. The report starts with the packet's verdict and
+// trusted fields, so any failure after that point would otherwise print
+// "verdict: valid, trusted: true" beside an INVALID result. A report that is
+// not valid never claims trust, and a success verdict becomes invalid. A
+// successful report and the offline report are unchanged.
+func withoutClaimedTrust(r auditPacketReport) auditPacketReport {
+	if r.Valid {
+		return r
+	}
+	r.Trusted = false
+	if r.Verdict == auditpacket.VerdictValid || r.Verdict == auditpacket.VerdictSelfConsistentOnly {
+		r.Verdict = auditpacket.VerdictInvalid
+	}
+	return r
 }
 
 func populateReportFromPacket(r *auditPacketReport, p *auditpacket.Packet) {
@@ -386,6 +414,40 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 		return receipt.ChainResult{Valid: false, Error: "empty chain"}, receipts, nil
 	}
 	return receipt.VerifyChain(receipts, resolvedKey), receipts, nil
+}
+
+// reverifyEvidenceChain verifies the EvidenceReceipt v2 chain of the packet's
+// evidence under the same key as its action chain. Evidence that is not
+// recorder output, or holds no v2 receipt, has no v2 chain to verify.
+func reverifyEvidenceChain(baseDir string, packet *auditpacket.Packet, signerKey string) error {
+	evidencePath, err := resolveArtifactPath(baseDir, packet.Artifacts.Evidence)
+	if err != nil {
+		return fmt.Errorf("evidence: %w", err)
+	}
+	entries, err := recorder.ReadEntries(evidencePath)
+	if err != nil {
+		return nil
+	}
+	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
+	if err != nil {
+		return fmt.Errorf("evidence receipt chain: %w", err)
+	}
+	if len(evidenceReceipts) == 0 {
+		return nil
+	}
+	keyHex, err := resolveSignerKey(strings.TrimSpace(signerKey))
+	if err != nil {
+		return fmt.Errorf("resolve signer key: %w", err)
+	}
+	var trusted []string
+	if keyHex != "" {
+		trusted = []string{keyHex}
+	}
+	res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trusted, contractreceipt.ChainVerifyOptions{})
+	if !res.Valid {
+		return fmt.Errorf("evidence receipt chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error)
+	}
+	return nil
 }
 
 // auditPacketSignerKey selects only trust material the relying party explicitly

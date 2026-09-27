@@ -7385,13 +7385,50 @@ func TestKnownValueWindowBudget_LongURLSharesOneAnchorBound(t *testing.T) {
 			highest = max(highest, off)
 		}
 	}
-	// Rounding the shared stride up can add at most one anchor per part.
-	if limit := maxKnownValuePartialAnchors + segments; anchors > limit {
-		t.Fatalf("long URL produced %d anchors, want at most %d", anchors, limit)
+	if anchors > maxKnownValuePartialAnchors {
+		t.Fatalf("long URL produced %d anchors, want at most %d", anchors, maxKnownValuePartialAnchors)
 	}
 	// Positive control: sampling still reaches the last segment.
 	if highest < len(value)-2*64 {
 		t.Fatalf("anchors end at offset %d of %d, want coverage through the last segment", highest, len(value))
+	}
+}
+
+// Sampling carries across URL parts, so thousands of minimum-length segments
+// share the value-wide anchor bound instead of each restarting at offset zero
+// and taking one anchor apiece.
+func TestKnownValueWindowBudget_ManyShortURLSegmentsShareTheBound(t *testing.T) {
+	const segments = 5000
+	var b strings.Builder
+	b.WriteString("https://api.vendor.example")
+	for i := range segments {
+		sum := sha256.Sum256([]byte(strconv.Itoa(i)))
+		b.WriteString("/")
+		b.WriteString(hex.EncodeToString(sum[:])[:minKnownSecretSubstringLen])
+	}
+	value := b.String()
+	windows, err := knownValueWindowsBounded(value, maxKnownValuePartialAnchors)
+	if err != nil {
+		t.Fatalf("URL with %d short segments refused under a %d-entry budget: %v", segments, maxKnownValuePartialAnchors, err)
+	}
+	anchors := 0
+	highest := -1
+	for _, offsets := range windows {
+		anchors += len(offsets)
+		for _, off := range offsets {
+			highest = max(highest, off)
+		}
+	}
+	if anchors > maxKnownValuePartialAnchors {
+		t.Fatalf("URL with %d short segments produced %d anchors, want at most %d", segments, anchors, maxKnownValuePartialAnchors)
+	}
+	// Positive controls: the sample is value-wide, not only the first parts,
+	// and it is not empty.
+	if anchors < maxKnownValuePartialAnchors/2 {
+		t.Fatalf("URL with %d short segments kept %d anchors, want a value-wide sample", segments, anchors)
+	}
+	if highest < len(value)-4*(minKnownSecretSubstringLen+1) {
+		t.Fatalf("anchors end at offset %d of %d, want coverage through the last segments", highest, len(value))
 	}
 }
 

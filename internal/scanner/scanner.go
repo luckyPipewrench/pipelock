@@ -3112,21 +3112,29 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 	stride := knownValueStride(totalSpan)
 	out := make(map[string][]int)
 	entryCount := 0
+	// phase carries the sampling position from one part into the next, so the
+	// parts are sampled as one continuous span of totalSpan window starts and
+	// yield at most maxKnownValuePartialAnchors anchors in total. Restarting at
+	// offset zero in every part would give each short part its own anchor, and
+	// thousands of short segments would exceed the bound.
+	phase := 0
 	for _, p := range eligible {
 		part, raw, idx := p.part, p.raw, p.idx
-		partWindows, windowErr := collectValueWindowsStrided(part, idx, maxEntries-entryCount, stride)
+		partWindows, next, windowErr := collectValueWindowsPhased(part, idx, maxEntries-entryCount, stride, phase)
 		if windowErr != nil {
 			return nil, windowErr
 		}
+		phase = next
 		for window, offsets := range partWindows {
 			out[window] = append(out[window], offsets...)
 			entryCount += len(offsets)
 		}
-		if raw != part {
-			rawWindows, rawErr := collectValueWindowsStrided(raw, idx, maxEntries-entryCount, stride)
+		if raw != part && len(raw) >= minKnownSecretSubstringLen {
+			rawWindows, rawNext, rawErr := collectValueWindowsPhased(raw, idx, maxEntries-entryCount, stride, phase)
 			if rawErr != nil {
 				return nil, rawErr
 			}
+			phase = rawNext
 			for window, offsets := range rawWindows {
 				out[window] = append(out[window], offsets...)
 				entryCount += len(offsets)
@@ -3169,14 +3177,23 @@ func knownValueStride(span int) int {
 }
 
 func collectValueWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
-	return collectValueWindowsStrided(value, 0, maxEntries, 1)
+	windows, _, err := collectValueWindowsPhased(value, 0, maxEntries, 1, 0)
+	return windows, err
 }
 
-// collectValueWindowsStrided indexes value's windows at least minStride apart,
-// widening the stride when value alone exceeds the anchor bound.
-func collectValueWindowsStrided(value string, base, maxEntries, minStride int) (map[string][]int, error) {
+// collectValueWindowsPhased indexes value's windows at least minStride apart,
+// widening the stride when value alone exceeds the anchor bound. The first
+// window starts at phase, and the returned phase is where the next window
+// would fall past the end of value, so a caller sampling several parts as one
+// span passes it to the next part.
+func collectValueWindowsPhased(value string, base, maxEntries, minStride, phase int) (map[string][]int, int, error) {
 	stride := max(minStride, knownValueStride(len(value)-minKnownSecretSubstringLen+1), 1)
-	capacity := (len(value) - minKnownSecretSubstringLen + stride) / stride
+	starts := len(value) - minKnownSecretSubstringLen + 1
+	phase = max(phase, 0)
+	capacity := 0
+	if starts > phase {
+		capacity = (starts - phase + stride - 1) / stride
+	}
 	if maxEntries <= 0 {
 		capacity = 0
 	} else if capacity > maxEntries {
@@ -3184,7 +3201,8 @@ func collectValueWindowsStrided(value string, base, maxEntries, minStride int) (
 	}
 	windows := make(map[string][]int, capacity)
 	repeated := make(map[string]struct{})
-	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start += stride {
+	start := phase
+	for ; start < starts; start += stride {
 		window := value[start : start+minKnownSecretSubstringLen]
 		// The whole-value entropy floor does not protect a low-entropy prefix
 		// or a repeated 16-byte block inside an otherwise high-entropy secret.
@@ -3202,12 +3220,12 @@ func collectValueWindowsStrided(value string, base, maxEntries, minStride int) (
 		windows[window] = []int{base + start}
 	}
 	if len(windows) > maxEntries {
-		return nil, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
+		return nil, 0, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
 			errKnownValueWindowBudget,
 			len(windows), len(windows)*knownValueWindowEntryBytes,
 			maxEntries, maxEntries*knownValueWindowEntryBytes)
 	}
-	return windows, nil
+	return windows, max(start-starts, 0), nil
 }
 
 // knownValueWindow is one exact partial-match candidate. Keeping its bytes and

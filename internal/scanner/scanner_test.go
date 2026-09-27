@@ -6,6 +6,7 @@ package scanner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4981,20 +4983,64 @@ func TestKnownValueWindowBudget_URLShapesFitDerivedCeiling(t *testing.T) {
 	}
 }
 
-func TestKnownValueWindowBudget_RejectsOversizedValueBeforeCollection(t *testing.T) {
-	value := strings.Repeat("Q7vP2mK9xR4nT8wB", maxKnownValuePartialInputBytes/minKnownSecretSubstringLen+1)
-	if len(value) <= maxKnownValuePartialInputBytes {
-		t.Fatalf("fixture length = %d, want greater than %d", len(value), maxKnownValuePartialInputBytes)
+// highEntropyKnownValue returns a non-repeating base64 value of about n bytes.
+// A periodic fixture is low-information and gets no windows at any size, which
+// would make the anchor assertions below vacuous.
+func highEntropyKnownValue(n int) string {
+	raw := make([]byte, n*3/4)
+	for i := 0; i < len(raw); i += sha256.Size {
+		sum := sha256.Sum256([]byte(strconv.Itoa(i)))
+		copy(raw[i:], sum[:])
 	}
-	set, err := buildKnownValueWindows(newKnownValueWindowBudget(maxKnownValueWindowEntries), []string{value})
-	if !errors.Is(err, errKnownValueWindowBudget) {
-		t.Fatalf("oversized known value error = %v, want window budget error", err)
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func TestKnownValueWindowBudget_OversizedValueIsSampledAcrossItsLength(t *testing.T) {
+	// 131,000 bytes is just under the Linux limit for one exec'd string.
+	for _, size := range []int{maxKnownValuePartialInputBytes + 1200, 131000} {
+		value := highEntropyKnownValue(size)
+		if len(value) <= maxKnownValuePartialInputBytes {
+			t.Fatalf("fixture length = %d, want greater than %d", len(value), maxKnownValuePartialInputBytes)
+		}
+		windows, err := collectValueWindowsBounded(value, 0, maxKnownValueWindowEntries)
+		if err != nil {
+			t.Fatalf("len %d: oversized known value refused: %v", len(value), err)
+		}
+		if len(windows) > maxKnownValuePartialAnchors || len(windows) < maxKnownValuePartialAnchors/2 {
+			t.Fatalf("len %d: %d anchors, want between %d and %d", len(value), len(windows), maxKnownValuePartialAnchors/2, maxKnownValuePartialAnchors)
+		}
+		span := len(value) - minKnownSecretSubstringLen + 1
+		stride := (span + maxKnownValuePartialAnchors - 1) / maxKnownValuePartialAnchors
+		lowest, highest := len(value), -1
+		for window, offsets := range windows {
+			for _, off := range offsets {
+				if off%stride != 0 || value[off:off+minKnownSecretSubstringLen] != window {
+					t.Fatalf("len %d: anchor %q at offset %d is not a stride-%d window of the value", len(value), window, off, stride)
+				}
+				lowest, highest = min(lowest, off), max(highest, off)
+			}
+		}
+		// Anchors cover the whole value, not just its start, so a fragment
+		// copied from the middle or the end is still findable.
+		if lowest > stride || highest < len(value)-minKnownSecretSubstringLen-stride {
+			t.Fatalf("len %d: anchors span offsets %d..%d, want the whole value (stride %d)", len(value), lowest, highest, stride)
+		}
+		set, err := buildKnownValueWindows(newKnownValueWindowBudget(maxKnownValueWindowEntries), []string{value})
+		if err != nil {
+			t.Fatalf("len %d: index build refused: %v", len(value), err)
+		}
+		if set[value].len() == 0 {
+			t.Fatalf("len %d: oversized value retained no partial windows", len(value))
+		}
 	}
-	if set != nil {
-		t.Fatalf("oversized known value returned partial index: %+v", set)
+	// Positive control: a value at the ceiling keeps every window (stride 1).
+	atCap := highEntropyKnownValue(maxKnownValuePartialInputBytes + 1200)[:maxKnownValuePartialInputBytes]
+	capWindows, err := collectValueWindowsBounded(atCap, 0, maxKnownValueWindowEntries)
+	if err != nil {
+		t.Fatalf("value at the ceiling: %v", err)
 	}
-	if !strings.Contains(err.Error(), "partial matching accepts at most") {
-		t.Fatalf("oversized known value error = %v, want per-value remedy", err)
+	if len(capWindows) < maxKnownValuePartialAnchors-64 {
+		t.Fatalf("value at the ceiling kept %d windows, want nearly all %d", len(capWindows), maxKnownValuePartialAnchors)
 	}
 }
 

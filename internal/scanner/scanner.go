@@ -3043,10 +3043,6 @@ func knownValueWindowsBounded(value string, maxEntries int) (map[string][]int, e
 	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
 		return nil, nil
 	}
-	if len(value) > maxKnownValuePartialInputBytes {
-		return nil, fmt.Errorf("%w: known value is %d bytes; partial matching accepts at most %d bytes per value",
-			errKnownValueWindowBudget, len(value), maxKnownValuePartialInputBytes)
-	}
 	if strings.Contains(value, "://") {
 		return urlCredentialWindowsBounded(value, maxEntries)
 	}
@@ -3128,7 +3124,20 @@ func locateURLPart(value, part string) (int, string) {
 }
 
 func collectValueWindowsBounded(value string, base, maxEntries int) (map[string][]int, error) {
-	capacity := len(value) - minKnownSecretSubstringLen + 1
+	// A value longer than maxKnownValuePartialInputBytes is sampled rather than
+	// refused: at most maxKnownValuePartialAnchors window starts, spaced evenly
+	// across the whole value, so the temporary maps below stay within the same
+	// bound as a value at the ceiling. A copied fragment of at least
+	// stride+minKnownSecretSubstringLen-1 bytes always contains an anchor.
+	// Refusing instead stopped the scanner from being built, so one long
+	// environment variable (an inline certificate or JSON key) kept Pipelock
+	// from starting under the default scan_env. Values at or under the ceiling
+	// keep every window (stride 1).
+	stride := 1
+	if span := len(value) - minKnownSecretSubstringLen + 1; span > maxKnownValuePartialAnchors {
+		stride = (span + maxKnownValuePartialAnchors - 1) / maxKnownValuePartialAnchors
+	}
+	capacity := (len(value) - minKnownSecretSubstringLen + stride) / stride
 	if maxEntries <= 0 {
 		capacity = 0
 	} else if capacity > maxEntries {
@@ -3136,7 +3145,7 @@ func collectValueWindowsBounded(value string, base, maxEntries int) (map[string]
 	}
 	windows := make(map[string][]int, capacity)
 	repeated := make(map[string]struct{})
-	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
+	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start += stride {
 		window := value[start : start+minKnownSecretSubstringLen]
 		// The whole-value entropy floor does not protect a low-entropy prefix
 		// or a repeated 16-byte block inside an otherwise high-entropy secret.
@@ -3226,10 +3235,12 @@ const (
 	maxKnownValueWindowEntries = maxSecretsFileEntries * maxSecretsFileLineLen * 2
 	knownValueWindowEntryBytes = 32
 	maxKnownValueWindowBytes   = maxKnownValueWindowEntries * knownValueWindowEntryBytes
-	// The secrets-file loader already enforces this per-value ceiling. Applying
-	// it to every partial-match source also bounds the temporary exact-dedup maps
-	// used during construction; whole-value-only low-entropy inputs bypass it.
+	// The secrets-file loader already enforces this per-value ceiling. Every
+	// other partial-match source samples a longer value down to the anchor
+	// count of a value at the ceiling, which bounds the temporary exact-dedup
+	// maps used during construction.
 	maxKnownValuePartialInputBytes = maxSecretsFileLineLen
+	maxKnownValuePartialAnchors    = maxKnownValuePartialInputBytes - minKnownSecretSubstringLen + 1
 )
 
 var errKnownValueWindowBudget = errors.New("known-value window index memory budget exceeded")

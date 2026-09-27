@@ -122,7 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SDK verifiers agree with the Go reference:** they verify default run chains with the `ext` bag, reject same-key transitions, bound evidence reads, and match the AARP timestamp grammar. The anchor-bundle schema loads under strict validators. (#1611, #1656, #1658, #1697)
 - **Rekor anchoring accepts sharded logs** whose entry index differs from the tree index. (#1470, #1622)
 - **License service:** one active trial per email across writers, the trial slot table as the only eligibility authority, atomic webhook revocation, and removal of a stale founding deadline. (#1556, #1597, #1606, #1698)
-- **The GitHub Action escapes repository-derived text** in annotations and the job summary. (#1698)
+- **The GitHub Action keeps repository-derived text out of workflow commands.** Annotations and the job summary escape it, the audit report no longer prints file names into the job log, and config validation output runs with workflow commands stopped. (#1698, #1704)
 - **Playground:** the durable signing root stays off visitor VMs, delegated runs seal against their root, published replays stay verifiable, a broker without a usable root refuses to start, visitors get their own evidence unedited, and kits stay downloadable. Runs record the requested and provider-reported model, and the broker's admin listener, key cache, artifact reads and VM slots are hardened. (#1442, #1444, #1449, #1450, #1459, #1583, #1646, #1647, #1649, #1695)
 - **The receipt example's tamper step edits a signed field,** so it now proves tamper detection. (#1445)
 - **The logo PNG renders transparent and scaled,** with a generated raster ladder and `.ico`. (#1519)

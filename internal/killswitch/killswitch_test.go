@@ -171,6 +171,28 @@ func TestSentinelObservationInvalidatesHeldSendAfterRemoval(t *testing.T) {
 	}
 }
 
+func TestReloadObservesPreviousSentinelBeforePathChange(t *testing.T) {
+	for _, newPath := range []string{"", filepath.Join(t.TempDir(), "new-kill")} {
+		t.Run(newPath, func(t *testing.T) {
+			oldPath := filepath.Join(t.TempDir(), "old-kill")
+			cfg := testConfig()
+			cfg.KillSwitch.SentinelFile = oldPath
+			c := New(cfg)
+			generation := c.DeferredGeneration()
+			if err := os.WriteFile(oldPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			next := testConfig()
+			next.KillSwitch.SentinelFile = newPath
+			c.Reload(next)
+			if release, ok := c.ClaimDeferredSendAt(generation); ok {
+				release()
+				t.Fatal("held send claimed after old sentinel activated before reload")
+			}
+		})
+	}
+}
+
 func TestController_ConfigEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true

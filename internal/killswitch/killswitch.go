@@ -342,6 +342,7 @@ func IsSessionKeyPath(path string) bool {
 func (c *Controller) Reload(cfg *config.Config) {
 	c.deferredMu.Lock()
 	defer c.deferredMu.Unlock()
+	c.observeSentinel(c.cfg.Load().sentinelFile)
 	c.cfg.Store(buildRuntime(cfg))
 	if c.computeDecision(c.cfg.Load()).Active {
 		c.deferredGeneration.Add(1)

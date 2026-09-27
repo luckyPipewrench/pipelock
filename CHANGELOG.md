@@ -103,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Default-on settings stay on when a config file omits them.** Enabling Browser Shield from a config file now strips hidden prompt traps, extension probes and tracking pixels as documented, and `request_body_scanning.issuer_bound_session_cookies` is on for config files as well as the no-config path. An explicit `false` is still honored. (#1703)
 - **Tool policy protected-path rules cover equivalent operations.** Move, rename, copy, delete, permission-change and link-creation tools now match rules that protect a destination path, patch targets come from patch headers, and backslash separators are recognized. (#1557)
 - **The core DLP floor covers MCP input and the A2A-only forward branch,** so a core credential in a tool call blocks even where the preset warns. (#1528)
 - **MCP scanning covers content it used to skip:** numeric leaves and tool definitions in responses, structured values under media-typed fields, the whole forwarded JSON-RPC envelope and session header, `structuredContent` keys, and SSE events with no data line. The listener enforces its state-token requirement on its own. (#1493, #1521, #1694)

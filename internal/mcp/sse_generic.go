@@ -452,11 +452,17 @@ func dropSelfMatchingSSEInjectionTail(ctx context.Context, sc *scanner.Scanner, 
 		return advanceSSERollingTail("", []byte(tail), true, " "), nil
 	}
 	end := 0
+	start := len(tail)
 	// ForMatching preserves byte offsets only for ASCII input with no
 	// length-changing normalization. Other views cannot index the raw event.
 	if len(normalize.ForMatching(tail)) == len(tail) && isASCII(tail) {
 		for _, match := range result.Matches {
 			span := match.Span()
+			if span.ViewLabel == scanner.ViewForMatching && span.ByteStart >= 0 && span.ByteEnd > span.ByteStart && span.ByteEnd <= len(tail) {
+				if span.ByteStart < start {
+					start = span.ByteStart
+				}
+			}
 			if span.ViewLabel == scanner.ViewForMatching && span.ByteEnd > end && span.ByteEnd <= len(tail) {
 				end = span.ByteEnd
 			}
@@ -467,7 +473,13 @@ func dropSelfMatchingSSEInjectionTail(ctx context.Context, sc *scanner.Scanner, 
 		// discard a possible second phrase.
 		return advanceSSERollingTail("", []byte(tail), true, " "), nil
 	}
-	return advanceSSERollingTail("", []byte(tail[end:]), true, " "), nil
+	// A separate phrase may already have started before the reported match.
+	// Keep both unreported sides while removing the reported span.
+	remaining := tail[end:]
+	if start > 0 && start < end {
+		remaining = tail[:start] + " " + remaining
+	}
+	return advanceSSERollingTail("", []byte(remaining), true, " "), nil
 }
 
 func isASCII(s string) bool {
